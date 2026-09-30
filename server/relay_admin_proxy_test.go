@@ -101,6 +101,8 @@ func TestRelayAdminPathWhitelist(t *testing.T) {
 		"/local/commercial-ops",
 		"/local/commercial-ops/api/overview",
 		"/local/commercial-ops/api/relay-sync?uid=38",
+		"/local/commercial-ops/api/auto-renew",
+		"/local/commercial-ops/api/auto-renew?uid=38",
 		"/local/commercial-ops/api/adjustments",
 		"/local/commercial-ops/api/order-refunds",
 		"/local/commercial-ops/api/cloud-worker-credits",
@@ -122,6 +124,7 @@ func TestRelayAdminPathWhitelist(t *testing.T) {
 		"/public/me", "/public/session",
 		"/health", "/api/foo", "/local/other",
 		"/local/commercial-ops/api/unknown",
+		"/local/commercial-ops/api/auto-renew/delete",
 		"/local/commercial-ops/api/cloud-workers/billing/extra",
 		"/local/commercial-ops/api/cloud-workers/delete",
 		"/local/commercial-ops/private",
@@ -378,6 +381,30 @@ func TestRelayAdminCommercialOpsWriteMarker(t *testing.T) {
 	h.HandleProxy(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("commercial write status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !sawMarker {
+		t.Fatal("relay did not receive the local commercial write marker")
+	}
+}
+
+func TestRelayAdminAutoRenewWriteMarker(t *testing.T) {
+	var sawMarker bool
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/local/commercial-ops/api/auto-renew" && r.Method == http.MethodPost {
+			sawMarker = r.Header.Get("X-Cats-Relay-Local-Write") == "commercial-ops"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	h.setRateLimit(1000, 60)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/relay/local/commercial-ops/api/auto-renew", strings.NewReader(`{"uid":38,"enabled":true}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("auto-renew write status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if !sawMarker {
 		t.Fatal("relay did not receive the local commercial write marker")

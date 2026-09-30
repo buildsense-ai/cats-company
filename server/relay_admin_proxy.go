@@ -386,8 +386,8 @@ var relayAdminAllowedPrefixes = []string{
 
 var relayAdminUserKeyPath = regexp.MustCompile(`^/local/users/[0-9]+/key/(state|limits|usage-reset)/?$`)
 var relayAdminUserKeyLimitsPath = regexp.MustCompile(`^/local/users/([0-9]+)/key/limits/?$`)
-var relayAdminCommercialOpsPath = regexp.MustCompile(`^/local/commercial-ops(?:/api/(?:overview|records|plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|cloud-workers(?:/(?:import|billing))?|users|orders|order-refunds|relay-dry-run|relay-sync))?/?$`)
-var relayAdminCommercialOpsWritePath = regexp.MustCompile(`^/local/commercial-ops/api/(?:plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|cloud-workers/(?:import|billing)|order-refunds|relay-sync)/?$`)
+var relayAdminCommercialOpsPath = regexp.MustCompile(`^/local/commercial-ops(?:/api/(?:overview|records|plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|cloud-workers(?:/(?:import|billing))?|users|orders|order-refunds|relay-dry-run|relay-sync|auto-renew))?/?$`)
+var relayAdminCommercialOpsWritePath = regexp.MustCompile(`^/local/commercial-ops/api/(?:plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|cloud-workers/(?:import|billing)|order-refunds|relay-sync|auto-renew)/?$`)
 
 // Keep this aligned with Relay's explicit capacity endpoints, not its entire
 // /local namespace. Both account registration and state changes require a marker.
