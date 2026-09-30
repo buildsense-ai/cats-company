@@ -154,6 +154,7 @@ export default function CloudArtifactsPanel({
   onClose,
   onPreviewArtifact,
   onPreviewFile,
+  onGatewayFrameChange,
 }) {
   const feedback = useFeedback();
   const normalizedInitialTab = ['active', 'deleted', 'files', 'gateway'].includes(initialTab)
@@ -294,18 +295,29 @@ export default function CloudArtifactsPanel({
     if (!app?.id || !app?.url) return;
     let viewerURL = app.url;
     let visitor = true;
+    let artifact = null;
     try {
       const launch = await api.requestArtifactLaunch({ app: app.id, topic_id: topicId });
       if (launch?.launch_url) { viewerURL = launch.launch_url; visitor = false; }
     } catch {
       // Keep the plain URL; the application will render as a guest.
     }
+    try {
+      const registry = await api.getCloudArtifacts(agentUid, 'active');
+      artifact = (Array.isArray(registry?.artifacts) ? registry.artifacts : [])
+        .find((item) => String(item?.id || '') === String(app.id || '')) || null;
+    } catch {
+      // The application can still be opened as a guest when registry lookup fails.
+    }
     if (target === 'window') {
       window.open(viewerURL, '_blank', 'noopener,noreferrer');
       return;
     }
-    setGatewayPreview({ ...app, viewerURL, visitor });
-  }, [topicId]);
+    onGatewayFrameChange?.(null);
+    setGatewayPreview({ ...app, viewerURL, visitor, artifact });
+  }, [agentUid, onGatewayFrameChange, topicId]);
+
+  useEffect(() => () => onGatewayFrameChange?.(null), [onGatewayFrameChange]);
 
   useEffect(() => {
     setArtifacts([]);
@@ -883,7 +895,14 @@ export default function CloudArtifactsPanel({
               style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
             >
               <div className="cloud-artifacts-gateway-viewer-bar">
-                <button type="button" onClick={() => setGatewayPreview(null)} aria-label="返回应用列表">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onGatewayFrameChange?.(null);
+                    setGatewayPreview(null);
+                  }}
+                  aria-label="返回应用列表"
+                >
                   返回
                 </button>
                 <span className="cloud-artifacts-gateway-viewer-title">
@@ -906,6 +925,11 @@ export default function CloudArtifactsPanel({
                 className="cloud-artifacts-gateway-frame"
                 src={gatewayPreview.viewerURL || gatewayPreview.url}
                 title={gatewayPreview.title || gatewayPreview.id}
+                onLoad={(event) => onGatewayFrameChange?.({
+                  frame: event.currentTarget,
+                  url: gatewayPreview.viewerURL || gatewayPreview.url,
+                  artifact: gatewayPreview.artifact,
+                })}
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
                 referrerPolicy="no-referrer"
                 style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}

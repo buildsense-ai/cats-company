@@ -914,6 +914,57 @@ export default function MessagesView({
     artifactTaskHostRef.current?.connect(activeBinding);
   }, []);
 
+  const handleGatewayArtifactFrameChange = useCallback((change) => {
+    const currentBinding = activeArtifactFrameRef.current;
+    if (!change?.frame || !change?.artifact) {
+      if (!currentBinding?.gateway) return;
+      invalidateArtifactSnapshot();
+      activeArtifactFocusRef.current = null;
+      activeArtifactFrameRef.current = null;
+      artifactTaskHostRef.current?.deactivate();
+      artifactRuntimeHostRef.current?.deactivate();
+      return;
+    }
+
+    const artifact = change.artifact;
+    const agentUid = Number(artifact.agent_uid || artifact.agentUid || cloudArtifactsAgentUID || 0);
+    const artifactId = String(artifact.id || artifact.artifact_id || '').trim();
+    const displayedVersion = Number(artifact.publish_version || 0);
+    const url = String(change.url || '').trim();
+    if (!artifactId || agentUid <= 0 || displayedVersion <= 0 || !url) return;
+
+    const previewFile = {
+      name: artifact.title || artifactId,
+      url,
+      mime_type: 'text/html',
+      artifact_id: artifactId,
+      publish_version: displayedVersion,
+      artifact_agent_uid: agentUid,
+    };
+    const focus = artifactMessageFocusFromPreviewFile(
+      previewFile,
+      artifactTopicRef.current,
+      artifactTopicGenerationRef.current,
+    );
+    if (!focus || activeArtifactAgentUIDRef.current !== agentUid) return;
+
+    const binding = {
+      frame: change.frame,
+      artifactId,
+      agentUid,
+      url,
+      gateway: true,
+      signal: undefined,
+    };
+    invalidateArtifactSnapshot();
+    artifactTaskHostRef.current?.deactivate();
+    artifactRuntimeHostRef.current?.deactivate();
+    activeArtifactFocusRef.current = focus;
+    activeArtifactFrameRef.current = binding;
+    artifactRuntimeHostRef.current?.resume();
+    artifactTaskHostRef.current?.connect(binding);
+  }, [cloudArtifactsAgentUID, invalidateArtifactSnapshot]);
+
   useEffect(() => {
     const getCurrentSession = () => {
       const focus = activeArtifactFocusRef.current;
@@ -4989,6 +5040,7 @@ export default function MessagesView({
                 onClose={closeSidePanel}
                 onPreviewArtifact={previewCloudArtifact}
                 onPreviewFile={previewAgentFile}
+                onGatewayFrameChange={handleGatewayArtifactFrameChange}
               />
             ) : (
               <FilePreviewPanel
