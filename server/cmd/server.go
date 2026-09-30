@@ -466,11 +466,7 @@ func main() {
 	// Group activation judging is optional: without a configured relay endpoint
 	// the hub keeps the deterministic mention rules.
 	if jevClient := server.NewJevClientFromEnv(); jevClient.Enabled() {
-		var functions server.BotFunctionReader
-		if reader, ok := db.(server.BotFunctionReader); ok {
-			functions = reader
-		}
-		hub.SetGroupActivationResolver(server.NewJevGroupActivationResolver(jevClient, functions))
+		hub.SetGroupActivationResolver(server.NewJevGroupActivationResolver(jevClient))
 	}
 	artifactContextSnapshotHandler := server.NewArtifactContextSnapshotHandler(hub)
 	artifactResultHandler := server.NewArtifactResultHandler(hub)

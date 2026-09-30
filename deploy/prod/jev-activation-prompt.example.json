@@ -1,0 +1,5 @@
+{
+  "instructions": "Should {name} reply to the latest message?",
+  "criteria_true": "Yes: the message is something {name} would naturally respond to — it names {name}, continues work {name} is doing, assigns the current step to {name}, or is a request that nobody has taken yet and {name} is able to handle.",
+  "criteria_false": "No: the message is aimed at another member, {name}'s part comes later, or {name} has nothing to add."
+}
