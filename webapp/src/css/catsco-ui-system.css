@@ -4859,6 +4859,15 @@ html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
 .v3-composer-mention-picker { position: absolute; left: max(20px, calc((100% - 760px) / 2)); bottom: calc(100% - 2px); z-index: 100; }
 .v3-composer-mention-picker .oc-mention-item { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--cc-border); background: var(--cc-panel); color: var(--cc-text); cursor: pointer; }
 .v3-composer-mention-picker .oc-mention-all-icon { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 24px; border-radius: 6px; background: color-mix(in srgb, var(--cc-accent) 14%, transparent); color: var(--cc-accent); }
+.v3-composer-command-palette { position: absolute; left: max(20px, calc((100% - 760px) / 2)); bottom: calc(100% - 2px); z-index: 100; min-width: min(360px, calc(100% - 40px)); overflow: hidden; border: 1px solid var(--cc-border); border-radius: 12px; background: var(--cc-panel); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18); }
+.v3-composer-command-palette .oc-command-item { width: 100%; display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--cc-border); background: transparent; color: var(--cc-text); text-align: left; cursor: pointer; }
+.v3-composer-command-palette .oc-command-item:last-child { border-bottom: 0; }
+.v3-composer-command-palette .oc-command-item:hover,
+.v3-composer-command-palette .oc-command-item.is-active { background: color-mix(in srgb, var(--cc-accent) 10%, transparent); }
+.v3-composer-command-palette .oc-command-name { flex: 0 0 78px; color: var(--cc-accent); font-family: var(--cc-font-mono, ui-monospace, monospace); font-size: 13px; font-weight: 600; }
+.v3-composer-command-palette .oc-command-copy { display: grid; gap: 2px; min-width: 0; }
+.v3-composer-command-palette .oc-command-label { font-size: 13px; font-weight: 600; }
+.v3-composer-command-palette .oc-command-description { color: var(--cc-muted); font-size: 12px; line-height: 1.35; }
 
 /* Shared overlays and panels */
 .name-dialog-overlay,
