@@ -914,23 +914,141 @@ export default function MessagesView({
     artifactTaskHostRef.current?.connect(activeBinding);
   }, []);
 
+  const handleGatewayArtifactFrameChange = useCallback((change) => {
+    const currentBinding = activeArtifactFrameRef.current;
+    if (!change?.frame || !change?.artifact) {
+      if (!currentBinding?.gateway) return;
+      invalidateArtifactSnapshot();
+      activeArtifactFocusRef.current = null;
+      activeArtifactFrameRef.current = null;
+      artifactTaskHostRef.current?.deactivate();
+      artifactRuntimeHostRef.current?.deactivate();
+      return;
+    }
+
+    const artifact = change.artifact;
+    const agentUid = Number(artifact.agent_uid || artifact.agentUid || cloudArtifactsAgentUID || 0);
+    const artifactId = String(artifact.id || artifact.artifact_id || '').trim();
+    const displayedVersion = Number(artifact.publish_version || 0);
+    const url = String(change.url || '').trim();
+    if (!artifactId || agentUid <= 0 || displayedVersion <= 0 || !url) {
+      console.warn('[CatsCo] gateway artifact binding skipped: incomplete metadata', {
+        artifactId,
+        agentUid,
+        displayedVersion,
+        url,
+      });
+      return;
+    }
+
+    const previewFile = {
+      name: artifact.title || artifactId,
+      url,
+      mime_type: 'text/html',
+      artifact_id: artifactId,
+      publish_version: displayedVersion,
+      artifact_agent_uid: agentUid,
+    };
+    const focus = artifactMessageFocusFromPreviewFile(
+      previewFile,
+      artifactTopicRef.current,
+      artifactTopicGenerationRef.current,
+    );
+    if (!focus || activeArtifactAgentUIDRef.current !== agentUid) {
+      console.warn('[CatsCo] gateway artifact binding skipped: session mismatch', {
+        artifactId,
+        agentUid,
+        topic: artifactTopicRef.current,
+      });
+      return;
+    }
+
+    const sameBinding = Boolean(
+      currentBinding?.gateway
+      && currentBinding.frame === change.frame
+      && currentBinding.artifactId === artifactId
+      && currentBinding.agentUid === agentUid
+      && currentBinding.url === url
+      && currentBinding.displayedVersion === displayedVersion,
+    );
+
+    const binding = {
+      frame: change.frame,
+      artifactId,
+      agentUid,
+      url,
+      displayedVersion,
+      gateway: true,
+      signal: change.signal,
+    };
+    if (!sameBinding) {
+      invalidateArtifactSnapshot();
+      artifactTaskHostRef.current?.deactivate();
+      artifactRuntimeHostRef.current?.deactivate();
+    }
+    // Gateway applications are task hosts, not chat-message previews. Keep
+    // the message focus empty so an ordinary composer send does not silently
+    // attach the gateway app as Artifact context; getCurrentSession below
+    // still exposes the gateway binding to the task/runtime hosts.
+    activeArtifactFocusRef.current = null;
+    activeArtifactFrameRef.current = sameBinding ? currentBinding : binding;
+    artifactRuntimeHostRef.current?.resume();
+    artifactTaskHostRef.current?.connect(
+      sameBinding ? currentBinding : binding,
+      { force: sameBinding },
+    );
+  }, [cloudArtifactsAgentUID, invalidateArtifactSnapshot]);
+
   useEffect(() => {
     const getCurrentSession = () => {
       const focus = activeArtifactFocusRef.current;
       const binding = activeArtifactFrameRef.current;
+      // A gateway app is not attached to a chat message. Keep its loaded
+      // frame as the task-host session so application task requests still
+      // route to this conversation while ordinary composer messages do not
+      // inherit the gateway binding.
+      const gatewayFocus = !focus && binding?.gateway && binding.frame
+        ? (() => {
+          const previewFile = {
+            artifact_id: binding.artifactId,
+            artifact_agent_uid: binding.agentUid,
+            publish_version: binding.displayedVersion,
+            mime_type: 'text/html',
+            url: binding.url,
+          };
+          const artifactRef = artifactRefFromPreviewFile(previewFile, binding.agentUid);
+          return artifactRef && activeTopicRef.current
+            ? {
+              topic: activeTopicRef.current,
+              topicGeneration: artifactTopicGenerationRef.current,
+              agentUid: binding.agentUid,
+              artifactId: binding.artifactId,
+              displayedVersion: binding.displayedVersion,
+              url: binding.url,
+              previewKey: [binding.agentUid, binding.artifactId, binding.displayedVersion, binding.url].join('|'),
+              artifactRef,
+            }
+            : null;
+        })()
+        : null;
+      const sessionFocus = focus || gatewayFocus;
       if (!focus || !binding || activeTopicRef.current !== focus.topic
         || artifactTopicGenerationRef.current !== focus.topicGeneration
         || activeArtifactAgentUIDRef.current !== focus.agentUid
-        || !artifactBindingMatchesFocus(binding, focus)) return null;
+        || !artifactBindingMatchesFocus(binding, focus)) {
+        if (!gatewayFocus || !binding || activeTopicRef.current !== gatewayFocus.topic
+          || artifactTopicGenerationRef.current !== gatewayFocus.topicGeneration
+          || !artifactBindingMatchesFocus(binding, gatewayFocus)) return null;
+      }
       return {
-        token: focus,
-        identityKey: focus.previewKey,
-        topicId: focus.topic,
-        topicGeneration: focus.topicGeneration,
-        agentUid: focus.agentUid,
-        artifactId: focus.artifactId,
-        displayedVersion: focus.displayedVersion,
-        artifactRef: focus.artifactRef,
+        token: focus || binding,
+        identityKey: sessionFocus.previewKey,
+        topicId: sessionFocus.topic,
+        topicGeneration: sessionFocus.topicGeneration,
+        agentUid: sessionFocus.agentUid,
+        artifactId: sessionFocus.artifactId,
+        displayedVersion: sessionFocus.displayedVersion,
+        artifactRef: sessionFocus.artifactRef,
         binding,
       };
     };
@@ -1457,6 +1575,9 @@ export default function MessagesView({
     const delivery = normalizeArtifactResultDelivery(value);
     if (!delivery) return;
     if (delivery.taskId) {
+      // Gateway apps deliberately have no composer focus/context snapshot.
+      // Result-sink deliveries must carry task_id; persistent task outputs use
+      // the Runtime host/state path. Context-only deliveries remain preview-only.
       await artifactTaskHostRef.current?.handleResultDelivery(value);
       return;
     }
@@ -4989,6 +5110,7 @@ export default function MessagesView({
                 onClose={closeSidePanel}
                 onPreviewArtifact={previewCloudArtifact}
                 onPreviewFile={previewAgentFile}
+                onGatewayFrameChange={handleGatewayArtifactFrameChange}
               />
             ) : (
               <FilePreviewPanel

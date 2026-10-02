@@ -1,5 +1,6 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { Simulate } from 'react-dom/test-utils';
 
 vi.mock('../api', () => ({
   resolveMediaURL: vi.fn((url) => url),
@@ -24,6 +25,7 @@ vi.mock('../api', () => ({
 import { api } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
 import CloudArtifactsPanel from './cloud-artifacts-panel';
+import { promoGatewayApp, promoRegistryArtifact } from '../test-fixtures/promo-gateway';
 
 const activeArtifact = {
   id: 'lesson-game',
@@ -84,6 +86,7 @@ function TestPanel({
   agentUid = 440,
   onPreviewArtifact,
   onPreviewFile,
+  onGatewayFrameChange,
 }) {
   const [tab, setTab] = React.useState(initialTab);
   return (
@@ -96,6 +99,7 @@ function TestPanel({
         onClose={vi.fn()}
         onPreviewArtifact={onPreviewArtifact}
         onPreviewFile={onPreviewFile}
+        onGatewayFrameChange={onGatewayFrameChange}
       />
     </FeedbackProvider>
   );
@@ -106,6 +110,8 @@ describe('CloudArtifactsPanel', () => {
   let root;
   let onPreviewArtifact;
   let onPreviewFile;
+  let onGatewayFrameChange;
+  let gatewayFrameChanges;
 
   beforeEach(() => {
     api.getCloudArtifacts.mockReset().mockResolvedValue({
@@ -134,6 +140,17 @@ describe('CloudArtifactsPanel', () => {
     api.renameCloudArtifactTag.mockReset().mockResolvedValue({ ok: true, renamed: 0 });
     onPreviewArtifact = vi.fn();
     onPreviewFile = vi.fn();
+    gatewayFrameChanges = [];
+    onGatewayFrameChange = (value) => {
+      gatewayFrameChanges.push(value
+        ? {
+          framePresent: Boolean(value.frame),
+          url: value.url,
+          artifact: value.artifact,
+          signal: value.signal,
+        }
+        : null);
+    };
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -736,6 +753,19 @@ describe('CloudArtifactsPanel', () => {
       .toBe('https://artifact.catsco.cc/_launch/code-123?next=/saturday-demo/');
     expect(container.textContent).not.toContain('身份未附带');
 
+    const loadedFrame = container.querySelector('.cloud-artifacts-gateway-frame');
+    await act(async () => {
+      Simulate.load(loadedFrame);
+      await Promise.resolve();
+    });
+    const loadedBinding = gatewayFrameChanges.at(-1);
+    expect(loadedBinding).toMatchObject({
+      url: 'https://artifact.catsco.cc/_launch/code-123?next=/saturday-demo/',
+      framePresent: true,
+      signal: expect.any(AbortSignal),
+    });
+    expect(loadedBinding.signal.aborted).toBe(false);
+
     // The new-page action takes the same code, so that entry gets the identity too.
     await act(async () => {
       [...container.querySelectorAll('button')]
@@ -748,6 +778,85 @@ describe('CloudArtifactsPanel', () => {
       'noopener,noreferrer',
     );
     openSpy.mockRestore();
+  });
+
+  test('shows a visible metadata failure when a gateway app cannot be bound to an Artifact', async () => {
+    api.listArtifactApps.mockResolvedValueOnce({
+      apps: [{
+        id: 'saturday-demo',
+        title: 'Saturday 演示应用',
+        url: 'https://artifact.catsco.cc/saturday-demo/',
+        status: 'ready',
+      }],
+    });
+    api.requestArtifactLaunch.mockResolvedValueOnce({
+      launch_url: 'https://artifact.catsco.cc/_launch/code-123?next=/saturday-demo/',
+    });
+    api.getCloudArtifacts.mockRejectedValue(new Error('artifact_registry_down'));
+
+    await renderPanel({ initialTab: 'active' });
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '应用').click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector('.cloud-artifact-main').click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent)
+      .toContain('应用版本信息读取失败');
+  });
+
+  test('binds the loaded gateway frame with application metadata and an abort signal', async () => {
+    const gatewayArtifact = {
+      ...activeArtifact,
+      ...promoRegistryArtifact,
+      agent_uid: '440',
+      url: 'https://artifact.catsco.cc/promo-content-studio/',
+    };
+    api.listArtifactApps.mockResolvedValueOnce({
+      apps: [{
+        ...promoGatewayApp,
+      }],
+    });
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [gatewayArtifact] });
+    api.requestArtifactLaunch.mockResolvedValueOnce({
+      launch_url: 'data:text/html,<p>gateway</p>',
+    });
+
+    await renderPanel({ initialTab: 'active' });
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '应用').click();
+      await Promise.resolve();
+    });
+    await act(() => {
+      container.querySelector('.cloud-artifact-main').click();
+    });
+
+    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(frame).not.toBeNull();
+    await act(async () => {
+      Simulate.load(frame);
+      await Promise.resolve();
+    });
+    const change = gatewayFrameChanges.at(-1);
+    expect(change).toMatchObject({
+      url: 'data:text/html,<p>gateway</p>',
+      framePresent: true,
+      artifact: expect.objectContaining({ id: 'promo-content-studio', publish_version: 18 }),
+      signal: expect.any(AbortSignal),
+    });
+    expect(change.signal.aborted).toBe(false);
+    await act(async () => {
+      [...container.querySelectorAll('button')]
+        .find((button) => button.textContent === '返回').click();
+      await Promise.resolve();
+    });
+    expect(change.signal.aborted).toBe(true);
+    expect(gatewayFrameChanges.at(-1)).toBeNull();
   });
 
   test('falls back to the plain URL and says so when no code can be obtained', async () => {
@@ -845,6 +954,7 @@ describe('CloudArtifactsPanel', () => {
           agentUid={agentUid}
           onPreviewArtifact={onPreviewArtifact}
           onPreviewFile={onPreviewFile}
+          onGatewayFrameChange={onGatewayFrameChange}
         />,
       );
       await Promise.resolve();

@@ -382,14 +382,14 @@ export function createArtifactTaskHost({
     }
   };
 
-  const connect = (binding = currentSession()?.binding) => {
+  const connect = (binding = currentSession()?.binding, { force = false } = {}) => {
     if (disposed || !binding) {
       connectedBinding = null;
       return false;
     }
     const session = currentSession();
     if (session?.binding !== binding) return false;
-    if (connectedBinding === binding) return true;
+    if (connectedBinding === binding && !force) return true;
     connectedBinding = binding;
     Promise.resolve().then(() => {
       const session = currentSession();

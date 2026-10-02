@@ -229,6 +229,8 @@ vi.mock('../api', () => ({
     getTutorialTasks: vi.fn(),
     getCloudWorkers: vi.fn(),
     getCloudArtifacts: vi.fn(),
+    listArtifactApps: vi.fn(),
+    requestArtifactLaunch: vi.fn(),
     getAgentFiles: vi.fn(),
     getTopicFiles: vi.fn(),
     deleteCloudArtifact: vi.fn(),
@@ -273,6 +275,7 @@ import {
   createComposerDraftStore,
   writeComposerInputDraft,
 } from '../utils/composer-draft-storage';
+import { promoGatewayApp, promoRegistryArtifact } from '../test-fixtures/promo-gateway';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -5634,6 +5637,132 @@ describe('MessagesView composer draft isolation', () => {
         status: 'failed',
         code: 'opaque_frame_bridge_required',
       },
+    }));
+  });
+
+  it('accepts task requests from a gateway application frame', async () => {
+    const origin = 'https://artifact.catsco.cc';
+    const taskId = `atk_${'g'.repeat(43)}`;
+    const taskRef = `atr_${'h'.repeat(43)}`;
+    const posted = [];
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        posted.push(message);
+        if (message.type === 'catsco.artifact.context.request.v1') {
+          window.setTimeout(() => dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.context.response.v1',
+            request_id: message.request_id,
+            context: {
+              contract_version: 'catsco.artifact-page-context.v1',
+              observed_at: '2026-08-26T03:00:00Z',
+              semantic_context: { view: 'gateway' },
+            },
+          }), 0);
+        }
+      },
+    };
+    const artifact = {
+      ...promoRegistryArtifact,
+      agent_uid: '440',
+      kind: 'html',
+      url: `${origin}/promo-content-studio/`,
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.listArtifactApps.mockResolvedValue({
+      apps: [{
+        ...promoGatewayApp,
+      }],
+    });
+    api.requestArtifactLaunch.mockResolvedValue({
+      launch_url: `${origin}/_launch/gateway-task?next=/promo-content-studio/`,
+    });
+    api.getAgents.mockResolvedValue({
+      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
+    });
+    api.createArtifactTask.mockResolvedValue({
+      contract_version: 'catsco.artifact-task-ref.v1',
+      task_id: taskId,
+      task_ref: taskRef,
+      status: 'submitted',
+      delivery_status: 'pending',
+      visible_message: '来自「宣传内容产出应用」：准备发布清单',
+      expires_at: '2026-08-26T12:00:00Z',
+    });
+    api.getArtifactTask.mockResolvedValue({
+      contract_version: 'catsco.artifact-task-status.v1',
+      task_id: taskId,
+      status: 'submitted',
+      delivery_status: 'pending',
+      expires_at: '2026-08-26T12:00:00Z',
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1, initialTab: 'gateway' },
+    });
+    await act(async () => { await flushPromises(); });
+    await act(async () => {
+      Simulate.click(container.querySelector('.cloud-artifact-main'));
+      await flushPromises();
+    });
+
+    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(frame).not.toBeNull();
+    Object.defineProperty(frame, 'contentWindow', {
+      configurable: true,
+      value: frameWindow,
+    });
+    await act(async () => {
+      Simulate.load(frame);
+      await Promise.resolve();
+    });
+    await act(async () => { await flushPromises(); });
+    expect(posted.some((message) => message.type === 'catsco.artifact.host.connect.v1')).toBe(true);
+
+    api.createArtifactContextSnapshot.mockClear();
+    api.sendMessage.mockClear();
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '网关旁的普通消息');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      expect(container.querySelector('textarea.v3-composer-input')?.value).toBe('网关旁的普通消息');
+      expect(container.querySelector('button[aria-label="发送"]')?.disabled).toBe(false);
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    expect(api.createArtifactContextSnapshot).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '网关旁的普通消息', undefined);
+
+    await act(async () => {
+      dispatchFrameMessage(frameWindow, origin, {
+        type: 'catsco.artifact.task.request.v1',
+        request_id: 'gateway-task-request-1',
+        intent_id: 'tasks.create.v1',
+        payload: { title: '准备发布清单' },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await flushPromises(12);
+    });
+
+    expect(api.createArtifactTask).toHaveBeenCalledWith({
+      topic_id: 'p2p_1_440',
+      artifact_ref: {
+        contract_version: 'catsco.artifact-ref.v1',
+        id: artifact.id,
+        displayed_version: artifact.publish_version,
+        currently_visible: true,
+      },
+      intent_id: 'tasks.create.v1',
+      payload: { title: '准备发布清单' },
+      page_context: expect.objectContaining({
+        semantic_context: { view: 'gateway' },
+      }),
+    }, { timeoutMs: 5000 });
+    expect(posted).toContainEqual(expect.objectContaining({
+      type: 'catsco.artifact.task.accepted.v1',
+      request_id: 'gateway-task-request-1',
+      task: expect.objectContaining({ task_id: taskId, status: 'submitted' }),
     }));
   });
 

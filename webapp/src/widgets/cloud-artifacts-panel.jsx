@@ -154,6 +154,7 @@ export default function CloudArtifactsPanel({
   onClose,
   onPreviewArtifact,
   onPreviewFile,
+  onGatewayFrameChange,
 }) {
   const feedback = useFeedback();
   const normalizedInitialTab = ['active', 'deleted', 'files', 'gateway'].includes(initialTab)
@@ -178,6 +179,7 @@ export default function CloudArtifactsPanel({
   const [renamingTag, setRenamingTag] = useState(null);
   const [renamingDraft, setRenamingDraft] = useState('');
   const [pendingGlobalTag, setPendingGlobalTag] = useState('');
+  const gatewayBindingControllerRef = useRef(null);
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -219,6 +221,12 @@ export default function CloudArtifactsPanel({
   const selectTab = (nextTab) => {
     // 「文件」依赖 topicId；'gateway'（应用）是跨域公共只读清单，两者互不影响。
     if (nextTab === 'files' && !topicId) return;
+    if (tab === 'gateway' && nextTab !== 'gateway') {
+      gatewayBindingControllerRef.current?.abort();
+      gatewayBindingControllerRef.current = null;
+      onGatewayFrameChange?.(null);
+      setGatewayPreview(null);
+    }
     if (controlledTab == null) setLocalTab(nextTab);
     onTabChange?.(nextTab);
   };
@@ -294,18 +302,58 @@ export default function CloudArtifactsPanel({
     if (!app?.id || !app?.url) return;
     let viewerURL = app.url;
     let visitor = true;
+    let artifact = null;
+    let metadataError = '';
     try {
       const launch = await api.requestArtifactLaunch({ app: app.id, topic_id: topicId });
       if (launch?.launch_url) { viewerURL = launch.launch_url; visitor = false; }
     } catch {
       // Keep the plain URL; the application will render as a guest.
     }
+    if (target === 'panel') {
+      // Compatibility with applications also published to the platform registry.
+      // Gateway registration alone does not create a versioned task manifest;
+      // do not invent a version or imply that a gateway-only app can run tasks.
+      try {
+        const registry = await api.getCloudArtifacts(agentUid, 'active');
+        artifact = (Array.isArray(registry?.artifacts) ? registry.artifacts : [])
+          .find((item) => String(item?.id || '') === String(app.id || '')) || null;
+        if (!artifact) metadataError = '此应用尚未配置 CatsCo 任务连接，当前只能浏览，请联系发布者';
+        else if (Number(artifact.publish_version || 0) <= 0) {
+          metadataError = '应用版本号缺失，当前只能浏览，无法提交任务';
+        }
+      } catch (error) {
+        metadataError = '应用版本信息读取失败，当前只能浏览，无法提交任务';
+        console.warn('[CatsCo] gateway artifact metadata lookup failed', {
+          agentUid,
+          appId: app.id,
+          error: error?.message || String(error),
+        });
+      }
+    }
     if (target === 'window') {
       window.open(viewerURL, '_blank', 'noopener,noreferrer');
       return;
     }
-    setGatewayPreview({ ...app, viewerURL, visitor });
-  }, [topicId]);
+    gatewayBindingControllerRef.current?.abort();
+    const bindingController = new AbortController();
+    gatewayBindingControllerRef.current = bindingController;
+    onGatewayFrameChange?.(null);
+    setGatewayPreview({
+      ...app,
+      viewerURL,
+      visitor,
+      artifact,
+      metadataError,
+      bindingSignal: bindingController.signal,
+    });
+  }, [agentUid, onGatewayFrameChange, topicId]);
+
+  useEffect(() => () => {
+    gatewayBindingControllerRef.current?.abort();
+    gatewayBindingControllerRef.current = null;
+    onGatewayFrameChange?.(null);
+  }, [onGatewayFrameChange]);
 
   useEffect(() => {
     setArtifacts([]);
@@ -883,7 +931,16 @@ export default function CloudArtifactsPanel({
               style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
             >
               <div className="cloud-artifacts-gateway-viewer-bar">
-                <button type="button" onClick={() => setGatewayPreview(null)} aria-label="返回应用列表">
+                <button
+                  type="button"
+                  onClick={() => {
+                    gatewayBindingControllerRef.current?.abort();
+                    gatewayBindingControllerRef.current = null;
+                    onGatewayFrameChange?.(null);
+                    setGatewayPreview(null);
+                  }}
+                  aria-label="返回应用列表"
+                >
                   返回
                 </button>
                 <span className="cloud-artifacts-gateway-viewer-title">
@@ -897,15 +954,25 @@ export default function CloudArtifactsPanel({
                   新页面打开
                 </button>
               </div>
-              {gatewayPreview.visitor && (
-                <p className="cloud-artifacts-gateway-viewer-note" role="status">
-                  身份未附带，按访客打开
+              {(gatewayPreview.visitor || gatewayPreview.metadataError) && (
+                <p
+                  className="cloud-artifacts-gateway-viewer-note"
+                  role={gatewayPreview.metadataError ? 'alert' : 'status'}
+                >
+                  {[gatewayPreview.visitor && '身份未附带，按访客打开', gatewayPreview.metadataError]
+                    .filter(Boolean).join('；')}
                 </p>
               )}
               <iframe
                 className="cloud-artifacts-gateway-frame"
                 src={gatewayPreview.viewerURL || gatewayPreview.url}
                 title={gatewayPreview.title || gatewayPreview.id}
+                onLoad={(event) => onGatewayFrameChange?.({
+                  frame: event.currentTarget,
+                  url: gatewayPreview.viewerURL || gatewayPreview.url,
+                  artifact: gatewayPreview.artifact,
+                  signal: gatewayPreview.bindingSignal,
+                })}
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
                 referrerPolicy="no-referrer"
                 style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}
