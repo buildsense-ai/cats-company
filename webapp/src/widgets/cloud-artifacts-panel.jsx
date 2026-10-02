@@ -179,6 +179,7 @@ export default function CloudArtifactsPanel({
   const [renamingTag, setRenamingTag] = useState(null);
   const [renamingDraft, setRenamingDraft] = useState('');
   const [pendingGlobalTag, setPendingGlobalTag] = useState('');
+  const gatewayBindingControllerRef = useRef(null);
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -220,6 +221,12 @@ export default function CloudArtifactsPanel({
   const selectTab = (nextTab) => {
     // 「文件」依赖 topicId；'gateway'（应用）是跨域公共只读清单，两者互不影响。
     if (nextTab === 'files' && !topicId) return;
+    if (tab === 'gateway' && nextTab !== 'gateway') {
+      gatewayBindingControllerRef.current?.abort();
+      gatewayBindingControllerRef.current = null;
+      onGatewayFrameChange?.(null);
+      setGatewayPreview(null);
+    }
     if (controlledTab == null) setLocalTab(nextTab);
     onTabChange?.(nextTab);
   };
@@ -296,28 +303,54 @@ export default function CloudArtifactsPanel({
     let viewerURL = app.url;
     let visitor = true;
     let artifact = null;
+    let metadataError = '';
     try {
       const launch = await api.requestArtifactLaunch({ app: app.id, topic_id: topicId });
       if (launch?.launch_url) { viewerURL = launch.launch_url; visitor = false; }
     } catch {
       // Keep the plain URL; the application will render as a guest.
     }
-    try {
-      const registry = await api.getCloudArtifacts(agentUid, 'active');
-      artifact = (Array.isArray(registry?.artifacts) ? registry.artifacts : [])
-        .find((item) => String(item?.id || '') === String(app.id || '')) || null;
-    } catch {
-      // The application can still be opened as a guest when registry lookup fails.
+    if (target === 'panel') {
+      try {
+        const registry = await api.getCloudArtifacts(agentUid, 'active');
+        artifact = (Array.isArray(registry?.artifacts) ? registry.artifacts : [])
+          .find((item) => String(item?.id || '') === String(app.id || '')) || null;
+        if (!artifact) metadataError = '应用版本信息暂时不可用，当前只能浏览，无法提交任务';
+        else if (Number(artifact.publish_version || 0) <= 0) {
+          metadataError = '应用版本号缺失，当前只能浏览，无法提交任务';
+        }
+      } catch (error) {
+        metadataError = '应用版本信息读取失败，当前只能浏览，无法提交任务';
+        console.warn('[CatsCo] gateway artifact metadata lookup failed', {
+          agentUid,
+          appId: app.id,
+          error: error?.message || String(error),
+        });
+      }
     }
     if (target === 'window') {
       window.open(viewerURL, '_blank', 'noopener,noreferrer');
       return;
     }
+    gatewayBindingControllerRef.current?.abort();
+    const bindingController = new AbortController();
+    gatewayBindingControllerRef.current = bindingController;
     onGatewayFrameChange?.(null);
-    setGatewayPreview({ ...app, viewerURL, visitor, artifact });
+    setGatewayPreview({
+      ...app,
+      viewerURL,
+      visitor,
+      artifact,
+      metadataError,
+      bindingSignal: bindingController.signal,
+    });
   }, [agentUid, onGatewayFrameChange, topicId]);
 
-  useEffect(() => () => onGatewayFrameChange?.(null), [onGatewayFrameChange]);
+  useEffect(() => () => {
+    gatewayBindingControllerRef.current?.abort();
+    gatewayBindingControllerRef.current = null;
+    onGatewayFrameChange?.(null);
+  }, [onGatewayFrameChange]);
 
   useEffect(() => {
     setArtifacts([]);
@@ -898,6 +931,8 @@ export default function CloudArtifactsPanel({
                 <button
                   type="button"
                   onClick={() => {
+                    gatewayBindingControllerRef.current?.abort();
+                    gatewayBindingControllerRef.current = null;
                     onGatewayFrameChange?.(null);
                     setGatewayPreview(null);
                   }}
@@ -921,6 +956,11 @@ export default function CloudArtifactsPanel({
                   身份未附带，按访客打开
                 </p>
               )}
+              {gatewayPreview.metadataError && (
+                <p className="cloud-artifacts-gateway-viewer-note" role="alert">
+                  {gatewayPreview.metadataError}
+                </p>
+              )}
               <iframe
                 className="cloud-artifacts-gateway-frame"
                 src={gatewayPreview.viewerURL || gatewayPreview.url}
@@ -929,6 +969,7 @@ export default function CloudArtifactsPanel({
                   frame: event.currentTarget,
                   url: gatewayPreview.viewerURL || gatewayPreview.url,
                   artifact: gatewayPreview.artifact,
+                  signal: gatewayPreview.bindingSignal,
                 })}
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
                 referrerPolicy="no-referrer"
