@@ -25,6 +25,7 @@ vi.mock('../api', () => ({
 import { api } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
 import CloudArtifactsPanel from './cloud-artifacts-panel';
+import { promoGatewayApp, promoRegistryArtifact } from '../test-fixtures/promo-gateway';
 
 const activeArtifact = {
   id: 'lesson-game',
@@ -811,18 +812,13 @@ describe('CloudArtifactsPanel', () => {
   test('binds the loaded gateway frame with application metadata and an abort signal', async () => {
     const gatewayArtifact = {
       ...activeArtifact,
-      id: 'saturday-demo',
-      title: 'Saturday 演示应用',
-      url: 'https://artifact.catsco.cc/saturday-demo/',
+      ...promoRegistryArtifact,
       agent_uid: '440',
-      publish_version: 7,
+      url: 'https://artifact.catsco.cc/promo-content-studio/',
     };
     api.listArtifactApps.mockResolvedValueOnce({
       apps: [{
-        id: 'saturday-demo',
-        title: 'Saturday 演示应用',
-        url: 'https://artifact.catsco.cc/saturday-demo/',
-        status: 'ready',
+        ...promoGatewayApp,
       }],
     });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [gatewayArtifact] });
@@ -850,7 +846,7 @@ describe('CloudArtifactsPanel', () => {
     expect(change).toMatchObject({
       url: 'data:text/html,<p>gateway</p>',
       framePresent: true,
-      artifact: expect.objectContaining({ id: 'saturday-demo', publish_version: 7 }),
+      artifact: expect.objectContaining({ id: 'promo-content-studio', publish_version: 18 }),
       signal: expect.any(AbortSignal),
     });
     expect(change.signal.aborted).toBe(false);

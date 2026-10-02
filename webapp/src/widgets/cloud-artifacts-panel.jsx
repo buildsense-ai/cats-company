@@ -311,11 +311,14 @@ export default function CloudArtifactsPanel({
       // Keep the plain URL; the application will render as a guest.
     }
     if (target === 'panel') {
+      // Compatibility with applications also published to the platform registry.
+      // Gateway registration alone does not create a versioned task manifest;
+      // do not invent a version or imply that a gateway-only app can run tasks.
       try {
         const registry = await api.getCloudArtifacts(agentUid, 'active');
         artifact = (Array.isArray(registry?.artifacts) ? registry.artifacts : [])
           .find((item) => String(item?.id || '') === String(app.id || '')) || null;
-        if (!artifact) metadataError = '应用版本信息暂时不可用，当前只能浏览，无法提交任务';
+        if (!artifact) metadataError = '此应用尚未配置 CatsCo 任务连接，当前只能浏览，请联系发布者';
         else if (Number(artifact.publish_version || 0) <= 0) {
           metadataError = '应用版本号缺失，当前只能浏览，无法提交任务';
         }
@@ -951,14 +954,13 @@ export default function CloudArtifactsPanel({
                   新页面打开
                 </button>
               </div>
-              {gatewayPreview.visitor && (
-                <p className="cloud-artifacts-gateway-viewer-note" role="status">
-                  身份未附带，按访客打开
-                </p>
-              )}
-              {gatewayPreview.metadataError && (
-                <p className="cloud-artifacts-gateway-viewer-note" role="alert">
-                  {gatewayPreview.metadataError}
+              {(gatewayPreview.visitor || gatewayPreview.metadataError) && (
+                <p
+                  className="cloud-artifacts-gateway-viewer-note"
+                  role={gatewayPreview.metadataError ? 'alert' : 'status'}
+                >
+                  {[gatewayPreview.visitor && '身份未附带，按访客打开', gatewayPreview.metadataError]
+                    .filter(Boolean).join('；')}
                 </p>
               )}
               <iframe

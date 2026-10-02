@@ -1575,6 +1575,9 @@ export default function MessagesView({
     const delivery = normalizeArtifactResultDelivery(value);
     if (!delivery) return;
     if (delivery.taskId) {
+      // Gateway apps deliberately have no composer focus/context snapshot.
+      // Result-sink deliveries must carry task_id; persistent task outputs use
+      // the Runtime host/state path. Context-only deliveries remain preview-only.
       await artifactTaskHostRef.current?.handleResultDelivery(value);
       return;
     }

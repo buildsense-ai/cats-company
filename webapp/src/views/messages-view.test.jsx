@@ -275,6 +275,7 @@ import {
   createComposerDraftStore,
   writeComposerInputDraft,
 } from '../utils/composer-draft-storage';
+import { promoGatewayApp, promoRegistryArtifact } from '../test-fixtures/promo-gateway';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -5662,25 +5663,19 @@ describe('MessagesView composer draft isolation', () => {
       },
     };
     const artifact = {
-      id: 'saturday-demo',
+      ...promoRegistryArtifact,
       agent_uid: '440',
-      title: 'Saturday 演示应用',
       kind: 'html',
-      url: `${origin}/saturday-demo/`,
-      status: 'active',
-      publish_version: 7,
+      url: `${origin}/promo-content-studio/`,
     };
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
     api.listArtifactApps.mockResolvedValue({
       apps: [{
-        id: artifact.id,
-        title: artifact.title,
-        url: artifact.url,
-        status: 'ready',
+        ...promoGatewayApp,
       }],
     });
     api.requestArtifactLaunch.mockResolvedValue({
-      launch_url: `${origin}/_launch/gateway-task?next=/saturday-demo/`,
+      launch_url: `${origin}/_launch/gateway-task?next=/promo-content-studio/`,
     });
     api.getAgents.mockResolvedValue({
       agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
@@ -5691,7 +5686,7 @@ describe('MessagesView composer draft isolation', () => {
       task_ref: taskRef,
       status: 'submitted',
       delivery_status: 'pending',
-      visible_message: '来自「Saturday 演示应用」：准备发布清单',
+      visible_message: '来自「宣传内容产出应用」：准备发布清单',
       expires_at: '2026-08-26T12:00:00Z',
     });
     api.getArtifactTask.mockResolvedValue({
@@ -5723,6 +5718,21 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => { await flushPromises(); });
     expect(posted.some((message) => message.type === 'catsco.artifact.host.connect.v1')).toBe(true);
+
+    api.createArtifactContextSnapshot.mockClear();
+    api.sendMessage.mockClear();
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '网关旁的普通消息');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      expect(container.querySelector('textarea.v3-composer-input')?.value).toBe('网关旁的普通消息');
+      expect(container.querySelector('button[aria-label="发送"]')?.disabled).toBe(false);
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    expect(api.createArtifactContextSnapshot).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '网关旁的普通消息', undefined);
 
     await act(async () => {
       dispatchFrameMessage(frameWindow, origin, {
