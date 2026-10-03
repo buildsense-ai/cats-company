@@ -43,9 +43,11 @@ export function Footer() {
       <img
         className="final-footer-watermark"
         src="/catsco-logo-mask.webp"
+        srcSet="/catsco-logo-mask-1600.webp 1600w, /catsco-logo-mask.webp 2700w"
+        sizes="100vw"
         alt=""
-        width="5140"
-        height="3271"
+        width="2700"
+        height="1718"
         aria-hidden="true"
         loading="lazy"
         decoding="async"

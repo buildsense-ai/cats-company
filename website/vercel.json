@@ -10,7 +10,7 @@
       ]
     },
     {
-      "source": "/(favicon.png|.*\\.(webp|mp4|svg|png|jpg|jpeg|pdf))",
+      "source": "/(favicon.png|.*\\.(webp|mp4|svg|png|jpg|jpeg|pdf|woff2))",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=604800, stale-while-revalidate=2592000" }
       ]

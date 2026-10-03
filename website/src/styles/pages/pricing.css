@@ -20,51 +20,6 @@
   background: #45b19b;
 }
 
-.min-h-screen:has(.pricing-page) > .site-header .header-login {
-  color: #b8b8b8;
-  background: #2b2b2b;
-}
-
-.min-h-screen:has(.pricing-page) > .site-header .header-login:hover {
-  color: #fff;
-  background: #5dc6b0;
-}
-
-.min-h-screen:has(.pricing-page) > .site-header .header-login:active {
-  color: #fff;
-  background: #11745b;
-}
-
-.min-h-screen:has(.pricing-page) > .site-header .header-download {
-  color: #d2d2d2;
-  background: #2b2b2b;
-}
-
-.min-h-screen:has(.pricing-page) > .site-header .header-download:hover {
-  color: #f5f5f5;
-  background: #303030;
-}
-
-.min-h-screen:has(.pricing-page) > .site-header .header-download:active {
-  color: #f5f5f5;
-  background: #3a3a3a;
-}
-
-.min-h-screen:has(.pricing-page) > .site-header .header-social-link {
-  color: #ededed;
-  background: #2b2b2b;
-}
-
-.min-h-screen:has(.pricing-page) > .site-header .header-social-link:hover {
-  color: #fff;
-  background: #303030;
-}
-
-.min-h-screen:has(.pricing-page) > .site-header .header-social-link:active {
-  color: #fff;
-  background: #3a3a3a;
-}
-
 .min-h-screen:has(.pricing-page) > .site-header .mobile-menu-button {
   border-color: #515151;
   color: #f4f4f2;
@@ -112,7 +67,8 @@ html:has(.pricing-page) {
   --pricing-muted: #8d8d89;
   --pricing-neutral-line: #393939;
   --pricing-neutral-line-strong: #515151;
-  --pricing-button: var(--pricing-accent);
+  /* Keep white CTA text at WCAG AA contrast on dark surfaces. */
+  --pricing-button: #11745b;
   --cats-primary: var(--pricing-accent);
   --cats-primary-dark: var(--pricing-accent-deep);
   --cats-primary-hover: var(--pricing-accent-deep);
@@ -603,11 +559,11 @@ html:has(.pricing-page) {
   padding: clamp(34px, 4.5vw, 52px);
   border-right: 0;
   color: #fff;
-  background: var(--pricing-accent);
+  background: #11745b;
 }
 
 .pricing-business-intro > p:first-child {
-  color: rgba(255, 255, 255, 0.82);
+  color: #fff;
 }
 
 .pricing-business-intro h2 {
@@ -618,7 +574,7 @@ html:has(.pricing-page) {
 .pricing-business-summary {
   max-width: 390px;
   margin: 14px 0 0;
-  color: rgba(255, 255, 255, 0.78);
+  color: #fff;
   font-size: 14px;
   line-height: 1.75;
 }
@@ -647,7 +603,7 @@ html:has(.pricing-page) {
 
 .pricing-business-price small {
   margin: 0 0 6px 9px;
-  color: rgba(255, 255, 255, 0.78);
+  color: #fff;
   font-size: 13px;
   font-weight: 560;
 }

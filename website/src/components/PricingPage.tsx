@@ -161,8 +161,8 @@ const pricingFaqs = [
 function ComparisonCell({ value }: { value: ComparisonValue }) {
   if (typeof value === 'boolean') {
     return value
-      ? <span className="pricing-comparison-status is-included" aria-label="包含"><Icon name="check" className="h-4 w-4" /></span>
-      : <span className="pricing-comparison-status is-unavailable" aria-label="当前方案未承诺">—</span>
+      ? <span className="pricing-comparison-status is-included" role="img" aria-label="包含"><Icon name="check" className="h-4 w-4" /></span>
+      : <span className="pricing-comparison-status is-unavailable" role="img" aria-label="当前方案未承诺">—</span>
   }
 
   return <span>{value}</span>
