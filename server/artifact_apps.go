@@ -333,6 +333,35 @@ func (h *ArtifactAppsHandler) handleDelete(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "id": id})
 }
 
+// GatewayAppOwner resolves the owning account of one registered application
+// from the gateway's unfiltered list. It backs gateway annotation
+// authorization: annotations may only reference an app the conversation's
+// Agent owns. Errors mean the answer is unknown, so callers fail closed.
+func (h *ArtifactAppsHandler) GatewayAppOwner(ctx context.Context, appID string) (string, bool, error) {
+	if !h.Enabled() {
+		return "", false, errors.New("artifact gateway is not configured")
+	}
+	_, body, failure := h.call(ctx, http.MethodGet, artifactAppsGatewayPath, nil)
+	if failure != nil {
+		return "", false, errors.New("artifact gateway unavailable")
+	}
+	var payload struct {
+		Apps []artifactApp `json:"apps"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", false, errors.New("artifact gateway unavailable")
+	}
+	for _, app := range payload.Apps {
+		if app.ID == appID {
+			if app.Agent == "" {
+				return "", false, nil
+			}
+			return app.Agent, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 // caller resolves the authenticated owner, or writes the response that refuses
 // the request. Every route starts here, so no route can reach the gateway
 // without an owner to scope it to.

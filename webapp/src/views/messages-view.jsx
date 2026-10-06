@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
+import { ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
@@ -34,6 +34,17 @@ import {
   writeComposerPhoneUploadSession,
 } from '../utils/composer-draft-storage';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
+import {
+  GATEWAY_ANNOTATIONS_CONTRACT,
+  buildGatewayAnnotationsMetadata,
+  readGatewayAnnotationDrafts,
+  writeGatewayAnnotationDrafts,
+} from '../utils/gateway-annotation-drafts';
+import {
+  GATEWAY_HOST_MODE_TYPE,
+  createGatewayAnnotationHost,
+  normalizeGatewayAnnotations,
+} from '../gateway-annotations';
 import { useShowThinkingPreference } from '../utils/show-thinking-preference';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, formatUploadErrorMessage, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import { describeResourceLoadError, REQUEST_ERROR_CODE } from '../utils/request-error';
@@ -155,6 +166,193 @@ function artifactBindingMatchesFocus(binding, focus) {
     && binding.artifactId === focus.artifactId
     && Number(binding.agentUid || 0) === focus.agentUid
     && String(binding.url || '') === focus.url);
+}
+
+const GATEWAY_ANNOTATION_KINDS = { element: '元素', text: '文本', region: '区域' };
+
+function gatewayAnnotationTargetText(target, kind) {
+  if (kind === 'region' && target?.rect) {
+    const percent = (value) => `${Math.round(Number(value) * 100)}%`;
+    return `区域 ${percent(target.x || 0)},${percent(target.y || 0)}`;
+  }
+  if (target?.element_id) return `#${target.element_id}`;
+  if (target?.selector) return String(target.selector);
+  if (target?.text) {
+    const text = String(target.text);
+    return text.length > 24 ? `${text.slice(0, 24)}…` : text;
+  }
+  return '';
+}
+
+// Inline editor for one captured target. Rejects empty bodies and disables
+// beyond the frozen 2000-character bound (server mirrors this). Escape
+// cancels and returns control without consuming the capture.
+function GatewayAnnotationCaptureEditor({ capture, existingCount, onConfirm, onCancel }) {
+  const [label, setLabel] = useState('');
+  const [body, setBody] = useState('');
+  const bodyRef = useRef(null);
+  useEffect(() => {
+    bodyRef.current?.focus();
+  }, []);
+  const trimmed = body.trim();
+  const tooLong = body.length > 2000;
+  const handleKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      onCancel();
+    } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      if (trimmed && !tooLong) onConfirm(trimmed, label.trim());
+    }
+  };
+  return (
+    <div className="v3-gateway-annotation-editor" role="form" aria-label="添加应用标注">
+      <div className="v3-gateway-annotation-editor-head">
+        <span className="v3-gateway-annotation-kind-label">
+          {GATEWAY_ANNOTATION_KINDS[capture.kind] || capture.kind}标注
+        </span>
+        <span className="v3-gateway-annotation-editor-target" title={capture.kind === 'text' ? String(capture.target?.text || '') : ''}>
+          {gatewayAnnotationTargetText(capture.target, capture.kind)}
+        </span>
+        <span className="v3-gateway-annotation-count">已有 {existingCount} 条</span>
+      </div>
+      <input
+        className="v3-gateway-annotation-input"
+        type="text"
+        value={label}
+        placeholder="标签（可选）"
+        aria-label="标注标签"
+        maxLength={256}
+        onChange={(event) => setLabel(event.currentTarget.value)}
+        onKeyDown={handleKeyDown}
+      />
+      <textarea
+        ref={bodyRef}
+        className={`v3-gateway-annotation-input is-body${tooLong ? ' is-invalid' : ''}`}
+        value={body}
+        placeholder="输入要传达给 Agent 的批注内容（必填）"
+        aria-label="标注内容"
+        onChange={(event) => setBody(event.currentTarget.value)}
+        onKeyDown={handleKeyDown}
+      />
+      <div className="v3-gateway-annotation-editor-actions">
+        <button
+          type="button"
+          className="v3-gateway-annotation-cancel"
+          onClick={onCancel}
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          className="v3-gateway-annotation-confirm"
+          disabled={!trimmed || tooLong}
+          onClick={() => onConfirm(trimmed, label.trim())}
+        >
+          添加标注
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Composer-attached draft bar: replaces nothing (sits beside the reply bar),
+// never auto-sends, and survives a closed viewer because drafts persist in
+// per-topic/agent/app session storage.
+function GatewayAnnotationDraftBar({ context, drafts, page, capture, disabled, onEditBody, onRemove, onClear, onCaptureConfirm, onCaptureCancel }) {
+  if (capture) {
+    return (
+      <GatewayAnnotationCaptureEditor
+        capture={capture}
+        existingCount={drafts.length}
+        onConfirm={onCaptureConfirm}
+        onCancel={onCaptureCancel}
+      />
+    );
+  }
+  if (!drafts.length && !context) return null;
+  return (
+    <div className="v3-gateway-annotation-bar" role="group" aria-label="待发送应用标注">
+      <div className="v3-gateway-annotation-bar-head">
+        <Bookmark size={14} aria-hidden="true" />
+        <strong>{context?.appTitle || context?.appId || '应用'}</strong>
+        {page?.path && <span className="v3-gateway-annotation-bar-page">{page.path}</span>}
+        <span className="v3-gateway-annotation-bar-count">{drafts.length} 条标注</span>
+        {drafts.length > 0 && (
+          <button type="button" className="v3-gateway-annotation-bar-clear" onClick={onClear}>
+            全部清除
+          </button>
+        )}
+      </div>
+      {drafts.length > 0 && (
+        <ul className="v3-gateway-annotation-bar-list">
+          {drafts.map((draft, index) => (
+            <GatewayAnnotationDraftRow
+              key={draft.id}
+              draft={draft}
+              index={index}
+              disabled={disabled}
+              onEditBody={onEditBody}
+              onRemove={onRemove}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function GatewayAnnotationDraftRow({ draft, index, disabled, onEditBody, onRemove }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(draft.body);
+  const commit = () => {
+    const trimmed = value.trim();
+    if (trimmed && trimmed !== draft.body) onEditBody(draft.id, trimmed);
+    setEditing(false);
+  };
+  return (
+    <li className="v3-gateway-annotation-bar-item">
+      <span className={`v3-gateway-annotation-kind is-${draft.kind}`}>
+        {GATEWAY_ANNOTATION_KINDS[draft.kind] || draft.kind}
+      </span>
+      {editing ? (
+        <input
+          className="v3-gateway-annotation-bar-edit"
+          aria-label={`编辑标注 ${index + 1} 内容`}
+          value={value}
+          maxLength={2000}
+          autoFocus
+          onChange={(event) => setValue(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') { event.preventDefault(); commit(); }
+            if (event.key === 'Escape') { event.preventDefault(); setValue(draft.body); setEditing(false); }
+          }}
+          onBlur={commit}
+        />
+      ) : (
+        <button
+          type="button"
+          className="v3-gateway-annotation-bar-body"
+          title="点击编辑内容"
+          disabled={disabled}
+          onClick={() => { setValue(draft.body); setEditing(true); }}
+        >
+          {draft.label ? <strong>{draft.label}</strong> : null}
+          <span>{draft.body}</span>
+        </button>
+      )}
+      <button
+        type="button"
+        className="v3-gateway-annotation-bar-remove"
+        aria-label={`移除标注 ${index + 1}`}
+        disabled={disabled}
+        onClick={() => onRemove(index)}
+      >
+        <X size={13} aria-hidden="true" />
+      </button>
+    </li>
+  );
 }
 const MAX_CONVERSATION_SHARE_MESSAGES = 50;
 
@@ -510,6 +708,31 @@ export default function MessagesView({
   const [galleryLoading, setGalleryLoading] = useState(false);
   const [galleryStatus, setGalleryStatus] = useState('');
   const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
+  // Gateway annotation drafts are stored per topic × agent × app in session
+  // storage (see utils/gateway-annotation-drafts.js) and mirrored into state
+  // for the composer bar. The context outlives the artifact sidebar, so an
+  // annotation captured in the panel is still visible in the composer after
+  // the viewer is closed.
+  const [gatewayAnnotationContext, setGatewayAnnotationContext] = useState(null);
+  const [gatewayAnnotationDrafts, setGatewayAnnotationDrafts] = useState([]);
+  const [gatewayAnnotationBinding, setGatewayAnnotationBinding] = useState(null);
+  const [gatewayAnnotationReady, setGatewayAnnotationReady] = useState(null);
+  const [gatewayAnnotationMode, setGatewayAnnotationMode] = useState('off');
+  const [gatewayAnnotationCapture, setGatewayAnnotationCapture] = useState(null);
+  const [gatewayAnnotationDraftPage, setGatewayAnnotationDraftPage] = useState(null);
+  const [gatewayAnnotationCapabilityNote, setGatewayAnnotationCapabilityNote] = useState('');
+  const [composerAnnotationBar, setComposerAnnotationBar] = useState(null);
+  const gatewayAnnotationPageChangedRef = useRef(false);
+  const gatewayAnnotationBindingRef = useRef(null);
+  const gatewayAnnotationContextRef = useRef(null);
+  const gatewayAnnotationDraftsRef = useRef([]);
+  const gatewayAnnotationPageRef = useRef(null);
+  const gatewayAnnotationConsumedRef = useRef(false);
+  const annotationSnapshotContextRef = useRef(null);
+  const annotationSnapshotDraftsRef = useRef([]);
+  const gatewayAnnotationHostRef = useRef(null);
+  const gatewayAnnotationPanelStateRef = useRef(null);
+  const gatewayAnnotationReadyTimerRef = useRef(0);
   const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
   const [cloudArtifactsReturnOpen, setCloudArtifactsReturnOpen] = useState(false);
   const [cloudArtifactsTab, setCloudArtifactsTab] = useState('files');
@@ -914,7 +1137,228 @@ export default function MessagesView({
     artifactTaskHostRef.current?.connect(activeBinding);
   }, []);
 
+  // ---------------------------------------------------------------------
+  // Gateway annotations. The annotation bridge owns only what the user
+  // explicitly captures; nothing here attaches app context to ordinary
+  // composer sends.
+  const resetGatewayAnnotationBinding = useCallback(() => {
+    setGatewayAnnotationBinding(null);
+    setGatewayAnnotationReady(null);
+    setGatewayAnnotationMode('off');
+  }, []);
+
+  const handleGatewayAnnotationFrameChange = useCallback((change) => {
+    if (change === null) {
+      gatewayAnnotationBindingRef.current = null;
+      resetGatewayAnnotationBinding();
+      return;
+    }
+    const appId = String(change?.annotationApp?.appId || '').trim();
+    const agentUid = Number(change?.annotationApp?.agentUid || cloudArtifactsAgentUID || 0);
+    const url = String(change?.url || '').trim();
+    if (!appId || agentUid <= 0 || !url) return;
+    // An annotation session only extends across the conversation it belongs
+    // to; switching topics while the viewer is open must not mix pages or
+    // comment targets into the new conversation's composer.
+    if (topic && activeTopicRef.current !== topic) return;
+    const binding = {
+      frame: change.frame,
+      url,
+      appId,
+      appTitle: String(change?.annotationApp?.title || appId),
+      agentUid,
+      signal: change.signal || null,
+    };
+    gatewayAnnotationBindingRef.current = binding;
+    setGatewayAnnotationBinding(binding);
+    setGatewayAnnotationContext((previous) => (previous
+      && previous.appId === appId
+      && Number(previous.agentUid) === agentUid
+      ? previous
+      : { appId, appTitle: binding.appTitle, agentUid }));
+    gatewayAnnotationContextRef.current = gatewayAnnotationContextRef.current
+      && String(gatewayAnnotationContextRef.current.appId) === appId
+      && Number(gatewayAnnotationContextRef.current.agentUid) === agentUid
+      ? gatewayAnnotationContextRef.current
+      : { appId, appTitle: binding.appTitle, agentUid };
+    // A frame reload (navigation or SDK reconnect) invalidates the previous
+    // session; re-handshake instead of reusing a dead token.
+    gatewayAnnotationReadyTimerRef.current = window.setTimeout(() => {
+      setGatewayAnnotationReady((previous) => (previous === null
+        ? 'unavailable'
+        : previous));
+      setGatewayAnnotationCapabilityNote(
+        '应用未加载标注 SDK 或未响应， Detailed element annotation is unavailable，请联系发布者接入 SDK',
+      );
+    }, 3000);
+    gatewayAnnotationHostRef.current?.connect?.(binding);
+  }, [cloudArtifactsAgentUID, resetGatewayAnnotationBinding, topic]);
+
+  // Context resets: a new topic, a different agent viewer, or logout drop the
+  // annotation session and the composer bar. Stored drafts stay in storage —
+  // they are keyed per topic/agent/app, so nothing can bleed across.
+  useEffect(() => {
+    setGatewayAnnotationContext(null);
+    setGatewayAnnotationDrafts([]);
+    setGatewayAnnotationCapture(null);
+    setGatewayAnnotationDraftPage(null);
+    setGatewayAnnotationCapabilityNote('');
+    gatewayAnnotationPageChangedRef.current = false;
+    gatewayAnnotationBindingRef.current = null;
+    resetGatewayAnnotationBinding();
+  }, [topic, resetGatewayAnnotationBinding]);
+
+  // Load the composer draft from storage whenever a context becomes active.
+  useEffect(() => {
+    if (!topic || !user?.uid || !gatewayAnnotationContext
+      || Number(gatewayAnnotationContext?.agentUid) <= 0) {
+      setGatewayAnnotationDrafts([]);
+      return;
+    }
+    const drafts = readGatewayAnnotationDrafts(
+      user.uid,
+      topic,
+      Number(gatewayAnnotationContext.agentUid),
+      String(gatewayAnnotationContext.appId || ''),
+    );
+    setGatewayAnnotationDrafts(drafts);
+    // The annotation page state is not reset here: onReady (SDK handshake)
+    // and capture confirm own it, and wiping it on a context identity change
+    // would erase the evidence needed when the message is sent.
+  }, [topic, user?.uid, gatewayAnnotationContext]);
+
+  // Storage mirrors for the asynchronous send path: handleSend reads these
+  // instead of state so a mid-send draft write cannot escape the snapshot.
+  useEffect(() => {
+    gatewayAnnotationContextRef.current = gatewayAnnotationContext;
+  }, [gatewayAnnotationContext]);
+  useEffect(() => {
+    gatewayAnnotationDraftsRef.current = gatewayAnnotationDrafts;
+  }, [gatewayAnnotationDrafts]);
+  useEffect(() => {
+    gatewayAnnotationPageRef.current = gatewayAnnotationDraftPage;
+  }, [gatewayAnnotationDraftPage]);
+
+  const handleGatewayAnnotationMode = useCallback((mode) => {
+    if (!GATEWAY_HOST_MODE_TYPE) return;
+    if (!['off', 'element', 'text', 'region'].includes(mode)) return;
+    if (mode !== 'off' && !gatewayAnnotationBindingRef.current) {
+      setGatewayAnnotationCapabilityNote('应用未打开，无法标注');
+      return;
+    }
+    if (mode !== 'off') {
+      if (gatewayAnnotationPageChangedRef.current && gatewayAnnotationDrafts.length > 0) {
+        setGatewayAnnotationCapabilityNote('页面已切换，请先清理已有标注再开始新标注');
+        return;
+      }
+      if (gatewayAnnotationDrafts.length >= 20) {
+        setGatewayAnnotationCapabilityNote('本条消息最多 20 条标注');
+        return;
+      }
+    }
+    if (mode !== 'off' && !gatewayAnnotationHostRef.current?.hasSession?.()) {
+      setGatewayAnnotationCapabilityNote('标注桥未连接，请等待应用加载完成后重试');
+      return;
+    }
+    const accepted = gatewayAnnotationHostRef.current?.setMode?.(mode) || false;
+    if (!accepted) {
+      setGatewayAnnotationCapabilityNote('应用未连接标注桥，无法标注');
+      return;
+    }
+    setGatewayAnnotationMode(mode);
+    setGatewayAnnotationCapabilityNote('');
+    gatewayAnnotationPanelStateRef.current?.setMode(mode);
+  }, [gatewayAnnotationDrafts]);
+
+  const gatewayAnnotationPanelStateSetter = useCallback((state) => {
+    if (!state || typeof state !== 'object') return;
+    gatewayAnnotationPanelStateRef.current = state;
+  }, []);
+
+  const handleGatewayAnnotationCaptureConfirm = useCallback((body, label) => {
+    const capture = gatewayAnnotationCapture;
+    const trimmedBody = String(body || '').trim();
+    if (!capture || !trimmedBody) return false;
+    if (!topic || !user?.uid) return false;
+    const agentUid = Number(gatewayAnnotationContext?.agentUid
+      || gatewayAnnotationBindingRef.current?.agentUid || 0);
+    const appId = String(gatewayAnnotationContext?.appId
+      || gatewayAnnotationBindingRef.current?.appId || '');
+    if (agentUid <= 0 || !appId) return false;
+    if (gatewayAnnotationDrafts.length >= 20) return false;
+    const existingIds = new Set(gatewayAnnotationDrafts.map((item) => item.id));
+    if (existingIds.has(capture.id)) return false;
+    const page = capture.page || gatewayAnnotationDraftPage || null;
+    const nextDrafts = [...gatewayAnnotationDrafts, {
+      id: capture.id,
+      kind: capture.kind,
+      label: String(label || '').trim(),
+      body: trimmedBody,
+      target: capture.target,
+    }];
+    setGatewayAnnotationContext({
+      appId,
+      appTitle: gatewayAnnotationBindingRef.current?.appTitle || appId,
+      agentUid,
+    });
+    writeGatewayAnnotationDrafts(user.uid, topic, agentUid, appId, nextDrafts);
+    setGatewayAnnotationDrafts(nextDrafts);
+    if (page) setGatewayAnnotationDraftPage(page);
+    setGatewayAnnotationCapture(null);
+    gatewayAnnotationPageChangedRef.current = false;
+    return true;
+  }, [gatewayAnnotationCapture, gatewayAnnotationContext, gatewayAnnotationDraftPage, gatewayAnnotationDrafts, topic, user?.uid]);
+
+  const handleGatewayAnnotationDraftRemove = useCallback((idOrIndex) => {
+    if (!topic || !user?.uid || !gatewayAnnotationContext) return;
+    const agentUid = Number(gatewayAnnotationContext.agentUid);
+    const appId = String(gatewayAnnotationContext.appId || '');
+    if (agentUid <= 0 || !appId) return;
+    const next = typeof idOrIndex === 'number'
+      ? gatewayAnnotationDrafts.filter((_, index) => index !== idOrIndex)
+      : gatewayAnnotationDrafts.filter((item) => item.id !== String(idOrIndex));
+    writeGatewayAnnotationDrafts(user.uid, topic, agentUid, appId, next);
+    setGatewayAnnotationDrafts(next);
+    if (next.length === 0) {
+      gatewayAnnotationPageChangedRef.current = false;
+      setGatewayAnnotationDraftPage(null);
+    }
+  }, [gatewayAnnotationContext, gatewayAnnotationDrafts, topic, user?.uid]);
+
+  const handleGatewayAnnotationDraftBody = useCallback((id, body) => {
+    if (!topic || !user?.uid || !gatewayAnnotationContext) return;
+    const agentUid = Number(gatewayAnnotationContext.agentUid);
+    const appId = String(gatewayAnnotationContext.appId || '');
+    if (agentUid <= 0 || !appId) return;
+    const trimmed = String(body || '').trim();
+    if (!trimmed) return;
+    const next = gatewayAnnotationDrafts.map((item) => (item.id === id ? { ...item, body: trimmed } : item));
+    writeGatewayAnnotationDrafts(user.uid, topic, agentUid, appId, next);
+    setGatewayAnnotationDrafts(next);
+  }, [gatewayAnnotationContext, gatewayAnnotationDrafts, topic, user?.uid]);
+
+  const clearGatewayAnnotationDrafts = useCallback(() => {
+    if (!topic || !user?.uid || !gatewayAnnotationContext) return;
+    writeGatewayAnnotationDrafts(
+      user.uid,
+      topic,
+      Number(gatewayAnnotationContext.agentUid),
+      String(gatewayAnnotationContext.appId || ''),
+      [],
+    );
+    setGatewayAnnotationDrafts([]);
+    setGatewayAnnotationDraftPage(null);
+    gatewayAnnotationPageChangedRef.current = false;
+  }, [gatewayAnnotationContext, topic, user?.uid]);
+
   const handleGatewayArtifactFrameChange = useCallback((change) => {
+    // Annotation bridge bindings and the legacy task-host path are wired to
+    // the same frame contentWindow. They stay separate: gateway-only apps
+    // (no registry artifact) get no task-host binding, and annotation
+    // bindings are computed only from caller-supplied panel state.
+    if (change === null || change?.annotationApp) {
+      handleGatewayAnnotationFrameChange(change);
+    }
     const currentBinding = activeArtifactFrameRef.current;
     if (!change?.frame || !change?.artifact) {
       if (!currentBinding?.gateway) return;
@@ -997,7 +1441,7 @@ export default function MessagesView({
       sameBinding ? currentBinding : binding,
       { force: sameBinding },
     );
-  }, [cloudArtifactsAgentUID, invalidateArtifactSnapshot]);
+  }, [cloudArtifactsAgentUID, handleGatewayAnnotationFrameChange, invalidateArtifactSnapshot]);
 
   useEffect(() => {
     const getCurrentSession = () => {
@@ -1074,6 +1518,75 @@ export default function MessagesView({
       runtimeHost.dispose();
       if (artifactTaskHostRef.current === host) artifactTaskHostRef.current = null;
       if (artifactRuntimeHostRef.current === runtimeHost) artifactRuntimeHostRef.current = null;
+    };
+  }, []);
+
+  // Gateway annotation bridge: one host instance per mount, messages routed
+  // through the shared handleWindowMessage so exact origin/source checks stay
+  // in the frozen shared module. The binding (frame/app identity) comes only
+  // from messages-view state; the cross-origin frame cannot set its own app
+  // or agent identity.
+  useEffect(() => {
+    const clearReadyTimer = () => {
+      if (gatewayAnnotationReadyTimerRef.current) {
+        window.clearTimeout(gatewayAnnotationReadyTimerRef.current);
+        gatewayAnnotationReadyTimerRef.current = 0;
+      }
+    };
+    const host = createGatewayAnnotationHost({
+      getBinding: () => {
+        const binding = gatewayAnnotationBindingRef.current;
+        if (!binding || !binding.frame?.isConnected) return null;
+        return binding;
+      },
+      onReady: ({ capabilities, page }) => {
+        clearReadyTimer();
+        setGatewayAnnotationReady(capabilities.slice());
+        setGatewayAnnotationDraftPage(page || null);
+        gatewayAnnotationPanelStateRef.current?.setCapabilityNote('');
+      },
+      onSelection: (selection, page) => {
+        const capture = {
+          ...selection,
+          page: page ? { ...page } : null,
+        };
+        setGatewayAnnotationCapture(capture);
+        // One capture closes the mode: the comment editor is the next step,
+        // and re-annotating requires an explicit mode selection again.
+        setGatewayAnnotationMode('off');
+        gatewayAnnotationHostRef.current?.setMode('off');
+      },
+      onPageChange: (page) => {
+        setGatewayAnnotationDraftPage((previous) => {
+          gatewayAnnotationPageChangedRef.current = Boolean(previous
+            && page
+            && (previous.path !== page.path || (previous.revision || '') !== (page.revision || '')));
+          return page;
+        });
+      },
+      onUnavailable: (binding, reason) => {
+        clearReadyTimer();
+        setGatewayAnnotationReady(null);
+        setGatewayAnnotationMode('off');
+        gatewayAnnotationPanelStateRef.current?.reset();
+        if (reason === 'bad-page' || reason === 'bad-selection') return;
+        if (reason === 'bad-capabilities') {
+          setGatewayAnnotationCapabilityNote('该应用未声明可支持的标注能力，暂无法标注');
+          return;
+        }
+        if (reason !== 'binding-gone' && reason !== 'binding-changed'
+          && reason !== 'rebind' && reason !== 'deactivate' && reason !== 'dispose') {
+          setGatewayAnnotationCapabilityNote('标注桥不可用，标注已停止');
+        }
+      },
+    });
+    gatewayAnnotationHostRef.current = host;
+    window.addEventListener('message', host.handleWindowMessage);
+    return () => {
+      clearReadyTimer();
+      window.removeEventListener('message', host.handleWindowMessage);
+      host.dispose();
+      if (gatewayAnnotationHostRef.current === host) gatewayAnnotationHostRef.current = null;
     };
   }, []);
 
@@ -2353,6 +2866,11 @@ export default function MessagesView({
     let topicToActivate = null;
     let switchesTopic = false;
     let stateCleared = false;
+    // Annotation snapshot restore state: filled when a successful-send clear
+    // consumed the draft, read by the catch path if the send then failed.
+    gatewayAnnotationConsumedRef.current = false;
+    annotationSnapshotContextRef.current = null;
+    annotationSnapshotDraftsRef.current = [];
     let sendClearMutationRevision = null;
     let messageSent = false;
     let optimisticMessageAdded = false;
@@ -2408,7 +2926,45 @@ export default function MessagesView({
       const artifactContext = switchesTopic
         ? { contextRef: '' }
         : await captureArtifactMessageContext();
-      const sendPayload = withArtifactContextRef(payload, artifactContext.contextRef);
+      const annotationContextSnapshot = gatewayAnnotationContextRef.current;
+      const annotationDraftsSnapshotted = switchesTopic
+        ? []
+        : gatewayAnnotationDraftsRef.current;
+      const annotationsMetadata = buildGatewayAnnotationsMetadata(
+        annotationContextSnapshot,
+        annotationDraftsSnapshotted,
+        gatewayAnnotationPageRef.current,
+      );
+      if (annotationDraftsSnapshotted.length > 0 && !annotationsMetadata) {
+        // A stale or non-canonical draft must never be silently dropped onto
+        // a message: refuse the send and keep the draft for the user.
+        throw new Error('应用标注数据无效或与当前应用不匹配，请清除标注后重试');
+      }
+      const payloadWithAnnotations = annotationsMetadata
+        ? (() => {
+          // Annotations ride on the ordinary text message; a string payload
+          // is lifted into the object form so metadata can be attached.
+          if (typeof payload === 'string') {
+            return { type: 'text', content: payload, metadata: { gateway_annotations: annotationsMetadata } };
+          }
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+            return null;
+          }
+          return {
+            ...payload,
+            metadata: {
+              ...(payload.metadata || {}),
+              gateway_annotations: annotationsMetadata,
+            },
+          };
+        })()
+        : null;
+      if (annotationDraftsSnapshotted.length > 0 && !payloadWithAnnotations) {
+        throw new Error('应用标注需要与文本消息一起发送');
+      }
+      const sendPayload = payloadWithAnnotations
+        ? withArtifactContextRef(payloadWithAnnotations, artifactContext.contextRef)
+        : withArtifactContextRef(payload, artifactContext.contextRef);
 
       // If a newer composer wrote text/mentions while this send was being
       // prepared, leave that draft alone. Attachment polling above is part of
@@ -2432,6 +2988,24 @@ export default function MessagesView({
         updateAttachmentDraft(topic, []);
         writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
         persistComposerDraftStore();
+        if (annotationContextSnapshot && annotationsMetadata
+          && !gatewayAnnotationConsumedRef.current) {
+          // The annotation draft is consumed atomically with the message it
+          // rides on; the storage wipe happens before the request so a later
+          // composer write cannot resurrect consumed rows into this draft.
+          annotationSnapshotContextRef.current = annotationContextSnapshot;
+          annotationSnapshotDraftsRef.current = annotationDraftsSnapshotted;
+          writeGatewayAnnotationDrafts(
+            user.uid,
+            topic,
+            Number(annotationContextSnapshot.agentUid),
+            String(annotationContextSnapshot.appId),
+            [],
+          );
+          setGatewayAnnotationDrafts([]);
+          setGatewayAnnotationContext(null);
+          gatewayAnnotationConsumedRef.current = true;
+        }
         sendClearMutationRevision = readComposerDraftMutationRevision(
           composerDraftStoreRef.current,
           topic,
@@ -2507,6 +3081,21 @@ export default function MessagesView({
         updateAttachmentDraft(topic, []);
         writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
         persistComposerDraftStore();
+        if (annotationContextSnapshot && annotationsMetadata
+          && !gatewayAnnotationConsumedRef.current) {
+          annotationSnapshotContextRef.current = annotationContextSnapshot;
+          annotationSnapshotDraftsRef.current = annotationDraftsSnapshotted;
+          writeGatewayAnnotationDrafts(
+            user.uid,
+            topic,
+            Number(annotationContextSnapshot.agentUid),
+            String(annotationContextSnapshot.appId),
+            [],
+          );
+          setGatewayAnnotationDrafts([]);
+          setGatewayAnnotationContext(null);
+          gatewayAnnotationConsumedRef.current = true;
+        }
         stateCleared = true;
         if (activeTopicRef.current === topic) {
           setInput('');
@@ -2558,6 +3147,25 @@ export default function MessagesView({
           originalPhoneUploadSession,
         );
         persistComposerDraftStore();
+        // A send that failed after the pre-clear keeps the annotation draft:
+        // the consumed rows go back into the same topic/agent/app bucket.
+        if (gatewayAnnotationConsumedRef.current) {
+          const restoreContext = annotationSnapshotContextRef.current;
+          const restoreDrafts = annotationSnapshotDraftsRef.current;
+          if (restoreContext && String(restoreContext.appId)
+            && Number(restoreContext.agentUid) > 0) {
+            writeGatewayAnnotationDrafts(
+              user.uid,
+              topic,
+              Number(restoreContext.agentUid),
+              String(restoreContext.appId),
+              Array.isArray(restoreDrafts) ? restoreDrafts : [],
+            );
+            setGatewayAnnotationContext(restoreContext);
+            setGatewayAnnotationDrafts(Array.isArray(restoreDrafts) ? restoreDrafts : []);
+          }
+          gatewayAnnotationConsumedRef.current = false;
+        }
       }
       if (activeTopicRef.current === topic) {
         if (stateCleared) {
@@ -4943,24 +5551,61 @@ export default function MessagesView({
           setAttachmentMenuOpen(false);
           setShowCommandPalette(false);
         }}
-        context={replyTo && (
-          <div className="oc-reply-bar">
-            <div className="oc-reply-bar-content">
-              <span className="oc-reply-bar-label">{t('chat_reply')}：</span>
-              <span className="oc-reply-bar-text">
-                {typeof replyTo.content === 'string' ? replyTo.content : '[media]'}
-              </span>
-            </div>
-            <button
-              type="button"
-              className="oc-reply-bar-close"
-              aria-label="取消回复"
-              onClick={() => setReplyTo(null)}
-            >
-              <X size={16} aria-hidden="true" />
-            </button>
-          </div>
-        )}
+        context={(() => {
+          const hasAnnotationBar = Boolean(
+            gatewayAnnotationCapture
+            || gatewayAnnotationCapabilityNote
+            || gatewayAnnotationDrafts.length > 0,
+          );
+          if (!hasAnnotationBar && !replyTo) return null;
+          return (
+          <>
+            {gatewayAnnotationCapture && (
+              <GatewayAnnotationCaptureEditor
+                capture={gatewayAnnotationCapture}
+                existingCount={gatewayAnnotationDrafts.length}
+                onConfirm={handleGatewayAnnotationCaptureConfirm}
+                onCancel={() => setGatewayAnnotationCapture(null)}
+              />
+            )}
+            {!gatewayAnnotationCapture && (gatewayAnnotationDrafts.length > 0 || gatewayAnnotationCapabilityNote) && (
+              <div className="v3-gateway-annotation-notice" role={gatewayAnnotationDrafts.length > 0 ? 'group' : 'status'}>
+                {gatewayAnnotationCapabilityNote || null}
+              </div>
+            )}
+            <GatewayAnnotationDraftBar
+              context={gatewayAnnotationContext}
+              drafts={gatewayAnnotationDrafts}
+              page={gatewayAnnotationDraftPage}
+              capture={null}
+              disabled={isSendingMessage}
+              onEditBody={handleGatewayAnnotationDraftBody}
+              onRemove={handleGatewayAnnotationDraftRemove}
+              onClear={clearGatewayAnnotationDrafts}
+              onCaptureConfirm={handleGatewayAnnotationCaptureConfirm}
+              onCaptureCancel={() => setGatewayAnnotationCapture(null)}
+            />
+            {replyTo && (
+              <div className="oc-reply-bar">
+                <div className="oc-reply-bar-content">
+                  <span className="oc-reply-bar-label">{t('chat_reply')}：</span>
+                  <span className="oc-reply-bar-text">
+                    {typeof replyTo.content === 'string' ? replyTo.content : '[media]'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="oc-reply-bar-close"
+                  aria-label="取消回复"
+                  onClick={() => setReplyTo(null)}
+                >
+                  <X size={16} aria-hidden="true" />
+                </button>
+              </div>
+            )}
+          </>
+          );
+        })()}
         attachments={pendingAttachments}
         attachmentRemovalDisabled={isUploadingAttachment || isSendingMessage}
         onRemoveAttachment={(index) => {
@@ -5111,6 +5756,8 @@ export default function MessagesView({
                 onPreviewArtifact={previewCloudArtifact}
                 onPreviewFile={previewAgentFile}
                 onGatewayFrameChange={handleGatewayArtifactFrameChange}
+                onGatewayAnnotationMode={handleGatewayAnnotationMode}
+                onGatewayAnnotationState={gatewayAnnotationPanelStateSetter}
               />
             ) : (
               <FilePreviewPanel

@@ -95,8 +95,22 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, status, map[string]string{"error": err.Error()})
 			return
 		}
+		sawGatewayAnnotationsIngress := hasGatewayAnnotationsMetadata(payload.Metadata)
+		payload.Metadata, err = h.hub.validateGatewayAnnotationsMetadata(uid, req.TopicID, payload.Metadata)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if sawGatewayAnnotationsIngress && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "gateway_annotations require a persisted visible message",
+			})
+			return
+		}
 	} else {
 		payload.Metadata = metadataWithoutArtifactContext(payload.Metadata)
+		payload.Metadata = metadataWithoutGatewayAnnotationContext(payload.Metadata)
+		payload.Metadata = metadataWithoutGatewayAnnotations(payload.Metadata)
 	}
 	if payload.ArtifactTaskRef != nil && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
 		h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
@@ -299,7 +313,7 @@ func (h *Hub) persistedArtifactTaskReplayPayload(
 	if message == nil {
 		return nil, errors.New("persisted Artifact task message was not found")
 	}
-	metadata := metadataWithoutArtifactContext(message.Metadata)
+	metadata := metadataWithoutGatewayAnnotationContext(metadataWithoutArtifactContext(message.Metadata))
 	mentions := structuredMentionsFromMessage(map[string]interface{}{
 		"content_blocks": message.ContentBlocks,
 		"metadata":       metadata,
@@ -512,6 +526,11 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		validatedTaskDelivery,
 		recipientUID,
 	)
+	metadata = withGatewayAnnotationAgentContext(
+		metadata,
+		h.gatewayAnnotationAgentContext(uid, recipientUID, topicID, payload.Metadata),
+		recipientUID,
+	)
 	metadata = withSkillConnectorMetadata(metadata, h.buildShimoSkillConnectorMetadata(uid, recipientUID, topicID, msgID))
 	return &ServerMessage{
 		Data: &MsgServerData{
@@ -612,7 +631,9 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 		users = identityUsers[0]
 	}
 	displayContent := decodeStoredContent(message.Content)
-	storedMetadata := metadataWithoutArtifactContext(message.Metadata)
+	// The stored annotation context key is fanout-only; a value that somehow
+	// reached the store must never be replayed to readers as server output.
+	storedMetadata := metadataWithoutGatewayAnnotationContext(metadataWithoutArtifactContext(message.Metadata))
 	return &MsgServerData{
 		Topic:         message.TopicID,
 		From:          formatUID(message.FromUID),

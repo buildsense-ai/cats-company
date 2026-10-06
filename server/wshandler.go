@@ -63,12 +63,15 @@ type Hub struct {
 	artifactContextResolver    ArtifactContextResolver
 	artifactTaskIntentResolver ArtifactTaskIntentResolver
 	artifactRuntimeResolver    ArtifactRuntimeManifestResolver
-	artifactContextSnapshots   *artifactContextSnapshotStore
-	artifactResultWritebacks   *artifactResultWritebackStore
-	artifactTasks              *artifactTaskStore
-	push                       *PushNotificationService
-	agentPush                  *agentPushTurnCoordinator
-	taskGrace                  time.Duration
+	// gatewayAnnotationAppResolver answers server-canonical gateway
+	// application ownership for annotation-bearing messages; nil fails closed.
+	gatewayAnnotationAppResolver GatewayAnnotationsAppResolver
+	artifactContextSnapshots     *artifactContextSnapshotStore
+	artifactResultWritebacks     *artifactResultWritebackStore
+	artifactTasks                *artifactTaskStore
+	push                         *PushNotificationService
+	agentPush                    *agentPushTurnCoordinator
+	taskGrace                    time.Duration
 	// taskReaperInterval is how often the disconnected-task recovery reaper
 	// scans durable rows. It complements the per-disconnect time.AfterFunc so
 	// a crashed/restarted process or transient DB error cannot permanently
@@ -1518,6 +1521,20 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		})
 		return
 	}
+	sawGatewayAnnotationsIngress := hasGatewayAnnotationsMetadata(payload.Metadata)
+	payload.Metadata, err = h.validateGatewayAnnotationsMetadata(uid, topic, payload.Metadata)
+	if err != nil {
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 400, Text: err.Error()},
+		})
+		return
+	}
+	if sawGatewayAnnotationsIngress && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 400, Text: "gateway_annotations require a persisted visible message"},
+		})
+		return
+	}
 	if payload.ArtifactTaskRef != nil && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
 		h.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
 		h.SendToClient(client, &ServerMessage{
@@ -1732,7 +1749,10 @@ func (h *Hub) fanoutStreamEvent(uid int64, topicID string, streamType string, co
 		streamType = "stream_delta"
 	}
 	streamMetadata := map[string]interface{}{}
-	for key, value := range metadataWithoutArtifactContext(metadata) {
+	// Streaming events are transport-only: neither the annotation attachment
+	// nor any (forged) server-context copy may ride them.
+	streamBase := metadataWithoutGatewayAnnotationContext(metadataWithoutGatewayAnnotations(metadataWithoutArtifactContext(metadata)))
+	for key, value := range streamBase {
 		streamMetadata[key] = value
 	}
 	streamMetadata["stream_event"] = strings.TrimPrefix(streamType, "stream_")
@@ -2463,6 +2483,11 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content), catscoIdentityMetadataOptions{SourceMetadata: msg.Data.Metadata}),
 			)
 			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(senderUID, m.UserID, msg.Data.Topic))
+			metadata = withGatewayAnnotationAgentContext(
+				metadata,
+				h.gatewayAnnotationAgentContext(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata),
+				m.UserID,
+			)
 			metadata = withArtifactContextDeliveryRef(
 				metadataWithoutArtifactContext(metadata),
 				h.validatedArtifactContextDeliveryRef(senderUID, msg.Data.Topic, msg.artifactContextRef, m.UserID),

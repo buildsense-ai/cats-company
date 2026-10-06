@@ -155,6 +155,8 @@ export default function CloudArtifactsPanel({
   onPreviewArtifact,
   onPreviewFile,
   onGatewayFrameChange,
+  onGatewayAnnotationMode,
+  onGatewayAnnotationState,
 }) {
   const feedback = useFeedback();
   const normalizedInitialTab = ['active', 'deleted', 'files', 'gateway'].includes(initialTab)
@@ -168,6 +170,11 @@ export default function CloudArtifactsPanel({
   const [files, setFiles] = useState([]);
   const [gatewayApps, setGatewayApps] = useState([]);
   const [gatewayPreview, setGatewayPreview] = useState(null);
+  // Annotation mode state lives here, not in the viewer chrome, so the
+  // toolbar re-renders without touching the cross-origin iframe subtree.
+  const [gatewayAnnotationMode, setGatewayAnnotationMode] = useState('off');
+  const [gatewayAnnotationCapabilityNote, setGatewayAnnotationCapabilityNote] = useState('');
+  const modeSyncRef = useRef(null);
   const [viewerRelation, setViewerRelation] = useState('');
   const [canPublish, setCanPublish] = useState(false);
   const [tagCounts, setTagCounts] = useState([]);
@@ -226,6 +233,7 @@ export default function CloudArtifactsPanel({
       gatewayBindingControllerRef.current = null;
       onGatewayFrameChange?.(null);
       setGatewayPreview(null);
+      setGatewayAnnotationMode('off');
     }
     if (controlledTab == null) setLocalTab(nextTab);
     onTabChange?.(nextTab);
@@ -318,12 +326,12 @@ export default function CloudArtifactsPanel({
         const registry = await api.getCloudArtifacts(agentUid, 'active');
         artifact = (Array.isArray(registry?.artifacts) ? registry.artifacts : [])
           .find((item) => String(item?.id || '') === String(app.id || '')) || null;
-        if (!artifact) metadataError = '此应用尚未配置 CatsCo 任务连接，当前只能浏览，请联系发布者';
+        if (!artifact) metadataError = '未接入 CatSco 任务系统（gateway-only 应用），无法提交任务；浏览与标注不受影响';
         else if (Number(artifact.publish_version || 0) <= 0) {
-          metadataError = '应用版本号缺失，当前只能浏览，无法提交任务';
+          metadataError = '任务版本信息缺失，无法提交任务；浏览与标注不受影响';
         }
       } catch (error) {
-        metadataError = '应用版本信息读取失败，当前只能浏览，无法提交任务';
+        metadataError = '任务连接信息读取失败，无法提交任务；浏览与标注不受影响';
         console.warn('[CatsCo] gateway artifact metadata lookup failed', {
           agentUid,
           appId: app.id,
@@ -347,13 +355,39 @@ export default function CloudArtifactsPanel({
       metadataError,
       bindingSignal: bindingController.signal,
     });
+    setGatewayAnnotationMode('off');
+    setGatewayAnnotationCapabilityNote('');
   }, [agentUid, onGatewayFrameChange, topicId]);
 
   useEffect(() => () => {
     gatewayBindingControllerRef.current?.abort();
     gatewayBindingControllerRef.current = null;
     onGatewayFrameChange?.(null);
+    modeSyncRef.current = null;
   }, [onGatewayFrameChange]);
+
+  // The toolbar renders host-acknowledged state only. User intent travels up
+  // through onGatewayAnnotationMode; the host (messages view) reports the
+  // accepted state back through onGatewayAnnotationState, so neither the
+  // cross-origin frame nor a double-click can drive toolbar state directly.
+  const handleAnnotationModeSelect = useCallback((event) => {
+    const mode = event?.currentTarget?.dataset?.annotationMode || 'off';
+    onGatewayAnnotationMode?.(mode);
+  }, [onGatewayAnnotationMode]);
+
+  useEffect(() => {
+    if (typeof onGatewayAnnotationState !== 'function') return undefined;
+    onGatewayAnnotationState({
+      setMode: (mode) => {
+        if (typeof mode === 'string') setGatewayAnnotationMode(mode);
+      },
+      setCapabilityNote: (note) => setGatewayAnnotationCapabilityNote(String(note || '')),
+      reset: () => {
+        setGatewayAnnotationMode('off');
+        setGatewayAnnotationCapabilityNote('');
+      },
+    });
+  }, [onGatewayAnnotationState]);
 
   useEffect(() => {
     setArtifacts([]);
@@ -946,6 +980,31 @@ export default function CloudArtifactsPanel({
                 <span className="cloud-artifacts-gateway-viewer-title">
                   {gatewayPreview.title || gatewayPreview.id}
                 </span>
+                {topicId && agentUid > 0 && (
+                  <div className="cloud-artifacts-gateway-annotation-tools" role="group" aria-label="应用标注">
+                    {[['element', '元素'], ['text', '文本'], ['region', '区域']].map(([mode, modeLabel]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        data-annotation-mode={mode}
+                        className={`cloud-artifacts-gateway-annotation-mode${gatewayAnnotationMode === mode ? ' is-active' : ''}${gatewayAnnotationMode === 'off' ? '' : ' is-secondary'}`}
+                        aria-pressed={gatewayAnnotationMode === mode}
+                        onClick={handleAnnotationModeSelect}
+                      >
+                        {modeLabel}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      data-annotation-mode="off"
+                      className={`cloud-artifacts-gateway-annotation-mode is-off${gatewayAnnotationMode === 'off' ? ' is-active' : ''}`}
+                      aria-pressed={gatewayAnnotationMode === 'off'}
+                      onClick={handleAnnotationModeSelect}
+                    >
+                      取消
+                    </button>
+                  </div>
+                )}
                 <button
                   type="button"
                   aria-label={'在新页面打开 ' + (gatewayPreview.title || gatewayPreview.id || '')}
@@ -954,6 +1013,18 @@ export default function CloudArtifactsPanel({
                   新页面打开
                 </button>
               </div>
+              {gatewayAnnotationCapabilityNote && (
+                <p className="cloud-artifacts-gateway-viewer-note" role="status">
+                  {gatewayAnnotationCapabilityNote}
+                </p>
+              )}
+              {gatewayAnnotationMode !== 'off' && (
+                <p className="cloud-artifacts-gateway-annotation-hint" role="status">
+                  {gatewayAnnotationMode === 'element' && '点击应用中的一个元素进行标注（密码、令牌等敏感输入框不可标注）。'}
+                  {gatewayAnnotationMode === 'text' && '在应用中选中一段文本后释放，即可为该选区写标注。'}
+                  {gatewayAnnotationMode === 'region' && '在应用页面按住并拖出一块矩形区域进行标注。区域按截图比例记录，刷新后会失效，仅用于参考。'}
+                </p>
+              )}
               {(gatewayPreview.visitor || gatewayPreview.metadataError) && (
                 <p
                   className="cloud-artifacts-gateway-viewer-note"
@@ -972,6 +1043,10 @@ export default function CloudArtifactsPanel({
                   url: gatewayPreview.viewerURL || gatewayPreview.url,
                   artifact: gatewayPreview.artifact,
                   signal: gatewayPreview.bindingSignal,
+                  annotationApp: {
+                    appId: gatewayPreview.id,
+                    title: gatewayPreview.title || gatewayPreview.id,
+                  },
                 })}
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
                 referrerPolicy="no-referrer"

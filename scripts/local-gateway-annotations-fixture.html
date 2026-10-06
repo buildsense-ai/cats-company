@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>GKB 物料看板（标注 SDK demo 应用）</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 14px/1.6 system-ui, "PingFang SC", sans-serif; margin: 0; padding: 24px 32px; color: #24303d; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 18px; color: #6b7684; font-size: 12px; }
+  button {
+    display: block; margin: 10px 0; padding: 8px 18px;
+    border-radius: 8px; border: 1px solid #9fb3c8; background: #fff;
+    color: #24303d; font: inherit; cursor: pointer;
+  }
+  button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  button:focus-visible { outline: 2px solid #1f6feb; outline-offset: 2px; }
+  input, textarea {
+    display: block; width: 320px; margin: 10px 0; padding: 8px 10px;
+    border: 1px solid #9fb3c8; border-radius: 8px; font: inherit;
+  }
+  section, table { margin: 16px 0; }
+  table { border-collapse: collapse; }
+  td { border: 1px solid #d4dee9; padding: 6px 12px; }
+  .annotated-target { background: #fff7d6; }
+  p.paragraph { max-width: 520px; margin: 14px 0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>GKB 物料看板</h1>
+  <p class="sub">gateway-only 演示应用（无平台任务注册，仅供浏览器行为与标注 SDK 联调）</p>
+  <input id="token-input" type="password" placeholder="访问令牌（敏感输入框，SDK 应拒绝标注）">
+  <span id="token-label">默认令牌</span>
+  <button id="submit-btn" class="primary">发布物料</button>
+  <section id="inventory">当前库位: A-12-3</section>
+  <button id="rotate-btn">切换库存位置令牌标签</button>
+  <p id="notice" class="paragraph">发布队列: 周一批量 40 件。注意温度上限 60°C。</p>
+  <table id="board-table">
+    <tr><td>批次</td><td>件数</td><td>色温</td></tr>
+    <tr><td>B-401</td><td>120</td><td>5600K</td></tr>
+    <tr><td>B-402</td><td>80</td><td>4000K</td></tr>
+  </table>
+</div>
+<script src="/catsco-annotations.js"></script>
+<script>
+  window.CatsCoAnnotations.create({
+    parentOrigin: '__CATSCO_HOST_ORIGIN__',
+    revision: 'r7',
+  });
+  document.getElementById('rotate-btn').addEventListener('click', () => {
+    const label = document.getElementById('token-label');
+    label.textContent = label.textContent === '默认令牌' ? '已切换令牌' : '默认令牌';
+  });
+</script>
+</body>
+</html>

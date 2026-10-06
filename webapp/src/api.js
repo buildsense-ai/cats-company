@@ -50,7 +50,12 @@ const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
 const ARTIFACT_PREVIEW_SESSION_CONTRACT = 'catsco.artifact-preview-session.v1';
 // 独立 artifact gateway 的公共只读清单（跨域，不走同源 request 封装）。
-const ARTIFACT_GATEWAY_BASE = 'https://artifact.catsco.cc';
+// VITE_ARTIFACT_GATEWAY_BASE 仅用于本地 demo/联调：指向一个实现了
+// /api/apps + 一次性 launch code 的本地 gateway（见
+// scripts/local-gateway-annotations-demo.mjs）。生产环境未设置时保持官方域名。
+const ARTIFACT_GATEWAY_BASE = String(
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_ARTIFACT_GATEWAY_BASE) || 'https://artifact.catsco.cc',
+).replace(/\/+$/, '');
 // Asking the server for a one-time code is a short round trip; keep it bounded
 // so a slow platform never blocks opening an application.
 const ARTIFACT_LAUNCH_TIMEOUT_MS = 8_000;

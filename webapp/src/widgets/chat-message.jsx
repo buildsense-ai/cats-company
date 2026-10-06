@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
+import { ArrowLeft, Bookmark, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -30,6 +30,7 @@ import {
 } from '../artifact-context';
 import PwaDownloadLink from './pwa-download-link';
 import { previewPageURL, sharePreviewLink } from './preview-share';
+import { normalizeGatewayAnnotations } from '../gateway-annotations';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -48,6 +49,28 @@ const SPREADSHEET_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]);
 const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Gateway annotation metadata is never rendered from the raw payload: the
+// shared contract normalizer is the single accept/drop gate, so an invalid
+// or hostile metadata value collapses into "no annotations" instead of an
+// unbounded card.
+function gatewayAnnotationsOf(message) {
+  const normalized = normalizeGatewayAnnotations(message?.metadata?.gateway_annotations);
+  if (!normalized || !Array.isArray(normalized.annotations) || normalized.annotations.length === 0) return null;
+  return normalized;
+}
+
+function gatewayAnnotationTargetSummary(kind, target) {
+  if (kind === 'region' && target?.rect) {
+    const rect = target.rect;
+    const percent = (value) => `${Math.round(Number(value) * 100)}%`;
+    return `选区 ${percent(rect.x || 0)},${percent(rect.y || 0)} · ${percent(rect.width || 0)}×${percent(rect.height || 0)}`;
+  }
+  if (target?.element_id) return `#${target.element_id}`;
+  if (target?.selector) return String(target.selector);
+  if (target?.text) return typeof target.text === 'string' ? target.text : String(target.text);
+  return '';
+}
 const REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS = 4000;
 const REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS = 1200;
 const FILE_PREVIEW_TIMEOUT_MS = 15_000;
@@ -1230,7 +1253,12 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     };
   }, [messageActionsOpen, moreActionsOpen]);
 
-  if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
+  const workingAnnotationDoc = useMemo(
+    () => gatewayAnnotationsOf(message),
+    [message],
+  );
+
+  if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0 && !workingAnnotationDoc) return null;
 
   return (
     <div
@@ -1278,6 +1306,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
           {!isSelf && showThinking && (
             <WorkingProcess blocks={workingBlocks} complete={workingProcessComplete} />
           )}
+
+          {workingAnnotationDoc && <GatewayAnnotationCard doc={workingAnnotationDoc} />}
 
           {(hasText || richBlocks.length > 0) && (
             <div className="v3-message-content">
@@ -3356,4 +3386,52 @@ function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+const GATEWAY_ANNOTATION_KIND_LABELS = { element: '元素', text: '文本', region: '区域' };
+
+// Review card for gateway app annotations attached to a sent message.
+// doc is already contract-normalized; this layer only renders.
+function GatewayAnnotationCard({ doc }) {
+  const [expanded, setExpanded] = useState(false);
+  const items = doc.annotations || [];
+  const visible = expanded ? items : items.slice(0, 3);
+  return (
+    <div className="v3-gateway-annotation-card" data-contract={doc.contract_version}>
+      <div className="v3-gateway-annotation-head">
+        <span className="v3-gateway-annotation-title">
+          <Bookmark size={14} aria-hidden="true" />
+          应用标注 · {doc.app_id} · {doc.page?.path || '/'}
+          {doc.page?.revision ? <span className="v3-gateway-annotation-revision">（{doc.page.revision}）</span> : null}
+        </span>
+        {items.length > 3 && (
+          <button
+            type="button"
+            className="v3-gateway-annotation-toggle"
+            aria-expanded={expanded}
+            onClick={() => setExpanded(value => !value)}
+          >
+            {expanded ? '收起' : `全部 ${items.length} 条`}
+          </button>
+        )}
+      </div>
+      <ul className="v3-gateway-annotation-list">
+        {visible.map((annotation) => {
+          const summary = gatewayAnnotationTargetSummary(annotation.kind, annotation.target);
+          return (
+            <li key={annotation.id} className="v3-gateway-annotation-item">
+              <span className={`v3-gateway-annotation-kind is-${annotation.kind}`}>
+                {GATEWAY_ANNOTATION_KIND_LABELS[annotation.kind] || annotation.kind}
+              </span>
+              <span className="v3-gateway-annotation-copy">
+                {annotation.label ? <strong>{annotation.label}</strong> : null}
+                <em>{summary}</em>
+                <span>{annotation.body}</span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }

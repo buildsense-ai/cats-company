@@ -87,6 +87,8 @@ function TestPanel({
   onPreviewArtifact,
   onPreviewFile,
   onGatewayFrameChange,
+  onGatewayAnnotationMode,
+  onGatewayAnnotationState,
 }) {
   const [tab, setTab] = React.useState(initialTab);
   return (
@@ -100,6 +102,8 @@ function TestPanel({
         onPreviewArtifact={onPreviewArtifact}
         onPreviewFile={onPreviewFile}
         onGatewayFrameChange={onGatewayFrameChange}
+        onGatewayAnnotationMode={onGatewayAnnotationMode}
+        onGatewayAnnotationState={onGatewayAnnotationState}
       />
     </FeedbackProvider>
   );
@@ -112,6 +116,9 @@ describe('CloudArtifactsPanel', () => {
   let onPreviewFile;
   let onGatewayFrameChange;
   let gatewayFrameChanges;
+  let onGatewayAnnotationMode;
+  let annotationModeRequests;
+  let onGatewayAnnotationState;
 
   beforeEach(() => {
     api.getCloudArtifacts.mockReset().mockResolvedValue({
@@ -141,6 +148,11 @@ describe('CloudArtifactsPanel', () => {
     onPreviewArtifact = vi.fn();
     onPreviewFile = vi.fn();
     gatewayFrameChanges = [];
+    annotationModeRequests = [];
+    onGatewayAnnotationMode = (mode) => {
+      annotationModeRequests.push(mode);
+    };
+    onGatewayAnnotationState = vi.fn();
     onGatewayFrameChange = (value) => {
       gatewayFrameChanges.push(value
         ? {
@@ -148,6 +160,7 @@ describe('CloudArtifactsPanel', () => {
           url: value.url,
           artifact: value.artifact,
           signal: value.signal,
+          annotationApp: value.annotationApp,
         }
         : null);
     };
@@ -806,7 +819,10 @@ describe('CloudArtifactsPanel', () => {
     });
 
     expect(container.querySelector('[role="alert"]')?.textContent)
-      .toContain('应用版本信息读取失败');
+      .toContain('任务连接信息读取失败，无法提交任务；浏览与标注不受影响');
+    // A gateway-only app (no registry record) still annotates: the toolbar
+    // renders independent of the task-host binding error.
+    expect(container.querySelector('.cloud-artifacts-gateway-annotation-tools')).not.toBeNull();
   });
 
   test('binds the loaded gateway frame with application metadata and an abort signal', async () => {
@@ -955,6 +971,8 @@ describe('CloudArtifactsPanel', () => {
           onPreviewArtifact={onPreviewArtifact}
           onPreviewFile={onPreviewFile}
           onGatewayFrameChange={onGatewayFrameChange}
+          onGatewayAnnotationMode={onGatewayAnnotationMode}
+          onGatewayAnnotationState={onGatewayAnnotationState}
         />,
       );
       await Promise.resolve();
@@ -1368,6 +1386,118 @@ test('escape closes the tag-delete confirm dialog without closing the panel', as
   expect(document.querySelector('[aria-label="确认删除标签"]')).toBeNull();
   expect(container.textContent).toContain('共享成果');
   expect(api.deleteCloudArtifactTagEverywhere).not.toHaveBeenCalled();
+});
+
+test('gateway annotation toolbar reports user intent to the host and renders host state', async () => {
+  api.listArtifactApps.mockResolvedValueOnce({
+    apps: [{
+      id: 'saturday-demo',
+      title: 'Saturday 演示应用',
+      url: 'https://artifact.catsco.cc/saturday-demo/',
+      status: 'ready',
+      updated_at: '2026-09-17T08:36:11.972Z',
+    }],
+  });
+  await renderPanel({ initialTab: 'active' });
+  await act(async () => {
+    [...container.querySelectorAll('button[role="tab"]')]
+      .find((button) => button.textContent === '应用').click();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    container.querySelector('.cloud-artifact-main').click();
+    await Promise.resolve();
+  });
+
+  // Tools render only for a conversation-scoped viewer with a known agent.
+  const tools = container.querySelector('.cloud-artifacts-gateway-annotation-tools');
+  expect(tools).not.toBeNull();
+
+  const modeButton = tools.querySelector('[data-annotation-mode="element"]');
+  expect(modeButton).not.toBeNull();
+  expect(modeButton.getAttribute('aria-pressed')).toBe('false');
+  await act(async () => {
+    modeButton.click();
+  });
+  // The panel does not flip to active until the host acknowledges.
+  expect(modeButton.classList.contains('is-active')).toBe(false);
+  expect(annotationModeRequests).toEqual(['element']);
+
+  // Host state callback drives the rendered mode.
+  const stateSetter = onGatewayAnnotationState.mock.calls.at(-1)?.[0];
+  expect(stateSetter?.setMode).toBeTypeOf('function');
+  await act(async () => {
+    stateSetter.setMode('element');
+  });
+  expect(tools.querySelector('[data-annotation-mode="element"]').getAttribute('aria-pressed')).toBe('true');
+
+  await act(async () => {
+    tools.querySelector('[data-annotation-mode="off"]').click();
+  });
+  expect(annotationModeRequests).toEqual(['element', 'off']);
+
+  // Host capability notes surface in the viewer note area.
+  await act(async () => {
+    stateSetter.setCapabilityNote('应用未加载标注 SDK 或未响应，请联系发布者接入 SDK');
+  });
+  expect(container.textContent).toContain('应用未加载标注 SDK 或未响应');
+});
+
+test('gateway viewer frame change payload carries the annotation app identity', async () => {
+  api.listArtifactApps.mockResolvedValueOnce({
+    apps: [{
+      id: 'saturday-demo',
+      title: 'Saturday 演示应用',
+      url: 'https://artifact.catsco.cc/saturday-demo/',
+      status: 'ready',
+      updated_at: '2026-09-17T08:36:11.972Z',
+    }],
+  });
+  await renderPanel({ initialTab: 'active' });
+  await act(async () => {
+    [...container.querySelectorAll('button[role="tab"]')]
+      .find((button) => button.textContent === '应用').click();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    container.querySelector('.cloud-artifact-main').click();
+    await Promise.resolve();
+  });
+
+  const loadedFrame = container.querySelector('.cloud-artifacts-gateway-frame');
+  await act(async () => {
+    Simulate.load(loadedFrame);
+    await Promise.resolve();
+  });
+  const change = gatewayFrameChanges.at(-1);
+  expect(change.framePresent).toBe(true);
+  expect(change.annotationApp).toEqual({
+    appId: 'saturday-demo',
+    title: 'Saturday 演示应用',
+  });
+  expect(change.url).toBe('https://artifact.catsco.cc/saturday-demo/');
+});
+
+test('annotation tools stay hidden without a conversation or a resolvable agent', async () => {
+  api.listArtifactApps.mockResolvedValueOnce({
+    apps: [{
+      id: 'saturday-demo',
+      title: 'Saturday 演示应用',
+      url: 'https://artifact.catsco.cc/saturday-demo/',
+    }],
+  });
+  await renderPanel({ initialTab: 'active', topicId: '' });
+  await act(async () => {
+    [...container.querySelectorAll('button[role="tab"]')]
+      .find((button) => button.textContent === '应用').click();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    container.querySelector('.cloud-artifact-main').click();
+    await Promise.resolve();
+  });
+  expect(container.querySelector('.cloud-artifacts-gateway-frame')).not.toBeNull();
+  expect(container.querySelector('.cloud-artifacts-gateway-annotation-tools')).toBeNull();
 });
 
 });

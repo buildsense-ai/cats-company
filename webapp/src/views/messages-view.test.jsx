@@ -9204,3 +9204,302 @@ describe('MessagesView composer draft isolation', () => {
     expect(composerBox.getAttribute('aria-busy')).toBe('false');
   });
 });
+
+describe('MessagesView gateway annotation flow', () => {
+  let container;
+  let root;
+  let wsHandler;
+  const APP_ORIGIN = 'https://artifact.catsco.cc';
+
+  beforeEach(() => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
+    sessionStorage.clear();
+    artifactPreviewChannels.length = 0;
+    vi.stubGlobal('BroadcastChannel', MockArtifactPreviewChannel);
+    api.getMessages.mockResolvedValue({ messages: [] });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({ agents: [] });
+    api.getAgentQuota.mockResolvedValue({ configured: false, shared: true });
+    api.createChannelIdentityMobileLink.mockResolvedValue({ qr_value: 'https://app.catsco.cc/mobile-link' });
+    api.getGroupInfo.mockResolvedValue({ members: [], group: null });
+    api.createArtifactContextSnapshot.mockResolvedValue({
+      contract_version: 'catsco.artifact-context-ref.v1',
+      context_ref: `acr_${'x'.repeat(43)}`,
+      expires_at: '2026-08-14T12:05:00Z',
+      revision: 1,
+    });
+    api.invalidateArtifactContextSnapshot.mockResolvedValue({ ok: true });
+    api.sendMessage.mockResolvedValue({ seq_id: 100, metadata: {} });
+    api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
+    api.getCloudWorkers.mockResolvedValue({ workers: [] });
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [], viewer_relation: 'owner' });
+    api.listArtifactApps.mockResolvedValue({
+      apps: [{
+        id: 'saturday-demo',
+        title: 'Saturday 演示应用',
+        url: `${APP_ORIGIN}/saturday-demo/`,
+        status: 'ready',
+        updated_at: '2026-09-17T08:36:11.972Z',
+      }],
+    });
+    api.requestArtifactLaunch.mockRejectedValue(new Error('guest'));
+    api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
+    api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
+    api.uploadFile.mockResolvedValue({
+      file_key: '20260610_default.jpg',
+      url: '/uploads/images/20260610_default.jpg',
+      name: 'default.jpg',
+      size: 12,
+      mime_type: 'image/jpeg',
+    });
+    api.createMobileUploadSession.mockResolvedValue({
+      session_id: 'abc123',
+      upload_url: '/mobile-upload/abc123',
+      api_upload_url: '/api/mobile-upload/sessions/abc123/files',
+    });
+    api.getMobileUploadSession.mockResolvedValue({ session_id: 'abc123', files: [] });
+    isMobileConversationShareBrowser.mockReturnValue(false);
+    wsHandler = null;
+    onWSMessage.mockImplementation((handler) => {
+      wsHandler = handler;
+      return vi.fn();
+    });
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    container.remove();
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  async function openGatewayAppInSidebar(topic = 'p2p_1_2') {
+    await mountTopic(root, topic, {
+      cloudArtifactsRequest: {
+        requestId: 'req-annotations',
+        agentUid: 7,
+        topicId: topic,
+        initialTab: 'gateway',
+      },
+    });
+    expect(container.querySelector('.cloud-artifacts-list')).not.toBeNull();
+    await act(async () => {
+      container.querySelector('.cloud-artifact-main').click();
+      await Promise.resolve();
+    });
+    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(frame).not.toBeNull();
+    // Capture the host handshake token as it leaves, so SDK messages can
+    // quote the exact session id the host accepted.
+    captureSessionToken(frame);
+    await act(async () => {
+      Simulate.load(frame);
+      await Promise.resolve();
+    });
+    return frame;
+  }
+
+  function captureSessionToken(frame) {
+    const contentWindow = frame.contentWindow;
+    if (!contentWindow || contentWindow.__annotationToken) return contentWindow?.__annotationToken || null;
+    const original = contentWindow.postMessage.bind(contentWindow);
+    contentWindow.postMessage = (data, targetOrigin) => {
+      if (typeof data === 'object'
+        && typeof data?.session_id === 'string') {
+        contentWindow.__annotationToken = data.session_id;
+      }
+      return original(data, targetOrigin);
+    };
+    return null;
+  }
+
+  function sdkMessage(frame, data) {
+    window.dispatchEvent(new MessageEvent('message', {
+      data,
+      origin: APP_ORIGIN,
+      source: frame.contentWindow,
+    }));
+  }
+
+  async function captureWithToken(frame, capabilities = ['element']) {
+    const token = captureSessionToken(frame);
+    sdkMessage(frame, {
+      type: 'catsco.gateway.annotation.ready.v1',
+      contract_version: 'catsco.gateway-annotation-bridge.v1',
+      session_id: token,
+      request_id: 'r1',
+      capabilities,
+      page: { path: '/board' },
+    });
+    sdkMessage(frame, {
+      type: 'catsco.gateway.annotation.target.v1',
+      contract_version: 'catsco.gateway-annotation-bridge.v1',
+      session_id: token,
+      selection: {
+        id: 'a1',
+        kind: 'element',
+        label: '',
+        target: { element_id: 'submit-btn', selector: 'button#submit-btn' },
+      },
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+
+  async function sendMessageAndFlush() {
+    const sendButton = [...container.querySelectorAll('button')]
+      .find((button) => button.getAttribute('aria-label') === '发送');
+    expect(sendButton).not.toBeNull();
+    await act(async () => {
+      sendButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    for (let round = 0; round < 3; round += 1) {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+  }
+
+  test('captures an SDK target, edits the comment, and sends it as message metadata', async () => {
+    const frame = await openGatewayAppInSidebar();
+
+    const tools = container.querySelector('.cloud-artifacts-gateway-annotation-tools');
+    expect(tools).not.toBeNull();
+    await act(async () => {
+      tools.querySelector('[data-annotation-mode="element"]').click();
+    });
+    expect(tools.querySelector('[data-annotation-mode="element"]').getAttribute('aria-pressed')).toBe('true');
+
+    // SDK announces itself and the captured target opens the comment editor.
+    await captureWithToken(frame, ['element', 'text', 'region']);
+    const bodyInput = container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body');
+    expect(bodyInput).not.toBeNull();
+
+    await act(async () => {
+      typeDraft(bodyInput, '改成蓝色');
+    });
+    await act(async () => {
+      container.querySelector('.v3-gateway-annotation-confirm').click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-gateway-annotation-editor')).toBeNull();
+    const bar = container.querySelector('.v3-gateway-annotation-bar');
+    expect(bar?.textContent).toContain('Saturday 演示应用');
+    expect(bar?.textContent).toContain('改成蓝色');
+
+    const textarea = container.querySelector('.v3-composer textarea');
+    await act(async () => {
+      typeDraft(textarea, '请按标注调整');
+    });
+    await sendMessageAndFlush();
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    const sentPayload = api.sendMessage.mock.calls[0][1];
+    expect(sentPayload.metadata.gateway_annotations).toMatchObject({
+      contract_version: 'catsco.gateway-annotations.v1',
+      agent_uid: 7,
+      app_id: 'saturday-demo',
+      page: { path: '/board' },
+      annotations: [{
+        id: 'a1',
+        kind: 'element',
+        body: '改成蓝色',
+        target: { element_id: 'submit-btn', selector: 'button#submit-btn' },
+      }],
+    });
+
+    // Success consumes the draft: bar and storage are empty.
+    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
+    const stored = sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1');
+    expect(stored === null || !stored.includes('a1')).toBe(true);
+  });
+
+  test('a failed send restores the annotation draft', async () => {
+    api.sendMessage.mockRejectedValueOnce(new Error('网络故障'));
+    const frame = await openGatewayAppInSidebar();
+
+    await captureWithToken(frame, ['element']);
+    const bodyInput = container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body');
+    await act(async () => {
+      typeDraft(bodyInput, '改成蓝色');
+    });
+    await act(async () => {
+      container.querySelector('.v3-gateway-annotation-confirm').click();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('.v3-composer textarea');
+    await act(async () => {
+      typeDraft(textarea, '请按标注调整');
+    });
+    await sendMessageAndFlush();
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    const bar = container.querySelector('.v3-gateway-annotation-bar');
+    expect(bar?.textContent).toContain('改成蓝色');
+    const textareaAfter = container.querySelector('.v3-composer textarea');
+    expect(textareaAfter?.value).toBe('请按标注调整');
+    const stored = sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1');
+    expect(stored).toContain('a1');
+  });
+
+  test('ordinary composer sends do not carry gateway annotation metadata', async () => {
+    const frame = await openGatewayAppInSidebar();
+    const token = captureSessionToken(frame);
+    sdkMessage(frame, {
+      type: 'catsco.gateway.annotation.ready.v1',
+      contract_version: 'catsco.gateway-annotation-bridge.v1',
+      session_id: token,
+      request_id: 'r1',
+      capabilities: ['element'],
+      page: { path: '/board' },
+    });
+
+    const textarea = container.querySelector('.v3-composer textarea');
+    await act(async () => {
+      typeDraft(textarea, '普通消息');
+    });
+    await sendMessageAndFlush();
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    const sentPayload = api.sendMessage.mock.calls[0][1];
+    expect(sentPayload.metadata?.gateway_annotations).toBeUndefined();
+  });
+
+  test('switching topics hides the other conversation annotation drafts', async () => {
+    const frame = await openGatewayAppInSidebar('p2p_1_2');
+    await captureWithToken(frame, ['element']);
+    const bodyInput = container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body');
+    await act(async () => {
+      typeDraft(bodyInput, '放在原会话');
+    });
+    await act(async () => {
+      container.querySelector('.v3-gateway-annotation-confirm').click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent).toContain('放在原会话');
+
+    await mountTopic(root, 'p2p_1_3');
+    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
+    const textarea = container.querySelector('.v3-composer textarea');
+    await act(async () => {
+      typeDraft(textarea, '其他会话消息');
+    });
+    await sendMessageAndFlush();
+    expect(api.sendMessage.mock.calls.at(-1)[1].metadata?.gateway_annotations).toBeUndefined();
+  });
+});
