@@ -39,9 +39,10 @@ const MAX_VIEWPORT_VALUE = 2 ** 20;
 const UNIT_EPSILON = 1e-6;
 
 // Identifiers (ids, selectors, paths, revisions) reject every control
-// character; free-form text (text/prefix/suffix) may carry line breaks.
+// character; free-form text (text/prefix/suffix/body) may carry line breaks
+// and tabs — matching the server's freetext rule (\n, \r, \t allowed).
 const CONTROL_FORBIDDEN = /[\u0000-\u001f\u007f]/;
-const FREE_TEXT_FORBIDDEN = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/;
+const FREE_TEXT_FORBIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
 function plainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;

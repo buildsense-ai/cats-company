@@ -661,6 +661,34 @@ describe('session lifecycle (reload / stale binding / gated targets)', () => {
     expect(host.page).toEqual({ path: '/new', revision: 'r2' });
   });
 
+
+  it('tab is legal free text across text/prefix/suffix/body; other control chars stay rejected', () => {
+    const tabSelection = normalizeGatewayAnnotationSelection({
+      id: 't1', kind: 'text', label: '表格',
+      target: { text: 'before\tafter', prefix: '列\t头', suffix: '行\t尾' },
+    });
+    expect(tabSelection).not.toBeNull();
+    expect(tabSelection.target.text).toContain('\t');
+
+    const tabBody = normalizeGatewayAnnotations(validMetadata({
+      annotations: [{ id: 'b1', kind: 'text', label: '', body: '评论\t带制表符', target: { text: '示例' } }],
+    }));
+    expect(tabBody).not.toBeNull();
+    expect(tabBody.annotations[0].body).toContain('\t');
+
+    // Non-break control characters (e.g. \u0001) remain rejected everywhere.
+    expect(normalizeGatewayAnnotationSelection({
+      id: 't2', kind: 'text', label: '', target: { text: 'bad\u0001char' },
+    })).toBeNull();
+    expect(normalizeGatewayAnnotations(validMetadata({
+      annotations: [{ id: 'b2', kind: 'text', label: '', body: 'bad\u0001body', target: { text: '示例' } }],
+    }))).toBeNull();
+    // Identifiers still reject tabs.
+    expect(normalizeGatewayAnnotationSelection({
+      id: 'a\tb', kind: 'element', label: '', target: { element_id: 'x' },
+    })).toBeNull();
+  });
+
   it('a page report is a full snapshot: revision can be dropped, not merged', () => {
     const { h, host, callbacks } = setup();
     host.connect();

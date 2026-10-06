@@ -770,6 +770,110 @@ describe('viewport-rect intersection (review round 2 P2-3 probe scenarios)', () 
 
 });
 
+
+describe('R3: tab free text + setRevision document invalidation', () => {
+  it('a text selection containing a tab is captured and accepted by the host normalizer', () => {
+    const { posted } = createSdk();
+    connect();
+    sendMode('text');
+
+    const paragraph = document.createElement('p');
+    const textNode = document.createTextNode('before\tafter');
+    paragraph.appendChild(textNode);
+    document.body.appendChild(paragraph);
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      isCollapsed: false,
+      rangeCount: 1,
+      anchorNode: textNode,
+      focusNode: textNode,
+      toString: () => range.toString(),
+      getRangeAt: () => range,
+      removeAllRanges: () => {},
+    });
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+
+    const targets = targetMessages(posted);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].selection.target.text).toContain('\t');
+    expect(normalizeGatewayAnnotationSelection(targets[0].selection)).not.toBeNull();
+  });
+
+  it('setRevision during a region drag cancels the old-revision drag (no r2-stamped stale target)', () => {
+    const { sdk, posted } = createSdk({ revision: 'r1' });
+    connect();
+    sendMode('region');
+    document.body.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 100, clientY: 100, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mousemove', { clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    sdk.setRevision('r2');
+    document.body.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    expect(targetMessages(posted)).toHaveLength(0);
+  });
+
+  it('a fresh region selection after the revision change reports the new revision', () => {
+    const { sdk, posted } = createSdk({ revision: 'r1' });
+    connect();
+    sendMode('region');
+    sdk.setRevision('r2');
+    document.body.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 100, clientY: 100, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mousemove', { clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    const targets = targetMessages(posted);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].page.revision).toBe('r2');
+    expect(targets[0].selection.target.rect).toEqual({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 });
+  });
+
+  it('host <-> SDK loop: stale drag across setRevision is dropped; new r2 selection accepted with matching page', () => {
+    const origin = 'https://app.catsco.example';
+    const fakeParent = { postMessage: vi.fn() };
+    Object.defineProperty(window, 'parent', { configurable: true, get: () => fakeParent });
+    currentFakeParent = fakeParent;
+    const sdk = window.CatsCoAnnotations.create({ parentOrigin: origin, revision: 'r1' });
+    activeSdk = sdk;
+
+    const captured = [];
+    // The host's frame postMessage replays into this window as a message
+    // event (jsdom cannot deliver cross-window); SDK posts flow back into
+    // the host bridge with matching source/origin.
+    const frameWindow = { postMessage: vi.fn((message) => {
+      window.dispatchEvent(new MessageEvent('message', { origin, source: fakeParent, data: message }));
+    }) };
+    const host = createGatewayAnnotationHost({
+      getBinding: () => ({ frame: { contentWindow: frameWindow }, url: origin, agentUid: 9, appId: 'board' }),
+      onSelection: (selection, page) => captured.push({ selection, page }),
+      onReady: () => {},
+      onPageChange: () => {},
+      onUnavailable: () => {},
+    });
+    fakeParent.postMessage.mockImplementation((message) => {
+      host.handleWindowMessage({ data: message, origin, source: frameWindow });
+    });
+
+    expect(host.connect()).toBe(true);
+    expect(host.setMode('region')).toBe(true);
+
+    // Old-revision drag: start, move, revision bump, release -> dropped.
+    document.body.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 100, clientY: 100, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mousemove', { clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    sdk.setRevision('r2');
+    expect(host.page.revision).toBe('r2');
+    document.body.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    expect(captured).toHaveLength(0);
+
+    // Fresh r2 drag: accepted end-to-end with matching page certificate.
+    document.body.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 100, clientY: 100, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mousemove', { clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    expect(captured).toHaveLength(1);
+    expect(captured[0].selection.target.rect).toEqual({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 });
+    expect(captured[0].page.revision).toBe('r2');
+    expect(host.page).toEqual({ path: window.location.pathname, revision: 'r2' });
+    host.dispose();
+  });
+});
+
 describe('host <-> SDK interoperability (frozen bridge protocol)', () => {
   it('connect -> ready -> mode -> element target round trip carries exact origin and session', () => {
     // Host side: real host bridge pointed at this jsdom window's fake frame.
@@ -832,5 +936,45 @@ describe('host <-> SDK interoperability (frozen bridge protocol)', () => {
     expect(callbacks.onUnavailable).not.toHaveBeenCalled();
 
     host.dispose();
+  });
+
+  it('changed revision clears a real DOM text selection from previous document',()=>{
+    const {sdk,posted}=createSdk({revision:'r1'});connect();sendMode('text');
+    const p=document.createElement('p');p.textContent='old-r1-selected-text';document.body.appendChild(p);
+    const range=document.createRange();range.selectNodeContents(p);
+    const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
+    expect(selection.toString()).toBe('old-r1-selected-text');
+    sdk.setRevision('r2');
+    document.body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+    expect(targetMessages(posted)).toHaveLength(0);
+  });
+});
+
+
+describe('R3B real Selection host round trip',()=>{
+  it('old r1 Selection must not be delivered as r2, fresh r2 selection still works',()=>{
+    const origin='https://app.catsco.example';
+    const parent={postMessage:vi.fn()};Object.defineProperty(window,'parent',{configurable:true,get:()=>parent});
+    const sdk=window.CatsCoAnnotations.create({parentOrigin:origin,revision:'r1'});activeSdk=sdk;
+    const receiver={postMessage(message,targetOrigin){expect(targetOrigin).toBe(origin);window.dispatchEvent(new MessageEvent('message',{origin,source:parent,data:message}));}};
+    const frame={contentWindow:receiver};const captured=[];
+    const host=createGatewayAnnotationHost({getBinding:()=>({frame,url:origin,agentUid:9,appId:'board'}),onSelection:(selection,page)=>captured.push({selection,page})});
+    parent.postMessage.mockImplementation((message,targetOrigin)=>{expect(targetOrigin).toBe(origin);host.handleWindowMessage({origin,source:receiver,data:message});});
+    expect(host.connect()).toBe(true);expect(host.setMode('text')).toBe(true);
+    const p=document.createElement('p');p.textContent='old-r1-selected-text';document.body.appendChild(p);
+    const range=document.createRange();range.selectNodeContents(p);
+    const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);
+    expect(sel.toString()).toBe('old-r1-selected-text');
+    sdk.setRevision('r2');expect(host.page.revision).toBe('r2');
+    document.body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+    const stale=captured.slice();
+    expect(sel.rangeCount).toBe(0); // emitText clears selection AFTER delivery
+    const next=document.createElement('p');next.textContent='fresh-r2-text';document.body.appendChild(next);
+    const fresh=document.createRange();fresh.selectNodeContents(next);sel.addRange(fresh);
+    document.body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+    expect(captured.at(-1).selection.target.text).toBe('fresh-r2-text');
+    expect(captured.at(-1).page).toEqual(host.page);expect(captured.at(-1).page.revision).toBe('r2');
+    host.dispose();sel.removeAllRanges();p.remove();next.remove();
+    expect(stale).toHaveLength(0);
   });
 });

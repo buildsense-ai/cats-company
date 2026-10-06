@@ -1353,7 +1353,16 @@ func cloudRestoreEquivalentText(data *MsgServerData) string {
 		// JS: rich.payload && typeof rich.payload === 'object' ? rich.payload : rich
 		payload = rich
 	}
-	contentType := strings.TrimSpace(fmt.Sprint(rich["type"]))
+	// JS: String(rich.type || message.type || message.msg_type).trim() — the
+	// envelope types fall back in order when the inner type is falsy.
+	typeSource := rich["type"]
+	if !jsTruthy(typeSource) {
+		typeSource = data.Type
+	}
+	if !jsTruthy(typeSource) {
+		typeSource = data.MsgType
+	}
+	contentType := strings.TrimSpace(jsStringOf(typeSource))
 	name, _ := payload["name"].(string)
 	description, _ := payload["text"].(string)
 	if description == "" {
@@ -2691,4 +2700,192 @@ func TestR2RealXiaoBaASTConsumers(t *testing.T) {
 	}
 	run("/tmp/xiaoba-r2-live-fixture.json")
 	run("/tmp/xiaoba-r2-cloud-fixture.json")
+}
+
+// ---------- Round-3 (review /tmp/catsco-pr575-review-round3.md R3-4):
+// rich content without a truthy inner type must inherit the envelope's
+// display/msg type for the cloud consumer (rich.type || message.type ||
+// message.msg_type, trimmed), so the annotation rides the rendered
+// description for nested/flat/empty-inner shapes alike. ----------
+
+func TestR3ExportOuterRichConsumerFixtures(t *testing.T) {
+	if os.Getenv("GATEWAY_ANNOTATIONS_EXPORT_FIXTURE") == "" {
+		t.Skip("set GATEWAY_ANNOTATIONS_EXPORT_FIXTURE to write /tmp/xiaoba-r3-outer-rich-fixture.json")
+	}
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	entries := []map[string]interface{}{}
+	for _, kind := range []string{"file", "image", "voice"} {
+		for _, shape := range []string{
+			`{"payload":{"name":"proof.bin","url":"/uploads/proof.bin"}}`,
+			`{"name":"proof.bin","url":"/uploads/proof.bin"}`,
+			`{"type":"","payload":{"name":"proof.bin","url":"/uploads/proof.bin"}}`,
+		} {
+			payload, err := normalizeMessageRequest(&SendMessageRequest{
+				TopicID: "p2p_7_9", Type: kind, Content: json.RawMessage(shape),
+				Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload.Metadata, err = hub.validateGatewayAnnotationsMetadata(7, "p2p_7_9", payload.Metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			message := &types.Message{
+				ID: 1, TopicID: "p2p_7_9", FromUID: 7,
+				Content: payload.StoredContent, MsgType: payload.StoredType,
+				ContentBlocks: payload.ContentBlocks, Metadata: payload.Metadata,
+			}
+			for _, reader := range []int64{9, 7} {
+				out := hub.historyAPIMessageForRecipient(reader, message)
+				expect := []string{}
+				forbid := []string{}
+				if reader == 9 {
+					expect = append(expect, "改成蓝色")
+				} else {
+					forbid = append(forbid, "Gateway 标注")
+				}
+				entries = append(entries, map[string]interface{}{
+					"name": kind + shape + formatUID(reader), "pipeline": "cloud",
+					"message": out, "expect": expect, "forbid": forbid,
+				})
+			}
+			if message.Content != shape || strings.Contains(message.Content, "Gateway 标注") {
+				t.Fatal("stored content mutated")
+			}
+		}
+	}
+	encoded, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile("/tmp/xiaoba-r3-outer-rich-fixture.json", encoded, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Log("outer-rich fixture written to /tmp/xiaoba-r3-outer-rich-fixture.json")
+}
+
+// TestR3OuterRichConsumerMatrix is the CI Go twin of the exported fixtures:
+// every outer-type shape (nested payload / flat / empty inner type) reaches
+// the annotation through the real cloud consumer semantics while the human
+// copy and the stored message stay untouched.
+func TestR3OuterRichConsumerMatrix(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	for _, kind := range []string{"file", "image", "voice"} {
+		for _, shape := range []string{
+			`{"payload":{"name":"proof.bin","url":"/uploads/proof.bin"}}`,
+			`{"name":"proof.bin","url":"/uploads/proof.bin"}`,
+			`{"type":"","payload":{"name":"proof.bin","url":"/uploads/proof.bin"}}`,
+		} {
+			t.Run(kind, func(t *testing.T) {
+				message := &types.Message{
+					ID: 1, TopicID: "p2p_7_9", FromUID: 7, MsgType: kind, Content: shape,
+					Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+				}
+				read := hub.historyMessageDataForRecipient(9, message)
+				restored := cloudRestoreEquivalentText(read)
+				if !strings.Contains(restored, "改成蓝色") || !strings.Contains(restored, "element_id=submit-btn") {
+					t.Fatalf("cloud consumer missing annotation: %q", restored)
+				}
+				// The real cloudMessageText renders the name only for
+				// file/image ("[历史语音]" carries no name clause).
+				if kind != "voice" && !strings.Contains(restored, "proof.bin") {
+					t.Fatalf("cloud consumer lost attachment name: %q", restored)
+				}
+				human := hub.historyMessageDataForRecipient(7, message)
+				if strings.Contains(cloudRestoreEquivalentText(human), "Gateway 标注") {
+					t.Fatalf("human copy polluted: %q", cloudRestoreEquivalentText(human))
+				}
+				if kind != "voice" && !strings.Contains(cloudRestoreEquivalentText(human), "proof.bin") {
+					t.Fatalf("human copy lost attachment name: %q", cloudRestoreEquivalentText(human))
+				}
+				if message.Content != shape || strings.Contains(message.Content, "Gateway 标注") {
+					t.Fatal("stored content mutated")
+				}
+			})
+		}
+	}
+}
+
+// TestR3AnnotationRefusalReleasesTaskLease (reviewer round-3 probe, vendored):
+// a task delivery reserved before an annotation refusal must be released on
+// both transports, so a retry can reserve it again and nothing persists.
+func TestR3AnnotationRefusalReleasesTaskLease(t *testing.T) {
+	for _, transport := range []string{"http", "ws"} {
+		for _, kind := range []string{"schema", "transient"} {
+			t.Run(transport+kind, func(t *testing.T) {
+				storeData := &gatewayAnnotationFakeStore{
+					users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 440: gatewayAnnotationBot(440)},
+					botOwners: map[int64]int64{440: 7},
+				}
+				hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "440"}})
+				task, err := hub.artifactTasks.create(testArtifactTaskCandidate(runtimeRoute{NodeID: "local-probe", ConnectionID: "local-only"}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				metadata := map[string]interface{}{artifactTaskRefMetadataKey: task.Ref}
+				displayType := "text"
+				if kind == "schema" {
+					metadata[gatewayAnnotationsMetadataKey] = "invalid"
+				} else {
+					metadata[gatewayAnnotationsMetadataKey] = gatewayAnnotationRequest("board", 440, nil)
+					displayType = "runtime_plan"
+				}
+				clientID := "artifact-task:" + task.ID
+				if transport == "http" {
+					body, _ := json.Marshal(map[string]interface{}{
+						"topic_id": task.TopicID, "type": displayType, "content": "local defensive check",
+						"client_msg_id": clientID, "metadata": metadata,
+					})
+					request := httptest.NewRequest(http.MethodPost, "/api/messages/send", strings.NewReader(string(body))).WithContext(withTestUID(7))
+					recorder := httptest.NewRecorder()
+					NewMessageHandler(storeData, hub).HandleSendMessage(recorder, request)
+					if recorder.Code != http.StatusBadRequest {
+						t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+					}
+				} else {
+					client := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 8)}
+					hub.addClient(client)
+					hub.handlePub(client, &MsgClientPub{
+						ID: "lease-probe", Topic: task.TopicID, Type: displayType,
+						Content: json.RawMessage(`"local defensive check"`), ClientMsgID: clientID, Metadata: metadata,
+					})
+					var ack ServerMessage
+					select {
+					case raw := <-client.send:
+						if err := json.Unmarshal(raw, &ack); err != nil {
+							t.Fatalf("unmarshal ack: %v", err)
+						}
+					default:
+						t.Fatal("missing ack")
+					}
+					if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusBadRequest {
+						t.Fatalf("ack=%+v", ack)
+					}
+				}
+				state, ok := hub.artifactTasks.forActor(task.ID, 7)
+				if !ok || state.DeliveryClaimed || state.Delivered {
+					t.Fatalf("lease held after refusal %+v", state)
+				}
+				delivery, err := hub.artifactTasks.reserveDelivery(task.Ref, 7, task.TopicID, 440, clientID)
+				if err != nil {
+					t.Fatalf("cannot retry reserve %v", err)
+				}
+				hub.artifactTasks.releaseDelivery(delivery)
+				if len(storeData.saved) != 0 {
+					t.Fatal("rejected request persisted")
+				}
+			})
+		}
+	}
 }

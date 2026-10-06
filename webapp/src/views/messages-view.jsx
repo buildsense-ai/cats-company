@@ -39,6 +39,7 @@ import {
   GATEWAY_ANNOTATIONS_CONTRACT,
   buildGatewayAnnotationsMetadata,
   readGatewayAnnotationDrafts,
+  sameGatewayAnnotationVersion,
   writeGatewayAnnotationDrafts,
 } from '../utils/gateway-annotation-drafts';
 import {
@@ -729,6 +730,7 @@ export default function MessagesView({
   const gatewayAnnotationDraftsRef = useRef([]);
   const gatewayAnnotationPageRef = useRef(null);
   const gatewayAnnotationConsumedRef = useRef(false);
+  const gatewayAnnotationRecoveryRef = useRef(new Map());
   // Monotonic binding generation: only the latest frame load may flip the
   // ready-timeout UI, so an overwritten handshake timer can never fire into
   // the newer binding.
@@ -1309,12 +1311,15 @@ export default function MessagesView({
       setGatewayAnnotationDrafts([]);
       return;
     }
-    const drafts = readGatewayAnnotationDrafts(
-      user.uid,
-      topic,
-      Number(gatewayAnnotationContext.agentUid),
-      String(gatewayAnnotationContext.appId || ''),
-    );
+    const recoveryKey = `${user.uid}|${topic}|${gatewayAnnotationContext.agentUid}|${gatewayAnnotationContext.appId}`;
+    const recovery = gatewayAnnotationRecoveryRef.current.get(recoveryKey);
+    if (recovery && !annotationSessionStillValid(recovery.session)) {
+      gatewayAnnotationRecoveryRef.current.delete(recoveryKey);
+    }
+    const drafts = recovery && annotationSessionStillValid(recovery.session)
+      ? recovery.rows
+      : readGatewayAnnotationDrafts(user.uid, topic,
+        Number(gatewayAnnotationContext.agentUid), String(gatewayAnnotationContext.appId || ''));
     setGatewayAnnotationDrafts(drafts);
     // The annotation page state is not reset here: onReady (SDK handshake)
     // and capture confirm own it, and wiping it on a context identity change
@@ -1424,12 +1429,18 @@ export default function MessagesView({
       body: trimmedBody,
       target: capture.target,
       page: rowCapturePage ? { ...rowCapturePage } : undefined,
-    }].map((row) => (row.page ? row : { ...row, page: rowCapturePage ? { ...rowCapturePage } : undefined }));
+    }];
     // The canonical envelope (contract + certificates + rows) must fit the
     // server bound before state flips: the writer's boolean decides whether
     // this capture succeeded. A refusal keeps the editor exactly as it was
     // (drafts/context/page untouched, capture still pending) and tells the
     // user why — a silent loss on reopen is unacceptable.
+    if (nextDrafts.some(row => !row.page
+      || row.page.path !== rowCapturePage?.path
+      || (row.page.revision || '') !== (rowCapturePage?.revision || ''))) {
+      setGatewayAnnotationCapabilityNote('已有标注缺少页面证书或来自其他页面，请清理后重新标注');
+      return false;
+    }
     const previewMetadata = buildGatewayAnnotationsMetadata(
       { appId, appTitle: gatewayAnnotationBindingRef.current?.appTitle || appId, agentUid },
       nextDrafts,
@@ -1443,12 +1454,13 @@ export default function MessagesView({
         : '标注内容超出限制或页面信息不完整，无法保存，请缩短评论');
       return false;
     }
+    gatewayAnnotationRecoveryRef.current.delete(`${user.uid}|${topic}|${agentUid}|${appId}`);
     setGatewayAnnotationContext({
       appId,
       appTitle: gatewayAnnotationBindingRef.current?.appTitle || appId,
       agentUid,
     });
-    setGatewayAnnotationDrafts(nextDrafts);
+    setGatewayAnnotationDrafts(readGatewayAnnotationDrafts(user.uid, topic, agentUid, appId));
     if (rowCapturePage) setGatewayAnnotationDraftPage(rowCapturePage);
     setGatewayAnnotationCapture(null);
     setGatewayAnnotationCapabilityNote('');
@@ -1464,8 +1476,13 @@ export default function MessagesView({
     const next = typeof idOrIndex === 'number'
       ? gatewayAnnotationDrafts.filter((_, index) => index !== idOrIndex)
       : gatewayAnnotationDrafts.filter((item) => item.id !== String(idOrIndex));
-    writeGatewayAnnotationDrafts(user.uid, topic, agentUid, appId, next);
-    setGatewayAnnotationDrafts(next);
+    if (!writeGatewayAnnotationDrafts(user.uid, topic, agentUid, appId, next, undefined, { recovery: true })) {
+      setGatewayAnnotationCapabilityNote('无法保存删除操作，标注仍保留，请重试');
+      return;
+    }
+    gatewayAnnotationRecoveryRef.current.delete(`${user.uid}|${topic}|${agentUid}|${appId}`);
+    setGatewayAnnotationDrafts(readGatewayAnnotationDrafts(user.uid, topic, agentUid, appId));
+    setGatewayAnnotationCapabilityNote('');
     if (next.length === 0) {
       gatewayAnnotationPageChangedRef.current = false;
       setGatewayAnnotationDraftPage(null);
@@ -1488,20 +1505,26 @@ export default function MessagesView({
       setGatewayAnnotationCapabilityNote('标注总大小超出上限或无法保存，请缩短评论后重试');
       return false;
     }
-    setGatewayAnnotationDrafts(next);
+    gatewayAnnotationRecoveryRef.current.delete(`${user.uid}|${topic}|${agentUid}|${appId}`);
+    setGatewayAnnotationDrafts(readGatewayAnnotationDrafts(user.uid, topic, agentUid, appId));
     setGatewayAnnotationCapabilityNote('');
     return true;
   }, [gatewayAnnotationContext, gatewayAnnotationDrafts, gatewayAnnotationPageRef, topic, user?.uid]);
 
   const clearGatewayAnnotationDrafts = useCallback(() => {
     if (!topic || !user?.uid || !gatewayAnnotationContext) return;
-    writeGatewayAnnotationDrafts(
+    if (!writeGatewayAnnotationDrafts(
       user.uid,
       topic,
       Number(gatewayAnnotationContext.agentUid),
       String(gatewayAnnotationContext.appId || ''),
       [],
-    );
+    )) {
+      setGatewayAnnotationCapabilityNote('无法保存清空操作，标注仍保留，请重试');
+      return;
+    }
+    gatewayAnnotationRecoveryRef.current.delete(`${user.uid}|${topic}|${gatewayAnnotationContext.agentUid}|${gatewayAnnotationContext.appId}`);
+    setGatewayAnnotationCapabilityNote('');
     setGatewayAnnotationDrafts([]);
     setGatewayAnnotationDraftPage(null);
     gatewayAnnotationPageChangedRef.current = false;
@@ -3198,18 +3221,22 @@ export default function MessagesView({
           // composer write cannot resurrect consumed rows into this draft.
           annotationSnapshotContextRef.current = annotationContextSnapshot;
           annotationSnapshotDraftsRef.current = annotationDraftsSnapshotted;
-          writeGatewayAnnotationDrafts(
-            user.uid,
-            topic,
-            Number(annotationContextSnapshot.agentUid),
-            String(annotationContextSnapshot.appId),
-            [],
-          );
-          if (annotationUIStillMatches()) {
-            setGatewayAnnotationDrafts([]);
-            setGatewayAnnotationContext(null);
+          const recoveryKey = `${user.uid}|${topic}|${annotationContextSnapshot.agentUid}|${annotationContextSnapshot.appId}`;
+          const recovered = gatewayAnnotationRecoveryRef.current.get(recoveryKey);
+          const pending = recovered && annotationSessionStillValid(recovered.session)
+            ? recovered.rows
+            : readGatewayAnnotationDrafts(user.uid, topic,
+              Number(annotationContextSnapshot.agentUid), String(annotationContextSnapshot.appId));
+          const remaining = pending.filter(row => !annotationDraftsSnapshotted.some(sent => sameGatewayAnnotationVersion(row, sent)));
+          const consumed = writeGatewayAnnotationDrafts(user.uid, topic,
+            Number(annotationContextSnapshot.agentUid), String(annotationContextSnapshot.appId), remaining,
+            undefined, { recovery: true });
+          if (consumed) gatewayAnnotationRecoveryRef.current.delete(recoveryKey);
+          if (consumed && annotationUIStillMatches()) {
+            setGatewayAnnotationDrafts(remaining);
+            if (!remaining.length) setGatewayAnnotationContext(null);
           }
-          gatewayAnnotationConsumedRef.current = true;
+          gatewayAnnotationConsumedRef.current = consumed;
         }
         sendClearMutationRevision = readComposerDraftMutationRevision(
           composerDraftStoreRef.current,
@@ -3290,18 +3317,8 @@ export default function MessagesView({
           && !gatewayAnnotationConsumedRef.current) {
           annotationSnapshotContextRef.current = annotationContextSnapshot;
           annotationSnapshotDraftsRef.current = annotationDraftsSnapshotted;
-          writeGatewayAnnotationDrafts(
-            user.uid,
-            topic,
-            Number(annotationContextSnapshot.agentUid),
-            String(annotationContextSnapshot.appId),
-            [],
-          );
-          if (annotationUIStillMatches()) {
-            setGatewayAnnotationDrafts([]);
-            setGatewayAnnotationContext(null);
-          }
-          gatewayAnnotationConsumedRef.current = true;
+          // Ordinary composer cleanup must not clear annotation versions.
+          // Annotation consumption below compares the actual sent versions.
         }
         stateCleared = true;
         if (activeTopicRef.current === topic) {
@@ -3323,11 +3340,19 @@ export default function MessagesView({
         && !gatewayAnnotationConsumedRef.current) {
         const successAgent = Number(annotationContextSnapshot.agentUid);
         const successApp = String(annotationContextSnapshot.appId);
-        const pendingRows = readGatewayAnnotationDrafts(user.uid, topic, successAgent, successApp);
-        const snapshotIDs = new Set(annotationDraftsSnapshotted.map((row) => row.id));
-        const remaining = pendingRows.filter((row) => !snapshotIDs.has(row.id));
-        writeGatewayAnnotationDrafts(user.uid, topic, successAgent, successApp, remaining);
-        if (activeTopicRef.current === topic
+        const recoveryKey = `${user.uid}|${topic}|${successAgent}|${successApp}`;
+        const recovered = gatewayAnnotationRecoveryRef.current.get(recoveryKey);
+        const pendingRows = recovered && annotationSessionStillValid(recovered.session)
+          ? recovered.rows
+          : readGatewayAnnotationDrafts(user.uid, topic, successAgent, successApp);
+        const remaining = pendingRows.filter(row => !annotationDraftsSnapshotted.some(sent => sameGatewayAnnotationVersion(row, sent)));
+        const persisted = writeGatewayAnnotationDrafts(user.uid, topic, successAgent, successApp, remaining,
+          undefined, { recovery: true });
+        if (persisted) gatewayAnnotationRecoveryRef.current.delete(recoveryKey);
+        if (!persisted && annotationUIStillMatches()) {
+          setGatewayAnnotationCapabilityNote('消息已发送，但无法保存标注清理，草稿仍保留，请重试清理');
+        }
+        if (persisted && activeTopicRef.current === topic
           && gatewayAnnotationContextRef.current
           && String(gatewayAnnotationContextRef.current.appId) === successApp
           && Number(gatewayAnnotationContextRef.current.agentUid) === successAgent) {
@@ -3409,12 +3434,18 @@ export default function MessagesView({
           const bucketAgent = Number(restoreContext.agentUid);
           const bucketApp = String(restoreContext.appId);
           const pendingRows = readGatewayAnnotationDrafts(user.uid, topic, bucketAgent, bucketApp);
-          const snapshotIDs = new Set(restoreDrafts.map((row) => row.id));
+          const pendingByID = new Map(pendingRows.map(row => [row.id, row]));
+          // Current saved versions win over the failed snapshot, including
+          // edits to an application-defined stable annotation ID.
           const merged = [
-            ...restoreDrafts,
-            ...pendingRows.filter((row) => !snapshotIDs.has(row.id)),
+            ...restoreDrafts.map(row => pendingByID.get(row.id) || row),
+            ...pendingRows.filter(row => !restoreDrafts.some(old => old.id === row.id)),
           ];
-          writeGatewayAnnotationDrafts(user.uid, topic, bucketAgent, bucketApp, merged);
+          const restored = writeGatewayAnnotationDrafts(user.uid, topic, bucketAgent, bucketApp, merged,
+            undefined, { recovery: true });
+          const recoveryKey = `${user.uid}|${topic}|${bucketAgent}|${bucketApp}`;
+          if (restored) gatewayAnnotationRecoveryRef.current.delete(recoveryKey);
+          else gatewayAnnotationRecoveryRef.current.set(recoveryKey, { rows: merged, session: annotationSendSnapshot });
           // Restore the visible composer state whenever the user is still on
           // the conversation the snapshot belongs to and no newer context
           // took over (context null — e.g. the pre-clear wiped it — or the
@@ -3427,6 +3458,11 @@ export default function MessagesView({
                 && Number(gatewayAnnotationContextRef.current.agentUid) === bucketAgent))) {
             setGatewayAnnotationContext(restoreContext);
             setGatewayAnnotationDrafts(merged);
+            if (!restored) {
+              setGatewayAnnotationCapabilityNote('恢复的标注无法保存，已保留在当前编辑器，请勿关闭页面并复制评论备份');
+            } else if (!buildGatewayAnnotationsMetadata(restoreContext, merged, merged[0]?.page)) {
+              setGatewayAnnotationCapabilityNote('已恢复全部标注，总大小超过单次发送限制，请分批移除或缩短后发送');
+            }
             // The capture page certificate stays authoritative.
             const restoredPage = merged[0]?.page || null;
             if (restoredPage) setGatewayAnnotationDraftPage(restoredPage);

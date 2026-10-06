@@ -5,6 +5,7 @@ import {
   GATEWAY_ANNOTATIONS_CONTRACT,
   gatewayAnnotationDraftKey,
   readGatewayAnnotationDrafts,
+  sameGatewayAnnotationVersion,
   writeGatewayAnnotationDrafts,
 } from './gateway-annotation-drafts';
 
@@ -125,6 +126,26 @@ describe('gateway annotation drafts', () => {
     storage.setItem = () => { throw new Error('quota exceeded'); };
     expect(writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [sampleAnnotation('new')], storage)).toBe(false);
     expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage).map(row => row.id)).toEqual(['keep']);
+  });
+
+  it('distinguishes edits, reversions and delete/recreate from a sent version', () => {
+    const row = sampleAnnotation('stable', { page: { path: '/board' } });
+    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [row], storage);
+    const original = readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage)[0];
+    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [{ ...original, body: 'edited' }], storage);
+    const edited = readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage)[0];
+    expect(sameGatewayAnnotationVersion(original, edited)).toBe(false);
+    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [{ ...edited, body: original.body }], storage);
+    expect(sameGatewayAnnotationVersion(original, readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage)[0])).toBe(false);
+    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [], storage);
+    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [row], storage);
+    expect(sameGatewayAnnotationVersion(original, readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage)[0])).toBe(false);
+  });
+
+  it('recovers more than one send envelope without trimming the saved comments', () => {
+    const rows = Array.from({ length: 24 }, (_, index) => sampleAnnotation(`recovered-${index}`, { body: '批'.repeat(1900) }));
+    expect(writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, rows, storage, { recovery: true })).toBe(true);
+    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage)).toHaveLength(24);
   });
 
   it('returns an empty list when the bucket key is incomplete', () => {

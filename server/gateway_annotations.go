@@ -844,7 +844,10 @@ func (h *Hub) gatewayAnnotationModelTextForPayload(actorUID int64, recipientUID 
 
 // withGatewayAnnotationAgentDelivery builds the annotated Agent's fanout or
 // history read copy as one unified, copy-on-write envelope that satisfies both
-// real XiaoBa consumers of the same message:
+// real XiaoBa consumers of the same message. displayType/storedType carry the
+// actual envelope's rendered and stored msg types, which the cloud consumer
+// falls back to when the rich content carries no truthy inner type
+// (rich.type || message.type || message.msg_type, trimmed).
 //
 //   - live parseMessage (WS live fanout AND WS history replay data messages):
 //     mergedText = exact-lowercase "text" blocks joined with blank lines ||
@@ -863,7 +866,7 @@ func (h *Hub) gatewayAnnotationModelTextForPayload(actorUID int64, recipientUID 
 // no exact text block), and the content channel appends the annotation to the
 // string content or merges it into the rendered description field. Human
 // copies and the stored message are never touched.
-func withGatewayAnnotationAgentDelivery(blocks []types.ContentBlock, displayContent interface{}, modelText string) (interface{}, []types.ContentBlock) {
+func withGatewayAnnotationAgentDelivery(blocks []types.ContentBlock, displayContent interface{}, modelText string, displayType string, storedType string) (interface{}, []types.ContentBlock) {
 	if modelText == "" {
 		return displayContent, blocks
 	}
@@ -903,7 +906,7 @@ func withGatewayAnnotationAgentDelivery(blocks []types.ContentBlock, displayCont
 		}
 		return typed + "\n\n" + modelText, annotatedBlocks
 	case map[string]interface{}:
-		return withGatewayAnnotationRichContent(typed, annotatedBlocks, modelText)
+		return withGatewayAnnotationRichContent(typed, annotatedBlocks, modelText, displayType, storedType)
 	default:
 		return typed, annotatedBlocks
 	}
@@ -917,12 +920,25 @@ func withGatewayAnnotationAgentDelivery(blocks []types.ContentBlock, displayCont
 // payload.description with JS truthiness, payload defaults to the rich object
 // itself when message.payload is missing), so the original text and the
 // annotation stay readable while url/name and sibling fields survive.
-func withGatewayAnnotationRichContent(content map[string]interface{}, blocks []types.ContentBlock, modelText string) (interface{}, []types.ContentBlock) {
+// The content type follows the real consumer's fallback chain
+// (rich.type || message.type || message.msg_type, trimmed): an inner type
+// that is truthy wins even when it trims to blank; otherwise the envelope's
+// display type, then the stored msg type.
+func withGatewayAnnotationRichContent(content map[string]interface{}, blocks []types.ContentBlock, modelText string, displayType string, storedType string) (interface{}, []types.ContentBlock) {
 	nextContent := make(map[string]interface{}, len(content)+1)
 	for key, value := range content {
 		nextContent[key] = value
 	}
-	contentType := strings.TrimSpace(fmt.Sprint(nextContent["type"]))
+	typeSource := nextContent["type"]
+	if !jsTruthy(typeSource) {
+		// JS: rich.type || message.type || message.msg_type
+		if displayType != "" {
+			typeSource = displayType
+		} else {
+			typeSource = storedType
+		}
+	}
+	contentType := strings.TrimSpace(jsStringOf(typeSource))
 	payload, ok := nextContent["payload"].(map[string]interface{})
 	if !ok {
 		// JS: rich.payload && typeof rich.payload === 'object' ? rich.payload : rich

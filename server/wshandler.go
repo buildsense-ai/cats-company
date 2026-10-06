@@ -2533,7 +2533,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				if out == msg {
 					out = cloneDataMessageWithMetadata(msg, msg.Data.Metadata)
 				}
-				memberContent, memberBlocks := withGatewayAnnotationAgentDelivery(out.Data.ContentBlocks, out.Data.Content, modelText)
+				memberContent, memberBlocks := withGatewayAnnotationAgentDelivery(out.Data.ContentBlocks, out.Data.Content, modelText, out.Data.Type, out.Data.MsgType)
 				out.Data.Content = memberContent
 				out.Data.ContentBlocks = memberBlocks
 			}

@@ -691,8 +691,15 @@
 
     function onUrlChanged() {
       // SPA navigations inside the app invalidate the previous document:
-      // any hover/drag state is dropped and the host learns the new page.
+      // any hover/drag/DOM selection is dropped and the host learns the new
+      // page. A stale selection must not be submitted with a newer revision.
       teardownOverlay();
+      try {
+        var selection = window.getSelection && window.getSelection();
+        if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
+      } catch (error) {
+        // Some embedded runtimes do not expose an editable Selection.
+      }
       if (state.mode !== 'off') activeOverlay().setBadge(modeHints[state.mode] || '');
       sendPageChanged();
     }
@@ -742,8 +749,22 @@
 
     return {
       setRevision(nextRevision) {
+        // A real revision change is a document change: run the same
+        // invalidation as navigation so a region drag started under the old
+        // revision cannot be released as a target stamped with the new one
+        // (hover/selection state is dropped too, and the mode badge
+        // re-arms). No-op when the effective page is unchanged.
+        var previousPage = currentPage(revision);
         revision = nextRevision;
-        sendPageChanged();
+        var nextPage = currentPage(revision);
+        var changed = !previousPage || !nextPage
+          || previousPage.path !== nextPage.path
+          || (previousPage.revision || '') !== (nextPage.revision || '');
+        if (changed) {
+          onUrlChanged();
+        } else {
+          sendPageChanged();
+        }
       },
       mode() { return state.mode; },
       dispose() {

@@ -51,7 +51,7 @@ import {
 - `id` 必填，≤128 字符，无控制字符；`kind` ∈ `element|text|region`；`label` ≤256 字符（可空）。
 - target 按 kind：element 需 `element_id` 或 `selector`；text 需非空白 `text`；region 需 `rect` + `coordinate_space:'viewport'` + `viewport`。
 - `rect` 视口归一化 0..1（允许 1e-6 浮点容差），零面积/越界拒绝；`viewport` 的 width/height >0、scroll ≥0、上限 2^20。
-- 自由文本（`text/prefix/suffix`）≤2000/256/256，允许换行；`element_id/selector` 等标识类拒绝一切控制字符。
+- 自由文本（`text/prefix/suffix/body`）≤2000/256/256/2000，允许换行与制表符（`\n`/`\r`/`\t`），其余控制字符拒绝——与 server freetext 规则一致；`element_id/selector` 等标识类拒绝一切控制字符。
 
 ### normalizeGatewayAnnotations(value)
 
@@ -93,7 +93,7 @@ import {
 </script>
 ```
 
-返回 `{ dispose(), setRevision(next), mode() }`：
+返回 `{ dispose(), setRevision(next), mode() }`（`setRevision` 在 page 实际变化时走与导航相同的文档失效路径：清空 hover/拖拽/选区态并重挂 mode 提示，旧 revision 下的拖拽不得以新 revision 发布；未变化时仅上报 page）：
 
 - 自动响应宿主 `connect.v1`（校验 `event.origin === parentOrigin` 且 `event.source === window.parent`），回 `ready.v1`；每次新 connect 重绑到最新 session。
 - `mode.v1` 切换显式选择态；`off` 完全恢复普通页面交互（overlay 移除、拦截监听不消费事件）。

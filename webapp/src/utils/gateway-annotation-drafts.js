@@ -25,6 +25,9 @@ export const GATEWAY_ANNOTATION_DRAFT_MAX_ANNOTATIONS = 20;
 export const GATEWAY_ANNOTATION_DRAFT_MAX_BYTES = 16 * 1024;
 export const GATEWAY_ANNOTATION_BODY_MAX_RUNES = 2000;
 export const GATEWAY_ANNOTATION_LABEL_MAX_RUNES = 256;
+// Monotonic within this mounted runtime even when a bucket is emptied. This
+// distinguishes delete/recreate and edit/revert from the version in flight.
+let nextDraftRevision = Date.now();
 
 function storageTarget(storage) {
   if (storage && typeof storage === 'object') return storage;
@@ -68,8 +71,7 @@ function writeDraftMap(userID, value, storage) {
   if (!target) return false;
   try {
     if (!value || typeof value !== 'object' || Object.keys(value).length === 0) {
-      removeStorageValue(key, target);
-      return true;
+      return removeStorageValue(key, target);
     }
     return writeStorageValue(key, JSON.stringify(value), target) ? true : false;
   } catch {
@@ -107,6 +109,9 @@ function validDraftAnnotation(value) {
     target: { ...target },
   };
   if (label) normalized.label = label;
+  if (Number.isSafeInteger(value.draft_revision) && value.draft_revision > 0) {
+    normalized.draft_revision = value.draft_revision;
+  }
   // The page the annotation was captured on is part of the annotation:
   // once a bucket captures against one page/revision, later framework loads
   // or SPA navigations must not silently re-anchor the target to the new
@@ -175,7 +180,7 @@ export function readGatewayAnnotationDrafts(userID, topicId, agentUid, appId, st
 // responsible for telling the user. A refused write never destroys the last
 // successfully persisted rows: adding one oversized comment must not delete
 // the whole previously saved draft.
-export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, annotations, storage) {
+export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, annotations, storage, { recovery = false } = {}) {
   const bucket = draftBucketKey(topicId, agentUid, appId);
   if (!bucket) return false;
   if (!Array.isArray(annotations) || annotations.length === 0) {
@@ -187,10 +192,26 @@ export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, a
     }
     return true;
   }
+  // Recovery storage is larger than a single send envelope. Failed sends must
+  // retain both their snapshot and new comments; sending still validates the
+  // strict 20-row/16KiB contract independently.
+  const rowLimit = recovery ? 100 : GATEWAY_ANNOTATION_DRAFT_MAX_ANNOTATIONS;
+  if (recovery && annotations.length > rowLimit) return false;
+  const stored = readDraftMap(userID, storage) || {};
+  const previousRows = draftValueFor(bucket, stored) || [];
+  const previousByID = new Map(previousRows.map(row => [row.id, row]));
+  let revision = Number(stored[`${bucket}.meta`]?.mutation_revision) || 0;
   const bounded = annotations
-    .slice(0, GATEWAY_ANNOTATION_DRAFT_MAX_ANNOTATIONS)
+    .slice(0, rowLimit)
     .map(validDraftAnnotation)
-    .filter(Boolean);
+    .filter(Boolean)
+    .map(row => {
+      const previous = previousByID.get(row.id);
+      if (previous && sameGatewayAnnotationVersion(previous, row)) return previous;
+      revision = Math.max(revision, nextDraftRevision, Number(row.draft_revision) || 0) + 1;
+      nextDraftRevision = revision;
+      return { ...row, draft_revision: revision };
+    });
   if (bounded.length === 0) {
     writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, [], storage);
     return true;
@@ -201,13 +222,10 @@ export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, a
   // untouched and the caller surfaces an explicit error, so no silent
   // trimming and no silent bucket destruction ever happen.
   const serialized = new TextEncoder().encode(JSON.stringify(bounded));
-  if (serialized.length > GATEWAY_ANNOTATION_DRAFT_MAX_BYTES) {
-    return false;
-  }
-  const stored = readDraftMap(userID, storage) || {};
-  // The canonical envelope (certificates + rows) must also fit; the caller
-  // treats false as "not saved" and keeps the editor open.
-  return writeDraftMap(userID, withCertificate(stored, bucket, bounded), storage);
+  if (serialized.length > (recovery ? 256 * 1024 : GATEWAY_ANNOTATION_DRAFT_MAX_BYTES)) return false;
+  const next = withCertificate(stored, bucket, bounded);
+  next[`${bucket}.meta`].mutation_revision = revision;
+  return writeDraftMap(userID, next, storage);
 }
 
 // Build (and validate) the gateway_annotations metadata value for one send.
@@ -238,6 +256,18 @@ export function buildGatewayAnnotationsMetadata(context, drafts, page) {
   return metadata && Array.isArray(metadata.annotations) && metadata.annotations.length > 0
     ? metadata
     : null;
+}
+
+// Identity alone does not prove a comment was sent: edits to the same ID are
+// new versions, and must survive an older request completing.
+export function sameGatewayAnnotationVersion(left, right) {
+  if (!left || !right || left.id !== right.id) return false;
+  const content = row => JSON.stringify({
+    id: row.id, kind: row.kind, label: row.label || '', body: row.body,
+    target: row.target, page: row.page || null,
+  });
+  return content(left) === content(right)
+    && (left.draft_revision || 0) === (right.draft_revision || 0);
 }
 
 export function gatewayAnnotationDraftKey(topicId, agentUid, appId) {

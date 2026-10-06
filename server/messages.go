@@ -546,7 +546,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 	contentBlocks := payload.ContentBlocks
 	dataContent := payload.DisplayContent
 	if modelText := h.gatewayAnnotationModelTextForPayload(uid, recipientUID, topicID, payload); modelText != "" {
-		dataContent, contentBlocks = withGatewayAnnotationAgentDelivery(contentBlocks, payload.DisplayContent, modelText)
+		dataContent, contentBlocks = withGatewayAnnotationAgentDelivery(contentBlocks, payload.DisplayContent, modelText, payload.DisplayType, payload.StoredType)
 	}
 	metadata = withSkillConnectorMetadata(metadata, h.buildShimoSkillConnectorMetadata(uid, recipientUID, topicID, msgID))
 	return &ServerMessage{
@@ -658,8 +658,9 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 	// human readers and the stored value stay untouched.
 	contentBlocks := message.ContentBlocks
 	readContent := displayContent
+	envelopeDisplayType := inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks)
 	if modelText := h.gatewayAnnotationHistoryModelText(message, recipientUID); modelText != "" {
-		readContent, contentBlocks = withGatewayAnnotationAgentDelivery(message.ContentBlocks, displayContent, modelText)
+		readContent, contentBlocks = withGatewayAnnotationAgentDelivery(message.ContentBlocks, displayContent, modelText, envelopeDisplayType, message.MsgType)
 		displayContent = readContent
 	}
 	return &MsgServerData{
@@ -667,7 +668,7 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 		From:          formatUID(message.FromUID),
 		SeqID:         int(message.ID),
 		Content:       displayContent,
-		Type:          inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
+		Type:          envelopeDisplayType,
 		MsgType:       message.MsgType,
 		Metadata:      withCatscoIdentityMetadata(storedMetadata, h.buildCatscoIdentityMetadata(message.FromUID, recipientUID, message.TopicID, message.ID, normalizeContentText(displayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: true, Replay: true, IdentityUsers: users})),
 		ContentBlocks: contentBlocks,
