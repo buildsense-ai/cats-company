@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '../public/catsco-annotations.js';
-import { createGatewayAnnotationHost } from './gateway-annotations';
+import { createGatewayAnnotationHost, normalizeGatewayAnnotationSelection } from './gateway-annotations';
 
 const BRIDGE = 'catsco.gateway-annotation-bridge.v1';
 const TYPES = window.CatsCoAnnotations.types;
@@ -622,6 +622,152 @@ describe('dispose', () => {
     expect(handler).toHaveBeenCalledTimes(1);
     expect(targetMessages(posted)).toHaveLength(0);
   });
+});
+
+describe('viewport-rect intersection (review round 2 P2-3 probe scenarios)', () => {
+  function clickElement(element, rect) {
+    const { posted } = createSdk();
+    connect('catsco_session_r2');
+    sendMode('element', 'catsco_session_r2');
+    vi.spyOn(element, 'getBoundingClientRect').mockReturnValue(rect);
+    element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    return targetMessages(posted);
+  }
+
+  function normalizedWithHost(selection) {
+    return normalizeGatewayAnnotationSelection(selection);
+  }
+
+  it('a partially visible element click yields the intersection rect the host accepts', () => {
+    // Probe scenario: 1000×1000 viewport, rect left=900, top=950,
+    // width=200, height=100 (bottom/right run past the viewport).
+    const button = document.createElement('button');
+    button.id = 'target';
+    document.body.appendChild(button);
+    const targets = clickElement(button, { left: 900, top: 950, width: 200, height: 100 });
+    expect(targets).toHaveLength(1);
+    expect(targets[0].selection.target.rect).toEqual({ x: 0.9, y: 0.95, width: 0.1, height: 0.05 });
+    expect(normalizedWithHost(targets[0].selection)).not.toBeNull();
+  });
+
+  it('an element fully outside the viewport keeps its anchor and omits the rect', () => {
+    const button = document.createElement('button');
+    button.id = 'offscreen';
+    document.body.appendChild(button);
+    const targets = clickElement(button, { left: 1200, top: 1400, width: 200, height: 100 });
+    expect(targets).toHaveLength(1);
+    expect(targets[0].selection.target.element_id).toBe('offscreen');
+    expect(targets[0].selection.target.rect).toBeUndefined();
+    expect(normalizedWithHost(targets[0].selection)).not.toBeNull();
+  });
+
+  it('an element larger than the viewport is clipped to the visible area', () => {
+    const section = document.createElement('section');
+    section.id = 'big';
+    document.body.appendChild(section);
+    const targets = clickElement(section, { left: -500, top: -500, width: 2000, height: 2000 });
+    expect(targets[0].selection.target.rect).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    expect(normalizedWithHost(targets[0].selection)).not.toBeNull();
+  });
+
+  it('a partially visible text range keeps its anchors and a clipped rect', () => {
+    const { posted } = createSdk();
+    connect('catsco_session_r2');
+    sendMode('text', 'catsco_session_r2');
+
+    const paragraph = document.createElement('p');
+    const textNode = document.createTextNode('部分可见的示例选择文本');
+    paragraph.appendChild(textNode);
+    document.body.appendChild(paragraph);
+
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 11);
+    Object.defineProperty(range, 'getBoundingClientRect', { configurable: true, value: () => ({ left: 900, top: 980, width: 300, height: 40, right: 1200, bottom: 1020 }) });
+    const mockSelection = {
+      isCollapsed: false,
+      rangeCount: 1,
+      anchorNode: textNode,
+      focusNode: textNode,
+      toString: () => '部分可见的示例选择文本',
+      getRangeAt: () => range,
+      removeAllRanges: () => {},
+    };
+    vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection);
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+
+    const targets = targetMessages(posted);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].selection.target.text).toBe('部分可见的示例选择文本');
+    expect(targets[0].selection.target.rect).toEqual({ x: 0.9, y: 0.98, width: 0.1, height: 0.02 });
+    expect(normalizedWithHost(targets[0].selection)).not.toBeNull();
+  });
+
+  it('a fully offscreen text range omits auxiliary rect but keeps the text anchor', () => {
+    const { posted } = createSdk();
+    connect('catsco_session_r2');
+    sendMode('text', 'catsco_session_r2');
+
+    const paragraph = document.createElement('p');
+    const textNode = document.createTextNode('屏幕外的文本选择');
+    paragraph.appendChild(textNode);
+    document.body.appendChild(paragraph);
+
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 8);
+    Object.defineProperty(range, 'getBoundingClientRect', { configurable: true, value: () => ({ left: 1500, top: 1800, width: 200, height: 40, right: 1700, bottom: 1840 }) });
+    const mockSelection = {
+      isCollapsed: false,
+      rangeCount: 1,
+      anchorNode: textNode,
+      focusNode: textNode,
+      toString: () => '屏幕外的文本选择',
+      getRangeAt: () => range,
+      removeAllRanges: () => {},
+    };
+    vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection);
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+
+    const targets = targetMessages(posted);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].selection.target.text).toBe('屏幕外的文本选择');
+    expect(targets[0].selection.target.rect).toBeUndefined();
+    expect(normalizedWithHost(targets[0].selection)).not.toBeNull();
+  });
+
+  it('negative-coordinate, partial and fully-offscreen element rect matrix', () => {
+    const cases = [
+      // [getBoundingClientRect, expected target rect or null (anchor only)]
+      [{ left: -200, top: -300, width: 500, height: 600 }, { x: 0, y: 0, width: 0.3, height: 0.3 }],
+      [{ left: 900, top: 950, width: 200, height: 100 }, { x: 0.9, y: 0.95, width: 0.1, height: 0.05 }],
+      [{ left: 1200, top: 1400, width: 200, height: 100 }, null],
+      [{ left: -100000, top: 500, width: 200000, height: 100 }, { x: 0, y: 0.5, width: 1, height: 0.1 }],
+    ];
+    const { posted } = createSdk();
+    connect('catsco_session_r2');
+    sendMode('element', 'catsco_session_r2');
+    for (const [rect, expected] of cases) {
+      const button = document.createElement('button');
+      button.id = `rect-case-${Math.random().toString(36).slice(2, 8)}`;
+      document.body.appendChild(button);
+      vi.spyOn(button, 'getBoundingClientRect').mockReturnValue(rect);
+      button.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      const target = targetMessages(posted).at(-1)?.selection?.target;
+      if (expected === null) {
+        expect(target.rect ?? null).toBeNull();
+        expect(target.element_id ?? target.selector).toBeTruthy();
+      } else {
+        expect(target.rect).toEqual(expected);
+      }
+      expect(normalizeGatewayAnnotationSelection(targetMessages(posted).at(-1).selection)).not.toBeNull();
+      button.remove();
+    }
+    expect(targetMessages(posted)).toHaveLength(cases.length); // exactly one target per case
+  });
+
 });
 
 describe('host <-> SDK interoperability (frozen bridge protocol)', () => {

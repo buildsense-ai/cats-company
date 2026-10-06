@@ -386,6 +386,11 @@ export function createGatewayAnnotationHost({
     // minted per connect and echoed by the SDK, so a late ready from an
     // older connect (or a replayed one) cannot activate the new session.
     if (payload.request_id !== state.session.requestId) return;
+    // A duplicate ready for the already-completed handshake must be ignored
+    // BEFORE any state mutation: replaying it would roll back page/capability
+    // state the frame has since superseded (page.v1) without notifying the
+    // UI. A new explicit connect replaces the token and re-opens the gate.
+    if (state.readyNotified) return;
     const capabilities = payload.capabilities;
     if (!Array.isArray(capabilities) || capabilities.length === 0
       || capabilities.some((item) => !SUPPORTED_CAPABILITIES.includes(item))) {
@@ -396,11 +401,8 @@ export function createGatewayAnnotationHost({
     const reportedPage = normalizedPage(payload.page) ?? defaultPage();
     state.page = reportedPage;
     state.ready = { capabilities: capabilities.slice(), page: reportedPage };
-    // A connect may be re-sent by the host (e.g. reconnect after navigation);
-    // a duplicate ready must not notify the UI twice.
-    const firstReady = !state.readyNotified;
     state.readyNotified = true;
-    if (firstReady) notify(onReady, state.ready);
+    notify(onReady, state.ready);
     setModeInternal();
   }
 

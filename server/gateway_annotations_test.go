@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 
 	"net/http"
 	"net/http/httptest"
@@ -390,15 +391,16 @@ func TestGatewayAnnotationsTotalBytesRejectsSixteenKiBPlus(t *testing.T) {
 // account types, bot ownership/friendship and persisted message metadata.
 type gatewayAnnotationFakeStore struct {
 	store.Store
-	users        map[int64]*types.User
-	botOwners    map[int64]int64
-	friendPairs  map[string]bool
-	groupMembers map[string]bool
-	groupMuted   map[string]bool
-	groups       map[int64]*types.Group
-	members      map[int64][]*types.GroupMember
-	topics       []string
-	saved        []gatewayAnnotationSavedMessage
+	users         map[int64]*types.User
+	botOwners     map[int64]int64
+	friendPairs   map[string]bool
+	groupMembers  map[string]bool
+	groupMuted    map[string]bool
+	groups        map[int64]*types.Group
+	members       map[int64][]*types.GroupMember
+	topics        []string
+	storedHistory map[string][]*types.Message
+	saved         []gatewayAnnotationSavedMessage
 }
 
 type gatewayAnnotationSavedMessage struct {
@@ -1329,9 +1331,12 @@ func xiaoBaEquivalentUserInput(data *MsgServerData) string {
 }
 
 // cloudRestoreEquivalentText mirrors the offline XiaoBa
-// cloud-session-restore rule (cloudMessageText): a non-empty string content
-// wins outright; a rich file/image/voice content renders its own description
-// line; anything else falls back to trimmed text blocks joined with a newline.
+// cloud-session-restore rule (cloudMessageText), faithfully to the real JS:
+// a non-empty string content wins outright; rich file/image/voice always
+// render "[历史X：name]" + description (independent ternaries on name and the
+// JS-truthy text||description, with the payload defaulting to the rich object
+// itself when message.payload is missing); any other object renders its
+// trimmed description or falls back to trimmed text blocks.
 func cloudRestoreEquivalentText(data *MsgServerData) string {
 	if data == nil {
 		return ""
@@ -1343,31 +1348,26 @@ func cloudRestoreEquivalentText(data *MsgServerData) string {
 	if !ok {
 		return cloudContentBlocksEquivalentText(data.ContentBlocks)
 	}
-	contentType := strings.TrimSpace(fmt.Sprint(rich["type"]))
-	payload, _ := rich["payload"].(map[string]interface{})
-	description := ""
-	name := ""
-	if payload != nil {
-		name, _ = payload["name"].(string)
-		// Exact restore rule: payload.text wins over payload.description.
-		description, _ = payload["text"].(string)
-		if strings.TrimSpace(description) == "" {
-			description, _ = payload["description"].(string)
-		}
+	payload, ok := rich["payload"].(map[string]interface{})
+	if !ok {
+		// JS: rich.payload && typeof rich.payload === 'object' ? rich.payload : rich
+		payload = rich
 	}
+	contentType := strings.TrimSpace(fmt.Sprint(rich["type"]))
+	name, _ := payload["name"].(string)
+	description, _ := payload["text"].(string)
+	if description == "" {
+		description, _ = payload["description"].(string)
+	}
+	// payload.text wins over payload.description with raw JS truthiness: a
+	// " " string is truthy and shadows the description field.
 	switch contentType {
-	case "image":
-		if strings.TrimSpace(name) != "" {
-			return fmt.Sprintf("[历史图片：%s]%s", strings.TrimSpace(name), descriptionSuffix(description))
-		}
-		return "[历史图片]" + descriptionSuffix(description)
 	case "file":
-		if strings.TrimSpace(name) != "" {
-			return fmt.Sprintf("[历史文件：%s]%s", strings.TrimSpace(name), descriptionSuffix(description))
-		}
-		return "[历史文件]" + descriptionSuffix(description)
+		return "[历史文件" + cloudNameClause(name) + "]" + cloudDescriptionClause(description)
+	case "image":
+		return "[历史图片" + cloudNameClause(name) + "]" + cloudDescriptionClause(description)
 	case "voice":
-		return "[历史语音]" + descriptionSuffix(description)
+		return "[历史语音]" + cloudDescriptionClause(description)
 	default:
 		if strings.TrimSpace(description) != "" {
 			return strings.TrimSpace(description)
@@ -1376,9 +1376,16 @@ func cloudRestoreEquivalentText(data *MsgServerData) string {
 	}
 }
 
-func descriptionSuffix(description string) string {
-	if strings.TrimSpace(description) != "" {
-		return " " + strings.TrimSpace(description)
+func cloudNameClause(name string) string {
+	if name != "" {
+		return "：" + name
+	}
+	return ""
+}
+
+func cloudDescriptionClause(description string) string {
+	if description != "" {
+		return " " + description
 	}
 	return ""
 }
@@ -2073,4 +2080,615 @@ func TestExportXiaoBaHistoryFixture(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	t.Log("history fixture written to /tmp/xiaoba-annotation-history-fixture.json")
+}
+
+// ---------- Round-2 regressions (review /tmp/catsco-pr575-review-round2.md,
+// P1-4/P1-5/P2-2): the annotated Agent's read copy must satisfy BOTH real
+// XiaoBa consumers of the same message — the live parse merge (blocks win:
+// mergedText = exact "text" blocks || top-level string content) and the cloud
+// restore reader (non-empty string content wins; rich file/image/voice always
+// render payload.text || payload.description with JS truthiness) — while
+// human reads and the stored message stay untouched. ----------
+
+func (s *gatewayAnnotationFakeStore) GetMessages(topicID string, limit, offset int) ([]*types.Message, error) {
+	if s.storedHistory == nil {
+		return nil, nil
+	}
+	return s.storedHistory[topicID], nil
+}
+
+func (s *gatewayAnnotationFakeStore) GetMessagesSince(topicID string, sinceID int64, limit int) ([]*types.Message, error) {
+	if s.storedHistory == nil {
+		return nil, nil
+	}
+	return s.storedHistory[topicID], nil
+}
+
+func TestR2BlocksOnlyCloudHistoryKeepsOriginalAndAnnotation(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	message := &types.Message{
+		ID: 1, TopicID: "p2p_7_9", FromUID: 7, MsgType: "text", Content: "",
+		ContentBlocks: []types.ContentBlock{{Type: "text", Text: "original-blocks-only"}},
+		Metadata:      map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+	read := hub.historyMessageDataForRecipient(9, message)
+	actual := cloudRestoreEquivalentText(read)
+	for _, fragment := range []string{"original-blocks-only", "改成蓝色"} {
+		if !strings.Contains(actual, fragment) {
+			t.Errorf("missing %q actual=%q", fragment, actual)
+		}
+	}
+	if message.Content != "" || len(message.ContentBlocks) != 1 {
+		t.Fatal("stored message mutated")
+	}
+	human := hub.historyMessageDataForRecipient(7, message)
+	if human.Content != "" || len(human.ContentBlocks) != 1 || human.ContentBlocks[0].Text != "original-blocks-only" {
+		t.Fatalf("human polluted: %+v", human)
+	}
+	if strings.Contains(cloudRestoreEquivalentText(human), "Gateway 标注") {
+		t.Fatal("human copy gained the annotation")
+	}
+}
+
+func TestR2HistoryWSReplayReadableInActualLiveBlockMerge(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	message := &types.Message{
+		ID: 1, TopicID: "p2p_7_9", FromUID: 7, MsgType: "text", Content: "original",
+		ContentBlocks: []types.ContentBlock{{Type: "text", Text: "original"}},
+		Metadata:      map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+	read := hub.historyMessageDataForRecipient(9, message)
+	actual := xiaoBaEquivalentUserInput(read)
+	for _, fragment := range []string{"original", "改成蓝色"} {
+		if !strings.Contains(actual, fragment) {
+			t.Errorf("missing %q actual=%q", fragment, actual)
+		}
+	}
+	// The same read copy also satisfies the cloud string-content preference.
+	restored := cloudRestoreEquivalentText(read)
+	if !strings.Contains(restored, "original") || !strings.Contains(restored, "改成蓝色") {
+		t.Fatalf("cloud channel lost fragments: %q", restored)
+	}
+}
+
+// TestR2AgentReaderShapeMatrix locks the tricky history shapes: JS truthiness
+// on rich payload fields, missing payload (flat rich), unknown objects and
+// blocks-only content, verified against the real consumer semantics.
+func TestR2AgentReaderShapeMatrix(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	cases := []struct {
+		name                  string
+		content               string
+		blocks                []types.ContentBlock
+		expectedCloudOriginal bool // does the real cloud consumer render the original text?
+		expectedHumanOriginal bool // does the human's copy render it?
+	}{
+		{"object text field", `{"text":"original"}`, nil, true, true},
+		{"rich whitespace text", `{"type":"file","payload":{"url":"/uploads/a","text":" ","description":"original"}}`, nil, false, false},
+		{"rich missing payload", `{"type":"file","name":"f.pdf","url":"/uploads/f.pdf","text":"original"}`, nil, true, true},
+		{"rich no payload at all", `{"type":"image","name":"p.png","url":"/uploads/p.png"}`, nil, false, false},
+		{"plain string", "original", nil, true, true},
+		{"blocks-only", "", []types.ContentBlock{{Type: "text", Text: "original"}}, true, true},
+		{"blocks with attachment", "", []types.ContentBlock{{Type: "image", Payload: map[string]interface{}{"url": "/uploads/p.png"}}, {Type: "text", Text: "original"}}, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			message := &types.Message{
+				ID: 1, TopicID: "p2p_7_9", FromUID: 7, MsgType: "text", Content: tc.content,
+				ContentBlocks: tc.blocks,
+				Metadata:      map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+			}
+			read := hub.historyMessageDataForRecipient(9, message)
+			// Cloud channel (HTTP history consumer): the annotation must be
+			// readable, and the original text must survive wherever the real
+			// consumer would have rendered it (a " " payload.text carries no
+			// substantive original text, so only the annotation is required
+			// there — the JS-native text-over-description shadowing stays).
+			restored := cloudRestoreEquivalentText(read)
+			if !strings.Contains(restored, "改成蓝色") || !strings.Contains(restored, "element_id=submit-btn") {
+				t.Fatalf("cloud consumer missing annotation: %q", restored)
+			}
+			if tc.expectedCloudOriginal && !strings.Contains(restored, "original") {
+				t.Fatalf("cloud consumer lost original text: %q", restored)
+			}
+			// Live/WS replay channel (block merge consumer): annotation always
+			// visible; the original text assertion applies to the shapes whose
+			// live semantics carried text (string content or text blocks) —
+			// object/rich shapes have no live text semantics to preserve.
+			merged := xiaoBaEquivalentUserInput(read)
+			if !strings.Contains(merged, "改成蓝色") {
+				t.Fatalf("live consumer missing annotation: %q", merged)
+			}
+			if tc.blocks != nil && !strings.Contains(merged, "original") {
+				t.Fatalf("live consumer lost original text: %q", merged)
+			}
+			// Human copy and stored value untouched.
+			human := hub.historyMessageDataForRecipient(7, message)
+			if strings.Contains(cloudRestoreEquivalentText(human), "Gateway 标注") || strings.Contains(xiaoBaEquivalentUserInput(human), "Gateway 标注") {
+				t.Fatalf("human copy polluted: %q / %q", cloudRestoreEquivalentText(human), xiaoBaEquivalentUserInput(human))
+			}
+			if tc.expectedHumanOriginal && !strings.Contains(cloudRestoreEquivalentText(human), "original") {
+				t.Fatalf("human copy lost original: %q", cloudRestoreEquivalentText(human))
+			}
+		})
+	}
+}
+
+// TestR2HTTPHistoryAPIAgentCopyThroughRealHandler drives the real HTTP
+// history API: the authorized Agent's response carries original text plus
+// annotation in every shape, human responses stay clean, attachments survive.
+func TestR2HTTPHistoryAPIAgentCopyThroughRealHandler(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	message := &types.Message{
+		ID: 7, TopicID: "p2p_7_9", FromUID: 7, MsgType: "text", Content: "original",
+		ContentBlocks: []types.ContentBlock{{Type: "text", Text: "original"}},
+		Metadata:      map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+	blocksOnly := &types.Message{
+		ID: 8, TopicID: "p2p_7_9", FromUID: 7, MsgType: "text", Content: "",
+		ContentBlocks: []types.ContentBlock{{Type: "text", Text: "original-blocks-only"}},
+		Metadata:      map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+	richMessage := &types.Message{
+		ID: 9, TopicID: "p2p_7_9", FromUID: 7, MsgType: "file",
+		Content:  `{"type":"file","payload":{"name":"f.pdf","url":"/uploads/f.pdf","text":" "}}`,
+		Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+	storeData.storedHistory = map[string][]*types.Message{"p2p_7_9": {message, blocksOnly, richMessage}}
+	handler := NewMessageHandler(storeData, hub)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=p2p_7_9&limit=10", nil)
+	request = request.WithContext(withTestUID(9))
+	recorder := httptest.NewRecorder()
+	handler.HandleGetMessages(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("agent history status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(payload.Messages) != 3 {
+		t.Fatalf("messages=%d", len(payload.Messages))
+	}
+	joined := ""
+	for _, entry := range payload.Messages {
+		entryJSON, _ := json.Marshal(entry)
+		joined += string(entryJSON) + "\n"
+	}
+	for _, fragment := range []string{"original", "original-blocks-only", "改成蓝色", "element_id=submit-btn", "f.pdf", "/uploads/f.pdf"} {
+		if !strings.Contains(joined, fragment) {
+			t.Fatalf("agent HTTP history missing %q in:\n%s", fragment, joined)
+		}
+	}
+
+	// The human reader gets clean copies of the same rows.
+	request = httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=p2p_7_9&limit=10", nil)
+	request = request.WithContext(withTestUID(7))
+	recorder = httptest.NewRecorder()
+	handler.HandleGetMessages(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("human history status=%d", recorder.Code)
+	}
+	// Decode into a fresh struct: reusing the agent-response value would let
+	// json.Unmarshal keep stale keys on messages whose human copy omits
+	// content_blocks (null leaves existing maps untouched).
+	var humanPayload struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &humanPayload); err != nil {
+		t.Fatalf("human unmarshal: %v", err)
+	}
+	joined = ""
+	for _, entry := range humanPayload.Messages {
+		entryContent, _ := json.Marshal(map[string]interface{}{
+			"content": entry["content"], "content_blocks": entry["content_blocks"],
+		})
+		if strings.Contains(string(entryContent), "Gateway 标注") {
+			t.Fatalf("human HTTP history content polluted: %s", entryContent)
+		}
+		joined += string(entryContent) + "\n"
+	}
+	if strings.Contains(joined, "Gateway 标注") {
+		t.Fatalf("human HTTP history content polluted: %s", joined)
+	}
+	for _, fragment := range []string{"original", "original-blocks-only", "f.pdf"} {
+		if !strings.Contains(joined, fragment) {
+			t.Fatalf("human HTTP history lost %q", fragment)
+		}
+	}
+	if message.Content != "original" || len(message.ContentBlocks) != 1 || strings.Contains(message.Content, "Gateway 标注") {
+		t.Fatal("stored messages mutated by the history read")
+	}
+}
+
+// TestR2WSHistoryGetThroughRealHandler drives the real WS history handler and
+// asserts the delivered data messages are readable through the actual live
+// block-merge semantics while humans get clean replays.
+func TestR2WSHistoryGetThroughRealHandler(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	message := &types.Message{
+		ID: 7, TopicID: "p2p_7_9", FromUID: 7, MsgType: "text", Content: "original",
+		ContentBlocks: []types.ContentBlock{{Type: "text", Text: "original"}},
+		Metadata:      map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+	blocksOnly := &types.Message{
+		ID: 8, TopicID: "p2p_7_9", FromUID: 7, MsgType: "text", Content: "",
+		ContentBlocks: []types.ContentBlock{{Type: "text", Text: "original-blocks-only"}},
+		Metadata:      map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+	storeData.storedHistory = map[string][]*types.Message{"p2p_7_9": {message, blocksOnly}}
+
+	agentClient := &Client{uid: 9, send: make(chan []byte, 8), accountType: types.AccountBot}
+	hub.addClient(agentClient)
+	hub.handleGet(agentClient, &MsgClientGet{ID: "h1", What: "history", Topic: "p2p_7_9", SeqID: 0})
+
+	annotationSeen := 0
+	originalSeen := 0
+	for {
+		select {
+		case raw := <-agentClient.send:
+			var delivered ServerMessage
+			if err := json.Unmarshal(raw, &delivered); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if delivered.Data != nil {
+				merged := xiaoBaEquivalentUserInput(delivered.Data)
+				if strings.Contains(merged, "original") {
+					originalSeen++
+				}
+				if strings.Contains(merged, "改成蓝色") {
+					annotationSeen++
+				}
+			}
+			if delivered.Ctrl != nil && delivered.Ctrl.Code == 200 {
+				// history complete
+				if annotationSeen != 2 || originalSeen != 2 {
+					t.Fatalf("ws history: originals=%d annotations=%d", originalSeen, annotationSeen)
+				}
+				return
+			}
+		default:
+			t.Fatalf("ws history incomplete: originals=%d annotations=%d", originalSeen, annotationSeen)
+		}
+	}
+}
+
+// ---------- Real-consumer fixtures: the matrix below is exported for the
+// vendored XiaoBa AST runner (server/testdata/xiaoba-consumer-ast-runner.cjs,
+// configured via XIAOBA_ROOT) so the actual XiaoBa source — not a Go
+// approximation — validates live parseMessage and cloud cloudMessageText on
+// every legal shape. ----------
+
+// TestR2ExportConsumerFixtures writes both pipelines' fixture files:
+// /tmp/xiaoba-r2-live-fixture.json (WS replay / live fanout through
+// parseMessage) and /tmp/xiaoba-r2-cloud-fixture.json (HTTP history / session
+// rebuild through cloudMessageText). Shapes cover plain string content,
+// blocks-only, object {text}, rich whitespace text, rich text, rich
+// description, flat rich without payload, and rich without any text field;
+// every agent entry expects original text (where the consumer would render
+// it) plus the annotation, keeps name/url, and human copies forbid both.
+func TestR2ExportConsumerFixtures(t *testing.T) {
+	if os.Getenv("GATEWAY_ANNOTATIONS_EXPORT_FIXTURE") == "" {
+		t.Skip("set GATEWAY_ANNOTATIONS_EXPORT_FIXTURE to write /tmp/xiaoba-r2-{live,cloud}-fixture.json")
+	}
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+
+	shapes := []struct {
+		name    string
+		content string
+		blocks  []types.ContentBlock
+	}{
+		{"plain string", "original", nil},
+		{"blocks-only", "", []types.ContentBlock{{Type: "text", Text: "original-blocks-only"}}},
+		{"object text field", `{"text":"original"}`, nil},
+		{"rich whitespace text", `{"type":"file","payload":{"url":"/uploads/f.pdf","name":"f.pdf","text":" ","description":"original"}}`, nil},
+		{"rich text", `{"type":"file","payload":{"url":"/uploads/f.pdf","name":"f.pdf","text":"original-rich-text"}}`, nil},
+		{"rich description", `{"type":"file","payload":{"url":"/uploads/f.pdf","name":"f.pdf","description":"original-description"}}`, nil},
+		{"rich missing payload", `{"type":"file","name":"f.pdf","url":"/uploads/f.pdf","text":"original"}`, nil},
+		{"rich no text fields", `{"type":"image","name":"p.png","url":"/uploads/p.png"}`, nil},
+	}
+	agentRead := func(message *types.Message) *MsgServerData {
+		return hub.historyMessageDataForRecipient(9, message)
+	}
+	humanRead := func(message *types.Message) *MsgServerData {
+		return hub.historyMessageDataForRecipient(7, message)
+	}
+
+	type modelMessage struct {
+		Content       interface{}              `json:"content"`
+		ContentBlocks []map[string]interface{} `json:"content_blocks"`
+		Metadata      map[string]interface{}   `json:"metadata"`
+		TopicID       string                   `json:"topic_id"`
+		FromUID       int64                    `json:"from_uid"`
+		Type          string                   `json:"type"`
+		MsgType       string                   `json:"msg_type"`
+		SeqID         int64                    `json:"seq_id"`
+	}
+	type fixtureEntry struct {
+		Name          string       `json:"name"`
+		Pipeline      string       `json:"pipeline"`
+		Message       modelMessage `json:"message"`
+		Expect        []string     `json:"expect"`
+		Forbid        []string     `json:"forbid"`
+		ExpectedFiles []string     `json:"expectedFiles,omitempty"`
+	}
+	liveFixtures := []fixtureEntry{}
+	cloudFixtures := []fixtureEntry{}
+	for _, shape := range shapes {
+		message := &types.Message{
+			ID: 1, TopicID: "p2p_7_9", FromUID: 7, MsgType: "text", Content: shape.content,
+			ContentBlocks: shape.blocks,
+			Metadata:      map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+		}
+		read := agentRead(message)
+		clean := func(data *MsgServerData) modelMessage {
+			blocks := []map[string]interface{}{}
+			for _, block := range data.ContentBlocks {
+				blocks = append(blocks, map[string]interface{}{"type": block.Type, "text": block.Text, "payload": block.Payload})
+			}
+			return modelMessage{
+				Content: data.Content, ContentBlocks: blocks, Metadata: data.Metadata,
+				TopicID: data.Topic, FromUID: message.FromUID, Type: data.Type,
+				MsgType: data.MsgType, SeqID: int64(data.SeqID),
+			}
+		}
+		agent := clean(read)
+		human := clean(humanRead(message))
+
+		// Live pipeline expectations: the block merge always sees the
+		// annotation; the original text appears for shapes whose live
+		// semantics carried text (string content or exact text blocks).
+		// Attachment names/urls ride the result.files channel (expectedFiles),
+		// never the merged text, and only shapes whose content carries a real
+		// `payload` object are collected by the live parser at all.
+		liveExpect := []string{"改成蓝色", "element_id=submit-btn"}
+		liveForbid := []string{"/forged"}
+		if shape.blocks != nil || (strings.Contains(shape.content, "original") && !strings.Contains(shape.content, `"`)) {
+			liveExpect = append(liveExpect, "original")
+		}
+		liveFiles := liveFileURLs(shape)
+		liveFixtures = append(liveFixtures,
+			fixtureEntry{Name: "agent " + shape.name + " (live)", Pipeline: "live", Message: agent, Expect: liveExpect, Forbid: liveForbid, ExpectedFiles: liveFiles},
+			fixtureEntry{Name: "human " + shape.name + " (live)", Pipeline: "live", Message: human, Expect: liveHumanExpect(shape), Forbid: []string{"改成蓝色", "Gateway 标注"}, ExpectedFiles: liveFiles},
+		)
+
+		// Cloud pipeline expectations: the annotation rides content or the
+		// rendered description; originals follow real consumer rendering.
+		cloudExpect := []string{"改成蓝色", "element_id=submit-btn"}
+		cloudForbid := []string{}
+		if cloudRendersOriginal(shape) {
+			cloudExpect = append(cloudExpect, cloudOriginalFragment(shape))
+		}
+		if cloudName := cloudRenderedName(shape); cloudName != "" {
+			cloudExpect = append(cloudExpect, cloudName)
+		}
+		cloudFixtures = append(cloudFixtures,
+			fixtureEntry{Name: "agent " + shape.name + " (cloud)", Pipeline: "cloud", Message: agent, Expect: cloudExpect, Forbid: cloudForbid},
+			fixtureEntry{Name: "human " + shape.name + " (cloud)", Pipeline: "cloud", Message: human, Expect: cloudHumanExpect(shape), Forbid: []string{"改成蓝色", "Gateway 标注"}},
+		)
+	}
+
+	writeFixture := func(path string, entries []fixtureEntry) {
+		encoded, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, encoded, 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	writeFixture("/tmp/xiaoba-r2-live-fixture.json", liveFixtures)
+	writeFixture("/tmp/xiaoba-r2-cloud-fixture.json", cloudFixtures)
+	t.Log("fixtures written to /tmp/xiaoba-r2-live-fixture.json and /tmp/xiaoba-r2-cloud-fixture.json")
+}
+
+func liveFileURLs(shape struct {
+	name    string
+	content string
+	blocks  []types.ContentBlock
+}) []string {
+	urls := []string{}
+	// parseMessage only collects attachments from a real `payload` object in
+	// the rich content (or from file/image blocks); flat rich shapes without
+	// a payload field have no live attachment semantics to preserve.
+	if strings.Contains(shape.content, `"payload"`) && strings.Contains(shape.content, "/uploads/f.pdf") {
+		urls = append(urls, "/uploads/f.pdf")
+	}
+	for _, block := range shape.blocks {
+		if block.Type == "image" || block.Type == "file" {
+			if payload, ok := block.Payload["url"].(string); ok {
+				urls = append(urls, payload)
+			}
+		}
+	}
+	return urls
+}
+
+func liveHumanExpect(shape struct {
+	name    string
+	content string
+	blocks  []types.ContentBlock
+}) []string {
+	if shape.blocks != nil {
+		return []string{"original"}
+	}
+	if strings.Contains(shape.content, "original") && !strings.Contains(shape.content, `"`) {
+		return []string{"original"}
+	}
+	return nil
+}
+
+// cloudWinnerValue returns the description field the real cloudMessageText
+// resolves for the shape (payload.text wins over payload.description with raw
+// JS truthiness; payload falls back to the rich object itself) and whether a
+// field existed at all.
+// cloudRenderedName returns the attachment name the real cloudMessageText
+// renders inside "[历史X：name]" for this shape.
+func cloudRenderedName(shape struct {
+	name    string
+	content string
+	blocks  []types.ContentBlock
+}) string {
+	if shape.blocks != nil || !strings.Contains(shape.content, `"`) {
+		return ""
+	}
+	var fields map[string]interface{}
+	if err := json.Unmarshal([]byte(shape.content), &fields); err != nil {
+		return ""
+	}
+	payload, ok := fields["payload"].(map[string]interface{})
+	if !ok {
+		payload = fields
+	}
+	name, _ := payload["name"].(string)
+	if name == "" {
+		return ""
+	}
+	switch strings.TrimSpace(fmt.Sprint(fields["type"])) {
+	case "file", "image":
+		return name
+	default:
+		return ""
+	}
+}
+
+func cloudWinnerValue(shape struct {
+	name    string
+	content string
+	blocks  []types.ContentBlock
+}) (string, bool) {
+	var fields map[string]interface{}
+	if err := json.Unmarshal([]byte(shape.content), &fields); err != nil {
+		return "", false
+	}
+	payload, ok := fields["payload"].(map[string]interface{})
+	if !ok {
+		payload = fields
+	}
+	if text, present := payload["text"].(string); present && text != "" {
+		return text, true
+	}
+	if description, present := payload["description"].(string); present && description != "" {
+		return description, true
+	}
+	return "", false
+}
+
+func cloudRendersOriginal(shape struct {
+	name    string
+	content string
+	blocks  []types.ContentBlock
+}) bool {
+	// The real consumer renders the original when a non-empty string content
+	// exists, or when the winning description field (payload.text ||
+	// payload.description, JS truthiness) carries substantive text. A " " text
+	// wins but is blank, and the JS-native shadowing is preserved, so no
+	// original text is rendered there.
+	if shape.blocks != nil {
+		return true
+	}
+	if !strings.Contains(shape.content, `"`) && shape.content != "" {
+		return true
+	}
+	value, _ := cloudWinnerValue(shape)
+	return strings.TrimSpace(value) != ""
+}
+
+func cloudOriginalFragment(shape struct {
+	name    string
+	content string
+	blocks  []types.ContentBlock
+}) string {
+	if shape.blocks != nil {
+		return "original-blocks-only"
+	}
+	value, found := cloudWinnerValue(shape)
+	if found && strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	if !strings.Contains(shape.content, `"`) && shape.content != "" {
+		return shape.content
+	}
+	return "original"
+}
+
+func cloudHumanExpect(shape struct {
+	name    string
+	content string
+	blocks  []types.ContentBlock
+}) []string {
+	if shape.blocks != nil {
+		return []string{"original-blocks-only"}
+	}
+	if !strings.Contains(shape.content, `"`) && shape.content != "" {
+		return []string{"original"}
+	}
+	value, found := cloudWinnerValue(shape)
+	if found && strings.TrimSpace(value) != "" {
+		return []string{strings.TrimSpace(value)}
+	}
+	return nil
+}
+
+// TestR2RealXiaoBaASTConsumers re-runs the vendored actual-XiaoBa AST runner
+// against both exported fixture pipelines whenever a XiaoBa checkout is
+// available (GATEWAY_ANNOTATIONS_EXPORT_FIXTURE + XIAOBA_ROOT). CI without
+// the XiaoBa source skips this and still runs the Go consumer-semantics
+// matrix above.
+func TestR2RealXiaoBaASTConsumers(t *testing.T) {
+	if os.Getenv("GATEWAY_ANNOTATIONS_EXPORT_FIXTURE") == "" || os.Getenv("XIAOBA_ROOT") == "" {
+		t.Skip("set GATEWAY_ANNOTATIONS_EXPORT_FIXTURE=1 and XIAOBA_ROOT to run the real consumer AST regression")
+	}
+	run := func(fixture string) {
+		output, err := exec.Command("node", "testdata/xiaoba-consumer-ast-runner.cjs", fixture).CombinedOutput()
+		if err != nil {
+			t.Fatalf("real AST runner failed for %s: %v\n%s", fixture, err, output)
+		}
+		var summary struct {
+			Passed int `json:"passed"`
+			Failed int `json:"failed"`
+		}
+		if err := json.Unmarshal(output, &summary); err != nil {
+			t.Fatalf("runner output: %v\n%s", err, output)
+		}
+		if summary.Failed != 0 {
+			t.Fatalf("real AST consumer regression failed for %s: %s", fixture, output)
+		}
+		t.Logf("%s: %d passed", fixture, summary.Passed)
+	}
+	run("/tmp/xiaoba-r2-live-fixture.json")
+	run("/tmp/xiaoba-r2-cloud-fixture.json")
 }

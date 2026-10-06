@@ -622,6 +622,45 @@ describe('session lifecycle (reload / stale binding / gated targets)', () => {
     expect(callbacks.onSelection).toHaveBeenCalledTimes(1);
   });
 
+
+  it('duplicate ready for the completed handshake must not roll back page or capability (review round 2 probe)', () => {
+    const { h, host, callbacks } = setup();
+    host.connect();
+    const connect = h.connectMessage();
+    const ready = {
+      type: GATEWAY_SDK_READY_TYPE,
+      contract_version: BRIDGE,
+      session_id: connect.session_id,
+      request_id: connect.request_id,
+      capabilities: ['element', 'text'],
+      page: { path: '/old', revision: 'r1' },
+    };
+    h.handleWindowMessage({ data: ready, origin: h.origin, source: h.contentWindow });
+    h.handleWindowMessage({ data: { type: GATEWAY_SDK_PAGE_TYPE, contract_version: BRIDGE, session_id: connect.session_id, page: { path: '/new', revision: 'r2' } }, origin: h.origin, source: h.contentWindow });
+    expect(host.page).toEqual({ path: '/new', revision: 'r2' });
+    expect(callbacks.onPageChange).toHaveBeenCalledWith({ path: '/new', revision: 'r2' });
+
+    // Late duplicate ready replaying the OLD page must be a no-op: same
+    // session+request, already completed handshake.
+    h.handleWindowMessage({ data: ready, origin: h.origin, source: h.contentWindow });
+    expect(host.page).toEqual({ path: '/new', revision: 'r2' });
+    expect(host.readyCapabilities()).toEqual(['element', 'text']); // not silently mutated
+    expect(callbacks.onReady).toHaveBeenCalledTimes(1);
+    expect(callbacks.onPageChange).toHaveBeenCalledTimes(1);
+
+    // With host.page and the consumer state aligned on /new/r2, a target for
+    // the current page is still accepted and delivered with that exact page.
+    expect(host.setMode('element')).toBe(true);
+    h.handleWindowMessage({
+      data: targetMessage(connect, { id: 'e1', kind: 'element', label: '', target: { element_id: 'x' } }, { path: '/new', revision: 'r2' }),
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    expect(callbacks.onSelection).toHaveBeenCalledTimes(1);
+    expect(callbacks.onSelection).toHaveBeenCalledWith(expect.anything(), { path: '/new', revision: 'r2' });
+    expect(host.page).toEqual({ path: '/new', revision: 'r2' });
+  });
+
   it('a page report is a full snapshot: revision can be dropped, not merged', () => {
     const { h, host, callbacks } = setup();
     host.connect();

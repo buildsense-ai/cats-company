@@ -87,24 +87,44 @@ describe('gateway annotation drafts', () => {
     expect(stored.length).toBe(GATEWAY_ANNOTATION_DRAFT_MAX_ANNOTATIONS);
   });
 
-  it('fails closed on an oversized draft instead of silently trimming rows', () => {
-    // 10 rows of ~1.9KB ASCII exceed the bound. Over-limit drafts are never
-    // persisted (they could never pass server ingestion) and never silently
-    // tail-trimmed — the failed write leaves nothing in storage so no
-    // sendable-looking subset can be resurrected later, while in-memory rows
-    // (held by the caller/editable UI state) are untouched for explicit user
-    // cleanup.
-    const rows = Array.from({ length: 10 }, (_, index) => sampleAnnotation(`a${index}`, {
-      body: 'x'.repeat(1900),
-    }));
-    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, rows, storage);
-    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage)).toEqual([]);
+  it('refuses an oversized draft and preserves the previously persisted rows', () => {
+    // A valid short draft first.
+    const keep = [sampleAnnotation('keep', { body: 'keep-me' })];
+    expect(writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, keep, storage)).toBe(true);
+    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage).map(a => a.body)).toEqual(['keep-me']);
 
-    // Counting UTF-8 bytes, not UTF-16 units: a single CJK body of 6000 chars
+    // Adding oversized rows is refused as a whole; the previously persisted
+    // rows survive and the caller gets a false result to surface as an error.
+    const rows = [...keep, ...Array.from({ length: 3 }, (_, index) => sampleAnnotation(`heavy${index}`, {
+      body: '批'.repeat(1900),
+    }))];
+    expect(writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, rows, storage)).toBe(false);
+    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage).map(a => a.body)).toEqual(['keep-me']);
+
+    // UTF-8 byte counting, not UTF-16 units: a single CJK body of 6000 chars
     // is ~18KiB of bytes but well under that in `.length`.
     const wide = sampleAnnotation('wide', { body: '批'.repeat(6000) });
-    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [wide], storage);
+    expect(writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [wide], storage)).toBe(false);
+
+    // An empty list still clears the bucket explicitly.
+    expect(writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [], storage)).toBe(true);
     expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage)).toEqual([]);
+
+    // A previously persisted bucket is never resurrect-safe from a refused
+    // write: nothing was deleted, so the earlier keep-me rows are retrievable
+    // right up to the explicit clear.
+    expect(writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, keep, storage)).toBe(true);
+    // ASCII bodies are ~2KiB per row, so enough rows must be stacked to
+    // exceed the canonical 16KiB bound.
+    expect(writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [...keep, ...Array.from({ length: 10 }, (_, i2) => sampleAnnotation(`h2_${i2}`, { body: 'x'.repeat(1900) }))], storage)).toBe(false);
+    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage).map(a => a.body)).toEqual(['keep-me']);
+  });
+
+  it('reports a storage refusal without destroying the last saved draft', () => {
+    expect(writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [sampleAnnotation('keep')], storage)).toBe(true);
+    storage.setItem = () => { throw new Error('quota exceeded'); };
+    expect(writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [sampleAnnotation('new')], storage)).toBe(false);
+    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage).map(row => row.id)).toEqual(['keep']);
   });
 
   it('returns an empty list when the bucket key is incomplete', () => {

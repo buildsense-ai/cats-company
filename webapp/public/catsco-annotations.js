@@ -63,11 +63,26 @@
   function normalizedViewportRect(domRect) {
     var width = window.innerWidth || 1;
     var height = window.innerHeight || 1;
+    // Intersect the DOM rect with the viewport FIRST, then derive the
+    // normalized geometry: a partially visible element (e.g. left=900 in a
+    // 1000px viewport with width=200) must yield x+w ≤ 1 instead of
+    // reporting an out-of-viewport area the host schema would reject. A
+    // rect with no visible area returns null so the caller can omit the
+    // auxiliary evidence and keep the element/text anchor.
+    var left = Number.isFinite(domRect.left) ? domRect.left : 0;
+    var top = Number.isFinite(domRect.top) ? domRect.top : 0;
+    var right = domRect.width === undefined ? 0 : left + domRect.width;
+    var bottom = domRect.height === undefined ? 0 : top + domRect.height;
+    var clampedLeft = Math.max(0, Math.min(left, width));
+    var clampedTop = Math.max(0, Math.min(top, height));
+    var clampedRight = Math.max(0, Math.min(right, width));
+    var clampedBottom = Math.max(0, Math.min(bottom, height));
+    if (clampedRight - clampedLeft <= 0 || clampedBottom - clampedTop <= 0) return null;
     return {
-      x: clamp01(domRect.left / width),
-      y: clamp01(domRect.top / height),
-      width: clamp01(domRect.width / width),
-      height: clamp01(domRect.height / height),
+      x: clampedLeft / width,
+      y: clampedTop / height,
+      width: (clampedRight - clampedLeft) / width,
+      height: (clampedBottom - clampedTop) / height,
     };
   }
 
@@ -280,9 +295,12 @@
       }
       var rect = range.getBoundingClientRect();
       if (rect && rect.width > 0 && rect.height > 0) {
-        target.rect = normalizedViewportRect(rect);
-        target.coordinate_space = 'viewport';
-        target.viewport = viewportEvidence();
+        var visibleRangeRect = normalizedViewportRect(rect);
+        if (visibleRangeRect) {
+          target.rect = visibleRangeRect;
+          target.coordinate_space = 'viewport';
+          target.viewport = viewportEvidence();
+        }
       }
     } catch (error) {
       // Selection evidence is best-effort; text alone already anchors it.
@@ -497,9 +515,14 @@
       if (selector) target.selector = selector;
       var rect = element.getBoundingClientRect();
       if (rect && rect.width > 0 && rect.height > 0) {
-        target.rect = normalizedViewportRect(rect);
-        target.coordinate_space = 'viewport';
-        target.viewport = viewportEvidence();
+        var visibleRect = normalizedViewportRect(rect);
+        // Rect is auxiliary evidence only: keep it when any part of the
+        // element is visible, otherwise send the anchor alone.
+        if (visibleRect) {
+          target.rect = visibleRect;
+          target.coordinate_space = 'viewport';
+          target.viewport = viewportEvidence();
+        }
       }
       if (!target.element_id && !target.selector) return null;
       return target;

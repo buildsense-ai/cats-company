@@ -98,10 +98,18 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 		sawGatewayAnnotationsIngress := hasGatewayAnnotationsMetadata(payload.Metadata)
 		payload.Metadata, err = h.hub.validateGatewayAnnotationsMetadata(uid, req.TopicID, payload.Metadata)
 		if err != nil {
+			// A rejected annotated message must never strand a task delivery
+			// lease reserved by the earlier extraction step.
+			if payload.ArtifactTaskRef != nil {
+				h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		if sawGatewayAnnotationsIngress && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
+			if payload.ArtifactTaskRef != nil {
+				h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": "gateway_annotations require a persisted visible message",
 			})
@@ -532,12 +540,13 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		recipientUID,
 	)
 	// Agent-side readability: the target Agent's fanout copy carries the
-	// validated annotations as one extra, provenance-labeled text block, so
-	// clients that only forward content_blocks text see the annotation intent.
-	// Human copies and persistence keep the payload blocks untouched.
+	// validated annotations through both real consumer channels (blocks for
+	// the live parse merge, content for the history/cloud reader) while
+	// human copies and persistence keep the payload untouched.
 	contentBlocks := payload.ContentBlocks
+	dataContent := payload.DisplayContent
 	if modelText := h.gatewayAnnotationModelTextForPayload(uid, recipientUID, topicID, payload); modelText != "" {
-		contentBlocks = withGatewayAnnotationModelTextBlock(contentBlocks, payload.DisplayContent, modelText)
+		dataContent, contentBlocks = withGatewayAnnotationAgentDelivery(contentBlocks, payload.DisplayContent, modelText)
 	}
 	metadata = withSkillConnectorMetadata(metadata, h.buildShimoSkillConnectorMetadata(uid, recipientUID, topicID, msgID))
 	return &ServerMessage{
@@ -545,7 +554,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 			Topic:         topicID,
 			From:          formatUID(uid),
 			SeqID:         int(msgID),
-			Content:       payload.DisplayContent,
+			Content:       dataContent,
 			Type:          payload.DisplayType,
 			MsgType:       payload.StoredType,
 			Metadata:      metadata,
@@ -648,10 +657,10 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 	// copy therefore carries the annotation context in the content itself;
 	// human readers and the stored value stay untouched.
 	contentBlocks := message.ContentBlocks
+	readContent := displayContent
 	if modelText := h.gatewayAnnotationHistoryModelText(message, recipientUID); modelText != "" {
-		modelContent, blocks := withGatewayAnnotationHistoryDelivery(message.ContentBlocks, displayContent, modelText)
-		displayContent = modelContent
-		contentBlocks = blocks
+		readContent, contentBlocks = withGatewayAnnotationAgentDelivery(message.ContentBlocks, displayContent, modelText)
+		displayContent = readContent
 	}
 	return &MsgServerData{
 		Topic:         message.TopicID,

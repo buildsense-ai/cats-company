@@ -94,17 +94,11 @@ target 按 kind 支持：`element_id` / `selector`（element）、`text` + `pref
    - 若消息没有 exact text 块而只有 image 等块/顶层 content，先补齐用户正文 text 块再追加标注块（否则 `blockText || content` 语义会丢正文）；
    - 仅在 fanout 信封内（p2p `messageForRecipient` 与群组 per-member clone）出现：不入库、不进 history/replay、不进 human；
    - 上限：32 KiB UTF-8 字节安全帽 + UTF-8 边界截断防护。非截断证明：渲染文本是对 metadata 已受 bound 值的重复 + 固定标签，最坏情况 20 条满标注 + region 证据 < 24 KiB < 32 KiB，`TestModelTextCarriesEveryContractAnnotationAtMetadataCeiling` 用 16KiB 上限 fixture 锁定全部 body/目标证据完整无截断。
-4. **离线会话重建（cloud-session-restore）层**：XiaoBa 离线会话恢复从 history API 重建上下文，真实 `cloudMessageText` 规则是：
-   - 非空 string `content` 无条件优先（不读 blocks）；
-   - rich `file`/`image`/`voice` content 无条件渲染 `[历史文件/图片/语音：name]` + 描述行，描述取 **`payload.text || payload.description`**（text 优先遮蔽 description，且不回落 blocks）；
-   - 其它情况才回落 `cloudContentBlocksText`（trimmed text 块 join）。
+4. **统一 recipient-only envelope（round2 收口）**：live fanout 与 history 读副本由**同一个** `withGatewayAnnotationAgentDelivery(blocks, displayContent, modelText)` 以 copy-on-write 构造，同时满足同一条消息的两个真实消费者：
+   - **live parseMessage**（WS live fanout **且 WS `get what=history` 回放 data message**，`parseMessage` 的 `blockText || content` 规则）：blocks 通道 —— 原消息无 exact `type==="text"` 块且顶层为非空 string 正文时先物化正文 text 块，随后统一追加一个批注 text 块（`"TEXT"`/`" text "` 非 canonical 拼写不参与合并，不能因此抑制正文物化）；
+   - **cloud restore cloudMessageText**（HTTP history / 会话重建）：content 通道 —— 非空 string content 追加批注（原文不丢，且 cloud 因 string content 优先**不会**再读 blocks，单消费者内无重复）；blocks-only 消息（content 为空/nil）保持 content 不制造 string 遮蔽，批注只进 blocks（cloud 走 `cloudContentBlocksText` 读到原文+批注）；rich object 按 `file/image/voice` 无条件渲染描述（`payload.text || payload.description`，**JS truthiness：`" "` 是 truthy 会遮蔽 description 且不回落 blocks**），批注 COW 写进胜者字段；`payload` 缺失时按 JS 语义回退以 rich 对象本身为 payload（flat rich 的 `text`/`name`/`url` 同样受保护）；unknown/无 type object 有 truthy 描述字段时 COW 写胜者，否则批注留在 blocks；URL/name 与兄弟字段保留。
 
-   因此 authorized 目标 Agent 的 **history 读副本**由 `gatewayAnnotationHistoryModelText` + `withGatewayAnnotationHistoryDelivery` 单独构建（copy-on-write）：
-   - plain string 正文 → `content = 原文 + "\n\n" + [Gateway 标注…]`；
-   - rich payload 有 `text` → COW 写回 `payload.text = 原text + "\n\n" + [标注…]`（text 是消费者实际优先字段，只写 description 会被遮蔽——reviewer 复验发现后修正）；有 `description`（无 text）→ 写 `description`；两者皆无 → 设 `description = [标注…]`；URL/name/其余字段保留；
-   - 非 rich/未知 shape → blocks 附加标注块（`cloudContentBlocksText` 分支可读）。
-
-   判定边界：recipient 必须 = `artifactAgentForTopic(message.FromUID, topic)` = canonical annotations 的 `agent_uid`，且 **≠ 消息作者本人**；human 读副本与存储值严格不变（含 rich COW：原 `message.Content` 原样）。该层同样只由 canonical 存储值渲染，不读任何客户端 context 块；metadata 持久化与 live fanout 不受影响。
+   每个消费者读到「原语义正文 + 批注」各一次：live 读 blocks 单次，cloud 读 content（或 blocks fallback）单次。human 读副本、群组共享模板、持久化 message（content/blocks/metadata）字节不变；author 自己与外部 agent 的读副本无注入。授权边界不变（`artifactAgentForTopic(topic)==agent_uid` 且 reader≠作者、canonical 存储值渲染、不读伪 context）。防泄漏补充：annotation 拒绝（schema/授权/transient 400）时同步 `releaseDelivery` 已预留的 Artifact task delivery lease，两条 ingestion 路径一致。
 
 验证：
 - live：`xiaoBaEquivalentUserInput`（Go 复刻 helper，exact type 规则）+ `TestExportXiaoBaParseFixture` → `node /tmp/xiaoba-annotation-parse-check.mjs /tmp/xiaoba-annotation-fixture.json` 4/4（源码锚定 5 条 parse 规则）；reviewer 以真实 XiaoBa AST 提取的 `parseMessage`/`isCatsCoAttachmentSummaryText`/`escapeRegExp` 复验 4/4（脚本与日志 `/tmp/pr575-actual-xiaoba-parse.cjs` 及 `.log`）。
@@ -117,7 +111,7 @@ target 按 kind 支持：`element_id` / `selector`（element）、`text` + `pref
 
 ## 7. 测试索引
 
-`server/gateway_annotations_test.go`：schema 全量拒绝矩阵与 freetext 换行/制表兼容、服务端身份授权（伪造 agent_uid / 他人 app / registry 故障 / 人-人 topic / 多 bot 群组）、客户端伪造 `catsco_gateway_annotation_context` 的剥离（函数级、HTTP 端到端、history 读取防护、stream 剥离、transient 400）、HTTP 入口端到端（真实 gateway relay fake）、WS 入口（拒绝 + 通过 + 持久化 + agent 可收到）、历史回放保留、**模型文本层（fanout content_blocks 注入：目标 agent 可见、human 副本与共享模板无污染、顶层 content-only 正文保留、16KiB 上限无截断证明、伪造 context 不参与渲染）**、群组 per-member 注入、`GatewayAppOwner` 直测、`TestExportXiaoBaParseFixture` + `TestExportXiaoBaHistoryFixture`（导出真实 fanout/离线 history fixture，供 XiaoBa 源码锚定与 reviewer AST 脚本验证，live 4/4 + offline 20/20）、exact-type 边界（`TEXT`/` text ` 副本正文不丢）、rich payload.text/description COW 三态。全量 `./server/` 2103 例通过。
+`server/gateway_annotations_test.go`：schema 全量拒绝矩阵与 freetext 换行/制表兼容、服务端身份授权（伪造 agent_uid / 他人 app / registry 故障 / 人-人 topic / 多 bot 群组）、客户端伪造 `catsco_gateway_annotation_context` 的剥离（函数级、HTTP 端到端、history 读取防护、stream 剥离、transient 400）、HTTP 入口端到端（真实 gateway relay fake）、WS 入口（拒绝 + 通过 + 持久化 + agent 可收到）、历史回放保留、**模型文本层（fanout content_blocks 注入：目标 agent 可见、human 副本与共享模板无污染、顶层 content-only 正文保留、16KiB 上限无截断证明、伪造 context 不参与渲染）**、群组 per-member 注入、`GatewayAppOwner` 直测、`TestExportXiaoBaParseFixture` + `TestExportXiaoBaHistoryFixture`（导出真实 fanout/离线 history fixture，供 XiaoBa 源码锚定与 reviewer AST 脚本验证，live 4/4 + offline 20/20）、exact-type 边界（`TEXT`/` text ` 副本正文不丢）、rich payload.text/description COW 三态。全量 `./server/...` 2416 例通过（含 R2 blocks-only/WS-replay/object.text/rich truthiness/flat-rich 矩阵、真实 HTTP/WS handler 回归与 vendored AST runner）。
 
 ## 8. 若需在 server 之外扩展（当前范围外）
 

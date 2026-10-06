@@ -60,19 +60,22 @@ function readDraftMap(userID, storage) {
 }
 
 function writeDraftMap(userID, value, storage) {
+  // Boolean result so a blocked/quota-full storage surfaces as a refused
+  // write, never as a silent success the UI would present as saved.
   const key = storageKey(userID);
-  if (!key) return;
+  if (!key) return false;
   const target = storageTarget(storage);
-  if (!target) return;
+  if (!target) return false;
   try {
     if (!value || typeof value !== 'object' || Object.keys(value).length === 0) {
       removeStorageValue(key, target);
-      return;
+      return true;
     }
-    writeStorageValue(key, JSON.stringify(value), target);
+    return writeStorageValue(key, JSON.stringify(value), target) ? true : false;
   } catch {
-    // Serialization or quota failure keeps the in-memory state but not the
-    // persisted copy; the next successful write restores persistence.
+    // Serialization or quota failure: refuse the write so the caller can
+    // tell the user, instead of reporting a persistence that never happened.
+    return false;
   }
 }
 
@@ -167,17 +170,22 @@ export function readGatewayAnnotationDrafts(userID, topicId, agentUid, appId, st
   return draftValueFor(bucket, stored) || [];
 }
 
+// Writes (or clears) one draft bucket. Returns true when the given rows are
+// now the persisted value, false when the write was refused — the caller is
+// responsible for telling the user. A refused write never destroys the last
+// successfully persisted rows: adding one oversized comment must not delete
+// the whole previously saved draft.
 export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, annotations, storage) {
   const bucket = draftBucketKey(topicId, agentUid, appId);
-  if (!bucket) return;
+  if (!bucket) return false;
   if (!Array.isArray(annotations) || annotations.length === 0) {
     const stored = readDraftMap(userID, storage);
     if (stored && (bucket in stored || `${bucket}.meta` in stored)) {
       delete stored[bucket];
       delete stored[`${bucket}.meta`];
-      writeDraftMap(userID, stored, storage);
+      if (!writeDraftMap(userID, stored, storage)) return false;
     }
-    return;
+    return true;
   }
   const bounded = annotations
     .slice(0, GATEWAY_ANNOTATION_DRAFT_MAX_ANNOTATIONS)
@@ -185,28 +193,21 @@ export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, a
     .filter(Boolean);
   if (bounded.length === 0) {
     writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, [], storage);
-    return;
+    return true;
   }
-  // Mirror the server's 16KiB **UTF-8 byte** bound (JS length counts UTF-16
-  // units, which under-counts CJK bodies). An over-limit draft is never
-  // persisted — but also never silently dropped: the previous in-memory rows
-  // stay readable so the user can still edit/remove, and persistence retries
-  // on the next successful write.
+  // The canonical set must fit the server's 16KiB UTF-8 byte bound before it
+  // is persisted (JS .length counts UTF-16 units and under-counts CJK). An
+  // over-limit set is refused as-is: the previously persisted rows stay
+  // untouched and the caller surfaces an explicit error, so no silent
+  // trimming and no silent bucket destruction ever happen.
   const serialized = new TextEncoder().encode(JSON.stringify(bounded));
   if (serialized.length > GATEWAY_ANNOTATION_DRAFT_MAX_BYTES) {
-    try {
-      const target = storageTarget(storage);
-      if (target) {
-        const shrink = readDraftMap(userID, storage) || {};
-        delete shrink[bucket];
-        delete shrink[`${bucket}.meta`];
-        writeDraftMap(userID, shrink, storage);
-      }
-    } catch { /* storage unavailable: in-memory state stands */ }
-    return;
+    return false;
   }
   const stored = readDraftMap(userID, storage) || {};
-  writeDraftMap(userID, withCertificate(stored, bucket, bounded), storage);
+  // The canonical envelope (certificates + rows) must also fit; the caller
+  // treats false as "not saved" and keeps the editor open.
+  return writeDraftMap(userID, withCertificate(stored, bucket, bounded), storage);
 }
 
 // Build (and validate) the gateway_annotations metadata value for one send.

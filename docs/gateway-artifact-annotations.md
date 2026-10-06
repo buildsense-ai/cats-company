@@ -64,7 +64,8 @@
 
 - **入口**：侧栏「应用」tab → 打开应用 → viewer 工具栏标注（元素/文本/区域/取消）；仅当存在 `topicId` 且 agentUid>0 时渲染；工具栏状态只由宿主 host-ack 后翻转。
 - **草稿**：composer 上方标注条，`key = topicId|agentUid|appId`，sessionStorage 用户隔离（`catsco_gateway_annotation_drafts:v1:<uid>`）；捕获后内联编辑（必填/超长/Escape 取消）；逐条改删、全部清除。
-- **发送**：`metadata.gateway_annotations` 注入文本消息 payload；成功后清空该 bucket；失败（网络/服务端 400）整份恢复（与附件/正文同一 mutation-revision 保护域，防止并发编辑冲突）；page 漂移 ↔ 旧草稿共存时阻断新增捕捉并提示用户清理，annotation 从不贴到新页面。
+- **发送**：在任何异步准备前冻结登录会话及标注快照，`metadata.gateway_annotations` 注入文本消息 payload；成功只消费快照中的标注，失败按原 topic/agent/app 恢复，与普通正文的 mutation-revision 分开处理，保留发送期间新增的正文和标注。异步回调不得更新不同会话或应用的当前标注栏；登出或卸载后不再恢复或消费旧登录草稿。所有行必须具有一致的 capture page/revision，缺失证书、混合页面或页面漂移时阻断发送并提示重新标注。
+- **保存失败**：添加和编辑前校验完整消息契约的总大小；超限或存储拒绝时保留上次保存的草稿、待编辑内容，并显示失败提示。只有保存成功后才关闭编辑器并更新标注栏。
 - **回看**：历史消息按 contract normalizer 渲染卡片（app/page/revision/逐条 kind/label/body/target 摘要），非法或异版 metadata 整体丢弃不渲染。
 - **旧 task-host 兼容**：`metadataError`（registry 缺失/版本缺失）只影响任务提交能力并如实提示「浏览与标注不受影响」；task 提交路径与标注路径互不依赖（`handleGatewayArtifactFrameChange` 内 `artifact` 判空返回原语义保留，`annotationApp` 分支独立）。
 
@@ -75,6 +76,6 @@
 ## 6. 已知限制（首版取舍）
 
 1. text 捕获依赖 mouseup（键盘选词/双击不覆盖）。
-2. OOPI iframe 的跨端自动化点击在 opencli 下不可用（人工可操作）；SDK↔宿主互操作以 44 用例忠实仿真覆盖。
+2. opencli 的 frame selector 定位未能完成本地 OOPIF 内部操作；底层鼠标事件已验证目标选择会打开评论编辑器，但完整选择→发送→历史回看仍需浏览器验收。SDK↔宿主互操作另有自动化测试覆盖。
 3. 服务端 app 归属校验在每次带键消息同步查一次 gateway（低频可接受，无 singleflight）。
 4. region 标注的 rect 仅 viewport 相对，滚动/缩放后仅作证据；旧目标不追溯改写。

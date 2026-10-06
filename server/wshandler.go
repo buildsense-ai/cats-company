@@ -1524,12 +1524,20 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 	sawGatewayAnnotationsIngress := hasGatewayAnnotationsMetadata(payload.Metadata)
 	payload.Metadata, err = h.validateGatewayAnnotationsMetadata(uid, topic, payload.Metadata)
 	if err != nil {
+		// A rejected annotated message must never strand a task delivery
+		// lease reserved by the earlier extraction step.
+		if payload.ArtifactTaskRef != nil {
+			h.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+		}
 		h.SendToClient(client, &ServerMessage{
 			Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 400, Text: err.Error()},
 		})
 		return
 	}
 	if sawGatewayAnnotationsIngress && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
+		if payload.ArtifactTaskRef != nil {
+			h.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+		}
 		h.SendToClient(client, &ServerMessage{
 			Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 400, Text: "gateway_annotations require a persisted visible message"},
 		})
@@ -2518,14 +2526,16 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			out = cloneDataMessageWithActivation(out, activated, m.UserID)
 		}
 		// Agent-side readability on the clone only: the target Agent's copy
-		// gets the validated annotations as text blocks while the shared
-		// template and every human copy stay byte-identical.
+		// gets the validated annotations through both consumer channels while
+		// the shared template and every human copy stay byte-identical.
 		if out != nil && out.Data != nil {
 			if modelText := h.gatewayAnnotationModelText(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata); modelText != "" {
 				if out == msg {
 					out = cloneDataMessageWithMetadata(msg, msg.Data.Metadata)
 				}
-				out.Data.ContentBlocks = withGatewayAnnotationModelTextBlock(out.Data.ContentBlocks, msg.Data.Content, modelText)
+				memberContent, memberBlocks := withGatewayAnnotationAgentDelivery(out.Data.ContentBlocks, out.Data.Content, modelText)
+				out.Data.Content = memberContent
+				out.Data.ContentBlocks = memberBlocks
 			}
 		}
 		if msg != nil && msg.artifactTaskRef != nil && msg.artifactTaskRef.AgentUID == m.UserID {

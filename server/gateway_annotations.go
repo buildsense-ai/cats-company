@@ -842,33 +842,154 @@ func (h *Hub) gatewayAnnotationModelTextForPayload(actorUID int64, recipientUID 
 	return h.gatewayAnnotationModelText(actorUID, recipientUID, topicID, payload.Metadata)
 }
 
-// withGatewayAnnotationModelTextBlock returns the content blocks that carry
-// the user text plus the annotation context text for one Agent fanout copy.
-// It is copy-on-write: the input slice (typically shared with the persisted
-// payload and other recipients) is never mutated, and when a message had no
-// text block at all the user's own text is first materialized as a text block
-// so agent-side block merging (blockText || top-level content) cannot drop it.
-func withGatewayAnnotationModelTextBlock(blocks []types.ContentBlock, displayContent interface{}, text string) []types.ContentBlock {
-	if text == "" {
-		return blocks
+// withGatewayAnnotationAgentDelivery builds the annotated Agent's fanout or
+// history read copy as one unified, copy-on-write envelope that satisfies both
+// real XiaoBa consumers of the same message:
+//
+//   - live parseMessage (WS live fanout AND WS history replay data messages):
+//     mergedText = exact-lowercase "text" blocks joined with blank lines ||
+//     top-level string content (blocks win);
+//   - cloud restore cloudMessageText (HTTP history / session rebuild): a
+//     non-empty string content wins outright; a rich file/image/voice object
+//     always renders "[历史X：name]" plus its description, where the
+//     description resolves as payload.text || payload.description with real JS
+//     truthiness (" " is truthy, missing payload falls back to the rich object
+//     itself); any other object falls back to trimmed text blocks only when
+//     its description is falsy.
+//
+// Both channels therefore carry the original text plus the annotation exactly
+// once per consumer: the blocks channel always ends with one annotation text
+// block (and materializes the user's string content first when the message had
+// no exact text block), and the content channel appends the annotation to the
+// string content or merges it into the rendered description field. Human
+// copies and the stored message are never touched.
+func withGatewayAnnotationAgentDelivery(blocks []types.ContentBlock, displayContent interface{}, modelText string) (interface{}, []types.ContentBlock) {
+	if modelText == "" {
+		return displayContent, blocks
 	}
-	hasTextBlock := false
+	originalText := ""
+	if s, ok := displayContent.(string); ok && strings.TrimSpace(s) != "" {
+		originalText = s
+	}
+	hasOriginalTextBlock := false
 	for _, block := range blocks {
 		// Exact lowercase "text" is what live agent clients match on (XiaoBa
 		// parseMessage: typedBlock.type === 'text'); "TEXT" or " text " are
-		// invisible to that merge and must not suppress the user-text fallback.
+		// invisible to that merge and must not suppress the user-text
+		// materialization below.
 		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
-			hasTextBlock = true
+			hasOriginalTextBlock = true
 		}
 	}
-	modelText := normalizeContentText(displayContent)
-	out := make([]types.ContentBlock, 0, len(blocks)+2)
-	if !hasTextBlock && modelText != "" {
-		out = append(out, types.ContentBlock{Type: "text", Text: modelText})
+	annotatedBlocks := make([]types.ContentBlock, 0, len(blocks)+2)
+	if !hasOriginalTextBlock && originalText != "" {
+		// Materialize the user text so block-merging consumers (whose merged
+		// text wins over the top-level content) cannot lose the body once the
+		// annotation block exists.
+		annotatedBlocks = append(annotatedBlocks, types.ContentBlock{Type: "text", Text: originalText})
 	}
-	out = append(out, blocks...)
-	out = append(out, types.ContentBlock{Type: "text", Text: text})
-	return out
+	annotatedBlocks = append(annotatedBlocks, blocks...)
+	annotatedBlocks = append(annotatedBlocks, types.ContentBlock{Type: "text", Text: modelText})
+
+	switch typed := displayContent.(type) {
+	case nil:
+		// Blocks-only message: keep content empty so the cloud consumer keeps
+		// reading content_blocks (now carrying original text + annotation)
+		// instead of manufacturing a string that would shadow them.
+		return nil, annotatedBlocks
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return typed, annotatedBlocks
+		}
+		return typed + "\n\n" + modelText, annotatedBlocks
+	case map[string]interface{}:
+		return withGatewayAnnotationRichContent(typed, annotatedBlocks, modelText)
+	default:
+		return typed, annotatedBlocks
+	}
+}
+
+// withGatewayAnnotationRichContent merges the annotation into the description
+// the actual cloudMessageText renders for object content. file/image/voice
+// always render their description line (never fall back to blocks), and any
+// other object renders its trimmed description or falls back to blocks; in
+// both cases the annotation rides the winning field (payload.text wins over
+// payload.description with JS truthiness, payload defaults to the rich object
+// itself when message.payload is missing), so the original text and the
+// annotation stay readable while url/name and sibling fields survive.
+func withGatewayAnnotationRichContent(content map[string]interface{}, blocks []types.ContentBlock, modelText string) (interface{}, []types.ContentBlock) {
+	nextContent := make(map[string]interface{}, len(content)+1)
+	for key, value := range content {
+		nextContent[key] = value
+	}
+	contentType := strings.TrimSpace(fmt.Sprint(nextContent["type"]))
+	payload, ok := nextContent["payload"].(map[string]interface{})
+	if !ok {
+		// JS: rich.payload && typeof rich.payload === 'object' ? rich.payload : rich
+		payload = nextContent
+	} else {
+		nextPayload := make(map[string]interface{}, len(payload)+1)
+		for key, value := range payload {
+			nextPayload[key] = value
+		}
+		nextContent["payload"] = nextPayload
+		payload = nextPayload
+	}
+	winner := ""
+	if jsTruthy(payload["text"]) {
+		winner = "text"
+	} else if jsTruthy(payload["description"]) {
+		winner = "description"
+	} else if contentType == "file" || contentType == "image" || contentType == "voice" {
+		// The consumer renders this shape's description unconditionally; with
+		// no truthy source field the annotation needs one to exist.
+		winner = "description"
+	}
+	if winner != "" {
+		payload[winner] = jsStringOf(payload[winner]) + "\n\n" + modelText
+	}
+	// Blocks keep the annotation block for live/WS replay consumers; the
+	// cloud consumer either reads the merged description (truthy) or falls
+	// back to these same blocks when it did not render a description.
+	return nextContent, blocks
+}
+
+// jsTruthy mirrors JavaScript truthiness for JSON-decoded values: "" false,
+// false false, 0 false, everything else (including " ") true.
+func jsTruthy(value interface{}) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		return typed != ""
+	case bool:
+		return typed
+	case float64:
+		return typed != 0
+	case int:
+		return typed != 0
+	default:
+		return true
+	}
+}
+
+// jsStringOf approximates String(value) for the merged description base.
+func jsStringOf(value interface{}) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strconv.FormatFloat(typed, 'g', -1, 64)
+	default:
+		return fmt.Sprint(typed)
+	}
 }
 
 // GatewayAnnotationsEnabled reports whether a deployment can verify gateway
@@ -989,68 +1110,4 @@ func (h *Hub) gatewayAnnotationHistoryModelText(message *types.Message, recipien
 		return ""
 	}
 	return gatewayAnnotationsModelText(document)
-}
-
-// withGatewayAnnotationHistoryDelivery builds the authorized Agent's history
-// read copy following the actual cloud-session-restore consumption rule
-// (cloudMessageText): a non-empty string content always wins and hides
-// content_blocks, so the annotation text must ride the content string
-// itself. Rich (file/image/voice) content keeps its shape and appends the
-// annotation text to the description the restore path actually renders; when
-// the rich payload carries no description at all the restore path falls back
-// to content_blocks, where the annotation text block is appended instead.
-// Human reads and the stored message are untouched by construction.
-func withGatewayAnnotationHistoryDelivery(blocks []types.ContentBlock, displayContent interface{}, modelText string) (interface{}, []types.ContentBlock) {
-	if modelText == "" {
-		return displayContent, blocks
-	}
-	switch typed := displayContent.(type) {
-	case nil:
-		return modelText, blocks
-	case string:
-		if strings.TrimSpace(typed) == "" {
-			return modelText, blocks
-		}
-		return typed + "\n\n" + modelText, blocks
-	case map[string]interface{}:
-		contentType := strings.TrimSpace(fmt.Sprint(typed["type"]))
-		payload, ok := typed["payload"].(map[string]interface{})
-		if (contentType != "file" && contentType != "image" && contentType != "voice") || !ok {
-			// Not a rich attachment shape the restore path renders on its own;
-			// deliver through blocks and keep the content shape.
-			return typed, withGatewayAnnotationModelTextBlock(blocks, displayContent, modelText)
-		}
-		// cloudMessageText resolves the rendered description as
-		// `payload.text || payload.description` and returns it unconditionally
-		// for file/image/voice, so the annotation text must ride whichever of
-		// those fields actually wins; blocks are never consulted here.
-		winner := ""
-		for _, key := range []string{"text", "description"} {
-			if value, present := payload[key].(string); present && strings.TrimSpace(value) != "" {
-				winner = key
-				break
-			}
-		}
-		if winner == "" {
-			winner = "description"
-		}
-		nextPayload := make(map[string]interface{}, len(payload)+1)
-		for key, value := range payload {
-			nextPayload[key] = value
-		}
-		base := ""
-		if value, ok := payload[winner].(string); ok {
-			base = value
-		}
-		nextPayload[winner] = base + "\n\n" + modelText
-		nextContent := make(map[string]interface{}, len(typed))
-		for key, value := range typed {
-			nextContent[key] = value
-		}
-		nextContent["payload"] = nextPayload
-		return nextContent, blocks
-	default:
-		// Non-JSON-safe content shape: keep it and deliver through blocks.
-		return typed, withGatewayAnnotationModelTextBlock(blocks, displayContent, modelText)
-	}
 }

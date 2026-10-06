@@ -9654,4 +9654,338 @@ describe('MessagesView gateway annotation flow', () => {
     // confirm against), so nothing was written for the new document.
     expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
   });
+
+  test('R2 logout cleanup cannot be undone by failed send after unmount', async () => {
+    let rejectSend;
+    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'r2old', 'old-login-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'first');
+    });
+    await sendMessageAndFlush();
+    const { clearPersistedComposerDrafts } = await import('../utils/composer-draft-storage');
+    await act(async () => {
+      root.render(null);
+      clearPersistedComposerDrafts();
+    });
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
+    await act(async () => {
+      rejectSend(new Error('late network failure'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // The late failure callback belongs to the logged-out session: it must
+    // not resurrect the cleaned bucket.
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
+  });
+
+  test('R2F late success after logout cannot delete a same-account new-session draft', async () => {
+    let resolveSend;
+    api.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'old-login', 'old-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'first');
+    });
+    await sendMessageAndFlush();
+    const drafts = await import('../utils/gateway-annotation-drafts');
+    const { clearPersistedComposerDrafts } = await import('../utils/composer-draft-storage');
+    await act(async () => {
+      root.render(null);
+      clearPersistedComposerDrafts();
+    });
+    // Simulate a same-account relogin writing a fresh bucket; the stale
+    // success must not delete it.
+    drafts.writeGatewayAnnotationDrafts(1, 'p2p_1_2', 7, 'saturday-demo', [{
+      id: 'new-login',
+      kind: 'element',
+      body: 'new-login-comment',
+      target: { element_id: 'btn' },
+      page,
+    }], undefined);
+    await act(async () => {
+      resolveSend({ seq_id: 123, metadata: {} });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('new-login-comment');
+  });
+
+  test('R2 failure merge must not stamp new-page annotation with snapshot old page', async () => {
+    let rejectSend;
+    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    const frame = await openGatewayAppInSidebar();
+    const oldPage = { path: '/old', revision: 'r1' };
+    const nextPage = { path: '/new', revision: 'r2' };
+    const connect = await followupReady(frame, oldPage);
+    await followupCapture(frame, connect, oldPage, 'old', 'old-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'first');
+    });
+    await sendMessageAndFlush();
+    // Navigate to a new document while the send is pending (no drafts left
+    // after the pre-clear, so the UI follows the new page), capture there.
+    await act(async () => {
+      sdkMessage(frame, {
+        type: 'catsco.gateway.annotation.page.v1',
+        contract_version: 'catsco.gateway-annotation-bridge.v1',
+        session_id: connect.session_id,
+        page: nextPage,
+      });
+      await Promise.resolve();
+    });
+    await followupCapture(frame, connect, nextPage, 'new', 'new-comment');
+    await act(async () => {
+      rejectSend(new Error('network'));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Both comments survive the merge, but the bucket must never send with a
+    // single stamped page: a retry is blocked until the user cleans up.
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('old-comment');
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('new-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'retry');
+    });
+    await sendMessageAndFlush();
+    const sent = api.sendMessage.mock.calls.at(-1)[1]?.metadata?.gateway_annotations;
+    expect(sent?.annotations?.some((a) => a.body === 'new-comment') && sent?.page?.path === '/old').toBe(false);
+  });
+
+  test('R2 legacy rows without capture page cannot inherit reopened document page', async () => {
+    const bucket = 'p2p_1_2|7|saturday-demo';
+    sessionStorage.setItem('catsco_gateway_annotation_drafts:v1:1', JSON.stringify({
+      [bucket]: [{ id: 'legacy', kind: 'element', body: 'legacy-comment', target: { element_id: 'old' } }],
+      [`${bucket}.meta`]: { topic_id: 'p2p_1_2', agent_uid: 7, app_id: 'saturday-demo' },
+    }));
+    const frame = await openGatewayAppInSidebar();
+    await followupReady(frame, { path: '/new', revision: 'r2' });
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'send');
+    });
+    await sendMessageAndFlush();
+    // Legacy rows have no capture page: they cannot inherit the reopened
+    // document's page, so the send is refused.
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  test('R2 over-limit comments must not delete previously persisted draft silently', async () => {
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'short', 'keep-me');
+    for (let i = 0; i < 3; i += 1) {
+      await followupCapture(frame, connect, page, `heavy${i}`, '批'.repeat(1900));
+    }
+    const stored = sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1');
+    expect(stored).toContain('keep-me');
+  });
+
+  test('R2 success consumes snapshot only and retains pending new annotations', async () => {
+    let resolveSend;
+    api.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'sent', 'sent-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'first');
+    });
+    await sendMessageAndFlush();
+    // While the request is pending, capture another annotation.
+    await followupCapture(frame, connect, page, 'pending', 'pending-comment');
+    await act(async () => {
+      resolveSend({ seq_id: 123, metadata: {} });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const stored = JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'));
+    expect(stored['p2p_1_2|7|saturday-demo'].map((a) => a.body)).toEqual(['pending-comment']);
+  });
+
+  test('R2 old send preparation cannot snapshot annotations from newly active topic', async () => {
+    let resolvePoll;
+    api.getMobileUploadSession.mockImplementationOnce(() => new Promise((resolve) => { resolvePoll = resolve; }));
+    const frame = await openGatewayAppInSidebar('p2p_1_2');
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'topic1', 'topic1-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'topic1-body');
+    });
+    await openPhoneUploadFromComposer(container);
+    await vi.waitFor(() => expect(resolvePoll).toBeTypeOf('function'));
+    // Send topic A: the send's phone-upload poll is parked unresolved.
+    await act(async () => {
+      const sendButton = [...container.querySelectorAll('button')]
+        .find((button) => button.getAttribute('aria-label') === '发送');
+      sendButton?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Switch to topic B, open the same app, capture there.
+    const frame2 = await openGatewayAppInSidebar('p2p_1_3');
+    const connect2 = await followupReady(frame2, page);
+    await followupCapture(frame2, connect2, page, 'topic2', 'topic2-comment');
+    // Now the topic-A poll resolves; the queued A send must only carry A's
+    // annotations, never B's.
+    await act(async () => {
+      resolvePoll({ session_id: 'abc123', files: [] });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalled());
+    const call = api.sendMessage.mock.calls.at(-1);
+    expect(call[0]).toBe('p2p_1_2');
+    expect(call[1]?.metadata?.gateway_annotations?.annotations?.some((a) => a.body === 'topic2-comment')).not.toBe(true);
+    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent).toContain('topic2-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'topic2-body');
+    });
+    await sendMessageAndFlush();
+    const nextCall = api.sendMessage.mock.calls.at(-1);
+    expect(nextCall[0]).toBe('p2p_1_3');
+    expect(nextCall[1]?.metadata?.gateway_annotations?.annotations?.some((a) => a.body === 'topic2-comment')).toBe(true);
+  });
+
+  test('R2 success after skipped preclear retains annotations added while request pending', async () => {
+    let resolveSend; let resolvePoll;
+    api.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'snapshot', 'snapshot-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'old-body');
+    });
+    api.getMobileUploadSession.mockImplementationOnce(() => new Promise((resolve) => { resolvePoll = resolve; }));
+    await openPhoneUploadFromComposer(container);
+    await vi.waitFor(() => expect(resolvePoll).toBeTypeOf('function'));
+    await sendMessageAndFlush();
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'new-body-before-clear');
+    });
+    await act(async () => {
+      resolvePoll({ session_id: 'abc123', files: [] });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(resolveSend).toBeTypeOf('function'));
+    await followupCapture(frame, connect, page, 'pending', 'pending-comment');
+    await act(async () => {
+      resolveSend({ seq_id: 123, metadata: {} });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const stored = JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'));
+    expect(stored?.['p2p_1_2|7|saturday-demo']?.map((a) => a.body)).toEqual(['pending-comment']);
+    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent).toContain('pending-comment');
+  });
+
+  test('R2 success may not wipe pending annotations if ordinary draft returned to snapshot body', async () => {
+    let resolveSend; let resolvePoll;
+    api.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'snapshot', 'snapshot-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'original-body');
+    });
+    api.getMobileUploadSession.mockImplementationOnce(() => new Promise((resolve) => { resolvePoll = resolve; }));
+    await openPhoneUploadFromComposer(container);
+    await vi.waitFor(() => expect(resolvePoll).toBeTypeOf('function'));
+    await sendMessageAndFlush();
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'new-body');
+    });
+    await act(async () => {
+      resolvePoll({ session_id: 'abc123', files: [] });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(resolveSend).toBeTypeOf('function'));
+    await followupCapture(frame, connect, page, 'pending', 'pending-comment');
+    // Returning the body to the snapshot text changes the mutation revision
+    // again; the ordinary clear must not consume the pending annotation.
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'original-body');
+    });
+    await act(async () => {
+      resolveSend({ seq_id: 123, metadata: {} });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const stored = JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'));
+    expect(stored?.['p2p_1_2|7|saturday-demo']?.map((a) => a.body)).toEqual(['pending-comment']);
+  });
+
+  test('R2F over-limit capture keeps the editor open with an explicit unsaved notice', async () => {
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    // One short saved comment, then three LEGAL (<=2000) heavy comments: the
+    // last one pushes the canonical envelope over 16KiB and must be refused
+    // with a visible notice instead of a silent success.
+    await followupCapture(frame, connect, page, 'short', 'keep-me');
+    for (let i = 0; i < 3; i += 1) {
+      await followupCapture(frame, connect, page, `heavy-feedback${i}`, '批'.repeat(1900));
+    }
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('keep-me');
+    const notice = container.querySelector('.v3-gateway-annotation-notice')?.textContent || '';
+    expect(notice).toMatch(/过大|超限|无法保存|未保存|上限|限制|过长/);
+    // The refused row is not in the bar (no silent confirmation); the saved
+    // rows that fit remain visible and sendable.
+    const barRows = (container.querySelector('.v3-gateway-annotation-bar')?.textContent || '');
+    expect(barRows).toContain('keep-me');
+    expect(barRows).toContain('批'.repeat(1900)); // heavy-feedback0/1 were accepted and persisted
+  });
+
+  test('R2F over-limit body edit keeps the editable row and states the refusal', async () => {
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    // The 15,802-byte canonical envelope fits. Editing one legal body to
+    // 1,990 characters makes the envelope 16,672 bytes, above the 16KiB cap.
+    for (let index = 0; index < 3; index += 1) {
+      await followupCapture(frame, connect, page, `e${index}`, '批'.repeat(1700));
+    }
+    const saved = sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1');
+    const rowButton = container.querySelector('.v3-gateway-annotation-bar .v3-gateway-annotation-bar-body');
+    expect(rowButton).not.toBeNull();
+    await act(async () => {
+      rowButton.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      const editInput = container.querySelector('.v3-gateway-annotation-bar-edit');
+      expect(editInput).not.toBeNull();
+      typeDraft(editInput, '批'.repeat(1990));
+    });
+    await act(async () => {
+      Simulate.keyDown(container.querySelector('.v3-gateway-annotation-bar-edit'), { key: 'Enter' });
+    });
+    expect(container.textContent).toMatch(/过大|超限|无法保存|未保存|上限|限制|过长/);
+    expect(container.querySelector('.v3-gateway-annotation-bar-edit')?.value).toBe('批'.repeat(1990));
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBe(saved);
+    await act(async () => {
+      const editor = container.querySelector('.v3-gateway-annotation-bar-edit');
+      typeDraft(editor, 'shortened-comment');
+    });
+    await act(async () => {
+      Simulate.keyDown(container.querySelector('.v3-gateway-annotation-bar-edit'), { key: 'Enter' });
+    });
+    expect(container.querySelector('.v3-gateway-annotation-bar-edit')).toBeNull();
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('shortened-comment');
+  });
 });
