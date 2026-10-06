@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -204,6 +205,49 @@ func normalizeGatewayAnnotations(value interface{}) (*gatewayAnnotationsDocument
 	return document, nil
 }
 
+// compactGatewayAnnotationsJSON is the canonical JSON encoder for every size
+// accounting path of the annotations contract: HTML-significant characters
+// stay single-byte (matching JavaScript's JSON.stringify) and the encoder's
+// trailing newline is removed, so the 16KiB budget is byte-identical across
+// the client, the ingestion check and the final restamped value. Durable
+// storage may still apply its own JSON escaping; only the contract budget is
+// measured with this encoding.
+func compactGatewayAnnotationsJSON(value interface{}) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	raw := bytes.TrimRight(buffer.Bytes(), "\n")
+	// Go also escapes U+2028/U+2029. Walk complete JSON escapes so escaped
+	// backslashes (a user's literal "\\u2028") are never mistaken for the
+	// separator itself, regardless of how many backslashes precede it.
+	result := make([]byte, 0, len(raw))
+	for index := 0; index < len(raw); {
+		if raw[index] != '\\' || index+1 >= len(raw) {
+			result = append(result, raw[index])
+			index++
+			continue
+		}
+		if index+6 <= len(raw) && raw[index+1] == 'u' {
+			escape := string(raw[index : index+6])
+			if escape == `\u2028` || escape == `\u2029` {
+				if escape == `\u2028` {
+					result = append(result, []byte("\u2028")...)
+				} else {
+					result = append(result, []byte("\u2029")...)
+				}
+				index += 6
+				continue
+			}
+		}
+		result = append(result, raw[index], raw[index+1])
+		index += 2
+	}
+	return result, nil
+}
+
 // canonicalGatewayAnnotationsJSON round-trips one raw value through JSON so
 // downstream code sees only JSON-safe scalars (finite numbers, no NaN/Inf,
 // no Go-native types). Input size is bounded before the round-trip.
@@ -211,7 +255,7 @@ func canonicalGatewayAnnotationsJSON(value interface{}) (interface{}, error) {
 	if value == nil {
 		return nil, nil
 	}
-	raw, err := json.Marshal(value)
+	raw, err := compactGatewayAnnotationsJSON(value)
 	if err != nil {
 		return nil, errors.New("gateway_annotations is not JSON-encodable")
 	}
@@ -520,7 +564,7 @@ func containsControlCharacter(value string) bool {
 // the server after validation, so the size is re-checked there too.
 func (d *gatewayAnnotationsDocument) checkSize() error {
 	d.ContractVersion = GatewayAnnotationsContractV1
-	raw, err := json.Marshal(d)
+	raw, err := compactGatewayAnnotationsJSON(d)
 	if err != nil {
 		return errors.New("gateway_annotations is not JSON-encodable")
 	}
@@ -534,7 +578,7 @@ func (d *gatewayAnnotationsDocument) checkSize() error {
 // identity, re-enforcing the total size bound on the exact persisted value.
 func (d *gatewayAnnotationsDocument) restamped() (map[string]interface{}, error) {
 	d.ContractVersion = GatewayAnnotationsContractV1
-	raw, err := json.Marshal(d)
+	raw, err := compactGatewayAnnotationsJSON(d)
 	if err != nil {
 		return nil, errors.New("gateway_annotations is not JSON-encodable")
 	}
@@ -1013,7 +1057,11 @@ func jsTruthy(value interface{}) bool {
 	}
 }
 
-// jsStringOf approximates String(value) for the merged description base.
+// jsStringOf mirrors the real JavaScript String(value) semantics for
+// JSON-decoded values, so the merged description keeps the exact text a
+// consumer would render: arrays join recursively with "," (null items empty),
+// plain objects become "[object Object]", numbers use JS number formatting,
+// booleans true/false, strings pass through.
 func jsStringOf(value interface{}) string {
 	switch typed := value.(type) {
 	case nil:
@@ -1026,10 +1074,48 @@ func jsStringOf(value interface{}) string {
 		}
 		return "false"
 	case float64:
-		return strconv.FormatFloat(typed, 'g', -1, 64)
+		return jsNumberString(typed)
+	case []interface{}:
+		parts := make([]string, 0, len(typed))
+		for _, item := range typed {
+			parts = append(parts, jsStringOf(item))
+		}
+		return strings.Join(parts, ",")
+	case map[string]interface{}:
+		return "[object Object]"
 	default:
 		return fmt.Sprint(typed)
 	}
+}
+
+// jsNumberString formats a float64 the way JavaScript's String() renders
+// numbers: 0 (including -0) becomes "0"; values with absolute magnitude in
+// [1e-6, 1e21) render as plain decimal; anything smaller or larger uses the
+// shortest exponent form with a single exponent digit.
+func jsNumberString(value float64) string {
+	if math.IsInf(value, 0) {
+		if value > 0 {
+			return "Infinity"
+		}
+		return "-Infinity"
+	}
+	if math.IsNaN(value) {
+		return "NaN"
+	}
+	if value == 0 {
+		return "0"
+	}
+	abs := math.Abs(value)
+	if abs >= 1e-6 && abs < 1e21 {
+		if value == math.Trunc(value) {
+			return strconv.FormatFloat(value, 'f', -1, 64)
+		}
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	}
+	text := strconv.FormatFloat(value, 'g', -1, 64)
+	text = strings.ReplaceAll(text, "e+0", "e+")
+	text = strings.ReplaceAll(text, "e-0", "e-")
+	return text
 }
 
 // GatewayAnnotationsEnabled reports whether a deployment can verify gateway

@@ -10349,4 +10349,56 @@ describe('MessagesView gateway annotation flow', () => {
     expect(api.sendMessage).toHaveBeenCalledTimes(1);expect(api.sendMessage.mock.calls[0][0]).toBe('p2p_1_2');expect(api.sendMessage.mock.calls[0][1].metadata.gateway_annotations.annotations[0].body).toBe('old-topic');
   });
 
+
+
+  test('R5 navigation after preclear and failure restore must reject retry of old document',async()=>{
+    let rejectSend;api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
+    await followupCapture(frame,c,page,'old','old-page-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();expect(rejectSend).toBeTypeOf('function');
+    await act(async()=>{sdkMessage(frame,{type:'catsco.gateway.annotation.page.v1',contract_version:'catsco.gateway-annotation-bridge.v1',session_id:c.session_id,page:{path:'/new',revision:'r2'}});await flushPromises();});
+    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('old-page-comment');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('R5 reload same app to new revision during preparation must reject original page snapshot',async()=>{
+    let resolvePoll;const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
+    await followupCapture(frame,c,page,'old','old-page-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();
+    await followupReady(frame,{path:'/board',revision:'r2'});
+    expect(container.textContent).toContain('页面已切换');
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  test('R5 preclear failure without navigation remains retryable control',async()=>{
+    let rejectSend;api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
+    await followupCapture(frame,c,page,'old','same-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();expect(api.sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  test('R5 clear during preparation is not undone by late request failure',async()=>{
+    let resolvePoll,rejectSend;api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
+    await followupCapture(frame,c,page,'deleted','deleted-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});await vi.waitFor(()=>expect(rejectSend).toBeTypeOf('function'));
+    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
+  });
+
+
+  test('R5 same app reload same page during preparation remains sendable control',async()=>{
+    let resolvePoll;const f=await openGatewayAppInSidebar();const p={path:'/board',revision:'r1'};const c=await followupReady(f,p);await followupCapture(f,c,p,'old','same-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();await followupReady(f,p);await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});expect(api.sendMessage).toHaveBeenCalledTimes(1);
+  });
+  test('R5 live drift on original unchanged binding still blocks preparation control',async()=>{
+    let resolvePoll;const f=await openGatewayAppInSidebar();const p={path:'/board',revision:'r1'};const c=await followupReady(f,p);await followupCapture(f,c,p,'old','same-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();await act(async()=>{sdkMessage(f,{type:'catsco.gateway.annotation.page.v1',contract_version:'catsco.gateway-annotation-bridge.v1',session_id:c.session_id,page:{path:'/new',revision:'r2'}});await flushPromises();});await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+  test('R5 reload after failure restoration correctly catches page mismatch control',async()=>{
+    let reject;api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{reject=r;}));const f=await openGatewayAppInSidebar();const p={path:'/board',revision:'r1'};const c=await followupReady(f,p);await followupCapture(f,c,p,'old','old-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();await act(async()=>{reject(new Error('network'));await flushPromises();});await followupReady(f,{path:'/new',revision:'r2'});await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();expect(api.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
 });

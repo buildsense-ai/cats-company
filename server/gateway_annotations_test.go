@@ -5,12 +5,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 
 	"net/http"
 	"net/http/httptest"
@@ -3093,5 +3095,326 @@ func TestR4PrimitivePayloadCloudChannel(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// ---------- Round-5 (review /tmp/catsco-pr575-review-round5.md R5-3/R5-5):
+// the 16KiB contract budget must match JavaScript's JSON.stringify bytes
+// (no HTML escaping inflation), and rich payload.text array/object values
+// must render with real JS String semantics in the agent's cloud copy. ----------
+
+// TestR5MarkupCommentsTravelThroughActualHTTPAndWS drives the reviewer's
+// contract shape: two 1900-character "<" comments are 4090 UTF-8 bytes as
+// JavaScript serializes them and must pass HTTP and WS ingestion within the
+// 16KiB budget, with the canonical value byte-count identical to JS.
+func TestR5MarkupCommentsTravelThroughActualHTTPAndWS(t *testing.T) {
+	annotations := make([]interface{}, 0, 2)
+	for index := 0; index < 2; index++ {
+		annotations = append(annotations, map[string]interface{}{
+			"id":   "m" + strconv.Itoa(index),
+			"kind": "element",
+			"body": strings.Repeat("<", 1900),
+			"target": map[string]interface{}{
+				"element_id": "e" + strconv.Itoa(index),
+				"selector":   "section[data-id=\"e" + strconv.Itoa(index) + "\"]",
+			},
+		})
+	}
+	value := map[string]interface{}{
+		"contract_version": GatewayAnnotationsContractV1,
+		"agent_uid":        9.0,
+		"app_id":           "board",
+		"page":             map[string]interface{}{"path": "/board"},
+		"annotations":      annotations,
+	}
+	// The canonical byte count must match what JavaScript's JSON.stringify
+	// produces for the same value: every "<" stays one UTF-8 byte and no HTML
+	// escaping inflates the payload (this fixture's JS-equivalent size is a
+	// frozen 4134 bytes; the reviewer's client envelope measured 4090 with its
+	// own field set).
+	compact, err := compactGatewayAnnotationsJSON(value)
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if len(compact) != 4134 {
+		t.Fatalf("canonical bytes = %d, want JS-equivalent 4134", len(compact))
+	}
+	if bytes.Count(compact, []byte("<")) != 3800 {
+		t.Fatal("HTML-significant characters must not be escaped in the canonical encoding")
+	}
+	if bytes.Contains(compact, []byte("\\u003c")) {
+		t.Fatal("canonical encoding must not HTML-escape markup")
+	}
+
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+
+	httpBody, _ := json.Marshal(SendMessageRequest{TopicID: "p2p_7_9", Content: json.RawMessage(`"看下markup"`), Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value}})
+	request := httptest.NewRequest(http.MethodPost, "/api/messages/send", strings.NewReader(string(httpBody))).WithContext(withTestUID(7))
+	recorder := httptest.NewRecorder()
+	NewMessageHandler(storeData, hub).HandleSendMessage(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("HTTP markup send rejected: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	client := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 4)}
+	hub.addClient(client)
+	hub.handlePub(client, &MsgClientPub{
+		ID: "r5", Topic: "p2p_7_9", Type: "text",
+		Content:  json.RawMessage(`"看下markup"`),
+		Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	})
+	var ack ServerMessage
+	select {
+	case raw := <-client.send:
+		if err := json.Unmarshal(raw, &ack); err != nil {
+			t.Fatalf("unmarshal ack: %v", err)
+		}
+	default:
+		t.Fatal("missing ws ack")
+	}
+	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+		t.Fatalf("ws markup send rejected: %+v", ack)
+	}
+	if len(storeData.saved) != 2 {
+		t.Fatalf("persisted=%d", len(storeData.saved))
+	}
+}
+
+// TestR5RichTextJSStringSemantics locks the real String() conversion for
+// rich payload.text values in the agent's cloud copy.
+func TestR5RichTextJSStringSemantics(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	cases := []struct {
+		name     string
+		payload  string
+		original string
+	}{
+		{"array text", `{"type":"file","payload":{"name":"r5.bin","url":"/uploads/r5.bin","text":["first","second"]}}`, "first,second"},
+		{"object text", `{"type":"file","payload":{"name":"r5.bin","url":"/uploads/r5.bin","text":{"label":"original"}}}`, "[object Object]"},
+		{"numeric text", `{"type":"file","payload":{"name":"r5.bin","url":"/uploads/r5.bin","text":123}}`, "123"},
+		{"float text", `{"type":"file","payload":{"name":"r5.bin","url":"/uploads/r5.bin","text":1.5}}`, "1.5"},
+		{"boolean text", `{"type":"file","payload":{"name":"r5.bin","url":"/uploads/r5.bin","text":true}}`, "true"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			message := &types.Message{
+				ID: 1, TopicID: "p2p_7_9", FromUID: 7, MsgType: "file", Content: tc.payload,
+				Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+			}
+			read := hub.historyMessageDataForRecipient(9, message)
+			restored := cloudRestoreEquivalentText(read)
+			if !strings.Contains(restored, tc.original) {
+				t.Fatalf("agent cloud copy lost JS-string original %q: %q", tc.original, restored)
+			}
+			if !strings.Contains(restored, "改成蓝色") {
+				t.Fatalf("agent cloud copy missing annotation: %q", restored)
+			}
+			human := hub.historyMessageDataForRecipient(7, message)
+			if strings.Contains(cloudRestoreEquivalentText(human), "Gateway 标注") {
+				t.Fatalf("human copy polluted: %q", cloudRestoreEquivalentText(human))
+			}
+			if message.Content != tc.payload || strings.Contains(message.Content, "Gateway 标注") {
+				t.Fatal("stored rich value mutated")
+			}
+		})
+	}
+}
+
+// TestR5ExportActualConsumersFixtures (env-gated) re-exports the reviewer's
+// full handler matrix for the real AST runner: http/ws × array/object/numeric
+// payload text, encoded rich, array payload and primitive shapes.
+func TestR5ExportActualConsumersFixtures(t *testing.T) {
+	if os.Getenv("GATEWAY_ANNOTATIONS_EXPORT_FIXTURE") == "" {
+		t.Skip("set GATEWAY_ANNOTATIONS_EXPORT_FIXTURE to write /tmp/xiaoba-r5-actual-consumers.json")
+	}
+	entries := []map[string]interface{}{}
+	for _, transport := range []string{"http", "ws"} {
+		for _, shapeName := range []string{"array-text", "object-text", "numeric-text", "encoded", "array-payload", "primitive"} {
+			fake := &gatewayAnnotationFakeStore{
+				users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+				botOwners: map[int64]int64{9: 7},
+			}
+			hub := NewHub(fake, nil)
+			hub.SetGatewayAnnotationsAppResolver(&staticAppResolver{apps: map[string]string{"board": "9"}})
+			agent := &Client{uid: 9, accountType: types.AccountBot, send: make(chan []byte, 8)}
+			hub.addClient(agent)
+			shape := `{"type":"file","payload":{"name":"r5.bin","url":"/uploads/r5.bin","text":["first","second"]}}`
+			original := "first,second"
+			files := []string{"/uploads/r5.bin"}
+			switch shapeName {
+			case "object-text":
+				shape = `{"type":"file","payload":{"name":"r5.bin","url":"/uploads/r5.bin","text":{"label":"original"}}}`
+				original = "[object Object]"
+			case "numeric-text":
+				shape = `{"type":"file","payload":{"name":"r5.bin","url":"/uploads/r5.bin","text":123}}`
+				original = "123"
+			case "encoded":
+				shape = `{"type":"file","payload":{"name":"r5.bin","url":"/uploads/r5.bin"}}`
+				original = ""
+			case "array-payload":
+				shape = `{"type":"file","payload":[],"name":"r5.bin","url":"/uploads/r5.bin"}`
+				files = nil
+				original = ""
+			case "primitive":
+				shape = `{"type":"file","payload":true,"text":"original","name":"r5.bin","url":"/uploads/r5.bin"}`
+				files = nil
+				original = "original"
+			}
+			raw := json.RawMessage(shape)
+			if shapeName == "encoded" {
+				encoded, _ := json.Marshal(shape)
+				raw = encoded
+			}
+			metadata := map[string]interface{}{gatewayAnnotationsMetadataKey: gatewayAnnotationRequest("board", 9, nil)}
+			blocks := []types.ContentBlock{{Type: "text", Text: "canonical-user-body"}}
+			if transport == "http" {
+				body, _ := json.Marshal(SendMessageRequest{TopicID: "p2p_7_9", Type: "file", Content: raw, ContentBlocks: blocks, Metadata: metadata})
+				request := httptest.NewRequest(http.MethodPost, "/api/messages/send", strings.NewReader(string(body))).WithContext(withTestUID(7))
+				recorder := httptest.NewRecorder()
+				NewMessageHandler(fake, hub).HandleSendMessage(recorder, request)
+				if recorder.Code != http.StatusOK {
+					t.Fatalf("status %d %s", recorder.Code, recorder.Body.String())
+				}
+			} else {
+				sender := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 8)}
+				hub.addClient(sender)
+				hub.handlePub(sender, &MsgClientPub{ID: "r5", Topic: "p2p_7_9", Type: "file", Content: raw, ContentBlocks: blocks, Metadata: metadata})
+				var ack ServerMessage
+				select {
+				case rawAck := <-sender.send:
+					if err := json.Unmarshal(rawAck, &ack); err != nil {
+						t.Fatalf("unmarshal ack: %v", err)
+					}
+				default:
+					t.Fatal("missing ack")
+				}
+				if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+					t.Fatalf("ack %+v", ack)
+				}
+			}
+			if len(fake.saved) != 1 || fake.saved[0].metadata == nil {
+				t.Fatalf("%s %s persisted", transport, shapeName)
+			}
+			var live ServerMessage
+			select {
+			case rawLive := <-agent.send:
+				if err := json.Unmarshal(rawLive, &live); err != nil {
+					t.Fatalf("unmarshal live: %v", err)
+				}
+			default:
+				t.Fatalf("%s %s missing live delivery", transport, shapeName)
+			}
+			entries = append(entries, map[string]interface{}{
+				"name": transport + shapeName + " live", "pipeline": "live",
+				"message":       live.Data,
+				"expect":        []string{"canonical-user-body", "这个按钮需要改成蓝色"},
+				"forbid":        []string{"/forged"},
+				"expectedFiles": files,
+			})
+			message := &types.Message{
+				ID: 1, TopicID: "p2p_7_9", FromUID: 7, MsgType: "file", Content: shape,
+				ContentBlocks: fake.saved[0].blocks, Metadata: fake.saved[0].metadata,
+			}
+			for _, uid := range []int64{9, 7} {
+				expect := []string{}
+				forbid := []string{}
+				if original != "" {
+					expect = append(expect, original)
+				}
+				if uid == 9 {
+					expect = append(expect, "这个按钮需要改成蓝色")
+				} else {
+					forbid = append(forbid, "Gateway 标注")
+				}
+				entries = append(entries, map[string]interface{}{
+					"name": transport + shapeName + formatUID(uid) + " cloud", "pipeline": "cloud",
+					"message": hub.historyAPIMessageForRecipient(uid, message), "expect": expect, "forbid": forbid,
+				})
+			}
+			replay := hub.historyMessageDataForRecipient(9, message)
+			entries = append(entries, map[string]interface{}{
+				"name": transport + shapeName + " replay", "pipeline": "live",
+				"message":       replay,
+				"expect":        []string{"canonical-user-body", "这个按钮需要改成蓝色"},
+				"expectedFiles": files,
+			})
+			if message.Content != shape {
+				t.Fatal("history mutation")
+			}
+		}
+	}
+	encoded, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile("/tmp/xiaoba-r5-actual-consumers.json", encoded, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Log("fixtures written to /tmp/xiaoba-r5-actual-consumers.json")
+}
+
+// TestR5UnicodeSeparatorBudgetMatchesJS locks the U+2028/U+2029 handling:
+// raw separators count as 3 bytes like JavaScript emits them, while a literal
+// backslash-u sequence in the value survives unconverted.
+func TestR5UnicodeSeparatorBudgetMatchesJS(t *testing.T) {
+	value := map[string]interface{}{
+		"contract_version": GatewayAnnotationsContractV1,
+		"agent_uid":        9.0,
+		"app_id":           "board",
+		"page":             map[string]interface{}{"path": "/board"},
+		"annotations": []interface{}{
+			map[string]interface{}{
+				"id":     "s1",
+				"kind":   "element",
+				"body":   "raw\u2028separator\u2029end",
+				"target": map[string]interface{}{"element_id": "sep"},
+			},
+			map[string]interface{}{
+				"id":     "s2",
+				"kind":   "element",
+				"body":   "literal\\u2028kept",
+				"target": map[string]interface{}{"element_id": "sep2"},
+			},
+		},
+	}
+	compact, err := compactGatewayAnnotationsJSON(value)
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if !bytes.Contains(compact, []byte("raw\u2028separator\u2029end")) {
+		t.Fatal("genuine separators must be emitted raw, like JS JSON.stringify")
+	}
+	// A literal backslash in the value must be JSON-escaped as "\\" in the
+	// compact output, exactly like JS JSON.stringify does.
+	if !bytes.Contains(compact, []byte("literal\\\\u2028kept")) {
+		t.Fatal("a literal backslash-u sequence must survive unconverted")
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(compact, &decoded); err != nil {
+		t.Fatalf("encoded JSON must remain valid: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, value) {
+		t.Fatalf("encoding must preserve separators and literal escape text: %s", compact)
+	}
+	// Each genuine separator is three bytes smaller than Go's escaped form;
+	// the user's literal escape sequence must have exactly the original size.
+	var defaultEncoding bytes.Buffer
+	encoder := json.NewEncoder(&defaultEncoding)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		t.Fatal(err)
+	}
+	expected := len(bytes.TrimSuffix(defaultEncoding.Bytes(), []byte("\n"))) - 6
+	if len(compact) != expected {
+		t.Fatalf("canonical bytes = %d, want JS-equivalent %d", len(compact), expected)
 	}
 }

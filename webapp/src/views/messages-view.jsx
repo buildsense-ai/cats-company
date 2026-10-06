@@ -3163,10 +3163,16 @@ export default function MessagesView({
         if (certificatePages.has('')) {
           throw new Error('存在缺少页面信息的旧批注，请清理后重新标注');
         }
-        const sameCaptureBinding = activeTopicRef.current === topic
-          && gatewayAnnotationBindingRef.current === annotationSendSnapshot.binding;
+        const currentBinding = gatewayAnnotationBindingRef.current;
+        const sameCaptureBucket = activeTopicRef.current === topic
+          && currentBinding?.appId === annotationContextSnapshot?.appId
+          && Number(currentBinding?.agentUid) === Number(annotationContextSnapshot?.agentUid);
+        const currentPage = sameCaptureBucket ? gatewayAnnotationHostRef.current?.page : null;
+        const capturePage = annotationDraftsSnapshotted[0]?.page;
         const originalPageDrift = annotationSendSnapshot.pageChanged
-          || (sameCaptureBinding && gatewayAnnotationPageChangedRef.current);
+          || (sameCaptureBucket && gatewayAnnotationPageChangedRef.current)
+          || (currentPage && capturePage && (currentPage.path !== capturePage.path
+            || (currentPage.revision || '') !== (capturePage.revision || '')));
         if (certificatePages.size > 1 || originalPageDrift) {
           throw new Error('批注来自不同页面，请清理后重新标注');
         }
@@ -3236,14 +3242,17 @@ export default function MessagesView({
           // rides on; the storage wipe happens before the request so a later
           // composer write cannot resurrect consumed rows into this draft.
           annotationSnapshotContextRef.current = annotationContextSnapshot;
-          annotationSnapshotDraftsRef.current = annotationDraftsSnapshotted;
           const recoveryKey = `${user.uid}|${topic}|${annotationContextSnapshot.agentUid}|${annotationContextSnapshot.appId}`;
           const recovered = gatewayAnnotationRecoveryRef.current.get(recoveryKey);
           const pending = recovered && annotationSessionStillValid(recovered.session)
             ? recovered.rows
             : readGatewayAnnotationDrafts(user.uid, topic,
               Number(annotationContextSnapshot.agentUid), String(annotationContextSnapshot.appId));
-          const remaining = pending.filter(row => !annotationDraftsSnapshotted.some(sent => sameGatewayAnnotationVersion(row, sent)));
+          const removed = pending.filter(row => annotationDraftsSnapshotted.some(sent => sameGatewayAnnotationVersion(row, sent)));
+          const remaining = pending.filter(row => !removed.includes(row));
+          // Restore only rows this request actually removed, never a frozen
+          // row the user already deleted while preparation was waiting.
+          annotationSnapshotDraftsRef.current = removed;
           const consumed = writeGatewayAnnotationDrafts(user.uid, topic,
             Number(annotationContextSnapshot.agentUid), String(annotationContextSnapshot.appId), remaining,
             undefined, { recovery: true });
@@ -3481,7 +3490,13 @@ export default function MessagesView({
             }
             // The capture page certificate stays authoritative.
             const restoredPage = merged[0]?.page || null;
-            if (restoredPage) setGatewayAnnotationDraftPage(restoredPage);
+            gatewayAnnotationDraftsRef.current = merged;
+            gatewayAnnotationPageRef.current = restoredPage;
+            setGatewayAnnotationDraftPage(restoredPage);
+            const binding = gatewayAnnotationBindingRef.current;
+            if (binding?.appId === bucketApp && Number(binding?.agentUid) === bucketAgent) {
+              gatewayAnnotationApplyFramePage(gatewayAnnotationHostRef.current?.page);
+            }
           }
         }
         gatewayAnnotationConsumedRef.current = false;
