@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 
 	"net/http"
 	"net/http/httptest"
@@ -469,6 +471,11 @@ func friendKeyForAnnotations(uid1, uid2 int64) string {
 
 func groupMemberKeyForAnnotations(groupID int64, uid int64) string {
 	return strconv.FormatInt(groupID, 10) + ":" + strconv.FormatInt(uid, 10)
+}
+
+func (s *gatewayAnnotationFakeStore) IsChannelManagedGroup(groupID int64) (bool, error) {
+	// Non-channel-owned groups let every visible member receive the fanout.
+	return false, nil
 }
 
 func errNotFoundForTest() error { return errors.New("not found") }
@@ -1296,4 +1303,774 @@ func TestTargetFreeTextAllowsBreaksAndTabs(t *testing.T) {
 	if _, err := normalizeGatewayAnnotations(strictPath); err == nil {
 		t.Fatal("line breaks must stay rejected inside page path")
 	}
+}
+
+// xiaoBaEquivalentUserInput mirrors the XiaoBa-CLI parseMessage rule for
+// turning a delivered message into the text that reaches the model: every
+// content_blocks entry with type "text" and non-blank text is joined with a
+// blank line, falling back to the top-level content only when no text block
+// exists (blockText || content). Asserting against this helper keeps the
+// server contract coupled to what the actual agent client consumes.
+func xiaoBaEquivalentUserInput(data *MsgServerData) string {
+	if data == nil {
+		return ""
+	}
+	parts := []string{}
+	for _, block := range data.ContentBlocks {
+		// Exact lowercase "text" — the live XiaoBa parseMessage merge rule.
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n\n")
+	}
+	return normalizeContentText(data.Content)
+}
+
+// cloudRestoreEquivalentText mirrors the offline XiaoBa
+// cloud-session-restore rule (cloudMessageText): a non-empty string content
+// wins outright; a rich file/image/voice content renders its own description
+// line; anything else falls back to trimmed text blocks joined with a newline.
+func cloudRestoreEquivalentText(data *MsgServerData) string {
+	if data == nil {
+		return ""
+	}
+	if text, ok := data.Content.(string); ok && strings.TrimSpace(text) != "" {
+		return strings.TrimSpace(text)
+	}
+	rich, ok := data.Content.(map[string]interface{})
+	if !ok {
+		return cloudContentBlocksEquivalentText(data.ContentBlocks)
+	}
+	contentType := strings.TrimSpace(fmt.Sprint(rich["type"]))
+	payload, _ := rich["payload"].(map[string]interface{})
+	description := ""
+	name := ""
+	if payload != nil {
+		name, _ = payload["name"].(string)
+		// Exact restore rule: payload.text wins over payload.description.
+		description, _ = payload["text"].(string)
+		if strings.TrimSpace(description) == "" {
+			description, _ = payload["description"].(string)
+		}
+	}
+	switch contentType {
+	case "image":
+		if strings.TrimSpace(name) != "" {
+			return fmt.Sprintf("[历史图片：%s]%s", strings.TrimSpace(name), descriptionSuffix(description))
+		}
+		return "[历史图片]" + descriptionSuffix(description)
+	case "file":
+		if strings.TrimSpace(name) != "" {
+			return fmt.Sprintf("[历史文件：%s]%s", strings.TrimSpace(name), descriptionSuffix(description))
+		}
+		return "[历史文件]" + descriptionSuffix(description)
+	case "voice":
+		return "[历史语音]" + descriptionSuffix(description)
+	default:
+		if strings.TrimSpace(description) != "" {
+			return strings.TrimSpace(description)
+		}
+		return cloudContentBlocksEquivalentText(data.ContentBlocks)
+	}
+}
+
+func descriptionSuffix(description string) string {
+	if strings.TrimSpace(description) != "" {
+		return " " + strings.TrimSpace(description)
+	}
+	return ""
+}
+
+func cloudContentBlocksEquivalentText(blocks []types.ContentBlock) string {
+	parts := []string{}
+	for _, block := range blocks {
+		switch strings.TrimSpace(block.Type) {
+		case "text":
+			if strings.TrimSpace(block.Text) != "" {
+				parts = append(parts, strings.TrimSpace(block.Text))
+			}
+		case "image":
+			parts = append(parts, "[历史图片]")
+		case "file":
+			parts = append(parts, "[历史文件]")
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func annotationDocForModelText() *gatewayAnnotationsDocument {
+	return &gatewayAnnotationsDocument{
+		AgentUID: 9, AppID: "board",
+		Page:        gatewayAnnotationsPage{Path: "/board", Revision: "r7"},
+		Annotations: []gatewayAnnotation{{ID: "a1", Kind: "element", Label: "发布按钮", Body: "改成蓝色", Target: gatewayAnnotationTarget{ElementID: "submit-btn", Selector: "button#submit"}}},
+	}
+}
+
+// TestP2PFanoutAgentSeesAnnotationTextInContentBlocks reproduces the XiaoBa
+// consumption contract end-to-end at fanout: the target Agent's message
+// carries the annotation as text blocks so the model text contains page,
+// target and body.
+func TestP2PFanoutAgentSeesAnnotationTextInContentBlocks(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+
+	t.Run("message already has text blocks", func(t *testing.T) {
+		payload := &normalizedMessagePayload{
+			StoredContent:  "看下这个按钮",
+			DisplayContent: "看下这个按钮",
+			StoredType:     "text",
+			DisplayType:    "text",
+			ContentBlocks:  []types.ContentBlock{{Type: "text", Text: "看下这个按钮"}},
+			Metadata:       map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+		}
+		agentMessage := hub.messageForRecipient(7, 9, "p2p_7_9", 0, payload, 31)
+		modelText := xiaoBaEquivalentUserInput(agentMessage.Data)
+		for _, fragment := range []string{"看下这个按钮", "[Gateway 标注", "board", "/board", "revision r7", "发布按钮", "改成蓝色", "submit-btn", "button#submit"} {
+			if !strings.Contains(modelText, fragment) {
+				t.Fatalf("agent model text misses %q:\n%s", fragment, modelText)
+			}
+		}
+
+		// The sender's own copy keeps the original blocks only.
+		senderMessage := hub.messageForRecipient(7, 7, "p2p_7_9", 0, payload, 31)
+		if senderText := xiaoBaEquivalentUserInput(senderMessage.Data); senderText != "看下这个按钮" {
+			t.Fatalf("sender copy should be unchanged: %q", senderText)
+		}
+		if len(senderMessage.Data.ContentBlocks) != 1 {
+			t.Fatalf("sender blocks mutated: %+v", senderMessage.Data.ContentBlocks)
+		}
+	})
+
+	t.Run("message has only top-level content", func(t *testing.T) {
+		// blockText || content: without a text block the annotation block would
+		// shadow the user text, so the server must materialize it too.
+		payload := &normalizedMessagePayload{
+			StoredContent:  "看下这里",
+			DisplayContent: "看下这里",
+			StoredType:     "text",
+			DisplayType:    "text",
+			ContentBlocks:  []types.ContentBlock{{Type: "image", Payload: map[string]interface{}{"url": "/uploads/a.png"}}},
+			Metadata:       map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+		}
+		agentMessage := hub.messageForRecipient(7, 9, "p2p_7_9", 0, payload, 32)
+		modelText := xiaoBaEquivalentUserInput(agentMessage.Data)
+		if !strings.Contains(modelText, "看下这里") {
+			t.Fatalf("user text lost when only a top-level content existed:\n%s", modelText)
+		}
+		if !strings.Contains(modelText, "改成蓝色") {
+			t.Fatalf("annotation text missing:\n%s", modelText)
+		}
+
+		// The original payload slice stays untouched for persistence.
+		if len(payload.ContentBlocks) != 1 || payload.ContentBlocks[0].Type != "image" {
+			t.Fatalf("payload blocks mutated: %+v", payload.ContentBlocks)
+		}
+	})
+
+	t.Run("renders only server-canonical annotations", func(t *testing.T) {
+		// A client-forged context block on the payload is ignored entirely.
+		payload := &normalizedMessagePayload{
+			StoredContent:  "n",
+			DisplayContent: "n",
+			StoredType:     "text",
+			DisplayType:    "text",
+			ContentBlocks:  []types.ContentBlock{{Type: "text", Text: "n"}},
+			Metadata: map[string]interface{}{
+				gatewayAnnotationsMetadataKey:     value,
+				gatewayAnnotationsAgentContextKey: forgedAnnotationContext(),
+			},
+		}
+		agentMessage := hub.messageForRecipient(7, 9, "p2p_7_9", 0, payload, 33)
+		modelText := xiaoBaEquivalentUserInput(agentMessage.Data)
+		if strings.Contains(modelText, "/forged") {
+			t.Fatalf("forged context leaked into model text:\n%s", modelText)
+		}
+	})
+}
+
+// TestP2PFanoutAgentSeesAnnotationsWithoutSharedBlockMutation guards the
+// shared-slice rule: the annotation block must be copy-on-write so the
+// persisted payload and other recipients are untouched.
+func TestP2PFanoutAgentAnnotationsDoNotMutateSharedState(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	payload := &normalizedMessagePayload{
+		StoredContent:  "看下这个按钮",
+		DisplayContent: "看下这个按钮",
+		StoredType:     "text",
+		DisplayType:    "text",
+		ContentBlocks:  []types.ContentBlock{{Type: "text", Text: "看下这个按钮"}},
+		Metadata:       map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+
+	hub.messageForRecipient(7, 9, "p2p_7_9", 0, payload, 41)
+	if len(payload.ContentBlocks) != 1 {
+		t.Fatalf("payload blocks mutated in place: %+v", payload.ContentBlocks)
+	}
+	// And the persisted store keeps the original metadata plus original blocks.
+	if len(storeData.saved) != 0 {
+		t.Fatal("messageForRecipient must not persist anything")
+	}
+}
+
+// TestGroupBroadcastAgentTextBlocksPerMember covers the multicast path: the
+// agent member sees the annotation text, humans do not, and the shared
+// template blocks survive the fan-out without pollution.
+func TestGroupBroadcastAgentTextBlocksPerMember(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users: map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9), 8: gatewayAnnotationHuman(8)},
+		groupMembers: map[string]bool{
+			groupMemberKeyForAnnotations(5, 7): true, groupMemberKeyForAnnotations(5, 8): true, groupMemberKeyForAnnotations(5, 9): true,
+		},
+		members: map[int64][]*types.GroupMember{5: {{UserID: 7}, {UserID: 8}, {UserID: 9, IsBot: true}}},
+		groups:  map[int64]*types.Group{5: {ID: 5, AgentIDs: []int64{9}}},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	payload := gatewayAnnotationFanoutPayload(map[string]interface{}{gatewayAnnotationsMetadataKey: value})
+	template := hub.messageForRecipient(7, 0, "grp_5", 0, payload, 51)
+	template.Data.Mentions = []string{formatUID(9)}
+	originalTemplateBlocks := make([]types.ContentBlock, len(template.Data.ContentBlocks))
+	copy(originalTemplateBlocks, template.Data.ContentBlocks)
+
+	agentClient := &Client{uid: 9, send: make(chan []byte, 4), accountType: types.AccountBot}
+	humanClient := &Client{uid: 8, send: make(chan []byte, 4), accountType: types.AccountHuman}
+	hub.addClient(agentClient)
+	hub.addClient(humanClient)
+
+	hub.broadcastToGroupWithMentions(5, template, 7, []string{formatUID(9)}, 7, false)
+
+	gotAgent := false
+	gotHuman := false
+	for name, client := range map[string]*Client{"agent": agentClient, "human": humanClient} {
+		select {
+		case raw := <-client.send:
+			var delivered ServerMessage
+			if err := json.Unmarshal(raw, &delivered); err != nil {
+				t.Fatalf("%s unmarshal: %v", name, err)
+			}
+			modelText := xiaoBaEquivalentUserInput(delivered.Data)
+			if name == "agent" {
+				gotAgent = true
+				if !strings.Contains(modelText, "改成蓝色") || !strings.Contains(modelText, "submit-btn") || !strings.Contains(modelText, "/board") {
+					t.Fatalf("agent text misses annotation content:\n%s", modelText)
+				}
+			} else {
+				gotHuman = true
+				if strings.Contains(modelText, "[Gateway 标注") {
+					t.Fatalf("human copy must not carry the annotation block:\n%s", modelText)
+				}
+			}
+		default:
+			t.Fatalf("%s did not receive the broadcast", name)
+		}
+	}
+	if !gotAgent || !gotHuman {
+		t.Fatalf("deliveries incomplete: agent=%v human=%v", gotAgent, gotHuman)
+	}
+	if len(template.Data.ContentBlocks) != len(originalTemplateBlocks) {
+		t.Fatal("the shared template content blocks were polluted")
+	}
+}
+
+// TestPersistedGatewayAnnotationsKeepOriginalBlocks proves the fanout-only
+// text-block attachment never reaches the durable store.
+func TestPersistedGatewayAnnotationsKeepOriginalBlocks(t *testing.T) {
+	gateway := newArtifactAppsGateway(t)
+	gateway.setApps(artifactApp{ID: "board", Agent: "9"})
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, gateway.handler())
+	// An online agent client so the fanout path that injects blocks runs.
+	agentClient := &Client{uid: 9, send: make(chan []byte, 4), accountType: types.AccountBot}
+	hub.addClient(agentClient)
+	messageHandler := NewMessageHandler(storeData, hub)
+
+	body, _ := json.Marshal(struct {
+		TopicID  string                 `json:"topic_id"`
+		Content  string                 `json:"content"`
+		Metadata map[string]interface{} `json:"metadata"`
+	}{TopicID: "p2p_7_9", Content: "看下这个按钮", Metadata: map[string]interface{}{
+		gatewayAnnotationsMetadataKey: gatewayAnnotationRequest("board", 9.0, nil),
+	}})
+	request := httptest.NewRequest(http.MethodPost, "/api/messages/send", strings.NewReader(string(body)))
+	request = request.WithContext(withTestUID(7))
+	recorder := httptest.NewRecorder()
+	messageHandler.HandleSendMessage(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	if len(storeData.saved) != 1 {
+		t.Fatalf("saved=%d", len(storeData.saved))
+	}
+	saved := storeData.saved[0]
+	if len(saved.blocks) != 0 && strings.Contains(savedContent(saved), "[Gateway 标注") {
+		t.Fatalf("the annotation text block leaked into persistence:\n%s", savedContent(saved))
+	}
+	if saved.metadata["gateway_annotations"] == nil {
+		t.Fatal("the annotations metadata must persist")
+	}
+	// The agent still received the readable block live.
+	select {
+	case raw := <-agentClient.send:
+		var delivered ServerMessage
+		if err := json.Unmarshal(raw, &delivered); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !strings.Contains(xiaoBaEquivalentUserInput(delivered.Data), "改成蓝色") {
+			t.Fatal("live agent copy lacked the readable annotation block")
+		}
+	default:
+		t.Fatal("agent did not receive the annotated message")
+	}
+}
+
+func savedContent(saved gatewayAnnotationSavedMessage) string {
+	if saved.blocks == nil {
+		return ""
+	}
+	parts := []string{}
+	for _, block := range saved.blocks {
+		parts = append(parts, block.Text)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// TestModelTextCarriesEveryContractAnnotationAtMetadataCeiling proves the
+// model text block never truncates a contract-legal annotation: building a
+// metadata value squeezed against the 16KiB budget with 20 full annotations
+// plus region targets (with coordinate space and viewport evidence) and
+// asserting every arrival body and target field survives the render byte for
+// byte within the 32KiB safety cap.
+func TestModelTextCarriesEveryContractAnnotationAtMetadataCeiling(t *testing.T) {
+	annotations := make([]interface{}, 0, gatewayAnnotationsMaxAnnotations)
+	bodies := make([]string, 0, gatewayAnnotationsMaxAnnotations)
+	const accent = "评论第"
+	for index := 0; index < gatewayAnnotationsMaxAnnotations; index++ {
+		body := strings.Repeat("评", 190) + accent + strconv.Itoa(index)
+		annotations = append(annotations, map[string]interface{}{
+			"id":   "a" + strconv.Itoa(index),
+			"kind": "region",
+			"body": body,
+			"target": map[string]interface{}{
+				"rect":             map[string]interface{}{"x": 0.01, "y": 0.01, "width": 0.4, "height": 0.4},
+				"coordinate_space": "viewport",
+				"viewport":         map[string]interface{}{"width": 1280.0, "height": 720.0, "scroll_x": 24.0, "scroll_y": 88.0},
+			},
+		})
+		bodies = append(bodies, body)
+	}
+	value := map[string]interface{}{
+		"contract_version": GatewayAnnotationsContractV1,
+		"agent_uid":        9.0,
+		"app_id":           "board",
+		"page":             map[string]interface{}{"path": "/board", "revision": "r7"},
+		"annotations":      annotations,
+	}
+	if _, err := normalizeGatewayAnnotations(value); err != nil {
+		t.Fatalf("fixture must stay within the 16KiB contract: %v", err)
+	}
+	text := gatewayAnnotationsModelText(mustDocument(t, value))
+	if len(text) > gatewayAnnotationsMaxModelTextBytes {
+		t.Fatalf("model text exceeded the safety cap: %d bytes", len(text))
+	}
+	if len(text) >= gatewayAnnotationsMaxModelTextBytes {
+		t.Fatalf("safety-cap proof relies on headroom; got %d bytes", len(text))
+	}
+	for _, body := range bodies {
+		if !strings.Contains(text, body) {
+			t.Fatal("a contract-legal body was truncated in the model text")
+		}
+	}
+	for _, fragment := range []string{"coordinate_space=viewport", "viewport(w=1280,h=720,scroll_x=24,scroll_y=88)"} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("target evidence missing: %q", fragment)
+		}
+	}
+}
+
+func mustDocument(t *testing.T, value map[string]interface{}) *gatewayAnnotationsDocument {
+	t.Helper()
+	document, err := normalizeGatewayAnnotations(value)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if document == nil {
+		t.Fatal("empty document")
+	}
+	return document
+}
+
+// TestExportXiaoBaParseFixture writes the real fanout deliveries (target Agent
+// and human p2p copy, plus the group agent member) as a JSON fixture under
+// /tmp, so the read-only XiaoBa parse-equivalence script
+// (/tmp/xiaoba-annotation-parse-check.mjs) can drive them through the rules
+// recovered from the actual XiaoBa source. Run with:
+//
+//	go test ./server/ -run 'TestExportXiaoBaParseFixture' && \
+//	node /tmp/xiaoba-annotation-parse-check.mjs /tmp/xiaoba-annotation-fixture.json
+func TestExportXiaoBaParseFixture(t *testing.T) {
+	if os.Getenv("GATEWAY_ANNOTATIONS_EXPORT_FIXTURE") == "" {
+		t.Skip("set GATEWAY_ANNOTATIONS_EXPORT_FIXTURE to write /tmp/xiaoba-annotation-fixture.json")
+	}
+	storeData := &gatewayAnnotationFakeStore{
+		users: map[int64]*types.User{
+			7: gatewayAnnotationHuman(7), 8: gatewayAnnotationHuman(8), 9: gatewayAnnotationBot(9),
+		},
+		botOwners:    map[int64]int64{9: 7},
+		groupMembers: map[string]bool{groupMemberKeyForAnnotations(5, 7): true, groupMemberKeyForAnnotations(5, 9): true},
+		members:      map[int64][]*types.GroupMember{5: {{UserID: 7}, {UserID: 9, IsBot: true}}},
+		groups:       map[int64]*types.Group{5: {ID: 5, AgentIDs: []int64{9}}},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+
+	p2pPayload := &normalizedMessagePayload{
+		StoredContent:  "看下这个按钮",
+		DisplayContent: "看下这个按钮",
+		StoredType:     "text",
+		DisplayType:    "text",
+		ContentBlocks:  []types.ContentBlock{{Type: "text", Text: "看下这个按钮"}},
+		Metadata:       map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+	agentP2P := hub.messageForRecipient(7, 9, "p2p_7_9", 0, p2pPayload, 61)
+	humanP2P := hub.messageForRecipient(7, 7, "p2p_7_9", 0, p2pPayload, 61)
+	agentP2PTopLevelOnly := hub.messageForRecipient(7, 9, "p2p_7_9", 0, &normalizedMessagePayload{
+		StoredContent:  "看下这里",
+		DisplayContent: "看下这里",
+		StoredType:     "text",
+		DisplayType:    "text",
+		ContentBlocks:  []types.ContentBlock{{Type: "image", Payload: map[string]interface{}{"url": "/uploads/a.png"}}},
+		Metadata:       map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}, 62)
+
+	groupPayload := gatewayAnnotationFanoutPayload(map[string]interface{}{gatewayAnnotationsMetadataKey: value})
+	template := hub.messageForRecipient(7, 0, "grp_5", 0, groupPayload, 63)
+	template.Data.Mentions = []string{formatUID(9)}
+	agentClient := &Client{uid: 9, send: make(chan []byte, 4), accountType: types.AccountBot}
+	hub.addClient(agentClient)
+	hub.broadcastToGroupWithMentions(5, template, 7, []string{formatUID(9)}, 7, false)
+	raw := <-agentClient.send
+	var groupAgent ServerMessage
+	if err := json.Unmarshal(raw, &groupAgent); err != nil {
+		t.Fatalf("unmarshal group delivery: %v", err)
+	}
+
+	type modelMessage struct {
+		Topic         string                   `json:"topic"`
+		Content       interface{}              `json:"content"`
+		ContentBlocks []map[string]interface{} `json:"content_blocks"`
+	}
+	normalizeBlocks := func(data *MsgServerData) []map[string]interface{} {
+		blocks := []map[string]interface{}{}
+		for _, block := range data.ContentBlocks {
+			entry := map[string]interface{}{"type": block.Type, "text": block.Text}
+			if block.Payload != nil {
+				entry["payload"] = block.Payload
+			}
+			blocks = append(blocks, entry)
+		}
+		return blocks
+	}
+	fixture := []struct {
+		Name    string       `json:"name"`
+		Message modelMessage `json:"message"`
+		Expect  []string     `json:"expect"`
+		Forbid  []string     `json:"forbid"`
+	}{
+		{Name: "p2p agent copy sees annotation and user text",
+			Message: modelMessage{Topic: "p2p_7_9", Content: agentP2P.Data.Content, ContentBlocks: normalizeBlocks(agentP2P.Data)},
+			Expect:  []string{"看下这个按钮", "[Gateway 标注", "board", "/board", "revision r7", "发布按钮", "改成蓝色", "element_id=submit-btn", "selector=button#submit"},
+			Forbid:  []string{"/forged"}},
+		{Name: "p2p human copy stays untouched",
+			Message: modelMessage{Topic: "p2p_7_9", Content: humanP2P.Data.Content, ContentBlocks: normalizeBlocks(humanP2P.Data)},
+			Expect:  []string{"看下这个按钮"},
+			Forbid:  []string{"[Gateway 标注", "改成蓝色"}},
+		{Name: "p2p agent copy with top-level-only content keeps user text",
+			Message: modelMessage{Topic: "p2p_7_9", Content: agentP2PTopLevelOnly.Data.Content, ContentBlocks: normalizeBlocks(agentP2PTopLevelOnly.Data)},
+			Expect:  []string{"看下这里", "[Gateway 标注", "改成蓝色"},
+			Forbid:  nil},
+		{Name: "group agent member sees annotation, user text stays",
+			Message: modelMessage{Topic: "grp_5", Content: groupAgent.Data.Content, ContentBlocks: normalizeBlocks(groupAgent.Data)},
+			Expect:  []string{"改成蓝色", "submit-btn", "/board"},
+			Forbid:  nil},
+	}
+	encoded, err := json.MarshalIndent(fixture, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	if err := os.WriteFile("/tmp/xiaoba-annotation-fixture.json", encoded, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Log("fixture written to /tmp/xiaoba-annotation-fixture.json")
+}
+
+// TestModelTextBlockMergeKeepsUserTextForNonExactTypes covers the real
+// XiaoBa exact-type rule: only lowercase "text" participates in the block
+// merge, so "TEXT"/" text " copies must still carry the user's own text via
+// the materialized fallback block instead of being shadowed.
+func TestModelTextBlockMergeKeepsUserTextForNonExactTypes(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+
+	for _, kind := range []string{"TEXT", " text ", "Text"} {
+		t.Run(kind, func(t *testing.T) {
+			payload := &normalizedMessagePayload{
+				StoredContent:  "original-user-body",
+				DisplayContent: "original-user-body",
+				StoredType:     "text",
+				DisplayType:    "text",
+				ContentBlocks:  []types.ContentBlock{{Type: kind, Text: "ignored-noncanonical-block"}},
+				Metadata:       map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+			}
+			agentMessage := hub.messageForRecipient(7, 9, "p2p_7_9", 0, payload, 71)
+			modelText := xiaoBaEquivalentUserInput(agentMessage.Data)
+			if !strings.Contains(modelText, "original-user-body") {
+				t.Fatalf("actual XiaoBa text lost original-user-body for kind %q:\n%s", kind, modelText)
+			}
+			if !strings.Contains(modelText, "[Gateway 标注") || !strings.Contains(modelText, "改成蓝色") {
+				t.Fatalf("annotation context missing for kind %q:\n%s", kind, modelText)
+			}
+			// The human copy keeps the payload blocks byte-identical.
+			humanMessage := hub.messageForRecipient(7, 7, "p2p_7_9", 0, payload, 71)
+			if xiaoBaEquivalentUserInput(humanMessage.Data) != "original-user-body" {
+				t.Fatalf("human copy changed for kind %q: %q", kind, xiaoBaEquivalentUserInput(humanMessage.Data))
+			}
+		})
+	}
+}
+
+// TestAgentHistoryCopyCarriesAnnotationContextForCloudRestore covers the
+// offline read path: the authorized Agent's history copy carries the
+// annotation context inside the content string (the field cloud-session-restore
+// actually reads), while human reads and the stored message stay untouched.
+func TestAgentHistoryCopyCarriesAnnotationContextForCloudRestore(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	message := &types.Message{
+		ID: 72, TopicID: "p2p_7_9", FromUID: 7, Content: "original-user-body", MsgType: "text",
+		Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+
+	agentRead := hub.historyMessageDataForRecipient(9, message)
+	restoredText := cloudRestoreEquivalentText(agentRead)
+	for _, fragment := range []string{"original-user-body", "[Gateway 标注", "board", "/board", "revision r7", "改成蓝色", "element_id=submit-btn", "selector=button#submit"} {
+		if !strings.Contains(restoredText, fragment) {
+			t.Fatalf("actual cloud history content omits annotation body/target: %q", fragment)
+		}
+	}
+	// Human reader and the stored message stay untouched.
+	humanRead := hub.historyMessageDataForRecipient(7, message)
+	if humanRead.Content != "original-user-body" {
+		t.Fatalf("human history copy changed: %v", humanRead.Content)
+	}
+	if len(humanRead.ContentBlocks) != 0 {
+		t.Fatalf("human history blocks changed: %+v", humanRead.ContentBlocks)
+	}
+	if message.Content != "original-user-body" || len(message.ContentBlocks) != 0 {
+		t.Fatal("the stored message was mutated")
+	}
+	// The author reading its own history gets no injected copy either.
+	if authorRead := hub.historyMessageDataForRecipient(7, message); authorRead.Content != "original-user-body" {
+		t.Fatalf("author copy changed: %v", authorRead.Content)
+	}
+	// The history API passes the same per-recipient copy through.
+	apiRead := hub.historyAPIMessageForRecipient(9, message)
+	if apiContent, _ := apiRead["content"].(string); !strings.Contains(apiContent, "[Gateway 标注") {
+		t.Fatalf("history API lost the annotation context: %q", apiContent)
+	}
+
+	t.Run("rich image content appends to the rendered description", func(t *testing.T) {
+		richMessage := &types.Message{
+			ID: 73, TopicID: "p2p_7_9", FromUID: 7, MsgType: "image",
+			Content:  `{"type":"image","payload":{"url":"/uploads/a.png","name":"a.png","description":"截图"}}`,
+			Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+		}
+		agentRead := hub.historyMessageDataForRecipient(9, richMessage)
+		restoredText := cloudRestoreEquivalentText(agentRead)
+		if !strings.Contains(restoredText, "截图") || !strings.Contains(restoredText, "[Gateway 标注") {
+			t.Fatalf("rich description lost the annotation: %q", restoredText)
+		}
+		if richMessage.Content == "" || strings.Contains(richMessage.Content, "[Gateway 标注") {
+			t.Fatal("the stored rich content was mutated")
+		}
+		humanRead := hub.historyMessageDataForRecipient(7, richMessage)
+		if restored := cloudRestoreEquivalentText(humanRead); strings.Contains(restored, "[Gateway 标注") {
+			t.Fatalf("human rich copy changed: %q", restored)
+		}
+	})
+
+	t.Run("rich content with payload text keeps url and appends there", func(t *testing.T) {
+		// payload.text wins over payload.description in cloudMessageText, so
+		// the agent's copy must append into the winning field.
+		textMessage := &types.Message{
+			ID: 76, TopicID: "p2p_7_9", FromUID: 7, MsgType: "file",
+			Content:  `{"type":"file","payload":{"url":"/uploads/report.xlsx","name":"report.xlsx","text":"季度报表"}}`,
+			Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+		}
+		agentRead := hub.historyMessageDataForRecipient(9, textMessage)
+		restoredText := cloudRestoreEquivalentText(agentRead)
+		if !strings.Contains(restoredText, "[历史文件：report.xlsx]") || !strings.Contains(restoredText, "季度报表") || !strings.Contains(restoredText, "[Gateway 标注") || !strings.Contains(restoredText, "改成蓝色") {
+			t.Fatalf("agent rich copy lost the annotation in payload.text: %q", restoredText)
+		}
+		if strings.Contains(textMessage.Content, "[Gateway 标注") {
+			t.Fatal("the stored rich content was mutated")
+		}
+		humanRead := hub.historyMessageDataForRecipient(7, textMessage)
+		if restored := cloudRestoreEquivalentText(humanRead); strings.Contains(restored, "[Gateway 标注") {
+			t.Fatalf("human rich copy changed: %q", restored)
+		}
+	})
+
+	t.Run("rich content without description carries the annotation in description", func(t *testing.T) {
+		// cloudMessageText never falls back to content_blocks for rich
+		// file/image/voice content, so the agent's copy gains a description.
+		bareMessage := &types.Message{
+			ID: 74, TopicID: "p2p_7_9", FromUID: 7, MsgType: "image",
+			Content:  `{"type":"image","payload":{"url":"/uploads/a.png"}}`,
+			Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+		}
+		agentRead := hub.historyMessageDataForRecipient(9, bareMessage)
+		restoredText := cloudRestoreEquivalentText(agentRead)
+		if !strings.Contains(restoredText, "[历史图片]") || !strings.Contains(restoredText, "[Gateway 标注") || !strings.Contains(restoredText, "改成蓝色") {
+			t.Fatalf("agent rich copy lost the annotation: %q", restoredText)
+		}
+		if strings.Contains(bareMessage.Content, "[Gateway 标注") {
+			t.Fatal("the stored rich content was mutated")
+		}
+		humanRead := hub.historyMessageDataForRecipient(7, bareMessage)
+		if restored := cloudRestoreEquivalentText(humanRead); strings.Contains(restored, "[Gateway 标注") {
+			t.Fatalf("human rich copy changed: %q", restored)
+		}
+	})
+
+	t.Run("foreign agent history reads stay clean", func(t *testing.T) {
+		// A reader that is not the annotated Agent gets no annotation text.
+		other := &types.Message{
+			ID: 75, TopicID: "p2p_7_10", FromUID: 7, Content: "plain", MsgType: "text",
+			Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+		}
+		if read := hub.historyMessageDataForRecipient(9, other); read.Content != "plain" {
+			t.Fatalf("foreign topic reader copy changed: %v", read.Content)
+		}
+	})
+}
+
+// TestExportXiaoBaHistoryFixture writes the offline history deliveries (the
+// authorized Agent's read copy plus the human reader copy) for every rich
+// payload shape, so the reviewer's actual XiaoBa cloudMessageText AST script
+// can re-verify the current code path:
+//
+//	GATEWAY_ANNOTATIONS_EXPORT_FIXTURE=1 go test ./server/ -run 'TestExportXiaoBaHistoryFixture' && \
+//	node /tmp/pr575-actual-xiaoba-cloud.cjs /tmp/xiaoba-annotation-history-fixture.json
+func TestExportXiaoBaHistoryFixture(t *testing.T) {
+	if os.Getenv("GATEWAY_ANNOTATIONS_EXPORT_FIXTURE") == "" {
+		t.Skip("set GATEWAY_ANNOTATIONS_EXPORT_FIXTURE to write /tmp/xiaoba-annotation-history-fixture.json")
+	}
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+
+	type modelMessage struct {
+		Content       interface{}              `json:"content"`
+		ContentBlocks []map[string]interface{} `json:"content_blocks"`
+		Metadata      map[string]interface{}   `json:"metadata"`
+		FromUID       int64                    `json:"from_uid"`
+	}
+	type entry struct {
+		Name    string       `json:"name"`
+		Message modelMessage `json:"message"`
+		Expect  []string     `json:"expect"`
+		Forbid  []string     `json:"forbid"`
+	}
+	entries := []entry{}
+
+	appendRead := func(name string, message *types.Message, recipientUID int64, expect, forbid []string) {
+		read := hub.historyMessageDataForRecipient(recipientUID, message)
+		blocks := []map[string]interface{}{}
+		for _, block := range read.ContentBlocks {
+			blocks = append(blocks, map[string]interface{}{"type": block.Type, "text": block.Text})
+		}
+		entries = append(entries, entry{
+			Name: name,
+			Message: modelMessage{
+				Content: read.Content, ContentBlocks: blocks, Metadata: read.Metadata,
+				FromUID: message.FromUID,
+			},
+			Expect: expect, Forbid: forbid,
+		})
+	}
+
+	agentExpect := []string{"改成蓝色", "submit-btn", "/board"}
+	richShapes := []struct {
+		msgType string
+		payload string
+	}{
+		{"file", `{"type":"file","payload":{"name":"f.pdf","url":"/uploads/f.pdf"}}`},
+		{"file", `{"type":"file","payload":{"name":"f.pdf","url":"/uploads/f.pdf","text":"original-rich-text"}}`},
+		{"file", `{"type":"file","payload":{"name":"f.pdf","url":"/uploads/f.pdf","description":"original-rich-description"}}`},
+		{"image", `{"type":"image","payload":{"name":"f.pdf","url":"/uploads/f.pdf"}}`},
+		{"image", `{"type":"image","payload":{"name":"f.pdf","url":"/uploads/f.pdf","text":"original-rich-text"}}`},
+		{"image", `{"type":"image","payload":{"name":"f.pdf","url":"/uploads/f.pdf","description":"original-rich-description"}}`},
+		{"voice", `{"type":"voice","payload":{"name":"f.pdf","url":"/uploads/f.pdf"}}`},
+		{"voice", `{"type":"voice","payload":{"name":"f.pdf","url":"/uploads/f.pdf","text":"original-rich-text"}}`},
+		{"voice", `{"type":"voice","payload":{"name":"f.pdf","url":"/uploads/f.pdf","description":"original-rich-description"}}`},
+	}
+	for _, shape := range richShapes {
+		message := &types.Message{
+			ID: 81, TopicID: "p2p_7_9", FromUID: 7, MsgType: shape.msgType,
+			Content:  shape.payload,
+			Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+		}
+		appendRead("agent "+shape.msgType+" "+shape.payload, message, 9, agentExpect, nil)
+		// Human expectations follow the original payload only.
+		humanExpect := []string{}
+		if strings.Contains(shape.payload, "original-rich-text") {
+			humanExpect = append(humanExpect, "original-rich-text")
+		}
+		if strings.Contains(shape.payload, "original-rich-description") {
+			humanExpect = append(humanExpect, "original-rich-description")
+		}
+		appendRead("human "+shape.msgType+" "+shape.payload, message, 7, humanExpect, []string{"Gateway 标注", "改成蓝色"})
+	}
+
+	plain := &types.Message{
+		ID: 82, TopicID: "p2p_7_9", FromUID: 7, Content: "original-user-body", MsgType: "text",
+		Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+	appendRead("agent plain", plain, 9, []string{"original-user-body", "改成蓝色", "submit-btn"}, nil)
+	appendRead("human plain", plain, 7, []string{"original-user-body"}, []string{"Gateway 标注"})
+
+	encoded, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile("/tmp/xiaoba-annotation-history-fixture.json", encoded, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Log("history fixture written to /tmp/xiaoba-annotation-history-fixture.json")
 }

@@ -349,7 +349,7 @@ export function createGatewayAnnotationHost({
       type: GATEWAY_HOST_CONNECT_TYPE,
       contract_version: GATEWAY_ANNOTATION_BRIDGE_CONTRACT,
       session_id: state.session.token,
-      request_id: createSessionToken(),
+      request_id: state.session.requestId,
     };
   }
 
@@ -382,6 +382,10 @@ export function createGatewayAnnotationHost({
   }
 
   function handleReady(event, payload) {
+    // A ready only completes the handshake it answers: the request_id is
+    // minted per connect and echoed by the SDK, so a late ready from an
+    // older connect (or a replayed one) cannot activate the new session.
+    if (payload.request_id !== state.session.requestId) return;
     const capabilities = payload.capabilities;
     if (!Array.isArray(capabilities) || capabilities.length === 0
       || capabilities.some((item) => !SUPPORTED_CAPABILITIES.includes(item))) {
@@ -412,19 +416,49 @@ export function createGatewayAnnotationHost({
   }
 
   function handlePage(event, payload) {
+    // Page/target reports are only meaningful on a completed handshake.
+    if (!state.ready) return;
     const page = normalizedPage(payload.page);
     if (page === null) {
       notify(onUnavailable, state.session.binding, 'bad-page');
       return;
     }
-    state.page = { ...state.page, ...page };
+    // A page report is a full snapshot of the frame's current document:
+    // replace, never merge — a dropped revision must actually drop.
+    state.page = page;
     notify(onPageChange, state.page);
   }
 
   function handleTarget(event, payload) {
+    // A target is only accepted after ready, in the currently active
+    // explicit mode, for a kind the SDK declared, on the page the host
+    // currently tracks. Anything else is stale or mixed-document state.
+    if (!state.ready) return;
+    const mode = state.session.mode;
+    if (mode === 'off') return;
+    // Out-of-mode messages are silent noise (a buggy or racing SDK), not
+    // reportable protocol violations; kind is checked on the raw payload
+    // before deeper schema validation.
+    if (payload?.selection?.kind !== mode) return;
     const selection = normalizeGatewayAnnotationSelection(payload.selection);
     if (selection === null) {
       notify(onUnavailable, state.session.binding, 'bad-selection');
+      return;
+    }
+    if (!state.ready.capabilities.includes(selection.kind)) {
+      notify(onUnavailable, state.session.binding, 'capability-mismatch');
+      return;
+    }
+    const page = normalizedPage(payload.page);
+    if (page === null) {
+      notify(onUnavailable, state.session.binding, 'bad-page');
+      return;
+    }
+    if (page.path !== state.page.path || (page.revision || '') !== (state.page.revision || '')) {
+      // The frame is speaking for a document the host has not accepted as
+      // current (missing page.v1 or out-of-order messages): the target must
+      // not be silently re-anchored onto a page it does not belong to.
+      notify(onUnavailable, state.session.binding, 'page-drift');
       return;
     }
     notify(onSelection, selection, state.page);
@@ -434,6 +468,10 @@ export function createGatewayAnnotationHost({
     if (state.disposed) return;
     const current = state.session;
     if (current?.frame) {
+      // Re-check the live binding on every message: if the consumer's
+      // binding has moved on or disappeared, messages from the stale frame
+      // are refused even before session/origin checks.
+      if (!revalidateBinding()) return;
       const failure = validSession(event);
       if (failure) return;
       const payload = event.data;
@@ -477,26 +515,16 @@ export function createGatewayAnnotationHost({
     if (state.disposed) return false;
     const nextBinding = bindingOverride ?? getBinding();
     if (!nextBinding?.frame?.contentWindow?.postMessage) return false;
-    const current = state.session;
-    if (current) {
-      const sameBinding = bindingKey(nextBinding) === bindingKey(current.binding)
-        && nextBinding.frame?.contentWindow === current.frame?.contentWindow;
-      if (!sameBinding) {
-        // Replace: same-activation rebind into a fresh session id (the old
-        // frame keeps a dead token and cannot resurrect state into it).
-        revoke('rebind');
-      } else {
-        // Same frame, same app: refresh the binding reference in case the
-        // consumer rebuilt the object, keep the existing session id so an
-        // in-flight ready/target from the frame is still attributed.
-        nextBinding.agentUid = current.binding.agentUid;
-        state.session.binding = nextBinding;
-        return true;
-      }
-    }
+    // Every explicit connect is a new-document handshake: it always mints a
+    // fresh session token (and request_id) and posts a fresh connect. A
+    // reloaded iframe must not inherit the previous document's token, and
+    // any in-flight state from the old session is dead immediately.
+    if (state.session) revoke('rebind');
     const token = createSessionToken();
+    const requestId = createSessionToken();
     state.session = {
       token,
+      requestId,
       binding: nextBinding,
       bindingKey: bindingKey(nextBinding),
       appId: nextBinding.appId ?? null,

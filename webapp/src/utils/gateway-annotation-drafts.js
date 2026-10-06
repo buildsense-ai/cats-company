@@ -1,4 +1,5 @@
 import {
+  getStorage,
   readStorageValue,
   writeStorageValue,
   removeStorageValue,
@@ -103,19 +104,42 @@ function validDraftAnnotation(value) {
     target: { ...target },
   };
   if (label) normalized.label = label;
+  // The page the annotation was captured on is part of the annotation:
+  // once a bucket captures against one page/revision, later framework loads
+  // or SPA navigations must not silently re-anchor the target to the new
+  // document. Stored here so a repoen can surface the original capture page
+  // instead of replacing it with the current viewer page.
+  const page = value.page && typeof value.page === 'object' && !Array.isArray(value.page)
+    ? value.page
+    : null;
+  const pagePath = page && typeof page.path === 'string' && page.path.length > 0
+    && page.path.length <= 1024 && page.path.startsWith('/')
+    ? page.path
+    : '';
+  if (pagePath) {
+    const capturePage = { path: pagePath };
+    if (typeof page.revision === 'string' && page.revision
+      && page.revision.length <= 128 && !/[\u0000-\u001f\u007f]/.test(page.revision)) {
+      capturePage.revision = page.revision;
+    }
+    normalized.page = capturePage;
+  }
   return normalized;
 }
 
 function draftValueFor(bucket, stored) {
   // The certificate proves the stored rows belong to the bucket identity;
   // a mismatch means the draft must never be resurrected for a different
-  // topic, agent, or application than the key it was written under.
+  // topic, agent, or application than the key it was written under. The
+  // agent must equal the bucket's agent exactly — a merely positive value
+  // would let a bucket written for agent A resurrect under agent B.
   const certificate = stored?.[`${bucket}.meta`];
   if (!certificate || typeof certificate !== 'object' || Array.isArray(certificate)) return null;
+  const [bucketTopic, bucketAgent, bucketApp] = bucket.split('|');
   const normalizedAgent = Number(certificate.agent_uid);
-  if (normalizedAgent <= 0
-    || certificate.app_id !== bucket.split('|')[2]
-    || certificate.topic_id !== bucket.split('|')[0]) return null;
+  if (String(normalizedAgent) !== bucketAgent
+    || certificate.app_id !== bucketApp
+    || certificate.topic_id !== bucketTopic) return null;
   const annotations = Array.isArray(stored[bucket])
     ? stored[bucket].map(validDraftAnnotation).filter(Boolean)
     : [];
@@ -163,15 +187,22 @@ export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, a
     writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, [], storage);
     return;
   }
-  const serialized = JSON.stringify(bounded);
+  // Mirror the server's 16KiB **UTF-8 byte** bound (JS length counts UTF-16
+  // units, which under-counts CJK bodies). An over-limit draft is never
+  // persisted — but also never silently dropped: the previous in-memory rows
+  // stay readable so the user can still edit/remove, and persistence retries
+  // on the next successful write.
+  const serialized = new TextEncoder().encode(JSON.stringify(bounded));
   if (serialized.length > GATEWAY_ANNOTATION_DRAFT_MAX_BYTES) {
-    // A draft over the ingestion limit can never be sent; keep trimming until
-    // it fits, so persistence never holds an unsentable payload.
-    if (bounded.length > 1) {
-      writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, bounded.slice(0, bounded.length - 1), storage);
-      return;
-    }
-    writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, [], storage);
+    try {
+      const target = storageTarget(storage);
+      if (target) {
+        const shrink = readDraftMap(userID, storage) || {};
+        delete shrink[bucket];
+        delete shrink[`${bucket}.meta`];
+        writeDraftMap(userID, shrink, storage);
+      }
+    } catch { /* storage unavailable: in-memory state stands */ }
     return;
   }
   const stored = readDraftMap(userID, storage) || {};
@@ -210,4 +241,39 @@ export function buildGatewayAnnotationsMetadata(context, drafts, page) {
 
 export function gatewayAnnotationDraftKey(topicId, agentUid, appId) {
   return draftBucketKey(topicId, agentUid, appId);
+}
+
+// Logout/session-expiry cleanup: removes every user's gateway annotation draft
+// bucket from the given storage (sessionStorage + its localStorage mirror, the
+// same shaped semantics as clearPersistedComposerDrafts). User-scoped keys are
+// an isolation boundary, not retention: a same-account relogin that finds the
+// old bucket would be able to resurrect stale targets without re-confirming
+// the page, so logout removes all buckets unconditionally.
+export function clearPersistedGatewayAnnotationDrafts(storage = 'sessionStorage') {
+  const resolved = [];
+  if (storage && typeof storage === 'object') {
+    resolved.push(storage);
+  } else if (typeof storage === 'string' && storage) {
+    resolved.push(getStorage(storage));
+    if (storage === 'sessionStorage') resolved.push(getStorage('localStorage'));
+  }
+  const targets = resolved.filter(Boolean);
+  let removed = 0;
+  targets.forEach((target) => {
+    try {
+      const doomed = [];
+      for (let index = 0; index < target.length; index += 1) {
+        const key = target.key(index);
+        if (typeof key === 'string' && key.startsWith(GATEWAY_ANNOTATION_DRAFTS_STORAGE_PREFIX)) {
+          doomed.push(key);
+        }
+      }
+      doomed.forEach((key) => {
+        if (removeStorageValue(key, target)) removed += 1;
+      });
+    } catch {
+      // A blocked storage target must not prevent the other target cleanup.
+    }
+  });
+  return removed;
 }

@@ -14,9 +14,7 @@ function disposeActiveSdk() {
   delete window.parent;
 }
 
-function createSdk({ revision } = {}) {
-  // The SDK refuses to post when it is not actually framed; give the test a
-  // fake parent window so the real browser path is exercised.
+function createParentBus() {
   const fakeParent = { postMessage: vi.fn() };
   Object.defineProperty(window, 'parent', { configurable: true, get: () => fakeParent });
   const posted = [];
@@ -24,6 +22,13 @@ function createSdk({ revision } = {}) {
     posted.push({ message, origin });
   });
   currentFakeParent = fakeParent;
+  return { posted, fakeParent };
+}
+
+function createSdk({ revision } = {}) {
+  // The SDK refuses to post when it is not actually framed; give the test a
+  // fake parent window so the real browser path is exercised.
+  const { fakeParent, posted } = createParentBus();
   const sdk = window.CatsCoAnnotations.create({
     parentOrigin: 'https://host.catsco.example',
     revision,
@@ -198,19 +203,22 @@ describe('mode handling', () => {
     connect();
     sendMode('text');
 
+    const paragraph = document.createElement('p');
+    paragraph.id = 'text-fixture';
+    const textNode = document.createTextNode('需要修改的示例文本尾部还有文字');
+    paragraph.appendChild(textNode);
+    document.body.appendChild(paragraph);
+
     const range = document.createRange();
-    range.selectNodeContents(document.body);
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 9); // '需要修改的示例文本'
     const mockSelection = {
       isCollapsed: false,
       rangeCount: 1,
-      anchorNode: document.body,
+      anchorNode: textNode,
+      focusNode: textNode,
       toString: () => '需要修改的示例文本',
-      getRangeAt: () => {
-        const inner = document.createRange();
-        inner.setStart(document.body.firstChild, 0);
-        inner.setEnd(document.body.firstChild, 5);
-        return inner;
-      },
+      getRangeAt: () => range,
       removeAllRanges: () => {},
     };
     vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection);
@@ -220,9 +228,104 @@ describe('mode handling', () => {
     expect(targets).toHaveLength(1);
     expect(targets[0].selection.kind).toBe('text');
     expect(targets[0].selection.target.text).toBe('需要修改的示例文本');
+    expect(targets[0].selection.target.suffix).toBe('尾部还有文字');
   });
 
-  it('text mode ignores collapsed selections and sensitive subtrees', () => {
+  it('text mode rejects a range that only touches a sensitive subtree at one end', () => {
+    const { posted } = createSdk();
+    connect();
+    sendMode('text');
+
+    // A range may start in plain text and end inside a password field; the
+    // whole range must be disqualified, not just the anchor side.
+    const paragraph = document.createElement('p');
+    paragraph.id = 'cross-sensitive-fixture';
+    const before = document.createTextNode('before ');
+    const password = document.createElement('input');
+    password.setAttribute('type', 'password');
+    const after = document.createTextNode(' after');
+    paragraph.append(before, password, after);
+    document.body.appendChild(paragraph);
+
+    const range = document.createRange();
+    range.setStart(before, 0);
+    range.setEnd(after, 6);
+
+    const mockSelection = {
+      isCollapsed: false,
+      rangeCount: 1,
+      anchorNode: before,
+      focusNode: after,
+      toString: () => 'before  after',
+      getRangeAt: () => range,
+      removeAllRanges: () => {},
+    };
+    vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection);
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    expect(targetMessages(posted)).toHaveLength(0);
+  });
+
+  it('text mode rejects ranges ending in contenteditable or marked subtrees', () => {
+    const { posted } = createSdk();
+    connect();
+    sendMode('text');
+
+    const paragraph = document.createElement('p');
+    const plain = document.createTextNode('plain ');
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    editable.appendChild(document.createTextNode('draft text'));
+    paragraph.append(plain, editable);
+    document.body.appendChild(paragraph);
+
+    const marked = document.createElement('span');
+    marked.setAttribute('data-catsco-annotation-sensitive', '');
+    marked.appendChild(document.createTextNode('secret'));
+    const plainAfterMarked = document.createTextNode('tail');
+    const markedHost = document.createElement('p');
+    markedHost.append(plainAfterMarked);
+    markedHost.prepend(marked);
+    document.body.appendChild(markedHost);
+
+    // end inside contenteditable
+    const editableRange = document.createRange();
+    editableRange.setStart(plain, 0);
+    editableRange.setEnd(editable.firstChild, 5);
+
+    // start before a marked subtree, ending after it
+    const markedRange = document.createRange();
+    markedRange.setStart(marked.firstChild, 0);
+    markedRange.setEnd(plainAfterMarked, 4);
+
+    // plain-to-plain range within the same paragraph is fine
+    const plainRange = document.createRange();
+    plainRange.setStart(plain, 0);
+    plainRange.setEnd(plain, 6);
+
+    const makeSelection = (range) => ({
+      isCollapsed: false,
+      rangeCount: 1,
+      anchorNode: range.startContainer,
+      focusNode: range.endContainer,
+      toString: () => range.toString(),
+      getRangeAt: () => range,
+      removeAllRanges: () => {},
+    });
+
+    vi.spyOn(window, 'getSelection').mockReturnValue(makeSelection(editableRange));
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    expect(targetMessages(posted)).toHaveLength(0);
+
+    vi.spyOn(window, 'getSelection').mockReturnValue(makeSelection(markedRange));
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    expect(targetMessages(posted)).toHaveLength(0);
+
+    vi.spyOn(window, 'getSelection').mockReturnValue(makeSelection(plainRange));
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    expect(targetMessages(posted)).toHaveLength(1);
+  });
+
+  it('text mode ignores collapsed selections', () => {
     const { posted } = createSdk();
     connect();
     sendMode('text');
@@ -259,6 +362,221 @@ describe('mode handling', () => {
     document.body.dispatchEvent(new MouseEvent('mousemove', { button: 0, clientX: 103, clientY: 101, bubbles: true, cancelable: true }));
     document.body.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX: 103, clientY: 101, bubbles: true, cancelable: true }));
     expect(targetMessages(posted)).toHaveLength(0);
+  });
+});
+
+describe('multi-instance history dispatcher (P2-1)', () => {
+  // Both instances live in the SAME document, so they share one window and
+  // one parent channel (faithful to the real failure mode). Page messages
+  // per navigation are counted on the shared bus: N live instances produce
+  // N page notifications.
+  function createSharedBus() {
+    // Parent channel only — no auto-created instance — so live-instance
+    // counts in assertions refer exactly to the instances the test makes.
+    const { posted } = createParentBus();
+    const instances = [];
+    const createInstance = () => {
+      const instance = window.CatsCoAnnotations.create({
+        parentOrigin: 'https://host.catsco.example',
+      });
+      instances.push(instance);
+      return instance;
+    };
+    return { posted, createInstance, instances };
+  }
+
+  function pageMessagesWithPath(posted, path) {
+    return pageMessages(posted).filter((m) => m.page.path === path);
+  }
+
+  it('both instances receive navigation while alive; any dispose order keeps survivors working', () => {
+    const { posted, createInstance } = createSharedBus();
+    const natives = { push: history.pushState, replace: history.replaceState };
+    const first = createInstance();
+    const second = createInstance();
+    connect('catsco_session_a');
+    connect('catsco_session_b');
+    history.pushState({}, '', '/multi-view');
+    expect(pageMessagesWithPath(posted, '/multi-view')).toHaveLength(2);
+
+    // Dispose the FIRST-created instance: the survivor keeps receiving
+    // page notifications and the patch stays installed.
+    first.dispose();
+    history.pushState({}, '', '/after-first-dispose');
+    expect(pageMessagesWithPath(posted, '/after-first-dispose')).toHaveLength(1);
+    expect(history.pushState).not.toBe(natives.push); // still patched
+
+    // After the LAST dispose the native methods are restored.
+    second.dispose();
+    history.pushState({}, '', '/after-last-dispose');
+    expect(pageMessagesWithPath(posted, '/after-last-dispose')).toHaveLength(0);
+    expect(history.pushState).toBe(natives.push);
+    expect(history.replaceState).toBe(natives.replace);
+  });
+
+  it('reverse dispose order also keeps the survivor notified', () => {
+    const { posted, createInstance } = createSharedBus();
+    const natives = { push: history.pushState, replace: history.replaceState };
+    const first = createInstance();
+    const second = createInstance();
+    connect('catsco_session_a');
+    second.dispose(); // dispose the LATER instance first
+    history.pushState({}, '', '/after-reverse-dispose');
+    expect(pageMessagesWithPath(posted, '/after-reverse-dispose')).toHaveLength(1);
+
+    first.dispose();
+    history.pushState({}, '', '/after-all-dispose');
+    expect(pageMessagesWithPath(posted, '/after-all-dispose')).toHaveLength(0);
+    expect(history.pushState).toBe(natives.push);
+  });
+
+  it('re-creating after full cleanup patches history again', () => {
+    const { posted, createInstance } = createSharedBus();
+    const natives = { push: history.pushState };
+    const first = createInstance();
+    first.dispose();
+    activeSdk = null;
+    expect(history.pushState).toBe(natives.push);
+
+    const again = createInstance();
+    connect('catsco_session_c');
+    history.pushState({}, '', '/recreated');
+    expect(pageMessagesWithPath(posted, '/recreated')).toHaveLength(1);
+    again.dispose();
+    expect(history.pushState).toBe(natives.push);
+  });
+});
+
+describe('selector anchor correctness', () => {
+  function elementTargetOf(posted) {
+    const targets = targetMessages(posted);
+    return targets[targets.length - 1]?.selection.target ?? null;
+  }
+
+  function clickInElementMode(element) {
+    const { posted } = createSdk();
+    connect();
+    sendMode('element');
+    vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 10, width: 100, height: 30 });
+    element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    return { posted, target: elementTargetOf(posted) };
+  }
+
+  it('nth-of-type counts same-tag siblings with mixed h1/button/p brothers', () => {
+    const container = document.createElement('section');
+    container.id = 'mixed-siblings';
+    container.innerHTML = [
+      '<h1>title</h1>',
+      '<button>one</button>',
+      '<p>first</p>',
+      '<button>two</button>',
+      '<p>real target</p>',
+    ].join('');
+    document.body.appendChild(container);
+    const element = container.querySelectorAll('p')[1];
+
+    const { target } = clickInElementMode(element);
+    expect(target.element_id ?? null).toBeNull();
+    expect(target.selector).toBeTruthy();
+    expect(document.querySelector(target.selector)).toBe(element);
+    // The p is the 2nd p among same-tag siblings, not index 5 of all children.
+    expect(target.selector).toContain('p:nth-of-type(2)');
+  });
+
+  it('a sanitized data-catsco-annotation-id that resolves to another element is not used as anchor', () => {
+    const host1 = document.createElement('p');
+    host1.setAttribute('data-catsco-annotation-id', 'x"y'); // sanitizes to "xy"
+    host1.id = 'host1';
+    const decoy = document.createElement('p');
+    decoy.setAttribute('data-catsco-annotation-id', 'xy');
+    decoy.id = 'decoy';
+    document.body.append(decoy, host1);
+
+    const { target } = clickInElementMode(host1);
+    // The attribute anchor would match the decoy; it must be skipped.
+    expect(target.selector ?? '').not.toContain('[data-catsco-annotation-id="xy"]');
+    if (target.selector) {
+      expect(document.querySelector(target.selector)).toBe(host1);
+    }
+    expect(target.element_id).toBe('x"y');
+  });
+
+  it('a selector that cannot match the real element is dropped, not asserted', () => {
+    // Deep chain beyond the 6-level cap inside a long hierarchy: the built
+    // selector would exceed the cap/boundary and must not claim to match.
+    let element = null;
+    const root = document.createElement('div');
+    root.id = 'deep-root';
+    document.body.appendChild(root);
+    let parent = root;
+    for (let i = 0; i < 10; i++) {
+      const next = document.createElement('div');
+      next.id = `level-${i}`;
+      parent.appendChild(next);
+      parent = next;
+      element = next;
+    }
+    const { target } = clickInElementMode(element);
+    expect(target.element_id).toBe('level-9');
+    if (target.selector) {
+      expect(document.querySelector(target.selector)).toBe(element);
+    }
+  });
+});
+
+describe('text selection range coverage (defensive hardening)', () => {
+  function mouseupWithRange(range) {
+    const { posted } = createSdk();
+    connect();
+    sendMode('text');
+    const mockSelection = {
+      isCollapsed: false,
+      rangeCount: 1,
+      anchorNode: range.startContainer,
+      focusNode: range.endContainer,
+      toString: () => range.toString(),
+      getRangeAt: () => range,
+      removeAllRanges: () => {},
+    };
+    vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection);
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    return targetMessages(posted);
+  }
+
+  it('selectNodeContents over a container with a sensitive descendant is rejected', () => {
+    const container = document.createElement('div');
+    container.id = 'mixed-content-container';
+    container.innerHTML = '<p>说明文本</p><input type="password">';
+    document.body.appendChild(container);
+
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    expect(mouseupWithRange(range)).toHaveLength(0);
+  });
+
+  it('selectNodeContents over a container with a marked descendant is rejected', () => {
+    const container = document.createElement('div');
+    container.id = 'marked-content-container';
+    container.innerHTML = '<p>说明文本</p><span data-catsco-annotation-sensitive="">内部机密</span>';
+    document.body.appendChild(container);
+
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    expect(mouseupWithRange(range)).toHaveLength(0);
+  });
+
+  it('plain sibling-free containers still annotate', () => {
+    const container = document.createElement('p');
+    container.id = 'plain-container';
+    container.textContent = '纯文本内容';
+    document.body.appendChild(container);
+
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    const targets = mouseupWithRange(range);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].selection.target.text).toBe('纯文本内容');
   });
 });
 

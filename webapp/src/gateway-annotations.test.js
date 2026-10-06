@@ -68,6 +68,7 @@ function connectReady(h, host, callbacks, pageOverrides = {}) {
       type: GATEWAY_SDK_READY_TYPE,
       contract_version: BRIDGE,
       session_id: connect.session_id,
+      request_id: connect.request_id,
       capabilities: ['element', 'text', 'region'],
       page: pageOverrides.page ?? { path: '/board' },
     },
@@ -333,6 +334,7 @@ describe('createGatewayAnnotationHost', () => {
         type: GATEWAY_SDK_READY_TYPE,
         contract_version: BRIDGE,
         session_id: connect.session_id,
+        request_id: connect.request_id,
         capabilities: [],
         page: { path: '/' },
       },
@@ -348,7 +350,7 @@ describe('createGatewayAnnotationHost', () => {
     host.connect();
     const connect = h.connectMessage();
     h.handleWindowMessage({
-      data: { type: GATEWAY_SDK_READY_TYPE, contract_version: BRIDGE, session_id: connect.session_id, capabilities: ['element'], page: { path: 'evil' } },
+      data: { type: GATEWAY_SDK_READY_TYPE, contract_version: BRIDGE, session_id: connect.session_id, request_id: connect.request_id, capabilities: ['element'], page: { path: 'evil' } },
       origin: h.origin,
       source: h.contentWindow,
     });
@@ -365,6 +367,7 @@ describe('createGatewayAnnotationHost', () => {
   it('routes valid selections with current page; invalid selections report onUnavailable', () => {
     const { h, host, callbacks } = setup();
     const connect = connectReady(h, host, callbacks);
+    expect(host.setMode('element')).toBe(true); // targets need the active mode
     const selection = { id: 'a1', kind: 'element', label: '钮', target: { element_id: 'ok' } };
     h.handleWindowMessage({
       data: {
@@ -392,10 +395,8 @@ describe('createGatewayAnnotationHost', () => {
       source: h.contentWindow,
     });
     expect(callbacks.onSelection).toHaveBeenCalledTimes(1);
-    expect(callbacks.onUnavailable).toHaveBeenCalledWith(
-      acceptAnyBinding(),
-      'bad-selection',
-    );
+    // kind mismatches the active mode → silently ignored, not reported.
+    expect(callbacks.onUnavailable).not.toHaveBeenCalled();
   });
 
   it('connect to a different frame app revokes the old session and refuses stale notices', () => {
@@ -474,3 +475,176 @@ describe('createGatewayAnnotationHost', () => {
 function acceptAnyBinding() {
   return expect.any(Object);
 }
+
+describe('session lifecycle (reload / stale binding / gated targets)', () => {
+  function targetMessage(connect, selection, page) {
+    return {
+      type: GATEWAY_SDK_TARGET_TYPE,
+      contract_version: BRIDGE,
+      session_id: connect.session_id,
+      page,
+      selection,
+    };
+  }
+
+  it('connect on the same binding mints a NEW token and posts a fresh connect (iframe reload)', () => {
+    const { h, host, callbacks } = setup();
+    host.connect();
+    expect(callbacks.onUnavailable).not.toHaveBeenCalled();
+
+    expect(host.connect()).toBe(true);
+    const connects = h.posted.filter((p) => p.message.type === GATEWAY_HOST_CONNECT_TYPE);
+    expect(connects).toHaveLength(2);
+    const first = connects[0].message;
+    const second = connects[1].message;
+    expect(second.session_id).not.toBe(first.session_id);
+    expect(second.request_id).not.toBe(first.request_id);
+    expect(host.sessionToken).toBe(second.session_id);
+    expect(callbacks.onUnavailable).toHaveBeenCalledTimes(1); // old session revoked
+
+    // A late ready answering the FIRST connect must not activate the session.
+    h.handleWindowMessage({
+      data: {
+        type: GATEWAY_SDK_READY_TYPE,
+        contract_version: BRIDGE,
+        session_id: first.session_id,
+        request_id: first.request_id,
+        capabilities: ['element'],
+        page: { path: '/' },
+      },
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    expect(callbacks.onReady).not.toHaveBeenCalled();
+  });
+
+  it('ready must echo the connect request_id', () => {
+    const { h, host, callbacks } = setup();
+    host.connect();
+    const connect = h.connectMessage();
+    h.handleWindowMessage({
+      data: { type: GATEWAY_SDK_READY_TYPE, contract_version: BRIDGE, session_id: connect.session_id, request_id: 'catsco_other_request', capabilities: ['element'], page: { path: '/' } },
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    expect(callbacks.onReady).not.toHaveBeenCalled();
+    h.handleWindowMessage({
+      data: { type: GATEWAY_SDK_READY_TYPE, contract_version: BRIDGE, session_id: connect.session_id, request_id: connect.request_id, capabilities: ['element'], page: { path: '/' } },
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    expect(callbacks.onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('messages from a frame that is no longer the current binding are refused', () => {
+    const { h, host, callbacks, setBinding } = setup();
+    host.connect();
+    const connect = h.connectMessage();
+    // The consumer's binding moved to a different frame/app.
+    const other = makeFrame('https://agent-999.example.com');
+    setBinding(bindingFor(other));
+    h.handleWindowMessage({
+      data: { type: GATEWAY_SDK_READY_TYPE, contract_version: BRIDGE, session_id: connect.session_id, request_id: connect.request_id, capabilities: ['element'], page: { path: '/' } },
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    expect(callbacks.onReady).not.toHaveBeenCalled();
+    expect(callbacks.onUnavailable).toHaveBeenCalledWith(expect.anything(), 'binding-changed');
+  });
+
+  it('targets are gated by ready state, capability and active mode', () => {
+    const { h, host, callbacks } = setup();
+    host.connect();
+    const connect = h.connectMessage();
+    const elementSelection = { id: 'e1', kind: 'element', label: '', target: { element_id: 'x' } };
+    // Before ready: ignored entirely.
+    h.handleWindowMessage({ data: targetMessage(connect, elementSelection, { path: '/' }), origin: h.origin, source: h.contentWindow });
+    expect(callbacks.onSelection).not.toHaveBeenCalled();
+
+    h.handleWindowMessage({
+      data: { type: GATEWAY_SDK_READY_TYPE, contract_version: BRIDGE, session_id: connect.session_id, request_id: connect.request_id, capabilities: ['element'], page: { path: '/board' } },
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    // Mode off: ignored.
+    h.handleWindowMessage({ data: targetMessage(connect, elementSelection, { path: '/board' }), origin: h.origin, source: h.contentWindow });
+    expect(callbacks.onSelection).not.toHaveBeenCalled();
+
+    expect(host.setMode('element')).toBe(true);
+    // Capability mismatch: text target while only 'element' was declared.
+    expect(host.setMode('text')).toBe(true);
+    h.handleWindowMessage({
+      data: targetMessage(connect, { id: 't1', kind: 'text', label: '', target: { text: '示例' } }, { path: '/board' }),
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    expect(callbacks.onSelection).not.toHaveBeenCalled();
+    expect(callbacks.onUnavailable).toHaveBeenCalledWith(expect.anything(), 'capability-mismatch');
+
+    // Declared kind in the matching mode: accepted.
+    expect(host.setMode('element')).toBe(true);
+    h.handleWindowMessage({ data: targetMessage(connect, elementSelection, { path: '/board' }), origin: h.origin, source: h.contentWindow });
+    expect(callbacks.onSelection).toHaveBeenCalledTimes(1);
+    expect(callbacks.onSelection).toHaveBeenCalledWith(elementSelection, { path: '/board' });
+  });
+
+  it('target page must match the tracked page snapshot (drift refuses the stale anchor)', () => {
+    const { h, host, callbacks } = setup();
+    host.connect();
+    const connect = h.connectMessage();
+    h.handleWindowMessage({
+      data: { type: GATEWAY_SDK_READY_TYPE, contract_version: BRIDGE, session_id: connect.session_id, request_id: connect.request_id, capabilities: ['element'], page: { path: '/board', revision: 'r1' } },
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    expect(host.setMode('element')).toBe(true);
+    const selection = { id: 'e1', kind: 'element', label: '', target: { element_id: 'x' } };
+
+    // Malformed page payload.
+    h.handleWindowMessage({ data: targetMessage(connect, selection, { path: 'nope' }), origin: h.origin, source: h.contentWindow });
+    expect(callbacks.onSelection).not.toHaveBeenCalled();
+    expect(callbacks.onUnavailable).toHaveBeenCalledWith(expect.anything(), 'bad-page');
+
+    // Page drifted ahead of the host's snapshot (no page.v1 yet).
+    h.handleWindowMessage({ data: targetMessage(connect, selection, { path: '/next', revision: 'r1' }), origin: h.origin, source: h.contentWindow });
+    expect(callbacks.onSelection).not.toHaveBeenCalled();
+    expect(callbacks.onUnavailable).toHaveBeenCalledWith(expect.anything(), 'page-drift');
+
+    // Revision drift is also a mismatch.
+    h.handleWindowMessage({ data: targetMessage(connect, selection, { path: '/board', revision: 'r2' }), origin: h.origin, source: h.contentWindow });
+    expect(callbacks.onSelection).not.toHaveBeenCalled();
+    expect(callbacks.onUnavailable).toHaveBeenCalledWith(expect.anything(), 'page-drift');
+
+    // After the frame announces the new page, matching targets are accepted.
+    h.handleWindowMessage({ data: { type: GATEWAY_SDK_PAGE_TYPE, contract_version: BRIDGE, session_id: connect.session_id, page: { path: '/board', revision: 'r2' } }, origin: h.origin, source: h.contentWindow });
+    expect(callbacks.onPageChange).toHaveBeenCalledWith({ path: '/board', revision: 'r2' });
+    h.handleWindowMessage({ data: targetMessage(connect, selection, { path: '/board', revision: 'r2' }), origin: h.origin, source: h.contentWindow });
+    expect(callbacks.onSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it('a page report is a full snapshot: revision can be dropped, not merged', () => {
+    const { h, host, callbacks } = setup();
+    host.connect();
+    const connect = h.connectMessage();
+    h.handleWindowMessage({
+      data: { type: GATEWAY_SDK_READY_TYPE, contract_version: BRIDGE, session_id: connect.session_id, request_id: connect.request_id, capabilities: ['element'], page: { path: '/board', revision: 'r1' } },
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    expect(host.page).toEqual({ path: '/board', revision: 'r1' });
+
+    // The frame drops its revision (e.g. SDK setRevision(null)): the new
+    // snapshot must replace the old one entirely.
+    h.handleWindowMessage({ data: { type: GATEWAY_SDK_PAGE_TYPE, contract_version: BRIDGE, session_id: connect.session_id, page: { path: '/board' } }, origin: h.origin, source: h.contentWindow });
+    expect(callbacks.onPageChange).toHaveBeenCalledWith({ path: '/board' });
+    expect(host.page).toEqual({ path: '/board' });
+
+    expect(host.setMode('element')).toBe(true);
+    h.handleWindowMessage({
+      data: targetMessage(connect, { id: 'e1', kind: 'element', label: '', target: { element_id: 'x' } }, { path: '/board' }),
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    expect(callbacks.onSelection).toHaveBeenCalledTimes(1); // revision-less target accepted
+  });
+});

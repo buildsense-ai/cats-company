@@ -67,12 +67,12 @@ import {
 ### createGatewayAnnotationHost({getBinding, onReady, onSelection, onPageChange, onUnavailable})
 
 - `getBinding() -> {frame, url, agentUid, appId, signal} | null`：绑定由消费方（messages-view）持有；`frame` 是 iframe 元素、`url` 是帧当前 URL（精确 origin 的唯一来源）、`signal` 是可选 AbortSignal（abort 即撤销会话）。
-- `host.connect(binding?)`：建立/重建会话。每次绑定变更必须重新 connect —— 内部生成新 `session_id`（宿主铸造，帧无法伪造新会话）。post 到帧的**精确 origin**（由 `binding.url` 解析）。
+- `host.connect(binding?)`：**每次显式 connect 都是新文档握手**——铸造全新 `session_id` + `request_id` 并发送 `connect.v1`，不复用旧 token；iframe onLoad 重载/重绑定必须再次 connect，旧会话全部在途状态立即作废（旧帧 replay 因 token 不符被拒）。post 到帧的**精确 origin**（由 `binding.url` 解析）。
 - `host.setMode(mode) -> boolean`：`off|element|text|region`；无会话时先 lazy connect，再下发 `mode.v1`。ready 到达后会自动重发当前 mode。
-- `host.handleWindowMessage(event)`：供消费方挂到 `window.addEventListener('message', ...)`。内部做四重校验——`event.source === frame.contentWindow`、`event.origin === binding URL origin`、`contract_version`、`session_id`。任何一项不符直接忽略（旧帧 replay、恶意 origin、脏 payload 静默丢弃）。`event.data` 里的身份字段一律不采信，app/agent 身份只来自 `getBinding`。
-- `onReady({capabilities, page})`：SDK 首次 ready（重复 ready 不重复通知）。capabilities 是 SDK 自报的 `element/text/region` 子集。
-- `onSelection(selection, page)`：一帧内一次显式选择；`page` 是宿主当前追踪的页面（SDK target 自带 page 字段不覆盖宿主身份）。
-- `onPageChange(page)`：SDK 导航/`setRevision` 通知。旧目标的坐标语义随 page 变化失效——UI 应丢弃/标记旧草稿（`host.page` 暴露当前页）。
+- `host.handleWindowMessage(event)`：供消费方挂到 `window.addEventListener('message', ...)`。每条消息先对 `getBinding()` 现值复检（绑定消失/换帧/换 app → 撤销旧会话并拒收），再校验 `event.source === frame.contentWindow`、`event.origin === binding URL origin`、`contract_version`、`session_id`。任何一项不符直接忽略；`event.data` 里的身份字段一律不采信，app/agent 身份只来自 `getBinding`。
+- `onReady({capabilities, page})`：仅接受**回显本次 connect `request_id`** 的 ready（旧 connect 的 ready 不能激活新会话）；重复 ready 不重复通知。capabilities 是 SDK 自报的 `element/text/region` 子集。
+- `onSelection(selection, page)`：target 接受条件 = 已 ready、当前 mode 非且等于 selection.kind、kind ∈ ready capabilities、payload.page 与宿主当前 page 快照完全一致（path+revision）。漂移/缺失/非法 → `onUnavailable(binding, 'bad-page'|'page-drift'|'capability-mismatch')` 或静默丢弃，不把旧选择重新贴到新文档。
+- `onPageChange(page)`：SDK 导航/`setRevision` 通知；**page 报告是完整快照替换**（revision 被丢弃就真的丢弃，不与旧值合并）。旧目标坐标语义随 page 变化失效——UI 应丢弃/标记旧草稿（`host.page` 暴露当前页）。
 - `onUnavailable(binding, reason)`：`bad-capabilities`（session 同时撤销）、`bad-selection`/`bad-page`（协议违规，会话保留）、`rebind`/`binding-changed`/`binding-gone`（绑定变更/消失）、`deactivate`。
 - `host.hasSession()` / `host.sessionToken` / `host.readyCapabilities()` / `host.page`：只读状态查询。
 - `host.deactivate()`：撤销会话（帧内 SDK 保留 session token，但后续消息因无会话被忽略）。
@@ -98,12 +98,12 @@ import {
 - 自动响应宿主 `connect.v1`（校验 `event.origin === parentOrigin` 且 `event.source === window.parent`），回 `ready.v1`；每次新 connect 重绑到最新 session。
 - `mode.v1` 切换显式选择态；`off` 完全恢复普通页面交互（overlay 移除、拦截监听不消费事件）。
 - 选择捕获：
-  - **element**：hover 高亮（真实 getBoundingClientRect），点击上报 `element_id`（优先 `getElementId` 回调 → `data-catsco-annotation-id` → DOM `id`）+ CSS selector（id 锚定或 ≤6 层 nth-of-type 链，≤512）+ rect/viewport 证据。
-  - **text**：mouseup 时读取 `window.getSelection()`，上报 `text`（≤2000）+ `prefix/suffix`（≤256）+ rect 证据；发送后清除选区。
+  - **element**：hover 高亮（真实 getBoundingClientRect），点击上报 `element_id`（优先 `getElementId` 回调 → `data-catsco-annotation-id` → DOM `id`）+ CSS selector（id 锚定、验证过的属性锚定，或 ≤6 层**同 tag** nth-of-type 链，≤512，含 rect/viewport 证据）。每段锚点与最终 selector 都以 `document.querySelector(selector) === 元素` 验证——转义/截断导致指向其他元素时丢弃该锚点或整条 selector（`element_id` 仍是锚），**绝不发布无法 match 的 selector**。
+  - **text**：mouseup 时读取 `window.getSelection()`，上报 `text`（≤2000）+ `prefix/suffix`（≤256）+ rect 证据；发送后清除选区。**整段 Range 覆盖检查**：start/end 容器、共同祖先及 Range 实际触及的每个元素（`Range.intersectsNode`）只要任一落入敏感 subtree 即整段拒绝（fail-closed；遍历超 500 节点预算同样拒绝）。
   - **region**：拖拽框选，<6px 视为误触；上报归一化 `rect` + `coordinate_space:'viewport'` + `viewport` 证据。
 - **敏感控件排除**：`input[type=password|hidden|email|tel|number|search|file|date…]`、名字/id 命中 `password|token|secret|api-key|card|cvv|otp…` 的输入控件、contenteditable 区域、以及标了 `data-catsco-annotation-sensitive` 的子树——既不作为标注目标，也不读取任何 `.value`（SDK 从不读输入值）。
-- **导航失效**：patch `history.pushState/replaceState` + `popstate`/`hashchange` → 清空拖拽/悬停态并上报 `page.v1`；宿主据此使旧页面草稿失效，旧目标不会静默贴到新文档。`pagehide` 清理 overlay。
-- `dispose()`：移除全部监听与 overlay、还原 `history` 方法；之后不再响应 connect。
+- **导航失效**：`history.pushState/replaceState` 在模块级**只 patch 一次**，由共享 dispatcher 把导航广播给所有存活实例（每个实例 dispose 只注销自己，任意 dispose 顺序下存活实例仍收到通知；最后一个实例 dispose 才恢复原生方法）。同时 `popstate`/`hashchange` → 清空拖拽/悬停态并上报 `page.v1`；宿主据此使旧页面草稿失效，旧目标不会静默贴到新文档。`pagehide` 清理 overlay。
+- `dispose()`：移除全部监听与 overlay、注销 dispatcher、（最后一个实例时）还原 `history` 方法；之后不再响应 connect。多实例共用同一 document 是受支持场景，但建议应用只创建一个实例。
 
 ## 4. 发送路径（宿主 UI 组装 metadata）
 

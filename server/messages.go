@@ -531,6 +531,14 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		h.gatewayAnnotationAgentContext(uid, recipientUID, topicID, payload.Metadata),
 		recipientUID,
 	)
+	// Agent-side readability: the target Agent's fanout copy carries the
+	// validated annotations as one extra, provenance-labeled text block, so
+	// clients that only forward content_blocks text see the annotation intent.
+	// Human copies and persistence keep the payload blocks untouched.
+	contentBlocks := payload.ContentBlocks
+	if modelText := h.gatewayAnnotationModelTextForPayload(uid, recipientUID, topicID, payload); modelText != "" {
+		contentBlocks = withGatewayAnnotationModelTextBlock(contentBlocks, payload.DisplayContent, modelText)
+	}
 	metadata = withSkillConnectorMetadata(metadata, h.buildShimoSkillConnectorMetadata(uid, recipientUID, topicID, msgID))
 	return &ServerMessage{
 		Data: &MsgServerData{
@@ -541,7 +549,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 			Type:          payload.DisplayType,
 			MsgType:       payload.StoredType,
 			Metadata:      metadata,
-			ContentBlocks: payload.ContentBlocks,
+			ContentBlocks: contentBlocks,
 			Mode:          payload.Mode,
 			Role:          payload.Role,
 			ReplyTo:       replyTo,
@@ -634,6 +642,17 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 	// The stored annotation context key is fanout-only; a value that somehow
 	// reached the store must never be replayed to readers as server output.
 	storedMetadata := metadataWithoutGatewayAnnotationContext(metadataWithoutArtifactContext(message.Metadata))
+	// Offline agent readers rebuild their session from history (XiaoBa
+	// cloud-session-restore), which ignores metadata and prefers a non-empty
+	// string content over content_blocks. The authorized target Agent's read
+	// copy therefore carries the annotation context in the content itself;
+	// human readers and the stored value stay untouched.
+	contentBlocks := message.ContentBlocks
+	if modelText := h.gatewayAnnotationHistoryModelText(message, recipientUID); modelText != "" {
+		modelContent, blocks := withGatewayAnnotationHistoryDelivery(message.ContentBlocks, displayContent, modelText)
+		displayContent = modelContent
+		contentBlocks = blocks
+	}
 	return &MsgServerData{
 		Topic:         message.TopicID,
 		From:          formatUID(message.FromUID),
@@ -642,7 +661,7 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 		Type:          inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
 		MsgType:       message.MsgType,
 		Metadata:      withCatscoIdentityMetadata(storedMetadata, h.buildCatscoIdentityMetadata(message.FromUID, recipientUID, message.TopicID, message.ID, normalizeContentText(displayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: true, Replay: true, IdentityUsers: users})),
-		ContentBlocks: message.ContentBlocks,
+		ContentBlocks: contentBlocks,
 		Mode:          message.Mode,
 		Role:          message.Role,
 	}

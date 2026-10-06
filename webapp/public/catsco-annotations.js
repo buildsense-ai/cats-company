@@ -104,8 +104,12 @@
       return SENSITIVE_NAME.test(identity2);
     }
     // Contenteditable regions may hold drafts, secrets, or compose boxes;
-    // treat them as sensitive unless the app explicitly opts in.
+    // treat them as sensitive unless the app explicitly opts in. The DOM
+    // property is unreliable across engines (jsdom), so the attribute is
+    // checked directly as well.
     if (element.isContentEditable) return true;
+    var editableAttr = (element.getAttribute && element.getAttribute('contenteditable') || '').toLowerCase();
+    if (editableAttr && editableAttr !== 'false') return true;
     return false;
   }
 
@@ -119,10 +123,76 @@
     return false;
   }
 
+  function elementOfNode(node) {
+    if (!node) return null;
+    return node.nodeType === 1 ? node : node.parentElement;
+  }
+
+  function nextNodeInDocumentOrder(node, root) {
+    if (node.firstChild) return node.firstChild;
+    while (node && node !== root) {
+      if (node.nextSibling) return node.nextSibling;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  var SELECTION_WALK_BUDGET = 500;
+
+  // Fail-closed: the range is untrusted, so every element its boundaries
+  // actually cover (start/end containers, descendants reached when the
+  // containers are elements, and everything in between) must be outside
+  // sensitive subtrees. Traversal is bounded; oversized subtrees are treated
+  // as sensitive.
+  function rangeTouchesSensitiveSubtree(range) {
+    if (!range || typeof range.startContainer === 'undefined') return true;
+    var startEl = elementOfNode(range.startContainer);
+    var endEl = elementOfNode(range.endContainer);
+    var commonEl = elementOfNode(range.commonAncestorContainer);
+    if (isSensitiveSubtreeRoot(startEl) || isSensitiveSubtreeRoot(endEl) || isSensitiveSubtreeRoot(commonEl)) return true;
+    if (!commonEl || typeof range.intersectsNode !== 'function') return true;
+    var budget = SELECTION_WALK_BUDGET;
+    var walker = document.createTreeWalker(commonEl, NodeFilter.SHOW_ELEMENT);
+    while (walker.nextNode()) {
+      if (budget-- <= 0) return true; // fail closed on oversized subtrees
+      var node = walker.currentNode;
+      var covered;
+      try {
+        covered = range.intersectsNode(node);
+      } catch (error) {
+        return true;
+      }
+      if (covered && isSensitiveSubtreeRoot(node)) return true;
+    }
+    return false;
+  }
+
   function cssEscapeFragment(value) {
     // Only plain attribute-name fragments end up in selectors; keep them
     // bounded and free of quotes/backslashes so injection cannot occur.
     return String(value).replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 64);
+  }
+
+  function sameTagOrdinal(node) {
+    // :nth-of-type() counts among same-tag siblings, not all children.
+    var parent = node.parentElement;
+    if (!parent) return -1;
+    var tag = node.tagName;
+    var ordinal = 0;
+    for (var i = 0; i < parent.children.length; i++) {
+      if (parent.children[i] === node) return ordinal + 1;
+      if (parent.children[i].tagName === tag) ordinal++;
+    }
+    return -1;
+  }
+
+  function selectorMatchesElement(selector, element) {
+    if (!selector) return false;
+    try {
+      return document.querySelector(selector) === element;
+    } catch (error) {
+      return false;
+    }
   }
 
   function selectorFor(element) {
@@ -139,21 +209,27 @@
       }
       var annotationId = node.getAttribute && node.getAttribute('data-catsco-annotation-id');
       if (annotationId && safeId(annotationId)) {
-        segments.unshift('[data-catsco-annotation-id="' + cssEscapeFragment(annotationId) + '"]');
-        break;
+        // The sanitized fragment may coincide with another element's
+        // attribute value; only accept the attribute anchor when it still
+        // resolves to this exact node.
+        var attributeSelector = '[data-catsco-annotation-id="' + cssEscapeFragment(annotationId) + '"]';
+        if (selectorMatchesElement(attributeSelector, node)) {
+          segments.unshift(attributeSelector);
+          break;
+        }
       }
-      var parent = node.parentElement;
-      if (parent) {
-        var sameTag = parent.children ? Array.prototype.indexOf.call(parent.children, node) : -1;
-        if (sameTag >= 0) segment += ':nth-of-type(' + (sameTag + 1) + ')';
-      }
+      var ordinal = sameTagOrdinal(node);
+      if (ordinal > 0) segment += ':nth-of-type(' + ordinal + ')';
       segments.unshift(segment);
-      node = parent;
+      node = node.parentElement;
       depth += 1;
     }
     if (!segments.length) return null;
     var selector = segments.join(' > ');
-    return selector.length <= MAX_SELECTOR_CHARS ? selector : selector.slice(0, MAX_SELECTOR_CHARS);
+    if (selector.length > MAX_SELECTOR_CHARS) selector = selector.slice(0, MAX_SELECTOR_CHARS);
+    // A selector anchor that cannot actually match the element is worse than
+    // none: element_id stays the anchor and the selector is dropped.
+    return selectorMatchesElement(selector, element) ? selector : null;
   }
 
   function elementLabel(element) {
@@ -175,8 +251,20 @@
   }
 
   function extractTextTarget(selection) {
+    if (!selection || typeof selection.getRangeAt !== 'function' || selection.rangeCount === 0) return null;
+    var range;
+    try {
+      range = selection.getRangeAt(0);
+    } catch (error) {
+      return null;
+    }
     var text = boundedText(selection.toString(), MAX_TEXT_CHARS);
-    if (!text || !/\S/.test(text) || isSensitiveSubtreeRoot(selection.anchorNode && selection.anchorNode.parentElement)) return null;
+    if (!text || !/\S/.test(text)) return null;
+    // The whole range is untrusted: start/end containers, the common
+    // ancestor, and every node covered in between must be outside sensitive
+    // subtrees (a selection may begin in plain text and end inside a
+    // password/email field).
+    if (rangeTouchesSensitiveSubtree(range)) return null;
     var target = { text: text };
     try {
       var range = selection.getRangeAt(0);
@@ -200,6 +288,63 @@
       // Selection evidence is best-effort; text alone already anchors it.
     }
     return target;
+  }
+
+  // ---------------------------------------------------------------------
+  // Shared navigation dispatcher.
+  //
+  // history.pushState/replaceState are patched exactly once per document;
+  // navigation events fan out to every live instance. Each instance's
+  // dispose only removes itself from the set, so any dispose order keeps
+  // surviving instances receiving page notifications; the native methods
+  // are restored when the last instance goes away.
+  var navigationInstances = new Set();
+  var patchedHistory = null; // { pushState, replaceState } natives
+
+  function notifyNavigation() {
+    Array.from(navigationInstances).forEach(function dispatchToInstance(onUrlChanged) {
+      try {
+        onUrlChanged();
+      } catch (error) {
+        // One broken instance must not starve the others.
+      }
+    });
+  }
+
+  function installHistoryPatches() {
+    if (navigationInstances.size > 0) return;
+    var nativePushState = history.pushState;
+    var nativeReplaceState = history.replaceState;
+    patchedHistory = { pushState: nativePushState, replaceState: nativeReplaceState };
+    history.pushState = function sharedPatchedPushState() {
+      var result = nativePushState.apply(this, arguments);
+      notifyNavigation();
+      return result;
+    };
+    history.replaceState = function sharedPatchedReplaceState() {
+      var result = nativeReplaceState.apply(this, arguments);
+      notifyNavigation();
+      return result;
+    };
+  }
+
+  function uninstallHistoryPatches() {
+    if (navigationInstances.size > 0 || !patchedHistory) return;
+    history.pushState = patchedHistory.pushState;
+    history.replaceState = patchedHistory.replaceState;
+    patchedHistory = null;
+  }
+
+  function registerInstance(onUrlChanged) {
+    // Install first: installHistoryPatches only patches when the set is
+    // empty, so the first instance must install before being counted.
+    installHistoryPatches();
+    navigationInstances.add(onUrlChanged);
+  }
+
+  function unregisterInstance(onUrlChanged) {
+    navigationInstances.delete(onUrlChanged);
+    uninstallHistoryPatches();
   }
 
   function ensureStyleContainer() {
@@ -278,6 +423,7 @@
     var state = {
       disposed: false,
       session: null, // opaque host-minted token from connect.v1
+      connectRequestId: null, // host-minted handshake id echoed in ready
       mode: 'off',
       page: currentPage(revision),
       overlay: null,
@@ -302,6 +448,7 @@
         type: TYPE_READY,
         contract_version: BRIDGE_CONTRACT,
         session_id: session,
+        request_id: state.connectRequestId,
         capabilities: CAPABILITIES,
         page: currentPage(revision) || { path: '/' },
       });
@@ -536,8 +683,11 @@
       if (payload.contract_version !== BRIDGE_CONTRACT) return;
       if (payload.type === TYPE_CONNECT) {
         // A connect re-binds the frame to a fresh session; older state dies.
+        // The host-minted request_id is echoed in ready so the host can
+        // bind the handshake reply to the exact connect it sent.
         state.session = safeId(payload.session_id);
-        if (state.session) {
+        state.connectRequestId = safeId(payload.request_id);
+        if (state.session && state.connectRequestId) {
           sendReady(state.session);
           handleMode(state.mode === 'off' ? 'off' : state.mode);
         }
@@ -551,20 +701,9 @@
       }
     }
 
-    // Listen to history pushState/replaceState, popstate and hashchange so
-    // SPA routing still announces page changes.
-    var originalPushState = history.pushState;
-    var originalReplaceState = history.replaceState;
-    history.pushState = function patchedPushState() {
-      var result = originalPushState.apply(this, arguments);
-      onUrlChanged();
-      return result;
-    };
-    history.replaceState = function patchedReplaceState() {
-      var result = originalReplaceState.apply(this, arguments);
-      onUrlChanged();
-      return result;
-    };
+    // Navigation notifications come from the module-level shared history
+    // dispatcher; this instance only registers/unregisters its handler.
+    registerInstance(onUrlChanged);
 
     document.addEventListener('mouseover', onHover, true);
     document.addEventListener('click', onClick, true);
@@ -599,8 +738,7 @@
         window.removeEventListener('popstate', onUrlChanged);
         window.removeEventListener('hashchange', onUrlChanged);
         window.removeEventListener('pagehide', teardownOverlay);
-        history.pushState = originalPushState;
-        history.replaceState = originalReplaceState;
+        unregisterInstance(onUrlChanged);
         state.session = null;
       },
     };

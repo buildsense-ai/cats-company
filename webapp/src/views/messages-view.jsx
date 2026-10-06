@@ -728,6 +728,16 @@ export default function MessagesView({
   const gatewayAnnotationDraftsRef = useRef([]);
   const gatewayAnnotationPageRef = useRef(null);
   const gatewayAnnotationConsumedRef = useRef(false);
+  // Monotonic binding generation: only the latest frame load may flip the
+  // ready-timeout UI, so an overwritten handshake timer can never fire into
+  // the newer binding.
+  const gatewayAnnotationBindingGenerationRef = useRef(0);
+  const clearGatewayAnnotationReadyTimer = () => {
+    if (gatewayAnnotationReadyTimerRef.current) {
+      window.clearTimeout(gatewayAnnotationReadyTimerRef.current);
+      gatewayAnnotationReadyTimerRef.current = 0;
+    }
+  };
   const annotationSnapshotContextRef = useRef(null);
   const annotationSnapshotDraftsRef = useRef([]);
   const gatewayAnnotationHostRef = useRef(null);
@@ -1137,6 +1147,47 @@ export default function MessagesView({
     artifactTaskHostRef.current?.connect(activeBinding);
   }, []);
 
+  // Compare the frame's current page with the page the draft bucket was
+  // captured against. Used by both onReady (fresh handshake) and page.v1
+  // (in-app navigation); the capture page always wins for metadata, a drift
+  // only blocks and warns.
+  const gatewayAnnotationApplyFramePage = (page) => {
+    if (!page) return;
+    const storedDrafts = gatewayAnnotationDraftsRef.current;
+    if (!Array.isArray(storedDrafts) || storedDrafts.length === 0) {
+      // No drafts: the currently loaded document is simply the annotation
+      // context. Follow it and clear any stale drift marker.
+      if (gatewayAnnotationPageChangedRef.current) {
+        gatewayAnnotationPageChangedRef.current = false;
+        setGatewayAnnotationCapabilityNote('');
+      }
+      gatewayAnnotationPageRef.current = page;
+      setGatewayAnnotationDraftPage(page);
+      return;
+    }
+    // Drafts exist: keep their capture page as the metadata page. A frame
+    // page that differs (reopen, reload landing on a different document,
+    // live SPA navigation) only raises the drift guard — the draft never
+    // silently re-anchors onto the new page.
+    const capturedPage = storedDrafts[0].page
+      || gatewayAnnotationPageRef.current
+      || null;
+    const drifted = Boolean(
+      capturedPage
+      && (capturedPage.path !== page.path
+        || (capturedPage.revision || '') !== (page.revision || '')),
+    );
+    if (drifted) {
+      gatewayAnnotationPageChangedRef.current = true;
+      setGatewayAnnotationCapabilityNote(
+        `页面已切换到 ${page.path}${page.revision ? `（${page.revision}）` : ''}，已有标注基于 ${capturedPage.path}，发送前请清理或重新标注`,
+      );
+    }
+    // Keep the capture page authoritative for send; never overwrite it with
+    // the freshly observed document page.
+    setGatewayAnnotationDraftPage((previous) => previous || page);
+  };
+
   // ---------------------------------------------------------------------
   // Gateway annotations. The annotation bridge owns only what the user
   // explicitly captures; nothing here attaches app context to ordinary
@@ -1150,6 +1201,9 @@ export default function MessagesView({
   const handleGatewayAnnotationFrameChange = useCallback((change) => {
     if (change === null) {
       gatewayAnnotationBindingRef.current = null;
+      gatewayAnnotationBindingGenerationRef.current += 1;
+      clearGatewayAnnotationReadyTimer();
+      setGatewayAnnotationCapture(null);
       resetGatewayAnnotationBinding();
       return;
     }
@@ -1171,6 +1225,9 @@ export default function MessagesView({
     };
     gatewayAnnotationBindingRef.current = binding;
     setGatewayAnnotationBinding(binding);
+    // A new document load invalidates a pending capture editor: its target
+    // was captured against the previous document/session.
+    setGatewayAnnotationCapture(null);
     setGatewayAnnotationContext((previous) => (previous
       && previous.appId === appId
       && Number(previous.agentUid) === agentUid
@@ -1182,13 +1239,19 @@ export default function MessagesView({
       ? gatewayAnnotationContextRef.current
       : { appId, appTitle: binding.appTitle, agentUid };
     // A frame reload (navigation or SDK reconnect) invalidates the previous
-    // session; re-handshake instead of reusing a dead token.
+    // session: revoke it (also covers the same-frame rebind, which would
+    // otherwise keep the old token alive) and handshake into a fresh session.
+    clearGatewayAnnotationReadyTimer();
+    const generation = ++gatewayAnnotationBindingGenerationRef.current;
+    gatewayAnnotationHostRef.current?.deactivate?.();
     gatewayAnnotationReadyTimerRef.current = window.setTimeout(() => {
+      if (gatewayAnnotationBindingGenerationRef.current !== generation) return;
+      if (gatewayAnnotationBindingRef.current !== binding) return;
       setGatewayAnnotationReady((previous) => (previous === null
         ? 'unavailable'
         : previous));
       setGatewayAnnotationCapabilityNote(
-        '应用未加载标注 SDK 或未响应， Detailed element annotation is unavailable，请联系发布者接入 SDK',
+        '应用未加载标注 SDK 或未响应，详细信息标注不可用，请联系发布者接入 SDK',
       );
     }, 3000);
     gatewayAnnotationHostRef.current?.connect?.(binding);
@@ -1205,6 +1268,8 @@ export default function MessagesView({
     setGatewayAnnotationCapabilityNote('');
     gatewayAnnotationPageChangedRef.current = false;
     gatewayAnnotationBindingRef.current = null;
+    gatewayAnnotationBindingGenerationRef.current += 1;
+    clearGatewayAnnotationReadyTimer();
     resetGatewayAnnotationBinding();
   }, [topic, resetGatewayAnnotationBinding]);
 
@@ -1279,6 +1344,36 @@ export default function MessagesView({
     const capture = gatewayAnnotationCapture;
     const trimmedBody = String(body || '').trim();
     if (!capture || !trimmedBody) return false;
+    // The editor must confirm against the binding it was captured in: a
+    // topic/app/frame-session change between capture and confirm would
+    // otherwise attach a stale target to the new context.
+    const binding = gatewayAnnotationBindingRef.current;
+    const currentSession = String(gatewayAnnotationHostRef.current?.sessionToken || '');
+    const currentHostPage = gatewayAnnotationHostRef.current?.page || null;
+    const identity = capture.identity || null;
+    const identityMatches = Boolean(
+      identity
+      && identity.topic === String(activeTopicRef.current || '')
+      && Number(identity.agentUid) === Number(binding?.agentUid || 0)
+      && identity.appId === String(binding?.appId || '')
+      && identity.sessionToken === currentSession
+      && Boolean(currentSession),
+    );
+    // The capture page must still be the host's current document page: a
+    // reload or navigation between capture and confirm invalidates the
+    // target even when no drafts exist (the drift flag alone would miss it).
+    const capturePage = capture.page || null;
+    const pageMatches = Boolean(
+      capturePage
+      && currentHostPage
+      && capturePage.path === currentHostPage.path
+      && (capturePage.revision || '') === (currentHostPage.revision || ''),
+    );
+    if (!identityMatches || !pageMatches) {
+      setGatewayAnnotationCapture(null);
+      setGatewayAnnotationCapabilityNote('标注目标已失效，请在应用中重新选择');
+      return false;
+    }
     if (!topic || !user?.uid) return false;
     const agentUid = Number(gatewayAnnotationContext?.agentUid
       || gatewayAnnotationBindingRef.current?.agentUid || 0);
@@ -1288,14 +1383,19 @@ export default function MessagesView({
     if (gatewayAnnotationDrafts.length >= 20) return false;
     const existingIds = new Set(gatewayAnnotationDrafts.map((item) => item.id));
     if (existingIds.has(capture.id)) return false;
-    const page = capture.page || gatewayAnnotationDraftPage || null;
+    // The capture page/revision is part of each draft row: the send path
+    // reads its page from the draft (not the current viewer page), so a
+    // reload or SPA navigation before sending can never re-anchor the
+    // comment to a different document.
+    const rowCapturePage = capture.page || gatewayAnnotationDraftPage || null;
     const nextDrafts = [...gatewayAnnotationDrafts, {
       id: capture.id,
       kind: capture.kind,
       label: String(label || '').trim(),
       body: trimmedBody,
       target: capture.target,
-    }];
+      page: rowCapturePage ? { ...rowCapturePage } : undefined,
+    }].map((row) => (row.page ? row : { ...row, page: rowCapturePage ? { ...rowCapturePage } : undefined }));
     setGatewayAnnotationContext({
       appId,
       appTitle: gatewayAnnotationBindingRef.current?.appTitle || appId,
@@ -1303,7 +1403,7 @@ export default function MessagesView({
     });
     writeGatewayAnnotationDrafts(user.uid, topic, agentUid, appId, nextDrafts);
     setGatewayAnnotationDrafts(nextDrafts);
-    if (page) setGatewayAnnotationDraftPage(page);
+    if (rowCapturePage) setGatewayAnnotationDraftPage(rowCapturePage);
     setGatewayAnnotationCapture(null);
     gatewayAnnotationPageChangedRef.current = false;
     return true;
@@ -1542,13 +1642,23 @@ export default function MessagesView({
       onReady: ({ capabilities, page }) => {
         clearReadyTimer();
         setGatewayAnnotationReady(capabilities.slice());
-        setGatewayAnnotationDraftPage(page || null);
+        gatewayAnnotationApplyFramePage(page);
         gatewayAnnotationPanelStateRef.current?.setCapabilityNote('');
       },
       onSelection: (selection, page) => {
+        const binding = gatewayAnnotationBindingRef.current;
         const capture = {
           ...selection,
           page: page ? { ...page } : null,
+          // Identity certificate: the capture is only confirmable while the
+          // same conversation, agent, app, frame session, and page are still
+          // current. Anything else is stale state from a previous binding.
+          identity: {
+            topic: String(activeTopicRef.current || ''),
+            agentUid: Number(binding?.agentUid || 0),
+            appId: String(binding?.appId || ''),
+            sessionToken: String(host.sessionToken || ''),
+          },
         };
         setGatewayAnnotationCapture(capture);
         // One capture closes the mode: the comment editor is the next step,
@@ -1557,12 +1667,7 @@ export default function MessagesView({
         gatewayAnnotationHostRef.current?.setMode('off');
       },
       onPageChange: (page) => {
-        setGatewayAnnotationDraftPage((previous) => {
-          gatewayAnnotationPageChangedRef.current = Boolean(previous
-            && page
-            && (previous.path !== page.path || (previous.revision || '') !== (page.revision || '')));
-          return page;
-        });
+        gatewayAnnotationApplyFramePage(page);
       },
       onUnavailable: (binding, reason) => {
         clearReadyTimer();
@@ -2930,10 +3035,16 @@ export default function MessagesView({
       const annotationDraftsSnapshotted = switchesTopic
         ? []
         : gatewayAnnotationDraftsRef.current;
+      const annotationCapturePage = annotationDraftsSnapshotted[0]?.page
+        || gatewayAnnotationPageRef.current
+        || null;
+      if (annotationDraftsSnapshotted.length > 0 && gatewayAnnotationPageChangedRef.current) {
+        throw new Error('标注基于旧页面，请先清理已有标注后在目标页面重新标注');
+      }
       const annotationsMetadata = buildGatewayAnnotationsMetadata(
         annotationContextSnapshot,
         annotationDraftsSnapshotted,
-        gatewayAnnotationPageRef.current,
+        annotationCapturePage,
       );
       if (annotationDraftsSnapshotted.length > 0 && !annotationsMetadata) {
         // A stale or non-canonical draft must never be silently dropped onto
@@ -3105,6 +3216,31 @@ export default function MessagesView({
           setPhoneUploadSession(null);
         }
       }
+      // Success consumption is also independent of the ordinary composer
+      // gate: when the pre-clear was skipped (a newer draft existed), only
+      // the snapshot's rows are removed so annotations captured while the
+      // request was in flight survive for the next message.
+      if (messageSent && annotationsMetadata && annotationContextSnapshot
+        && !gatewayAnnotationConsumedRef.current) {
+        const successAgent = Number(annotationContextSnapshot.agentUid);
+        const successApp = String(annotationContextSnapshot.appId);
+        const pendingRows = readGatewayAnnotationDrafts(user.uid, topic, successAgent, successApp);
+        const snapshotIDs = new Set(annotationDraftsSnapshotted.map((row) => row.id));
+        const remaining = pendingRows.filter((row) => !snapshotIDs.has(row.id));
+        writeGatewayAnnotationDrafts(user.uid, topic, successAgent, successApp, remaining);
+        if (activeTopicRef.current === topic
+          && gatewayAnnotationContextRef.current
+          && String(gatewayAnnotationContextRef.current.appId) === successApp
+          && Number(gatewayAnnotationContextRef.current.agentUid) === successAgent) {
+          setGatewayAnnotationDrafts(remaining);
+          if (remaining.length === 0) {
+            setGatewayAnnotationContext(null);
+            setGatewayAnnotationDraftPage(null);
+            gatewayAnnotationPageChangedRef.current = false;
+          }
+        }
+        gatewayAnnotationConsumedRef.current = true;
+      }
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
           await onActivateTopic?.(topicToActivate);
@@ -3147,29 +3283,56 @@ export default function MessagesView({
           originalPhoneUploadSession,
         );
         persistComposerDraftStore();
-        // A send that failed after the pre-clear keeps the annotation draft:
-        // the consumed rows go back into the same topic/agent/app bucket.
-        if (gatewayAnnotationConsumedRef.current) {
-          const restoreContext = annotationSnapshotContextRef.current;
-          const restoreDrafts = annotationSnapshotDraftsRef.current;
-          if (restoreContext && String(restoreContext.appId)
-            && Number(restoreContext.agentUid) > 0) {
-            writeGatewayAnnotationDrafts(
-              user.uid,
-              topic,
-              Number(restoreContext.agentUid),
-              String(restoreContext.appId),
-              Array.isArray(restoreDrafts) ? restoreDrafts : [],
-            );
+      }
+      // Annotation draft restoration is independent of the ordinary composer
+      // mutation gate: a user typing a new body while the request hangs must
+      // not cost them their captured annotations. Merge semantics: the
+      // snapshot rows come back first, rows written into the same bucket
+      // while the send was pending are preserved, and a topic switch during
+      // the send only restores the original storage bucket without touching
+      // the now-active conversation's state.
+      if (gatewayAnnotationConsumedRef.current) {
+        const restoreContext = annotationSnapshotContextRef.current;
+        const restoreDrafts = Array.isArray(annotationSnapshotDraftsRef.current)
+          ? annotationSnapshotDraftsRef.current
+          : [];
+        if (restoreContext && String(restoreContext.appId)
+          && Number(restoreContext.agentUid) > 0) {
+          const bucketAgent = Number(restoreContext.agentUid);
+          const bucketApp = String(restoreContext.appId);
+          const pendingRows = readGatewayAnnotationDrafts(user.uid, topic, bucketAgent, bucketApp);
+          const snapshotIDs = new Set(restoreDrafts.map((row) => row.id));
+          const merged = [
+            ...restoreDrafts,
+            ...pendingRows.filter((row) => !snapshotIDs.has(row.id)),
+          ];
+          writeGatewayAnnotationDrafts(user.uid, topic, bucketAgent, bucketApp, merged);
+          // Restore the visible composer state whenever the user is still on
+          // the conversation the snapshot belongs to and no newer context
+          // took over (context null — e.g. the pre-clear wiped it — or the
+          // same bucket). This makes an immediate retry send the restored
+          // annotations again; a different app/topic only gets the storage
+          // write, never this conversation's state.
+          if (activeTopicRef.current === topic
+            && (!gatewayAnnotationContextRef.current
+              || (String(gatewayAnnotationContextRef.current.appId) === bucketApp
+                && Number(gatewayAnnotationContextRef.current.agentUid) === bucketAgent))) {
             setGatewayAnnotationContext(restoreContext);
-            setGatewayAnnotationDrafts(Array.isArray(restoreDrafts) ? restoreDrafts : []);
+            setGatewayAnnotationDrafts(merged);
+            // The capture page certificate stays authoritative.
+            const restoredPage = merged[0]?.page || null;
+            if (restoredPage) setGatewayAnnotationDraftPage(restoredPage);
           }
-          gatewayAnnotationConsumedRef.current = false;
         }
+        gatewayAnnotationConsumedRef.current = false;
       }
       if (activeTopicRef.current === topic) {
         if (stateCleared) {
-          setInput(originalInput);
+          // A newer body typed while the request hung wins over the snapshot:
+          // the composer draft store already holds it, so only restore the
+          // original text when nothing newer was written.
+          const pendingInput = readComposerInputDraft(composerDraftStoreRef.current, topic);
+          setInput(pendingInput !== '' ? pendingInput : originalInput);
           setReplyTo(originalReplyTo);
         }
         setAttachmentStatus({

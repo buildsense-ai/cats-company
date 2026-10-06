@@ -4,11 +4,11 @@
 //   6062  onboarding mock          (MOCK_CATS_SCENARIO=showcase, run separately)
 //   6063  platform mirror          (this file: forwards to the mock, records annotation sends)
 //   6066  local artifact gateway   (this file: app registry + one-time launch codes + fixture app)
-//   5173  webapp (pnpm start with VITE_ARTIFACT_GATEWAY_BASE=http://127.0.0.1:6066)
+//   5173  webapp (explicit localhost origin and port, matching the SDK parentOrigin)
 //
 //   MOCK_CATS_SCENARIO=showcase MOCK_CATS_PORT=6062 node scripts/local-onboarding-mock-server.mjs
-//   VITE_ARTIFACT_GATEWAY_BASE=http://127.0.0.1:6066 node scripts/local-gateway-annotations-demo.mjs
-//   cd webapp && VITE_BACKEND_TARGET=http://127.0.0.1:6063 pnpm start
+//   node scripts/local-gateway-annotations-demo.mjs
+//   cd webapp && VITE_BACKEND_TARGET=http://127.0.0.1:6063 VITE_ARTIFACT_GATEWAY_BASE=http://127.0.0.1:6066 pnpm start --host localhost --port 5173 --strictPort
 //
 // The webapp then loads the showcase account (ui-reviewer / demo123456). Open a
 // bot conversation, open the 云文件 sidebar → 应用 tab → Saturday 演示应用,
@@ -29,8 +29,8 @@ const APP_ID = process.env.GATEWAY_DEMO_APP_ID || 'saturday-demo';
 const PUBLIC_BASE = process.env.GATEWAY_DEMO_PUBLIC_BASE || `http://127.0.0.1:${GATEWAY_PORT}`;
 // The fixture's SDK validates the host page's exact origin in the connect
 // handshake; this is the webapp dev origin, not the gateway origin.
-const HOST_ORIGIN = process.env.GATEWAY_DEMO_HOST_ORIGIN || 'http://localhost:5273';
-const LOG_PATH = new URL('../demo-annotations.log.jsonl', import.meta.url);
+const HOST_ORIGIN = process.env.GATEWAY_DEMO_HOST_ORIGIN || 'http://localhost:5173';
+const LOG_PATH = process.env.GATEWAY_ANNOTATIONS_LOG_PATH || new URL('../demo-annotations.log.jsonl', import.meta.url);
 
 const LAUNCH_CODES = new Map(); // code -> { agent, topic }
 
@@ -179,8 +179,10 @@ async function handlePlatform(req, res, url) {
     return;
   }
 
+  // Consume the request stream once: the same bytes are used for logging and
+  // forwarding. Reading IncomingMessage again after its end event would hang.
+  const body = ['GET', 'HEAD'].includes(req.method) ? undefined : await readBody(req);
   if (url.pathname === '/api/messages/send' && req.method === 'POST') {
-    const body = await readBody(req);
     try {
       const parsed = JSON.parse(body || '{}');
       recordLog({
@@ -192,8 +194,7 @@ async function handlePlatform(req, res, url) {
     } catch { /* demo only */ }
   }
 
-  // Everything else proxies to the onboarding mock.
-  const body = ['GET', 'HEAD'].includes(req.method) ? undefined : await readBody(req);
+  // Everything else proxies to the onboarding mock using the captured body.
   const forwardHeaders = { ...req.headers };
   delete forwardHeaders.host;
   const upstream = await fetch(MOCK_ORIGIN + url.pathname + url.search, {

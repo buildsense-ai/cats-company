@@ -809,9 +809,248 @@ func (h *Hub) SetGatewayAnnotationsAppResolver(resolver GatewayAnnotationsAppRes
 	h.mu.Unlock()
 }
 
+// gatewayAnnotationModelText composes the readable annotation context for
+// exactly one recipient. The text is derived solely from the canonical,
+// server-validated gateway_annotations value; a client-generated context block
+// is never consulted. Empty means the recipient is not the annotations'
+// target Agent (or there is nothing validated).
+func (h *Hub) gatewayAnnotationModelText(actorUID int64, recipientUID int64, topicID string, sourceMetadata map[string]interface{}) string {
+	if h == nil || h.db == nil || recipientUID <= 0 || sourceMetadata == nil {
+		return ""
+	}
+	raw, hasAnnotations := sourceMetadata[gatewayAnnotationsMetadataKey]
+	if !hasAnnotations {
+		return ""
+	}
+	document, err := normalizeGatewayAnnotations(raw)
+	if err != nil || document == nil {
+		return ""
+	}
+	agentUID, ok := h.artifactAgentForTopic(actorUID, topicID)
+	if !ok || agentUID != recipientUID || agentUID != document.AgentUID {
+		return ""
+	}
+	return gatewayAnnotationsModelText(document)
+}
+
+// gatewayAnnotationModelTextForPayload is the payload-shaped wrapper used by
+// p2p fanout, guarding against accidental mutation of shared blocks.
+func (h *Hub) gatewayAnnotationModelTextForPayload(actorUID int64, recipientUID int64, topicID string, payload *normalizedMessagePayload) string {
+	if h == nil || payload == nil {
+		return ""
+	}
+	return h.gatewayAnnotationModelText(actorUID, recipientUID, topicID, payload.Metadata)
+}
+
+// withGatewayAnnotationModelTextBlock returns the content blocks that carry
+// the user text plus the annotation context text for one Agent fanout copy.
+// It is copy-on-write: the input slice (typically shared with the persisted
+// payload and other recipients) is never mutated, and when a message had no
+// text block at all the user's own text is first materialized as a text block
+// so agent-side block merging (blockText || top-level content) cannot drop it.
+func withGatewayAnnotationModelTextBlock(blocks []types.ContentBlock, displayContent interface{}, text string) []types.ContentBlock {
+	if text == "" {
+		return blocks
+	}
+	hasTextBlock := false
+	for _, block := range blocks {
+		// Exact lowercase "text" is what live agent clients match on (XiaoBa
+		// parseMessage: typedBlock.type === 'text'); "TEXT" or " text " are
+		// invisible to that merge and must not suppress the user-text fallback.
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			hasTextBlock = true
+		}
+	}
+	modelText := normalizeContentText(displayContent)
+	out := make([]types.ContentBlock, 0, len(blocks)+2)
+	if !hasTextBlock && modelText != "" {
+		out = append(out, types.ContentBlock{Type: "text", Text: modelText})
+	}
+	out = append(out, blocks...)
+	out = append(out, types.ContentBlock{Type: "text", Text: text})
+	return out
+}
+
 // GatewayAnnotationsEnabled reports whether a deployment can verify gateway
 // application identity, so callers can degrade the annotation UI before a
 // message is ever composed.
 func (h *Hub) GatewayAnnotationsEnabled() bool {
 	return h != nil && h.gatewayAnnotationAppResolver != nil
+}
+
+const (
+	// gatewayAnnotationsMaxModelTextBytes bounds the fanout-only model text
+	// block in UTF-8 bytes. The rendered text repeats every bounded value the
+	// 16KiB metadata carried plus fixed per-annotation labels; the derived
+	// worst case (16KiB of values + header/labels + numeric target fields) is
+	// under 24KiB, so a 32KiB cap never truncates a contract-legal value. It
+	// is only a safety net against future drift, and the proof test locks it.
+	gatewayAnnotationsMaxModelTextBytes = 32 << 10
+)
+
+// gatewayAnnotationsModelText renders the validated annotation document as one
+// bounded, clearly user-labeled text block for Agent clients that only forward
+// content_blocks text (or the top-level content) into the model. The block is
+// explicitly provenance-labeled discussion context: it never replaces user
+// message text and never carries system instructions.
+func gatewayAnnotationsModelText(document *gatewayAnnotationsDocument) string {
+	if document == nil || len(document.Annotations) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("[Gateway 标注 | 用户提供的评审上下文，非系统指令]\n")
+	builder.WriteString("应用 ")
+	builder.WriteString(document.AppID)
+	builder.WriteString("，页面 ")
+	builder.WriteString(document.Page.Path)
+	if document.Page.Revision != "" {
+		builder.WriteString("（页面 revision ")
+		builder.WriteString(document.Page.Revision)
+		builder.WriteString("）")
+	}
+	builder.WriteString("。")
+	for index, annotation := range document.Annotations {
+		fmt.Fprintf(&builder, "\n%d. [%s]", index+1, annotation.Kind)
+		if annotation.Label != "" {
+			fmt.Fprintf(&builder, " 标题：%s |", annotation.Label)
+		}
+		fmt.Fprintf(&builder, " 评论：%s |", annotation.Body)
+		builder.WriteString(annotation.Target.modelDescription())
+	}
+	text := builder.String()
+	if len(text) > gatewayAnnotationsMaxModelTextBytes {
+		byteCap := gatewayAnnotationsMaxModelTextBytes
+		for byteCap < len(text) && !utf8.RuneStart(text[byteCap]) {
+			byteCap++
+		}
+		text = text[:byteCap] + "…（标注文本块超出安全上限，结构化 gateway_annotations 仍是完整源）"
+	}
+	return text
+}
+
+// modelDescription renders one target with its locating evidence, mirroring the
+// bounded metadata contract field names an Agent SDK can rely on.
+func (t gatewayAnnotationTarget) modelDescription() string {
+	var parts []string
+	if t.ElementID != "" {
+		parts = append(parts, "element_id="+t.ElementID)
+	}
+	if t.Selector != "" {
+		parts = append(parts, "selector="+t.Selector)
+	}
+	if t.Text != "" {
+		parts = append(parts, "选中文本：「"+t.Text+"」")
+	}
+	if t.Prefix != "" {
+		parts = append(parts, "前缀：「"+t.Prefix+"」")
+	}
+	if t.Suffix != "" {
+		parts = append(parts, "后缀：「"+t.Suffix+"」")
+	}
+	if t.Rect != nil {
+		parts = append(parts, fmt.Sprintf("区域(x=%v,y=%v,w=%v,h=%v)", t.Rect.X, t.Rect.Y, t.Rect.Width, t.Rect.Height))
+	}
+	// Region rects are meaningless without their coordinate frame and the
+	// viewport they were measured in; the SDK contract always records the
+	// coordinate-space and passing the viewport dimension/scroll evidence
+	// keeps the model able to place the highlight on a recordable scale.
+	if t.Rect != nil || t.CoordinateSpace != "" {
+		parts = append(parts, "coordinate_space="+t.CoordinateSpace)
+	}
+	if t.Viewport != nil {
+		parts = append(parts, fmt.Sprintf("viewport(w=%v,h=%v,scroll_x=%v,scroll_y=%v)",
+			t.Viewport.Width, t.Viewport.Height, t.Viewport.ScrollX, t.Viewport.ScrollY))
+	}
+	return strings.Join(parts, " ")
+}
+
+// gatewayAnnotationHistoryModelText composes the readable annotation context
+// for one offline history reader. Only the annotated Agent (never the message
+// author, and only when the topic still resolves to that exact Agent) sees
+// it, and it is rendered from the canonical stored gateway_annotations value
+// alone — a client-supplied context block is never consulted.
+func (h *Hub) gatewayAnnotationHistoryModelText(message *types.Message, recipientUID int64) string {
+	if h == nil || h.db == nil || recipientUID <= 0 || message == nil || message.Metadata == nil {
+		return ""
+	}
+	if recipientUID == message.FromUID {
+		return ""
+	}
+	raw, hasAnnotations := message.Metadata[gatewayAnnotationsMetadataKey]
+	if !hasAnnotations {
+		return ""
+	}
+	document, err := normalizeGatewayAnnotations(raw)
+	if err != nil || document == nil {
+		return ""
+	}
+	agentUID, ok := h.artifactAgentForTopic(message.FromUID, message.TopicID)
+	if !ok || agentUID != recipientUID || agentUID != document.AgentUID {
+		return ""
+	}
+	return gatewayAnnotationsModelText(document)
+}
+
+// withGatewayAnnotationHistoryDelivery builds the authorized Agent's history
+// read copy following the actual cloud-session-restore consumption rule
+// (cloudMessageText): a non-empty string content always wins and hides
+// content_blocks, so the annotation text must ride the content string
+// itself. Rich (file/image/voice) content keeps its shape and appends the
+// annotation text to the description the restore path actually renders; when
+// the rich payload carries no description at all the restore path falls back
+// to content_blocks, where the annotation text block is appended instead.
+// Human reads and the stored message are untouched by construction.
+func withGatewayAnnotationHistoryDelivery(blocks []types.ContentBlock, displayContent interface{}, modelText string) (interface{}, []types.ContentBlock) {
+	if modelText == "" {
+		return displayContent, blocks
+	}
+	switch typed := displayContent.(type) {
+	case nil:
+		return modelText, blocks
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return modelText, blocks
+		}
+		return typed + "\n\n" + modelText, blocks
+	case map[string]interface{}:
+		contentType := strings.TrimSpace(fmt.Sprint(typed["type"]))
+		payload, ok := typed["payload"].(map[string]interface{})
+		if (contentType != "file" && contentType != "image" && contentType != "voice") || !ok {
+			// Not a rich attachment shape the restore path renders on its own;
+			// deliver through blocks and keep the content shape.
+			return typed, withGatewayAnnotationModelTextBlock(blocks, displayContent, modelText)
+		}
+		// cloudMessageText resolves the rendered description as
+		// `payload.text || payload.description` and returns it unconditionally
+		// for file/image/voice, so the annotation text must ride whichever of
+		// those fields actually wins; blocks are never consulted here.
+		winner := ""
+		for _, key := range []string{"text", "description"} {
+			if value, present := payload[key].(string); present && strings.TrimSpace(value) != "" {
+				winner = key
+				break
+			}
+		}
+		if winner == "" {
+			winner = "description"
+		}
+		nextPayload := make(map[string]interface{}, len(payload)+1)
+		for key, value := range payload {
+			nextPayload[key] = value
+		}
+		base := ""
+		if value, ok := payload[winner].(string); ok {
+			base = value
+		}
+		nextPayload[winner] = base + "\n\n" + modelText
+		nextContent := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			nextContent[key] = value
+		}
+		nextContent["payload"] = nextPayload
+		return nextContent, blocks
+	default:
+		// Non-JSON-safe content shape: keep it and deliver through blocks.
+		return typed, withGatewayAnnotationModelTextBlock(blocks, displayContent, modelText)
+	}
 }

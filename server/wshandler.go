@@ -2517,6 +2517,17 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		if out != nil && out.Data != nil && isBot {
 			out = cloneDataMessageWithActivation(out, activated, m.UserID)
 		}
+		// Agent-side readability on the clone only: the target Agent's copy
+		// gets the validated annotations as text blocks while the shared
+		// template and every human copy stay byte-identical.
+		if out != nil && out.Data != nil {
+			if modelText := h.gatewayAnnotationModelText(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata); modelText != "" {
+				if out == msg {
+					out = cloneDataMessageWithMetadata(msg, msg.Data.Metadata)
+				}
+				out.Data.ContentBlocks = withGatewayAnnotationModelTextBlock(out.Data.ContentBlocks, msg.Data.Content, modelText)
+			}
+		}
 		if msg != nil && msg.artifactTaskRef != nil && msg.artifactTaskRef.AgentUID == m.UserID {
 			// Never deliver a task-shaped message to its target Agent after the
 			// reserved delivery stopped validating; that would become an ordinary

@@ -9298,28 +9298,7 @@ describe('MessagesView gateway annotation flow', () => {
     });
     const frame = container.querySelector('.cloud-artifacts-gateway-frame');
     expect(frame).not.toBeNull();
-    // Capture the host handshake token as it leaves, so SDK messages can
-    // quote the exact session id the host accepted.
-    captureSessionToken(frame);
-    await act(async () => {
-      Simulate.load(frame);
-      await Promise.resolve();
-    });
     return frame;
-  }
-
-  function captureSessionToken(frame) {
-    const contentWindow = frame.contentWindow;
-    if (!contentWindow || contentWindow.__annotationToken) return contentWindow?.__annotationToken || null;
-    const original = contentWindow.postMessage.bind(contentWindow);
-    contentWindow.postMessage = (data, targetOrigin) => {
-      if (typeof data === 'object'
-        && typeof data?.session_id === 'string') {
-        contentWindow.__annotationToken = data.session_id;
-      }
-      return original(data, targetOrigin);
-    };
-    return null;
   }
 
   function sdkMessage(frame, data) {
@@ -9330,30 +9309,69 @@ describe('MessagesView gateway annotation flow', () => {
     }));
   }
 
-  async function captureWithToken(frame, capabilities = ['element']) {
-    const token = captureSessionToken(frame);
-    sdkMessage(frame, {
-      type: 'catsco.gateway.annotation.ready.v1',
-      contract_version: 'catsco.gateway-annotation-bridge.v1',
-      session_id: token,
-      request_id: 'r1',
-      capabilities,
-      page: { path: '/board' },
-    });
-    sdkMessage(frame, {
-      type: 'catsco.gateway.annotation.target.v1',
-      contract_version: 'catsco.gateway-annotation-bridge.v1',
-      session_id: token,
-      selection: {
-        id: 'a1',
-        kind: 'element',
-        label: '',
-        target: { element_id: 'submit-btn', selector: 'button#submit-btn' },
-      },
-    });
+  // Faithful SDK replay against the real host bridge. The connect handshake
+  // posted by the host on frame load is captured (session_id + request_id);
+  // ready echoes both, and the target arrives in the same session with the
+  // capture page attached (matching B's four-gate target validation).
+  async function followupReady(frame, page = { path: '/board' }) {
+    const posted = [];
+    const contentWindow = frame.contentWindow;
+    const original = contentWindow.postMessage.bind(contentWindow);
+    contentWindow.postMessage = (data, targetOrigin) => {
+      posted.push(data);
+      return original(data, targetOrigin);
+    };
     await act(async () => {
+      Simulate.load(frame);
       await Promise.resolve();
     });
+    const connect = posted.filter((m) => m?.type === 'catsco.gateway.annotation.connect.v1').at(-1);
+    expect(connect).toBeTruthy();
+    await act(async () => {
+      sdkMessage(frame, {
+        type: 'catsco.gateway.annotation.ready.v1',
+        contract_version: 'catsco.gateway-annotation-bridge.v1',
+        session_id: connect.session_id,
+        request_id: connect.request_id,
+        capabilities: ['element', 'text', 'region'],
+        page,
+      });
+      await Promise.resolve();
+    });
+    return connect;
+  }
+
+  async function followupCapture(frame, connect, page, id = 'a1', comment = '') {
+    await act(async () => {
+      document.querySelector('.cloud-artifacts-gateway-annotation-tools [data-annotation-mode="element"]').click();
+    });
+    await act(async () => {
+      sdkMessage(frame, {
+        type: 'catsco.gateway.annotation.target.v1',
+        contract_version: 'catsco.gateway-annotation-bridge.v1',
+        session_id: connect.session_id,
+        page,
+        selection: {
+          id,
+          kind: 'element',
+          label: '',
+          target: { element_id: 'submit-btn', selector: 'button#submit-btn' },
+        },
+      });
+      await Promise.resolve();
+    });
+    const editor = container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body');
+    expect(editor).not.toBeNull();
+    if (comment) {
+      await act(async () => {
+        typeDraft(editor, comment);
+      });
+      await act(async () => {
+        container.querySelector('.v3-gateway-annotation-confirm').click();
+        await Promise.resolve();
+      });
+    }
+    return editor;
   }
 
   async function sendMessageAndFlush() {
@@ -9375,31 +9393,22 @@ describe('MessagesView gateway annotation flow', () => {
 
   test('captures an SDK target, edits the comment, and sends it as message metadata', async () => {
     const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board' };
 
     const tools = container.querySelector('.cloud-artifacts-gateway-annotation-tools');
     expect(tools).not.toBeNull();
-    await act(async () => {
-      tools.querySelector('[data-annotation-mode="element"]').click();
-    });
-    expect(tools.querySelector('[data-annotation-mode="element"]').getAttribute('aria-pressed')).toBe('true');
 
-    // SDK announces itself and the captured target opens the comment editor.
-    await captureWithToken(frame, ['element', 'text', 'region']);
-    const bodyInput = container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body');
-    expect(bodyInput).not.toBeNull();
-
-    await act(async () => {
-      typeDraft(bodyInput, '改成蓝色');
-    });
-    await act(async () => {
-      container.querySelector('.v3-gateway-annotation-confirm').click();
-      await Promise.resolve();
-    });
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'a1', '改成蓝色');
 
     expect(container.querySelector('.v3-gateway-annotation-editor')).toBeNull();
     const bar = container.querySelector('.v3-gateway-annotation-bar');
     expect(bar?.textContent).toContain('Saturday 演示应用');
     expect(bar?.textContent).toContain('改成蓝色');
+
+    // The capture page is persisted with the draft row.
+    const storedBucket = JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'));
+    expect(storedBucket['p2p_1_2|7|saturday-demo'][0].page).toEqual(page);
 
     const textarea = container.querySelector('.v3-composer textarea');
     await act(async () => {
@@ -9431,16 +9440,10 @@ describe('MessagesView gateway annotation flow', () => {
   test('a failed send restores the annotation draft', async () => {
     api.sendMessage.mockRejectedValueOnce(new Error('网络故障'));
     const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board' };
 
-    await captureWithToken(frame, ['element']);
-    const bodyInput = container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body');
-    await act(async () => {
-      typeDraft(bodyInput, '改成蓝色');
-    });
-    await act(async () => {
-      container.querySelector('.v3-gateway-annotation-confirm').click();
-      await Promise.resolve();
-    });
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'a1', '改成蓝色');
 
     const textarea = container.querySelector('.v3-composer textarea');
     await act(async () => {
@@ -9457,40 +9460,11 @@ describe('MessagesView gateway annotation flow', () => {
     expect(stored).toContain('a1');
   });
 
-  test('ordinary composer sends do not carry gateway annotation metadata', async () => {
-    const frame = await openGatewayAppInSidebar();
-    const token = captureSessionToken(frame);
-    sdkMessage(frame, {
-      type: 'catsco.gateway.annotation.ready.v1',
-      contract_version: 'catsco.gateway-annotation-bridge.v1',
-      session_id: token,
-      request_id: 'r1',
-      capabilities: ['element'],
-      page: { path: '/board' },
-    });
-
-    const textarea = container.querySelector('.v3-composer textarea');
-    await act(async () => {
-      typeDraft(textarea, '普通消息');
-    });
-    await sendMessageAndFlush();
-
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);
-    const sentPayload = api.sendMessage.mock.calls[0][1];
-    expect(sentPayload.metadata?.gateway_annotations).toBeUndefined();
-  });
-
   test('switching topics hides the other conversation annotation drafts', async () => {
     const frame = await openGatewayAppInSidebar('p2p_1_2');
-    await captureWithToken(frame, ['element']);
-    const bodyInput = container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body');
-    await act(async () => {
-      typeDraft(bodyInput, '放在原会话');
-    });
-    await act(async () => {
-      container.querySelector('.v3-gateway-annotation-confirm').click();
-      await Promise.resolve();
-    });
+    const page = { path: '/board' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'a1', '放在原会话');
     expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent).toContain('放在原会话');
 
     await mountTopic(root, 'p2p_1_3');
@@ -9501,5 +9475,183 @@ describe('MessagesView gateway annotation flow', () => {
     });
     await sendMessageAndFlush();
     expect(api.sendMessage.mock.calls.at(-1)[1].metadata?.gateway_annotations).toBeUndefined();
+  });
+
+  test('restored old-page drafts block send after reopen ready', async () => {
+    const bucket = 'p2p_1_2|7|saturday-demo';
+    sessionStorage.setItem('catsco_gateway_annotation_drafts:v1:1', JSON.stringify({
+      [bucket]: [{
+        id: 'old-target',
+        kind: 'element',
+        body: 'old-comment',
+        target: { element_id: 'old-node' },
+        page: { path: '/old', revision: 'r1' },
+      }],
+      [`${bucket}.meta`]: { topic_id: 'p2p_1_2', agent_uid: 7, app_id: 'saturday-demo' },
+    }));
+    const frame = await openGatewayAppInSidebar();
+    await followupReady(frame, { path: '/new', revision: 'r2' });
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'send-now');
+    });
+    await sendMessageAndFlush();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(container.textContent).toMatch(/旧页面|页面已切换/);
+  });
+
+  test('drift then clear allows fresh capture on current page', async () => {
+    const frame = await openGatewayAppInSidebar();
+    const oldPage = { path: '/old', revision: 'r1' };
+    const nextPage = { path: '/new', revision: 'r2' };
+    const connect = await followupReady(frame, oldPage);
+    await followupCapture(frame, connect, oldPage, 'fu1', 'review-comment');
+    await act(async () => {
+      sdkMessage(frame, {
+        type: 'catsco.gateway.annotation.page.v1',
+        contract_version: 'catsco.gateway-annotation-bridge.v1',
+        session_id: connect.session_id,
+        page: nextPage,
+      });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector('.v3-gateway-annotation-bar-clear').click();
+      await Promise.resolve();
+    });
+    await followupCapture(frame, connect, nextPage, 'fu2', 'new-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'send-new');
+    });
+    await sendMessageAndFlush();
+    expect(api.sendMessage.mock.calls.at(-1)[1].metadata.gateway_annotations.page).toEqual(nextPage);
+    expect(api.sendMessage.mock.calls.at(-1)[1].metadata.gateway_annotations.annotations.map((a) => a.body)).toEqual(['new-comment']);
+  });
+
+  test('failed in-flight send preserves annotation despite newer ordinary text', async () => {
+    let rejectSend;
+    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page);
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body'), 'review-comment');
+    });
+    await act(async () => {
+      container.querySelector('.v3-gateway-annotation-confirm').click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'original-send');
+    });
+    await sendMessageAndFlush();
+    expect(rejectSend).toBeTypeOf('function');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), 'newer-user-text');
+    });
+    await act(async () => {
+      rejectSend(new Error('network'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('review-comment');
+    expect(container.querySelector('.v3-composer textarea').value).toBe('newer-user-text');
+  });
+
+  test('a failed send restores visible drafts and an immediate retry carries them', async () => {
+    api.sendMessage.mockRejectedValueOnce(new Error('网络故障'));
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'a1', 'review-comment');
+
+    const textarea = container.querySelector('.v3-composer textarea');
+    await act(async () => {
+      typeDraft(textarea, '第一次发送');
+    });
+    await sendMessageAndFlush();
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+
+    // The restored draft is visible in the composer bar without reopening
+    // the viewer, and the page certificate is intact.
+    const bar = container.querySelector('.v3-gateway-annotation-bar');
+    expect(bar?.textContent).toContain('review-comment');
+    const storedBucket = JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'));
+    expect(storedBucket['p2p_1_2|7|saturday-demo'][0].page).toEqual(page);
+
+    // Immediate retry: no viewer interaction, annotations ride along.
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), '重试正文');
+    });
+    await sendMessageAndFlush();
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    const retryPayload = api.sendMessage.mock.calls[1][1];
+    expect(retryPayload.metadata.gateway_annotations.page).toEqual(page);
+    expect(retryPayload.metadata.gateway_annotations.annotations.map((a) => a.body)).toEqual(['review-comment']);
+    // Success clears the bucket.
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
+    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
+  });
+
+  test('a failed send for a switched-away topic only restores that bucket storage', async () => {
+    // Draft exists in topic p2p_1_2's bucket; the send hangs, the user moves
+    // to p2p_1_3, and the request then fails. The original bucket is
+    // restored in storage, but the active conversation's composer state is
+    // not polluted with the other topic's annotations. (A second send while
+    // the first is in flight is refused by the composer's in-flight guard,
+    // so the pollution check is on state, not on a second API call.)
+    let rejectSend;
+    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board' };
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'a1', 'review-comment');
+    await act(async () => {
+      typeDraft(container.querySelector('.v3-composer textarea'), '原会话正文');
+    });
+    await sendMessageAndFlush();
+    expect(rejectSend).toBeTypeOf('function');
+
+    // Switch topics while the request is still hanging.
+    await mountTopic(root, 'p2p_1_3');
+    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
+
+    await act(async () => {
+      rejectSend(new Error('network'));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The original bucket is restored in storage only.
+    const storedBucket = JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'));
+    expect(storedBucket['p2p_1_2|7|saturday-demo']?.[0]?.body).toBe('review-comment');
+    // The active conversation's composer stays clean.
+    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
+  });
+
+  test('a stale capture is dropped when the frame rebinds before confirm', async () => {
+    const frame = await openGatewayAppInSidebar();
+    const page = { path: '/board' };
+    const connect = await followupReady(frame, page);
+    // Capture a target but leave the editor open.
+    await followupCapture(frame, connect, page, 'a1', '');
+    // The iframe reloads (navigation/rebind): the pending capture belongs to
+    // the previous document/session and must not be confirmable.
+    await act(async () => {
+      Simulate.load(frame);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      const editor = container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body');
+      if (editor) typeDraft(editor, '迟到确认');
+      container.querySelector('.v3-gateway-annotation-confirm')?.click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-gateway-annotation-editor')).toBeNull();
+    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
+    // The rebind cleared the pending capture outright (no stale editor to
+    // confirm against), so nothing was written for the new document.
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
   });
 });

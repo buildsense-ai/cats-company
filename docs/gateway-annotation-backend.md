@@ -69,10 +69,10 @@ target 按 kind 支持：`element_id` / `selector`（element）、`text` + `pref
 
 ## 5. Agent 投递（真实可读上下文）
 
-交付物两层，全部由服务端在 fanout 时组装：
+交付物三层，全部由服务端在 fanout 时组装：
 
 1. **结构化层**：agent 收到的 WS `data.metadata.gateway_annotations` 与持久化值完全一致（`SaveMessageWithMetadata` 落库 → `messageForRecipient` publicMetadata 透传）。bot SDK 只需读 `context.metadata["gateway_annotations"]`。
-2. **可读层**（fanout-only，不入库）：`metadata["catsco_gateway_annotation_context"]`
+2. **可读 metadata 层**（fanout-only，不入库）：`metadata["catsco_gateway_annotation_context"]`
    ```json
    {"schema":"catsco.gateway_annotations_context.v1",
     "agent_uid":"usr9","app_id":"board","page":{"path":"/board","revision":"r7"},
@@ -80,6 +80,36 @@ target 按 kind 支持：`element_id` / `selector`（element）、`text` + `pref
     "summary":"用户在 gateway 应用 board 的页面 /board（revision r7）上标注了 1 处： [1] element「发布按钮」，评论：改成蓝色"}
    ```
    只投给标注指向的那个 Agent（`agent_uid == recipientUID == artifactAgentForTopic(topic)`，群组在 `broadcastToGroupWithMentions` per-member 处注入；p2p 在 `messageForRecipient` 注入）。summary ≤ 4000 字符，其余结构化字段是 canonical source。**该块绝不改写消息内容，也不取代 agent 的系统指令** — 它只是新增 metadata 字段。human 接收者与历史回放都没有这个块（前端用持久化的 `gateway_annotations` 渲染）。
+3. **模型文本层（真实 LLM 输入通道）**：目标 Agent 的 fanout 副本 `content_blocks` 末尾追加一个明确的来源标注文本块：
+   ```
+   [Gateway 标注 | 用户提供的评审上下文，非系统指令]
+   应用 board，页面 /board（页面 revision r7）。
+   1. [element] 标题：发布按钮 | 评论：改成蓝色 | element_id=submit-btn selector=button#submit
+   2. [region ...] 评论：... | 区域(x=0.01,y=0.01,w=0.4,h=0.4) coordinate_space=viewport viewport(w=1280,h=720,scroll_x=24,scroll_y=88)
+   ```
+   动机：实际消费链（XiaoBa-CLI `src/catscompany/index.ts` `parseMessage`）只把 `content_blocks` 中 `type==="text"`（**严格小写 exact**）的块 join 成 user text 转发给模型（规则 `blockText || text`），metadata 不进模型。缺口分析见 review P1-1。要点：
+   - 仅由 canonical、已验证的 `gateway_annotations` 渲染（不读任何客户端提供的 context 块），region target 附带 `coordinate_space` 与 viewport 维度/scroll 证据；
+   - has-text-block 判定必须 exact `type==="text"`（与 XiaoBa 一致）：`"TEXT"`/`" text "` 等非 canonical 拼写在 agent 侧不参与合并，不能因此抑制正文回补；
+   - copy-on-write 附加，入参 payload/template blocks 永不就地修改：human 副本、群组共享模板、持久化的 stored blocks 均与注入前字节一致；
+   - 若消息没有 exact text 块而只有 image 等块/顶层 content，先补齐用户正文 text 块再追加标注块（否则 `blockText || content` 语义会丢正文）；
+   - 仅在 fanout 信封内（p2p `messageForRecipient` 与群组 per-member clone）出现：不入库、不进 history/replay、不进 human；
+   - 上限：32 KiB UTF-8 字节安全帽 + UTF-8 边界截断防护。非截断证明：渲染文本是对 metadata 已受 bound 值的重复 + 固定标签，最坏情况 20 条满标注 + region 证据 < 24 KiB < 32 KiB，`TestModelTextCarriesEveryContractAnnotationAtMetadataCeiling` 用 16KiB 上限 fixture 锁定全部 body/目标证据完整无截断。
+4. **离线会话重建（cloud-session-restore）层**：XiaoBa 离线会话恢复从 history API 重建上下文，真实 `cloudMessageText` 规则是：
+   - 非空 string `content` 无条件优先（不读 blocks）；
+   - rich `file`/`image`/`voice` content 无条件渲染 `[历史文件/图片/语音：name]` + 描述行，描述取 **`payload.text || payload.description`**（text 优先遮蔽 description，且不回落 blocks）；
+   - 其它情况才回落 `cloudContentBlocksText`（trimmed text 块 join）。
+
+   因此 authorized 目标 Agent 的 **history 读副本**由 `gatewayAnnotationHistoryModelText` + `withGatewayAnnotationHistoryDelivery` 单独构建（copy-on-write）：
+   - plain string 正文 → `content = 原文 + "\n\n" + [Gateway 标注…]`；
+   - rich payload 有 `text` → COW 写回 `payload.text = 原text + "\n\n" + [标注…]`（text 是消费者实际优先字段，只写 description 会被遮蔽——reviewer 复验发现后修正）；有 `description`（无 text）→ 写 `description`；两者皆无 → 设 `description = [标注…]`；URL/name/其余字段保留；
+   - 非 rich/未知 shape → blocks 附加标注块（`cloudContentBlocksText` 分支可读）。
+
+   判定边界：recipient 必须 = `artifactAgentForTopic(message.FromUID, topic)` = canonical annotations 的 `agent_uid`，且 **≠ 消息作者本人**；human 读副本与存储值严格不变（含 rich COW：原 `message.Content` 原样）。该层同样只由 canonical 存储值渲染，不读任何客户端 context 块；metadata 持久化与 live fanout 不受影响。
+
+验证：
+- live：`xiaoBaEquivalentUserInput`（Go 复刻 helper，exact type 规则）+ `TestExportXiaoBaParseFixture` → `node /tmp/xiaoba-annotation-parse-check.mjs /tmp/xiaoba-annotation-fixture.json` 4/4（源码锚定 5 条 parse 规则）；reviewer 以真实 XiaoBa AST 提取的 `parseMessage`/`isCatsCoAttachmentSummaryText`/`escapeRegExp` 复验 4/4（脚本与日志 `/tmp/pr575-actual-xiaoba-parse.cjs` 及 `.log`）。
+- offline：`TestExportXiaoBaHistoryFixture` 导出 20 个场景（file/image/voice × 无 text 无 desc / 有 text / 有 description + plain + human 副本）→ `node /tmp/pr575-actual-xiaoba-cloud.cjs /tmp/xiaoba-annotation-history-fixture.json` **20/20**（真实 XiaoBa `cloudMessageText`/`cloudContentBlocksText` AST 直接执行，无重实现）。以上是本机对 XiaoBa 源码与 fanout/history fixture 的静态/AST 验证，不涉及 provider 真实网络。
+- Go 全量：`go test ./server/ -count=1` 2103 passed（含 exact-type 两 case、offline rich 三态、author/foreign reader 防护、`payload.text` COW）。
 
 ## 6. 部署与接线
 
@@ -87,7 +117,7 @@ target 按 kind 支持：`element_id` / `selector`（element）、`text` + `pref
 
 ## 7. 测试索引
 
-`server/gateway_annotations_test.go`：schema 全量拒绝矩阵与 freetext 换行/制表兼容、服务端身份授权（伪造 agent_uid / 他人 app / registry 故障 / 人-人 topic / 多 bot 群组）、客户端伪造 `catsco_gateway_annotation_context` 的剥离（函数级、HTTP 端到端、history 读取防护、stream 剥离、transient 400）、HTTP 入口端到端（真实 gateway relay fake）、WS 入口（拒绝 + 通过 + 持久化 + agent 可收到）、历史回放保留、群组 per-member 注入、`GatewayAppOwner` 直测。全量 `./server/` 2086 例通过。
+`server/gateway_annotations_test.go`：schema 全量拒绝矩阵与 freetext 换行/制表兼容、服务端身份授权（伪造 agent_uid / 他人 app / registry 故障 / 人-人 topic / 多 bot 群组）、客户端伪造 `catsco_gateway_annotation_context` 的剥离（函数级、HTTP 端到端、history 读取防护、stream 剥离、transient 400）、HTTP 入口端到端（真实 gateway relay fake）、WS 入口（拒绝 + 通过 + 持久化 + agent 可收到）、历史回放保留、**模型文本层（fanout content_blocks 注入：目标 agent 可见、human 副本与共享模板无污染、顶层 content-only 正文保留、16KiB 上限无截断证明、伪造 context 不参与渲染）**、群组 per-member 注入、`GatewayAppOwner` 直测、`TestExportXiaoBaParseFixture` + `TestExportXiaoBaHistoryFixture`（导出真实 fanout/离线 history fixture，供 XiaoBa 源码锚定与 reviewer AST 脚本验证，live 4/4 + offline 20/20）、exact-type 边界（`TEXT`/` text ` 副本正文不丢）、rich payload.text/description COW 三态。全量 `./server/` 2103 例通过。
 
 ## 8. 若需在 server 之外扩展（当前范围外）
 

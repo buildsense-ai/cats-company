@@ -87,14 +87,24 @@ describe('gateway annotation drafts', () => {
     expect(stored.length).toBe(GATEWAY_ANNOTATION_DRAFT_MAX_ANNOTATIONS);
   });
 
-  it('trims an oversized draft until it fits the 16KiB bound', () => {
-    const heavy = Array.from({ length: 10 }, (_, index) => sampleAnnotation(`a${index}`, {
-      body: 'x'.repeat(1900), // 10 × ~1.9KB > 16KiB
+  it('fails closed on an oversized draft instead of silently trimming rows', () => {
+    // 10 rows of ~1.9KB ASCII exceed the bound. Over-limit drafts are never
+    // persisted (they could never pass server ingestion) and never silently
+    // tail-trimmed — the failed write leaves nothing in storage so no
+    // sendable-looking subset can be resurrected later, while in-memory rows
+    // (held by the caller/editable UI state) are untouched for explicit user
+    // cleanup.
+    const rows = Array.from({ length: 10 }, (_, index) => sampleAnnotation(`a${index}`, {
+      body: 'x'.repeat(1900),
     }));
-    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, heavy, storage);
-    const stored = readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage);
-    expect(stored.length).toBeGreaterThan(0);
-    expect(JSON.stringify(stored).length).toBeLessThanOrEqual(GATEWAY_ANNOTATION_DRAFT_MAX_BYTES);
+    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, rows, storage);
+    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage)).toEqual([]);
+
+    // Counting UTF-8 bytes, not UTF-16 units: a single CJK body of 6000 chars
+    // is ~18KiB of bytes but well under that in `.length`.
+    const wide = sampleAnnotation('wide', { body: '批'.repeat(6000) });
+    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [wide], storage);
+    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage)).toEqual([]);
   });
 
   it('returns an empty list when the bucket key is incomplete', () => {
@@ -102,6 +112,22 @@ describe('gateway annotation drafts', () => {
     expect(readGatewayAnnotationDrafts(USER_A, '', AGENT_A, APP_A, storage)).toEqual([]);
     expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, 0, APP_A, storage)).toEqual([]);
     expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, '', storage)).toEqual([]);
+  });
+
+  it('refuses to resurrect a bucket whose certificate names a different agent', () => {
+    // Simulate a corrupted/tampered certificate: bucket key says agent 42,
+    // certificate says 99. The rows must not resurrect under this bucket.
+    const key = gatewayAnnotationDraftKey(TOPIC_1, AGENT_A, APP_A);
+    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [sampleAnnotation()], storage);
+    const stored = JSON.parse(
+      storage.getItem(`catsco_gateway_annotation_drafts:v1:${USER_A}`),
+    );
+    stored[`${key}.meta`] = { ...storage.meta, agent_uid: 999 };
+    storage.setItem(`catsco_gateway_annotation_drafts:v1:${USER_A}`, JSON.stringify({
+      ...JSON.parse(storage.getItem(`catsco_gateway_annotation_drafts:v1:${USER_A}`)),
+      [`${key}.meta`]: { topic_id: TOPIC_1, agent_uid: 999, app_id: APP_A, updated_at: 1 },
+    }));
+    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage)).toEqual([]);
   });
 
   it('issues stable bucket keys', () => {
