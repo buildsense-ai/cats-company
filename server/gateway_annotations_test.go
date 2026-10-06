@@ -2889,3 +2889,209 @@ func TestR3AnnotationRefusalReleasesTaskLease(t *testing.T) {
 		}
 	}
 }
+
+// ---------- Round-4 (review /tmp/catsco-pr575-review-round4.md R4-1/R4-4):
+// JSON-string encoded rich attachments must keep their live file channel, and
+// array payloads (JS-object truthy) must expose the annotation in the cloud
+// description channel — both through the real handlers, verified by the real
+// XiaoBa AST. ----------
+
+// TestR4ActualHandlersConsumerPreservation (reviewer probe, vendored) drives
+// the real HTTP send + WS pub handlers and the real history API, then exports
+// live/cloud fixtures for the actual AST runner.
+func TestR4ActualHandlersConsumerPreservation(t *testing.T) {
+	if os.Getenv("GATEWAY_ANNOTATIONS_EXPORT_FIXTURE") == "" {
+		t.Skip("set GATEWAY_ANNOTATIONS_EXPORT_FIXTURE to write /tmp/xiaoba-r4-handler-consumers.json")
+	}
+	entries := []map[string]interface{}{}
+	for _, transport := range []string{"http", "ws"} {
+		for _, kind := range []string{"file", "image"} {
+			for _, shapeName := range []string{"encoded-rich", "array-payload", "encoded-control"} {
+				fake := &gatewayAnnotationFakeStore{
+					users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+					botOwners: map[int64]int64{9: 7},
+				}
+				hub := NewHub(fake, nil)
+				hub.SetGatewayAnnotationsAppResolver(&staticAppResolver{apps: map[string]string{"board": "9"}})
+				agent := &Client{uid: 9, accountType: types.AccountBot, send: make(chan []byte, 8)}
+				hub.addClient(agent)
+
+				shape := `{"type":"` + kind + `","payload":{"name":"encoded.bin","url":"/uploads/encoded.bin"}}`
+				raw := json.RawMessage(shape)
+				if shapeName == "encoded-rich" || shapeName == "encoded-control" {
+					encoded, _ := json.Marshal(shape)
+					raw = encoded
+				} else {
+					shape = `{"type":"` + kind + `","payload":[],"name":"array.bin","url":"/uploads/array.bin"}`
+					raw = json.RawMessage(shape)
+				}
+				metadata := map[string]interface{}{gatewayAnnotationsMetadataKey: gatewayAnnotationRequest("board", 9, nil)}
+				if shapeName == "encoded-control" {
+					metadata = nil
+				}
+				if transport == "http" {
+					body, _ := json.Marshal(SendMessageRequest{TopicID: "p2p_7_9", Type: kind, Content: raw, Metadata: metadata})
+					request := httptest.NewRequest(http.MethodPost, "/api/messages/send", strings.NewReader(string(body))).WithContext(withTestUID(7))
+					recorder := httptest.NewRecorder()
+					NewMessageHandler(fake, hub).HandleSendMessage(recorder, request)
+					if recorder.Code != http.StatusOK {
+						t.Fatalf("%s %s %s status=%d body=%s", transport, kind, shapeName, recorder.Code, recorder.Body.String())
+					}
+				} else {
+					sender := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 8)}
+					hub.addClient(sender)
+					hub.handlePub(sender, &MsgClientPub{ID: "r4", Topic: "p2p_7_9", Type: kind, Content: raw, Metadata: metadata})
+					var ack ServerMessage
+					select {
+					case rawAck := <-sender.send:
+						if err := json.Unmarshal(rawAck, &ack); err != nil {
+							t.Fatalf("unmarshal ack: %v", err)
+						}
+					default:
+						t.Fatalf("%s %s %s missing ack", transport, kind, shapeName)
+					}
+					if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+						t.Fatalf("ack %+v", ack)
+					}
+				}
+				if len(fake.saved) != 1 {
+					t.Fatalf("%s %s %s persisted=%d", transport, kind, shapeName, len(fake.saved))
+				}
+				storedContent := shape
+				var live ServerMessage
+				select {
+				case rawLive := <-agent.send:
+					if err := json.Unmarshal(rawLive, &live); err != nil {
+						t.Fatalf("unmarshal live: %v", err)
+					}
+				default:
+					t.Fatalf("%s %s %s missing live delivery", transport, kind, shapeName)
+				}
+				if live.Data == nil {
+					t.Fatal("missing actual delivery")
+				}
+				message := &types.Message{
+					ID: 1, TopicID: "p2p_7_9", FromUID: 7,
+					Content: storedContent, MsgType: kind,
+					ContentBlocks: fake.saved[0].blocks, Metadata: fake.saved[0].metadata,
+				}
+				liveExpect := []string{}
+				if shapeName != "encoded-control" {
+					liveExpect = append(liveExpect, "这个按钮需要改成蓝色")
+				}
+				liveEntry := map[string]interface{}{
+					"name": transport + kind + shapeName + " actual live", "pipeline": "live",
+					"message": live.Data, "expect": liveExpect, "forbid": []string{"/forged"},
+				}
+				if shapeName == "encoded-rich" || shapeName == "encoded-control" {
+					liveEntry["expectedFiles"] = []string{"/uploads/encoded.bin"}
+				}
+				entries = append(entries, liveEntry)
+				for _, uid := range []int64{9, 7} {
+					expect := []string{}
+					forbid := []string{}
+					if uid == 9 && shapeName != "encoded-control" {
+						expect = append(expect, "这个按钮需要改成蓝色")
+					} else {
+						forbid = append(forbid, "Gateway 标注")
+					}
+					entries = append(entries, map[string]interface{}{
+						"name": transport + kind + shapeName + formatUID(uid) + " history", "pipeline": "cloud",
+						"message": hub.historyAPIMessageForRecipient(uid, message), "expect": expect, "forbid": forbid,
+					})
+				}
+				if message.Content != shape {
+					t.Fatalf("history mutated store: %q", message.Content)
+				}
+			}
+		}
+	}
+	encoded, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile("/tmp/xiaoba-r4-handler-consumers.json", encoded, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Log("fixtures written to /tmp/xiaoba-r4-handler-consumers.json")
+}
+
+// TestR4ArrayPayloadCloudChannelIsReadable is the CI Go twin for R4-4: the
+// agent history copy of an accepted array-payload message exposes the
+// annotation in the winning description channel while store/human arrays
+// survive untouched.
+func TestR4ArrayPayloadCloudChannelIsReadable(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	message := &types.Message{
+		ID: 1, TopicID: "p2p_7_9", FromUID: 7, MsgType: "file",
+		Content:  `{"type":"file","payload":[],"name":"array.bin","url":"/uploads/array.bin"}`,
+		Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+	}
+	read := hub.historyMessageDataForRecipient(9, message)
+	restored := cloudRestoreEquivalentText(read)
+	if !strings.Contains(restored, "改成蓝色") || !strings.Contains(restored, "element_id=submit-btn") {
+		t.Fatalf("array-payload cloud copy missing annotation: %q", restored)
+	}
+	human := hub.historyMessageDataForRecipient(7, message)
+	if strings.Contains(cloudRestoreEquivalentText(human), "Gateway 标注") {
+		t.Fatalf("human array copy polluted: %q", cloudRestoreEquivalentText(human))
+	}
+	if message.Content != `{"type":"file","payload":[],"name":"array.bin","url":"/uploads/array.bin"}` {
+		t.Fatalf("store mutated: %q", message.Content)
+	}
+	if strings.Contains(message.Content, "Gateway 标注") {
+		t.Fatal("stored array payload mutated")
+	}
+}
+
+// TestR4PrimitivePayloadCloudChannel locks the real JS fallback for
+// non-object payloads: rich.payload && typeof === 'object' ? payload : rich,
+// so every primitive payload (falsy or truthy) falls back to the rich object
+// itself — the annotation lands in the winning field there while original
+// name/text and the human/store payloads stay untouched.
+func TestR4PrimitivePayloadCloudChannel(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	value, _ := annotationDocForModelText().restamped()
+	for _, kind := range []string{"file", "image", "voice"} {
+		for name, primitive := range map[string]string{
+			"false-payload":  "false",
+			"zero-payload":   "0",
+			"number-payload": "5",
+			"string-payload": `"payload-text"`,
+			"true-payload":   "true",
+			"null-payload":   "null",
+		} {
+			t.Run(kind+":"+name, func(t *testing.T) {
+				shape := `{"type":"` + kind + `","payload":` + primitive + `,"name":"prim.bin","url":"/uploads/prim.bin"}`
+				message := &types.Message{
+					ID: 1, TopicID: "p2p_7_9", FromUID: 7, MsgType: kind, Content: shape,
+					Metadata: map[string]interface{}{gatewayAnnotationsMetadataKey: value},
+				}
+				read := hub.historyMessageDataForRecipient(9, message)
+				restored := cloudRestoreEquivalentText(read)
+				if !strings.Contains(restored, "改成蓝色") || !strings.Contains(restored, "element_id=submit-btn") {
+					t.Fatalf("primitive payload cloud copy missing annotation: %q", restored)
+				}
+				if kind != "voice" && !strings.Contains(restored, "prim.bin") {
+					t.Fatalf("primitive payload cloud copy lost attachment name: %q", restored)
+				}
+				human := hub.historyMessageDataForRecipient(7, message)
+				if strings.Contains(cloudRestoreEquivalentText(human), "Gateway 标注") {
+					t.Fatalf("human primitive copy polluted: %q", cloudRestoreEquivalentText(human))
+				}
+				if message.Content != shape || strings.Contains(message.Content, "Gateway 标注") {
+					t.Fatal("stored primitive payload mutated")
+				}
+			})
+		}
+	}
+}

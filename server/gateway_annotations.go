@@ -892,6 +892,17 @@ func withGatewayAnnotationAgentDelivery(blocks []types.ContentBlock, displayCont
 		annotatedBlocks = append(annotatedBlocks, types.ContentBlock{Type: "text", Text: originalText})
 	}
 	annotatedBlocks = append(annotatedBlocks, blocks...)
+	// A JSON-string encoded rich attachment (R4-1): the live parser reads the
+	// attachment from the parsed JSON, which breaks once the annotation text
+	// is appended to the string. Materialize the equivalent attachment block
+	// so the live file channel survives; content keeps the original JSON text
+	// plus the annotation.
+	if originalString, ok := displayContent.(string); ok {
+		if attachment := richJSONAttachmentBlock(originalString, annotatedBlocks); attachment != nil {
+			annotatedBlocks = append(annotatedBlocks, *attachment)
+		}
+	}
+	// The annotation block itself: exactly one, always last, for every shape.
 	annotatedBlocks = append(annotatedBlocks, types.ContentBlock{Type: "text", Text: modelText})
 
 	switch typed := displayContent.(type) {
@@ -939,17 +950,29 @@ func withGatewayAnnotationRichContent(content map[string]interface{}, blocks []t
 		}
 	}
 	contentType := strings.TrimSpace(jsStringOf(typeSource))
-	payload, ok := nextContent["payload"].(map[string]interface{})
-	if !ok {
-		// JS: rich.payload && typeof rich.payload === 'object' ? rich.payload : rich
-		payload = nextContent
-	} else {
-		nextPayload := make(map[string]interface{}, len(payload)+1)
-		for key, value := range payload {
+	payloadRaw := nextContent["payload"]
+	var payload map[string]interface{}
+	switch typedPayload := payloadRaw.(type) {
+	case map[string]interface{}:
+		nextPayload := make(map[string]interface{}, len(typedPayload)+1)
+		for key, value := range typedPayload {
 			nextPayload[key] = value
 		}
 		nextContent["payload"] = nextPayload
 		payload = nextPayload
+	case []interface{}:
+		// JS: typeof [] === 'object', so the real consumer reads
+		// text/description from the array (absent) and renders the bare
+		// attachment label. The agent copy normalizes the payload into a map
+		// so the annotation becomes readable in the winning description
+		// channel; the stored/human array payload survives untouched.
+		payload = make(map[string]interface{}, 1)
+		nextContent["payload"] = payload
+	default:
+		// JS: rich.payload && typeof rich.payload === 'object' ? rich.payload : rich
+		// Every non-object payload (primitive, falsy or not) falls back to the
+		// rich object itself; annotation and original text fields live there.
+		payload = nextContent
 	}
 	winner := ""
 	if jsTruthy(payload["text"]) {
@@ -964,9 +987,10 @@ func withGatewayAnnotationRichContent(content map[string]interface{}, blocks []t
 	if winner != "" {
 		payload[winner] = jsStringOf(payload[winner]) + "\n\n" + modelText
 	}
-	// Blocks keep the annotation block for live/WS replay consumers; the
-	// cloud consumer either reads the merged description (truthy) or falls
-	// back to these same blocks when it did not render a description.
+	// Blocks (the caller's annotatedBlocks) keep the annotation block for
+	// live/WS replay consumers; the cloud consumer either reads the merged
+	// description (truthy) or falls back to these same blocks when it did not
+	// render a description.
 	return nextContent, blocks
 }
 
@@ -1126,4 +1150,45 @@ func (h *Hub) gatewayAnnotationHistoryModelText(message *types.Message, recipien
 		return ""
 	}
 	return gatewayAnnotationsModelText(document)
+}
+
+// richJSONAttachmentBlock detects a JSON-string encoded rich attachment
+// (R4-1) and returns the equivalent content block, so the live parser keeps
+// collecting the attachment after the annotation text is appended to the
+// string. nil when the string is not a file/image/voice rich object with a
+// url, or when an equivalent block already exists.
+func richJSONAttachmentBlock(raw string, blocks []types.ContentBlock) *types.ContentBlock {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "{") {
+		return nil
+	}
+	var parsed interface{}
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return nil
+	}
+	rich, ok := parsed.(map[string]interface{})
+	if !ok || !jsTruthy(rich["type"]) {
+		return nil
+	}
+	richType := strings.TrimSpace(jsStringOf(rich["type"]))
+	if richType != "file" && richType != "image" && richType != "voice" {
+		return nil
+	}
+	payload, ok := rich["payload"].(map[string]interface{})
+	if !ok {
+		payload = rich
+	}
+	url, _ := payload["url"].(string)
+	name, _ := payload["name"].(string)
+	if url == "" {
+		return nil
+	}
+	for _, block := range blocks {
+		if block.Type == richType && block.Payload != nil {
+			if blockURL, _ := block.Payload["url"].(string); blockURL == url {
+				return nil
+			}
+		}
+	}
+	return &types.ContentBlock{Type: richType, Payload: map[string]interface{}{"url": url, "name": name}}
 }

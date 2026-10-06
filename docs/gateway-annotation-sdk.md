@@ -100,7 +100,7 @@ import {
 - 选择捕获：
   - **element**：hover 高亮（真实 getBoundingClientRect），点击上报 `element_id`（优先 `getElementId` 回调 → `data-catsco-annotation-id` → DOM `id`）+ CSS selector（id 锚定、验证过的属性锚定，或 ≤6 层**同 tag** nth-of-type 链，≤512，含 rect/viewport 证据）。每段锚点与最终 selector 都以 `document.querySelector(selector) === 元素` 验证——转义/截断导致指向其他元素时丢弃该锚点或整条 selector（`element_id` 仍是锚），**绝不发布无法 match 的 selector**。
   - **text**：mouseup 时读取 `window.getSelection()`，上报 `text`（≤2000）+ `prefix/suffix`（≤256）+ rect 证据；发送后清除选区。**整段 Range 覆盖检查**：start/end 容器、共同祖先及 Range 实际触及的每个元素（`Range.intersectsNode`）只要任一落入敏感 subtree 即整段拒绝（fail-closed；遍历超 500 节点预算同样拒绝）。
-  - **region**：拖拽框选，<6px 视为误触；上报归一化 `rect` + `coordinate_space:'viewport'` + `viewport` 证据。
+  - **region**：拖拽框选，释放点以 mouseup 事件自身坐标为准（不依赖最后一次 mousemove），两端坐标先 clamp 进 viewport 再做 <6px 误触判定与归一化；上报归一化 `rect` + `coordinate_space:'viewport'` + `viewport` 证据。
 - **rect 视口交集**：element/text 的辅助 rect 一律先取 DOMRect 与 iframe viewport 的交集再归一化（部分可见大元素/文本选择产生 `x+w≤1` 的合法 rect）；交集为空（完全不可见）时省略 rect/coordinate_space/viewport，仅保留 element/text anchor；region 选择发生在 viewport 内，始终为有效正面积。
 - **敏感控件排除**：`input[type=password|hidden|email|tel|number|search|file|date…]`、名字/id 命中 `password|token|secret|api-key|card|cvv|otp…` 的输入控件、contenteditable 区域、以及标了 `data-catsco-annotation-sensitive` 的子树——既不作为标注目标，也不读取任何 `.value`（SDK 从不读输入值）。
 - **导航失效**：`history.pushState/replaceState` 在模块级**只 patch 一次**，由共享 dispatcher 把导航广播给所有存活实例（每个实例 dispose 只注销自己，任意 dispose 顺序下存活实例仍收到通知；最后一个实例 dispose 才恢复原生方法）。同时 `popstate`/`hashchange` → 清空拖拽/悬停态并上报 `page.v1`；宿主据此使旧页面草稿失效，旧目标不会静默贴到新文档。`pagehide` 清理 overlay。

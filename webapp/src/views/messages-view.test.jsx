@@ -10238,4 +10238,115 @@ describe('MessagesView gateway annotation flow', () => {
   });
 
 
+
+
+  test('R4 recovery storage success after failed send must refresh the row version consumed by next send', async()=>{
+    let rejectSend;
+    api.sendMessage.mockImplementationOnce(()=>new Promise((_,reject)=>{rejectSend=reject;}));
+    const frame=await openGatewayAppInSidebar(); const page={path:'/board',revision:'r1'}; const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'stable','original');
+    const read=()=>JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')||'{}')['p2p_1_2|7|saturday-demo']||[];
+    const firstVersion=read()[0].draft_revision;
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first')); await sendMessageAndFlush();
+    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    expect(read()[0].draft_revision).toBeGreaterThan(firstVersion);
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('original');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);expect(read()).toHaveLength(0);
+  });
+
+  test('R4 quota recovery retry failure must not replace memory newer same-ID comment with older persisted version',async()=>{
+    let rejectFirst,rejectRetry;
+    api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectFirst=r;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'old','old-comment');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();
+    await followupCapture(frame,connect,page,'pending','pending-comment');
+    const refuseSet=vi.spyOn(sessionStorage,'setItem').mockImplementation(()=>{throw new Error('quota');});
+    await act(async()=>{rejectFirst(new Error('network'));await flushPromises();});
+    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(2);
+    // A retry preclear is also refused; the complete recovery remains authoritative.
+    api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectRetry=r;}));
+    const refuseRemove=vi.spyOn(sessionStorage,'removeItem').mockImplementation(()=>{throw new Error('blocked');});
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();
+    expect(rejectRetry).toBeTypeOf('function');
+    expect(api.sendMessage.mock.calls[1][1].metadata.gateway_annotations.annotations.map(a=>a.id)).toEqual(['old','pending']);
+    await act(async()=>{rejectRetry(new Error('network'));await flushPromises();});
+    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(2);
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('old-comment');
+    refuseSet.mockRestore();refuseRemove.mockRestore();
+  });
+
+  test('R4 repeated retry with refused preclear and later successful cleanup preserves unseen same-ID edit',async()=>{
+    let resolvePoll,resolveSend;
+    const {frame,connect,page}=await reviewerQuotaRecovery();
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-body').click());
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));
+    await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
+    api.sendMessage.mockImplementationOnce(()=>new Promise(r=>{resolveSend=r;}));await sendMessageAndFlush();
+    await act(async()=>typeDraft(container.querySelector('.v3-gateway-annotation-bar-edit'),'new-preparation-edit'));
+    await act(async()=>Simulate.keyDown(container.querySelector('.v3-gateway-annotation-bar-edit'),{key:'Enter'}));
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
+    await vi.waitFor(()=>expect(resolveSend).toBeTypeOf('function'));
+    await act(async()=>{resolveSend({seq_id:130,metadata:{}});await flushPromises();});
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('new-preparation-edit');
+  });
+
+  test('R4 recovering over-size comments can be shortened one at a time without deleting other comments',async()=>{
+    let rejectSend;
+    api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'old-a','旧'.repeat(1900));await followupCapture(frame,connect,page,'old-b','原'.repeat(1900));
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
+    await followupCapture(frame,connect,page,'pending-a','新'.repeat(1900));await followupCapture(frame,connect,page,'pending-b','后'.repeat(1900));
+    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(4);
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-body').click());
+    await act(async()=>typeDraft(container.querySelector('.v3-gateway-annotation-bar-edit'),'short'));
+    await act(async()=>Simulate.keyDown(container.querySelector('.v3-gateway-annotation-bar-edit'),{key:'Enter'}));
+    const saved=JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'];
+    expect(saved).toHaveLength(4);expect(saved[0].body).toBe('short');
+  });
+
+  test('R4 late success in original app cannot overwrite newly active app visible drafts',async()=>{
+    let resolveSend;api.sendMessage.mockImplementationOnce(()=>new Promise(r=>{resolveSend=r;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'old','original-app');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
+    await mountTopic(root,'p2p_1_3');const next=await openGatewayAppInSidebar('p2p_1_3');const c=await followupReady(next,page);
+    await followupCapture(next,c,page,'new','other-topic-comment');
+    await act(async()=>{resolveSend({seq_id:135,metadata:{}});await flushPromises();});
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('other-topic-comment');
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('other-topic-comment');
+  });
+
+
+  test('R4 shortening multiple recovered comments must save intermediate bounded recovery set',async()=>{
+    let rejectSend;api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
+    for(const id of ['old-a','old-b'])await followupCapture(frame,connect,page,id,'批'.repeat(1900));
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
+    for(const id of ['new-a','new-b'])await followupCapture(frame,connect,page,id,'新'.repeat(1900));
+    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(4);
+    for(let i=0;i<2;i++){
+      await act(async()=>container.querySelectorAll('.v3-gateway-annotation-bar-body')[i]?.click());
+      const editor=container.querySelector('.v3-gateway-annotation-bar-edit');expect(editor).not.toBeNull();
+      await act(async()=>typeDraft(editor,'short-'+i));await act(async()=>Simulate.keyDown(editor,{key:'Enter'}));
+      expect(container.querySelector('.v3-gateway-annotation-bar-edit')).toBeNull();
+    }
+    const rows=JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'];expect(rows).toHaveLength(4);expect(rows[0].body).toBe('short-0');expect(rows[1].body).toBe('short-1');
+  });
+
+  test('R4 prepared snapshot new page guard must not read drift from newly active other topic',async()=>{
+    let resolvePoll;const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
+    await followupCapture(frame,c,page,'topic-a','old-topic');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'body-a'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();
+    await mountTopic(root,'p2p_1_3');const next=await openGatewayAppInSidebar('p2p_1_3');const c2=await followupReady(next,page);await followupCapture(next,c2,page,'topic-b','other-topic');
+    await act(async()=>{sdkMessage(next,{type:'catsco.gateway.annotation.page.v1',contract_version:'catsco.gateway-annotation-bridge.v1',session_id:c2.session_id,page:{path:'/new',revision:'r2'}});await flushPromises();});
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);expect(api.sendMessage.mock.calls[0][0]).toBe('p2p_1_2');expect(api.sendMessage.mock.calls[0][1].metadata.gateway_annotations.annotations[0].body).toBe('old-topic');
+  });
+
 });

@@ -874,6 +874,58 @@ describe('R3: tab free text + setRevision document invalidation', () => {
   });
 });
 
+
+describe('R4: region release geometry', () => {
+  it('the committed region uses the mouseup release point, not the last mousemove', () => {
+    const { posted } = createSdk({ revision: 'r1' });
+    connect();
+    sendMode('region');
+    document.body.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 100, clientY: 100, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mousemove', { clientX: 200, clientY: 200, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    const targets = targetMessages(posted);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].selection.target.rect).toEqual({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 });
+  });
+
+  it('a mouseup without prior mousemove is rejected as below the minimum size', () => {
+    const { posted } = createSdk({ revision: 'r1' });
+    connect();
+    sendMode('region');
+    document.body.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 100, clientY: 100, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX: 103, clientY: 102, bubbles: true, cancelable: true }));
+    expect(targetMessages(posted)).toHaveLength(0);
+  });
+
+  it('release coordinates outside the viewport are clamped before the rect', () => {
+    const { posted } = createSdk({ revision: 'r1' });
+    connect();
+    sendMode('region');
+    document.body.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 100, clientY: 100, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX: 1500, clientY: -50, bubbles: true, cancelable: true }));
+    const targets = targetMessages(posted);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].selection.target.rect).toEqual({ x: 0.1, y: 0, width: 0.9, height: 0.1 });
+  });
+
+  it('navigation and revision no-op keep functioning after one of two instances disposed', () => {
+    const { posted } = createParentBus();
+    const a = window.CatsCoAnnotations.create({ parentOrigin: 'https://host.catsco.example', revision: 'r1' });
+    const b = window.CatsCoAnnotations.create({ parentOrigin: 'https://host.catsco.example', revision: 'r1' });
+    activeSdk = b;
+    connect();
+    a.dispose();
+    sendMode('region');
+    document.body.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 100, clientY: 100, bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new MouseEvent('mousemove', { clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    b.setRevision('r1'); // page unchanged: drag must survive
+    document.body.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX: 300, clientY: 300, bubbles: true, cancelable: true }));
+    expect(targetMessages(posted)).toHaveLength(1);
+    history.pushState({}, '', '/r4-next');
+    expect(pageMessages(posted).at(-1).page.path).toBe('/r4-next');
+  });
+});
+
 describe('host <-> SDK interoperability (frozen bridge protocol)', () => {
   it('connect -> ready -> mode -> element target round trip carries exact origin and session', () => {
     // Host side: real host bridge pointed at this jsdom window's fake frame.

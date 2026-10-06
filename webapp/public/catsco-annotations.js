@@ -663,22 +663,38 @@
       event.stopPropagation();
       var width = window.innerWidth || 1;
       var height = window.innerHeight || 1;
-      var left = Math.min(state.regionDrag.startX, state.regionDrag.currentX ?? state.regionDrag.startX);
-      var top = Math.min(state.regionDrag.startY, state.regionDrag.currentY ?? state.regionDrag.startY);
-      var rectWidth = Math.abs((state.regionDrag.currentX ?? state.regionDrag.startX) - state.regionDrag.startX);
-      var rectHeight = Math.abs((state.regionDrag.currentY ?? state.regionDrag.startY) - state.regionDrag.startY);
+      // The release point is the mouseup event's own coordinates (the last
+      // mousemove may lag behind it); clamp both ends into the viewport
+      // before the size threshold and the normalized rect.
+      var startX = Math.max(0, Math.min(state.regionDrag.startX, width));
+      var startY = Math.max(0, Math.min(state.regionDrag.startY, height));
+      var endX = Number.isFinite(event.clientX)
+        ? Math.max(0, Math.min(event.clientX, width))
+        : Math.max(0, Math.min(state.regionDrag.currentX ?? startX, width));
+      var endY = Number.isFinite(event.clientY)
+        ? Math.max(0, Math.min(event.clientY, height))
+        : Math.max(0, Math.min(state.regionDrag.currentY ?? startY, height));
+      var left = Math.min(startX, endX);
+      var top = Math.min(startY, endY);
+      var dragRect = {
+        left: left,
+        top: top,
+        width: Math.abs(endX - startX),
+        height: Math.abs(endY - startY),
+      };
       state.regionDrag = null;
       state.overlay.setHighlight(null);
-      if (rectWidth < MIN_REGION_PX || rectHeight < MIN_REGION_PX) {
+      if (dragRect.width < MIN_REGION_PX || dragRect.height < MIN_REGION_PX) {
         state.overlay.setBadge('拖拽范围太小，请框选一个更大的区域');
         return;
       }
-      emitRegion({
-        x: clamp01(left / width),
-        y: clamp01(top / height),
-        width: clamp01(rectWidth / width),
-        height: clamp01(rectHeight / height),
-      });
+      var normalized = normalizedViewportRect(dragRect);
+      if (!normalized) {
+        // Degenerate after viewport clamping (e.g. drag entirely outside).
+        state.overlay.setBadge('拖拽范围太小，请框选一个更大的区域');
+        return;
+      }
+      emitRegion(normalized);
     }
 
     function onKeydown(event) {

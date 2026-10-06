@@ -749,6 +749,8 @@ export default function MessagesView({
   const freezeGatewayAnnotationSendSnapshot = useCallback(() => ({
     authRevision: getAuthRevision(),
     token: getToken(),
+    pageChanged: gatewayAnnotationPageChangedRef.current,
+    binding: gatewayAnnotationBindingRef.current,
     context: gatewayAnnotationContextRef.current
       ? { ...gatewayAnnotationContextRef.current }
       : null,
@@ -1499,15 +1501,25 @@ export default function MessagesView({
     const next = gatewayAnnotationDrafts.map((item) => (item.id === id ? { ...item, body: trimmed } : item));
     // Refusal keeps the visible row (and its editable state) untouched and
     // tells the user; the row's old body stays authoritative for sends.
-    const persisted = buildGatewayAnnotationsMetadata(gatewayAnnotationContext, next, gatewayAnnotationPageRef.current)
-      && writeGatewayAnnotationDrafts(user.uid, topic, agentUid, appId, next);
+    const currentSendable = buildGatewayAnnotationsMetadata(gatewayAnnotationContext, gatewayAnnotationDrafts, gatewayAnnotationPageRef.current);
+    const nextSendable = buildGatewayAnnotationsMetadata(gatewayAnnotationContext, next, gatewayAnnotationPageRef.current);
+    const previous = gatewayAnnotationDrafts.find(row => row.id === id);
+    // An oversized recovery can be reduced incrementally. Each changed body
+    // remains bounded; recovery capacity governs intermediate persistence,
+    // while the strict send envelope is checked when actually sending.
+    const reducingRecovery = !currentSendable && previous
+      && Array.from(trimmed).length <= 2000
+      && new TextEncoder().encode(trimmed).length < new TextEncoder().encode(previous.body).length;
+    const persisted = (nextSendable || reducingRecovery)
+      && writeGatewayAnnotationDrafts(user.uid, topic, agentUid, appId, next,
+        undefined, { recovery: Boolean(reducingRecovery) });
     if (!persisted) {
       setGatewayAnnotationCapabilityNote('标注总大小超出上限或无法保存，请缩短评论后重试');
       return false;
     }
     gatewayAnnotationRecoveryRef.current.delete(`${user.uid}|${topic}|${agentUid}|${appId}`);
     setGatewayAnnotationDrafts(readGatewayAnnotationDrafts(user.uid, topic, agentUid, appId));
-    setGatewayAnnotationCapabilityNote('');
+    setGatewayAnnotationCapabilityNote(nextSendable ? '' : '已保存缩短的评论，标注仍超过单次发送限制，请继续缩短或分批处理');
     return true;
   }, [gatewayAnnotationContext, gatewayAnnotationDrafts, gatewayAnnotationPageRef, topic, user?.uid]);
 
@@ -3151,7 +3163,11 @@ export default function MessagesView({
         if (certificatePages.has('')) {
           throw new Error('存在缺少页面信息的旧批注，请清理后重新标注');
         }
-        if (certificatePages.size > 1 || gatewayAnnotationPageChangedRef.current) {
+        const sameCaptureBinding = activeTopicRef.current === topic
+          && gatewayAnnotationBindingRef.current === annotationSendSnapshot.binding;
+        const originalPageDrift = annotationSendSnapshot.pageChanged
+          || (sameCaptureBinding && gatewayAnnotationPageChangedRef.current);
+        if (certificatePages.size > 1 || originalPageDrift) {
           throw new Error('批注来自不同页面，请清理后重新标注');
         }
       }
