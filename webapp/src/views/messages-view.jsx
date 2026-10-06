@@ -954,10 +954,15 @@ export default function MessagesView({
       artifactTopicRef.current,
       artifactTopicGenerationRef.current,
     );
-    if (!focus || activeArtifactAgentUIDRef.current !== agentUid) {
+    // Gateway apps use their own launch capability. The legacy artifact flag
+    // may be absent/disabled, so also accept the bot explicitly selected by
+    // this panel. A known, different session bot still takes precedence.
+    const sessionAgentUid = Number(activeArtifactAgentUIDRef.current || cloudArtifactsAgentUID || 0);
+    if (!focus || sessionAgentUid !== agentUid) {
       console.warn('[CatsCo] gateway artifact binding skipped: session mismatch', {
         artifactId,
         agentUid,
+        sessionAgentUid,
         topic: artifactTopicRef.current,
       });
       return;

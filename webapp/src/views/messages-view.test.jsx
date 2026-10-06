@@ -5640,7 +5640,12 @@ describe('MessagesView composer draft isolation', () => {
     }));
   });
 
-  it('accepts task requests from a gateway application frame', async () => {
+  it.each([
+    { legacyArtifactsEnabled: true, group: false },
+    { legacyArtifactsEnabled: false, group: false },
+    { legacyArtifactsEnabled: true, group: true },
+  ])('accepts task requests from a gateway application frame (%j)', async ({ legacyArtifactsEnabled, group }) => {
+    const topic = group ? 'grp_90' : 'p2p_1_440';
     const origin = 'https://artifact.catsco.cc';
     const taskId = `atk_${'g'.repeat(43)}`;
     const taskRef = `atr_${'h'.repeat(43)}`;
@@ -5678,7 +5683,15 @@ describe('MessagesView composer draft isolation', () => {
       launch_url: `${origin}/_launch/gateway-task?next=/promo-content-studio/`,
     });
     api.getAgents.mockResolvedValue({
-      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
+      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: legacyArtifactsEnabled }],
+    });
+    if (group) api.getGroupInfo.mockResolvedValue({
+      group: { id: 90, name: 'Shared application conversation', is_agent_task: false },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 2, display_name: 'Collaborator', is_bot: false },
+        { user_id: 440, display_name: 'Agent', is_bot: true },
+      ],
     });
     api.createArtifactTask.mockResolvedValue({
       contract_version: 'catsco.artifact-task-ref.v1',
@@ -5697,7 +5710,8 @@ describe('MessagesView composer draft isolation', () => {
       expires_at: '2026-08-26T12:00:00Z',
     });
 
-    await mountTopic(root, 'p2p_1_440', {
+    await mountTopic(root, topic, {
+      ...(group ? { isGroup: true, groupId: 90 } : {}),
       cloudArtifactsRequest: { agentUid: 440, requestId: 1, initialTab: 'gateway' },
     });
     await act(async () => { await flushPromises(); });
@@ -5732,7 +5746,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(api.createArtifactContextSnapshot).not.toHaveBeenCalled();
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '网关旁的普通消息', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith(topic, '网关旁的普通消息', undefined);
 
     await act(async () => {
       dispatchFrameMessage(frameWindow, origin, {
@@ -5746,7 +5760,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(api.createArtifactTask).toHaveBeenCalledWith({
-      topic_id: 'p2p_1_440',
+      topic_id: topic,
       artifact_ref: {
         contract_version: 'catsco.artifact-ref.v1',
         id: artifact.id,
@@ -5764,6 +5778,20 @@ describe('MessagesView composer draft isolation', () => {
       request_id: 'gateway-task-request-1',
       task: expect.objectContaining({ task_id: taskId, status: 'submitted' }),
     }));
+
+    api.createArtifactTask.mockClear();
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="返回应用列表"]'));
+      await flushPromises();
+      dispatchFrameMessage(frameWindow, origin, {
+        type: 'catsco.artifact.task.request.v1',
+        request_id: 'gateway-task-after-close',
+        intent_id: 'tasks.create.v1',
+        payload: { title: 'must not run after close' },
+      });
+      await flushPromises();
+    });
+    expect(api.createArtifactTask).not.toHaveBeenCalled();
   });
 
   it('turns a declared page action into one visible Agent turn and routes its result back', async () => {
