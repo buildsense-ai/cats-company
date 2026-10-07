@@ -23,6 +23,16 @@ the agent from the topic and validates the Artifact against that agent's registr
 before accepting a task. Closing the panel invalidates the frame so it cannot
 submit further tasks.
 
+The gateway panel's **new page** action opens a same-origin CatsCo viewer at
+`/artifact-viewer?mode=gateway&topic=...&agent=...&artifact=...`. The URL carries
+identity only. The viewer fetches the current gateway/Artifact registry entries,
+obtains its own authenticated one-time launch, and establishes its own WebSocket,
+task host and Runtime host. It does not require an opener or a sidebar ownership
+acknowledgement and does not attach its page context to ordinary sidebar chat.
+Reloading obtains a new launch and the current registry version while Runtime
+state remains keyed to the same application. Gateway-only apps without a
+versioned platform registry entry remain available for browsing without a host.
+
 The production `promo-content-studio` application was checked on 2026-10-02:
 
 - Gateway: `id=promo-content-studio`, URL
