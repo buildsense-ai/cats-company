@@ -16,6 +16,22 @@
   background: #ffffff;
 }
 
+.artifact-fullscreen-browse-only {
+  display: flex;
+  flex-direction: column;
+}
+
+.artifact-fullscreen-browse-only > p {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 13px;
+}
+
+.artifact-fullscreen-browse-only > iframe {
+  flex: 1;
+  min-height: 0;
+}
+
 .artifact-fullscreen-viewer-state {
   position: absolute;
   inset: 0;

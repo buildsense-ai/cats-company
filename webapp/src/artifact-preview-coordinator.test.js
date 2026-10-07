@@ -7,6 +7,7 @@ import {
   createArtifactPreviewLeaseStore,
   createArtifactPreviewMessage,
   createArtifactViewerURL,
+  createGatewayApplicationViewerURL,
   normalizeArtifactPreviewIdentity,
   normalizeArtifactPreviewMessage,
   parseArtifactViewerLocation,
@@ -19,6 +20,19 @@ const identity = {
   artifactId: 'project-risk-register',
   displayedVersion: 2,
 };
+
+test.each(['https://app.catsco.cc', 'https://app.catsco.cn'])('creates an independent gateway entry on %s without a launch secret', (origin) => {
+  const url = new URL(createGatewayApplicationViewerURL({ ...identity, url: 'https://untrusted.test/', handoffId: 'must-not-copy' }, { origin }));
+  expect(url.origin).toBe(origin);
+  expect(Object.fromEntries(url.searchParams)).toEqual({
+    mode: 'gateway', topic: identity.topicId, agent: '440', artifact: identity.artifactId,
+  });
+  expect(parseArtifactViewerLocation(url)).toEqual({
+    mode: 'gateway', topicId: identity.topicId, agentUid: 440, artifactId: identity.artifactId,
+  });
+  expect(createGatewayApplicationViewerURL({ ...identity, topicId: '' }, { origin })).toBe('');
+  expect(parseArtifactViewerLocation({ pathname: ARTIFACT_VIEWER_PATH, search: '?mode=gateway&topic=p2p_7_440&agent=440&artifact=../../bad' })).toBeNull();
+});
 
 test('builds a CatsCo Viewer URL from identity without accepting an Artifact URL', () => {
   const value = createArtifactViewerURL({

@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, resolveMediaURL } from '../api';
+import { createGatewayApplicationViewerURL } from '../artifact-preview-coordinator';
 import { useFeedback } from '../components/feedback-system';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import { previewFileDescriptor } from './chat-message';
@@ -300,6 +301,17 @@ export default function CloudArtifactsPanel({
   // for any reason we still open the plain URL, so the action never dead-ends.
   const openGatewayApp = useCallback(async (app, target = 'panel') => {
     if (!app?.id || !app?.url) return;
+    if (target === 'window') {
+      const hostedURL = createGatewayApplicationViewerURL({
+        topicId, agentUid, artifactId: app.id,
+      });
+      // Open synchronously in the user's click, before any API calls. The new
+      // viewer owns authentication and its task/runtime connection independently.
+      if (hostedURL) {
+        window.open(hostedURL, '_blank', 'noopener,noreferrer');
+        return;
+      }
+    }
     let viewerURL = app.url;
     let visitor = true;
     let artifact = null;
