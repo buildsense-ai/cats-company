@@ -14,9 +14,14 @@ submitting a request that the server must reject.
 The panel's explicitly selected bot also identifies a gateway iframe when the
 legacy `cloud_artifacts_enabled` flag is missing or the conversation has multiple
 human members. Those conditions disable ordinary chat Artifact attachment, but
-must not disable a versioned application opened from the gateway panel. A
-different known session bot still prevents binding. Closing the panel invalidates
-the frame so it cannot submit further tasks.
+must not disable a versioned application opened from the gateway panel. When
+the conversation has resolved an active Artifact bot, that bot takes precedence
+over the panel selection; a mismatch prevents binding. In shared conversations
+where no active Artifact bot is resolved, the panel selection is the fallback
+and this client-side mismatch guard does not apply. The server still resolves
+the agent from the topic and validates the Artifact against that agent's registry
+before accepting a task. Closing the panel invalidates the frame so it cannot
+submit further tasks.
 
 The production `promo-content-studio` application was checked on 2026-10-02:
 

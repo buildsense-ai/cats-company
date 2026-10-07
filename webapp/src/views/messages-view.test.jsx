@@ -5644,6 +5644,7 @@ describe('MessagesView composer draft isolation', () => {
     { legacyArtifactsEnabled: true, group: false },
     { legacyArtifactsEnabled: false, group: false },
     { legacyArtifactsEnabled: true, group: true },
+    { legacyArtifactsEnabled: false, group: true },
   ])('accepts task requests from a gateway application frame (%j)', async ({ legacyArtifactsEnabled, group }) => {
     const topic = group ? 'grp_90' : 'p2p_1_440';
     const origin = 'https://artifact.catsco.cc';
@@ -5792,6 +5793,79 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(api.createArtifactTask).not.toHaveBeenCalled();
+  });
+
+  it.each(['p2p', 'agent-task'])('rejects a gateway panel bot that differs from the resolved %s Artifact bot', async (conversation) => {
+    const group = conversation === 'agent-task';
+    const origin = 'https://artifact.catsco.cc';
+    const posted = [];
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        posted.push(message);
+        if (message.type === 'catsco.artifact.context.request.v1') {
+          window.setTimeout(() => dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.context.response.v1',
+            request_id: message.request_id,
+            context: {
+              contract_version: 'catsco.artifact-page-context.v1',
+              observed_at: '2026-08-26T03:00:00Z',
+              semantic_context: { view: 'gateway' },
+            },
+          }), 0);
+        }
+      },
+    };
+    api.getAgents.mockResolvedValue({
+      agents: [440, 441].map((uid) => ({ uid, is_bot: true, cloud_artifacts_enabled: true })),
+    });
+    if (group) api.getGroupInfo.mockResolvedValue({
+      group: { id: 90, name: 'Agent task conversation', is_agent_task: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 440, display_name: 'Conversation agent', is_bot: true },
+      ],
+    });
+    // Both bots have valid registry metadata. Only the resolved conversation
+    // bot differs from the panel selection, so neither missing metadata nor a
+    // panel/registry mismatch can explain the rejection.
+    api.getCloudArtifacts.mockImplementation(async (agentUid) => ({
+      artifacts: [{ ...promoRegistryArtifact, agent_uid: String(agentUid) }],
+    }));
+    api.listArtifactApps.mockResolvedValue({ apps: [promoGatewayApp] });
+    api.requestArtifactLaunch.mockResolvedValue({
+      launch_url: `${origin}/_launch/gateway-task?next=/promo-content-studio/`,
+    });
+
+    await mountTopic(root, group ? 'grp_90' : 'p2p_1_440', {
+      ...(group ? { isGroup: true, groupId: 90 } : {}),
+      cloudArtifactsRequest: { agentUid: 441, requestId: 1, initialTab: 'gateway' },
+    });
+    await act(async () => { await flushPromises(); });
+    await act(async () => {
+      Simulate.click(container.querySelector('.cloud-artifact-main'));
+      await flushPromises();
+    });
+
+    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(frame).not.toBeNull();
+    Object.defineProperty(frame, 'contentWindow', { configurable: true, value: frameWindow });
+    await act(async () => {
+      Simulate.load(frame);
+      await flushPromises();
+      dispatchFrameMessage(frameWindow, origin, {
+        type: 'catsco.artifact.task.request.v1',
+        request_id: 'gateway-wrong-agent',
+        intent_id: 'tasks.create.v1',
+        payload: { title: 'must not run for a different bot' },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await flushPromises(12);
+    });
+
+    expect(api.createArtifactTask).not.toHaveBeenCalled();
+    expect(api.createArtifactContextSnapshot).not.toHaveBeenCalled();
+    expect(posted.some((message) => message.type === 'catsco.artifact.host.connect.v1')).toBe(false);
   });
 
   it('turns a declared page action into one visible Agent turn and routes its result back', async () => {
