@@ -8211,6 +8211,133 @@ describe('MessagesView composer draft isolation', () => {
     });
   });
 
+  it('does not announce a share for a gateway application that was already published', async () => {
+    // The notice answers "did the thing I just published reach the registry?" A
+    // gateway application is already published the moment it is listed, so naming
+    // its URL in a new message must not be reported as a fresh share. The notice
+    // therefore reads the registry's own artifacts, not the merged card list.
+    const gatewayURL = 'https://artifact.catsco.cc/mario-test/';
+    api.getMessages.mockResolvedValue({
+      messages: [{
+        id: 730,
+        from_uid: 365,
+        content: '准备发布',
+        created_at: '2026-10-08T00:00:00Z',
+      }],
+    });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 365,
+        topic_id: 'p2p_1_365',
+        username: 'saturday',
+        relation: 'friend',
+        is_bot: true,
+        account_type: 'bot',
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    api.listArtifactApps.mockResolvedValue({
+      apps: [{ id: 'mario-test', title: 'Mini Mario 测试页', url: gatewayURL, status: 'online' }],
+    });
+
+    await mountTopic(root, 'p2p_1_365');
+    await act(async () => {
+      await flushPromises();
+    });
+    // The gateway application is in the card list...
+    expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+    expect(feedbackNotify).not.toHaveBeenCalled();
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_365',
+          from: 'usr365',
+          seq_id: 731,
+          type: 'text',
+          content: `已发布：${gatewayURL}`,
+        },
+      });
+      await flushPromises();
+    });
+
+    // Bump the registry revision, which is the other half of the condition: the
+    // notice only fires once the registry has been re-read since the message
+    // arrived. Without this the test would pass for the wrong reason.
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('cc:cloud-artifacts-changed', {
+        detail: { agentUid: 365 },
+      }));
+      await flushPromises();
+    });
+
+    // ...but naming it is not a new share, because the registry never gained it.
+    expect(feedbackNotify).not.toHaveBeenCalled();
+  });
+
+  it('still announces a share when the registry gains the artifact', async () => {
+    // The counterpart: the notice must keep working for the case it exists for.
+    const artifactURL = 'https://artifacts.example.test/by-agent/365/fresh/latest/';
+    api.getMessages.mockResolvedValue({
+      messages: [{
+        id: 740,
+        from_uid: 365,
+        content: '准备发布',
+        created_at: '2026-10-08T00:00:00Z',
+      }],
+    });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 365,
+        topic_id: 'p2p_1_365',
+        username: 'saturday',
+        relation: 'friend',
+        is_bot: true,
+        account_type: 'bot',
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    api.listArtifactApps.mockResolvedValue({ apps: [] });
+
+    await mountTopic(root, 'p2p_1_365');
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(feedbackNotify).not.toHaveBeenCalled();
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_365',
+          from: 'usr365',
+          seq_id: 741,
+          type: 'text',
+          content: `已发布：${artifactURL}`,
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      api.getCloudArtifacts.mockResolvedValue({
+        artifacts: [{ id: 'fresh', url: artifactURL }],
+      });
+      window.dispatchEvent(new CustomEvent('cc:cloud-artifacts-changed', {
+        detail: { agentUid: 365 },
+      }));
+      await flushPromises();
+    });
+
+    expect(feedbackNotify).toHaveBeenCalledWith({
+      tone: 'success',
+      message: '已共享内容到云端',
+    });
+  });
+
   it('lets only the latest Artifact registry request update the active Agent state', async () => {
     const firstRegistry = deferred();
     const refreshedRegistry = deferred();
@@ -9472,6 +9599,32 @@ describe('gateway applications in the artifact registry', () => {
     );
     expect(merged).toHaveLength(1);
     expect(merged[0].kind).toBeUndefined();
+  });
+
+  it('keeps two entries when the same address is written with and without a trailing slash', () => {
+    // The dedupe key normalizes the query and hash away but keeps the trailing
+    // slash, and the card matcher normalizes the same way, so the two forms are
+    // two distinct addresses as far as matching is concerned. Keeping both is
+    // therefore correct rather than a duplicate: each one matches its own URL in
+    // a message. Every gateway URL currently ends in a slash, so this does not
+    // arise in practice today — the test pins the behaviour so a future change to
+    // the normalization has to decide this on purpose.
+    const merged = mergeArtifactSources(
+      [{ id: 'same', url: 'https://artifact.catsco.cc/same' }],
+      [{ id: 'same', kind: 'mini_app', url: 'https://artifact.catsco.cc/same/' }],
+    );
+    expect(merged.map((artifact) => artifact.url)).toEqual([
+      'https://artifact.catsco.cc/same',
+      'https://artifact.catsco.cc/same/',
+    ]);
+  });
+
+  it('ignores the query string and fragment when deciding identity', () => {
+    const merged = mergeArtifactSources(
+      [{ id: 'same', url: 'https://artifact.catsco.cc/same/' }],
+      [{ id: 'same', kind: 'mini_app', url: 'https://artifact.catsco.cc/same/?v=2#top' }],
+    );
+    expect(merged).toHaveLength(1);
   });
 
   it('handles both sources being empty', () => {
