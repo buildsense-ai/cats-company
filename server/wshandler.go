@@ -2432,7 +2432,6 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 	senderPublishesTaskStatus := h.isTaskStatusPublisher(senderUID)
 
 	decision := h.resolveGroupActivation(groupID, members, msg, mentions, senderUID, senderIsBot, trustedChannelTrigger)
-
 	for _, m := range members {
 		if m.UserID == excludeUID {
 			continue
@@ -2517,6 +2516,77 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 	return taskDelivered
 }
 
+// groupTopicID is the topic a group's messages are stored under. It mirrors
+// the construction used by the group handlers so a topic-scoped lookup cannot
+// drift from the stored form.
+func groupTopicID(groupID int64) string {
+	if groupID <= 0 {
+		return ""
+	}
+	return "grp_" + formatInt64(groupID)
+}
+
+// activationMutedUIDs lists the group members the group has silenced.
+//
+// A muted member is forbidden from posting, so activating one only produces a
+// rejected write: the judgement, the delivery and the model turn are all spent
+// for nothing. Mute therefore acts as a lock on activation, which is also what
+// makes it usable as one.
+func activationMutedUIDs(members []*types.GroupMember) []int64 {
+	var uids []int64
+	for _, member := range members {
+		if member == nil || !member.Muted {
+			continue
+		}
+		uids = append(uids, member.UserID)
+	}
+	return uids
+}
+
+// activationWorkingUIDs lists the group members already mid-turn.
+//
+// The in-process turn tracker is the first source: it is exact for the node
+// that routed the turn. The task-status store is the second, and it is what
+// makes this work across nodes and across a restart — a bot that is running on
+// another node, or whose turn outlived this process, still shows up there.
+//
+// Both are advisory. A failure to read either one degrades to "nobody is known
+// to be working", which is the pre-change behaviour, rather than blocking
+// activation entirely.
+func (h *Hub) activationWorkingUIDs(groupID int64) []int64 {
+	if h == nil || groupID <= 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{})
+	var uids []int64
+	add := func(uid int64) {
+		if uid <= 0 {
+			return
+		}
+		if _, ok := seen[uid]; ok {
+			return
+		}
+		seen[uid] = struct{}{}
+		uids = append(uids, uid)
+	}
+	for _, uid := range h.groupTurns.activeBots(groupID) {
+		add(uid)
+	}
+	if h.db != nil {
+		if statusStore, ok := h.db.(store.ConversationTaskStatusTopicStore); ok {
+			topicID := groupTopicID(groupID)
+			if working, err := statusStore.ListActiveConversationTaskStatusSources(topicID); err == nil {
+				for _, uid := range working {
+					add(uid)
+				}
+			} else {
+				log.Printf("activation working members: list failed for group %d: %v", groupID, err)
+			}
+		}
+	}
+	return uids
+}
+
 // resolveGroupActivation asks the injected resolver which bots a message
 // activates. Without a resolver the pre-existing behaviour is preserved: a
 // single-bot group activates, larger groups require an explicit mention, and an
@@ -2537,6 +2607,9 @@ func (h *Hub) resolveGroupActivation(
 		Mentions:              mentions,
 		Members:               members,
 		TrustedChannelTrigger: trustedChannelTrigger,
+		NotConversation:       !isJudgeableActivationMessage(msg),
+		MutedUIDs:             activationMutedUIDs(members),
+		WorkingUIDs:           func() []int64 { return h.activationWorkingUIDs(groupID) },
 		DefaultAgentUID:       h.defaultAgentForGroup(groupID, len(members), mentions, senderIsBot, trustedChannelTrigger),
 	}
 	if msg != nil && msg.Data != nil {
@@ -2589,13 +2662,20 @@ func (h *Hub) logActivationDecision(groupID int64, req GroupActivationRequest, d
 // itself as degraded: falling back to mentions is a designed outcome, not a
 // failure worth telling the group about.
 func deterministicGroupActivation(req GroupActivationRequest) GroupActivationDecision {
+	if req.NotConversation {
+		return GroupActivationDecision{Source: activationSourceNotConversation}
+	}
 	allBots := activationBots(req.Members)
 	if len(allBots) == 0 {
 		return GroupActivationDecision{Source: activationSourceNoBot}
 	}
+	muted := activationUIDSet(req.MutedUIDs)
 	if len(allBots) == 1 {
 		if allBots[0].UID == req.SenderUID {
 			return GroupActivationDecision{Source: activationSourceBotSender}
+		}
+		if _, blocked := muted[allBots[0].UID]; blocked {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
 		}
 		return GroupActivationDecision{
 			Activated: map[int64]float64{allBots[0].UID: 1},
@@ -2607,13 +2687,32 @@ func deterministicGroupActivation(req GroupActivationRequest) GroupActivationDec
 		return GroupActivationDecision{Source: activationSourceBotSender}
 	}
 	if req.TrustedChannelTrigger {
-		return GroupActivationDecision{Activated: activationAll(bots), Source: activationSourceChannel}
+		reachable := activationExcludingUIDs(bots, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		return GroupActivationDecision{Activated: activationAll(reachable), Source: activationSourceChannel}
 	}
 	if activationMentionAll(req.Mentions) {
-		return GroupActivationDecision{Activated: activationAll(bots), Source: activationSourceMention}
+		reachable := activationExcludingUIDs(bots, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		return GroupActivationDecision{Activated: activationAll(reachable), Source: activationSourceMention}
 	}
+	// A mention is matched against the roster including silenced members, then
+	// filtered: naming someone is a designation, so "@a muted bot" must not be
+	// reinterpreted as an open request for a different member.
 	if mentioned := activationMentionedBots(bots, req.Mentions); len(mentioned) > 0 {
-		return GroupActivationDecision{Activated: mentioned, Source: activationSourceMention}
+		reachable := activationExcludingScores(mentioned, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		return GroupActivationDecision{Activated: reachable, Source: activationSourceMention}
+	}
+	bots = activationExcludingUIDs(bots, muted)
+	if len(bots) == 0 {
+		return GroupActivationDecision{Source: activationSourceNoCandidate}
 	}
 	// An agent-task group exists to finish one piece of work, so a message that
 	// addresses nobody still needs its owner rather than stalling silently.

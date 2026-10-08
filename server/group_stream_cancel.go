@@ -129,6 +129,34 @@ func (t *groupAgentTurnTracker) pruneExpiredLocked(now time.Time) {
 	}
 }
 
+// activeBots lists the members currently holding a turn in this group. The
+// tracker already knows them — it reserves a turn on activation and clears it
+// on stream cancel or a terminal task status — so this exposes that state to
+// the activation path instead of making it re-derive "who is busy" from the
+// transcript.
+//
+// Expired turns are pruned first, so a bot that vanished without a terminal
+// event stops counting as busy after the TTL instead of being excluded
+// forever.
+func (t *groupAgentTurnTracker) activeBots(groupID int64) []int64 {
+	if t == nil || groupID <= 0 {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	t.pruneExpiredLocked(now)
+	groupTurns := t.turns[groupID]
+	if len(groupTurns) == 0 {
+		return nil
+	}
+	uids := make([]int64, 0, len(groupTurns))
+	for botUID := range groupTurns {
+		uids = append(uids, botUID)
+	}
+	return uids
+}
+
 func (t *groupAgentTurnTracker) clear(groupID, botUID int64) {
 	if t == nil || groupID <= 0 || botUID <= 0 {
 		return

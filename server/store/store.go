@@ -144,6 +144,19 @@ type ConversationTaskStatusStore interface {
 	GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error)
 }
 
+// ConversationTaskStatusTopicStore reports which members of one topic are
+// currently running a turn.
+//
+// It is separate from ConversationTaskStatusStore so focused stores keep
+// implementing the smaller surface: activation treats a missing implementation
+// as "nobody is known to be working" rather than failing.
+type ConversationTaskStatusTopicStore interface {
+	// ListActiveConversationTaskStatusSources returns the source uids that are
+	// still running or waiting in this topic. Read-only: the caller runs on the
+	// message hot path and must not reconcile or lock.
+	ListActiveConversationTaskStatusSources(topicID string) ([]int64, error)
+}
+
 // ValidateConversationTaskStatusTransition enforces the per-source run
 // lifecycle shared by every task-status store implementation.
 func ValidateConversationTaskStatusTransition(current, next *types.ConversationTaskStatus, now time.Time) error {
