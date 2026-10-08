@@ -1347,7 +1347,7 @@ describe('SkillHubView', () => {
 
     const search = container.querySelector('#cc-skillhub-added-search-input');
     expect(search).toBeTruthy();
-    expect(container.querySelector('.cc-skillhub-added-search-count')?.textContent).toBe('2 项能力');
+    expect(container.querySelector('.cc-skillhub-added-search-count')).toBeNull();
     await act(async () => {
       search.value = 'summarize';
       Simulate.change(search);
@@ -1441,9 +1441,10 @@ describe('SkillHubView', () => {
     const localItem = [...container.querySelectorAll('.cc-skillhub-added-item')]
       .find((item) => item.querySelector('h3')?.textContent === 'web-search');
     expect(localItem).toBeTruthy();
-    expect(container.textContent).toContain('已配置能力来自 BotDefinition');
-    expect(container.textContent).toContain('仅运行工作区中的未同步能力');
-    expect(container.textContent).toContain('来自当前 Agent 的 XiaoBa 真实 skills 目录');
+    expect(container.querySelector('.cc-skillhub-content-header')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-navigation #cc-skillhub-added-search-input')).toBeTruthy();
+    expect(container.querySelector('[aria-label="仅运行工作区中的未同步能力"]')).toBeTruthy();
+    expect(container.querySelector('.cc-skillhub-ability-group-heading')).toBeNull();
     expect(localItem.textContent).toContain('仅运行工作区，未同步');
     expect(localItem.textContent).toContain('尚未发布 · 当前运行工作区');
     expect(localItem.textContent).not.toContain('版本未确认');
@@ -2489,6 +2490,8 @@ describe('SkillHubView', () => {
     expect(listbox).toBeTruthy();
     expect(listbox.style.left).toBe('100px');
     expect(listbox.style.width).toBe('176px');
+    expect([...listbox.querySelectorAll('[role="option"]')].map((option) => option.textContent))
+      .toEqual(['Owner Bot', 'Friend Bot']);
     expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.textContent).toContain('Owner Bot');
     expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.title).toBe('Owner Bot');
 
@@ -2532,10 +2535,9 @@ describe('SkillHubView', () => {
     await act(async () => {
       Simulate.click(trigger);
     });
-    expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.textContent)
-      .toContain('部分待确认');
-    expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.textContent)
-      .toContain('removed/skill');
+    const selectedOption = document.body.querySelector('[role="option"][aria-selected="true"]');
+    expect(selectedOption?.textContent).toBe('Owner Bot');
+    expect(selectedOption?.getAttribute('aria-describedby')).toBeNull();
   });
 
   it('loads only owner bots and binds a precise SkillHub reference', async () => {
@@ -2691,10 +2693,10 @@ describe('SkillHubView', () => {
     expect(container.textContent).not.toContain('私有能力');
     expect(container.textContent).toContain('第 2 版 · 最近变更：lin');
     expect(container.textContent).not.toContain('v2');
-    expect(container.textContent).toContain('只读查看');
-    expect(container.textContent).toContain('不会读取其运行工作区，因此不能确认运行环境是否已应用');
-    expect(container.textContent).toContain('已同步能力');
-    expect(container.textContent).toContain('来自该 Agent 已同步到 BotDefinition 的只读元数据');
+    expect(container.querySelector('.cc-skillhub-readonly-badge')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-content-header')).toBeNull();
+    expect(container.querySelector('[aria-label="已同步能力"]')).toBeTruthy();
+    expect(container.querySelector('.cc-skillhub-ability-group-heading')).toBeNull();
     expect(container.querySelector('.cc-skillhub-custom-entry')).toBeNull();
     expect(container.textContent).not.toContain('用此工作区覆盖 Agent 配置');
     expect(container.querySelector('.cc-skillhub-availability.is-configured')?.textContent).toContain('已配置');

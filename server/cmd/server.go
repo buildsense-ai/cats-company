@@ -477,6 +477,7 @@ func main() {
 	// authenticates with its own login and the platform uses the shared gateway
 	// token, so a bot never needs write access to the gateway configuration.
 	artifactAppsHandler := server.NewArtifactAppsHandlerFromEnv()
+	artifactAppsHandler.SetStore(db)
 	// Optional: issue the domain-level Artifact identity cookie and serve the
 	// read-only lookup the gateway uses. Off unless configured.
 	server.ConfigureArtifactIdentity(server.ArtifactIdentityConfigFromEnv())

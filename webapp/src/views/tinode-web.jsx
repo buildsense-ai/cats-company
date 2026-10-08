@@ -27,6 +27,7 @@ import { hasRoutableDesktopDevice } from '../widgets/catsco-desktop-shared';
 import RelayAccessModal from '../widgets/relay-access-modal';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import StandaloneCloudArtifactsPanel from '../widgets/standalone-cloud-artifacts-panel';
+import ArtifactQuickPicker from '../widgets/artifact-quick-picker';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
 import IdentityOnboarding from '../components/identity-onboarding';
 import LiquidFlowBackground, {
@@ -103,7 +104,7 @@ import {
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
-import { Cloud, Download, Frown, KeyRound, Laptop, MoreHorizontal, Package, Plus, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { AppWindow, Cloud, Download, Frown, KeyRound, Laptop, MoreHorizontal, Package, Plus, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import './workspace-styles';
 
 // Keep the active conversation eager; fetch secondary tools only when opened.
@@ -111,6 +112,7 @@ import './workspace-styles';
 const RelayAdminPanel = lazy(() => import('./relay-admin-panel'));
 const MobileUploadView = lazy(() => import('./mobile-upload-view'));
 const SkillHubView = lazy(() => import('./skillhub-view'));
+const AppsView = lazy(() => import('./apps-view'));
 const GroupSettings = lazy(() => import('../widgets/group-settings'));
 const WorkflowRichMediaDemo = lazy(() => import('./workflow-rich-media-demo'));
 const WorkspaceOnboardingCard = lazy(() => import('../widgets/workspace-onboarding-card'));
@@ -506,6 +508,7 @@ function TinodeWebApp({ location }) {
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
   const recoveredProfileRef = useRef(null);
   const showAutomaticWorkspaceOnboarding = activeView !== 'skillhub'
+    && activeView !== 'apps'
     && !downloadLinkPending
     && !showDesktopConnectModal
     && !showWorkspaceOnboardingReplay
@@ -631,7 +634,7 @@ function TinodeWebApp({ location }) {
     relayUsageSummary,
   );
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
-  const openCloudArtifactsForAgent = useCallback((agentUid) => {
+  const openCloudArtifactsForAgent = useCallback((agentUid, selection = {}) => {
     const normalizedAgentUid = Number(agentUid || 0);
     if (normalizedAgentUid <= 0 && !activeTopicId) return;
     cloudArtifactsRequestSequenceRef.current += 1;
@@ -639,7 +642,9 @@ function TinodeWebApp({ location }) {
       agentUid: normalizedAgentUid,
       requestId: cloudArtifactsRequestSequenceRef.current,
       topicId: activeTopicId,
-      initialTab: activeTopicId ? 'files' : 'active',
+      initialTab: selection.initialTab || (activeTopicId ? 'files' : 'active'),
+      file: selection.file,
+      app: selection.app,
     };
     if (activeTopicId) {
       setStandaloneCloudArtifactsRequest(null);
@@ -647,12 +652,12 @@ function TinodeWebApp({ location }) {
       return;
     }
     setCloudArtifactsRequest(null);
-    setStandaloneCloudArtifactsTab('active');
+    setStandaloneCloudArtifactsTab(request.initialTab);
     setStandaloneCloudArtifactsRequest(request);
   }, [activeTopicId]);
 
-  const handleOpenCloudArtifacts = useCallback(() => {
-    openCloudArtifactsForAgent(displayedActiveAgent?.uid || displayedActiveAgent?.id);
+  const handleOpenCloudArtifacts = useCallback((selection) => {
+    openCloudArtifactsForAgent(displayedActiveAgent?.uid || displayedActiveAgent?.id, selection);
   }, [displayedActiveAgent?.id, displayedActiveAgent?.uid, openCloudArtifactsForAgent]);
 
   const handleOpenManagedAgentArtifacts = useCallback((agentUid) => {
@@ -1522,6 +1527,7 @@ function TinodeWebApp({ location }) {
       currentModelName={currentModelName}
       onDownload={() => openDesktopModal('download')}
       onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
+      topicId={activeTopicId}
       title={activeTopic?.name || taskDraftTitle(taskDraft || persistedTaskContext)}
       mobileModelInfo={mobileModelInfo}
       onNewTask={() => setNewTaskRequest((request) => request + 1)}
@@ -1624,6 +1630,13 @@ function TinodeWebApp({ location }) {
                     setMobileSidebarOpen(false);
                   }}
                 />
+                <AppsSidebarButton
+                  active={activeView === 'apps'}
+                  onClick={() => {
+                    setActiveView('apps');
+                    setMobileSidebarOpen(false);
+                  }}
+                />
               </>
             )}
             onManageGroup={(group) => {
@@ -1705,7 +1718,11 @@ function TinodeWebApp({ location }) {
         </button>
         <div className="v3-main-body">
           <div className="v3-main-content">
-            {activeView === 'skillhub' ? (
+            {activeView === 'apps' ? (
+              <Suspense fallback={<SecondaryViewLoading label=" 应用" />}>
+                <AppsView user={user} topicId={activeTopic?.topicId || ''} />
+              </Suspense>
+            ) : activeView === 'skillhub' ? (
               <Suspense fallback={<SecondaryViewLoading label=" SkillHub" />}>
                 <SkillHubView
                   user={user}
@@ -1739,9 +1756,9 @@ function TinodeWebApp({ location }) {
                 modelInfo={mobileModelInfo}
               />
             ) : (
-              <>
-                {localAssistantBar}
-                <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}`}>
+              <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}`}>
+                <div className="v3-chat-column">
+                  {localAssistantBar}
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
                     user={user}
@@ -1753,22 +1770,23 @@ function TinodeWebApp({ location }) {
                     onActivateTopic={activateResolvedTopic}
                     modelInfo={mobileModelInfo}
                   />
-                  {standaloneCloudArtifactsRequest && (
-                    <div className="v3-file-preview-shell">
-                      <StandaloneCloudArtifactsPanel
-                        key={standaloneCloudArtifactsRequest.requestId}
-                        agentUid={standaloneCloudArtifactsRequest.agentUid}
-                        topicId={standaloneCloudArtifactsRequest.topicId}
-                        initialTab={standaloneCloudArtifactsRequest.initialTab}
-                        tab={standaloneCloudArtifactsTab}
-                        onTabChange={setStandaloneCloudArtifactsTab}
-                        onClose={() => setStandaloneCloudArtifactsRequest(null)}
-                        onOpenArtifact={openExternalArtifact}
-                      />
-                    </div>
-                  )}
                 </div>
-              </>
+                {standaloneCloudArtifactsRequest && (
+                  <div className="v3-file-preview-shell">
+                    <StandaloneCloudArtifactsPanel
+                      key={standaloneCloudArtifactsRequest.requestId}
+                      agentUid={standaloneCloudArtifactsRequest.agentUid}
+                      topicId={standaloneCloudArtifactsRequest.topicId}
+                      initialTab={standaloneCloudArtifactsRequest.initialTab}
+                      initialApp={standaloneCloudArtifactsRequest.app}
+                      tab={standaloneCloudArtifactsTab}
+                      onTabChange={setStandaloneCloudArtifactsTab}
+                      onClose={() => setStandaloneCloudArtifactsRequest(null)}
+                      onOpenArtifact={openExternalArtifact}
+                    />
+                  </div>
+                )}
+              </div>
             )}
           </div>
           {relayAdminAllowed && relayAdminOpen && (
@@ -1881,7 +1899,7 @@ function TinodeWebApp({ location }) {
   );
 }
 
-export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin, mobileModelInfo = null, onNewTask }) {
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, topicId = '', title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin, mobileModelInfo = null, onNewTask }) {
   const barRef = useRef(null);
   const mobileActionsRef = useRef(null);
   const mobileActionsTriggerRef = useRef(null);
@@ -1989,17 +2007,13 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
             <Settings2 size={17} />
           </button>
         )}
-        <button
-          type="button"
+        <ArtifactQuickPicker
           className="v3-action-btn v3-cloud-action v3-shell-action-desktop"
-          onClick={onOpenCloudArtifacts}
-          disabled={!onOpenCloudArtifacts}
-          aria-label={onOpenCloudArtifacts ? '打开产物' : '产物暂不可用'}
-          title={onOpenCloudArtifacts ? '产物' : '选择 Agent 后可查看产物'}
-        >
-          <Cloud size={17} aria-hidden="true" />
-        </button>
-        <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onDownload} aria-label="打开桌面端" title="桌面端">
+          agentUid={activeAgent?.uid || activeAgent?.id}
+          topicId={topicId}
+          onSelect={onOpenCloudArtifacts}
+        />
+        <button type="button" className="v3-action-btn v3-desktop-action v3-shell-action-desktop" onClick={onDownload} aria-label="打开桌面端" title="桌面端">
           <Laptop size={17} />
         </button>
         <div ref={mobileActionsRef} className="v3-mobile-actions">
@@ -2032,16 +2046,8 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
                   <span>模型用量</span>
                 </button>
               )}
-              <button
-                type="button"
-                role="menuitem"
-                aria-label={onOpenCloudArtifacts ? '打开产物' : '产物暂不可用'}
-                disabled={!onOpenCloudArtifacts}
-                onClick={() => { closeMobileActions(); onOpenCloudArtifacts?.(); }}
-              >
-                <Cloud size={16} aria-hidden="true" />
-                <span>{onOpenCloudArtifacts ? '打开产物' : '产物暂不可用'}</span>
-              </button>
+              <ArtifactQuickPicker mobile agentUid={activeAgent?.uid || activeAgent?.id} topicId={topicId}
+                onSelect={onOpenCloudArtifacts} onChoose={closeMobileActions} />
               <button type="button" role="menuitem" aria-label="下载桌面端" onClick={() => { closeMobileActions(); onDownload?.(); }}>
                 <Download size={16} aria-hidden="true" />
                 <span>下载桌面端</span>
@@ -2166,6 +2172,22 @@ function SkillHubSidebarButton({ active, onClick, updateCount = 0 }) {
       <Package size={17} />
       <span>SkillHub</span>
       {count > 0 && <span className="cc-skillhub-sidebar-update-badge" aria-label={`${count} 个 Skill 可更新`}>{count}</span>}
+    </button>
+  );
+}
+
+function AppsSidebarButton({ active, onClick }) {
+  return (
+    <button
+      type="button"
+      className={`cc-sidebar-primary cc-sidebar-apps-entry${active ? ' active' : ''}`}
+      onClick={onClick}
+      aria-label="打开应用"
+      aria-current={active ? 'page' : undefined}
+      title="应用"
+    >
+      <AppWindow size={17} aria-hidden="true" />
+      <span>应用</span>
     </button>
   );
 }

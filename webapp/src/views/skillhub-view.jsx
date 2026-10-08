@@ -1139,17 +1139,10 @@ export default function SkillHubView({
     return skillHubUpdateSummary?.byBot?.[uid] || null;
   }, [skillHubUpdateSummary]);
 
-  const agentOptions = useMemo(() => bots.map((bot) => {
-    const summary = updateSummaryForBot(bot);
-    const status = summary?.status || '';
-    return {
-      value: String(botUID(bot)),
-      label: `${botLabel(bot)}${isFriendBot(bot) ? '（好友）' : ''}`,
-      updateCount: ['ready', 'partial'].includes(status) ? summary?.count : null,
-      updateStatus: status,
-      unavailableSkillIds: summary?.unavailableSkillIds || [],
-    };
-  }), [bots, updateSummaryForBot]);
+  const agentOptions = useMemo(() => bots.map((bot) => ({
+    value: String(botUID(bot)),
+    label: botLabel(bot),
+  })), [bots]);
   const selectedUpdateSummary = updateSummaryForBot(selectedAgent);
   const selectedUpdateCount = ['ready', 'partial'].includes(selectedUpdateSummary?.status)
     ? Number(selectedUpdateSummary?.count || 0)

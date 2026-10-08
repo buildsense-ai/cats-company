@@ -3135,7 +3135,7 @@ export function FilePreviewPanel({
             )}
             {isImage ? <ImageIcon size={18} /> : <FileText size={18} />}
             <div>
-              <h3>{file.name}</h3>
+              <h3 title={file.name}>{file.name}</h3>
               <span>{meta.label}{sizeStr ? ` · ${sizeStr}` : ''}</span>
             </div>
           </div>

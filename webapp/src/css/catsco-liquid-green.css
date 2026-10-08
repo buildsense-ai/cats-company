@@ -300,7 +300,6 @@ html[data-theme="liquid"][data-liquid-variant="green"] .v3-composer-box {
   border: 1px solid var(--cc-liquid-edge);
   background: #242627;
   box-shadow:
-    0 0 0 1px rgba(0, 10, 8, 0.32),
     0 3px 7px rgba(0, 9, 7, 0.24),
     inset 0 1px 1px rgba(255, 255, 255, 0.16),
     inset 0 8px 12px -10px rgba(255, 255, 255, 0.36),
