@@ -1100,9 +1100,10 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 // internal all-models plan grants hides the model from those users while their
 // quota for it keeps being billed.
 func TestCatalogPoolCoversEveryGPTModelAnyPlanGrants(t *testing.T) {
-	// catsco-pro / catsco-personal sell gpt-6-sol; the internal all-models plan
-	// keeps gpt-5.6-sol; every plan with GPT models carries gpt-5.6-terra.
-	planModels := []string{"gpt-5.6-terra", "gpt-6-sol", "gpt-5.6-sol"}
+	// catsco-pro / catsco-personal sell gpt-6-sol and gpt-6.1-sol; the internal
+	// all-models plan keeps gpt-5.6-sol; every plan with GPT models carries
+	// gpt-5.6-terra.
+	planModels := []string{"gpt-5.6-terra", "gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-sol"}
 	offered := map[string]bool{}
 	for _, item := range botModelCatalog {
 		if strings.HasPrefix(item.ID, "gpt-") {
