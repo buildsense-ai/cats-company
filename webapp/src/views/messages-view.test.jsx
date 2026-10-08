@@ -9524,6 +9524,50 @@ describe('MessagesView composer draft isolation', () => {
 
       expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
     });
+
+    it('renders registry cards without waiting for the gateway list', async () => {
+      // The gateway list only adds cards; it must not gate the registry's own. An
+      // earlier version awaited both with Promise.all, so every registry card
+      // waited on the gateway — up to the gateway's bound — even though the
+      // registry had already answered.
+      const registryURL = 'https://artifacts.example.test/by-agent/365/lesson/latest/';
+      api.getMessages.mockResolvedValue({
+        messages: [{ id: 750, from_uid: 365, content: '准备发布', created_at: '2026-10-08T00:00:00Z' }],
+      });
+      api.getFriends.mockResolvedValue({ friends: [] });
+      api.getAgents.mockResolvedValue({
+        agents: [{
+          uid: 365,
+          topic_id: 'p2p_1_365',
+          username: 'saturday',
+          relation: 'friend',
+          is_bot: true,
+          account_type: 'bot',
+          cloud_artifacts_enabled: true,
+        }],
+      });
+      api.getCloudArtifacts.mockResolvedValue({
+        artifacts: [{ id: 'lesson', url: registryURL }],
+      });
+      let releaseGateway;
+      api.listArtifactApps.mockImplementation(() => new Promise((resolve) => { releaseGateway = resolve; }));
+
+      await mountTopic(root, 'p2p_1_365');
+      await act(async () => {
+        await flushPromises();
+      });
+
+      // The gateway has not answered yet, and the registry card is already here.
+      expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+
+      await act(async () => {
+        releaseGateway({ apps: [{ id: 'gw', title: 'GW', url: 'https://artifact.catsco.cc/gw/' }] });
+        await flushPromises();
+      });
+
+      // And the gateway's own card joins once it arrives.
+      expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('2');
+    });
   });
 
 });

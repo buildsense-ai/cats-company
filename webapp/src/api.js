@@ -54,15 +54,19 @@ const DEV_ARTIFACT_GATEWAY_BASE = '/artifact-gateway';
 // so a slow platform never blocks opening an application.
 const ARTIFACT_LAUNCH_TIMEOUT_MS = 8_000;
 // The gateway application list is read alongside the artifact registry and only
-// decorates it, so it gets a shorter leash than the registry: a gateway that
-// stops answering should cost a missing card, not a stalled conversation.
+// adds cards to it, so it gets a shorter leash: the registry's own cards render as
+// soon as the registry answers, and a gateway that stops answering should cost a
+// missing card rather than a stalled conversation.
 //
-// It must still be longer than the gateway's own budget, or the client would give
-// up on exactly the requests the server is still working on. That budget is 4s
-// (`PROBE_BUDGET_MS`, on top of `PROBE_TIMEOUT_MS` 3s per probe), the probe cache
-// is 10s, and a cold list measures ~3.03s whenever an unreachable application has
-// to be probed — which is routine, not exceptional. 8s leaves room for the budget
-// to be reached and the response to return.
+// The value is chosen from measurement, not from a chain of budgets. A cold list —
+// the gateway's probe cache is 10s, and probing an unreachable application costs
+// up to `PROBE_TIMEOUT_MS` 3s — measures ~3.03s, so 8s leaves roughly 2.6x
+// headroom. Note the platform sits in front of the gateway with its own 10s
+// upstream timeout (`artifactUpstreamTimeout` in server/cloud_artifacts.go), which
+// is *longer* than this bound: a request taking 8-10s is abandoned here while the
+// platform is still working. That is deliberate — 10s is too long to hold a card
+// back — but it means this is not "greater than the server's budget" and the
+// comment should not claim to be.
 const ARTIFACT_GATEWAY_TIMEOUT_MS = 8_000;
 
 function normalizeArtifactPreviewSession(value) {

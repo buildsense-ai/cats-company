@@ -3550,32 +3550,42 @@ export default function MessagesView({
         // Applications published through the gateway live in a different system
         // from the cloud-artifact registry. Read both, because a card is rendered
         // by matching a URL in the message text against this list: with only the
-        // registry, a gateway application would never produce a card. A gateway
-        // failure must not take the registry down with it, so it degrades to an
-        // empty list and the registry result still renders.
-        const [result, gateway] = await Promise.all([
-          api.getCloudArtifacts(requestAgentUID, 'active', {
-            signal: controller.signal,
-          }),
-          // Promise.resolve() first: a caller or test double may return a plain
-          // value rather than a promise, and calling .catch on it would throw and
-          // take the registry load down with it.
-          Promise.resolve()
-            .then(() => api.listArtifactApps(requestAgentUID, { signal: controller.signal }))
-            .catch(() => null),
-        ]);
+        // registry, a gateway application would never produce a card.
+        //
+        // The registry result is published as soon as it arrives, and the gateway
+        // list is merged in when it arrives, rather than waiting for both. Awaiting
+        // both would make every registry card wait on the gateway — up to the
+        // gateway's bound — for a list that only adds cards. The gateway is the
+        // decoration here, so it must not gate the registry.
+        const registryArtifacts = await api.getCloudArtifacts(requestAgentUID, 'active', {
+          signal: controller.signal,
+        }).then(result => (Array.isArray(result?.artifacts) ? result.artifacts : []));
         if (!isCurrentRequest()) return;
         hadSuccessfulResponse = true;
-        const registryArtifacts = Array.isArray(result?.artifacts) ? result.artifacts : [];
         setArtifactRegistryState({
           agentUID: requestAgentUID,
           registryArtifacts,
-          artifacts: mergeArtifactSources(
-            registryArtifacts,
-            gatewayAppsAsArtifacts(gateway?.apps),
-          ),
+          artifacts: registryArtifacts,
         });
         setArtifactRegistryRevision((current) => current + 1);
+
+        // Promise.resolve() first: a caller or test double may return a plain
+        // value rather than a promise, and calling .catch on it would throw.
+        const gateway = await Promise.resolve()
+          .then(() => api.listArtifactApps(requestAgentUID, { signal: controller.signal }))
+          .catch(() => null);
+        if (!isCurrentRequest()) return;
+        const gatewayArtifacts = gatewayAppsAsArtifacts(gateway?.apps);
+        // No early return: the polling and retry scheduling below must still run.
+        // Skipping it would stop the registry from refreshing at all whenever the
+        // gateway had nothing to add, which is the common case.
+        if (gatewayArtifacts.length > 0) {
+          setArtifactRegistryState((current) => (
+            current.agentUID === requestAgentUID
+              ? { ...current, artifacts: mergeArtifactSources(current.registryArtifacts, gatewayArtifacts) }
+              : current
+          ));
+        }
       } catch {
         if (!isCurrentRequest()) return;
         if ((polling || attempt >= retryDelays.length) && !hadSuccessfulResponse) {

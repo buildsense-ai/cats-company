@@ -97,12 +97,18 @@ describe('shared app list transport', () => {
     const { api, setToken } = await import('./api');
     setToken('test-token');
 
-    const request = api.listArtifactApps(42);
+    let settled = false;
+    const request = api.listArtifactApps(42).catch((error) => { settled = true; throw error; });
     const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
 
-    // The bound has to clear the gateway's own probe budget (4s) plus a probe (3s),
-    // or the client would abandon requests the server is still working on.
-    await vi.advanceTimersByTimeAsync(8000);
+    // Pin the value from both sides, so the test fails for any bound other than
+    // the intended one rather than only for one that happens to cross 8s. The
+    // bound is chosen from a measured cold list (~3.03s) with headroom, and is
+    // deliberately shorter than the platform's own 10s upstream timeout.
+    await vi.advanceTimersByTimeAsync(7_999);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
     await rejection;
     expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
     vi.useRealTimers();
