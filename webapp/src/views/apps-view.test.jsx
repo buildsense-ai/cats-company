@@ -15,7 +15,7 @@ vi.mock('../api', () => ({
   api: mocks,
 }));
 
-import AppsView from './apps-view';
+import AppsView, { isNewApplication } from './apps-view';
 
 describe('AppsView', () => {
   let container;
@@ -62,6 +62,13 @@ describe('AppsView', () => {
 
   const titles = () => [...container.querySelectorAll('.cc-app-card-heading-copy strong')].map((node) => node.textContent);
 
+  test('keeps legacy Artifact URLs out of the new Applications page', () => {
+    expect(isNewApplication({ url: 'https://artifact.catsco.cc/new-app/' })).toBe(true);
+    expect(isNewApplication({ urls: ['https://artifact.catsco.cn/new-app/'] })).toBe(true);
+    expect(isNewApplication({ url: 'https://agent-1071.artifacts.catsco.fun:19991/artifacts/old-app/latest/' })).toBe(false);
+    expect(isNewApplication({ id: 'missing-url' })).toBe(false);
+  });
+
   test('delays skeletons for slow initial loading and replaces them with real cards', async () => {
     vi.useFakeTimers();
     let finish;
@@ -104,7 +111,7 @@ describe('AppsView', () => {
     expect(container.querySelector('.cc-apps-results')).toBe(grid);
     expect(container.querySelector('.cc-app-card-skeleton')).toBeNull();
     expect(container.querySelector('.cc-apps-refresh .is-spinning')).toBeTruthy();
-    await act(async () => { finishes.forEach((finish) => finish({ apps: [{ id: 'updated', title: 'Updated application' }] })); });
+    await act(async () => { finishes.forEach((finish) => finish({ apps: [{ id: 'updated', title: 'Updated application', url: 'https://artifact.catsco.cc/updated/' }] })); });
     expect(titles()).toEqual(['Updated application']);
     expect(container.querySelector('.cc-apps-results')).toBe(grid);
     expect(container.querySelector('.cc-apps-refresh .is-spinning')).toBeNull();
@@ -291,6 +298,21 @@ describe('AppsView', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
+  test('silently skips a legacy-only Agent when its new catalog is unavailable', async () => {
+    const original = mocks.listArtifactApps.getMockImplementation();
+    mocks.listArtifactApps.mockImplementation(async (uid) => {
+      if (uid === '43') {
+        const error = new Error('not found');
+        error.status = 404;
+        throw error;
+      }
+      return original(uid);
+    });
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+    expect(titles()).toEqual(['Saturday 演示应用']);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   test('does not claim to show remaining apps when every Agent request fails', async () => {
     mocks.listArtifactApps.mockRejectedValue(new Error('backend unavailable'));
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
@@ -302,7 +324,7 @@ describe('AppsView', () => {
   test('handles empty lists and missing timestamps while keeping dated apps first', async () => {
     mocks.listArtifactApps.mockImplementation(async (uid) => ({ apps: uid === '43' ? [] : [
       { id: 'undated', title: '无日期', url: 'https://artifact.catsco.cc/undated/' },
-      { id: 'created', title: '新建应用', created_at: '2026-09-20T00:00:00Z' },
+      { id: 'created', title: '新建应用', url: 'https://artifact.catsco.cc/created/', created_at: '2026-09-20T00:00:00Z' },
     ] }));
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
     expect(titles()).toEqual(['新建应用', '无日期']);
