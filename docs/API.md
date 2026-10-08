@@ -44,6 +44,44 @@ Cats Company 是一个独立的即时通讯平台，提供：
 
 ## 1. 认证
 
+### SkillHub 图文介绍代理（M2a，默认关闭）
+
+这是图文详情 UI 的后端前置接口，不是新 UI、AI 生成或计费上线。旧 `/api/skillhub/skills` 及现有 Bot 安装、更新、删除、发布和模型切换接口不变。
+
+所有下列路由要求 **当前有效真人账号**的 `Authorization: Bearer <JWT>`，经过 `OwnerMiddlewareWithDB` 核验账号状态；不接受 Bot API Key、Bot JWT、浏览器 SkillHub Cookie，也不接受 URL query token。好友可以读取公开介绍，但编辑他人 Skill 仍被 SkillHub 按精确版本的实际发布者身份拒绝。CatsCo 管理员身份不自动转换成 SkillHub 管理员。
+
+统一前缀 `/api/skillhub/marketplace`：
+
+| 方法与后缀 | 说明 |
+| --- | --- |
+| `GET /capabilities` | `{schemaVersion:1, enabled, writesEnabled}`，表示 CatsCo 本地开关，不保证上游已启用 |
+| `GET /catalogue/categories` | 分类列表 |
+| `GET /catalogue/skills` | 分类搜索与分页；允许 `q/category/platform/agent_version/search_mode/limit/cursor` |
+| `GET /presentations?skillId=author%2Fname&version=1.0.0` | 精确公开版本的已确认介绍 |
+| `GET /presentations/draft?skillId=author%2Fname&version=1.0.0` | 发布者/Admin 私有草稿 |
+| `PUT /presentations/draft` | 保存结构化草稿；使用 SkillHub 原有 `expectedRevision` CAS 契约 |
+| `POST /presentations/publish`、`POST /presentations/unpublish` | 确认/撤回介绍，不改变 Skill 包或 BotDefinition |
+| `GET /assets?skillId=author%2Fname&version=1.0.0` | 发布者/Admin 的附件元数据列表 |
+| `POST /assets` | JSON `{skillId,version,dataBase64,reason?}` 上传受控图片 |
+| `GET /assets/:id` | 当前正式介绍所引用的 WebP 图片；不携带编辑凭据请求上游 |
+| `GET /assets/:id/preview` | 发布者/Admin 私有预览 |
+| `DELETE /assets/:id` | JSON `{skillId,version,reason?}` 丢弃从未进入介绍历史的上传 |
+
+写请求必须是 JSON，介绍/删除体最大 176 KiB、图片上传体最大 3 MiB。图片响应最大 2 MiB，固定 `image/webp`，校验类型与签名，设置 `nosniff`、限制性 CSP 和 `private, no-store`；JSON 响应同样不缓存。不透传 Set-Cookie、Location 或任意上游响应头。草稿预览不得作为公开图片失效时的回退路径。
+
+编辑和私有读取通过已有 `/api/auth/catsco-exchange` 交换当前 JWT，核对返回 CatsCo UID 与认证上下文一致后，使用**仅在本次请求内持有**的上游会话。操作后通过 `/api/auth/logout` 尝试注销，取消请求也使用独立的三秒清理超时。无跨用户会话缓存，JWT/临时 Cookie 不返回浏览器、不存文件、不写日志。清理失败仅输出不含凭据的警告，不把已经提交的写操作伪装成失败；上游未注销的记录会保留至其会话到期（现有默认 30 天），CatsCo 不再持有或复用该凭据。此方案有每个私有请求额外两次认证 HTTP 调用与会话审计存储成本；后续优化不能跨越账号/令牌边界。公开读取不创建会话。上游审计 IP 反映代理出口，不伪造浏览器 IP；操作者身份由交换验证。
+
+代理地址固定使用服务端 `CATSCO_SKILLHUB_BASE_URL`，新增请求拒绝所有重定向并禁用 cookie jar。不接收任意 URL、路径、所选 Bot UID 或付款身份。没有设备 RPC、本地 Dashboard、Relay 模型调用。写请求不自动重试；网络结果不明应重新读取 revision 后由用户决定。保留 400/401/403/404/409/413/415/429/503 状态及已知错误码，丢弃任意上游错误正文。UI 应区别 `presentation.revision_conflict`、`catalogue.cursor_stale`、`presentation.disabled` 等；上游关闭/旧部署不可用时回退原说明，不锁住原有 Skill 操作。
+
+部署顺序：SkillHub PR #15/#16 的代码及迁移先部署；本 PR 仅新增默认关闭的代理。在测试环境联合验证后，随 M2b 的真实详情/编辑 UI 再启用；本阶段不在生产打开开关。
+
+- `CATSCO_SKILLHUB_MARKETPLACE_ENABLED=false`：关闭新读写路由，但 capabilities 仍可读取。
+- `CATSCO_SKILLHUB_MARKETPLACE_WRITES_ENABLED=false`：独立关闭写操作；只读展示可继续。
+- `CATSCO_SKILLHUB_SESSION_COOKIE_NAME=catsco_session`：若 SkillHub 定制了 `SKILLHUB_COOKIE_NAME`，此处保持一致。
+- 同时需正确配置 SkillHub 的介绍 read/write 与 images 开关，且 `SKILLHUB_CATSCO_BASE_URL` 指向验证当前 JWT 的 CatsCo 环境。不要将测试账号的 JWT 发往生产认证域。
+
+回滚只关闭新开关或回退 CatsCo 应用；保留上游新增表和历史图片，不撤回原 Skill 安装能力。M2b 后续还需实现 UI 的账号切换清理、过期响应抑制、Blob 图片地址释放、详情 fallback、预览确认及 CAS 冲突交互；本 PR 不声称这些前端行为已完成。
+
 ### 1.1 用户认证（JWT）
 
 通过登录接口获取 JWT Token，有效期 7 天。

@@ -1009,6 +1009,10 @@ func main() {
 	mux.HandleFunc("/api/skillhub/skills", jwtAuthWithDB(skillHubProxyHandler.HandleSkills))
 	mux.HandleFunc("/api/skillhub/skills/", jwtAuthWithDB(skillHubProxyHandler.HandleSkill))
 	mux.HandleFunc("/api/skillhub/publisher-profile/sync", jwtAuthWithDB(skillHubProxyHandler.HandlePublisherProfileSync))
+	// Presentation editing uses the current human identity, never the selected
+	// Bot's credentials. This additive subtree defaults off in production.
+	skillHubMarketplaceHandler := server.NewSkillHubMarketplaceHandlerFromEnv(skillHubProxyHandler)
+	mux.HandleFunc("/api/skillhub/marketplace/", ownerAuthWithDB(skillHubMarketplaceHandler.Handle))
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))
 	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
 	mux.HandleFunc("/api/bot/definition/default-prompt", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefaultPrompt))
