@@ -58,7 +58,7 @@ vi.mock('read-excel-file/browser', () => ({
   default: vi.fn(),
 }));
 
-import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel, previewFileDescriptor } from './chat-message';
+import ChatMessage, { artifactSubtitle, createCloudArtifactPreviewFile, FilePreviewPanel, previewFileDescriptor } from './chat-message';
 import { resolveMediaURL } from '../api';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
@@ -3898,5 +3898,28 @@ describe('ChatMessage rich file rendering', () => {
     const previewButton = container.querySelector('button.v3-artifact-action');
     expect(previewButton.disabled).toBe(true);
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toBe('/uploads/files/handout.docx?download=1');
+  });
+});
+
+describe('artifact card subtitle', () => {
+  it('describes a gateway application as an application, not as HTML', () => {
+    // A gateway application is a running service behind the tunnel. Its entry
+    // point happens to be HTML, but calling the card "HTML" tells the reader it
+    // is a static page, which is exactly the confusion this label avoids.
+    expect(artifactSubtitle({ kind: 'mini_app' })).toBe('小应用 · 云端生成物');
+  });
+
+  it('keeps the HTML wording for a stored cloud artifact', () => {
+    expect(artifactSubtitle({ kind: 'html' })).toBe('HTML · 云端生成物');
+  });
+
+  it('appends the published version only when there is one', () => {
+    expect(artifactSubtitle({ kind: 'mini_app', publish_version: 3 })).toBe('小应用 · 云端生成物 · v3');
+    expect(artifactSubtitle({ kind: 'html', publish_version: 0 })).toBe('HTML · 云端生成物');
+    expect(artifactSubtitle({ kind: 'html', publish_version: null })).toBe('HTML · 云端生成物');
+  });
+
+  it('treats a missing artifact as a plain cloud artifact rather than throwing', () => {
+    expect(artifactSubtitle(undefined)).toBe('HTML · 云端生成物');
   });
 });

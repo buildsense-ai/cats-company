@@ -250,6 +250,8 @@ vi.mock('../api', () => ({
 import MessagesView, {
   canonicalizeStructuredMentionText,
   collectStructuredMentionTargets,
+  gatewayAppsAsArtifacts,
+  mergeArtifactSources,
   mergeOwnServerEcho,
   ImageGalleryPreview,
   mergeCloudWorkerSnapshots,
@@ -799,6 +801,11 @@ describe('MessagesView composer draft isolation', () => {
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudWorkers.mockResolvedValue({ workers: [] });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    // The registry effect reads the gateway list too, so it needs the same
+    // per-test default as the registry call above. Without it a test that sets
+    // this mock leaks its value into every later test: clearAllMocks() in
+    // afterEach clears calls but keeps mockResolvedValue.
+    api.listArtifactApps.mockResolvedValue({ apps: [] });
     feedbackConfirm.mockReset();
     feedbackConfirm.mockResolvedValue(true);
     feedbackNotify.mockReset();
@@ -9304,5 +9311,82 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(composerBox.classList.contains('is-agent-reply-active')).toBe(false);
     expect(composerBox.getAttribute('aria-busy')).toBe('false');
+  });
+});
+
+describe('gateway applications in the artifact registry', () => {
+  it('maps a gateway application into the shape the cards read', () => {
+    // Cards match a URL in the message text against this list. A gateway
+    // application only produces a card if it is in here, so the mapping has to
+    // keep the URL and give the card a kind to branch its subtitle on.
+    expect(gatewayAppsAsArtifacts([{
+      id: 'xiantu-ai',
+      title: '仙途 · AI修仙模拟器',
+      url: 'https://artifact.catsco.cc/xiantu-ai/',
+      status: 'online',
+    }])).toEqual([{
+      id: 'xiantu-ai',
+      title: '仙途 · AI修仙模拟器',
+      kind: 'mini_app',
+      url: 'https://artifact.catsco.cc/xiantu-ai/',
+      updated_at: null,
+    }]);
+  });
+
+  it('falls back to the id when an application has no title', () => {
+    const [mapped] = gatewayAppsAsArtifacts([{ id: 'unnamed', url: 'https://artifact.catsco.cc/unnamed/' }]);
+    expect(mapped.title).toBe('unnamed');
+  });
+
+  it('drops entries without a usable id or url instead of rendering a broken card', () => {
+    expect(gatewayAppsAsArtifacts([
+      { id: '', url: 'https://artifact.catsco.cc/a/' },
+      { id: 'b', url: '' },
+      { url: 'https://artifact.catsco.cc/c/' },
+      null,
+    ])).toEqual([]);
+  });
+
+  it('tolerates a missing or non-array list', () => {
+    expect(gatewayAppsAsArtifacts(undefined)).toEqual([]);
+    expect(gatewayAppsAsArtifacts(null)).toEqual([]);
+    expect(gatewayAppsAsArtifacts({ apps: [] })).toEqual([]);
+  });
+
+  it('keeps both sources, because a registry artifact and a gateway app can differ', () => {
+    const merged = mergeArtifactSources(
+      [{ id: 'stored', url: 'https://artifacts.example.test/by-agent/440/stored/latest/' }],
+      gatewayAppsAsArtifacts([{ id: 'live', url: 'https://artifact.catsco.cc/live/' }]),
+    );
+    expect(merged.map((artifact) => artifact.id)).toEqual(['stored', 'live']);
+  });
+
+  it('lets the registry entry win when both sources list the same application', () => {
+    // The registry copy carries the published version and creator metadata the
+    // card shows; the gateway copy has neither, so it must not displace it.
+    const merged = mergeArtifactSources(
+      [{ id: 'same', kind: 'html', publish_version: 2, url: 'https://artifact.catsco.cc/same/' }],
+      gatewayAppsAsArtifacts([{ id: 'same', title: 'Same', url: 'https://artifact.catsco.cc/same/' }]),
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].kind).toBe('html');
+    expect(merged[0].publish_version).toBe(2);
+  });
+
+  it('does not duplicate the same application when only its URL form differs', () => {
+    // Both systems name the application the same way, so the id is what decides
+    // identity. Matching on the URL alone would let one application through twice
+    // whenever the two sides spell its address differently.
+    const merged = mergeArtifactSources(
+      [{ id: 'same', url: 'https://artifact.catsco.cc/same/latest/' }],
+      [{ id: 'same', kind: 'mini_app', url: 'https://artifact.catsco.cc/same/' }],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].url).toBe('https://artifact.catsco.cc/same/latest/');
+  });
+
+  it('handles both sources being empty', () => {
+    expect(mergeArtifactSources([], [])).toEqual([]);
+    expect(mergeArtifactSources(undefined, undefined)).toEqual([]);
   });
 });

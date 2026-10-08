@@ -457,6 +457,47 @@ function artifactPublishCandidates(messages) {
   });
 }
 
+// Gateway applications come from a different system than the cloud-artifact
+// registry the cards were built around, so they carry a different shape: no
+// `kind`, no `publish_version`, no creator fields. The card only needs a URL to
+// match and a title to show, so map them into the registry shape here instead of
+// teaching every card consumer about a second source. `kind: 'mini_app'` is what
+// the subtitle branches on to say 小应用 rather than 网页; a gateway application
+// is a running service, not a static page.
+export function gatewayAppsAsArtifacts(apps) {
+  return (Array.isArray(apps) ? apps : []).flatMap((app) => {
+    const url = String(app?.url || '').trim();
+    const id = String(app?.id || '').trim();
+    if (!url || !id) return [];
+    return [{
+      id,
+      title: String(app?.title || '').trim() || id,
+      kind: 'mini_app',
+      url,
+      updated_at: app?.updated_at ?? null,
+    }];
+  });
+}
+
+// The registry and the gateway list the same application under the same id once
+// it has been published to both, so deduplicate on the id and let the registry
+// entry win: it carries the version and creator metadata the cards show, and the
+// gateway entry has neither. Falling back to the URL covers an entry that somehow
+// arrives without an id.
+export function mergeArtifactSources(registryArtifacts, gatewayArtifacts) {
+  const merged = [];
+  const seen = new Set();
+  const registry = Array.isArray(registryArtifacts) ? registryArtifacts : [];
+  const gateway = Array.isArray(gatewayArtifacts) ? gatewayArtifacts : [];
+  for (const artifact of [...registry, ...gateway]) {
+    const key = String(artifact?.id || '').trim() || artifactNotificationURL(artifact?.url);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(artifact);
+  }
+  return merged;
+}
+
 function cacheHistoryPage(cache, key, entry) {
   cache.delete(key);
   cache.set(key, entry);
@@ -3497,14 +3538,31 @@ export default function MessagesView({
     );
     const loadArtifacts = async (attempt = 0, polling = false) => {
       try {
-        const result = await api.getCloudArtifacts(requestAgentUID, 'active', {
-          signal: controller.signal,
-        });
+        // Applications published through the gateway live in a different system
+        // from the cloud-artifact registry. Read both, because a card is rendered
+        // by matching a URL in the message text against this list: with only the
+        // registry, a gateway application would never produce a card. A gateway
+        // failure must not take the registry down with it, so it degrades to an
+        // empty list and the registry result still renders.
+        const [result, gateway] = await Promise.all([
+          api.getCloudArtifacts(requestAgentUID, 'active', {
+            signal: controller.signal,
+          }),
+          // Promise.resolve() first: a caller or test double may return a plain
+          // value rather than a promise, and calling .catch on it would throw and
+          // take the registry load down with it.
+          Promise.resolve()
+            .then(() => api.listArtifactApps(requestAgentUID))
+            .catch(() => null),
+        ]);
         if (!isCurrentRequest()) return;
         hadSuccessfulResponse = true;
         setArtifactRegistryState({
           agentUID: requestAgentUID,
-          artifacts: Array.isArray(result?.artifacts) ? result.artifacts : [],
+          artifacts: mergeArtifactSources(
+            Array.isArray(result?.artifacts) ? result.artifacts : [],
+            gatewayAppsAsArtifacts(gateway?.apps),
+          ),
         });
         setArtifactRegistryRevision((current) => current + 1);
       } catch {
