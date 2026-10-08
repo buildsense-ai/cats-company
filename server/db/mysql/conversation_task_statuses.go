@@ -342,6 +342,43 @@ func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer
 	return err
 }
 
+// ListActiveConversationTaskStatusSources returns the source uids still running
+// or waiting in one topic.
+//
+// This is the read-only counterpart used on the message hot path, so unlike the
+// per-source getter it neither reconciles legacy rows nor takes a lock. A row
+// counts as active while its expiry has not passed, which is the same liveness
+// rule the recovery reaper uses; a bot that crashed mid-turn is marked stale
+// there rather than blocking activation forever.
+func (a *Adapter) ListActiveConversationTaskStatusSources(topicID string) ([]int64, error) {
+	if topicID == "" {
+		return nil, nil
+	}
+	rows, err := a.db.Query(
+		`SELECT source_uid
+		 FROM conversation_task_status_sources
+		 WHERE topic_id = ?
+		   AND state IN ('running', 'waiting')
+		   AND source_uid IS NOT NULL
+		   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP(6))`,
+		topicID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list active conversation task sources: %w", err)
+	}
+	defer rows.Close()
+
+	var uids []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err != nil {
+			return nil, fmt.Errorf("scan active conversation task source: %w", err)
+		}
+		uids = append(uids, uid)
+	}
+	return uids, rows.Err()
+}
+
 // ListAllActiveConversationTaskStatusesBefore returns every active source run
 // last updated before the cutoff (feeds the periodic/startup reaper).
 func (a *Adapter) ListAllActiveConversationTaskStatusesBefore(updatedBefore time.Time) ([]*types.ConversationTaskStatus, error) {

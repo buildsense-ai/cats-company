@@ -59,6 +59,16 @@ const (
 	activationSourceNoBot        = "no_bot"
 	activationSourceNoMention    = "no_mention"
 	activationSourceDefaultAgent = "default_agent"
+	// activationSourceNotConversation marks a message that never reaches
+	// judging because it is not conversation: agent working traffic (tool
+	// calls, tool results, thinking, runtime plans, stream deltas, task
+	// status) rather than something a member could reply to.
+	activationSourceNotConversation = "not_conversation"
+	// activationSourceNoCandidate marks a judged group where every bot was
+	// filtered out before judging — the author itself, a member who cannot
+	// speak, or one already working. There is nobody left to ask about, so the
+	// judge is never called.
+	activationSourceNoCandidate = "no_candidate"
 )
 
 // GroupActivationResolver decides which bots respond to a group message.
@@ -80,6 +90,32 @@ type GroupActivationRequest struct {
 	// TrustedChannelTrigger marks a channel-managed group message that already
 	// passed the channel's own trigger rules.
 	TrustedChannelTrigger bool
+	// NotConversation marks agent runtime traffic rather than a message a
+	// member could reply to: tool calls, tool results, thinking, runtime plans,
+	// stream deltas and task status.
+	//
+	// The zero value is false, so a caller that does not classify the message
+	// keeps the previous behaviour of judging it.
+	NotConversation bool
+	// MutedUIDs lists members the group has silenced. A muted member is
+	// forbidden from posting, so activating it would only produce a rejected
+	// write — the judgement, the delivery and the model turn are all waste.
+	// Mute is therefore a lock: a muted member is never activated, not even by
+	// an explicit mention.
+	//
+	// It is read from the roster the broadcaster already loaded, so it costs
+	// nothing on the paths that never judge.
+	MutedUIDs []int64
+	// WorkingUIDs lazily loads the members that are mid-turn. They are dropped
+	// from the judgement because a bot that is already running does not need to
+	// be asked whether it should run: the answer cannot change anything, and
+	// the question is what makes two busy bots keep waking each other.
+	//
+	// It is a loader rather than a slice because it costs a store query, and
+	// the paths that never judge — a single-bot group, a mention, and above all
+	// agent working traffic, which is the bulk of a busy group's messages —
+	// must not pay for it.
+	WorkingUIDs func() []int64
 	// DefaultAgentUID is the agent an agent-task group falls back to when
 	// judging is not installed. It is only consulted on the deterministic path:
 	// once judging runs, its verdict is the decision, including a verdict of
@@ -148,11 +184,25 @@ func NewJevGroupActivationResolver(client *JevClient) *JevGroupActivationResolve
 }
 
 // Resolve applies the activation rules in order of increasing cost.
+//
+// Activating a bot and judging with Jev are two separate things. A mention
+// activates a bot without any model call; judging is only the fallback for
+// messages that name nobody. The filters below therefore sit on the judging
+// path, and a member that must not be *judged* can still be *activated* by name.
 func (r *JevGroupActivationResolver) Resolve(ctx context.Context, req GroupActivationRequest) GroupActivationDecision {
+	// Working traffic is not conversation. Judging it would ask the model about
+	// something the transcript itself drops, and the answer could only come
+	// from imagination — measured in the field, a bare "execute_shell" scored
+	// 0.56-0.60 for another bot and woke it.
+	if req.NotConversation {
+		return GroupActivationDecision{Source: activationSourceNotConversation}
+	}
 	allBots := activationBots(req.Members)
 	if len(allBots) == 0 {
 		return GroupActivationDecision{Source: activationSourceNoBot}
 	}
+	muted := activationUIDSet(req.MutedUIDs)
+
 	// A group with one bot never needs addressing: every message is for it.
 	// This is decided from the group's roster, not from the candidates below, so
 	// a lone bot's own messages cannot be mistaken for a single-bot group.
@@ -160,6 +210,15 @@ func (r *JevGroupActivationResolver) Resolve(ctx context.Context, req GroupActiv
 		if allBots[0].UID == req.SenderUID {
 			return GroupActivationDecision{Source: activationSourceBotSender}
 		}
+		// A muted member cannot post, so waking it only produces a rejected
+		// write. Mute is a lock, and it applies here too: a lone muted bot is
+		// simply not reachable until it is unmuted.
+		if _, blocked := muted[allBots[0].UID]; blocked {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		// A busy lone bot is still activated. It needs no judgement, and
+		// delivering the message lets it fold the new text into the turn it is
+		// already running.
 		return GroupActivationDecision{
 			Activated: map[int64]float64{allBots[0].UID: 1},
 			Source:    activationSourceSingleBot,
@@ -177,19 +236,61 @@ func (r *JevGroupActivationResolver) Resolve(ctx context.Context, req GroupActiv
 	// break handover. Convergence comes from the criteria instead: a bot that
 	// reports progress rather than asking for work does not wake anyone.
 	if req.TrustedChannelTrigger {
+		reachable := activationExcludingUIDs(bots, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
 		return GroupActivationDecision{
-			Activated: activationAll(bots),
+			Activated: activationAll(reachable),
 			Source:    activationSourceChannel,
 		}
 	}
 	// An explicit mention is the strongest signal a person can give, so it
 	// short-circuits judging and keeps working when judging is unavailable.
+	//
+	// It is matched against the roster *including* members filtered out below.
+	// A mention is a designation: "@someone else go do it" must not be
+	// reinterpreted as an open request for the judge to pick a different member
+	// when the named one happens to be silenced. If the named member cannot be
+	// activated, the correct outcome is that nobody is.
 	if mentioned := activationMentionedBots(bots, req.Mentions); len(mentioned) > 0 {
-		return GroupActivationDecision{Activated: mentioned, Source: activationSourceMention}
+		reachable := activationExcludingScores(mentioned, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		// A member that is merely busy stays addressable by name: this costs no
+		// model call, and the client folds the message into the running turn.
+		return GroupActivationDecision{Activated: reachable, Source: activationSourceMention}
 	}
 	// "@all" asks every bot to look, which needs no semantic judgement.
 	if activationMentionAll(req.Mentions) {
-		return GroupActivationDecision{Activated: activationAll(bots), Source: activationSourceMention}
+		reachable := activationExcludingUIDs(bots, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		return GroupActivationDecision{Activated: activationAll(reachable), Source: activationSourceMention}
+	}
+	// Mute is a lock, so it filters before the judge is asked. A muted member
+	// cannot post, so offering it would spend a model call to produce a write
+	// the server rejects.
+	bots = activationExcludingUIDs(bots, muted)
+	if len(bots) == 0 {
+		return GroupActivationDecision{Source: activationSourceNoCandidate}
+	}
+	// Only now, on the path that actually calls the model, are the busy members
+	// dropped. A bot that is already running does not need to be asked whether
+	// it should run: the answer cannot change anything, and asking is what let
+	// two bots keep waking each other on every progress line.
+	//
+	// The lookup is resolved here rather than at the top because it costs a
+	// store query, and the paths above — working traffic, a single-bot group, a
+	// mention — never need it.
+	bots = activationExcludingUIDs(bots, activationWorkingUIDSet(req))
+	if len(bots) == 0 {
+		// Nobody is left to ask about. The judge is not called: the answer
+		// "nobody should reply" is already known, and paying for a round trip
+		// to hear it would be pure waste.
+		return GroupActivationDecision{Source: activationSourceNoCandidate}
 	}
 	if !r.client.Enabled() {
 		// Judging is switched off or unreachable. The caller reports that to
@@ -388,6 +489,62 @@ func activationExcludingSender(bots []GroupActivationBot, senderUID int64) []Gro
 			continue
 		}
 		filtered = append(filtered, bot)
+	}
+	return filtered
+}
+
+// activationWorkingUIDSet resolves the lazily loaded busy members. A caller
+// that knows judging will not happen can leave the loader unset, in which case
+// nobody is treated as busy — the pre-change behaviour.
+func activationWorkingUIDSet(req GroupActivationRequest) map[int64]struct{} {
+	if req.WorkingUIDs == nil {
+		return nil
+	}
+	return activationUIDSet(req.WorkingUIDs())
+}
+
+// activationUIDSet indexes a uid list for membership checks.
+func activationUIDSet(uids []int64) map[int64]struct{} {
+	if len(uids) == 0 {
+		return nil
+	}
+	index := make(map[int64]struct{}, len(uids))
+	for _, uid := range uids {
+		if uid > 0 {
+			index[uid] = struct{}{}
+		}
+	}
+	return index
+}
+
+// activationExcludingUIDs drops the listed members from the candidates.
+func activationExcludingUIDs(bots []GroupActivationBot, excluded map[int64]struct{}) []GroupActivationBot {
+	if len(excluded) == 0 {
+		return bots
+	}
+	filtered := make([]GroupActivationBot, 0, len(bots))
+	for _, bot := range bots {
+		if _, drop := excluded[bot.UID]; drop {
+			continue
+		}
+		filtered = append(filtered, bot)
+	}
+	return filtered
+}
+
+// activationExcludingScores drops the listed members from a selection that is
+// already keyed by uid. Mentions arrive in that form, so re-filtering them
+// keeps "who was named" and "who may actually be woken" separate.
+func activationExcludingScores(selected map[int64]float64, excluded map[int64]struct{}) map[int64]float64 {
+	if len(excluded) == 0 {
+		return selected
+	}
+	filtered := make(map[int64]float64, len(selected))
+	for uid, score := range selected {
+		if _, drop := excluded[uid]; drop {
+			continue
+		}
+		filtered[uid] = score
 	}
 	return filtered
 }
