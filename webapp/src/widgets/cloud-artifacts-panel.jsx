@@ -372,6 +372,10 @@ export default function CloudArtifactsPanel({
     onGatewayFrameChange?.(null);
   }, [onGatewayFrameChange]);
 
+  useEffect(() => () => {
+    consumedInitialAppRef.current = null;
+  }, []);
+
   useEffect(() => {
     setArtifacts([]);
     setFiles([]);

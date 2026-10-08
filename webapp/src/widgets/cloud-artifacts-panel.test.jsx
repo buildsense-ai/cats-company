@@ -706,6 +706,27 @@ describe('CloudArtifactsPanel', () => {
     expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(2);
   });
 
+  test('opens the initial application after StrictMode replays mount effects', async () => {
+    const app = { id: 'strict-app', title: 'Strict', url: 'https://artifact.catsco.cc/strict-app/' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url });
+    await act(async () => {
+      root.render(<React.StrictMode><TestPanel initialTab="gateway" initialApp={app} /></React.StrictMode>);
+    });
+    await flush();
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')?.getAttribute('src')).toBe(app.url);
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')].find((button) => button.textContent === '文件').click();
+    });
+    api.requestArtifactLaunch.mockClear();
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')].find((button) => button.textContent === '应用').click();
+    });
+    await flush();
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')).toBeNull();
+    expect(api.requestArtifactLaunch).not.toHaveBeenCalled();
+  });
+
   test('lists gateway applications and opens one inside the sidebar', async () => {
     api.listArtifactApps.mockResolvedValueOnce({
       apps: [{
