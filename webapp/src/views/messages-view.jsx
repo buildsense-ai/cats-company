@@ -513,6 +513,7 @@ export default function MessagesView({
   const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
   const [cloudArtifactsReturnOpen, setCloudArtifactsReturnOpen] = useState(false);
   const [cloudArtifactsTab, setCloudArtifactsTab] = useState('files');
+  const [cloudArtifactsInitialApp, setCloudArtifactsInitialApp] = useState(null);
   const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
   const [artifactRegistryRevision, setArtifactRegistryRevision] = useState(0);
@@ -1481,13 +1482,19 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsAgentUID(agentUID);
     setCloudArtifactsTab(cloudArtifactsRequest.initialTab || 'files');
-    setCloudArtifactsListOpen(true);
-    setCloudArtifactsReturnOpen(false);
+    setCloudArtifactsInitialApp(cloudArtifactsRequest.app || null);
+    if (cloudArtifactsRequest.file) {
+      previewAgentFile(cloudArtifactsRequest.file);
+    } else {
+      setCloudArtifactsListOpen(true);
+      setCloudArtifactsReturnOpen(false);
+    }
     onCloudArtifactsRequestConsumed?.(cloudArtifactsRequest.requestId);
   }, [
     clearActiveArtifactFocus,
     cloudArtifactsRequest,
     onCloudArtifactsRequestConsumed,
+    previewAgentFile,
     topic,
   ]);
 
@@ -5112,6 +5119,7 @@ export default function MessagesView({
                 agentUid={cloudArtifactsAgentUID}
                 topicId={topic}
                 tab={cloudArtifactsTab}
+                initialApp={cloudArtifactsInitialApp}
                 onTabChange={setCloudArtifactsTab}
                 onClose={closeSidePanel}
                 onPreviewArtifact={previewCloudArtifact}

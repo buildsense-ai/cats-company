@@ -24,6 +24,72 @@ type artifactAppsCall struct {
 	body   []byte
 }
 
+func TestArtifactAppsListsAccessibleAgentWithoutGrantingMutationAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		agent string
+		want  int
+	}{
+		{"owner", "42", http.StatusOK},
+		{"friend", "43", http.StatusOK},
+		{"stranger", "44", http.StatusForbidden},
+		{"human", "45", http.StatusBadRequest},
+		{"missing", "46", http.StatusNotFound},
+		{"invalid", "abc", http.StatusBadRequest},
+		{"negative", "-1", http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gateway := newArtifactAppsGateway(t)
+			gateway.setApps(
+				artifactApp{ID: "own-app", Agent: "42", Title: "Owned"},
+				artifactApp{ID: "friend-app", Agent: "43", Title: "Friend"},
+				artifactApp{ID: "stranger-app", Agent: "44", Title: "Stranger"},
+			)
+			handler := gateway.handler()
+			handler.SetStore(&agentTestStore{
+				users: map[int64]*types.User{
+					42: {ID: 42, AccountType: types.AccountBot},
+					43: {ID: 43, AccountType: types.AccountBot},
+					44: {ID: 44, AccountType: types.AccountBot},
+					45: {ID: 45},
+				},
+				owners:      map[int64]int64{42: 7, 43: 8, 44: 9},
+				friendPairs: map[string]bool{agentPairKey(7, 43): true},
+			})
+			recorder := httptest.NewRecorder()
+			handler.HandleApps(recorder, artifactAppsRequest(7, http.MethodGet, "/api/artifacts/apps?agent="+tc.agent, ""))
+			if recorder.Code != tc.want {
+				t.Fatalf("status=%d, want %d: %s", recorder.Code, tc.want, recorder.Body.String())
+			}
+			if tc.want != http.StatusOK {
+				if len(gateway.recorded()) != 0 {
+					t.Fatal("unauthorized request reached the gateway")
+				}
+				return
+			}
+			var payload struct {
+				Apps []artifactApp `json:"apps"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if len(payload.Apps) != 1 || payload.Apps[0].Agent != tc.agent {
+				t.Fatalf("wrong Agent apps: %+v", payload.Apps)
+			}
+			denied := httptest.NewRecorder()
+			handler.HandleApps(denied, artifactAppsRequest(7, http.MethodDelete, "/api/artifacts/apps/"+payload.Apps[0].ID+"?agent="+tc.agent, ""))
+			if denied.Code != http.StatusNotFound {
+				t.Fatalf("read access granted delete access: %d", denied.Code)
+			}
+			for _, call := range gateway.recorded() {
+				if call.method != http.MethodGet {
+					t.Fatal("unexpected gateway mutation")
+				}
+			}
+		})
+	}
+}
+
 // artifactAppsGateway stands in for the real gateway: it records calls, answers
 // the documented shapes by default, and lets a test override the answer to
 // exercise the failure mapping.
@@ -203,6 +269,7 @@ func TestArtifactAppsRequireLoginThroughTheMiddleware(t *testing.T) {
 		httptest.NewRequest(http.MethodPost, "/api/artifacts/apps", strings.NewReader(`{"id":"saturday-board","title":"t","publicKey":"ssh-ed25519 AAAA"}`)),
 		httptest.NewRequest(http.MethodGet, "/api/artifacts/apps/saturday-board", nil),
 		httptest.NewRequest(http.MethodDelete, "/api/artifacts/apps/saturday-board", nil),
+		httptest.NewRequest(http.MethodPatch, "/api/artifacts/apps/saturday-board", strings.NewReader(`{"title":"Updated"}`)),
 	}
 	for _, request := range requests {
 		recorder := httptest.NewRecorder()
@@ -741,7 +808,7 @@ func TestArtifactAppsRoutesOwnTheAppsPrefix(t *testing.T) {
 		{name: "collection with a trailing slash", method: http.MethodGet, path: "/api/artifacts/apps/", wantStatus: http.StatusOK},
 		{name: "item reaches the apps handler", method: http.MethodGet, path: "/api/artifacts/apps/mine", wantStatus: http.StatusOK},
 		{name: "unsupported collection method", method: http.MethodPut, path: "/api/artifacts/apps", wantStatus: http.StatusMethodNotAllowed, wantAllow: "GET, POST"},
-		{name: "unsupported item method", method: http.MethodPatch, path: "/api/artifacts/apps/mine", wantStatus: http.StatusMethodNotAllowed, wantAllow: "GET, DELETE"},
+		{name: "unsupported item method", method: http.MethodPut, path: "/api/artifacts/apps/mine", wantStatus: http.StatusMethodNotAllowed, wantAllow: "GET, DELETE, PATCH"},
 		{name: "the artifact subtree is untouched", method: http.MethodGet, path: "/api/artifacts/saturday-demo", wantStatus: http.StatusTeapot},
 	}
 	for _, testCase := range cases {

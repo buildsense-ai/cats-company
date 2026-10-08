@@ -29,6 +29,7 @@ export default function StandaloneCloudArtifactsPanel({
   agentUid,
   topicId,
   initialTab,
+  initialApp,
   tab,
   onTabChange,
   onClose,
@@ -52,6 +53,7 @@ export default function StandaloneCloudArtifactsPanel({
       agentUid={agentUid}
       topicId={topicId}
       initialTab={initialTab}
+      initialApp={initialApp}
       tab={tab}
       onTabChange={onTabChange}
       onClose={onClose}

@@ -49,8 +49,7 @@ const WS_STABLE_CONNECTION_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
 const ARTIFACT_PREVIEW_SESSION_CONTRACT = 'catsco.artifact-preview-session.v1';
-// 独立 artifact gateway 的公共只读清单（跨域，不走同源 request 封装）。
-const ARTIFACT_GATEWAY_BASE = 'https://artifact.catsco.cc';
+const DEV_ARTIFACT_GATEWAY_BASE = '/artifact-gateway';
 // Asking the server for a one-time code is a short round trip; keep it bounded
 // so a slow platform never blocks opening an application.
 const ARTIFACT_LAUNCH_TIMEOUT_MS = 8_000;
@@ -893,15 +892,31 @@ export const api = {
       undefined,
       options,
     ),
-  listArtifactApps: (agentUid) => {
+  listArtifactApps: async (agentUid) => {
     const agent = String(agentUid ?? '').trim();
-    const query = /^[0-9]+$/.test(agent) ? `?agent=${agent}` : '';
-    return fetch(`${ARTIFACT_GATEWAY_BASE}/api/apps${query}`).then(
-      (response) => (response.ok
-        ? response.json()
-        : Promise.reject(new Error('artifact_gateway_unavailable'))),
-    );
+    const query = /^[0-9]+$/.test(agent) ? `?agent=${encodeURIComponent(agent)}` : '';
+    const publicCatalog = async () => {
+      const response = await fetch(`${DEV_ARTIFACT_GATEWAY_BASE}/api/apps${query}`);
+      if (!response.ok) throw new Error('artifact_gateway_unavailable');
+      const result = await response.json();
+      return { ...result, apps: (result.apps || []).map((app) => ({ ...app, can_manage: false })) };
+    };
+    // Explicit local compatibility mode while the management backend is being
+    // rolled out. Production always uses the authenticated platform catalog.
+    if (import.meta.env.DEV && import.meta.env.VITE_ARTIFACT_APPS_CATALOG === 'public') {
+      return publicCatalog();
+    }
+    try {
+      return await request('GET', `/api/artifacts/apps${query}`);
+    } catch (error) {
+      // Older development backends can still browse the public catalog. Never
+      // infer management rights or bypass an authentication/permission failure.
+      if (!import.meta.env.DEV || ![404, 405, 501].includes(error.status)) throw error;
+      return publicCatalog();
+    }
   },
+  updateArtifactApp: (id, metadata) =>
+    request('PATCH', `/api/artifacts/apps/${encodeURIComponent(id)}`, metadata),
   // Ask the platform for a one-time Artifact code. Opening the returned
   // launch_url makes the gateway set its session cookie on the way in, so the
   // application can recognise the viewer (and the conversation it came from).

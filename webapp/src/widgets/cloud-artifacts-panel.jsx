@@ -30,7 +30,7 @@ const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 const FILTER_POPOVER_GAP = 8;
 const FILTER_POPOVER_GUTTER = 8;
 const FILTER_POPOVER_MAX_HEIGHT = 480;
-const FILTER_POPOVER_WIDTH = 280;
+const FILTER_POPOVER_WIDTH = 240;
 
 function notifyArtifactsChanged(agentUid) {
   window.dispatchEvent(new CustomEvent(CLOUD_ARTIFACTS_CHANGED_EVENT, {
@@ -150,6 +150,7 @@ export default function CloudArtifactsPanel({
   agentUid,
   topicId,
   initialTab = 'files',
+  initialApp,
   tab: controlledTab,
   onTabChange,
   onClose,
@@ -169,6 +170,7 @@ export default function CloudArtifactsPanel({
   const [files, setFiles] = useState([]);
   const [gatewayApps, setGatewayApps] = useState([]);
   const [gatewayPreview, setGatewayPreview] = useState(null);
+  const gatewayLaunchSequenceRef = useRef(0);
   const [viewerRelation, setViewerRelation] = useState('');
   const [canPublish, setCanPublish] = useState(false);
   const [tagCounts, setTagCounts] = useState([]);
@@ -312,6 +314,7 @@ export default function CloudArtifactsPanel({
         return;
       }
     }
+    const launchSequence = ++gatewayLaunchSequenceRef.current;
     let viewerURL = app.url;
     let visitor = true;
     let artifact = null;
@@ -343,6 +346,7 @@ export default function CloudArtifactsPanel({
         });
       }
     }
+    if (launchSequence !== gatewayLaunchSequenceRef.current) return;
     if (target === 'window') {
       window.open(viewerURL, '_blank', 'noopener,noreferrer');
       return;
@@ -382,8 +386,13 @@ export default function CloudArtifactsPanel({
     loadContent();
     return () => {
       requestSequenceRef.current += 1;
+      gatewayLaunchSequenceRef.current += 1;
     };
   }, [loadContent]);
+
+  useEffect(() => {
+    if (tab === 'gateway' && initialApp) openGatewayApp(initialApp);
+  }, [initialApp, tab, openGatewayApp]);
 
   useEffect(() => {
     setArtifactScope(topicId ? 'current' : 'all');

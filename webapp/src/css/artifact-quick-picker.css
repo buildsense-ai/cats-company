@@ -1,0 +1,52 @@
+.cc-artifact-picker {
+  position: fixed;
+  z-index: 2400;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--cc-border);
+  border-radius: 8px;
+  background: var(--cc-panel-raised);
+  color: var(--cc-text);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 16%);
+  font-family: var(--cc-font-sans);
+  font-size: 14px;
+  animation: cc-artifact-picker-enter 140ms ease-out;
+}
+.cc-artifact-picker button {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+.cc-artifact-picker button:hover:not(:disabled),
+.cc-artifact-picker-heading[aria-expanded="true"] { background: var(--cc-hover); }
+.cc-artifact-picker button:active:not(:disabled) { background: var(--cc-pressed); }
+.cc-artifact-picker button:disabled { opacity: 0.5; cursor: not-allowed; }
+.cc-artifact-picker-heading { font-weight: var(--cc-font-weight-medium) !important; }
+.cc-artifact-picker-heading > span { flex: 1; }
+.cc-artifact-picker-heading > svg:last-child { transition: transform 200ms ease; }
+.cc-artifact-picker-heading[aria-expanded="true"] > svg:last-child { transform: rotate(180deg); }
+.cc-artifact-picker-content { padding: 4px 0 6px; }
+.cc-artifact-picker-content p { display: flex; align-items: center; gap: 8px; margin: 0; padding: 14px 10px; color: var(--cc-muted); font-size: 13px; }
+.cc-artifact-picker-list { max-height: 300px; overflow: auto; overscroll-behavior: contain; }
+.cc-artifact-picker button > svg { flex: 0 0 auto; color: var(--cc-muted); }
+.cc-artifact-picker-item > span { min-width: 0; overflow-wrap: anywhere; line-height: 20px; }
+.cc-artifact-picker button.cc-artifact-picker-all { min-height: 34px; color: var(--cc-muted); font-size: 13px; margin-top: 4px; }
+.cc-artifact-picker-error { padding-bottom: 4px; }
+@keyframes cc-artifact-picker-enter { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .cc-artifact-picker { animation: none; }
+  .cc-artifact-picker button, .cc-artifact-picker-heading > svg:last-child { transition: none; }
+}

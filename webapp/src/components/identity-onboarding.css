@@ -275,7 +275,7 @@
 
 .cc-identity-onboarding__form button:hover:not(:disabled) {
   background: var(--cc-accent-hover);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--cc-accent) 20%, transparent);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 12%);
   transform: translateY(-1px);
 }
 

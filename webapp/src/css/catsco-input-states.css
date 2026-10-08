@@ -71,7 +71,8 @@
     /* The enclosing search/message field owns the single visible border. */
     &:where(
       .oc-friend-search-control *, .oc-member-search *, .cc-global-search-field *,
-      .cc-agent-skill-search *, .cc-sidebar-search *, .oc-feedback-message-field *
+      .cc-agent-skill-search *, .cc-sidebar-search *, .oc-feedback-message-field *,
+      .cc-library-search *, .cc-skillhub-navigation-tools form *
     ) {
       border-color: transparent !important;
       background-color: transparent !important;

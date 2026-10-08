@@ -12,6 +12,11 @@ const backendTarget = process.env.VITE_BACKEND_TARGET
 const localXiaobaTarget = 'http://127.0.0.1:3800';
 
 const proxy = {
+  '/artifact-gateway': {
+    target: 'https://artifact.catsco.cc',
+    changeOrigin: true,
+    rewrite: (path) => path.replace(/^\/artifact-gateway/, ''),
+  },
   '/local-xiaoba': {
     target: localXiaobaTarget,
     rewrite: (path) => path.replace(/^\/local-xiaoba/, ''),

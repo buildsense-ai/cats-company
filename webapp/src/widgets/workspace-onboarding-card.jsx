@@ -76,15 +76,14 @@ function AssistantInviteDialog({ onPersist, onComplete, onClose }) {
     <button type="button" className="cc-workspace-onboarding-close" aria-label={completed ? '开始创建任务' : '关闭邀请码窗口'} onClick={completed ? finish : onClose}><X size={20} aria-hidden="true" /></button>
     <header className="cc-workspace-onboarding-heading">
       <h2 id="workspace-invite-title" ref={titleRef} tabIndex={-1} data-cc-focus-group="true">{completed ? '云端助手已添加' : '添加云端 AI 助手'}</h2>
-      <p id="workspace-invite-description">{completed ? '现在可以创建任务，并在输入框中选择这个助手开始对话。' : '输入助手所有者或官方分享的邀请码。'}</p>
+      <p id="workspace-invite-description">{completed ? '现在可以创建任务，并在输入框中选择这个助手开始对话。' : '粘贴助手所有者或官方提供的邀请码。'}</p>
     </header>
     {completed ? <>
       <p className="cc-workspace-onboarding-invite-note" role="status">助手已加入你的可用列表。</p>
       <footer className="cc-workspace-onboarding-invite-footer"><button type="button" className="cc-workspace-onboarding-action" onClick={finish}>开始创建任务</button></footer>
     </> : <form className="cc-workspace-onboarding-invite-form" onSubmit={submit}>
       <label htmlFor="workspace-onboarding-invite">邀请码</label>
-      <input ref={inputRef} id="workspace-onboarding-invite" placeholder="输入或粘贴邀请码" value={invite} autoComplete="off" autoCapitalize="off" spellCheck={false} aria-describedby="workspace-invite-note" onChange={(event) => { setError(''); setInvite(event.target.value.toUpperCase()); }} onKeyDown={(event) => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }} />
-      <p id="workspace-invite-note" className="cc-workspace-onboarding-invite-note">邀请码由助手所有者或官方提供。</p>
+      <input ref={inputRef} id="workspace-onboarding-invite" placeholder="粘贴邀请码" value={invite} autoComplete="off" autoCapitalize="off" spellCheck={false} onChange={(event) => { setError(''); setInvite(event.target.value.toUpperCase()); }} onKeyDown={(event) => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }} />
       {error && <p className="cc-workspace-onboarding-invite-error" role="alert">{error}</p>}
       <footer className="cc-workspace-onboarding-invite-footer">
         <button type="button" onClick={onClose}>取消</button>
