@@ -9312,6 +9312,93 @@ describe('MessagesView composer draft isolation', () => {
     expect(composerBox.classList.contains('is-agent-reply-active')).toBe(false);
     expect(composerBox.getAttribute('aria-busy')).toBe('false');
   });
+
+  describe('gateway applications reach the card list', () => {
+    // The unit tests cover merging and mapping in isolation. This one goes through
+    // the registry effect itself, so it fails if the gateway list is dropped,
+    // mis-wired, or fetched from the wrong place — the way this feature would
+    // actually regress.
+    const gatewayApp = {
+      id: 'mario-test',
+      title: 'Mini Mario 测试页',
+      url: 'https://artifact.catsco.cc/mario-test/',
+      status: 'online',
+    };
+
+    it('includes a gateway application in the list the cards match against', async () => {
+      api.getMessages.mockResolvedValue({
+        messages: [{
+          id: 720,
+          from_uid: 440,
+          content: '已发布应用',
+          created_at: '2026-10-08T00:00:00Z',
+        }],
+      });
+      api.getFriends.mockResolvedValue({ friends: [] });
+      api.getAgents.mockResolvedValue({
+        agents: [{
+          uid: 440,
+          topic_id: 'p2p_1_440',
+          username: 'doubao',
+          display_name: '豆包',
+          relation: 'friend',
+          is_bot: true,
+          account_type: 'bot',
+          cloud_artifacts_enabled: true,
+        }],
+      });
+      api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+      api.listArtifactApps.mockResolvedValue({ apps: [gatewayApp] });
+
+      await mountTopic(root, 'p2p_1_440');
+      await act(async () => {
+        await flushPromises();
+      });
+
+      expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+    });
+
+    it('still lists registry artifacts when the gateway list is unavailable', async () => {
+      // A gateway outage must cost the gateway's cards, not the registry's.
+      api.getMessages.mockResolvedValue({
+        messages: [{
+          id: 721,
+          from_uid: 440,
+          content: '已发布课堂小游戏',
+          created_at: '2026-10-08T00:00:00Z',
+        }],
+      });
+      api.getFriends.mockResolvedValue({ friends: [] });
+      api.getAgents.mockResolvedValue({
+        agents: [{
+          uid: 440,
+          topic_id: 'p2p_1_440',
+          username: 'doubao',
+          display_name: '豆包',
+          relation: 'friend',
+          is_bot: true,
+          account_type: 'bot',
+          cloud_artifacts_enabled: true,
+        }],
+      });
+      api.getCloudArtifacts.mockResolvedValue({
+        artifacts: [{
+          id: 'lesson-game',
+          title: '课堂小游戏',
+          url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+        }],
+      });
+      api.listArtifactApps.mockRejectedValue(new Error('artifact_gateway_unavailable'));
+
+      await mountTopic(root, 'p2p_1_440');
+      await act(async () => {
+        await flushPromises();
+      });
+
+      expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+    });
+  });
+
 });
 
 describe('gateway applications in the artifact registry', () => {
@@ -9361,28 +9448,30 @@ describe('gateway applications in the artifact registry', () => {
     expect(merged.map((artifact) => artifact.id)).toEqual(['stored', 'live']);
   });
 
-  it('lets the registry entry win when both sources list the same application', () => {
-    // The registry copy carries the published version and creator metadata the
-    // card shows; the gateway copy has neither, so it must not displace it.
+  it('keeps both addresses when one application is published to both systems', () => {
+    // A card is matched by URL, and each entry carries one URL. The registry and
+    // the gateway address the same application differently — promo-content-studio
+    // is the real case — so collapsing them onto one entry would silently remove
+    // the other address's card.
     const merged = mergeArtifactSources(
-      [{ id: 'same', kind: 'html', publish_version: 2, url: 'https://artifact.catsco.cc/same/' }],
+      [{ id: 'same', kind: 'html', publish_version: 2, url: 'https://agent-1.artifacts.example.test/artifacts/same/latest/' }],
       gatewayAppsAsArtifacts([{ id: 'same', title: 'Same', url: 'https://artifact.catsco.cc/same/' }]),
     );
-    expect(merged).toHaveLength(1);
-    expect(merged[0].kind).toBe('html');
+    expect(merged.map((artifact) => artifact.url)).toEqual([
+      'https://agent-1.artifacts.example.test/artifacts/same/latest/',
+      'https://artifact.catsco.cc/same/',
+    ]);
     expect(merged[0].publish_version).toBe(2);
+    expect(merged[1].kind).toBe('mini_app');
   });
 
-  it('does not duplicate the same application when only its URL form differs', () => {
-    // Both systems name the application the same way, so the id is what decides
-    // identity. Matching on the URL alone would let one application through twice
-    // whenever the two sides spell its address differently.
+  it('does not double an entry that both sources spell the same way', () => {
     const merged = mergeArtifactSources(
-      [{ id: 'same', url: 'https://artifact.catsco.cc/same/latest/' }],
+      [{ id: 'same', url: 'https://artifact.catsco.cc/same/' }],
       [{ id: 'same', kind: 'mini_app', url: 'https://artifact.catsco.cc/same/' }],
     );
     expect(merged).toHaveLength(1);
-    expect(merged[0].url).toBe('https://artifact.catsco.cc/same/latest/');
+    expect(merged[0].kind).toBeUndefined();
   });
 
   it('handles both sources being empty', () => {

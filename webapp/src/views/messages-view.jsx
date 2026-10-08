@@ -479,18 +479,20 @@ export function gatewayAppsAsArtifacts(apps) {
   });
 }
 
-// The registry and the gateway list the same application under the same id once
-// it has been published to both, so deduplicate on the id and let the registry
-// entry win: it carries the version and creator metadata the cards show, and the
-// gateway entry has neither. Falling back to the URL covers an entry that somehow
-// arrives without an id.
+// A card is rendered by matching a URL written in the message text against this
+// list, and each entry carries exactly one URL. So the unit of identity here is
+// the URL, not the application id: when the registry and the gateway describe the
+// same application under different addresses — which is the normal case for
+// anything published to both, e.g. promo-content-studio — dropping one of them
+// silently removes that address's card. Keep both; deduplicate only on the
+// normalized URL so an entry that both sources spell the same way is not doubled.
 export function mergeArtifactSources(registryArtifacts, gatewayArtifacts) {
   const merged = [];
   const seen = new Set();
   const registry = Array.isArray(registryArtifacts) ? registryArtifacts : [];
   const gateway = Array.isArray(gatewayArtifacts) ? gatewayArtifacts : [];
   for (const artifact of [...registry, ...gateway]) {
-    const key = String(artifact?.id || '').trim() || artifactNotificationURL(artifact?.url);
+    const key = artifactNotificationURL(artifact?.url) || String(artifact?.id || '');
     if (!key || seen.has(key)) continue;
     seen.add(key);
     merged.push(artifact);
@@ -3443,6 +3445,13 @@ export default function MessagesView({
   const knownArtifacts = artifactRegistryState.agentUID === activeArtifactAgentUID
     ? artifactRegistryState.artifacts
     : [];
+  // The "shared to the cloud" notice answers "did the thing I just published
+  // appear in the registry?" A gateway application is already published the
+  // moment it exists there, so counting it would announce a share that never
+  // happened. Keep the registry-only view for that check.
+  const registryArtifacts = artifactRegistryState.agentUID === activeArtifactAgentUID
+    ? artifactRegistryState.registryArtifacts || []
+    : [];
 
   useEffect(() => {
     if (!historyLoaded || activeArtifactAgentUID <= 0) return;
@@ -3478,7 +3487,7 @@ export default function MessagesView({
     }
 
     const confirmedURLs = new Set(
-      knownArtifacts.map((artifact) => artifactNotificationURL(artifact?.url)).filter(Boolean),
+      registryArtifacts.map((artifact) => artifactNotificationURL(artifact?.url)).filter(Boolean),
     );
     let shared = false;
     state.pending.forEach((pending, key) => {
@@ -3487,7 +3496,7 @@ export default function MessagesView({
       shared = true;
     });
     if (shared) feedback.notify({ tone: 'success', message: '已共享内容到云端' });
-  }, [activeArtifactAgentUID, artifactRegistryRevision, feedback, historyLoaded, knownArtifacts, messages, topic]);
+  }, [activeArtifactAgentUID, artifactRegistryRevision, feedback, historyLoaded, registryArtifacts, messages, topic]);
 
   const activePreviewArtifactRef = artifactRefFromPreviewFile(previewFile, activeArtifactAgentUID);
   const activePreviewArtifactId = activePreviewArtifactRef?.id || '';
@@ -3552,15 +3561,17 @@ export default function MessagesView({
           // value rather than a promise, and calling .catch on it would throw and
           // take the registry load down with it.
           Promise.resolve()
-            .then(() => api.listArtifactApps(requestAgentUID))
+            .then(() => api.listArtifactApps(requestAgentUID, { signal: controller.signal }))
             .catch(() => null),
         ]);
         if (!isCurrentRequest()) return;
         hadSuccessfulResponse = true;
+        const registryArtifacts = Array.isArray(result?.artifacts) ? result.artifacts : [];
         setArtifactRegistryState({
           agentUID: requestAgentUID,
+          registryArtifacts,
           artifacts: mergeArtifactSources(
-            Array.isArray(result?.artifacts) ? result.artifacts : [],
+            registryArtifacts,
             gatewayAppsAsArtifacts(gateway?.apps),
           ),
         });
@@ -3568,7 +3579,7 @@ export default function MessagesView({
       } catch {
         if (!isCurrentRequest()) return;
         if ((polling || attempt >= retryDelays.length) && !hadSuccessfulResponse) {
-          setArtifactRegistryState({ agentUID: requestAgentUID, artifacts: [] });
+          setArtifactRegistryState({ agentUID: requestAgentUID, registryArtifacts: [], artifacts: [] });
         }
       }
 

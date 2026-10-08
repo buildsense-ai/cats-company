@@ -3899,6 +3899,68 @@ describe('ChatMessage rich file rendering', () => {
     expect(previewButton.disabled).toBe(true);
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toBe('/uploads/files/handout.docx?download=1');
   });
+
+  describe('gateway application cards, end to end', () => {
+    // These go through the real path a user sees: a URL written in the message, a
+    // known-artifact list, and the card that renders. The unit tests around
+    // mergeArtifactSources and gatewayAppsAsArtifacts cannot catch the list being
+    // wired up wrong or dropped entirely, which is exactly how this feature would
+    // regress.
+    const gatewayArtifact = {
+      id: 'mario-test',
+      title: 'Mini Mario 测试页',
+      kind: 'mini_app',
+      url: 'https://artifact.catsco.cc/mario-test/',
+      updated_at: null,
+    };
+    const gatewayMessage = {
+      id: 31,
+      from_uid: 365,
+      content: `已发布：${gatewayArtifact.url}`,
+      created_at: '2026-10-08T00:00:00Z',
+    };
+
+    it('renders a card for a gateway application named in the message', async () => {
+      await act(async () => {
+        root.render(<PreviewHarness message={gatewayMessage} knownArtifacts={[gatewayArtifact]} />);
+        await Promise.resolve();
+      });
+
+      expect(container.querySelector('.v3-message-artifact-list')).not.toBeNull();
+      expect(container.querySelector('.v3-attachment-name').textContent).toBe('Mini Mario 测试页');
+      expect(container.querySelector('.v3-attachment-size').textContent).toBe('小应用 · 云端生成物');
+    });
+
+    it('does not render a card when the application is missing from the known list', async () => {
+      // The list is what makes the card appear; without the gateway entry there is
+      // nothing to match, which is the bug this change fixes.
+      await act(async () => {
+        root.render(<PreviewHarness message={gatewayMessage} knownArtifacts={[]} />);
+        await Promise.resolve();
+      });
+
+      expect(container.querySelector('.v3-message-artifact-list')).toBeNull();
+    });
+
+    it('opens the gateway application in the preview panel', async () => {
+      await act(async () => {
+        root.render(<PreviewHarness message={gatewayMessage} knownArtifacts={[gatewayArtifact]} />);
+        await Promise.resolve();
+      });
+
+      const main = container.querySelector('.v3-artifact-main');
+      expect(main.disabled).toBe(false);
+      await act(async () => {
+        Simulate.click(main);
+        await Promise.resolve();
+      });
+
+      const frame = container.querySelector('iframe.v3-file-preview-frame');
+      expect(frame).not.toBeNull();
+      expect(frame.getAttribute('src')).toBe('https://artifact.catsco.cc/mario-test/');
+    });
+  });
+
 });
 
 describe('artifact card subtitle', () => {
