@@ -58,7 +58,7 @@ html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-apps-page {
   margin: 0;
   color: var(--cc-text);
   font-size: 32px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.25;
   letter-spacing: 0;
   overflow-wrap: anywhere;
@@ -454,7 +454,7 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
   color: var(--cc-text);
   font-size: 18px;
   line-height: 22px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0;
 }
 
