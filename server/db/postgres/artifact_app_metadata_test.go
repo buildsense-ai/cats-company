@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestArtifactAppMetadataPersistence(t *testing.T) {
+func TestPostgresArtifactAppMetadataPersistence(t *testing.T) {
 	rawDSN := os.Getenv("CATS_PG_TEST_DSN")
 	if rawDSN == "" {
 		t.Skip("set CATS_PG_TEST_DSN for database integration")

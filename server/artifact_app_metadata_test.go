@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/openchat/openchat/server/store"
@@ -200,6 +202,38 @@ func TestArtifactAppLegacyEditDoesNotInventCreator(t *testing.T) {
 	handler.HandleApps(failed, artifactAppsRequest(7, http.MethodGet, "/api/artifacts/apps?agent=42", ""))
 	if failed.Code != 503 {
 		t.Fatal("metadata outage silently returned stale gateway metadata")
+	}
+}
+
+func TestArtifactAppTitleLengthMatchesRegistrationAndMetadataUpdate(t *testing.T) {
+	for _, character := range []string{"a", "界", "😀"} {
+		for _, length := range []int{127, 128, 129} {
+			title := strings.Repeat(character, length)
+			for _, method := range []string{http.MethodPost, http.MethodPatch} {
+				t.Run(fmt.Sprintf("%s/%s/%d", method, character, length), func(t *testing.T) {
+					gateway := newArtifactAppsGateway(t)
+					gateway.setApps(artifactApp{ID: "board", Agent: "42", Title: "Before"})
+					handler := gateway.handler()
+					handler.SetStore(newAppMetadataTestStore())
+					body, err := json.Marshal(map[string]string{"id": "board", "title": title})
+					if err != nil {
+						t.Fatal(err)
+					}
+					uid, route, want := int64(42), "/api/artifacts/apps", http.StatusCreated
+					if method == http.MethodPatch {
+						uid, route, want = 7, route+"/board", http.StatusOK
+					}
+					if length > artifactAppsMaxTitleLen {
+						want = http.StatusBadRequest
+					}
+					response := httptest.NewRecorder()
+					handler.HandleApps(response, artifactAppsRequest(uid, method, route, string(body)))
+					if response.Code != want {
+						t.Fatalf("status=%d, want %d: %s", response.Code, want, response.Body.String())
+					}
+				})
+			}
+		}
 	}
 }
 

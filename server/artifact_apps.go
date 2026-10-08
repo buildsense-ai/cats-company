@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/openchat/openchat/server/store"
 )
@@ -186,7 +187,7 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	title := strings.TrimSpace(request.Title)
-	if title == "" || len(title) > artifactAppsMaxTitleLen || strings.ContainsAny(title, "\r\n\x00") {
+	if title == "" || utf8.RuneCountInString(title) > artifactAppsMaxTitleLen || strings.ContainsAny(title, "\r\n\x00") {
 		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusBadRequest, value: "artifact_app_title_invalid"})
 		return
 	}

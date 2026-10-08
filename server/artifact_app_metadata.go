@@ -188,7 +188,7 @@ func (h *ArtifactAppsHandler) handleMetadataUpdate(w http.ResponseWriter, r *htt
 		return
 	}
 	input.Title, input.Description, input.IconURL = strings.TrimSpace(input.Title), strings.TrimSpace(input.Description), strings.TrimSpace(input.IconURL)
-	if input.Title == "" || utf8.RuneCountInString(input.Title) > 128 || strings.ContainsAny(input.Title, "\r\n\x00") || utf8.RuneCountInString(input.Description) > 1000 || strings.ContainsRune(input.Description, '\x00') || !validAppIconURL(input.IconURL) {
+	if input.Title == "" || utf8.RuneCountInString(input.Title) > artifactAppsMaxTitleLen || strings.ContainsAny(input.Title, "\r\n\x00") || utf8.RuneCountInString(input.Description) > 1000 || strings.ContainsRune(input.Description, '\x00') || !validAppIconURL(input.IconURL) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "artifact_app_metadata_invalid"})
 		return
 	}

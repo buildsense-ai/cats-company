@@ -82,6 +82,7 @@ const historicalImage = {
 
 function TestPanel({
   initialTab = 'active',
+  initialApp,
   topicId = 'p2p_7_440',
   agentUid = 440,
   onPreviewArtifact,
@@ -95,6 +96,7 @@ function TestPanel({
         agentUid={agentUid}
         topicId={topicId}
         tab={tab}
+        initialApp={initialApp}
         onTabChange={setTab}
         onClose={vi.fn()}
         onPreviewArtifact={onPreviewArtifact}
@@ -114,6 +116,8 @@ describe('CloudArtifactsPanel', () => {
   let gatewayFrameChanges;
 
   beforeEach(() => {
+    api.listArtifactApps.mockReset();
+    api.requestArtifactLaunch.mockReset();
     api.getCloudArtifacts.mockReset().mockResolvedValue({
       artifacts: [activeArtifact],
       viewer_relation: 'owner',
@@ -670,6 +674,38 @@ describe('CloudArtifactsPanel', () => {
     expect([...container.querySelectorAll('button')].some((button) => button.textContent === '重试')).toBe(true);
   });
 
+  test('consumes a quick application selection once across tab changes and reopening the list', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
+    api.listArtifactApps.mockReset().mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockReset().mockResolvedValue({ launch_url: app.url });
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')?.getAttribute('src')).toBe(app.url);
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      [...container.querySelectorAll('button')].find((button) => button.textContent === '返回').click();
+    });
+    await renderPanel({ initialApp: app });
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')).toBeNull();
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')].find((button) => button.textContent === '文件').click();
+    });
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')].find((button) => button.textContent === '应用').click();
+    });
+    await flush();
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')).toBeNull();
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+
+    const nextApp = { id: 'other-app', title: 'Other', url: 'https://artifact.catsco.cc/other-app/' };
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: nextApp.url });
+    await renderPanel({ initialApp: nextApp });
+    await flush();
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')?.getAttribute('src')).toBe(nextApp.url);
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(2);
+  });
+
   test('lists gateway applications and opens one inside the sidebar', async () => {
     api.listArtifactApps.mockResolvedValueOnce({
       apps: [{
@@ -945,6 +981,7 @@ describe('CloudArtifactsPanel', () => {
 
   async function renderPanel({
     initialTab = 'active',
+    initialApp,
     topicId = 'p2p_7_440',
     agentUid = 440,
   } = {}) {
@@ -952,6 +989,7 @@ describe('CloudArtifactsPanel', () => {
       root.render(
         <TestPanel
           initialTab={initialTab}
+          initialApp={initialApp}
           topicId={topicId}
           agentUid={agentUid}
           onPreviewArtifact={onPreviewArtifact}

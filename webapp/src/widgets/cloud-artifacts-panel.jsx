@@ -171,6 +171,7 @@ export default function CloudArtifactsPanel({
   const [gatewayApps, setGatewayApps] = useState([]);
   const [gatewayPreview, setGatewayPreview] = useState(null);
   const gatewayLaunchSequenceRef = useRef(0);
+  const consumedInitialAppRef = useRef(null);
   const [viewerRelation, setViewerRelation] = useState('');
   const [canPublish, setCanPublish] = useState(false);
   const [tagCounts, setTagCounts] = useState([]);
@@ -391,8 +392,12 @@ export default function CloudArtifactsPanel({
   }, [loadContent]);
 
   useEffect(() => {
-    if (tab === 'gateway' && initialApp) openGatewayApp(initialApp);
-  }, [initialApp, tab, openGatewayApp]);
+    if (tab !== 'gateway' || !initialApp?.id || !initialApp?.url) return;
+    const consumed = consumedInitialAppRef.current;
+    if (consumed?.app === initialApp && consumed.agentUid === agentUid && consumed.topicId === topicId) return;
+    consumedInitialAppRef.current = { app: initialApp, agentUid, topicId };
+    openGatewayApp(initialApp);
+  }, [initialApp, tab, openGatewayApp, agentUid, topicId]);
 
   useEffect(() => {
     setArtifactScope(topicId ? 'current' : 'all');

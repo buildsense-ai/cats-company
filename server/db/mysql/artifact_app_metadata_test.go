@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestArtifactAppMetadataPersistence(t *testing.T) {
+func TestMySQLArtifactAppMetadataPersistence(t *testing.T) {
 	dsn := os.Getenv("CATS_MYSQL_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set CATS_MYSQL_TEST_DSN for database integration")
