@@ -72,6 +72,7 @@ function PreviewHarness({
   message,
   knownArtifacts = [],
   isSelf = false,
+  onOpenArtifactApp = undefined,
   onOpenRemoteArtifactFullscreen = vi.fn(),
   onRemoteArtifactFrameChange = vi.fn(),
 }) {
@@ -88,6 +89,7 @@ function PreviewHarness({
           onPreviewFile={setPreviewFile}
           activePreviewFile={previewFile}
           knownArtifacts={knownArtifacts}
+          onOpenArtifactApp={onOpenArtifactApp}
         />
       </div>
       {previewFile && (
@@ -3942,9 +3944,20 @@ describe('ChatMessage rich file rendering', () => {
       expect(container.querySelector('.v3-message-artifact-list')).toBeNull();
     });
 
-    it('opens the gateway application in the preview panel', async () => {
+    it('opens the gateway application through the application viewer, not the file preview', async () => {
+      // The sidebar opens an application through the hosted viewer, which carries
+      // the conversation and the visitor's identity. A card has to take the same
+      // path: the generic file preview has neither, which is what made "open in a
+      // new page" fail and what this test pins.
+      const onOpenArtifactApp = vi.fn();
       await act(async () => {
-        root.render(<PreviewHarness message={gatewayMessage} knownArtifacts={[gatewayArtifact]} />);
+        root.render(
+          <PreviewHarness
+            message={gatewayMessage}
+            knownArtifacts={[gatewayArtifact]}
+            onOpenArtifactApp={onOpenArtifactApp}
+          />,
+        );
         await Promise.resolve();
       });
 
@@ -3955,9 +3968,64 @@ describe('ChatMessage rich file rendering', () => {
         await Promise.resolve();
       });
 
-      const frame = container.querySelector('iframe.v3-file-preview-frame');
-      expect(frame).not.toBeNull();
-      expect(frame.getAttribute('src')).toBe('https://artifact.catsco.cc/mario-test/');
+      expect(onOpenArtifactApp).toHaveBeenCalledTimes(1);
+      expect(onOpenArtifactApp.mock.calls[0][0]).toMatchObject({ id: 'mario-test', kind: 'mini_app' });
+      expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+    });
+
+    it('offers a separate new-page action that asks for the viewer handoff', async () => {
+      const onOpenArtifactApp = vi.fn();
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={gatewayMessage}
+            knownArtifacts={[gatewayArtifact]}
+            onOpenArtifactApp={onOpenArtifactApp}
+          />,
+        );
+        await Promise.resolve();
+      });
+
+      const newPageButton = [...container.querySelectorAll('button.v3-artifact-action')]
+        .find((button) => button.textContent.includes('新页面'));
+      expect(newPageButton).toBeTruthy();
+      await act(async () => {
+        Simulate.click(newPageButton);
+        await Promise.resolve();
+      });
+
+      expect(onOpenArtifactApp).toHaveBeenCalledTimes(1);
+      expect(onOpenArtifactApp.mock.calls[0][1]).toEqual({ newPage: true });
+    });
+
+    it('keeps the file preview for a stored artifact rather than routing it to the viewer', async () => {
+      // Only a gateway application is a running service. A stored page has no
+      // viewer identity to hand over, so it must keep the existing preview path.
+      const stored = {
+        id: 'stored-page',
+        title: '已发布页面',
+        kind: 'html',
+        url: 'https://artifacts.example.test/by-agent/365/stored-page/latest/',
+      };
+      const onOpenArtifactApp = vi.fn();
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{ id: 32, from_uid: 365, content: `已发布：${stored.url}`, created_at: '2026-10-08T00:00:00Z' }}
+            knownArtifacts={[stored]}
+            onOpenArtifactApp={onOpenArtifactApp}
+          />,
+        );
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await Promise.resolve();
+      });
+
+      expect(onOpenArtifactApp).not.toHaveBeenCalled();
+      expect(container.querySelector('.v3-file-preview-frame')).not.toBeNull();
     });
   });
 

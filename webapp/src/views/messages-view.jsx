@@ -53,6 +53,7 @@ import {
   createArtifactPreviewChatCoordinator,
   createArtifactPreviewLeaseStore,
   createArtifactViewerURL,
+  createGatewayApplicationViewerURL,
   sameArtifactPreviewIdentity,
 } from '../artifact-preview-coordinator';
 import {
@@ -469,11 +470,20 @@ export function gatewayAppsAsArtifacts(apps) {
     const url = String(app?.url || '').trim();
     const id = String(app?.id || '').trim();
     if (!url || !id) return [];
+    // The owning bot travels with the application so a card can hand it to the
+    // hosted viewer, which addresses applications by agent. Without it the card
+    // can only fall back to the generic file preview, which has no identity.
+    const agentUid = Number(app?.agent ?? app?.agent_uid ?? 0);
+    const urls = (Array.isArray(app?.urls) ? app.urls : [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
     return [{
       id,
       title: String(app?.title || '').trim() || id,
       kind: 'mini_app',
       url,
+      ...(urls.length > 0 ? { urls } : {}),
+      ...(Number.isSafeInteger(agentUid) && agentUid > 0 ? { agent_uid: agentUid } : {}),
       updated_at: app?.updated_at ?? null,
     }];
   });
@@ -1236,6 +1246,40 @@ export default function MessagesView({
     setCloudArtifactsListOpen(false);
     setCloudArtifactsReturnOpen(true);
   }, [cloudArtifactsAgentUID, setPreviewFileWithFocus]);
+
+  // A card for a gateway application opens the same viewer the sidebar's
+  // application list uses, so the conversation and the visitor's identity travel
+  // with it. The generic file preview would show the entry point as a stored
+  // page and could not hand off to a new tab.
+  const openArtifactApp = useCallback((artifact, { newPage = false } = {}) => {
+    const agentUid = Number(artifact?.agent_uid || artifact?.agentUid || 0);
+    const appId = String(artifact?.id || artifact?.artifact_id || '').trim();
+    if (agentUid <= 0 || !appId) return;
+    if (newPage) {
+      const viewerURL = createGatewayApplicationViewerURL({
+        topicId: topic,
+        agentUid,
+        artifactId: appId,
+      });
+      if (viewerURL) {
+        window.open(viewerURL, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
+      return;
+    }
+    setPendingArtifactRefresh(null);
+    setPreviewFile(null);
+    clearActiveArtifactFocus();
+    setCloudArtifactsAgentUID(agentUid);
+    setCloudArtifactsTab('gateway');
+    // A fresh object every time: the panel remembers which initialApp it already
+    // consumed by identity, so reusing the same reference would silently ignore a
+    // second click on the same card after the sidebar was closed.
+    setCloudArtifactsInitialApp({ ...artifact });
+    setCloudArtifactsReturnOpen(false);
+    setCloudArtifactsListOpen(true);
+  }, [clearActiveArtifactFocus, feedback, topic]);
 
   const captureArtifactMessageContext = useCallback(async () => {
     const focus = activeArtifactFocusRef.current;
@@ -4826,6 +4870,7 @@ export default function MessagesView({
                   knownArtifacts={knownArtifacts}
                   imageGallery={imageGallery}
                   onOpenImage={openImagePreview}
+                  onOpenArtifactApp={openArtifactApp}
                 />
               </div>
             );
@@ -4888,6 +4933,7 @@ export default function MessagesView({
                 knownArtifacts={knownArtifacts}
                 imageGallery={imageGallery}
                 onOpenImage={openImagePreview}
+                onOpenArtifactApp={openArtifactApp}
               />
             </div>
           );

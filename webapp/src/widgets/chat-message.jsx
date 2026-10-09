@@ -994,7 +994,7 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
   const [copyState, setCopyState] = useState('');
   useEffect(() => {
     if (!copyState) return undefined;
@@ -1107,6 +1107,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
             activePreviewFile={activePreviewFile}
             imageGallery={imageGallery}
             onOpenImage={onOpenImage}
+            onOpenArtifactApp={onOpenArtifactApp}
           />
         </div>
       );
@@ -1118,6 +1119,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     knownArtifacts,
     mentionDisplayNames,
     onPreviewFile,
+    onOpenArtifactApp,
     displayTextBlocks,
   ]);
   const renderedMessageText = hasText && (parsed ? (
@@ -1137,6 +1139,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       knownArtifacts={knownArtifacts}
       onPreviewFile={onPreviewFile}
       activePreviewFile={activePreviewFile}
+      onOpenArtifactApp={onOpenArtifactApp}
     />
   ));
 
@@ -1448,6 +1451,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&
+    prevProps.onOpenArtifactApp === nextProps.onOpenArtifactApp &&
     prevProps.activePreviewFile === nextProps.activePreviewFile &&
     prevProps.knownArtifacts === nextProps.knownArtifacts &&
     prevProps.imageGallery === nextProps.imageGallery &&
@@ -1456,7 +1460,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
 
 export default ChatMessage;
 
-function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifacts = [], onPreviewFile, activePreviewFile }) {
+function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifacts = [], onPreviewFile, activePreviewFile, onOpenArtifactApp }) {
   const text = useMemo(() => messageContentText(content), [content]);
   const matchedArtifacts = useMemo(() => findKnownArtifactsInText(text, knownArtifacts), [knownArtifacts, text]);
   const plainText = useMemo(() => removeKnownArtifactURLs(text, matchedArtifacts), [matchedArtifacts, text]);
@@ -1493,6 +1497,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
           artifacts={matchedArtifacts}
           onPreviewFile={onPreviewFile}
           activePreviewFile={activePreviewFile}
+          onOpenArtifactApp={onOpenArtifactApp}
         />
       </>
     );
@@ -1502,7 +1507,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
     return (
       <>
         <pre className="oc-plain-text-table">{plainText}</pre>
-        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} onOpenArtifactApp={onOpenArtifactApp} />
       </>
     );
   }
@@ -1531,7 +1536,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
               </p>
             ))}
           </div>
-          <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+          <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} onOpenArtifactApp={onOpenArtifactApp} />
         </>
       );
     }
@@ -1541,7 +1546,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
         <span className="oc-plain-text-paragraph is-first" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
           {renderGroupText(plainTextParagraphs[0])}
         </span>
-        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} onOpenArtifactApp={onOpenArtifactApp} />
       </>
     );
   }
@@ -1554,7 +1559,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
             <p className={`oc-plain-text-paragraph${index === 0 ? ' is-first' : ''}`} key={index}>{paragraph}</p>
           ))}
         </div>
-        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} onOpenArtifactApp={onOpenArtifactApp} />
       </>
     );
   }
@@ -1562,7 +1567,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
   return (
     <>
       <span className="oc-plain-text-paragraph is-first" style={{ whiteSpace: 'pre-wrap' }}>{plainTextParagraphs[0]}</span>
-      <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+      <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} onOpenArtifactApp={onOpenArtifactApp} />
     </>
   );
 }
@@ -1680,7 +1685,7 @@ export function artifactSubtitle(artifact, version = Number(artifact?.publish_ve
   return [label, '云端生成物', version > 0 ? `v${version}` : ''].filter(Boolean).join(' · ');
 }
 
-function ArtifactMessageCards({ artifacts, onPreviewFile, activePreviewFile }) {
+function ArtifactMessageCards({ artifacts, onPreviewFile, activePreviewFile, onOpenArtifactApp }) {
   if (!Array.isArray(artifacts) || artifacts.length === 0) return null;
   return (
     <div className="v3-message-artifact-list">
@@ -1690,25 +1695,43 @@ function ArtifactMessageCards({ artifacts, onPreviewFile, activePreviewFile }) {
           artifact={artifact}
           onPreviewFile={onPreviewFile}
           activePreviewFile={activePreviewFile}
+          onOpenArtifactApp={onOpenArtifactApp}
         />
       ))}
     </div>
   );
 }
 
-function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
+function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile, onOpenArtifactApp }) {
   const payload = createCloudArtifactPreviewFile(artifact);
   const descriptor = previewFileDescriptor(payload);
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = descriptor?.canPreview && descriptor.key === activeKey;
   const version = Number(artifact.publish_version || 0);
   const subtitle = artifactSubtitle(artifact, version);
-  const previewArtifact = () => {
+  // A gateway application is opened the same way here as from the sidebar's
+  // application list: through the hosted viewer, which carries the conversation
+  // and the visitor's identity. Falling back to the generic file preview would
+  // drop both, and is also what made "open in a new page" fail.
+  const isGatewayApp = artifact?.kind === 'mini_app' && typeof onOpenArtifactApp === 'function';
+  const openArtifact = () => {
+    if (isGatewayApp) {
+      onOpenArtifactApp(artifact);
+      return;
+    }
     if (descriptor?.canPreview) onPreviewFile?.(payload);
   };
+  const openArtifactInNewPage = () => {
+    if (isGatewayApp) {
+      onOpenArtifactApp(artifact, { newPage: true });
+      return;
+    }
+    if (descriptor?.canPreview) onPreviewFile?.(payload);
+  };
+  const canOpen = isGatewayApp || Boolean(descriptor?.canPreview);
   return (
     <div className={`v3-attachment-card v3-artifact-card cloud-static${isActive ? ' active' : ''}`}>
-      <button className="v3-artifact-main" disabled={!descriptor?.canPreview} onClick={previewArtifact} title="预览生成物" type="button">
+      <button className="v3-artifact-main" disabled={!canOpen} onClick={openArtifact} title="预览生成物" type="button">
         <div className="v3-attachment-icon"><FileCode2 size={18} strokeWidth={1.5} /></div>
         <div className="v3-attachment-info">
           <span className="v3-attachment-name" title={payload.name}>{payload.name}</span>
@@ -1716,9 +1739,14 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
         </div>
       </button>
       <div className="v3-artifact-actions">
-        <button className="v3-artifact-action" disabled={!descriptor?.canPreview} onClick={previewArtifact} title="预览" type="button">
+        <button className="v3-artifact-action" disabled={!canOpen} onClick={openArtifact} title="预览" type="button">
           <Eye size={15} /><span>预览</span>
         </button>
+        {isGatewayApp && (
+          <button className="v3-artifact-action" onClick={openArtifactInNewPage} title="在新页面打开" aria-label={`在新页面打开 ${payload.name}`} type="button">
+            <ExternalLink size={15} /><span>新页面</span>
+          </button>
+        )}
       </div>
     </div>
   );
