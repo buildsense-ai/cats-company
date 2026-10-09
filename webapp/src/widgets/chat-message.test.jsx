@@ -58,7 +58,7 @@ vi.mock('read-excel-file/browser', () => ({
   default: vi.fn(),
 }));
 
-import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel, previewFileDescriptor } from './chat-message';
+import ChatMessage, { artifactSubtitle, createCloudArtifactPreviewFile, FilePreviewPanel, previewFileDescriptor } from './chat-message';
 import { resolveMediaURL } from '../api';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
@@ -3898,5 +3898,90 @@ describe('ChatMessage rich file rendering', () => {
     const previewButton = container.querySelector('button.v3-artifact-action');
     expect(previewButton.disabled).toBe(true);
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toBe('/uploads/files/handout.docx?download=1');
+  });
+
+  describe('gateway application cards, end to end', () => {
+    // These go through the real path a user sees: a URL written in the message, a
+    // known-artifact list, and the card that renders. The unit tests around
+    // mergeArtifactSources and gatewayAppsAsArtifacts cannot catch the list being
+    // wired up wrong or dropped entirely, which is exactly how this feature would
+    // regress.
+    const gatewayArtifact = {
+      id: 'mario-test',
+      title: 'Mini Mario 测试页',
+      kind: 'mini_app',
+      url: 'https://artifact.catsco.cc/mario-test/',
+      updated_at: null,
+    };
+    const gatewayMessage = {
+      id: 31,
+      from_uid: 365,
+      content: `已发布：${gatewayArtifact.url}`,
+      created_at: '2026-10-08T00:00:00Z',
+    };
+
+    it('renders a card for a gateway application named in the message', async () => {
+      await act(async () => {
+        root.render(<PreviewHarness message={gatewayMessage} knownArtifacts={[gatewayArtifact]} />);
+        await Promise.resolve();
+      });
+
+      expect(container.querySelector('.v3-message-artifact-list')).not.toBeNull();
+      expect(container.querySelector('.v3-attachment-name').textContent).toBe('Mini Mario 测试页');
+      expect(container.querySelector('.v3-attachment-size').textContent).toBe('小应用 · 云端生成物');
+    });
+
+    it('does not render a card when the application is missing from the known list', async () => {
+      // The list is what makes the card appear; without the gateway entry there is
+      // nothing to match, which is the bug this change fixes.
+      await act(async () => {
+        root.render(<PreviewHarness message={gatewayMessage} knownArtifacts={[]} />);
+        await Promise.resolve();
+      });
+
+      expect(container.querySelector('.v3-message-artifact-list')).toBeNull();
+    });
+
+    it('opens the gateway application in the preview panel', async () => {
+      await act(async () => {
+        root.render(<PreviewHarness message={gatewayMessage} knownArtifacts={[gatewayArtifact]} />);
+        await Promise.resolve();
+      });
+
+      const main = container.querySelector('.v3-artifact-main');
+      expect(main.disabled).toBe(false);
+      await act(async () => {
+        Simulate.click(main);
+        await Promise.resolve();
+      });
+
+      const frame = container.querySelector('iframe.v3-file-preview-frame');
+      expect(frame).not.toBeNull();
+      expect(frame.getAttribute('src')).toBe('https://artifact.catsco.cc/mario-test/');
+    });
+  });
+
+});
+
+describe('artifact card subtitle', () => {
+  it('describes a gateway application as an application, not as HTML', () => {
+    // A gateway application is a running service behind the tunnel. Its entry
+    // point happens to be HTML, but calling the card "HTML" tells the reader it
+    // is a static page, which is exactly the confusion this label avoids.
+    expect(artifactSubtitle({ kind: 'mini_app' })).toBe('小应用 · 云端生成物');
+  });
+
+  it('keeps the HTML wording for a stored cloud artifact', () => {
+    expect(artifactSubtitle({ kind: 'html' })).toBe('HTML · 云端生成物');
+  });
+
+  it('appends the published version only when there is one', () => {
+    expect(artifactSubtitle({ kind: 'mini_app', publish_version: 3 })).toBe('小应用 · 云端生成物 · v3');
+    expect(artifactSubtitle({ kind: 'html', publish_version: 0 })).toBe('HTML · 云端生成物');
+    expect(artifactSubtitle({ kind: 'html', publish_version: null })).toBe('HTML · 云端生成物');
+  });
+
+  it('treats a missing artifact as a plain cloud artifact rather than throwing', () => {
+    expect(artifactSubtitle(undefined)).toBe('HTML · 云端生成物');
   });
 });

@@ -53,6 +53,21 @@ const DEV_ARTIFACT_GATEWAY_BASE = '/artifact-gateway';
 // Asking the server for a one-time code is a short round trip; keep it bounded
 // so a slow platform never blocks opening an application.
 const ARTIFACT_LAUNCH_TIMEOUT_MS = 8_000;
+// The gateway application list is read alongside the artifact registry and only
+// adds cards to it, so it gets a shorter leash: the registry's own cards render as
+// soon as the registry answers, and a gateway that stops answering should cost a
+// missing card rather than a stalled conversation.
+//
+// The value is chosen from measurement, not from a chain of budgets. A cold list —
+// the gateway's probe cache is 10s, and probing an unreachable application costs
+// up to `PROBE_TIMEOUT_MS` 3s — measures ~3.03s, so 8s leaves roughly 2.6x
+// headroom. Note the platform sits in front of the gateway with its own 10s
+// upstream timeout (`artifactUpstreamTimeout` in server/cloud_artifacts.go), which
+// is *longer* than this bound: a request taking 8-10s is abandoned here while the
+// platform is still working. That is deliberate — 10s is too long to hold a card
+// back — but it means this is not "greater than the server's budget" and the
+// comment should not claim to be.
+const ARTIFACT_GATEWAY_TIMEOUT_MS = 8_000;
 
 function normalizeArtifactPreviewSession(value) {
   if (!value || typeof value !== 'object'
@@ -892,11 +907,18 @@ export const api = {
       undefined,
       options,
     ),
-  listArtifactApps: async (agentUid) => {
+  listArtifactApps: async (agentUid, options = {}) => {
     const agent = String(agentUid ?? '').trim();
     const query = /^[0-9]+$/.test(agent) ? `?agent=${encodeURIComponent(agent)}` : '';
     const publicCatalog = async () => {
-      const response = await fetch(`${DEV_ARTIFACT_GATEWAY_BASE}/api/apps${query}`);
+      // The caller renders other data alongside this list, so a gateway that
+      // accepts the connection and then never answers must not hold that render
+      // open. Bound it, and accept the caller's signal so a superseded request
+      // stops waiting. A bare fetch has neither.
+      const response = await fetchWithRequestError(`${DEV_ARTIFACT_GATEWAY_BASE}/api/apps${query}`, {
+        signal: options.signal,
+        timeoutMs: ARTIFACT_GATEWAY_TIMEOUT_MS,
+      });
       if (!response.ok) throw new Error('artifact_gateway_unavailable');
       const result = await response.json();
       return { ...result, apps: (result.apps || []).map((app) => ({ ...app, can_manage: false })) };
@@ -907,7 +929,14 @@ export const api = {
       return publicCatalog();
     }
     try {
-      return await request('GET', `/api/artifacts/apps${query}`);
+      // `request` defaults to no timeout, which is too long for a list that only
+      // decorates the artifact registry. The bound has to exceed the gateway's own
+      // probe budget (4s, plus 3s per probe) or the client gives up on requests the
+      // server is still working on — a cold list measures ~3.03s.
+      return await request('GET', `/api/artifacts/apps${query}`, undefined, {
+        signal: options.signal,
+        timeoutMs: ARTIFACT_GATEWAY_TIMEOUT_MS,
+      });
     } catch (error) {
       // Older development backends can still browse the public catalog. Never
       // infer management rights or bypass an authentication/permission failure.

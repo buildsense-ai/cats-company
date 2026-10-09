@@ -457,6 +457,49 @@ function artifactPublishCandidates(messages) {
   });
 }
 
+// Gateway applications come from a different system than the cloud-artifact
+// registry the cards were built around, so they carry a different shape: no
+// `kind`, no `publish_version`, no creator fields. The card only needs a URL to
+// match and a title to show, so map them into the registry shape here instead of
+// teaching every card consumer about a second source. `kind: 'mini_app'` is what
+// the subtitle branches on to say 小应用 rather than 网页; a gateway application
+// is a running service, not a static page.
+export function gatewayAppsAsArtifacts(apps) {
+  return (Array.isArray(apps) ? apps : []).flatMap((app) => {
+    const url = String(app?.url || '').trim();
+    const id = String(app?.id || '').trim();
+    if (!url || !id) return [];
+    return [{
+      id,
+      title: String(app?.title || '').trim() || id,
+      kind: 'mini_app',
+      url,
+      updated_at: app?.updated_at ?? null,
+    }];
+  });
+}
+
+// A card is rendered by matching a URL written in the message text against this
+// list, and each entry carries exactly one URL. So the unit of identity here is
+// the URL, not the application id: when the registry and the gateway describe the
+// same application under different addresses — which is the normal case for
+// anything published to both, e.g. promo-content-studio — dropping one of them
+// silently removes that address's card. Keep both; deduplicate only on the
+// normalized URL so an entry that both sources spell the same way is not doubled.
+export function mergeArtifactSources(registryArtifacts, gatewayArtifacts) {
+  const merged = [];
+  const seen = new Set();
+  const registry = Array.isArray(registryArtifacts) ? registryArtifacts : [];
+  const gateway = Array.isArray(gatewayArtifacts) ? gatewayArtifacts : [];
+  for (const artifact of [...registry, ...gateway]) {
+    const key = artifactNotificationURL(artifact?.url) || String(artifact?.id || '');
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(artifact);
+  }
+  return merged;
+}
+
 function cacheHistoryPage(cache, key, entry) {
   cache.delete(key);
   cache.set(key, entry);
@@ -3402,6 +3445,13 @@ export default function MessagesView({
   const knownArtifacts = artifactRegistryState.agentUID === activeArtifactAgentUID
     ? artifactRegistryState.artifacts
     : [];
+  // The "shared to the cloud" notice answers "did the thing I just published
+  // appear in the registry?" A gateway application is already published the
+  // moment it exists there, so counting it would announce a share that never
+  // happened. Keep the registry-only view for that check.
+  const registryArtifacts = artifactRegistryState.agentUID === activeArtifactAgentUID
+    ? artifactRegistryState.registryArtifacts || []
+    : [];
 
   useEffect(() => {
     if (!historyLoaded || activeArtifactAgentUID <= 0) return;
@@ -3437,7 +3487,7 @@ export default function MessagesView({
     }
 
     const confirmedURLs = new Set(
-      knownArtifacts.map((artifact) => artifactNotificationURL(artifact?.url)).filter(Boolean),
+      registryArtifacts.map((artifact) => artifactNotificationURL(artifact?.url)).filter(Boolean),
     );
     let shared = false;
     state.pending.forEach((pending, key) => {
@@ -3446,7 +3496,7 @@ export default function MessagesView({
       shared = true;
     });
     if (shared) feedback.notify({ tone: 'success', message: '已共享内容到云端' });
-  }, [activeArtifactAgentUID, artifactRegistryRevision, feedback, historyLoaded, knownArtifacts, messages, topic]);
+  }, [activeArtifactAgentUID, artifactRegistryRevision, feedback, historyLoaded, registryArtifacts, messages, topic]);
 
   const activePreviewArtifactRef = artifactRefFromPreviewFile(previewFile, activeArtifactAgentUID);
   const activePreviewArtifactId = activePreviewArtifactRef?.id || '';
@@ -3497,20 +3547,49 @@ export default function MessagesView({
     );
     const loadArtifacts = async (attempt = 0, polling = false) => {
       try {
-        const result = await api.getCloudArtifacts(requestAgentUID, 'active', {
+        // Applications published through the gateway live in a different system
+        // from the cloud-artifact registry. Read both, because a card is rendered
+        // by matching a URL in the message text against this list: with only the
+        // registry, a gateway application would never produce a card.
+        //
+        // The registry result is published as soon as it arrives, and the gateway
+        // list is merged in when it arrives, rather than waiting for both. Awaiting
+        // both would make every registry card wait on the gateway — up to the
+        // gateway's bound — for a list that only adds cards. The gateway is the
+        // decoration here, so it must not gate the registry.
+        const registryArtifacts = await api.getCloudArtifacts(requestAgentUID, 'active', {
           signal: controller.signal,
-        });
+        }).then(result => (Array.isArray(result?.artifacts) ? result.artifacts : []));
         if (!isCurrentRequest()) return;
         hadSuccessfulResponse = true;
         setArtifactRegistryState({
           agentUID: requestAgentUID,
-          artifacts: Array.isArray(result?.artifacts) ? result.artifacts : [],
+          registryArtifacts,
+          artifacts: registryArtifacts,
         });
         setArtifactRegistryRevision((current) => current + 1);
+
+        // Promise.resolve() first: a caller or test double may return a plain
+        // value rather than a promise, and calling .catch on it would throw.
+        const gateway = await Promise.resolve()
+          .then(() => api.listArtifactApps(requestAgentUID, { signal: controller.signal }))
+          .catch(() => null);
+        if (!isCurrentRequest()) return;
+        const gatewayArtifacts = gatewayAppsAsArtifacts(gateway?.apps);
+        // No early return: the polling and retry scheduling below must still run.
+        // Skipping it would stop the registry from refreshing at all whenever the
+        // gateway had nothing to add, which is the common case.
+        if (gatewayArtifacts.length > 0) {
+          setArtifactRegistryState((current) => (
+            current.agentUID === requestAgentUID
+              ? { ...current, artifacts: mergeArtifactSources(current.registryArtifacts, gatewayArtifacts) }
+              : current
+          ));
+        }
       } catch {
         if (!isCurrentRequest()) return;
         if ((polling || attempt >= retryDelays.length) && !hadSuccessfulResponse) {
-          setArtifactRegistryState({ agentUID: requestAgentUID, artifacts: [] });
+          setArtifactRegistryState({ agentUID: requestAgentUID, registryArtifacts: [], artifacts: [] });
         }
       }
 
