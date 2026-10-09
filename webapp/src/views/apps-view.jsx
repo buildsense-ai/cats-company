@@ -65,6 +65,26 @@ function normalizeApps(result) {
   return Array.isArray(result?.apps) ? result.apps : [];
 }
 
+const NEW_APPLICATION_HOSTS = new Set(['artifact.catsco.cc', 'artifact.catsco.cn']);
+
+// The sidebar Applications page is the new shared gateway catalog. Older
+// platform Artifact URLs may still be returned by a mixed Agent roster, but
+// they belong in the legacy cloud-artifact panel and must not appear here.
+export function isNewApplication(app) {
+  const urls = [app?.url, ...(Array.isArray(app?.urls) ? app.urls : [])];
+  return urls.some((value) => {
+    try {
+      return NEW_APPLICATION_HOSTS.has(new URL(String(value || '')).hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  });
+}
+
+function isLegacyApplicationCatalogUnavailable(error) {
+  return [404, 405, 501].includes(Number(error?.status));
+}
+
 export function normalizeAccessibleAgents(response, userUID) {
   const agents = Array.isArray(response) ? response : (response?.agents || response?.bots || []);
   return agents
@@ -236,12 +256,15 @@ export default function AppsView({ user = null, topicId = '' }) {
       const failed = [];
       results.forEach((result, index) => {
         if (result.status === 'rejected') {
+          // Agents that only expose the legacy Artifact catalog do not have a
+          // new application list. Keep them out of the new page quietly.
+          if (isLegacyApplicationCatalogUnavailable(result.reason)) return;
           failed.push(agentUID(accessible[index]));
           return;
         }
         const { agent, apps: agentApps } = result.value;
         const seen = new Set();
-        agentApps.forEach((app) => {
+        agentApps.filter(isNewApplication).forEach((app) => {
           const key = String(app?.id || app?.url || '');
           if (!key || seen.has(key)) return;
           seen.add(key);

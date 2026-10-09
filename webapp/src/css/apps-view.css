@@ -405,6 +405,7 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
   align-items: center;
   gap: 15px;
   min-width: 0;
+  overflow: hidden;
   padding-right: 0;
 }
 
@@ -431,14 +432,18 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
 
 .cc-app-card-heading-copy {
   display: flex;
+  width: 0;
+  max-width: 100%;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 0%;
   flex-direction: column;
   gap: 4px;
+  overflow: hidden;
 }
 
 .cc-app-card-heading-copy strong,
 .cc-app-card-heading-copy > span {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -448,6 +453,7 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
   display: -webkit-box;
   white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   max-height: 44px;
