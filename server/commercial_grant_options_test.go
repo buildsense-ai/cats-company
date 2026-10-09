@@ -20,7 +20,7 @@ func legacyGrantFixture(now time.Time) (*commercialTestStore, commercialRelayUsa
 		{Model: "MiniMax-M3", Provider: "minimax", AllowedModels: []string{"MiniMax-M3"}},
 		{Model: "glm-5.3-flash", Provider: "glm-openai", AllowedModels: []string{"glm-5.3-flash"}},
 		{Model: "glm-5.3-flash", Provider: "glm-anthropic", AllowedModels: []string{"glm-5.3-flash"}},
-		{Model: "gpt-5.6-sol", Provider: "gpt", AllowedModels: []string{"gpt-5.6-sol"}},
+		{Model: "claude-sonnet-5-5", Provider: "foxcode-anthropic", AllowedModels: []string{"claude-sonnet-5-5"}},
 	}
 	return store, commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{AvailableModelLimits: limits}}
 }
@@ -36,8 +36,14 @@ func TestCommercialGrantOptionsLegacyCatalogAndPaidRestrictions(t *testing.T) {
 	if len(options) != 3 {
 		t.Fatalf("expected three unique usable models: %+v", options)
 	}
-	if options[2].ID != "gpt-5.6-sol" {
-		t.Fatalf("internal Sol unavailable: %+v", options)
+	offered := false
+	for _, option := range options {
+		if option.ID == "claude-sonnet-5-5" {
+			offered = true
+		}
+	}
+	if !offered {
+		t.Fatalf("claude-sonnet-5-5 unavailable: %+v", options)
 	}
 	relay.Limits.ModelLimits = relay.Limits.AvailableModelLimits
 	relay.Limits.AvailableModelLimits = nil

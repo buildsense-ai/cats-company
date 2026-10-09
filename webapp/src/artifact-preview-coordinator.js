@@ -39,19 +39,23 @@ function coordinationID(value) {
   return COORDINATION_ID_PATTERN.test(normalized) ? normalized : '';
 }
 
-export function normalizeArtifactPreviewIdentity(value) {
+function normalizeArtifactPreviewTarget(value) {
   const topicId = String(value?.topicId || value?.topic_id || '').trim();
   const agentUid = positiveInteger(value?.agentUid ?? value?.agent_uid);
   const artifactId = String(value?.artifactId || value?.artifact_id || '').trim();
-  const displayedVersion = positiveInteger(
-    value?.displayedVersion ?? value?.displayed_version ?? value?.version,
-  );
   if (!TOPIC_ID_PATTERN.test(topicId)
     || agentUid <= 0
     || artifactId.length > 64
-    || !ARTIFACT_ID_PATTERN.test(artifactId)
-    || displayedVersion <= 0) return null;
-  return { topicId, agentUid, artifactId, displayedVersion };
+    || !ARTIFACT_ID_PATTERN.test(artifactId)) return null;
+  return { topicId, agentUid, artifactId };
+}
+
+export function normalizeArtifactPreviewIdentity(value) {
+  const target = normalizeArtifactPreviewTarget(value);
+  const displayedVersion = positiveInteger(
+    value?.displayedVersion ?? value?.displayed_version ?? value?.version,
+  );
+  return target && displayedVersion > 0 ? { ...target, displayedVersion } : null;
 }
 
 export function sameArtifactPreviewIdentity(left, right) {
@@ -94,6 +98,12 @@ export function createArtifactViewerURL(value, {
 export function parseArtifactViewerLocation(location = globalThis.location) {
   if (!location || String(location.pathname || '') !== ARTIFACT_VIEWER_PATH) return null;
   const params = new URLSearchParams(String(location.search || ''));
+  if (params.get('mode') === 'gateway') {
+    const target = normalizeArtifactPreviewTarget({
+      topicId: params.get('topic'), agentUid: params.get('agent'), artifactId: params.get('artifact'),
+    });
+    return target ? { ...target, mode: 'gateway' } : null;
+  }
   const identity = normalizeArtifactPreviewIdentity({
     topicId: params.get('topic'),
     agentUid: params.get('agent'),
@@ -102,6 +112,21 @@ export function parseArtifactViewerLocation(location = globalThis.location) {
   });
   const handoffId = coordinationID(params.get('handoff'));
   return identity && handoffId ? { ...identity, handoffId } : null;
+}
+
+// Gateway applications resolve their current registry version and mint a fresh
+// launch inside the viewer. No single-use code or caller-supplied URL is shared.
+export function createGatewayApplicationViewerURL(value, { origin = globalThis.location?.origin } = {}) {
+  const target = normalizeArtifactPreviewTarget(value);
+  if (!target || !origin) return '';
+  try {
+    const url = new URL(ARTIFACT_VIEWER_PATH, origin);
+    url.searchParams.set('mode', 'gateway');
+    url.searchParams.set('topic', target.topicId);
+    url.searchParams.set('agent', String(target.agentUid));
+    url.searchParams.set('artifact', target.artifactId);
+    return url.toString();
+  } catch { return ''; }
 }
 
 export function createArtifactPreviewMessage(type, identity, extra = {}) {

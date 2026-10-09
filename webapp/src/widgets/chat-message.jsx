@@ -1753,6 +1753,14 @@ export function createCloudArtifactPreviewFile(artifact) {
   return payload;
 }
 
+// The card subtitle has to describe two kinds of thing. A cloud artifact is a
+// stored page; a gateway application is a running service reachable through the
+// tunnel, so calling it HTML would be wrong even though its entry point is one.
+export function artifactSubtitle(artifact, version = Number(artifact?.publish_version || 0)) {
+  const label = artifact?.kind === 'mini_app' ? '小应用' : 'HTML';
+  return [label, '云端生成物', version > 0 ? `v${version}` : ''].filter(Boolean).join(' · ');
+}
+
 function ArtifactMessageCards({ artifacts, onPreviewFile, activePreviewFile }) {
   if (!Array.isArray(artifacts) || artifacts.length === 0) return null;
   return (
@@ -1775,7 +1783,7 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = descriptor?.canPreview && descriptor.key === activeKey;
   const version = Number(artifact.publish_version || 0);
-  const subtitle = ['HTML', '云端生成物', version > 0 ? `v${version}` : ''].filter(Boolean).join(' · ');
+  const subtitle = artifactSubtitle(artifact, version);
   const previewArtifact = () => {
     if (descriptor?.canPreview) onPreviewFile?.(payload);
   };
@@ -3244,7 +3252,7 @@ export function FilePreviewPanel({
             )}
             {isImage ? <ImageIcon size={18} /> : <FileText size={18} />}
             <div>
-              <h3>{file.name}</h3>
+              <h3 title={file.name}>{file.name}</h3>
               <span>{meta.label}{sizeStr ? ` · ${sizeStr}` : ''}</span>
             </div>
           </div>

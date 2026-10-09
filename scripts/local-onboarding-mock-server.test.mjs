@@ -72,7 +72,7 @@ test('showcase mock serves the Agent quota endpoint without console-noisy 404s',
     shared: true,
     summary: {
       source: 'relay',
-      model: 'gpt-5.6-terra',
+      model: 'gpt-6.1-sol',
       remaining_percent: 82,
       status: 'normal',
     },

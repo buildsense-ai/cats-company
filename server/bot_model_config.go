@@ -98,29 +98,18 @@ var botModelCatalog = []botModelCatalogItem{
 		ReasoningEfforts: []string{"max"}, DefaultReasoningEffort: "max",
 		Vision: true, RuntimeModel: "glm-5.3-flash",
 	},
-	{
-		ID: "gpt-5.6-terra", Label: "GPT-5.6 Terra", Description: "OpenAI Responses，支持精细推理强度",
-		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-terra",
-		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
-	},
-	// This is the candidate pool, not the sellable list: it has to cover every
-	// model any plan may grant, and the plan then decides which entries a given
-	// buyer sees. An entry missing here is invisible no matter what the plan
-	// grants, which is exactly how a buyer ends up holding quota for a model the
-	// picker never offers.
-	//
-	// GPT-6 Sol and GPT-5.6 Sol run on the same routes and are split by plan, not
-	// by name: the paid plans sell gpt-6-sol, the internal all-models plan keeps
-	// gpt-5.6-sol. Both names therefore belong in the pool, and neither plan leaks
-	// the other's name because the plan filter removes it.
+	// The GPT-5.6 family (terra/sol/luna) retired 2026-10-08. Stored selections
+	// resolve through resolveLegacyCatalogModelID onto gpt-6.1-sol and are
+	// rewritten on the next save or admin reapply, so the pool only lists the
+	// successor entries below.
 	{
 		ID: "gpt-6-sol", Label: "GPT-6 Sol", Description: "OpenAI Responses，支持精细推理强度",
 		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-6-sol",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 	{
-		ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol", Description: "OpenAI Responses，支持精细推理强度",
-		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-sol",
+		ID: "gpt-6.1-sol", Label: "GPT-6.1 Sol", Description: "OpenAI Responses，支持精细推理强度",
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-6.1-sol",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 	{
@@ -945,7 +934,10 @@ func catalogForCommercialSummary(
 	summary *types.CommercialSummary,
 	currentModelID string,
 ) []botModelCatalogItem {
-	current := normalizeRelayModelName(currentModelID)
+	// A stored current selection may be a retired family id; resolve it through
+	// the legacy alias so the "current model stays visible" contract keeps
+	// working during the migration window.
+	current := normalizeRelayModelName(resolveLegacyCatalogModelID(currentModelID))
 	filtered := make([]botModelCatalogItem, 0, len(catalog))
 	for _, item := range catalog {
 		if commercialQuotaModelAllowed(summary, item.ID) {
@@ -965,7 +957,7 @@ func catalogWithUnavailableCurrent(
 	catalog []botModelCatalogItem,
 	currentModelID, reason string,
 ) []botModelCatalogItem {
-	current := normalizeRelayModelName(currentModelID)
+	current := normalizeRelayModelName(resolveLegacyCatalogModelID(currentModelID))
 	if current == "" {
 		return nil
 	}

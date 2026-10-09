@@ -23,6 +23,7 @@ import {
 import { api, resolveMediaURL } from '../api';
 import { getAuthRevision, getToken } from '../auth-session';
 import { normalizeArtifactOpenBinding, artifactOpenBindingUsable } from '../gateway-annotations';
+import { createGatewayApplicationViewerURL } from '../artifact-preview-coordinator';
 import { useFeedback } from '../components/feedback-system';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import { previewFileDescriptor } from './chat-message';
@@ -32,7 +33,7 @@ const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 const FILTER_POPOVER_GAP = 8;
 const FILTER_POPOVER_GUTTER = 8;
 const FILTER_POPOVER_MAX_HEIGHT = 480;
-const FILTER_POPOVER_WIDTH = 280;
+const FILTER_POPOVER_WIDTH = 240;
 
 function notifyArtifactsChanged(agentUid) {
   window.dispatchEvent(new CustomEvent(CLOUD_ARTIFACTS_CHANGED_EVENT, {
@@ -152,6 +153,7 @@ export default function CloudArtifactsPanel({
   agentUid,
   topicId,
   initialTab = 'files',
+  initialApp,
   tab: controlledTab,
   onTabChange,
   onClose,
@@ -182,6 +184,8 @@ export default function CloudArtifactsPanel({
   const [gatewayAnnotationMode, setGatewayAnnotationMode] = useState('off');
   const [gatewayAnnotationCapabilityNote, setGatewayAnnotationCapabilityNote] = useState('');
   const modeSyncRef = useRef(null);
+  const gatewayLaunchSequenceRef = useRef(0);
+  const consumedInitialAppRef = useRef(null);
   const [viewerRelation, setViewerRelation] = useState('');
   const [canPublish, setCanPublish] = useState(false);
   const [tagCounts, setTagCounts] = useState([]);
@@ -324,8 +328,18 @@ export default function CloudArtifactsPanel({
   // for any reason we still open the plain URL, so the action never dead-ends.
   const openGatewayApp = useCallback(async (app, target = 'panel') => {
     if (!app?.id || !app?.url) return;
-    // Standalone windows are identity-only: no parent annotation channel and
-    // no binding to leak/retain. Panel opens own one capability per instance.
+    if (target === 'window') {
+      const hostedURL = createGatewayApplicationViewerURL({
+        topicId, agentUid, artifactId: app.id,
+      });
+      // The standalone viewer owns authentication and runtime independently.
+      if (hostedURL) {
+        window.open(hostedURL, '_blank', 'noopener,noreferrer');
+        return;
+      }
+    }
+    const launchSequence = ++gatewayLaunchSequenceRef.current;
+    // Panel opens own one capability per instance.
     const requestID = ++gatewayOpenSequenceRef.current;
     const authRevision = getAuthRevision();
     const token = getToken();
@@ -369,7 +383,8 @@ export default function CloudArtifactsPanel({
         });
       }
     }
-    if (requestID !== gatewayOpenSequenceRef.current || getAuthRevision() !== authRevision || getToken() !== token) {
+    if (launchSequence !== gatewayLaunchSequenceRef.current
+      || requestID !== gatewayOpenSequenceRef.current || getAuthRevision() !== authRevision || getToken() !== token) {
       if (openBinding) void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
       return;
     }
@@ -437,6 +452,10 @@ export default function CloudArtifactsPanel({
     });
   }, [onGatewayAnnotationState]);
 
+  useEffect(() => () => {
+    consumedInitialAppRef.current = null;
+  }, []);
+
   useEffect(() => {
     setArtifacts([]);
     setFiles([]);
@@ -454,8 +473,17 @@ export default function CloudArtifactsPanel({
     loadContent();
     return () => {
       requestSequenceRef.current += 1;
+      gatewayLaunchSequenceRef.current += 1;
     };
   }, [loadContent]);
+
+  useEffect(() => {
+    if (tab !== 'gateway' || !initialApp?.id || !initialApp?.url) return;
+    const consumed = consumedInitialAppRef.current;
+    if (consumed?.app === initialApp && consumed.agentUid === agentUid && consumed.topicId === topicId) return;
+    consumedInitialAppRef.current = { app: initialApp, agentUid, topicId };
+    openGatewayApp(initialApp);
+  }, [initialApp, tab, openGatewayApp, agentUid, topicId]);
 
   useEffect(() => {
     setArtifactScope(topicId ? 'current' : 'all');

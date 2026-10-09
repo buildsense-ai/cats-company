@@ -32,12 +32,7 @@ func TestJevResolverLiveEndToEnd(t *testing.T) {
 		t.Fatalf("live judge client is not configured")
 	}
 
-	functions := staticBotFunctions{functions: map[int64]types.BotFunction{
-		42: {UID: 42, Role: "code_review", Description: "负责代码审查、bug 定位、代码质量"},
-		43: {UID: 43, Role: "writing", Description: "负责营销文案、发布公告"},
-		44: {UID: 44, Role: "research", Description: "负责数据统计、报表"},
-	}}
-	resolver := NewJevGroupActivationResolver(client, functions)
+	resolver := NewJevGroupActivationResolver(client)
 
 	members := []*types.GroupMember{
 		{UserID: 7, DisplayName: "林"},
@@ -52,19 +47,25 @@ func TestJevResolverLiveEndToEnd(t *testing.T) {
 		senderIsBot bool
 		turns       []GroupActivationTurn
 		wantAny     []int64
+		wantNot     []int64
 		wantNone    bool
 	}{
 		{
-			name:      "code request reaches the reviewer",
+			// An open request that nobody has taken reaches someone. Which
+			// member answers is the judge's call: with roles gone the decision
+			// is about participation, not about matching a job title.
+			name:      "open request reaches a member",
 			senderUID: 7,
 			turns:     []GroupActivationTurn{{Speaker: "林", Text: "这段 Python 报空指针，帮我看下"}},
-			wantAny:   []int64{42},
+			wantAny:   []int64{42, 43, 44},
 		},
 		{
-			name:      "copy request reaches the writer",
+			// A request addressed by name reaches that member and nobody else.
+			name:      "named request reaches the named member",
 			senderUID: 7,
-			turns:     []GroupActivationTurn{{Speaker: "林", Text: "帮我写一句发布公告"}},
+			turns:     []GroupActivationTurn{{Speaker: "林", Text: "小文，帮我写一句发布公告"}},
 			wantAny:   []int64{43},
+			wantNot:   []int64{42, 44},
 		},
 		{
 			// A bot handing work over names the next owner in its message. The
@@ -78,6 +79,17 @@ func TestJevResolverLiveEndToEnd(t *testing.T) {
 				{Speaker: "阿码", IsBot: true, Text: "代码审查完成，发现 2 处风险。发布公告这块需要小文来写。"},
 			},
 			wantAny: []int64{43},
+			wantNot: []int64{44},
+		},
+		{
+			// A sequence keeps the later member out until its turn. Without
+			// this the judge treats "阿码 goes first, then 小文" as work for
+			// both and the second member answers out of order.
+			name:      "later step waits its turn",
+			senderUID: 7,
+			turns:     []GroupActivationTurn{{Speaker: "林", Text: "分两步：阿码先整理数据，完成后交给小文写报告"}},
+			wantAny:   []int64{42},
+			wantNot:   []int64{43},
 		},
 		{
 			name:      "small talk reaches nobody",
@@ -117,7 +129,7 @@ func TestJevResolverLiveEndToEnd(t *testing.T) {
 			if decision.Source != activationSourceJev {
 				t.Fatalf("source = %s, want %s", decision.Source, activationSourceJev)
 			}
-			t.Logf("activated=%v source=%s", decision.Activated, decision.Source)
+			t.Logf("activated=%v scores=%v source=%s", decision.Activated, decision.Scores, decision.Source)
 
 			if tc.wantNone {
 				if len(decision.Activated) != 0 {
@@ -125,25 +137,25 @@ func TestJevResolverLiveEndToEnd(t *testing.T) {
 				}
 				return
 			}
+			// wantAny lists acceptable responders: the judge picks among them,
+			// so any one of them satisfies the case.
+			matched := false
 			for _, uid := range tc.wantAny {
-				if _, ok := decision.Activated[uid]; !ok {
-					t.Fatalf("bot %d was not activated: %v", uid, decision.Activated)
+				if _, ok := decision.Activated[uid]; ok {
+					matched = true
+				}
+			}
+			if !matched {
+				t.Fatalf("none of %v was activated: %v", tc.wantAny, decision.Activated)
+			}
+			// wantNot guards the cases where reaching the wrong member is the
+			// bug: a sequence must not wake the later step, and a named request
+			// must not wake anyone else.
+			for _, uid := range tc.wantNot {
+				if _, ok := decision.Activated[uid]; ok {
+					t.Fatalf("bot %d should not have been activated: %v", uid, decision.Activated)
 				}
 			}
 		})
 	}
-}
-
-type staticBotFunctions struct {
-	functions map[int64]types.BotFunction
-}
-
-func (s staticBotFunctions) GetBotFunctions(uids []int64) (map[int64]types.BotFunction, error) {
-	out := make(map[int64]types.BotFunction, len(uids))
-	for _, uid := range uids {
-		if function, ok := s.functions[uid]; ok {
-			out[uid] = function
-		}
-	}
-	return out, nil
 }

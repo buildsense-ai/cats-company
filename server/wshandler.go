@@ -2468,7 +2468,6 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 	senderPublishesTaskStatus := h.isTaskStatusPublisher(senderUID)
 
 	decision := h.resolveGroupActivation(groupID, members, msg, mentions, senderUID, senderIsBot, trustedChannelTrigger)
-
 	for _, m := range members {
 		if m.UserID == excludeUID {
 			continue
@@ -2580,6 +2579,77 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 	return taskDelivered
 }
 
+// groupTopicID is the topic a group's messages are stored under. It mirrors
+// the construction used by the group handlers so a topic-scoped lookup cannot
+// drift from the stored form.
+func groupTopicID(groupID int64) string {
+	if groupID <= 0 {
+		return ""
+	}
+	return "grp_" + formatInt64(groupID)
+}
+
+// activationMutedUIDs lists the group members the group has silenced.
+//
+// A muted member is forbidden from posting, so activating one only produces a
+// rejected write: the judgement, the delivery and the model turn are all spent
+// for nothing. Mute therefore acts as a lock on activation, which is also what
+// makes it usable as one.
+func activationMutedUIDs(members []*types.GroupMember) []int64 {
+	var uids []int64
+	for _, member := range members {
+		if member == nil || !member.Muted {
+			continue
+		}
+		uids = append(uids, member.UserID)
+	}
+	return uids
+}
+
+// activationWorkingUIDs lists the group members already mid-turn.
+//
+// The in-process turn tracker is the first source: it is exact for the node
+// that routed the turn. The task-status store is the second, and it is what
+// makes this work across nodes and across a restart — a bot that is running on
+// another node, or whose turn outlived this process, still shows up there.
+//
+// Both are advisory. A failure to read either one degrades to "nobody is known
+// to be working", which is the pre-change behaviour, rather than blocking
+// activation entirely.
+func (h *Hub) activationWorkingUIDs(groupID int64) []int64 {
+	if h == nil || groupID <= 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{})
+	var uids []int64
+	add := func(uid int64) {
+		if uid <= 0 {
+			return
+		}
+		if _, ok := seen[uid]; ok {
+			return
+		}
+		seen[uid] = struct{}{}
+		uids = append(uids, uid)
+	}
+	for _, uid := range h.groupTurns.activeBots(groupID) {
+		add(uid)
+	}
+	if h.db != nil {
+		if statusStore, ok := h.db.(store.ConversationTaskStatusTopicStore); ok {
+			topicID := groupTopicID(groupID)
+			if working, err := statusStore.ListActiveConversationTaskStatusSources(topicID); err == nil {
+				for _, uid := range working {
+					add(uid)
+				}
+			} else {
+				log.Printf("activation working members: list failed for group %d: %v", groupID, err)
+			}
+		}
+	}
+	return uids
+}
+
 // resolveGroupActivation asks the injected resolver which bots a message
 // activates. Without a resolver the pre-existing behaviour is preserved: a
 // single-bot group activates, larger groups require an explicit mention, and an
@@ -2600,6 +2670,9 @@ func (h *Hub) resolveGroupActivation(
 		Mentions:              mentions,
 		Members:               members,
 		TrustedChannelTrigger: trustedChannelTrigger,
+		NotConversation:       !isJudgeableActivationMessage(msg),
+		MutedUIDs:             activationMutedUIDs(members),
+		WorkingUIDs:           func() []int64 { return h.activationWorkingUIDs(groupID) },
 		DefaultAgentUID:       h.defaultAgentForGroup(groupID, len(members), mentions, senderIsBot, trustedChannelTrigger),
 	}
 	if msg != nil && msg.Data != nil {
@@ -2615,20 +2688,128 @@ func (h *Hub) resolveGroupActivation(
 		}
 	}
 	if h.groupActivation != nil {
-		return h.groupActivation.Resolve(context.Background(), req)
+		decision := h.groupActivation.Resolve(context.Background(), req)
+		h.logActivationDecision(groupID, req, decision)
+		return decision
 	}
 	return deterministicGroupActivation(req)
 }
 
-// defaultAgentForGroup reports the agent an agent-task group falls back to.
+// logActivationDecision records what the judge decided and why.
 //
-// The rule predates semantic judging and still applies: the first current task
-// agent owns messages that address nobody, and if it leaves the next current
-// agent takes over.
+// A message that reaches nobody is indistinguishable from a broken prompt
+// without this: Activated keeps only the winners, so "correctly nobody" and
+// "the criteria never fire" produce the same empty map. The per-candidate
+// scores make the difference visible, and the source says which rule ran.
+func (h *Hub) logActivationDecision(groupID int64, req GroupActivationRequest, decision GroupActivationDecision) {
+	if h == nil {
+		return
+	}
+	sender := fmt.Sprintf("usr%d", req.SenderUID)
+	if req.SenderIsBot {
+		sender += "(bot)"
+	}
+	log.Printf(
+		"group activation: group=%d sender=%s source=%s degraded=%t activated=%v scores=%v",
+		groupID,
+		sender,
+		decision.Source,
+		decision.Degraded,
+		decision.Activated,
+		decision.Scores,
+	)
+}
+
+// deterministicGroupActivation applies the rules that predate semantic judging.
+// It is the fallback used when no judge is installed, and it never reports
+// itself as degraded: falling back to mentions is a designed outcome, not a
+// failure worth telling the group about.
+func deterministicGroupActivation(req GroupActivationRequest) GroupActivationDecision {
+	if req.NotConversation {
+		return GroupActivationDecision{Source: activationSourceNotConversation}
+	}
+	allBots := activationBots(req.Members)
+	if len(allBots) == 0 {
+		return GroupActivationDecision{Source: activationSourceNoBot}
+	}
+	muted := activationUIDSet(req.MutedUIDs)
+	if len(allBots) == 1 {
+		if allBots[0].UID == req.SenderUID {
+			return GroupActivationDecision{Source: activationSourceBotSender}
+		}
+		if _, blocked := muted[allBots[0].UID]; blocked {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		return GroupActivationDecision{
+			Activated: map[int64]float64{allBots[0].UID: 1},
+			Source:    activationSourceSingleBot,
+		}
+	}
+	bots := activationExcludingSender(allBots, req.SenderUID)
+	if len(bots) == 0 {
+		return GroupActivationDecision{Source: activationSourceBotSender}
+	}
+	if req.TrustedChannelTrigger {
+		reachable := activationExcludingUIDs(bots, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		return GroupActivationDecision{Activated: activationAll(reachable), Source: activationSourceChannel}
+	}
+	if activationMentionAll(req.Mentions) {
+		reachable := activationExcludingUIDs(bots, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		return GroupActivationDecision{Activated: activationAll(reachable), Source: activationSourceMention}
+	}
+	// A mention is matched against the roster including silenced members, then
+	// filtered: naming someone is a designation, so "@a muted bot" must not be
+	// reinterpreted as an open request for a different member.
+	if mentioned := activationMentionedBots(bots, req.Mentions); len(mentioned) > 0 {
+		reachable := activationExcludingScores(mentioned, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		return GroupActivationDecision{Activated: reachable, Source: activationSourceMention}
+	}
+	bots = activationExcludingUIDs(bots, muted)
+	if len(bots) == 0 {
+		return GroupActivationDecision{Source: activationSourceNoCandidate}
+	}
+	// An agent-task group exists to finish one piece of work, so a message that
+	// addresses nobody still needs its owner rather than stalling silently.
+	//
+	// This applies only when no judge is installed. Once judging runs, its
+	// verdict is the decision — including a verdict of "nobody" — and a fallback
+	// here would silently overrule it.
+	if req.DefaultAgentUID > 0 {
+		if _, ok := activationBotUIDs(bots)[req.DefaultAgentUID]; ok {
+			return GroupActivationDecision{
+				Activated: map[int64]float64{req.DefaultAgentUID: 1},
+				Source:    activationSourceDefaultAgent,
+			}
+		}
+	}
+	return GroupActivationDecision{Source: activationSourceNoMention}
+}
+
+// activationBotUIDs indexes the candidate bots for membership checks.
+func activationBotUIDs(bots []GroupActivationBot) map[int64]struct{} {
+	index := make(map[int64]struct{}, len(bots))
+	for _, bot := range bots {
+		index[bot.UID] = struct{}{}
+	}
+	return index
+}
+
+// defaultAgentForGroup reports the agent an agent-task group falls back to when
+// no judge is installed.
 //
-// The lookup is skipped unless a fallback could actually apply. A message that
-// names someone needs no fallback, and a group of two members is already covered
-// by the single-bot rule, so neither pays for a query.
+// The rule predates semantic judging and still applies on the deterministic
+// path: the first current task agent owns messages that address nobody, and if
+// it leaves the next current agent takes over. Judging supersedes it, which is
+// why the lookup is skipped unless a fallback could actually apply.
 func (h *Hub) defaultAgentForGroup(groupID int64, memberCount int, mentions []string, senderIsBot, trustedChannelTrigger bool) int64 {
 	if h == nil || h.db == nil || groupID <= 0 || memberCount <= 2 {
 		return 0
@@ -2644,52 +2825,6 @@ func (h *Hub) defaultAgentForGroup(groupID int64, memberCount int, mentions []st
 		return 0
 	}
 	return group.AgentIDs[0]
-}
-
-// deterministicGroupActivation applies the rules that predate semantic judging.
-// It is the fallback used when no judge is installed, and it never reports
-// itself as degraded: falling back to mentions is a designed outcome, not a
-// failure worth telling the group about.
-func deterministicGroupActivation(req GroupActivationRequest) GroupActivationDecision {
-	allBots := activationBots(req.Members)
-	if len(allBots) == 0 {
-		return GroupActivationDecision{Source: activationSourceNoBot}
-	}
-	if len(allBots) == 1 {
-		if allBots[0].UID == req.SenderUID {
-			return GroupActivationDecision{Source: activationSourceBotSender}
-		}
-		return GroupActivationDecision{
-			Activated: map[int64]float64{allBots[0].UID: 1},
-			Source:    activationSourceSingleBot,
-		}
-	}
-	bots := activationExcludingSender(allBots, req.SenderUID)
-	if len(bots) == 0 {
-		return GroupActivationDecision{Source: activationSourceBotSender}
-	}
-	if req.TrustedChannelTrigger {
-		return GroupActivationDecision{Activated: activationAll(bots), Source: activationSourceChannel}
-	}
-	if activationMentionAll(req.Mentions) {
-		return GroupActivationDecision{Activated: activationAll(bots), Source: activationSourceMention}
-	}
-	if mentioned := activationMentionedBots(bots, req.Mentions); len(mentioned) > 0 {
-		return GroupActivationDecision{Activated: mentioned, Source: activationSourceMention}
-	}
-	// An agent-task group exists to finish one piece of work. A message that
-	// addresses nobody still needs its owner, otherwise the task stalls with no
-	// reply and no notice. The first current agent is the default; if it leaves,
-	// the next current agent takes over.
-	if req.DefaultAgentUID > 0 {
-		if _, ok := activationBotUIDs(bots)[req.DefaultAgentUID]; ok {
-			return GroupActivationDecision{
-				Activated: map[int64]float64{req.DefaultAgentUID: 1},
-				Source:    activationSourceDefaultAgent,
-			}
-		}
-	}
-	return GroupActivationDecision{Source: activationSourceNoMention}
 }
 
 // groupNameForActivation reads the group label used in the judging prompt. A
@@ -2810,8 +2945,10 @@ func (h *Hub) activationNoticeAllowed(groupID int64) bool {
 
 const (
 	activationUnavailableNotice = "⚠️ 智能路由暂不可用，本条未触发任何成员。可再次发送，或 @ 对应成员。"
-	// activationNoticeCooldown bounds how often one group is told about an
-	// outage. Long enough to keep the notice readable, short enough that a
-	// person arriving mid-outage still learns what is wrong.
-	activationNoticeCooldown = 5 * time.Minute
+	// activationNoticeCooldown absorbs a burst without hiding the problem. It is
+	// deliberately short: the notice is how a person learns routing is down, so
+	// a long silence would be worse than a repeat. Ten seconds collapses the
+	// messages of one back-and-forth into a single notice while still telling
+	// someone who arrives a moment later.
+	activationNoticeCooldown = 10 * time.Second
 )

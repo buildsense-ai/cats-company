@@ -144,6 +144,19 @@ type ConversationTaskStatusStore interface {
 	GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error)
 }
 
+// ConversationTaskStatusTopicStore reports which members of one topic are
+// currently running a turn.
+//
+// It is separate from ConversationTaskStatusStore so focused stores keep
+// implementing the smaller surface: activation treats a missing implementation
+// as "nobody is known to be working" rather than failing.
+type ConversationTaskStatusTopicStore interface {
+	// ListActiveConversationTaskStatusSources returns the source uids that are
+	// still running or waiting in this topic. Read-only: the caller runs on the
+	// message hot path and must not reconcile or lock.
+	ListActiveConversationTaskStatusSources(topicID string) ([]int64, error)
+}
+
 // ValidateConversationTaskStatusTransition enforces the per-source run
 // lifecycle shared by every task-status store implementation.
 func ValidateConversationTaskStatusTransition(current, next *types.ConversationTaskStatus, now time.Time) error {
@@ -296,13 +309,6 @@ type BotSkillsVisibilityStore interface {
 // widening focused Store test doubles that do not exercise profile editing.
 type BotProfileStore interface {
 	UpdateBotProfile(botUID int64, role, description *string) error
-}
-
-// BotFunctionStore reads the owner-defined assistant identity used by group
-// activation judging. It stays separate from BotProfileStore so a store that
-// only writes profiles does not have to answer reads.
-type BotFunctionStore interface {
-	GetBotFunctions(uids []int64) (map[int64]types.BotFunction, error)
 }
 
 // BotArtifactPolicyStore persists whether regular Agent members may publish

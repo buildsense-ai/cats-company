@@ -96,16 +96,26 @@ const WS_STABLE_CONNECTION_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
 const ARTIFACT_PREVIEW_SESSION_CONTRACT = 'catsco.artifact-preview-session.v1';
-// Public read-only gateway catalogue. In development, use Vite's narrowly
-// scoped same-origin proxy because production CORS does not allow loopback.
-// VITE_ARTIFACT_GATEWAY_BASE also selects the dev proxy upstream for local demos.
-// Production retains the official gateway (or an explicit configured base).
-const ARTIFACT_GATEWAY_BASE = import.meta.env.DEV ? '/artifact-gateway' : String(
-  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_ARTIFACT_GATEWAY_BASE) || 'https://artifact.catsco.cc',
-).replace(/\/+$/, '');
+// Development's public compatibility catalogue uses a narrowly scoped proxy.
+const DEV_ARTIFACT_GATEWAY_BASE = '/artifact-gateway';
 // Asking the server for a one-time code is a short round trip; keep it bounded
 // so a slow platform never blocks opening an application.
 const ARTIFACT_LAUNCH_TIMEOUT_MS = 8_000;
+// The gateway application list is read alongside the artifact registry and only
+// adds cards to it, so it gets a shorter leash: the registry's own cards render as
+// soon as the registry answers, and a gateway that stops answering should cost a
+// missing card rather than a stalled conversation.
+//
+// The value is chosen from measurement, not from a chain of budgets. A cold list —
+// the gateway's probe cache is 10s, and probing an unreachable application costs
+// up to `PROBE_TIMEOUT_MS` 3s — measures ~3.03s, so 8s leaves roughly 2.6x
+// headroom. Note the platform sits in front of the gateway with its own 10s
+// upstream timeout (`artifactUpstreamTimeout` in server/cloud_artifacts.go), which
+// is *longer* than this bound: a request taking 8-10s is abandoned here while the
+// platform is still working. That is deliberate — 10s is too long to hold a card
+// back — but it means this is not "greater than the server's budget" and the
+// comment should not claim to be.
+const ARTIFACT_GATEWAY_TIMEOUT_MS = 8_000;
 
 function normalizeArtifactPreviewSession(value) {
   if (!value || typeof value !== 'object'
@@ -945,15 +955,46 @@ export const api = {
       undefined,
       options,
     ),
-  listArtifactApps: (agentUid) => {
+  listArtifactApps: async (agentUid, options = {}) => {
     const agent = String(agentUid ?? '').trim();
-    const query = /^[0-9]+$/.test(agent) ? `?agent=${agent}` : '';
-    return fetch(`${ARTIFACT_GATEWAY_BASE}/api/apps${query}`, { credentials: 'omit' }).then(
-      (response) => (response.ok
-        ? response.json()
-        : Promise.reject(new Error('artifact_gateway_unavailable'))),
-    );
+    const query = /^[0-9]+$/.test(agent) ? `?agent=${encodeURIComponent(agent)}` : '';
+    const publicCatalog = async () => {
+      // The caller renders other data alongside this list, so a gateway that
+      // accepts the connection and then never answers must not hold that render
+      // open. Bound it, and accept the caller's signal so a superseded request
+      // stops waiting. A bare fetch has neither.
+      const response = await fetchWithRequestError(`${DEV_ARTIFACT_GATEWAY_BASE}/api/apps${query}`, {
+        credentials: 'omit',
+        signal: options.signal,
+        timeoutMs: ARTIFACT_GATEWAY_TIMEOUT_MS,
+      });
+      if (!response.ok) throw new Error('artifact_gateway_unavailable');
+      const result = await response.json();
+      return { ...result, apps: (result.apps || []).map((app) => ({ ...app, can_manage: false })) };
+    };
+    // Explicit local compatibility mode while the management backend is being
+    // rolled out. Production always uses the authenticated platform catalog.
+    if (import.meta.env.DEV && import.meta.env.VITE_ARTIFACT_APPS_CATALOG === 'public') {
+      return publicCatalog();
+    }
+    try {
+      // `request` defaults to no timeout, which is too long for a list that only
+      // decorates the artifact registry. The bound has to exceed the gateway's own
+      // probe budget (4s, plus 3s per probe) or the client gives up on requests the
+      // server is still working on — a cold list measures ~3.03s.
+      return await request('GET', `/api/artifacts/apps${query}`, undefined, {
+        signal: options.signal,
+        timeoutMs: ARTIFACT_GATEWAY_TIMEOUT_MS,
+      });
+    } catch (error) {
+      // Older development backends can still browse the public catalog. Never
+      // infer management rights or bypass an authentication/permission failure.
+      if (!import.meta.env.DEV || ![404, 405, 501].includes(error.status)) throw error;
+      return publicCatalog();
+    }
   },
+  updateArtifactApp: (id, metadata) =>
+    request('PATCH', `/api/artifacts/apps/${encodeURIComponent(id)}`, metadata),
   // Ask the platform for a one-time Artifact code. Opening the returned
   // launch_url makes the gateway set its session cookie on the way in, so the
   // application can recognise the viewer (and the conversation it came from).

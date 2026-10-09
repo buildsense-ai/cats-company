@@ -165,8 +165,8 @@ describe('CatsCo shell styling', () => {
     const placeholderRule = ruleIn(searchOverlayCss, '.cc-global-search-field input::placeholder');
 
     expect(tabsRule).toContain('gap: 4px;');
-    expect(activeScopeRule).toContain('border-color: color-mix(in srgb, #a3a3a3 28%, transparent);');
-    expect(activeScopeRule).toContain('background: color-mix(in srgb, #808080 22%, transparent);');
+    expect(activeScopeRule).not.toContain('border-color:');
+    expect(activeScopeRule).toContain('background: color-mix(in srgb, #000 10%, var(--cc-control-surface));');
     expect(activeScopeRule).toContain('color: var(--cc-text);');
     expect(placeholderRule).toContain('color: var(--cc-placeholder);');
   });

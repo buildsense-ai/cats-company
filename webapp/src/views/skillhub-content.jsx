@@ -7,6 +7,9 @@ import {
 } from 'lucide-react';
 import CustomSelect from '../widgets/custom-select';
 import useDialogBehavior from '../utils/use-dialog-behavior';
+import { useFeedback } from '../components/feedback-system';
+import { MARKET_CATEGORIES, MarketplaceFilters, mergeMarketplaceLibrary, useMarketplace, useMarketplaceCatalogue } from './skillhub-marketplace-state';
+import { MarketplaceIntroduction } from './skillhub-marketplace-intro';
 import {
   formatSkillHubPublisher,
   formatSkillHubVersion,
@@ -32,6 +35,12 @@ function formatUnavailableSkillHint(skillIds = []) {
 }
 
 export default function SkillHubContent(props) {
+  const { navigate } = useMarketplace();
+  const guardedProps = {
+    ...props,
+    onSelectAgent: (value) => navigate ? navigate(() => props.onSelectAgent(value)) : props.onSelectAgent(value),
+    onChangeSection: (value) => navigate ? navigate(() => props.onChangeSection(value)) : props.onChangeSection(value),
+  };
   const {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
     isReadOnly, loadingDefinition, onChangeSection, onToggleUpdates, saving, selectedAgentName,
@@ -48,11 +57,10 @@ export default function SkillHubContent(props) {
       <div className='cc-skillhub-shell'>
         <header className='cc-skillhub-header'>
           <div className='cc-skillhub-title-block'>
-            <span className='cc-skillhub-eyebrow'><Package size={14} aria-hidden='true' /> SkillHub</span>
             <h1>Agent 能力</h1>
             <p>为 Agent 添加和管理可用能力。</p>
           </div>
-          <AgentContext {...props} />
+          <AgentContext {...guardedProps} />
         </header>
         {definitionError && <div className='cc-skillhub-alert error' role='alert'>{definitionError}</div>}
         {runtimeRouteError && <div className='cc-skillhub-alert error' role='alert'>{runtimeRouteError}</div>}
@@ -60,7 +68,7 @@ export default function SkillHubContent(props) {
         {visibleSection === 'custom' ? <CustomSkills {...props} /> : (
           <>
             <SkillNavigation
-              {...props}
+              {...guardedProps}
               activeSection={visibleSection}
               addedCount={definition.skills.length}
               selectedUpdateCount={selectedUpdateCount}
@@ -74,7 +82,7 @@ export default function SkillHubContent(props) {
                 {loadingDefinition ? `正在更新${selectedAgentName ? ` Agent“${selectedAgentName}”` : '当前 Agent'}的能力…` : skillAction?.type === 'remove' ? '正在移除能力…' : skillAction?.update ? '正在更新能力…' : '正在添加能力…'}
               </div>
             )}
-            {visibleSection === 'added' ? <AddedSkills {...props} /> : <Catalogue {...props} />}
+            {visibleSection === 'added' ? <AddedSkills key={props.selectedBotUID} {...props} /> : <Catalogue key={props.selectedBotUID} {...props} />}
           </>
         )}
       </div>
@@ -83,7 +91,7 @@ export default function SkillHubContent(props) {
 }
 
 function AgentContext({
-  agentOptions, loadingBots, onSelectAgent, saving, selectedAgentRelation, selectedBotUID, sharingSkill, syncingWorkspace,
+  agentOptions, loadingBots, onSelectAgent, saving, selectedBotUID, sharingSkill, syncingWorkspace,
 }) {
   const disabled = loadingBots || agentOptions.length === 0 || Boolean(sharingSkill) || saving || syncingWorkspace;
   return (
@@ -97,7 +105,6 @@ function AgentContext({
           value={selectedBotUID}
         />
       </label>
-      {selectedAgentRelation === 'friend' && <span className='cc-skillhub-readonly-badge'><ShieldCheck size={13} aria-hidden='true' /> 只读查看</span>}
     </div>
   );
 }
@@ -134,16 +141,8 @@ function AgentSelect({ agents, disabled, onChange, value }) {
             key={agent.value}
             value={agent.value}
             data-title={agent.label}
-            data-description={agent.updateStatus === 'unavailable'
-              ? '暂时无法确认更新状态'
-              : agent.updateStatus === 'partial' ? formatUnavailableSkillHint(agent.unavailableSkillIds) : undefined}
           >
-            <span className='cc-skillhub-agent-option-content'>
-              <span className='cc-skillhub-agent-option-name'>{agent.label}</span>
-              {agent.updateCount > 0 && <span className='cc-skillhub-agent-update-badge'>{agent.updateCount}</span>}
-              {agent.updateStatus === 'unavailable' && <span className='cc-skillhub-agent-uncertain'>可能有更新</span>}
-              {agent.updateStatus === 'partial' && <span className='cc-skillhub-agent-uncertain'>部分待确认</span>}
-            </span>
+            {agent.label}
           </option>
         ))}
       </CustomSelect>
@@ -151,7 +150,8 @@ function AgentSelect({ agents, disabled, onChange, value }) {
   );
 }
 
-function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly, onChangeSection, onToggleUpdates, selectedUnavailableSkillIds = [], selectedUpdateCount = 0, selectedUpdateStatus = '', updatesOnly = false }) {
+function SkillNavigation(props) {
+  const { activeSection, addedCount, isLocalEnabled, isReadOnly, onChangeSection, onToggleUpdates, selectedUnavailableSkillIds = [], selectedUpdateCount = 0, selectedUpdateStatus = '', updatesOnly = false, onRefreshDefinition, selectedBotUID, loadingDefinition, saving, sharingSkill } = props;
   return (
     <nav className='cc-skillhub-navigation' aria-label='Agent 能力视图'>
       <div className='cc-skillhub-tabs-actions'>
@@ -179,6 +179,12 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly
           </span>
         )}
       </div>
+      <div className='cc-skillhub-navigation-tools'>
+        <SkillSearch {...props} />
+        {activeSection === 'added' && <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
+          <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={16} aria-hidden='true' />
+        </button>}
+      </div>
       {isLocalEnabled && (
         <button type='button' className='cc-skillhub-custom-entry' onClick={() => onChangeSection('custom')}>
           <Wrench size={14} aria-hidden='true' /> 运行工作区（真实目录）
@@ -188,11 +194,28 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly
   );
 }
 
+function SkillSearch({ activeSection, addedSkillQuery, onAddedSkillQuery, query, onQueryChange, onSearch, loadingCatalogue }) {
+  const added = activeSection === 'added';
+  const value = added ? addedSkillQuery || '' : query || '';
+  const change = added ? onAddedSkillQuery : onQueryChange;
+  const id = added ? 'cc-skillhub-added-search-input' : 'cc-skillhub-search-input';
+  return (
+    <form className={added ? 'cc-skillhub-added-search' : 'cc-skillhub-search'} role='search' onSubmit={(event) => { event.preventDefault(); if (!added) onSearch(value); }}>
+      <Search size={16} aria-hidden='true' />
+      <label className='cc-visually-hidden' htmlFor={id}>{added ? '搜索当前 Agent 能力' : '搜索能力名称'}</label>
+      <div className='cc-skillhub-search-field'>
+        <input id={id} name='skillhub-query' type='search' autoComplete='off' value={value} onChange={(event) => change(event.target.value)} placeholder={added ? '搜索当前 Agent 能力…' : '搜索能力名称…'} />
+        {value && <button type='button' className='cc-skillhub-search-clear' aria-label={added ? '清除当前 Agent 能力搜索' : '清除搜索内容'} title='清除' onClick={() => change('')}><X size={14} aria-hidden='true' /></button>}
+      </div>
+      {!added && <button type='submit' className='cc-skillhub-search-submit' disabled={loadingCatalogue} aria-label='搜索能力' title='搜索'><Search size={16} aria-hidden='true' /></button>}
+    </form>
+  );
+}
+
 function AddedSkills(props) {
   const {
     catalogueByID, definition, definitionReady, loadingDefinition, onChangeSection,
-    onRefreshDefinition, onRemoveSkill, saving, selectedAgentName, selectedBotUID,
-    sharingSkill, skillAction, isReadOnly, addedSkillQuery, onAddedSkillQuery, updatesOnly,
+    saving, selectedBotUID, sharingSkill, isReadOnly, addedSkillQuery, updatesOnly,
   } = props;
   const formalSkills = definition.skills.filter((skill) => !skill.localOnly);
   const localOnlySkills = definition.skills.filter((skill) => skill.localOnly);
@@ -219,38 +242,10 @@ function AddedSkills(props) {
   const visibleLocalOnlySkills = localOnlySkills.filter(matches).filter((skill) => !updatesOnly || isUpdateable(skill));
   const visibleSkillCount = visibleFormalSkills.length + visibleLocalOnlySkills.length;
   const totalSkillCount = formalSkills.length + localOnlySkills.length;
-  const sourceExplanation = isReadOnly
-    ? '这里只读展示该 Agent 的 BotDefinition 配置。不会读取其运行工作区，因此不能确认运行环境是否已应用。'
-    : '已配置能力来自 BotDefinition；仅运行工作区能力来自当前 XiaoBa 的真实 skills 目录。状态标签会说明配置是否已在运行环境中应用。';
   return (
     <section id='skillhub-added-panel' className='cc-skillhub-surface cc-skillhub-added' role='tabpanel' aria-labelledby='skillhub-added-tab'>
-      <div className='cc-skillhub-content-header'>
-        <div><h2>Agent 能力总览</h2><p>{sourceExplanation}</p></div>
-        <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
-          <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={15} aria-hidden='true' />
-        </button>
-      </div>
-      {selectedBotUID && !loadingDefinition && definition.skills.length > 0 && (
-        <div className='cc-skillhub-added-search' role='search'>
-          <Search size={16} aria-hidden='true' />
-          <label className='cc-visually-hidden' htmlFor='cc-skillhub-added-search-input'>搜索当前 Agent 能力</label>
-          <div className='cc-skillhub-search-field'>
-            <input
-              id='cc-skillhub-added-search-input'
-              type='search'
-              autoComplete='off'
-              value={addedSkillQuery || ''}
-              onChange={(event) => onAddedSkillQuery(event.target.value)}
-              placeholder='搜索当前 Agent 能力…'
-            />
-            {addedSkillQuery && (
-              <button type='button' className='cc-skillhub-search-clear' aria-label='清除当前 Agent 能力搜索' title='清除' onClick={() => onAddedSkillQuery('')}>
-                <X size={14} aria-hidden='true' />
-              </button>
-            )}
-          </div>
-          <span className='cc-skillhub-added-search-count'>{normalizedQuery ? `${visibleSkillCount} / ${totalSkillCount}` : `${totalSkillCount} 项能力`}</span>
-        </div>
+      {selectedBotUID && !loadingDefinition && definition.skills.length > 0 && (normalizedQuery || updatesOnly) && (
+        <span className='cc-visually-hidden cc-skillhub-added-search-count' role='status'>{visibleSkillCount} / {totalSkillCount}</span>
       )}
       {!selectedBotUID ? (
         <EmptyState icon={<Bot size={21} />} title='请先选择 Agent' copy='选择后即可查看它已经具备的能力。' />
@@ -267,7 +262,6 @@ function AddedSkills(props) {
           {visibleFormalSkills.length > 0 && (
             <AbilityGroup
               label={isReadOnly ? '已同步能力' : '已配置能力'}
-              description={isReadOnly ? '来自该 Agent 已同步到 BotDefinition 的只读元数据。' : '已写入 BotDefinition；运行状态基于当前工作区快照。'}
               skills={visibleFormalSkills}
               {...props}
             />
@@ -275,7 +269,6 @@ function AddedSkills(props) {
           {visibleLocalOnlySkills.length > 0 && (
             <AbilityGroup
               label='仅运行工作区中的未同步能力'
-              description='来自当前 Agent 的 XiaoBa 真实 skills 目录，尚未同步到 BotDefinition。'
               skills={visibleLocalOnlySkills}
               {...props}
             />
@@ -293,13 +286,9 @@ function AddedSkills(props) {
   );
 }
 
-function AbilityGroup({ description, label, skills, ...props }) {
+function AbilityGroup({ label, skills, ...props }) {
   return (
     <section className='cc-skillhub-ability-group' aria-label={label}>
-      <div className='cc-skillhub-ability-group-heading'>
-        <div><h3>{label}</h3><p>{description}</p></div>
-        <span>{skills.length}</span>
-      </div>
       <div className='cc-skillhub-added-list'>
         {skills.map((skill) => <AddedSkillItem key={`${props.selectedBotUID}:${skill.skillId}`} skill={skill} {...props} />)}
       </div>
@@ -511,7 +500,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
         document.body,
       )}
       {detailsOpen && createPortal(
-        <SkillDetailsDialog details={details} historyBotUID={selectedBotUID} label={label} localDetails={localDetails} onClose={closeDetails} onLoadSkillHistory={onLoadSkillHistory} privateReference={privateReference} skill={skill} />,
+        <SkillDetailsDialog readOnly={isReadOnly} details={details} historyBotUID={selectedBotUID} label={label} localDetails={localDetails} onClose={closeDetails} onLoadSkillHistory={onLoadSkillHistory} privateReference={privateReference} skill={skill} />,
         document.body,
       )}
     </article>
@@ -535,12 +524,20 @@ function AddedSkillRuntimeStatus({
   return <span className='cc-skillhub-availability is-pending' title='已读取当前运行工作区，但尚未找到相同版本和内容哈希的 Skill。'><RefreshCw size={12} aria-hidden='true' /> 已配置，等待运行环境应用</span>;
 }
 
-function SkillDetailsDialog({ cataloguePreview = false, details, historyBotUID, label, localDetails, onClose, onLoadSkillHistory, privateReference, skill }) {
+function SkillDetailsDialog({ cataloguePreview = false, readOnly = false, details, historyBotUID, label, localDetails, onClose, onLoadSkillHistory, privateReference, skill }) {
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
   const titleId = useId();
   const descriptionId = useId();
   const localOnly = Boolean(skill?.localOnly);
+  const { enabled: marketEnabled } = useMarketplace();
+  const feedback = useFeedback();
+  const [editorState, setEditorState] = useState({ dirty: false, busy: false });
+  const requestClose = async () => {
+    if (editorState.busy) return;
+    if (editorState.dirty && !await feedback.confirm({ title: '关闭介绍编辑？', message: '尚未保存的修改将丢失。', confirmLabel: '放弃修改并关闭' })) return;
+    onClose();
+  };
   const [history, setHistory] = useState([]);
   const [historyCursor, setHistoryCursor] = useState(0);
   const [historyError, setHistoryError] = useState('');
@@ -550,7 +547,7 @@ function SkillDetailsDialog({ cataloguePreview = false, details, historyBotUID, 
     : details?.description || skill?.description || localDetails?.description
       || (cataloguePreview ? '这个能力暂时没有补充说明。' : '此能力已写入当前 Agent 的配置。');
 
-  useDialogBehavior(dialogRef, { onClose, initialFocusRef: closeButtonRef });
+  useDialogBehavior(dialogRef, { onClose: requestClose, initialFocusRef: closeButtonRef });
 
   const loadHistory = async ({ append = false, beforeRevisionNumber = 0 } = {}) => {
     if (cataloguePreview || localOnly || typeof onLoadSkillHistory !== 'function') return;
@@ -591,13 +588,13 @@ function SkillDetailsDialog({ cataloguePreview = false, details, historyBotUID, 
     <div
       className='cc-skillhub-detail-overlay'
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) requestClose();
       }}
     >
       <section
         ref={dialogRef}
         tabIndex={-1}
-        className='cc-skillhub-detail-dialog'
+        className={`cc-skillhub-detail-dialog${marketEnabled && !localOnly && !privateReference ? ' cc-market-detail' : ''}`}
         role='dialog'
         aria-modal='true'
         aria-labelledby={titleId}
@@ -609,11 +606,15 @@ function SkillDetailsDialog({ cataloguePreview = false, details, historyBotUID, 
             <span>{localOnly ? '本地能力' : privateReference ? 'Agent 私有能力' : 'SkillHub 能力'}</span>
             <h2 id={titleId}>{label}</h2>
           </div>
-          <button ref={closeButtonRef} type='button' className='icon-button' aria-label='关闭能力详情' onClick={onClose}>
+          <button ref={closeButtonRef} type='button' className='icon-button' aria-label='关闭能力详情' disabled={editorState.busy} onClick={requestClose}>
             <X size={17} aria-hidden='true' />
           </button>
         </header>
         <p id={descriptionId} className='cc-skillhub-detail-description'>{description}</p>
+        {!localOnly && !privateReference && skill?.skillId && skill?.version && <MarketplaceIntroduction
+          key={`${skill.skillId}:${skill.version}:${readOnly}`}
+          target={{ skillId: skill.skillId, version: skill.version }} readOnly={readOnly} onEditorState={setEditorState}
+        />}
         <dl className='cc-skillhub-detail-meta'>
           <div><dt>{localOnly ? '本地能力名' : privateReference ? '能力引用' : 'SkillHub ID'}</dt><dd><code translate='no'>{localOnly ? skill.localName || label : skill.skillId}</code></dd></div>
           <div><dt>{localOnly ? '发布状态' : cataloguePreview ? '最新版本' : '当前版本'}</dt><dd>{localOnly ? '尚未发布' : formatAddedSkillVersion(skill, privateReference)}</dd></div>
@@ -658,7 +659,7 @@ function SkillDetailsDialog({ cataloguePreview = false, details, historyBotUID, 
           >{historyLoading ? '读取中…' : '加载更早版本'}</button>}
         </section>}
         <div className='cc-skillhub-detail-footer'>
-          <button type='button' onClick={onClose}>完成</button>
+          <button type='button' disabled={editorState.busy} onClick={requestClose}>完成</button>
         </div>
       </section>
     </div>
@@ -693,29 +694,20 @@ function shortPrivateVersion(value) {
 
 function Catalogue(props) {
   const {
-    catalogueError, isReadOnly, libraryLocalError, librarySkills, loadingCatalogue,
-    loadingLibraryLocalSkills, onQueryChange, onSearch, query,
+    catalogueError, libraryLocalError, librarySkills: legacySkills, loadingCatalogue,
+    loadingLibraryLocalSkills,
   } = props;
-  const loading = loadingCatalogue || loadingLibraryLocalSkills;
+  const market = useMarketplaceCatalogue(props.query || '');
+  const hasMarketPage = market.enabled && Boolean(market.state?.skills);
+  const marketPending = market.enabled && (!market.state || (market.state.loading && !market.state.skills));
+  const librarySkills = hasMarketPage
+    ? mergeMarketplaceLibrary(legacySkills, market.state.skills, market.category)
+    : marketPending ? [] : legacySkills;
+  const loading = (market.enabled ? marketPending || Boolean(market.state?.loading) : loadingCatalogue) || loadingLibraryLocalSkills;
   return (
     <section id='skillhub-catalogue-panel' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
-      <div className='cc-skillhub-content-header cc-skillhub-catalogue-header'>
-        <div><h2>能力库</h2><p>找到需要的能力，一次点击即可添加到当前 Agent。</p></div>
-      </div>
-      <form className='cc-skillhub-search' role='search' onSubmit={(event) => { event.preventDefault(); onSearch(query); }}>
-        <Search size={17} aria-hidden='true' />
-        <label className='cc-visually-hidden' htmlFor='cc-skillhub-search-input'>搜索能力名称</label>
-        <div className='cc-skillhub-search-field'>
-          <input id='cc-skillhub-search-input' name='skillhub-query' type='search' autoComplete='off' value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder='搜索能力名称…' />
-          {query && (
-            <button type='button' className='cc-skillhub-search-clear' aria-label='清除搜索内容' title='清除' onClick={() => onQueryChange('')}>
-              <X size={14} aria-hidden='true' />
-            </button>
-          )}
-        </div>
-        <button type='submit' disabled={loadingCatalogue}>{loadingCatalogue ? '搜索中…' : '搜索'}</button>
-      </form>
-      {catalogueError && <div className='cc-skillhub-alert error' role='alert'>{catalogueError}</div>}
+      <MarketplaceFilters market={market} />
+      {!hasMarketPage && catalogueError && <div className='cc-skillhub-alert error' role='alert'>{catalogueError}</div>}
       {libraryLocalError && <div className='cc-skillhub-alert error cc-skillhub-library-alert' role='alert'>{libraryLocalError}</div>}
       {loading && librarySkills.length === 0 ? (
         <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取能力库' status />
@@ -727,6 +719,7 @@ function Catalogue(props) {
           <div className='cc-skillhub-grid'>
             {librarySkills.map((skill) => <CatalogueCard key={skill.skillId} skill={skill} {...props} />)}
           </div>
+          {hasMarketPage && market.state.cursor && <button type='button' className='cc-market-more' disabled={market.state.loading} onClick={market.more}>{market.state.loading ? '读取中…' : '加载更多能力'}</button>}
         </>
       )}
     </section>
@@ -734,6 +727,7 @@ function Catalogue(props) {
 }
 
 function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSkill, saving, sharingSkill, skill, skillAction }) {
+  const { enabled: marketEnabled } = useMarketplace();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsTriggerRef = useRef(null);
   const closeDetails = () => {
@@ -775,7 +769,8 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
           onClick={() => setDetailsOpen(true)}
         >{label}</button></h3>
       </div>
-      <p>{skill.description || '这个能力暂时没有补充说明。'}</p>
+      {marketEnabled && skill.primaryCategory && <div className='cc-market-tags'><span>{MARKET_CATEGORIES.find(([id]) => id === skill.primaryCategory)?.[1] || '其他 / 待分类'}</span></div>}
+      <p>{(marketEnabled && typeof skill.presentationSummary?.summary === 'string' && skill.presentationSummary.summary) || skill.description || '这个能力暂时没有补充说明。'}</p>
       <div className='cc-skillhub-card-footer'>
         <div className={`cc-skillhub-card-source${skill.isLocalSkill ? ' is-local' : ''}`} title={sourceMetadata}>
           {skill.isLocalSkill ? <span>{sourceMetadata}</span> : <>
@@ -800,6 +795,7 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
       {detailsOpen && createPortal(
         <SkillDetailsDialog
           cataloguePreview
+          readOnly={isReadOnly}
           details={skill}
           label={label}
           skill={{

@@ -220,32 +220,40 @@ func TestOldRuntimeCannotSwitchUntilItRegistersCloudModelProtocol(t *testing.T) 
 	allowedPatch = allowedPatch.WithContext(context.WithValue(allowedPatch.Context(), uidKey, int64(7)))
 	allowedRec := httptest.NewRecorder()
 	handler.HandleOwnerConfig(allowedRec, allowedPatch)
-	if allowedRec.Code != http.StatusOK || db.models[43].ModelID != "gpt-5.6-terra" || db.models[43].Revision != 1 {
+	// The retired GPT-5.6 id resolves through the legacy alias and is stored as
+	// the successor, so old clients keep working without a local update.
+	if allowedRec.Code != http.StatusOK || db.models[43].ModelID != "gpt-6.1-sol" || db.models[43].Revision != 1 {
 		t.Fatalf("new runtime patch status=%d body=%s config=%+v", allowedRec.Code, allowedRec.Body.String(), db.models[43])
 	}
 }
 
 func TestGPTCatalogUsesRelayReasoningEfforts(t *testing.T) {
-	model, effort, ok := normalizeBotModelSelection("gpt-5.6-terra", "xhigh")
-	if !ok || model.ID != "gpt-5.6-terra" || model.Provider != "openai" || model.Protocol != "OpenAI Responses" || model.ContextWindowTokens != 256000 || effort != "xhigh" {
+	model, effort, ok := normalizeBotModelSelection("gpt-6.1-sol", "xhigh")
+	if !ok || model.ID != "gpt-6.1-sol" || model.Provider != "openai" || model.Protocol != "OpenAI Responses" || model.ContextWindowTokens != 256000 || effort != "xhigh" {
 		t.Fatalf("selection model=%+v effort=%q ok=%v", model, effort, ok)
 	}
 
-	for _, modelID := range []string{"gpt-5.6-terra", "gpt-6-sol"} {
+	// The retired GPT-5.6 family resolves onto its successor, keeping stored
+	// selections and old clients working.
+	for _, retired := range gpt56RetiredModelIDs {
+		resolved, resolvedEffort, valid := normalizeBotModelSelection(retired, "")
+		if !valid || resolved.ID != "gpt-6.1-sol" || resolvedEffort != "medium" {
+			t.Fatalf("retired %s must resolve to gpt-6.1-sol: model=%+v effort=%q valid=%v", retired, resolved, resolvedEffort, valid)
+		}
+	}
+
+	for _, modelID := range []string{"gpt-6-sol", "gpt-6.1-sol"} {
 		catalogModel, defaultEffort, valid := normalizeBotModelSelection(modelID, "")
 		if !valid || catalogModel.ContextWindowTokens != 256000 || defaultEffort != "medium" {
 			t.Fatalf("default selection for %s: model=%+v effort=%q valid=%v", modelID, catalogModel, defaultEffort, valid)
 		}
 	}
 
-	if _, _, valid := normalizeBotModelSelection("gpt-5.6-terra", "max"); valid {
-		t.Fatal("GPT-5.6 must reject DeepSeek-only max effort")
-	}
-	if _, _, valid := normalizeBotModelSelection("gpt-5.6-luna", ""); valid {
-		t.Fatal("retired Luna must not be selectable")
+	if _, _, valid := normalizeBotModelSelection("gpt-6.1-sol", "max"); valid {
+		t.Fatal("GPT must reject DeepSeek-only max effort")
 	}
 	if _, _, valid := normalizeBotModelSelection("deepseek-v4-flash", "xhigh"); valid {
-		t.Fatal("DeepSeek must reject GPT-5.6-only xhigh effort")
+		t.Fatal("DeepSeek must reject GPT-only xhigh effort")
 	}
 }
 
@@ -984,7 +992,7 @@ func TestOwnerModelCatalogIncludesPerModelQuotaFromSingleRelayRequest(t *testing
 				"limits": map[string]interface{}{
 					"model_limits": []map[string]interface{}{
 						{
-							"provider": "openai", "model": "gpt-5.6-terra",
+							"provider": "openai", "model": "gpt-6.1-sol",
 							"budget": map[string]interface{}{"max_limit": 100.0, "current_usage": 25.0},
 						},
 						{
@@ -1014,8 +1022,8 @@ func TestOwnerModelCatalogIncludesPerModelQuotaFromSingleRelayRequest(t *testing
 	if requestCount != 1 {
 		t.Fatalf("relay request count=%d, want 1", requestCount)
 	}
-	if !strings.Contains(rec.Body.String(), `"model":"gpt-5.6-terra"`) || !strings.Contains(rec.Body.String(), `"remaining_percent":75`) {
-		t.Fatalf("Terra quota missing from response: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"model":"gpt-6.1-sol"`) || !strings.Contains(rec.Body.String(), `"remaining_percent":75`) {
+		t.Fatalf("GPT-6.1 Sol quota missing from response: %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"model":"deepseek-flash"`) || !strings.Contains(rec.Body.String(), `"status":"high"`) {
 		t.Fatalf("DeepSeek quota missing from response: %s", rec.Body.String())
@@ -1039,7 +1047,7 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 				"limits": map[string]interface{}{
 					"monthly_budget": map[string]interface{}{"max_limit": 33600.0, "current_usage": 3360.0, "reset_duration": "1M"},
 					"model_limits": []map[string]interface{}{
-						{"model": "gpt-5.6-terra", "budget": map[string]interface{}{"max_limit": 31500.0, "current_usage": 12000.0}},
+						{"model": "gpt-6.1-sol", "budget": map[string]interface{}{"max_limit": 31500.0, "current_usage": 12000.0}},
 					},
 				},
 			}},
@@ -1048,7 +1056,7 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 	defer relay.Close()
 	summary := &types.CommercialSummary{TotalCNY: 33600, TotalsByModel: map[string]float64{
 		"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-flash": 100,
-		"gpt-5.6-terra": 15750, "gpt-6-sol": 15750, "glm-5.3-flash": 500,
+		"gpt-6.1-sol": 15750, "gpt-6-sol": 15750, "glm-5.3-flash": 500,
 	}}
 	handler := NewBotModelConfigHandler(nil, nil)
 	handler.SetRelayUsageClient(&RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()})
@@ -1062,25 +1070,23 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 	if len(catalog) != 6 {
 		t.Fatalf("catalog length=%d, want 6 granted models: %#v", len(catalog), catalog)
 	}
-	// The paid plan grants gpt-6-sol, so the picker has to offer it. An entry
-	// missing from botModelCatalog is invisible no matter what the plan sells,
-	// which is how the model reached every buyer's quota while staying out of
-	// their model list.
+	// The paid plan grants the GPT-6 family, so the picker has to offer it. An
+	// entry missing from botModelCatalog is invisible no matter what the plan
+	// sells, which is how a model can reach every buyer's quota while staying out
+	// of their model list.
 	granted := map[string]bool{}
 	for _, item := range catalog {
 		granted[item.ID] = true
 	}
-	for _, model := range []string{"gpt-6-sol", "gpt-5.6-terra"} {
+	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol"} {
 		if !granted[model] {
 			t.Fatalf("catalog is missing %s, which the plan grants: %#v", model, catalog)
 		}
 	}
-	// The paid plans do not sell the superseded name, so it must stay hidden
-	// here even though the pool carries it for the internal all-models plan. The
-	// filter is what keeps the two apart; the pool only has to cover both.
+	// The retired family is never offered, regardless of any historical ledger row.
 	for _, item := range catalog {
-		if item.ID == "gpt-5.6-sol" {
-			t.Fatal("a plan without gpt-5.6-sol must not be shown the superseded name")
+		if isRetiredCatalogModel(item.ID) {
+			t.Fatalf("retired %s must not be shown in the model catalog", item.ID)
 		}
 	}
 	for _, item := range catalog {
@@ -1100,9 +1106,9 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 // internal all-models plan grants hides the model from those users while their
 // quota for it keeps being billed.
 func TestCatalogPoolCoversEveryGPTModelAnyPlanGrants(t *testing.T) {
-	// catsco-pro / catsco-personal sell gpt-6-sol; the internal all-models plan
-	// keeps gpt-5.6-sol; every plan with GPT models carries gpt-5.6-terra.
-	planModels := []string{"gpt-5.6-terra", "gpt-6-sol", "gpt-5.6-sol"}
+	// catsco-pro / catsco-personal sell gpt-6-sol and gpt-6.1-sol; the retired
+	// GPT-5.6 family is carried by no plan any more.
+	planModels := []string{"gpt-6-sol", "gpt-6.1-sol"}
 	offered := map[string]bool{}
 	for _, item := range botModelCatalog {
 		if strings.HasPrefix(item.ID, "gpt-") {
@@ -1114,20 +1120,18 @@ func TestCatalogPoolCoversEveryGPTModelAnyPlanGrants(t *testing.T) {
 			t.Fatalf("a plan grants %s but the candidate pool does not carry it: %v", model, offered)
 		}
 	}
-	// A plan that sells gpt-6-sol must never surface the superseded name, and a
-	// plan that keeps gpt-5.6-sol must never surface the paid one - both are the
-	// same filter working in opposite directions.
-	paid := &types.CommercialSummary{TotalsByModel: map[string]float64{
-		"gpt-5.6-terra": 1000, "gpt-6-sol": 1000,
+	// A retired family id is denied even when a historical ledger row still
+	// carries it; the successor is granted normally through TotalsByModel.
+	legacy := &types.CommercialSummary{TotalsByModel: map[string]float64{
+		"gpt-5.6-terra": 1000, "gpt-6-sol": 1000, "gpt-6.1-sol": 1000,
 	}}
-	internal := &types.CommercialSummary{TotalsByModel: map[string]float64{
-		"gpt-5.6-terra": 1000, "gpt-5.6-sol": 1000,
-	}}
-	if !commercialQuotaModelAllowed(paid, "gpt-6-sol") || commercialQuotaModelAllowed(paid, "gpt-5.6-sol") {
-		t.Fatal("a plan selling gpt-6-sol must not be offered gpt-5.6-sol")
+	if !commercialQuotaModelAllowed(legacy, "gpt-6-sol") || !commercialQuotaModelAllowed(legacy, "gpt-6.1-sol") {
+		t.Fatal("granted GPT-6 models must stay selectable")
 	}
-	if !commercialQuotaModelAllowed(internal, "gpt-5.6-sol") || commercialQuotaModelAllowed(internal, "gpt-6-sol") {
-		t.Fatal("the internal all-models plan must keep gpt-5.6-sol and not gain gpt-6-sol")
+	for _, retired := range gpt56RetiredModelIDs {
+		if commercialQuotaModelAllowed(legacy, retired) {
+			t.Fatalf("retired %s must never be allowed, even with a historical ledger row", retired)
+		}
 	}
 }
 
@@ -1203,8 +1207,10 @@ func TestOwnerModelCatalogKeepsCurrentRevokedModelVisibleButDisabled(t *testing.
 	if quotaError != "" {
 		t.Fatalf("quota error=%q", quotaError)
 	}
+	// The stored retired id resolves through the legacy alias, so the current
+	// model stays visible as its successor and is marked revoked.
 	for _, item := range catalog {
-		if item.ID != "gpt-5.6-terra" {
+		if item.ID != "gpt-6.1-sol" {
 			continue
 		}
 		if item.Available || !strings.Contains(item.UnavailableReason, "当前套餐已不包含") {

@@ -49,11 +49,80 @@ function viewerErrorMessage(error) {
 }
 
 export default function ArtifactFullscreenViewer({ location = window.location } = {}) {
-  const feedback = useFeedback();
   const params = useMemo(
     () => parseArtifactViewerLocation(location),
     [location.pathname, location.search],
   );
+  if (params?.mode === 'gateway') {
+    return <GatewayApplicationViewer key={`${params.topicId}|${params.agentUid}|${params.artifactId}`} params={params} />;
+  }
+  return <ArtifactFullscreenSession params={params} />;
+}
+
+function GatewayApplicationViewer({ params }) {
+  const [loaded, setLoaded] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    void Promise.all([
+      api.listArtifactApps(params.agentUid),
+      api.getCloudArtifacts(params.agentUid, 'active', { signal: controller.signal }),
+    ]).then(async ([apps, registry]) => {
+      if (cancelled) return;
+      const app = (Array.isArray(apps?.apps) ? apps.apps : [])
+        .find((item) => item?.id === params.artifactId);
+      const artifact = (Array.isArray(registry?.artifacts) ? registry.artifacts : [])
+        .find((item) => item?.id === params.artifactId);
+      if (!app || (artifact && Number(artifact.agent_uid) !== params.agentUid)) {
+        throw new Error('artifact_not_found');
+      }
+      const version = Number(artifact?.publish_version);
+      if (artifact && (!Number.isSafeInteger(version) || version <= 0)) throw new Error('artifact_viewer_version');
+      const launch = await api.requestArtifactLaunch({ app: app.id, topic_id: params.topicId });
+      if (cancelled) return;
+      // The server is the source of both URLs; additionally reject unexpected
+      // origins/schemes before embedding a frame in the authenticated viewer.
+      const url = new URL(launch?.launch_url);
+      if (url.protocol !== 'https:' || url.origin !== new URL(app.url).origin) {
+        throw new Error('artifact_viewer_invalid');
+      }
+      if (!artifact) {
+        // Gateway-only apps remain browsable, as in the sidebar. Do not invent
+        // a platform version or give an unregistered app a task/runtime host.
+        setLoaded({ browseURL: url.toString(), title: app.title || app.id });
+        return;
+      }
+      const file = createCloudArtifactPreviewFile({
+        ...artifact, url: url.toString(), publish_version: version, agent_uid: params.agentUid,
+      });
+      setLoaded({ file, params: { ...params, displayedVersion: version } });
+    }).catch((e) => {
+      if (!cancelled) setError(String(e?.message || 'artifact_not_found'));
+    });
+    return () => { cancelled = true; controller.abort(); };
+  }, [params.topicId, params.agentUid, params.artifactId]);
+  if (loaded?.browseURL) return (
+    <main className="artifact-fullscreen-viewer artifact-fullscreen-browse-only" aria-label="CatsCo 应用查看器">
+      <p role="status">此应用尚未接入 CatsCo 任务，当前只能浏览。</p>
+      <iframe className="artifact-fullscreen-viewer-frame" title={loaded.title} src={loaded.browseURL}
+        sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals" referrerPolicy="no-referrer" />
+    </main>
+  );
+  if (loaded) return <ArtifactFullscreenSession params={loaded.params} gatewayFile={loaded.file} />;
+  return (
+    <main className="artifact-fullscreen-viewer" aria-label="CatsCo 应用查看器">
+      <div className={`artifact-fullscreen-viewer-state${error ? ' is-error' : ''}`} role={error ? 'alert' : 'status'}>
+        <strong>{error ? viewerErrorMessage(error) : '正在连接应用…'}</strong>
+        {error && <button type="button" onClick={() => window.location.reload()}>重试</button>}
+      </div>
+    </main>
+  );
+}
+
+function ArtifactFullscreenSession({ params, gatewayFile = null }) {
+  const feedback = useFeedback();
+  const independent = Boolean(gatewayFile);
   const identity = params ? {
     topicId: params.topicId,
     agentUid: params.agentUid,
@@ -330,6 +399,12 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
 
   useEffect(() => {
     if (!identity) return undefined;
+    if (gatewayFile) {
+      document.title = `${gatewayFile.name || identity.artifactId} - CatsCo`;
+      setFile(gatewayFile);
+      setLoading(false);
+      return undefined;
+    }
     let cancelled = false;
     setLoading(true);
     setError('');
@@ -366,10 +441,10 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
     return () => {
       cancelled = true;
     };
-  }, [identityKey]);
+  }, [gatewayFile, identityKey]);
 
   useEffect(() => {
-    if (!identity) return undefined;
+    if (!identity || independent) return undefined;
     const channel = createArtifactPreviewChannel();
     if (!channel) {
       setError('artifact_viewer_channel');
@@ -386,7 +461,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
       channel.close();
       if (channelRef.current === channel) channelRef.current = null;
     };
-  }, [identityKey, postCoordination]);
+  }, [identityKey, independent, postCoordination]);
 
   useEffect(() => {
     if (!identity) return undefined;
@@ -470,22 +545,32 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
         setError('artifact_viewer_connection');
         return;
       }
-      if (!postCoordination('viewer_ready', { context_ref: contextRef })) {
+      if (independent) {
+        // Gateway views do not take over ordinary chat context. Their own
+        // authenticated socket and validated snapshot authorize this binding;
+        // no opener/sidebar acknowledgement is required.
+        readyAttemptRef.current = false;
+        readyRef.current = true;
+        setReady(true);
+        taskHostRef.current?.resume();
+        runtimeHostRef.current?.resume();
+        taskHostRef.current?.connect(bindingRef.current);
+      } else if (!postCoordination('viewer_ready', { context_ref: contextRef })) {
         readyAttemptRef.current = false;
         setError('artifact_viewer_connection');
       }
     });
-  }, [captureSnapshot, error, file, frameReady, identityKey, postCoordination, released, sessionReady]);
+  }, [captureSnapshot, error, file, frameReady, identityKey, independent, postCoordination, released, sessionReady]);
 
   useEffect(() => {
-    if (!ready || released || !identity) return undefined;
+    if (!ready || released || !identity || independent) return undefined;
     const heartbeat = () => postCoordination('viewer_heartbeat', {
       context_ref: snapshotRef.current?.contextRef || '',
     });
     heartbeat();
     const timer = window.setInterval(heartbeat, VIEWER_HEARTBEAT_MS);
     return () => window.clearInterval(timer);
-  }, [identityKey, postCoordination, ready, released]);
+  }, [identityKey, independent, postCoordination, ready, released]);
 
   useEffect(() => {
     const handlePageHide = (event) => {

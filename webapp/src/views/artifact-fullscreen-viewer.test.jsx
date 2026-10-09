@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   sessionReady: false,
   wsHandler: null,
   getCloudArtifacts: vi.fn(),
+  listArtifactApps: vi.fn(),
+  requestArtifactLaunch: vi.fn(),
   createArtifactContextSnapshot: vi.fn(),
   invalidateArtifactContextSnapshot: vi.fn(),
   connectWS: vi.fn(),
@@ -36,6 +38,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../api', () => ({
   api: {
     getCloudArtifacts: mocks.getCloudArtifacts,
+    listArtifactApps: mocks.listArtifactApps,
+    requestArtifactLaunch: mocks.requestArtifactLaunch,
     createArtifactContextSnapshot: mocks.createArtifactContextSnapshot,
     invalidateArtifactContextSnapshot: mocks.invalidateArtifactContextSnapshot,
     createArtifactTask: mocks.createArtifactTask,
@@ -226,6 +230,8 @@ describe('ArtifactFullscreenViewer', () => {
         agent_uid: 440,
       }],
     });
+    mocks.listArtifactApps.mockResolvedValue({ apps: [{ id: 'risk-register', url: 'https://artifacts.example.test/risk-register/' }] });
+    mocks.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://artifacts.example.test/_launch/fresh-code?next=/risk-register/' });
     mocks.createArtifactContextSnapshot.mockResolvedValue({
       contract_version: 'catsco.artifact-context-ref.v1',
       context_ref: `acr_${'a'.repeat(43)}`,
@@ -257,6 +263,96 @@ describe('ArtifactFullscreenViewer', () => {
     container.remove();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+  });
+
+  it('hosts gateway tasks without an opener or sidebar coordination and resolves the latest version', async () => {
+    vi.stubGlobal('BroadcastChannel', undefined);
+    const gatewayLocation = { ...location, search: '?mode=gateway&topic=p2p_1_440&agent=440&artifact=risk-register' };
+    const taskId = `atk_${'g'.repeat(43)}`;
+    mocks.createArtifactTask.mockResolvedValue({
+      contract_version: 'catsco.artifact-task-ref.v1', task_id: taskId, task_ref: `atr_${'h'.repeat(43)}`,
+      status: 'submitted', delivery_status: 'pending', visible_message: '来自「项目风险台账」：生成交付物', expires_at: '2026-10-07T12:00:00Z',
+    });
+    mocks.getArtifactTask.mockResolvedValue({
+      contract_version: 'catsco.artifact-task-status.v1', task_id: taskId, status: 'running', delivery_status: 'delivered', expires_at: '2026-10-07T12:00:00Z',
+    });
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={gatewayLocation} />);
+      await flushPromises(20);
+    });
+    expect(mocks.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'risk-register', topic_id: 'p2p_1_440' });
+    expect(container.querySelector('iframe')?.dataset.url).toContain('/_launch/fresh-code');
+    expect(mocks.framePostMessage).not.toHaveBeenCalledWith({ type: 'catsco.artifact.host.connect.v1' }, expect.anything());
+    await act(async () => {
+      mocks.sessionReady = true;
+      mocks.wsHandler({ ctrl: { params: { artifact_preview_session: {} } } });
+      await flushPromises(20);
+    });
+    expect(channels).toHaveLength(0);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(mocks.framePostMessage).toHaveBeenCalledWith({ type: 'catsco.artifact.host.connect.v1' }, 'https://artifacts.example.test');
+    await act(async () => {
+      dispatchArtifactFrameMessage({
+        type: 'catsco.artifact.task.request.v1', request_id: 'gateway-independent-task',
+        intent_id: 'works.batch.create.v1', payload: { types: ['新闻通稿'] },
+      });
+      await vi.waitFor(() => expect(mocks.createArtifactTask).toHaveBeenCalled());
+      await flushPromises(20);
+    });
+    expect(mocks.createArtifactTask).toHaveBeenCalledWith(expect.objectContaining({
+      topic_id: 'p2p_1_440',
+      artifact_ref: expect.objectContaining({ id: 'risk-register', displayed_version: 3 }),
+      intent_id: 'works.batch.create.v1',
+    }), { timeoutMs: 5000 });
+    expect(mocks.sendMessage).toHaveBeenCalled();
+    expect(mocks.framePostMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'catsco.artifact.task.accepted.v1', request_id: 'gateway-independent-task',
+    }), 'https://artifacts.example.test');
+
+    await act(async () => {
+      mocks.sessionReady = false;
+      mocks.wsHandler({ _type: 'ws_close' });
+      await flushPromises();
+    });
+    expect(mocks.runtimeSuspend).toHaveBeenCalled();
+    mocks.framePostMessage.mockClear();
+    await act(async () => {
+      mocks.sessionReady = true;
+      mocks.wsHandler({ ctrl: { params: { artifact_preview_session: {} } } });
+      await flushPromises(20);
+    });
+    expect(channels).toHaveLength(0);
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(mocks.framePostMessage).toHaveBeenCalledWith({ type: 'catsco.artifact.host.connect.v1' }, 'https://artifacts.example.test');
+  });
+
+  it('keeps gateway-only apps browsable without granting a task host', async () => {
+    mocks.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={{ ...location, search: '?mode=gateway&topic=p2p_1_440&agent=440&artifact=risk-register' }} />);
+      await flushPromises(20);
+    });
+    expect(container.querySelector('iframe')?.src).toContain('/_launch/fresh-code');
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('只能浏览');
+    expect(mocks.connectWS).not.toHaveBeenCalled();
+    expect(mocks.createArtifactTask).not.toHaveBeenCalled();
+  });
+
+  it.each(['wrong-agent', 'no-version', 'missing-app', 'untrusted-launch'])('fails closed for invalid gateway metadata: %s', async (problem) => {
+    if (problem === 'wrong-agent' || problem === 'no-version') mocks.getCloudArtifacts.mockResolvedValue({ artifacts: [{
+      id: 'risk-register', agent_uid: problem === 'wrong-agent' ? 441 : 440, publish_version: problem === 'no-version' ? 0 : 3,
+    }] });
+    if (problem === 'missing-app') mocks.listArtifactApps.mockResolvedValue({ apps: [] });
+    if (problem === 'untrusted-launch') mocks.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://untrusted.test/_launch/x' });
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={{ ...location, search: '?mode=gateway&topic=p2p_1_440&agent=440&artifact=risk-register' }} />);
+      await flushPromises(20);
+    });
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(mocks.connectWS).not.toHaveBeenCalled();
+    expect(mocks.createArtifactTask).not.toHaveBeenCalled();
   });
 
   it('loads exact vN but activates only after the coordinator accepts ownership', async () => {

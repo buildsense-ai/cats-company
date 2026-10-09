@@ -886,6 +886,10 @@
   color: var(--cc-muted);
 }
 
+.v3-message-workspace.has-preview > .v3-chat-column .v3-shell-actions > :is(.v3-cloud-action, .v3-desktop-action) {
+  display: none;
+}
+
 .v3-local-assistant-status:focus-visible,
 .v3-action-btn:focus-visible {
   outline: 2px solid var(--cc-focus-ring);

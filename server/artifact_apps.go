@@ -9,7 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/openchat/openchat/server/store"
 )
 
 // Artifact apps are the lightweight applications a bot serves from its own
@@ -22,10 +26,9 @@ import (
 // artifact_launch.go uses for a launch handoff, to write the gateway
 // configuration.
 //
-// The relay is the ownership boundary, not the gateway: the gateway trusts the
-// `agent` it is handed, and its list endpoint answers for every account. So the
-// owner here always comes from the session, and every answer the gateway gives
-// is filtered down to the caller before it leaves the platform.
+// The platform checks catalog access and mutation permissions because the
+// gateway trusts its control token. The publishing Agent comes from the session;
+// human attribution and editable presentation live separately in the platform.
 const (
 	artifactAppsGatewayPath = "/_gateway/apps"
 	artifactAppsAPIPath     = "/api/artifacts/apps"
@@ -53,31 +56,42 @@ type ArtifactAppsHandler struct {
 	token      string
 	httpClient *http.Client
 	configErr  error
+	db         store.Store
 }
+
+// SetStore enables the authenticated list endpoint to verify that a requested
+// Agent belongs to the caller or is an accepted friend.
+func (h *ArtifactAppsHandler) SetStore(db store.Store) { h.db = db }
 
 // artifactAppRequest is what a publishing bot sends. There is no owner field:
 // the owner is the authenticated caller, and accepting one from the body would
 // let a bot publish an application under another account's identity, because the
 // gateway has no way to tell the difference.
 type artifactAppRequest struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	PublicKey     string `json:"publicKey"`
-	LocalPort     *int   `json:"localPort,omitempty"`
-	UploadLimitMB *int   `json:"uploadLimitMb,omitempty"`
+	SourceTopicID   string `json:"source_topic_id,omitempty"`
+	SourceMessageID int64  `json:"source_message_id,omitempty"`
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	PublicKey       string `json:"publicKey"`
+	LocalPort       *int   `json:"localPort,omitempty"`
+	UploadLimitMB   *int   `json:"uploadLimitMb,omitempty"`
 }
 
 // artifactApp is the gateway's view of a registered application. remote_port and
 // the tunnel transport are assigned by the gateway, so nothing here is echoed
 // back from a request.
 type artifactApp struct {
-	ID         string   `json:"id"`
-	Title      string   `json:"title"`
-	Agent      string   `json:"agent"`
-	RemotePort int      `json:"remote_port"`
-	URL        string   `json:"url"`
-	URLs       []string `json:"urls,omitempty"`
-	UpdatedAt  string   `json:"updated_at,omitempty"`
+	CreatorUID  int64    `json:"creator_uid,omitempty"`
+	Description string   `json:"description"`
+	IconURL     string   `json:"icon_url"`
+	CanManage   bool     `json:"can_manage"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Agent       string   `json:"agent"`
+	RemotePort  int      `json:"remote_port"`
+	URL         string   `json:"url"`
+	URLs        []string `json:"urls,omitempty"`
+	UpdatedAt   string   `json:"updated_at,omitempty"`
 }
 
 // artifactAppRegistration is the gateway's answer to a publish. `status` is
@@ -140,8 +154,10 @@ func (h *ArtifactAppsHandler) HandleItem(w http.ResponseWriter, r *http.Request)
 		h.handleGet(w, r)
 	case http.MethodDelete:
 		h.handleDelete(w, r)
+	case http.MethodPatch:
+		h.handleMetadataUpdate(w, r)
 	default:
-		w.Header().Set("Allow", http.MethodGet+", "+http.MethodDelete)
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodDelete+", "+http.MethodPatch)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 	}
 }
@@ -171,7 +187,7 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	title := strings.TrimSpace(request.Title)
-	if title == "" || len(title) > artifactAppsMaxTitleLen || strings.ContainsAny(title, "\r\n\x00") {
+	if title == "" || utf8.RuneCountInString(title) > artifactAppsMaxTitleLen || strings.ContainsAny(title, "\r\n\x00") {
 		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusBadRequest, value: "artifact_app_title_invalid"})
 		return
 	}
@@ -199,13 +215,18 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 	// naming its id: the owner, the public key and therefore the tunnel would all
 	// move to the caller. The read paths filter by owner; registration cannot,
 	// because "not mine" and "does not exist" mean different things here.
-	if taken, failure := h.ownedByAnother(r.Context(), uid, app); failure != nil {
+	existing, found, failure := h.findApp(r.Context(), app)
+	if failure != nil {
 		writeArtifactAppsFailure(w, failure)
 		return
-	} else if taken {
+	} else if found && existing.Agent != fmt.Sprint(uid) {
 		// The same answer GET and DELETE give, so a caller cannot use this route
 		// to tell "somebody else has it" from "nothing has it".
 		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusNotFound, value: "artifact_app_not_found"})
+		return
+	}
+	if failure := h.prepareMetadata(r.Context(), uid, request, existing, found); failure != nil {
+		writeArtifactAppsFailure(w, failure)
 		return
 	}
 
@@ -249,6 +270,12 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusBadGateway, value: "artifact_gateway_unavailable"})
 		return
 	}
+	decorated := []artifactApp{registration.artifactApp}
+	if failure := h.decorateApps(r.Context(), uid, uid, decorated); failure != nil {
+		writeArtifactAppsFailure(w, failure)
+		return
+	}
+	registration.artifactApp = decorated[0]
 	writeJSON(w, status, registration)
 }
 
@@ -261,19 +288,47 @@ func validArtifactAppsUploadLimitMB(value int) bool {
 	}
 }
 
-// handleList returns the caller's applications only. The filter has to happen
-// here: the gateway's list is the platform's own view and covers every account,
-// because the platform is the only caller that holds the token to read it.
+// handleList defaults to the caller's own applications. An explicit Agent may
+// be an owned bot or accepted friend; tunnel mutations stay publisher-only.
+// Filter here because the authenticated gateway catalog covers every account.
 func (h *ArtifactAppsHandler) handleList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := h.caller(w, r)
 	if !ok {
 		return
 	}
-	apps, failure := h.listApps(r.Context(), uid)
+	targetUID := uid
+	if rawAgent := strings.TrimSpace(r.URL.Query().Get("agent")); rawAgent != "" {
+		parsed, err := strconv.ParseInt(rawAgent, 10, 64)
+		if err != nil || parsed <= 0 {
+			writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusBadRequest, value: "agent_invalid"})
+			return
+		}
+		targetUID = parsed
+		if targetUID != uid {
+			if h.db == nil {
+				writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusServiceUnavailable, value: "artifact_gateway_unavailable"})
+				return
+			}
+			_, _, status, accessErr := accessibleAgentUser(h.db, uid, targetUID)
+			if accessErr != nil || status != 0 {
+				if status == 0 {
+					status = http.StatusForbidden
+				}
+				writeArtifactAppsFailure(w, &artifactAppsFailure{status: status, value: "agent_forbidden"})
+				return
+			}
+		}
+	}
+	apps, failure := h.listApps(r.Context(), targetUID)
 	if failure != nil {
 		writeArtifactAppsFailure(w, failure)
 		return
 	}
+	if failure := h.decorateApps(r.Context(), uid, targetUID, apps); failure != nil {
+		writeArtifactAppsFailure(w, failure)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"apps": apps})
 }
 
@@ -292,7 +347,12 @@ func (h *ArtifactAppsHandler) handleGet(w http.ResponseWriter, r *http.Request) 
 		writeArtifactAppsFailure(w, failure)
 		return
 	}
-	writeJSON(w, http.StatusOK, app)
+	apps := []artifactApp{app}
+	if failure := h.decorateApps(r.Context(), uid, uid, apps); failure != nil {
+		writeArtifactAppsFailure(w, failure)
+		return
+	}
+	writeJSON(w, http.StatusOK, apps[0])
 }
 
 // handleDelete removes the caller's own application. Ownership is proven against
@@ -329,6 +389,12 @@ func (h *ArtifactAppsHandler) handleDelete(w http.ResponseWriter, r *http.Reques
 	if err := json.Unmarshal(responseBody, &removed); err != nil {
 		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusBadGateway, value: "artifact_gateway_unavailable"})
 		return
+	}
+	if metadata, ok := h.db.(store.ArtifactAppMetadataStore); ok {
+		if err := metadata.DeleteArtifactAppMetadata(r.Context(), uid, id); err != nil {
+			writeArtifactAppsFailure(w, appMetadataFailure())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "id": id})
 }
@@ -390,33 +456,6 @@ func (h *ArtifactAppsHandler) caller(w http.ResponseWriter, r *http.Request) (in
 // listApps reads every registered application and keeps the caller's. A
 // malformed or oversized answer is treated as a gateway failure: an empty list
 // here would otherwise read as "you have no applications".
-// ownedByAnother reports whether an id is already registered to a different
-// account. It reads the gateway's unfiltered list on purpose: filtering by owner
-// first, the way the read paths do, would make somebody else's application look
-// absent, and registering over it would then move the entry — and the public key
-// with it — to the caller.
-func (h *ArtifactAppsHandler) ownedByAnother(ctx context.Context, uid int64, id string) (bool, *artifactAppsFailure) {
-	_, body, failure := h.call(ctx, http.MethodGet, artifactAppsGatewayPath, nil)
-	if failure != nil {
-		return false, failure
-	}
-	var payload struct {
-		Apps []artifactApp `json:"apps"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return false, &artifactAppsFailure{status: http.StatusBadGateway, value: "artifact_gateway_unavailable"}
-	}
-	owner := fmt.Sprint(uid)
-	for _, app := range payload.Apps {
-		if app.ID == id {
-			// An application that declares no owner is a conflict too: it is not
-			// the caller's to take over.
-			return app.Agent != owner, nil
-		}
-	}
-	return false, nil
-}
-
 func (h *ArtifactAppsHandler) listApps(ctx context.Context, uid int64) ([]artifactApp, *artifactAppsFailure) {
 	_, body, failure := h.call(ctx, http.MethodGet, artifactAppsGatewayPath, nil)
 	if failure != nil {

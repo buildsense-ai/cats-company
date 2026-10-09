@@ -2,8 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/openchat/openchat/server/store/types"
@@ -37,6 +37,12 @@ const (
 type GroupActivationDecision struct {
 	// Activated holds the bot UIDs that should respond, mapped to their score.
 	Activated map[int64]float64
+	// Scores holds every judged candidate's score, including the ones below the
+	// threshold. Activated alone cannot explain a message that reached nobody:
+	// it keeps only the winners, so a correct "nobody" and a criteria that never
+	// fires look identical. This exists for observability and does not affect
+	// routing.
+	Scores map[int64]float64
 	// Source explains which rule produced the decision.
 	Source string
 	// Degraded is true when judging failed and the fallback applied.
@@ -53,6 +59,16 @@ const (
 	activationSourceNoBot        = "no_bot"
 	activationSourceNoMention    = "no_mention"
 	activationSourceDefaultAgent = "default_agent"
+	// activationSourceNotConversation marks a message that never reaches
+	// judging because it is not conversation: agent working traffic (tool
+	// calls, tool results, thinking, runtime plans, stream deltas, task
+	// status) rather than something a member could reply to.
+	activationSourceNotConversation = "not_conversation"
+	// activationSourceNoCandidate marks a judged group where every bot was
+	// filtered out before judging — the author itself, a member who cannot
+	// speak, or one already working. There is nobody left to ask about, so the
+	// judge is never called.
+	activationSourceNoCandidate = "no_candidate"
 )
 
 // GroupActivationResolver decides which bots respond to a group message.
@@ -74,9 +90,36 @@ type GroupActivationRequest struct {
 	// TrustedChannelTrigger marks a channel-managed group message that already
 	// passed the channel's own trigger rules.
 	TrustedChannelTrigger bool
-	// DefaultAgentUID is the agent an agent-task group falls back to when a
-	// message addresses nobody. Such a group exists to get one piece of work
-	// done, so a message that reaches no one would silently stall it.
+	// NotConversation marks agent runtime traffic rather than a message a
+	// member could reply to: tool calls, tool results, thinking, runtime plans,
+	// stream deltas and task status.
+	//
+	// The zero value is false, so a caller that does not classify the message
+	// keeps the previous behaviour of judging it.
+	NotConversation bool
+	// MutedUIDs lists members the group has silenced. A muted member is
+	// forbidden from posting, so activating it would only produce a rejected
+	// write — the judgement, the delivery and the model turn are all waste.
+	// Mute is therefore a lock: a muted member is never activated, not even by
+	// an explicit mention.
+	//
+	// It is read from the roster the broadcaster already loaded, so it costs
+	// nothing on the paths that never judge.
+	MutedUIDs []int64
+	// WorkingUIDs lazily loads the members that are mid-turn. They are dropped
+	// from the judgement because a bot that is already running does not need to
+	// be asked whether it should run: the answer cannot change anything, and
+	// the question is what makes two busy bots keep waking each other.
+	//
+	// It is a loader rather than a slice because it costs a store query, and
+	// the paths that never judge — a single-bot group, a mention, and above all
+	// agent working traffic, which is the bulk of a busy group's messages —
+	// must not pay for it.
+	WorkingUIDs func() []int64
+	// DefaultAgentUID is the agent an agent-task group falls back to when
+	// judging is not installed. It is only consulted on the deterministic path:
+	// once judging runs, its verdict is the decision, including a verdict of
+	// "nobody", and a fallback would silently overrule it.
 	DefaultAgentUID int64
 	// JudgeContext lazily loads the prompt material. It is only called when
 	// semantic judging actually happens, so the common paths (a single-bot
@@ -107,11 +150,15 @@ type GroupActivationTurn struct {
 }
 
 // GroupActivationBot describes one bot to the judge.
+//
+// Only the identity is carried. Judging asks whether a member would answer,
+// which is a question about participation rather than about a job title, so the
+// owner-defined role and description are deliberately absent: feeding them in
+// turns the decision into "does this match the posting" and narrows it to
+// task-shaped messages.
 type GroupActivationBot struct {
 	UID         int64
 	DisplayName string
-	Role        string
-	Description string
 }
 
 // GroupActivationResolverFunc adapts a function to the interface, mirroring the
@@ -122,37 +169,40 @@ func (f GroupActivationResolverFunc) Resolve(ctx context.Context, req GroupActiv
 	return f(ctx, req)
 }
 
-// JevGroupActivationResolver judges activation with the Jev model and falls back
-// to deterministic routing when judging is unavailable.
+// JevGroupActivationResolver judges activation with the Jev model.
 type JevGroupActivationResolver struct {
-	client     *JevClient
-	functions  BotFunctionReader
-	threshold  float64
-	contextLen int
-}
-
-// BotFunctionReader loads the owner-defined role and description for bots.
-// The data already lives in bot_config; only a read path is missing.
-type BotFunctionReader interface {
-	GetBotFunctions(uids []int64) (map[int64]types.BotFunction, error)
+	client    *JevClient
+	threshold float64
 }
 
 // NewJevGroupActivationResolver builds the production resolver.
-func NewJevGroupActivationResolver(client *JevClient, functions BotFunctionReader) *JevGroupActivationResolver {
+func NewJevGroupActivationResolver(client *JevClient) *JevGroupActivationResolver {
 	return &JevGroupActivationResolver{
-		client:     client,
-		functions:  functions,
-		threshold:  defaultActivationThreshold,
-		contextLen: defaultActivationContextLimit,
+		client:    client,
+		threshold: defaultActivationThreshold,
 	}
 }
 
 // Resolve applies the activation rules in order of increasing cost.
+//
+// Activating a bot and judging with Jev are two separate things. A mention
+// activates a bot without any model call; judging is only the fallback for
+// messages that name nobody. The filters below therefore sit on the judging
+// path, and a member that must not be *judged* can still be *activated* by name.
 func (r *JevGroupActivationResolver) Resolve(ctx context.Context, req GroupActivationRequest) GroupActivationDecision {
+	// Working traffic is not conversation. Judging it would ask the model about
+	// something the transcript itself drops, and the answer could only come
+	// from imagination — measured in the field, a bare "execute_shell" scored
+	// 0.56-0.60 for another bot and woke it.
+	if req.NotConversation {
+		return GroupActivationDecision{Source: activationSourceNotConversation}
+	}
 	allBots := activationBots(req.Members)
 	if len(allBots) == 0 {
 		return GroupActivationDecision{Source: activationSourceNoBot}
 	}
+	muted := activationUIDSet(req.MutedUIDs)
+
 	// A group with one bot never needs addressing: every message is for it.
 	// This is decided from the group's roster, not from the candidates below, so
 	// a lone bot's own messages cannot be mistaken for a single-bot group.
@@ -160,6 +210,15 @@ func (r *JevGroupActivationResolver) Resolve(ctx context.Context, req GroupActiv
 		if allBots[0].UID == req.SenderUID {
 			return GroupActivationDecision{Source: activationSourceBotSender}
 		}
+		// A muted member cannot post, so waking it only produces a rejected
+		// write. Mute is a lock, and it applies here too: a lone muted bot is
+		// simply not reachable until it is unmuted.
+		if _, blocked := muted[allBots[0].UID]; blocked {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		// A busy lone bot is still activated. It needs no judgement, and
+		// delivering the message lets it fold the new text into the turn it is
+		// already running.
 		return GroupActivationDecision{
 			Activated: map[int64]float64{allBots[0].UID: 1},
 			Source:    activationSourceSingleBot,
@@ -177,24 +236,67 @@ func (r *JevGroupActivationResolver) Resolve(ctx context.Context, req GroupActiv
 	// break handover. Convergence comes from the criteria instead: a bot that
 	// reports progress rather than asking for work does not wake anyone.
 	if req.TrustedChannelTrigger {
+		reachable := activationExcludingUIDs(bots, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
 		return GroupActivationDecision{
-			Activated: activationAll(bots),
+			Activated: activationAll(reachable),
 			Source:    activationSourceChannel,
 		}
 	}
 	// An explicit mention is the strongest signal a person can give, so it
 	// short-circuits judging and keeps working when judging is unavailable.
+	//
+	// It is matched against the roster *including* members filtered out below.
+	// A mention is a designation: "@someone else go do it" must not be
+	// reinterpreted as an open request for the judge to pick a different member
+	// when the named one happens to be silenced. If the named member cannot be
+	// activated, the correct outcome is that nobody is.
 	if mentioned := activationMentionedBots(bots, req.Mentions); len(mentioned) > 0 {
-		return GroupActivationDecision{Activated: mentioned, Source: activationSourceMention}
+		reachable := activationExcludingScores(mentioned, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		// A member that is merely busy stays addressable by name: this costs no
+		// model call, and the client folds the message into the running turn.
+		return GroupActivationDecision{Activated: reachable, Source: activationSourceMention}
 	}
 	// "@all" asks every bot to look, which needs no semantic judgement.
 	if activationMentionAll(req.Mentions) {
-		return GroupActivationDecision{Activated: activationAll(bots), Source: activationSourceMention}
+		reachable := activationExcludingUIDs(bots, muted)
+		if len(reachable) == 0 {
+			return GroupActivationDecision{Source: activationSourceNoCandidate}
+		}
+		return GroupActivationDecision{Activated: activationAll(reachable), Source: activationSourceMention}
+	}
+	// Mute is a lock, so it filters before the judge is asked. A muted member
+	// cannot post, so offering it would spend a model call to produce a write
+	// the server rejects.
+	bots = activationExcludingUIDs(bots, muted)
+	if len(bots) == 0 {
+		return GroupActivationDecision{Source: activationSourceNoCandidate}
+	}
+	// Only now, on the path that actually calls the model, are the busy members
+	// dropped. A bot that is already running does not need to be asked whether
+	// it should run: the answer cannot change anything, and asking is what let
+	// two bots keep waking each other on every progress line.
+	//
+	// The lookup is resolved here rather than at the top because it costs a
+	// store query, and the paths above — working traffic, a single-bot group, a
+	// mention — never need it.
+	bots = activationExcludingUIDs(bots, activationWorkingUIDSet(req))
+	if len(bots) == 0 {
+		// Nobody is left to ask about. The judge is not called: the answer
+		// "nobody should reply" is already known, and paying for a round trip
+		// to hear it would be pure waste.
+		return GroupActivationDecision{Source: activationSourceNoCandidate}
 	}
 	if !r.client.Enabled() {
-		return activationDefaultAgentFallback(req, bots)
+		// Judging is switched off or unreachable. The caller reports that to
+		// the group instead of guessing an addressee.
+		return GroupActivationDecision{Source: activationSourceDegraded, Degraded: true}
 	}
-	r.attachFunctions(bots)
 
 	decision, err := r.judge(ctx, req, bots)
 	if err != nil {
@@ -202,79 +304,24 @@ func (r *JevGroupActivationResolver) Resolve(ctx context.Context, req GroupActiv
 		// unavailable so a person can mention the right member instead.
 		return GroupActivationDecision{Source: activationSourceDegraded, Degraded: true}
 	}
-	if len(decision.Activated) == 0 && req.DefaultAgentUID > 0 {
-		// An agent-task group exists to finish one piece of work. When judging
-		// finds no addressee, the task still needs its owner rather than
-		// stalling silently.
-		if _, ok := activationBotUIDs(bots)[req.DefaultAgentUID]; ok {
-			return GroupActivationDecision{
-				Activated: map[int64]float64{req.DefaultAgentUID: 1},
-				Source:    activationSourceDefaultAgent,
-			}
-		}
-	}
+	// A judgement that reaches nobody is a result, not a failure. The group is
+	// told nothing and no bot runs: an unanswered message is the correct
+	// outcome for chat, and inventing an addressee would make every message
+	// produce a reply.
 	return decision
 }
 
-// activationDefaultAgentFallback applies the agent-task rule when judging is
-// unavailable, matching what the deterministic path does.
-func activationDefaultAgentFallback(req GroupActivationRequest, bots []GroupActivationBot) GroupActivationDecision {
-	if req.DefaultAgentUID > 0 {
-		if _, ok := activationBotUIDs(bots)[req.DefaultAgentUID]; ok {
-			return GroupActivationDecision{
-				Activated: map[int64]float64{req.DefaultAgentUID: 1},
-				Source:    activationSourceDefaultAgent,
-			}
-		}
-	}
-	return GroupActivationDecision{Source: activationSourceDegraded, Degraded: true}
-}
-
-// activationBotUIDs indexes the candidate bots for membership checks.
-func activationBotUIDs(bots []GroupActivationBot) map[int64]struct{} {
-	index := make(map[int64]struct{}, len(bots))
-	for _, bot := range bots {
-		index[bot.UID] = struct{}{}
-	}
-	return index
-}
-
-// attachFunctions fills in each bot's owner-defined role and description, which
-// is what lets the judge tell "this is the copywriter's job" from "this is the
-// reviewer's job". A lookup failure degrades the prompt, not the decision.
-func (r *JevGroupActivationResolver) attachFunctions(bots []GroupActivationBot) {
-	if r.functions == nil || len(bots) == 0 {
-		return
-	}
-	uids := make([]int64, 0, len(bots))
-	for _, bot := range bots {
-		uids = append(uids, bot.UID)
-	}
-	functions, err := r.functions.GetBotFunctions(uids)
-	if err != nil {
-		log.Printf("group activation: bot functions unavailable: %v", err)
-		return
-	}
-	for index := range bots {
-		function, ok := functions[bots[index].UID]
-		if !ok {
-			continue
-		}
-		bots[index].Role = function.Role
-		bots[index].Description = function.Description
-	}
-}
-
 func (r *JevGroupActivationResolver) judge(ctx context.Context, req GroupActivationRequest, bots []GroupActivationBot) (GroupActivationDecision, error) {
+	prompt := loadActivationPrompt()
 	questions := make(map[string]JevQuestion, len(bots))
 	for _, bot := range bots {
 		name := activationBotName(bot)
 		questions[activationQuestionKey(bot.UID)] = JevQuestion{
 			Type:         "noul",
-			Instructions: fmt.Sprintf("%s「%s」是否应当回复这条最新消息", activationRoleLabel(bot), name),
+			Instructions: renderActivationPrompt(prompt.Instructions, name),
 			Criteria: map[string]string{
-				"true":  activationTrueCriteria(bot),
-				"false": "消息只是寒暄、汇报进度、闲聊、情绪表达，或属于其他成员的职责范围，或没有提出新的待办请求",
+				"true":  renderActivationPrompt(prompt.CriteriaTrue, name),
+				"false": renderActivationPrompt(prompt.CriteriaFalse, name),
 			},
 		}
 	}
@@ -283,73 +330,107 @@ func (r *JevGroupActivationResolver) judge(ctx context.Context, req GroupActivat
 	if err != nil {
 		return GroupActivationDecision{}, err
 	}
+	return r.scoreAnswers(answers, bots), nil
+}
 
+// scoreAnswers turns the raw answers into a decision.
+//
+// Scores keeps every candidate's value, including the ones below the threshold.
+// Activated alone cannot explain a message that reached nobody: it holds only
+// the winners, so a correct "nobody" and a criteria that never fires look
+// identical. Keeping the losers is what makes the difference visible.
+func (r *JevGroupActivationResolver) scoreAnswers(answers map[string]jevAnswer, bots []GroupActivationBot) GroupActivationDecision {
 	activated := make(map[int64]float64)
+	scores := make(map[int64]float64, len(bots))
 	for _, bot := range bots {
 		answer, ok := answers[activationQuestionKey(bot.UID)]
 		if !ok {
 			continue
 		}
 		value := answer.NoulAnswer()
-		if value.Valid && value.Value >= r.threshold {
+		if !value.Valid {
+			continue
+		}
+		scores[bot.UID] = value.Value
+		if value.Value >= r.threshold {
 			activated[bot.UID] = value.Value
 		}
 	}
-	return GroupActivationDecision{Activated: activated, Source: activationSourceJev}, nil
+	return GroupActivationDecision{
+		Activated: activated,
+		Scores:    scores,
+		Source:    activationSourceJev,
+	}
 }
 
-// activationState renders the prompt. It names every bot with the same display
-// name the bot's own system prompt uses, so the judge and the bot agree on who
-// is who. Human members are named but never judged.
+// activationState renders the prompt material. It names every member by the
+// display name the group shows, so the judge and the participants agree on who
+// is who, and it marks each one as a bot or a user so the judge can tell the
+// two apart.
+//
+// The state is built as a named structure and sent as JSON text — the API takes
+// the state as a string, so this is the serialised form, not an object on the
+// wire. Each part carries a name ("group", "members", "messages"), which is what
+// the upstream recommends and what keeps the roster from being read as more
+// transcript.
 func activationState(req GroupActivationRequest, bots []GroupActivationBot) string {
 	context := judgeContext(req)
-	var b strings.Builder
+	state := map[string]any{}
 	if name := strings.TrimSpace(context.GroupName); name != "" {
-		b.WriteString("群名称：")
-		b.WriteString(name)
-		b.WriteString("\n")
+		state["group"] = map[string]any{"name": name}
 	}
-	b.WriteString("群成员：\n")
+
+	members := make([]map[string]any, 0, len(req.Members))
+	seen := make(map[int64]bool, len(req.Members))
 	for _, bot := range bots {
-		b.WriteString("- ")
-		b.WriteString(activationBotName(bot))
-		if role := strings.TrimSpace(bot.Role); role != "" {
-			b.WriteString("（")
-			b.WriteString(role)
-			b.WriteString("）")
-		}
-		if desc := strings.TrimSpace(bot.Description); desc != "" {
-			b.WriteString("：")
-			b.WriteString(desc)
-		}
-		b.WriteString("\n")
+		seen[bot.UID] = true
+		members = append(members, map[string]any{
+			"name": activationBotName(bot),
+			"type": "bot",
+		})
 	}
 	for _, member := range req.Members {
-		if member == nil || member.IsBot {
+		if member == nil || member.IsBot || seen[member.UserID] {
 			continue
 		}
 		name := activationMemberName(member)
 		if name == "" {
 			continue
 		}
-		b.WriteString("- ")
-		b.WriteString(name)
-		b.WriteString("\n")
+		seen[member.UserID] = true
+		members = append(members, map[string]any{
+			"name": name,
+			"type": "user",
+		})
+	}
+	if len(members) > 0 {
+		state["members"] = members
 	}
 
 	if turns := mergeActivationTurns(context.RecentTurns); len(turns) > 0 {
-		b.WriteString("最近对话：\n")
+		messages := make([]map[string]any, 0, len(turns))
 		for _, turn := range turns {
-			b.WriteString(turn.Speaker)
+			kind := "user"
 			if turn.IsBot {
-				b.WriteString("（机器人）")
+				kind = "bot"
 			}
-			b.WriteString(": ")
-			b.WriteString(turn.Text)
-			b.WriteString("\n")
+			messages = append(messages, map[string]any{
+				"from": turn.Speaker,
+				"type": kind,
+				"text": turn.Text,
+			})
 		}
+		state["messages"] = messages
 	}
-	return b.String()
+
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		// Encoding plain strings and maps cannot fail in practice; falling back
+		// to the group name alone keeps a judgement possible rather than
+		// turning a serialisation problem into an outage.
+		return context.GroupName
+	}
+	return string(encoded)
 }
 
 // mergeActivationTurns folds consecutive messages from one speaker into a single
@@ -377,13 +458,20 @@ func mergeActivationTurns(turns []GroupActivationTurn) []GroupActivationTurn {
 	return merged
 }
 
+// activationBots lists the group's bots. The display name is carried through
+// because the judge is told who each member is by name; without it the prompt
+// would name bots by uid and the roster would not line up with the transcript,
+// which speaks display names.
 func activationBots(members []*types.GroupMember) []GroupActivationBot {
 	bots := make([]GroupActivationBot, 0, len(members))
 	for _, member := range members {
 		if member == nil || !member.IsBot {
 			continue
 		}
-		bots = append(bots, GroupActivationBot{UID: member.UserID})
+		bots = append(bots, GroupActivationBot{
+			UID:         member.UserID,
+			DisplayName: activationMemberName(member),
+		})
 	}
 	return bots
 }
@@ -405,6 +493,62 @@ func activationExcludingSender(bots []GroupActivationBot, senderUID int64) []Gro
 	return filtered
 }
 
+// activationWorkingUIDSet resolves the lazily loaded busy members. A caller
+// that knows judging will not happen can leave the loader unset, in which case
+// nobody is treated as busy — the pre-change behaviour.
+func activationWorkingUIDSet(req GroupActivationRequest) map[int64]struct{} {
+	if req.WorkingUIDs == nil {
+		return nil
+	}
+	return activationUIDSet(req.WorkingUIDs())
+}
+
+// activationUIDSet indexes a uid list for membership checks.
+func activationUIDSet(uids []int64) map[int64]struct{} {
+	if len(uids) == 0 {
+		return nil
+	}
+	index := make(map[int64]struct{}, len(uids))
+	for _, uid := range uids {
+		if uid > 0 {
+			index[uid] = struct{}{}
+		}
+	}
+	return index
+}
+
+// activationExcludingUIDs drops the listed members from the candidates.
+func activationExcludingUIDs(bots []GroupActivationBot, excluded map[int64]struct{}) []GroupActivationBot {
+	if len(excluded) == 0 {
+		return bots
+	}
+	filtered := make([]GroupActivationBot, 0, len(bots))
+	for _, bot := range bots {
+		if _, drop := excluded[bot.UID]; drop {
+			continue
+		}
+		filtered = append(filtered, bot)
+	}
+	return filtered
+}
+
+// activationExcludingScores drops the listed members from a selection that is
+// already keyed by uid. Mentions arrive in that form, so re-filtering them
+// keeps "who was named" and "who may actually be woken" separate.
+func activationExcludingScores(selected map[int64]float64, excluded map[int64]struct{}) map[int64]float64 {
+	if len(excluded) == 0 {
+		return selected
+	}
+	filtered := make(map[int64]float64, len(selected))
+	for uid, score := range selected {
+		if _, drop := excluded[uid]; drop {
+			continue
+		}
+		filtered[uid] = score
+	}
+	return filtered
+}
+
 // activationBotName mirrors the name the bot sees for itself. Both the roster
 // and the bot's own handshake read users.display_name, so they cannot drift.
 func activationBotName(bot GroupActivationBot) string {
@@ -422,38 +566,6 @@ func activationMemberName(member *types.GroupMember) string {
 		return name
 	}
 	return strings.TrimSpace(member.Username)
-}
-
-func activationRoleLabel(bot GroupActivationBot) string {
-	role := strings.TrimSpace(bot.Role)
-	if role == "" {
-		return "成员"
-	}
-	// The stored role is an enum token such as "code_review". Judging happens in
-	// Chinese, and an English token inside a Chinese prompt reads as noise, so
-	// the known roles are rendered as the words the prompt actually needs.
-	if label, ok := activationRoleLabels[role]; ok {
-		return label
-	}
-	return role
-}
-
-// activationRoleLabels renders the stored role enum for the judging prompt.
-var activationRoleLabels = map[string]string{
-	"code_review": "代码审查员",
-	"debugging":   "调试工程师",
-	"writing":     "文案写手",
-	"research":    "研究员",
-	"general":     "通用助手",
-}
-
-func activationTrueCriteria(bot GroupActivationBot) string {
-	role := activationRoleLabel(bot)
-	desc := strings.TrimSpace(bot.Description)
-	if desc == "" {
-		return fmt.Sprintf("消息包含需要%s承担的请求，或明确点名要求「%s」接手", role, activationBotName(bot))
-	}
-	return fmt.Sprintf("消息包含需要%s承担的请求（%s），或明确点名要求「%s」接手", role, desc, activationBotName(bot))
 }
 
 func activationQuestionKey(uid int64) string {

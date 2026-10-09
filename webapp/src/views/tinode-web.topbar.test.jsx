@@ -473,7 +473,8 @@ describe('LocalAssistantBar model selector', () => {
     expect(button).toBeTruthy();
     expect(button.disabled).toBe(false);
     await act(async () => button.click());
-    expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[role="dialog"][aria-label="选择产物"]')).toBeNull();
+    expect(onOpenCloudArtifacts).toHaveBeenCalledWith({ initialTab: 'active' });
 
     await renderBar({ onOpenCloudArtifacts: undefined });
     const unavailableButton = container.querySelector('button[aria-label="产物暂不可用"]');
@@ -485,7 +486,8 @@ describe('LocalAssistantBar model selector', () => {
     const onOpenCloudArtifacts = vi.fn();
     const onDownload = vi.fn();
     const onNewTask = vi.fn();
-    await renderBar({ onOpenCloudArtifacts, onDownload, onNewTask });
+    vi.spyOn(api, 'getTopicFiles').mockResolvedValue({ files: [] });
+    await renderBar({ onOpenCloudArtifacts, onDownload, onNewTask, topicId: 'p2p_1_43' });
 
     const moreButton = container.querySelector('button[aria-label="更多操作"]');
     expect(moreButton).toBeTruthy();
@@ -500,7 +502,9 @@ describe('LocalAssistantBar model selector', () => {
     expect(menu.textContent).toContain('下载桌面端');
 
     await act(async () => menu.querySelector('button[aria-label="打开产物"]').click());
+    expect(document.querySelector('[aria-label="选择产物"]')).toBeNull();
     expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
+    expect(onOpenCloudArtifacts).toHaveBeenCalledWith({ initialTab: 'files' });
     expect(container.querySelector('[role="menu"][aria-label="更多操作"]')).toBeNull();
 
     await act(async () => moreButton.click());

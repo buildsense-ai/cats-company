@@ -275,6 +275,8 @@ vi.mock('../api', () => ({
 import MessagesView, {
   canonicalizeStructuredMentionText,
   collectStructuredMentionTargets,
+  gatewayAppsAsArtifacts,
+  mergeArtifactSources,
   mergeOwnServerEcho,
   ImageGalleryPreview,
   mergeCloudWorkerSnapshots,
@@ -824,6 +826,11 @@ describe('MessagesView composer draft isolation', () => {
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudWorkers.mockResolvedValue({ workers: [] });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    // The registry effect reads the gateway list too, so it needs the same
+    // per-test default as the registry call above. Without it a test that sets
+    // this mock leaks its value into every later test: clearAllMocks() in
+    // afterEach clears calls but keeps mockResolvedValue.
+    api.listArtifactApps.mockResolvedValue({ apps: [] });
     feedbackConfirm.mockReset();
     feedbackConfirm.mockResolvedValue(true);
     feedbackNotify.mockReset();
@@ -5665,7 +5672,13 @@ describe('MessagesView composer draft isolation', () => {
     }));
   });
 
-  it('accepts task requests from a gateway application frame', async () => {
+  it.each([
+    { legacyArtifactsEnabled: true, group: false },
+    { legacyArtifactsEnabled: false, group: false },
+    { legacyArtifactsEnabled: true, group: true },
+    { legacyArtifactsEnabled: false, group: true },
+  ])('accepts task requests from a gateway application frame (%j)', async ({ legacyArtifactsEnabled, group }) => {
+    const topic = group ? 'grp_90' : 'p2p_1_440';
     const origin = 'https://artifact.catsco.cc';
     const taskId = `atk_${'g'.repeat(43)}`;
     const taskRef = `atr_${'h'.repeat(43)}`;
@@ -5703,7 +5716,15 @@ describe('MessagesView composer draft isolation', () => {
       launch_url: `${origin}/_launch/gateway-task?next=/promo-content-studio/`,
     });
     api.getAgents.mockResolvedValue({
-      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
+      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: legacyArtifactsEnabled }],
+    });
+    if (group) api.getGroupInfo.mockResolvedValue({
+      group: { id: 90, name: 'Shared application conversation', is_agent_task: false },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 2, display_name: 'Collaborator', is_bot: false },
+        { user_id: 440, display_name: 'Agent', is_bot: true },
+      ],
     });
     api.createArtifactTask.mockResolvedValue({
       contract_version: 'catsco.artifact-task-ref.v1',
@@ -5722,7 +5743,8 @@ describe('MessagesView composer draft isolation', () => {
       expires_at: '2026-08-26T12:00:00Z',
     });
 
-    await mountTopic(root, 'p2p_1_440', {
+    await mountTopic(root, topic, {
+      ...(group ? { isGroup: true, groupId: 90 } : {}),
       cloudArtifactsRequest: { agentUid: 440, requestId: 1, initialTab: 'gateway' },
     });
     await act(async () => { await flushPromises(); });
@@ -5757,7 +5779,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(api.createArtifactContextSnapshot).not.toHaveBeenCalled();
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '网关旁的普通消息', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith(topic, '网关旁的普通消息', undefined);
 
     await act(async () => {
       dispatchFrameMessage(frameWindow, origin, {
@@ -5771,7 +5793,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(api.createArtifactTask).toHaveBeenCalledWith({
-      topic_id: 'p2p_1_440',
+      topic_id: topic,
       artifact_ref: {
         contract_version: 'catsco.artifact-ref.v1',
         id: artifact.id,
@@ -5789,6 +5811,93 @@ describe('MessagesView composer draft isolation', () => {
       request_id: 'gateway-task-request-1',
       task: expect.objectContaining({ task_id: taskId, status: 'submitted' }),
     }));
+
+    api.createArtifactTask.mockClear();
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="返回应用列表"]'));
+      await flushPromises();
+      dispatchFrameMessage(frameWindow, origin, {
+        type: 'catsco.artifact.task.request.v1',
+        request_id: 'gateway-task-after-close',
+        intent_id: 'tasks.create.v1',
+        payload: { title: 'must not run after close' },
+      });
+      await flushPromises();
+    });
+    expect(api.createArtifactTask).not.toHaveBeenCalled();
+  });
+
+  it.each(['p2p', 'agent-task'])('rejects a gateway panel bot that differs from the resolved %s Artifact bot', async (conversation) => {
+    const group = conversation === 'agent-task';
+    const origin = 'https://artifact.catsco.cc';
+    const posted = [];
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        posted.push(message);
+        if (message.type === 'catsco.artifact.context.request.v1') {
+          window.setTimeout(() => dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.context.response.v1',
+            request_id: message.request_id,
+            context: {
+              contract_version: 'catsco.artifact-page-context.v1',
+              observed_at: '2026-08-26T03:00:00Z',
+              semantic_context: { view: 'gateway' },
+            },
+          }), 0);
+        }
+      },
+    };
+    api.getAgents.mockResolvedValue({
+      agents: [440, 441].map((uid) => ({ uid, is_bot: true, cloud_artifacts_enabled: true })),
+    });
+    if (group) api.getGroupInfo.mockResolvedValue({
+      group: { id: 90, name: 'Agent task conversation', is_agent_task: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 440, display_name: 'Conversation agent', is_bot: true },
+      ],
+    });
+    // Both bots have valid registry metadata. Only the resolved conversation
+    // bot differs from the panel selection, so neither missing metadata nor a
+    // panel/registry mismatch can explain the rejection.
+    api.getCloudArtifacts.mockImplementation(async (agentUid) => ({
+      artifacts: [{ ...promoRegistryArtifact, agent_uid: String(agentUid) }],
+    }));
+    api.listArtifactApps.mockResolvedValue({ apps: [promoGatewayApp] });
+    api.requestArtifactLaunch.mockResolvedValue({
+      launch_url: `${origin}/_launch/gateway-task?next=/promo-content-studio/`,
+    });
+
+    await mountTopic(root, group ? 'grp_90' : 'p2p_1_440', {
+      ...(group ? { isGroup: true, groupId: 90 } : {}),
+      cloudArtifactsRequest: { agentUid: 441, requestId: 1, initialTab: 'gateway' },
+    });
+    await act(async () => { await flushPromises(); });
+    await act(async () => {
+      Simulate.click(container.querySelector('.cloud-artifact-main'));
+      await flushPromises();
+    });
+
+    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(frame).not.toBeNull();
+    Object.defineProperty(frame, 'contentWindow', { configurable: true, value: frameWindow });
+    await act(async () => {
+      Simulate.load(frame);
+      await flushPromises();
+      dispatchFrameMessage(frameWindow, origin, {
+        type: 'catsco.artifact.task.request.v1',
+        request_id: 'gateway-wrong-agent',
+        intent_id: 'tasks.create.v1',
+        payload: { title: 'must not run for a different bot' },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await flushPromises(12);
+    });
+
+    expect(api.createArtifactTask).not.toHaveBeenCalled();
+    expect(api.createArtifactContextSnapshot).not.toHaveBeenCalled();
+    expect(posted.some((message) => message.type === 'catsco.artifact.host.connect.v1')).toBe(false);
   });
 
   it('turns a declared page action into one visible Agent turn and routes its result back', async () => {
@@ -8127,6 +8236,133 @@ describe('MessagesView composer draft isolation', () => {
     });
   });
 
+  it('does not announce a share for a gateway application that was already published', async () => {
+    // The notice answers "did the thing I just published reach the registry?" A
+    // gateway application is already published the moment it is listed, so naming
+    // its URL in a new message must not be reported as a fresh share. The notice
+    // therefore reads the registry's own artifacts, not the merged card list.
+    const gatewayURL = 'https://artifact.catsco.cc/mario-test/';
+    api.getMessages.mockResolvedValue({
+      messages: [{
+        id: 730,
+        from_uid: 365,
+        content: '准备发布',
+        created_at: '2026-10-08T00:00:00Z',
+      }],
+    });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 365,
+        topic_id: 'p2p_1_365',
+        username: 'saturday',
+        relation: 'friend',
+        is_bot: true,
+        account_type: 'bot',
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    api.listArtifactApps.mockResolvedValue({
+      apps: [{ id: 'mario-test', title: 'Mini Mario 测试页', url: gatewayURL, status: 'online' }],
+    });
+
+    await mountTopic(root, 'p2p_1_365');
+    await act(async () => {
+      await flushPromises();
+    });
+    // The gateway application is in the card list...
+    expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+    expect(feedbackNotify).not.toHaveBeenCalled();
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_365',
+          from: 'usr365',
+          seq_id: 731,
+          type: 'text',
+          content: `已发布：${gatewayURL}`,
+        },
+      });
+      await flushPromises();
+    });
+
+    // Bump the registry revision, which is the other half of the condition: the
+    // notice only fires once the registry has been re-read since the message
+    // arrived. Without this the test would pass for the wrong reason.
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('cc:cloud-artifacts-changed', {
+        detail: { agentUid: 365 },
+      }));
+      await flushPromises();
+    });
+
+    // ...but naming it is not a new share, because the registry never gained it.
+    expect(feedbackNotify).not.toHaveBeenCalled();
+  });
+
+  it('still announces a share when the registry gains the artifact', async () => {
+    // The counterpart: the notice must keep working for the case it exists for.
+    const artifactURL = 'https://artifacts.example.test/by-agent/365/fresh/latest/';
+    api.getMessages.mockResolvedValue({
+      messages: [{
+        id: 740,
+        from_uid: 365,
+        content: '准备发布',
+        created_at: '2026-10-08T00:00:00Z',
+      }],
+    });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 365,
+        topic_id: 'p2p_1_365',
+        username: 'saturday',
+        relation: 'friend',
+        is_bot: true,
+        account_type: 'bot',
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    api.listArtifactApps.mockResolvedValue({ apps: [] });
+
+    await mountTopic(root, 'p2p_1_365');
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(feedbackNotify).not.toHaveBeenCalled();
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_365',
+          from: 'usr365',
+          seq_id: 741,
+          type: 'text',
+          content: `已发布：${artifactURL}`,
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      api.getCloudArtifacts.mockResolvedValue({
+        artifacts: [{ id: 'fresh', url: artifactURL }],
+      });
+      window.dispatchEvent(new CustomEvent('cc:cloud-artifacts-changed', {
+        detail: { agentUid: 365 },
+      }));
+      await flushPromises();
+    });
+
+    expect(feedbackNotify).toHaveBeenCalledWith({
+      tone: 'success',
+      message: '已共享内容到云端',
+    });
+  });
+
   it('lets only the latest Artifact registry request update the active Agent state', async () => {
     const firstRegistry = deferred();
     const refreshedRegistry = deferred();
@@ -9227,6 +9463,242 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(composerBox.classList.contains('is-agent-reply-active')).toBe(false);
     expect(composerBox.getAttribute('aria-busy')).toBe('false');
+  });
+
+  describe('gateway applications reach the card list', () => {
+    // The unit tests cover merging and mapping in isolation. This one goes through
+    // the registry effect itself, so it fails if the gateway list is dropped,
+    // mis-wired, or fetched from the wrong place — the way this feature would
+    // actually regress.
+    const gatewayApp = {
+      id: 'mario-test',
+      title: 'Mini Mario 测试页',
+      url: 'https://artifact.catsco.cc/mario-test/',
+      status: 'online',
+    };
+
+    it('includes a gateway application in the list the cards match against', async () => {
+      api.getMessages.mockResolvedValue({
+        messages: [{
+          id: 720,
+          from_uid: 440,
+          content: '已发布应用',
+          created_at: '2026-10-08T00:00:00Z',
+        }],
+      });
+      api.getFriends.mockResolvedValue({ friends: [] });
+      api.getAgents.mockResolvedValue({
+        agents: [{
+          uid: 440,
+          topic_id: 'p2p_1_440',
+          username: 'doubao',
+          display_name: '豆包',
+          relation: 'friend',
+          is_bot: true,
+          account_type: 'bot',
+          cloud_artifacts_enabled: true,
+        }],
+      });
+      api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+      api.listArtifactApps.mockResolvedValue({ apps: [gatewayApp] });
+
+      await mountTopic(root, 'p2p_1_440');
+      await act(async () => {
+        await flushPromises();
+      });
+
+      expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+    });
+
+    it('still lists registry artifacts when the gateway list is unavailable', async () => {
+      // A gateway outage must cost the gateway's cards, not the registry's.
+      api.getMessages.mockResolvedValue({
+        messages: [{
+          id: 721,
+          from_uid: 440,
+          content: '已发布课堂小游戏',
+          created_at: '2026-10-08T00:00:00Z',
+        }],
+      });
+      api.getFriends.mockResolvedValue({ friends: [] });
+      api.getAgents.mockResolvedValue({
+        agents: [{
+          uid: 440,
+          topic_id: 'p2p_1_440',
+          username: 'doubao',
+          display_name: '豆包',
+          relation: 'friend',
+          is_bot: true,
+          account_type: 'bot',
+          cloud_artifacts_enabled: true,
+        }],
+      });
+      api.getCloudArtifacts.mockResolvedValue({
+        artifacts: [{
+          id: 'lesson-game',
+          title: '课堂小游戏',
+          url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+        }],
+      });
+      api.listArtifactApps.mockRejectedValue(new Error('artifact_gateway_unavailable'));
+
+      await mountTopic(root, 'p2p_1_440');
+      await act(async () => {
+        await flushPromises();
+      });
+
+      expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+    });
+
+    it('renders registry cards without waiting for the gateway list', async () => {
+      // The gateway list only adds cards; it must not gate the registry's own. An
+      // earlier version awaited both with Promise.all, so every registry card
+      // waited on the gateway — up to the gateway's bound — even though the
+      // registry had already answered.
+      const registryURL = 'https://artifacts.example.test/by-agent/365/lesson/latest/';
+      api.getMessages.mockResolvedValue({
+        messages: [{ id: 750, from_uid: 365, content: '准备发布', created_at: '2026-10-08T00:00:00Z' }],
+      });
+      api.getFriends.mockResolvedValue({ friends: [] });
+      api.getAgents.mockResolvedValue({
+        agents: [{
+          uid: 365,
+          topic_id: 'p2p_1_365',
+          username: 'saturday',
+          relation: 'friend',
+          is_bot: true,
+          account_type: 'bot',
+          cloud_artifacts_enabled: true,
+        }],
+      });
+      api.getCloudArtifacts.mockResolvedValue({
+        artifacts: [{ id: 'lesson', url: registryURL }],
+      });
+      let releaseGateway;
+      api.listArtifactApps.mockImplementation(() => new Promise((resolve) => { releaseGateway = resolve; }));
+
+      await mountTopic(root, 'p2p_1_365');
+      await act(async () => {
+        await flushPromises();
+      });
+
+      // The gateway has not answered yet, and the registry card is already here.
+      expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+
+      await act(async () => {
+        releaseGateway({ apps: [{ id: 'gw', title: 'GW', url: 'https://artifact.catsco.cc/gw/' }] });
+        await flushPromises();
+      });
+
+      // And the gateway's own card joins once it arrives.
+      expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('2');
+    });
+  });
+
+});
+
+describe('gateway applications in the artifact registry', () => {
+  it('maps a gateway application into the shape the cards read', () => {
+    // Cards match a URL in the message text against this list. A gateway
+    // application only produces a card if it is in here, so the mapping has to
+    // keep the URL and give the card a kind to branch its subtitle on.
+    expect(gatewayAppsAsArtifacts([{
+      id: 'xiantu-ai',
+      title: '仙途 · AI修仙模拟器',
+      url: 'https://artifact.catsco.cc/xiantu-ai/',
+      status: 'online',
+    }])).toEqual([{
+      id: 'xiantu-ai',
+      title: '仙途 · AI修仙模拟器',
+      kind: 'mini_app',
+      url: 'https://artifact.catsco.cc/xiantu-ai/',
+      updated_at: null,
+    }]);
+  });
+
+  it('falls back to the id when an application has no title', () => {
+    const [mapped] = gatewayAppsAsArtifacts([{ id: 'unnamed', url: 'https://artifact.catsco.cc/unnamed/' }]);
+    expect(mapped.title).toBe('unnamed');
+  });
+
+  it('drops entries without a usable id or url instead of rendering a broken card', () => {
+    expect(gatewayAppsAsArtifacts([
+      { id: '', url: 'https://artifact.catsco.cc/a/' },
+      { id: 'b', url: '' },
+      { url: 'https://artifact.catsco.cc/c/' },
+      null,
+    ])).toEqual([]);
+  });
+
+  it('tolerates a missing or non-array list', () => {
+    expect(gatewayAppsAsArtifacts(undefined)).toEqual([]);
+    expect(gatewayAppsAsArtifacts(null)).toEqual([]);
+    expect(gatewayAppsAsArtifacts({ apps: [] })).toEqual([]);
+  });
+
+  it('keeps both sources, because a registry artifact and a gateway app can differ', () => {
+    const merged = mergeArtifactSources(
+      [{ id: 'stored', url: 'https://artifacts.example.test/by-agent/440/stored/latest/' }],
+      gatewayAppsAsArtifacts([{ id: 'live', url: 'https://artifact.catsco.cc/live/' }]),
+    );
+    expect(merged.map((artifact) => artifact.id)).toEqual(['stored', 'live']);
+  });
+
+  it('keeps both addresses when one application is published to both systems', () => {
+    // A card is matched by URL, and each entry carries one URL. The registry and
+    // the gateway address the same application differently — promo-content-studio
+    // is the real case — so collapsing them onto one entry would silently remove
+    // the other address's card.
+    const merged = mergeArtifactSources(
+      [{ id: 'same', kind: 'html', publish_version: 2, url: 'https://agent-1.artifacts.example.test/artifacts/same/latest/' }],
+      gatewayAppsAsArtifacts([{ id: 'same', title: 'Same', url: 'https://artifact.catsco.cc/same/' }]),
+    );
+    expect(merged.map((artifact) => artifact.url)).toEqual([
+      'https://agent-1.artifacts.example.test/artifacts/same/latest/',
+      'https://artifact.catsco.cc/same/',
+    ]);
+    expect(merged[0].publish_version).toBe(2);
+    expect(merged[1].kind).toBe('mini_app');
+  });
+
+  it('does not double an entry that both sources spell the same way', () => {
+    const merged = mergeArtifactSources(
+      [{ id: 'same', url: 'https://artifact.catsco.cc/same/' }],
+      [{ id: 'same', kind: 'mini_app', url: 'https://artifact.catsco.cc/same/' }],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].kind).toBeUndefined();
+  });
+
+  it('keeps two entries when the same address is written with and without a trailing slash', () => {
+    // The dedupe key normalizes the query and hash away but keeps the trailing
+    // slash, and the card matcher normalizes the same way, so the two forms are
+    // two distinct addresses as far as matching is concerned. Keeping both is
+    // therefore correct rather than a duplicate: each one matches its own URL in
+    // a message. Every gateway URL currently ends in a slash, so this does not
+    // arise in practice today — the test pins the behaviour so a future change to
+    // the normalization has to decide this on purpose.
+    const merged = mergeArtifactSources(
+      [{ id: 'same', url: 'https://artifact.catsco.cc/same' }],
+      [{ id: 'same', kind: 'mini_app', url: 'https://artifact.catsco.cc/same/' }],
+    );
+    expect(merged.map((artifact) => artifact.url)).toEqual([
+      'https://artifact.catsco.cc/same',
+      'https://artifact.catsco.cc/same/',
+    ]);
+  });
+
+  it('ignores the query string and fragment when deciding identity', () => {
+    const merged = mergeArtifactSources(
+      [{ id: 'same', url: 'https://artifact.catsco.cc/same/' }],
+      [{ id: 'same', kind: 'mini_app', url: 'https://artifact.catsco.cc/same/?v=2#top' }],
+    );
+    expect(merged).toHaveLength(1);
+  });
+
+  it('handles both sources being empty', () => {
+    expect(mergeArtifactSources([], [])).toEqual([]);
+    expect(mergeArtifactSources(undefined, undefined)).toEqual([]);
   });
 });
 

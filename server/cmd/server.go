@@ -466,11 +466,7 @@ func main() {
 	// Group activation judging is optional: without a configured relay endpoint
 	// the hub keeps the deterministic mention rules.
 	if jevClient := server.NewJevClientFromEnv(); jevClient.Enabled() {
-		var functions server.BotFunctionReader
-		if reader, ok := db.(server.BotFunctionReader); ok {
-			functions = reader
-		}
-		hub.SetGroupActivationResolver(server.NewJevGroupActivationResolver(jevClient, functions))
+		hub.SetGroupActivationResolver(server.NewJevGroupActivationResolver(jevClient))
 	}
 	artifactContextSnapshotHandler := server.NewArtifactContextSnapshotHandler(hub)
 	artifactResultHandler := server.NewArtifactResultHandler(hub)
@@ -481,6 +477,7 @@ func main() {
 	// authenticates with its own login and the platform uses the shared gateway
 	// token, so a bot never needs write access to the gateway configuration.
 	artifactAppsHandler := server.NewArtifactAppsHandlerFromEnv()
+	artifactAppsHandler.SetStore(db)
 	// Gateway annotation authorization reads application ownership from the
 	// gateway itself, so an annotated message never trusts a client claim.
 	hub.SetGatewayAnnotationsAppResolver(artifactAppsHandler)
@@ -1024,6 +1021,10 @@ func main() {
 	mux.HandleFunc("/api/skillhub/skills", jwtAuthWithDB(skillHubProxyHandler.HandleSkills))
 	mux.HandleFunc("/api/skillhub/skills/", jwtAuthWithDB(skillHubProxyHandler.HandleSkill))
 	mux.HandleFunc("/api/skillhub/publisher-profile/sync", jwtAuthWithDB(skillHubProxyHandler.HandlePublisherProfileSync))
+	// Presentation editing uses the current human identity, never the selected
+	// Bot's credentials. This additive subtree defaults off in production.
+	skillHubMarketplaceHandler := server.NewSkillHubMarketplaceHandlerFromEnv(skillHubProxyHandler)
+	mux.HandleFunc("/api/skillhub/marketplace/", ownerAuthWithDB(skillHubMarketplaceHandler.Handle))
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))
 	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
 	mux.HandleFunc("/api/bot/definition/default-prompt", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefaultPrompt))
