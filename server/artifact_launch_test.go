@@ -51,7 +51,7 @@ func TestArtifactLaunchIssuesCodeForAuthenticatedUser(t *testing.T) {
 
 	handler := newTestLaunchHandler(gateway)
 	recorder := httptest.NewRecorder()
-	handler.HandleLaunch(recorder, launchRequestAs(441, "saturday", `{"app":"saturday-demo","topic_id":"topic-1"}`))
+	handler.HandleLaunch(recorder, launchRequestAs(441, "saturday", `{"app":"saturday-demo"}`))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -70,7 +70,7 @@ func TestArtifactLaunchIssuesCodeForAuthenticatedUser(t *testing.T) {
 	if forwarded["uid"] != "441" {
 		t.Errorf("forwarded uid = %v, want the authenticated 441", forwarded["uid"])
 	}
-	if forwarded["app"] != "saturday-demo" || forwarded["topic"] != "topic-1" {
+	if forwarded["app"] != "saturday-demo" || forwarded["topic"] != "" {
 		t.Errorf("forwarded app/topic = %v/%v", forwarded["app"], forwarded["topic"])
 	}
 	if forwarded["username"] != "saturday" {

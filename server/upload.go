@@ -269,6 +269,13 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if uploadType == "image" {
+		if err := h.rememberArtifactImageUpload(UIDFromContext(r.Context()), fileKey); err != nil {
+			_ = os.Remove(destPath)
+			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload receipt failed"})
+			return
+		}
+	}
 	url := fmt.Sprintf("%s/%s/%s", h.baseURL, subDir, fileKey)
 
 	writeUploadJSON(w, http.StatusOK, uploadPayload{
@@ -1293,6 +1300,13 @@ func (h *UploadHandler) receiveRawUpload(
 		return uploadPayload{}, false
 	}
 	tempPath = ""
+	if uploadType == "image" {
+		if err := h.rememberArtifactImageUpload(UIDFromContext(r.Context()), fileKey); err != nil {
+			_ = os.Remove(destPath)
+			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload receipt failed"})
+			return uploadPayload{}, false
+		}
+	}
 
 	return uploadPayload{
 		FileKey:  fileKey,

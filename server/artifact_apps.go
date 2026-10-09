@@ -338,28 +338,37 @@ func (h *ArtifactAppsHandler) handleDelete(w http.ResponseWriter, r *http.Reques
 // authorization: annotations may only reference an app the conversation's
 // Agent owns. Errors mean the answer is unknown, so callers fail closed.
 func (h *ArtifactAppsHandler) GatewayAppOwner(ctx context.Context, appID string) (string, bool, error) {
+	app, found, err := h.gatewayApp(ctx, appID)
+	return app.Agent, found && app.Agent != "", err
+}
+
+// gatewayApp returns one exact registry record, rejecting ambiguous duplicate
+// IDs. Binding authorization also needs its canonical public URLs.
+func (h *ArtifactAppsHandler) gatewayApp(ctx context.Context, appID string) (artifactApp, bool, error) {
 	if !h.Enabled() {
-		return "", false, errors.New("artifact gateway is not configured")
+		return artifactApp{}, false, errors.New("artifact gateway is not configured")
 	}
 	_, body, failure := h.call(ctx, http.MethodGet, artifactAppsGatewayPath, nil)
 	if failure != nil {
-		return "", false, errors.New("artifact gateway unavailable")
+		return artifactApp{}, false, errors.New("artifact gateway unavailable")
 	}
 	var payload struct {
 		Apps []artifactApp `json:"apps"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", false, errors.New("artifact gateway unavailable")
+		return artifactApp{}, false, errors.New("artifact gateway unavailable")
 	}
+	var result artifactApp
+	found := false
 	for _, app := range payload.Apps {
 		if app.ID == appID {
-			if app.Agent == "" {
-				return "", false, nil
+			if found {
+				return artifactApp{}, false, errors.New("ambiguous gateway app")
 			}
-			return app.Agent, true, nil
+			result, found = app, true
 		}
 	}
-	return "", false, nil
+	return result, found, nil
 }
 
 // caller resolves the authenticated owner, or writes the response that refuses

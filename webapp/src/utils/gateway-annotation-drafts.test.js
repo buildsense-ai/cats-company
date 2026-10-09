@@ -45,6 +45,27 @@ describe('gateway annotation drafts', () => {
     storage = createMemoryStorage();
   });
 
+  it('associates capability only with caller mount memory; raw storage never contains it', () => {
+    const capabilities = new Map();
+    const binding = { contract_version: 'catsco.artifact-open-binding.v1',
+      open_ref: 'aob_secret_parent_123456789012345', topic_id: TOPIC_1, agent_uid: AGENT_A,
+      app_id: APP_A, app_origin: 'https://artifact.catsco.cc', expires_at: '2099-01-01T00:00:00Z' };
+    writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A,
+      [sampleAnnotation('memory', { open_binding: binding })], storage, { capabilities });
+    const raw = storage.getItem(`catsco_gateway_annotation_drafts:v1:${USER_A}`);
+    expect(raw).not.toMatch(/aob_|open_ref|open_binding/);
+    expect(raw).not.toContain(binding.open_ref);
+    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage, capabilities)[0].open_binding).toEqual(binding);
+    const remounted = readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage, new Map());
+    expect(remounted[0].body).toBe('改成蓝色');
+    expect(remounted[0].open_binding).toBeUndefined();
+    // Even an older serialized binding cannot grant a new mount authority.
+    const serialized = JSON.parse(raw);
+    serialized[`${TOPIC_1}|${AGENT_A}|${APP_A}`][0].open_binding = binding;
+    storage.setItem(`catsco_gateway_annotation_drafts:v1:${USER_A}`, JSON.stringify(serialized));
+    expect(readGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, storage, new Map())[0].open_binding).toBeUndefined();
+  });
+
   it('round-trips one draft per topic × agent × app bucket', () => {
     writeGatewayAnnotationDrafts(USER_A, TOPIC_1, AGENT_A, APP_A, [sampleAnnotation()], storage);
     writeGatewayAnnotationDrafts(USER_A, TOPIC_2, AGENT_A, APP_A, [sampleAnnotation('b1')], storage);

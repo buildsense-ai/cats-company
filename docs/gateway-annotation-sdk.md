@@ -80,6 +80,8 @@ import {
 
 ## 3. 应用侧 SDK（`webapp/public/catsco-annotations.js`）
 
+当前 gateway 自动注入、allowlist bootstrap、singleton、canonical export 与新版单按钮 `select` 模式见 [gateway-annotation-runtime.md](gateway-annotation-runtime.md)。新版 inline 批注由父页面在选区旁弹出评论并直接走 bound annotations API；下文 composer 发送描述为历史兼容路径。`select` 保留机器 kind `element/text/region`，host 接受声明 capability 且要求合法 viewport bbox；旧 explicit modes 继续兼容。SDK 的 iframe Escape 通过现有 mode.v1 通知退出，宿主可订阅 `onModeChange` 同步按钮状态。
+
 普通 `<script>`（非 module），暴露 `window.CatsCoAnnotations`：
 
 ```html

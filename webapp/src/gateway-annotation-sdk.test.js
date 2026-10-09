@@ -143,6 +143,112 @@ describe('CatsCoAnnotations.create', () => {
   });
 });
 
+describe('single select mode gesture capture', () => {
+  function fixture() {
+    const bus = createSdk({ revision: 'r1' });
+    connect(); sendMode('select');
+    const button = document.createElement('button');
+    button.id = `select-${Math.random().toString(36).slice(2)}`;
+    document.body.appendChild(button);
+    vi.spyOn(button, 'getBoundingClientRect').mockReturnValue({ left: 100, top: 100, width: 120, height: 40 });
+    const mouse = (type, x, y, target = button) => target.dispatchEvent(new MouseEvent(type, {
+      bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y,
+    }));
+    return { ...bus, button, mouse };
+  }
+
+  it('short gesture emits one element bbox, keeps highlight and blocks app pointer/mouse/click actions', () => {
+    const { sdk, posted, button, mouse } = fixture();
+    const action = vi.fn();
+    for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick']) button.addEventListener(type, action);
+    for (const type of ['pointerdown', 'pointerup']) button.dispatchEvent(new Event(type, { bubbles: true }));
+    mouse('mouseover', 110, 110); mouse('mousedown', 110, 110); mouse('mouseup', 112, 114);
+    mouse('click', 112, 114); mouse('dblclick', 112, 114);
+    expect(sdk.mode()).toBe('select');
+    expect(action).not.toHaveBeenCalled();
+    const targets = targetMessages(posted);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].selection.kind).toBe('element');
+    expect(targets[0].selection.target).toMatchObject({ rect: { x: 0.1, y: 0.1, width: 0.12, height: 0.04 }, coordinate_space: 'viewport' });
+    expect(normalizeGatewayAnnotationSelection(targets[0].selection)).not.toBeNull();
+    expect(document.querySelector('.catsco-annotation-highlight').style.display).toBe('block');
+  });
+
+  it('drag resolves to region using mouseup point, without trailing click element or app action', () => {
+    const { posted, button, mouse } = fixture();
+    const action = vi.fn(); button.addEventListener('click', action);
+    mouse('mousedown', 100, 100); mouse('mousemove', 160, 170); mouse('mouseup', 300, 350); mouse('click', 300, 350);
+    const targets = targetMessages(posted);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].selection.kind).toBe('region');
+    expect(targets[0].selection.target.rect).toEqual({ x: 0.1, y: 0.1, width: 0.2, height: 0.25 });
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it.each([[6, 6, 'element'], [7, 1, 'region'], [1, 7, 'region'], [7, 0, null]])('dx=%i dy=%i resolves %s; zero-area drag discarded', (dx, dy, kind) => {
+    const { posted, mouse } = fixture();
+    mouse('mousedown', 100, 100); mouse('mouseup', 100 + dx, 100 + dy); mouse('click', 100 + dx, 100 + dy);
+    expect(targetMessages(posted)).toHaveLength(kind ? 1 : 0);
+    if (kind) expect(targetMessages(posted)[0].selection.kind).toBe(kind);
+  });
+
+  it('clips region release to viewport; rapid next gesture emits once independently', () => {
+    const { posted, mouse } = fixture();
+    mouse('mousedown', 900, 900); mouse('mouseup', 1300, 1400); mouse('click', 1300, 1400);
+    mouse('mousedown', 110, 110); mouse('mouseup', 110, 110); mouse('click', 110, 110);
+    expect(targetMessages(posted).map((entry) => entry.selection.kind)).toEqual(['region', 'element']);
+    expect(targetMessages(posted)[0].selection.target.rect).toEqual({ x: 0.9, y: 0.9, width: 0.1, height: 0.1 });
+  });
+
+  it('bbox-less/offscreen/sensitive element fails closed without fabricated point bbox', () => {
+    const { posted, button, mouse } = fixture();
+    vi.mocked(button.getBoundingClientRect).mockReturnValue({ left: 1200, top: 1200, width: 120, height: 40 });
+    mouse('mousedown', 100, 100); mouse('mouseup', 100, 100); mouse('click', 100, 100);
+    vi.mocked(button.getBoundingClientRect).mockReturnValue({ left: 100, top: 100, width: 0, height: 0 });
+    mouse('click', 100, 100);
+    button.setAttribute('data-catsco-annotation-sensitive', '');
+    vi.mocked(button.getBoundingClientRect).mockReturnValue({ left: 100, top: 100, width: 120, height: 40 });
+    mouse('mousedown', 100, 100); mouse('mouseup', 100, 100); mouse('click', 100, 100);
+    expect(targetMessages(posted)).toHaveLength(0);
+  });
+
+  it.each(['revision', 'navigation', 'session', 'mode', 'escape'])('%s cancels pending drag and trailing click', (kind) => {
+    const { sdk, posted, mouse } = fixture();
+    mouse('mousedown', 110, 110); mouse('mousemove', 300, 300);
+    if (kind === 'revision') sdk.setRevision('r2');
+    if (kind === 'navigation') history.pushState({}, '', '/select-next');
+    if (kind === 'session') connect('catsco_session_2');
+    if (kind === 'mode') sendMode('off');
+    if (kind === 'escape') document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    mouse('mouseup', 300, 300); mouse('click', 300, 300);
+    expect(targetMessages(posted)).toHaveLength(0);
+    if (kind === 'session') { sendMode('select', 'catsco_session_1'); expect(sdk.mode()).toBe('off'); }
+    if (kind === 'escape') {
+      expect(sdk.mode()).toBe('off');
+      expect(posted.map((entry) => entry.message).find((entry) => entry.type === TYPES.mode)).toMatchObject({
+        mode: 'off', session_id: 'catsco_session_1', page: { revision: 'r1' },
+      });
+    }
+  });
+
+  it('new ordinary gesture after cancel/off passes through to app', () => {
+    const { button, mouse } = fixture();
+    mouse('mousedown', 100, 100); sendMode('off'); mouse('mouseup', 300, 300); mouse('click', 300, 300);
+    const action = vi.fn(); button.addEventListener('click', action);
+    mouse('mousedown', 100, 100); mouse('mouseup', 100, 100); mouse('click', 100, 100);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it('same revision keeps live gesture; detached element is discarded', () => {
+    const { sdk, posted, button, mouse } = fixture();
+    mouse('mousedown', 100, 100); sdk.setRevision('r1'); mouse('mouseup', 100, 100); mouse('click', 100, 100);
+    expect(targetMessages(posted)).toHaveLength(1);
+    mouse('mousedown', 100, 100); button.remove();
+    mouse('mouseup', 100, 100, document.body); mouse('click', 100, 100, document.body);
+    expect(targetMessages(posted)).toHaveLength(1);
+  });
+});
+
 describe('mode handling', () => {
   it('mode off from an unknown session is ignored', () => {
     const { sdk } = createSdk();

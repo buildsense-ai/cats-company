@@ -1,0 +1,107 @@
+.cloud-artifacts-header-actions .cloud-artifacts-annotation-toggle.is-active {
+  color: var(--cc-accent, #22734e);
+  background: var(--cc-accent-soft, #e7f3ec);
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+.gateway-annotation-target-outline {
+  position: fixed;
+  z-index: 1100;
+  pointer-events: none;
+  border: 2px solid var(--cc-accent, #22734e);
+  border-radius: 3px;
+  background: rgb(34 115 78 / 8%);
+}
+.gateway-annotation-popover {
+  position: fixed;
+  z-index: 1101;
+  box-sizing: border-box;
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--cc-border, #d9e3dd);
+  border-radius: 12px;
+  background: var(--cc-panel, #fff);
+  color: var(--cc-text, #26352d);
+  box-shadow: 0 8px 24px rgb(20 40 28 / 15%);
+  font-size: 13px;
+}
+.gateway-annotation-popover-target {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 10px;
+}
+.gateway-annotation-popover textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 90px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--cc-border, #d9e3dd);
+  border-radius: 7px;
+  background: var(--cc-panel, #fff);
+  color: inherit;
+  font: inherit;
+}
+.gateway-annotation-popover textarea:focus-visible {
+  outline: 2px solid var(--cc-accent, #22734e);
+  outline-offset: 2px;
+}
+.gateway-annotation-popover-note {
+  margin: 10px 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--cc-text-secondary, #627168);
+}
+.gateway-annotation-popover-error { color: var(--cc-danger-text, #a83434); }
+.gateway-annotation-popover-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.gateway-annotation-popover-actions button {
+  border: 1px solid var(--cc-border, #d9e3dd);
+  border-radius: 7px;
+  background: var(--cc-panel, #fff);
+  color: inherit;
+  padding: 6px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+.gateway-annotation-popover-actions button:last-child {
+  background: var(--cc-action-bg, #454549);
+  color: var(--cc-on-action, #fff);
+  border-color: transparent;
+}
+.gateway-annotation-screenshots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.gateway-annotation-screenshots figure { flex: 1 1 110px; margin: 0; min-width: 0; }
+.gateway-annotation-screenshots img {
+  display: block;
+  width: 100%;
+  height: 86px;
+  object-fit: contain;
+  border: 1px solid var(--cc-border, #ececef);
+  border-radius: 6px;
+  background: var(--cc-panel-raised, #f7f7f8);
+}
+.gateway-annotation-screenshots figcaption {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--cc-text-secondary, #454549);
+}
+.gateway-annotation-screenshots label { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.gateway-annotation-screenshots p { margin: 0; font-size: 12px; }
+.gateway-annotation-screenshots > p, .gateway-annotation-screenshots > label { flex-basis: 100%; }
+.gateway-annotation-screenshots button {
+  border: 1px solid var(--cc-border, #ececef);
+  border-radius: 6px;
+  background: var(--cc-panel, #fff);
+  color: inherit;
+  padding: 5px 9px;
+  font: inherit;
+  cursor: pointer;
+}
+.gateway-annotation-popover-actions button:disabled { opacity: .55; cursor: default; }

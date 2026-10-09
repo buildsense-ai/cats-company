@@ -81,8 +81,32 @@ test('demo forwards annotated JSON once and serves the documented parent origin'
     assert.equal(logs.length, 1);
     assert.deepEqual(logs[0].gateway_annotations, payload.metadata.gateway_annotations);
     const fixture = await (await fetch(`http://127.0.0.1:${gatewayPort}/saturday-demo/`)).text();
-    assert.ok(fixture.includes("parentOrigin: 'http://localhost:5173'"));
+    assert.ok(fixture.includes('data-catsco-parent-origins="[&quot;http://localhost:5173&quot;]"'));
+    assert.ok(fixture.includes('src="/_catsco/runtime/annotations-v1.js"'));
+    assert.ok(!fixture.includes('CatsCoAnnotations.create'));
     assert.ok(!fixture.includes('__CATSCO_HOST_ORIGIN__'));
+    const base = `http://127.0.0.1:${platformPort}`;
+    const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer demo-a' };
+    const launch = async topic => (await (await fetch(`${base}/api/artifacts/launch`, {
+      method: 'POST', headers, body: JSON.stringify({ app: 'saturday-demo', topic_id: topic }),
+    })).json()).open_binding;
+    const a = await launch('topic-A'); const b = await launch('topic-B');
+    assert.notEqual(a.open_ref, b.open_ref);
+    const submit = async (binding, authorization = headers.Authorization) => fetch(`${base}/api/artifacts/annotations`, {
+      method: 'POST', headers: { ...headers, Authorization: authorization },
+      body: JSON.stringify({ open_ref: binding.open_ref, client_msg_id: 'demo-one', content: 'Review',
+        gateway_annotations: { ...payload.metadata.gateway_annotations, agent_uid: 201 } }),
+    });
+    assert.equal((await submit(a)).status, 200);
+    assert.equal(JSON.parse(requests.at(-1).body).topic_id, 'topic-A');
+    assert.equal((await submit(b)).status, 200);
+    assert.equal(JSON.parse(requests.at(-1).body).topic_id, 'topic-B');
+    const count = requests.length;
+    assert.equal((await submit(a, 'Bearer wrong')).status, 403);
+    assert.equal(requests.length, count);
+    assert.equal((await fetch(`${base}/api/artifacts/open-bindings/${a.open_ref}`, { method: 'DELETE', headers })).status, 204);
+    assert.equal((await submit(a)).status, 403);
+    assert.equal(requests.length, count);
   } finally {
     child.kill('SIGTERM');
     if (child.exitCode === null) await once(child, 'exit');

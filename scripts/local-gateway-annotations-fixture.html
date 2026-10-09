@@ -42,12 +42,8 @@
     <tr><td>B-402</td><td>80</td><td>4000K</td></tr>
   </table>
 </div>
-<script src="/catsco-annotations.js"></script>
+<!-- No app SDK integration: the demo gateway injects the external runtime. -->
 <script>
-  window.CatsCoAnnotations.create({
-    parentOrigin: '__CATSCO_HOST_ORIGIN__',
-    revision: 'r7',
-  });
   document.getElementById('rotate-btn').addEventListener('click', () => {
     const label = document.getElementById('token-label');
     label.textContent = label.textContent === '默认令牌' ? '已切换令牌' : '默认令牌';

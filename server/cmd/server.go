@@ -484,6 +484,9 @@ func main() {
 	// Gateway annotation authorization reads application ownership from the
 	// gateway itself, so an annotated message never trusts a client claim.
 	hub.SetGatewayAnnotationsAppResolver(artifactAppsHandler)
+	artifactOpenBindingHandler := server.NewArtifactOpenBindingHandler(hub, msgHandler, artifactAppsHandler)
+	artifactOpenBindingHandler.SetUploadHandler(uploadHandler)
+	artifactLaunchHandler.SetOpenBindingHandler(artifactOpenBindingHandler)
 	// Optional: issue the domain-level Artifact identity cookie and serve the
 	// read-only lookup the gateway uses. Off unless configured.
 	server.ConfigureArtifactIdentity(server.ArtifactIdentityConfigFromEnv())
@@ -887,6 +890,8 @@ func main() {
 	mux.HandleFunc("/api/artifacts", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("/api/artifacts/", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("POST /api/artifacts/launch", jwtAuthWithDB(artifactLaunchHandler.HandleLaunch))
+	mux.HandleFunc("POST /api/artifacts/annotations", jwtAuthWithDB(artifactOpenBindingHandler.HandleAnnotations))
+	mux.HandleFunc("DELETE /api/artifacts/open-bindings/{open_ref}", jwtAuthWithDB(artifactOpenBindingHandler.HandleRevoke))
 	mux.HandleFunc("GET /api/artifacts/identity", artifactIdentityHandler.HandleIdentity)
 	// The apps routes sit next to the other artifact routes and are more specific
 	// than the /api/artifacts/ subtree above, which would otherwise read "apps"

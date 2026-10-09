@@ -64,13 +64,20 @@ type savedMessageResult struct {
 
 // HandleSendMessage handles POST /api/messages/send
 func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Request) {
-	uid := UIDFromContext(r.Context())
-
 	var req SendMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
+	h.sendMessage(w, r, req, nil)
+}
+
+// sendMessage is the ordinary HTTP ingestion service. A bound Artifact submit
+// supplies only a final lifecycle gate; normalization, access, metadata,
+// persistence, idempotency and recipient fanout remain the same implementation.
+// The optional gate holds its release lock only across the persistence boundary.
+func (h *MessageHandler) sendMessage(w http.ResponseWriter, r *http.Request, req SendMessageRequest, beforeSave func() (func(), bool)) {
+	uid := UIDFromContext(r.Context())
 	req.TopicID = strings.TrimSpace(req.TopicID)
 
 	payload, err := normalizeMessageRequest(&req)
@@ -178,12 +185,24 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	var release func()
+	if beforeSave != nil {
+		var valid bool
+		release, valid = beforeSave()
+		if !valid {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact_open_binding_invalid", "code": "artifact_open_binding_invalid"})
+			return
+		}
+	}
 	if !isGroupTopic(req.TopicID) {
 		// Ensure p2p topic exists before saving.
 		h.db.CreateTopic(req.TopicID, "p2p", uid)
 	}
 
 	result, err := saveNormalizedMessage(h.db, req.TopicID, uid, req.ReplyTo, payload)
+	if release != nil {
+		release()
+	}
 	if err != nil {
 		if payload.ArtifactTaskRef != nil {
 			h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)

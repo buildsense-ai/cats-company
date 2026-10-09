@@ -4,10 +4,13 @@ import { Simulate } from 'react-dom/test-utils';
 
 vi.mock('../api', () => ({
   resolveMediaURL: vi.fn((url) => url),
+  getAuthRevision: vi.fn(() => 0),
+  getToken: vi.fn(() => 'test-token'),
   api: {
     getCloudArtifacts: vi.fn(),
     listArtifactApps: vi.fn(),
     requestArtifactLaunch: vi.fn(),
+    revokeArtifactOpenBinding: vi.fn(async () => ({})),
     getAgentFiles: vi.fn(),
     getTopicFiles: vi.fn(),
     publishCloudArtifact: vi.fn(),
@@ -822,7 +825,7 @@ describe('CloudArtifactsPanel', () => {
       .toContain('任务连接信息读取失败，无法提交任务；浏览与标注不受影响');
     // A gateway-only app (no registry record) still annotates: the toolbar
     // renders independent of the task-host binding error.
-    expect(container.querySelector('.cloud-artifacts-gateway-annotation-tools')).not.toBeNull();
+    expect(container.querySelector('[aria-label="批注应用"]')).not.toBeNull();
   });
 
   test('binds the loaded gateway frame with application metadata and an abort signal', async () => {
@@ -1389,6 +1392,12 @@ test('escape closes the tag-delete confirm dialog without closing the panel', as
 });
 
 test('gateway annotation toolbar reports user intent to the host and renders host state', async () => {
+  api.requestArtifactLaunch.mockResolvedValueOnce({
+    launch_url: 'https://artifact.catsco.cc/saturday-demo/',
+    open_binding: { contract_version: 'catsco.artifact-open-binding.v1',
+      open_ref: 'aob_toolbar_test_123456789', topic_id: 'p2p_7_440', agent_uid: 440,
+      app_id: 'saturday-demo', app_origin: 'https://artifact.catsco.cc', expires_at: '2099-01-01T00:00:00Z' },
+  });
   api.listArtifactApps.mockResolvedValueOnce({
     apps: [{
       id: 'saturday-demo',
@@ -1410,10 +1419,9 @@ test('gateway annotation toolbar reports user intent to the host and renders hos
   });
 
   // Tools render only for a conversation-scoped viewer with a known agent.
-  const tools = container.querySelector('.cloud-artifacts-gateway-annotation-tools');
-  expect(tools).not.toBeNull();
-
-  const modeButton = tools.querySelector('[data-annotation-mode="element"]');
+  expect(container.querySelector('.cloud-artifacts-gateway-annotation-tools')).toBeNull();
+  const modeButton = container.querySelector('[aria-label="批注应用"]');
+  expect(modeButton.nextElementSibling.getAttribute('aria-label')).toBe('刷新当前栏目');
   expect(modeButton).not.toBeNull();
   expect(modeButton.getAttribute('aria-pressed')).toBe('false');
   await act(async () => {
@@ -1421,20 +1429,20 @@ test('gateway annotation toolbar reports user intent to the host and renders hos
   });
   // The panel does not flip to active until the host acknowledges.
   expect(modeButton.classList.contains('is-active')).toBe(false);
-  expect(annotationModeRequests).toEqual(['element']);
+  expect(annotationModeRequests).toEqual(['select']);
 
   // Host state callback drives the rendered mode.
   const stateSetter = onGatewayAnnotationState.mock.calls.at(-1)?.[0];
   expect(stateSetter?.setMode).toBeTypeOf('function');
   await act(async () => {
-    stateSetter.setMode('element');
+    stateSetter.setMode('select');
   });
-  expect(tools.querySelector('[data-annotation-mode="element"]').getAttribute('aria-pressed')).toBe('true');
+  expect(modeButton.getAttribute('aria-pressed')).toBe('true');
 
   await act(async () => {
-    tools.querySelector('[data-annotation-mode="off"]').click();
+    modeButton.click();
   });
-  expect(annotationModeRequests).toEqual(['element', 'off']);
+  expect(annotationModeRequests).toEqual(['select', 'off']);
 
   // Host capability notes surface in the viewer note area.
   await act(async () => {

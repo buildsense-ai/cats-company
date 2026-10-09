@@ -1,12 +1,12 @@
 /*
  * CatsCo gateway annotation SDK.
  *
- * Loaded by a gateway application page served inside the CatsCo host iframe:
- *
- *   <script src="/catsco-annotations.js"></script>
- *   <script>
- *     window.CatsCoAnnotations.create({ parentOrigin: 'https://app.catsco.cc' });
- *   </script>
+ * Gateway injects a same-origin external script (no inline config/secrets):
+ *   <script src="/_catsco/runtime/annotations-v1.js"
+ *     data-catsco-parent-origins='["https://app.catsco.cc"]'></script>
+ * It waits for the first allowlisted window.parent connect. Advanced apps
+ * may still call create({ parentOrigin, revision, getElementId }); injected
+ * automatic/explicit use shares one instance. Plain manual use stays compatible.
  *
  * The SDK never talks to the network, never reads input values, and never
  * sends chat messages. It only reports what the user explicitly selected
@@ -16,12 +16,23 @@
 (function initCatsCoAnnotations() {
   'use strict';
 
+  var runtimeScript = document.currentScript;
+  var originsAttribute = runtimeScript && runtimeScript.getAttribute('data-catsco-parent-origins');
+  // Repeated head/body injection must not install another module/dispatcher.
+  if (window.CatsCoAnnotations && window.CatsCoAnnotations.runtimeVersion === 'annotations-v1') {
+    window.CatsCoAnnotations.bootstrapAttribute(originsAttribute);
+    return;
+  }
+
   var BRIDGE_CONTRACT = 'catsco.gateway-annotation-bridge.v1';
   var TYPE_CONNECT = 'catsco.gateway.annotation.connect.v1';
   var TYPE_READY = 'catsco.gateway.annotation.ready.v1';
   var TYPE_MODE = 'catsco.gateway.annotation.mode.v1';
   var TYPE_TARGET = 'catsco.gateway.annotation.target.v1';
   var TYPE_PAGE = 'catsco.gateway.annotation.page.v1';
+  var TYPE_SCREENSHOT_REQUEST = 'catsco.gateway.annotation.screenshot.request.v1';
+  var TYPE_SCREENSHOT_RESULT = 'catsco.gateway.annotation.screenshot.result.v1';
+  var TYPE_SCREENSHOT_CANCEL = 'catsco.gateway.annotation.screenshot.cancel.v1';
 
   var CAPABILITIES = ['element', 'text', 'region'];
   var MAX_ID_CHARS = 128;
@@ -53,6 +64,250 @@
   function safeId(value) {
     var id = typeof value === 'string' ? value.slice(0, MAX_ID_CHARS) : '';
     return id && !CONTROL_FORBIDDEN.test(id) ? id : null;
+  }
+
+  function exactOrigin(value) {
+    if (typeof value !== 'string' || !value || value.length > 2048) return null;
+    try {
+      var url = new URL(value);
+      return (url.protocol === 'https:' || url.protocol === 'http:') && url.origin === value ? value : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function handshakeId(value) {
+    return typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_CHARS
+      && !CONTROL_FORBIDDEN.test(value) ? value : null;
+  }
+
+  function validConnect(payload) {
+    return isPlainObject(payload) && payload.contract_version === BRIDGE_CONTRACT
+      && payload.type === TYPE_CONNECT && handshakeId(payload.session_id) && handshakeId(payload.request_id);
+  }
+
+  var liveInstances = new Map();
+  var automaticOrigins = null; // immutable once configured; never infer from the frame URL/referrer
+  var singleton = null;
+  var bootstrapListening = false;
+  var bootstrapStopped = false; // dispose is permanent until an explicit create (or new document)
+
+  function stopBootstrap() {
+    window.removeEventListener('message', onBootstrapConnect);
+    bootstrapListening = false;
+  }
+
+  function onBootstrapConnect(event) {
+    if (!automaticOrigins || window.parent === window || event.source !== window.parent
+      || automaticOrigins.indexOf(event.origin) < 0 || !validConnect(event.data)) return;
+    var instance = createConfigured({ parentOrigin: event.origin });
+    if (instance) {
+      // The new listener was not present at the start of this dispatch. Do
+      // not swallow the host's only connect or depend on a second retry.
+      liveInstances.get(instance).onMessage(event);
+    }
+  }
+
+  function bootstrapAttribute(attribute) {
+    if (typeof attribute !== 'string' || attribute.length > 16384) return false;
+    var origins;
+    try { origins = JSON.parse(attribute); } catch (error) { return false; }
+    if (!Array.isArray(origins) || !origins.length || origins.length > 32
+      || origins.some(function (origin) { return !exactOrigin(origin); })) return false;
+    origins = Array.from(new Set(origins)).sort();
+    if (automaticOrigins && JSON.stringify(origins) !== JSON.stringify(automaticOrigins)) return false;
+    if (!automaticOrigins) {
+      // A manually installed instance wins over a later gateway script.
+      // Ambiguous pre-existing instances cannot safely become a singleton.
+      if (liveInstances.size > 1) return false;
+      if (liveInstances.size === 1) {
+        var entry = Array.from(liveInstances.entries())[0];
+        if (origins.indexOf(entry[1].parentOrigin) < 0) return false;
+        singleton = entry[0];
+      }
+      automaticOrigins = origins;
+    }
+    if (!singleton && !bootstrapListening && !bootstrapStopped && window.parent !== window) {
+      window.addEventListener('message', onBootstrapConnect);
+      bootstrapListening = true;
+    }
+    return true;
+  }
+
+  function createConfigured(config) {
+    if (!isPlainObject(config) || !exactOrigin(config.parentOrigin)) return null;
+    if (automaticOrigins) {
+      if (automaticOrigins.indexOf(config.parentOrigin) < 0) return null;
+      if (singleton) {
+        var controller = liveInstances.get(singleton);
+        if (controller.parentOrigin !== config.parentOrigin) return null;
+        controller.configure(config);
+        return singleton;
+      }
+      stopBootstrap();
+      singleton = createInstance(config);
+      return singleton;
+    }
+    return createInstance(config);
+  }
+
+  var RENDERER_URL = '/_catsco/runtime/html2canvas-1.4.1.min.js';
+  var RENDERER_INTEGRITY = 'sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H';
+  var rendererPromise = null;
+  var verifiedRenderer = null;
+
+  function loadRenderer() {
+    // Always load the pinned self-hosted bundle with SRI, even when the app
+    // already defines window.html2canvas: an arbitrary app-provided renderer
+    // is not the audited 1.4.1 build and must not be trusted for evidence.
+    if (!rendererPromise) {
+      rendererPromise = new Promise(function (resolve, reject) {
+        var script = document.createElement('script');
+        script.id = 'catsco-annotation-renderer';
+        script.src = new URL(RENDERER_URL, window.location.origin).href;
+        script.integrity = RENDERER_INTEGRITY;
+        script.crossOrigin = 'anonymous';
+        // The self-hosted bundle overwrites window.html2canvas. Remember what
+        // the application had so its own behaviour is restored afterwards.
+        var hadGlobal = 'html2canvas' in window;
+        var previousGlobal = window.html2canvas;
+        function restoreAppGlobal() {
+          if (hadGlobal) window.html2canvas = previousGlobal;
+          else { try { delete window.html2canvas; } catch (error) { window.html2canvas = undefined; } }
+        }
+        var timer = setTimeout(function () { script.remove(); restoreAppGlobal(); reject(new Error('renderer-unavailable')); }, 10000);
+        script.onload = function () {
+          clearTimeout(timer);
+          // Freeze exactly what the verified bundle exposed.
+          if (typeof window.html2canvas !== 'function') {
+            script.remove(); restoreAppGlobal(); reject(new Error('renderer-unavailable')); return;
+          }
+          verifiedRenderer = window.html2canvas;
+          restoreAppGlobal();
+          resolve();
+        };
+        script.onerror = function () { clearTimeout(timer); script.remove(); restoreAppGlobal(); reject(new Error('renderer-unavailable')); };
+        (document.head || document.documentElement).appendChild(script);
+      }).catch(function (error) { rendererPromise = null; throw error; });
+    }
+    return rendererPromise;
+  }
+
+  function runtimeOverlay(element) {
+    return element && element.nodeType === 1 && (element.id === 'catsco-annotation-style' || element.id === 'catsco-annotation-renderer'
+      || (element.classList && (element.classList.contains('catsco-annotation-overlay')
+        || element.classList.contains('catsco-annotation-badge'))));
+  }
+
+  function screenshotEnvironment() {
+    return { width: window.innerWidth, height: window.innerHeight, scrollX: window.scrollX || 0,
+      scrollY: window.scrollY || 0, dpr: window.devicePixelRatio || 1 };
+  }
+
+  function sameEnvironment(a, b) {
+    return a.width === b.width && a.height === b.height && a.scrollX === b.scrollX
+      && a.scrollY === b.scrollY && a.dpr === b.dpr;
+  }
+
+  function screenshotRisks() {
+    var warnings = new Set();
+    var nodes = document.querySelectorAll('*');
+    if (nodes.length > 10000) throw new Error('page-too-large');
+    function external(value) {
+      try {
+        var url = new URL(value, window.location.href);
+        return !['data:', 'blob:'].includes(url.protocol) && url.origin !== window.location.origin;
+      } catch (error) { return true; }
+    }
+    Array.from(nodes).forEach(function (node) {
+      if (runtimeOverlay(node) || !normalizedViewportRect(node.getBoundingClientRect())) return;
+      if (isSensitiveSubtreeRoot(node) || ['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName)) {
+        warnings.add('sensitive-content-masked'); return;
+      }
+      var style = window.getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
+      if (node.tagName === 'IMG') {
+        if (external(node.currentSrc || node.src)) warnings.add('cross-origin-image');
+        if (!node.complete || !node.naturalWidth) warnings.add('unloaded-image');
+      }
+      if (node.tagName === 'VIDEO') warnings.add('video');
+      if (node.tagName === 'IFRAME' || node.tagName === 'OBJECT' || node.tagName === 'EMBED') warnings.add('embedded-content');
+      if (node.tagName === 'CANVAS') {
+        try {
+          node.toDataURL();
+          if (!node.getContext('2d')) warnings.add('webgl-canvas');
+        } catch (error) { warnings.add('unreadable-canvas'); }
+      }
+      var background = style.backgroundImage || '';
+      var matches = background.match(/url\([^)]+\)/g) || [];
+      matches.forEach(function (match) {
+        if (external(match.slice(4, -1).replace(/^['"]|['"]$/g, ''))) warnings.add('cross-origin-background');
+      });
+    });
+    return Array.from(warnings);
+  }
+
+  function maskScreenshotClone(clone) {
+    // Snapshot every box BEFORE mutating the clone. Keep subtree content in
+    // its layout (never textContent=''): auto-height blocks/textarea must not
+    // collapse and move the selected target. html2canvas skips opacity-zero
+    // roots entirely, including nested media and pseudo-elements.
+    var nodes = Array.from(clone.querySelectorAll('*'));
+    var masks = nodes.filter(function (node) {
+      return isSensitiveSubtreeRoot(node) || ['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName);
+    }).map(function (node) { return { node: node, rect: node.getBoundingClientRect() }; });
+    nodes.forEach(function (node) { if (runtimeOverlay(node)) node.remove(); });
+    masks.forEach(function (entry) {
+      var node = entry.node;
+      if ('value' in node) node.value = '';
+      node.removeAttribute('value'); node.removeAttribute('placeholder');
+      if (entry.rect.width > 0 && entry.rect.height > 0) {
+        node.style.setProperty('box-sizing', 'border-box', 'important');
+        node.style.setProperty('width', entry.rect.width + 'px', 'important');
+        node.style.setProperty('height', entry.rect.height + 'px', 'important');
+        node.style.setProperty('min-width', entry.rect.width + 'px', 'important');
+        node.style.setProperty('max-width', entry.rect.width + 'px', 'important');
+        node.style.setProperty('min-height', entry.rect.height + 'px', 'important');
+        node.style.setProperty('max-height', entry.rect.height + 'px', 'important');
+      }
+      node.style.setProperty('overflow', 'hidden', 'important');
+      node.style.setProperty('opacity', '0', 'important');
+      node.style.setProperty('visibility', 'hidden', 'important');
+      node.style.setProperty('background-image', 'none', 'important');
+    });
+  }
+
+  function imageEvidence(canvas, role) {
+    var data = canvas.toDataURL('image/jpeg', 0.85);
+    if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new Error('encode-failed');
+    var encoded = data.slice(23);
+    var bytes = encoded.length * 3 / 4 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
+    if (bytes > 2 * 1024 * 1024) throw new Error('image-too-large');
+    return { role: role, mime_type: 'image/jpeg', data_url: data, width: canvas.width, height: canvas.height };
+  }
+
+  function screenshotPair(bitmap, rect, env) {
+    var full = document.createElement('canvas');
+    full.width = bitmap.width; full.height = bitmap.height;
+    var context = full.getContext('2d');
+    if (!context) throw new Error('canvas-unavailable');
+    context.drawImage(bitmap, 0, 0);
+    context.strokeStyle = '#ef4444'; context.lineWidth = Math.max(1, 2 * bitmap.width / env.width);
+    var x = rect.x * bitmap.width, y = rect.y * bitmap.height;
+    var width = rect.width * bitmap.width, height = rect.height * bitmap.height;
+    var inset = context.lineWidth / 2;
+    context.strokeRect(x + inset, y + inset, Math.max(0, width - 2 * inset), Math.max(0, height - 2 * inset));
+    var crop = document.createElement('canvas');
+    var left = Math.max(0, Math.floor(x - 16 * bitmap.width / env.width));
+    var top = Math.max(0, Math.floor(y - 16 * bitmap.height / env.height));
+    var right = Math.min(bitmap.width, Math.ceil(x + width + 16 * bitmap.width / env.width));
+    var bottom = Math.min(bitmap.height, Math.ceil(y + height + 16 * bitmap.height / env.height));
+    crop.width = Math.max(1, right - left); crop.height = Math.max(1, bottom - top);
+    var cropContext = crop.getContext('2d');
+    if (!cropContext) throw new Error('canvas-unavailable');
+    // Same frozen bitmap, not two asynchronous renderings; only full has box.
+    cropContext.drawImage(bitmap, left, top, crop.width, crop.height, 0, 0, crop.width, crop.height);
+    return [imageEvidence(full, 'full'), imageEvidence(crop, 'crop')];
   }
 
   function clamp01(value) {
@@ -427,8 +682,8 @@
   }
 
   function createInstance(config) {
-    var parentOrigin = typeof config.parentOrigin === 'string' ? config.parentOrigin : '';
-    if (!parentOrigin || parentOrigin === '*' || parentOrigin === 'null') {
+    var parentOrigin = exactOrigin(config.parentOrigin);
+    if (!parentOrigin) {
       // Refuse wildcard origins: the host is pinned to one exact origin.
       if (typeof console !== 'undefined' && console.warn) {
         console.warn('[CatsCoAnnotations] create() requires an exact parentOrigin string.');
@@ -447,6 +702,13 @@
       overlay: null,
       regionDrag: null,
       lastElement: null,
+      selectGesture: null,
+      selectionRect: null,
+      suppressNextClick: false, // cleared by the trailing click or a fresh mousedown
+      screenshotSelection: null,
+      screenshotJob: null,
+      rendering: false,
+      documentEpoch: 0,
     };
 
     function post(message) {
@@ -468,6 +730,7 @@
         session_id: session,
         request_id: state.connectRequestId,
         capabilities: CAPABILITIES,
+        screenshot_supported: true,
         page: currentPage(revision) || { path: '/' },
       });
     }
@@ -475,6 +738,18 @@
     function sendSelection(selection) {
       var page = currentPage(revision);
       if (!state.session || !page) return false;
+      if (state.mode === 'select') {
+        // Inline host comments need a real visible bounding box; never
+        // fabricate a corner/point and claim it came from the selected DOM.
+        var target = selection.target;
+        if (!target.rect || target.coordinate_space !== 'viewport' || !target.viewport) return false;
+        showSelectionRect(target.rect);
+      }
+      cancelScreenshot('selection-changed');
+      state.screenshotSelection = {
+        id: selection.id, target: selection.target, page: page, environment: screenshotEnvironment(),
+        epoch: state.documentEpoch, session: state.session, request: state.connectRequestId,
+      };
       return post({
         type: TYPE_TARGET,
         contract_version: BRIDGE_CONTRACT,
@@ -494,6 +769,102 @@
         session_id: state.session,
         page: page,
       });
+    }
+
+    function cancelScreenshot(reason) {
+      var job = state.screenshotJob;
+      if (!job) return;
+      state.screenshotJob = null;
+      job.canceled = true;
+      post({ type: TYPE_SCREENSHOT_RESULT, contract_version: BRIDGE_CONTRACT,
+        session_id: job.session, request_id: job.request, selection_id: job.selection.id,
+        page: job.selection.page, error: { code: reason || 'canceled' } });
+    }
+
+    function invalidateScreenshot() {
+      state.documentEpoch++;
+      state.screenshotSelection = null;
+      cancelScreenshot('stale-document');
+    }
+
+    function onCaptureEnvironmentChanged() {
+      invalidateScreenshot();
+      teardownOverlay();
+      clearSelection();
+      if (state.mode !== 'off') activeOverlay().setBadge(modeHints[state.mode] || '');
+      // Same path/revision still invalidates viewport geometry, including
+      // an already completed screenshot. Host page handler revokes target.
+      sendPageChanged();
+    }
+
+    function onScreenshotRequest(payload) {
+      var selected = state.screenshotSelection;
+      if (!selected || !handshakeId(payload.request_id) || payload.selection_id !== selected.id
+        || !isPlainObject(payload.page) || payload.page.path !== selected.page.path
+        || (payload.page.revision || '') !== (selected.page.revision || '')) return;
+      // A new request never cancels a run that is already inside the
+      // renderer: it is refused as busy so the in-flight pair still lands.
+      if (state.rendering) {
+        post({ type: TYPE_SCREENSHOT_RESULT, contract_version: BRIDGE_CONTRACT,
+          session_id: state.session, request_id: payload.request_id, selection_id: selected.id,
+          page: selected.page, error: { code: 'capture-busy' } });
+        return;
+      }
+      cancelScreenshot('superseded');
+      var job = { session: state.session, request: payload.request_id, selection: selected, canceled: false };
+      state.screenshotJob = job;
+      function current() {
+        var page = currentPage(revision);
+        return !state.disposed && !job.canceled && state.screenshotJob === job
+          && state.session === job.session && selected === state.screenshotSelection
+          && selected.epoch === state.documentEpoch && selected.request === state.connectRequestId
+          && page && page.path === selected.page.path && (page.revision || '') === (selected.page.revision || '')
+          && sameEnvironment(selected.environment, screenshotEnvironment());
+      }
+      function fail(code) {
+        if (!current()) { if (state.screenshotJob === job) cancelScreenshot('stale-document'); return; }
+        state.screenshotJob = null;
+        post({ type: TYPE_SCREENSHOT_RESULT, contract_version: BRIDGE_CONTRACT,
+          session_id: job.session, request_id: job.request, selection_id: selected.id, page: selected.page,
+          error: { code: code } });
+      }
+      var env = selected.environment;
+      var rect = selected.target.rect;
+      if (!current()) { cancelScreenshot('stale-document'); return; }
+      if (!rect || !Number.isFinite(env.width) || !Number.isFinite(env.height) || env.width < 1 || env.height < 1
+        || env.width > 16384 || env.height > 16384) { fail('bad-geometry'); return; }
+      var scale = Math.min(Math.max(1, Math.min(env.dpr, 2)), 2048 / Math.max(env.width, env.height));
+      var warnings;
+      try { warnings = screenshotRisks(); } catch (error) { fail('page-too-large'); return; }
+      state.rendering = true;
+      loadRenderer().then(function () {
+        if (!current()) throw new Error('stale-document');
+        var renderer = verifiedRenderer;
+        // The verified bundle is called directly; the application global is
+        // irrelevant here (and may be absent, which is the normal case).
+        if (typeof renderer !== 'function') throw new Error('renderer-unavailable');
+        return renderer(document.documentElement, {
+          x: env.scrollX, y: env.scrollY, width: env.width, height: env.height,
+          windowWidth: env.width, windowHeight: env.height, scrollX: env.scrollX, scrollY: env.scrollY,
+          scale: scale, backgroundColor: '#ffffff', allowTaint: false, useCORS: false,
+          logging: false, imageTimeout: 5000, removeContainer: true,
+          ignoreElements: runtimeOverlay, onclone: maskScreenshotClone,
+        });
+      }).then(function (bitmap) {
+        if (!current()) throw new Error('stale-document');
+        var expectedWidth = Math.floor(env.width * scale), expectedHeight = Math.floor(env.height * scale);
+        if (!bitmap || bitmap.width !== expectedWidth || bitmap.height !== expectedHeight
+          || bitmap.width < 1 || bitmap.height < 1 || bitmap.width > 2048 || bitmap.height > 2048) throw new Error('bad-geometry');
+        var screenshots = screenshotPair(bitmap, rect, env);
+        if (!current()) throw new Error('stale-document');
+        state.screenshotJob = null;
+        post({ type: TYPE_SCREENSHOT_RESULT, contract_version: BRIDGE_CONTRACT,
+          session_id: job.session, request_id: job.request, selection_id: selected.id, page: selected.page,
+          screenshots: screenshots, warnings: warnings });
+      }).catch(function (error) {
+        var allowed = ['renderer-unavailable', 'stale-document', 'bad-geometry', 'image-too-large', 'encode-failed', 'canvas-unavailable'];
+        fail(allowed.indexOf(error.message) >= 0 ? error.message : 'capture-failed');
+      }).finally(function () { state.rendering = false; });
     }
 
     function elementTarget(element) {
@@ -569,6 +940,7 @@
     }
 
     var modeHints = {
+      select: '点击元素或拖拽框选，然后在旁边填写批注；Esc 退出',
       element: '元素标注：点击要标注的元素',
       text: '文本标注：选中要标注的文本',
       region: '区域标注：拖拽框选一个区域',
@@ -587,9 +959,22 @@
       }
       state.lastElement = null;
       state.regionDrag = null;
+      if (state.selectGesture) state.suppressNextClick = true;
+      state.selectGesture = null;
+      state.selectionRect = null;
+    }
+
+    function clearSelection() {
+      try {
+        var selection = window.getSelection && window.getSelection();
+        if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
+      } catch (error) {
+        // Some embedded runtimes do not expose an editable Selection.
+      }
     }
 
     function handleMode(mode) {
+      if (state.mode !== mode) { clearSelection(); invalidateScreenshot(); }
       state.mode = mode;
       teardownOverlay();
       if (mode !== 'off') {
@@ -597,8 +982,83 @@
       }
     }
 
+    function showSelectionRect(rect) {
+      state.selectionRect = rect;
+      activeOverlay().setHighlight({
+        left: rect.x * window.innerWidth, top: rect.y * window.innerHeight,
+        width: rect.width * window.innerWidth, height: rect.height * window.innerHeight,
+      });
+    }
+
+    function consumeGestureEvent(event) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+
+    function onSelectStart(event) {
+      // A new ordinary gesture cannot accidentally inherit a canceled
+      // annotation's pending click suppression after mode has turned off.
+      state.suppressNextClick = false;
+      if (state.mode !== 'select' || event.button !== 0) return;
+      consumeGestureEvent(event);
+      state.selectionRect = null;
+      state.selectGesture = {
+        startX: event.clientX, startY: event.clientY, element: event.target,
+        session: state.session, request: state.connectRequestId, page: currentPage(revision),
+      };
+      activeOverlay().setBadge(modeHints.select);
+    }
+
+    function onSelectMove(event) {
+      if (state.mode !== 'select' || !state.selectGesture) return;
+      consumeGestureEvent(event);
+      var gesture = state.selectGesture;
+      if (Math.max(Math.abs(event.clientX - gesture.startX), Math.abs(event.clientY - gesture.startY)) <= MIN_REGION_PX) return;
+      activeOverlay().setHighlight({
+        left: Math.min(gesture.startX, event.clientX), top: Math.min(gesture.startY, event.clientY),
+        width: Math.abs(event.clientX - gesture.startX), height: Math.abs(event.clientY - gesture.startY),
+      });
+    }
+
+    function onSelectEnd(event) {
+      if (state.mode !== 'select' || event.button !== 0 || !state.selectGesture) return;
+      consumeGestureEvent(event);
+      var gesture = state.selectGesture;
+      state.selectGesture = null;
+      state.suppressNextClick = true;
+      var page = currentPage(revision);
+      if (!page || !gesture.page || gesture.session !== state.session || gesture.request !== state.connectRequestId
+        || page.path !== gesture.page.path || (page.revision || '') !== (gesture.page.revision || '')) return;
+      // Use the actual release coordinates, not a potentially lagging move.
+      var dx = Math.abs(event.clientX - gesture.startX);
+      var dy = Math.abs(event.clientY - gesture.startY);
+      if (Math.max(dx, dy) > MIN_REGION_PX) {
+        var rect = normalizedViewportRect({
+          left: Math.min(gesture.startX, event.clientX), top: Math.min(gesture.startY, event.clientY),
+          width: dx, height: dy,
+        });
+        if (rect) emitRegion(rect); // a zero-area drag is not an element click
+        return;
+      }
+      var element = gesture.element;
+      if (element instanceof Element && element.isConnected) emitElement(element);
+    }
+
+    function onPointerControl(event) {
+      // Pointer events precede mouse events in browsers. Block app pointer
+      // handlers as well, while mouse events resolve the one gesture.
+      if (state.mode === 'select' || (event.type === 'pointerup' && state.suppressNextClick)) {
+        event.stopImmediatePropagation();
+      }
+    }
+
+    function onAuxClick(event) {
+      if (state.mode === 'select' || state.suppressNextClick) consumeGestureEvent(event);
+    }
+
     function onHover(event) {
-      if (state.mode !== 'element') return;
+      if (state.mode !== 'element' && state.mode !== 'select') return;
+      if (state.mode === 'select' && (state.selectGesture || state.selectionRect)) return;
       var element = event.target;
       if (!(element instanceof Element) || isSensitiveSubtreeRoot(element)) {
         state.overlay.setHighlight(null);
@@ -610,9 +1070,17 @@
     }
 
     function onClick(event) {
-      if (state.mode !== 'element') return;
-      event.preventDefault();
-      event.stopPropagation();
+      if (state.suppressNextClick) {
+        state.suppressNextClick = false;
+        consumeGestureEvent(event);
+        return;
+      }
+      if (state.mode !== 'element' && state.mode !== 'select') return;
+      if (state.mode === 'select') consumeGestureEvent(event);
+      else {
+        event.preventDefault();
+        event.stopPropagation();
+      }
       if (!event.target || !(event.target instanceof Element)) return;
       if (isSensitiveSubtreeRoot(event.target)) {
         state.overlay.setBadge('敏感控件不可标注');
@@ -699,23 +1167,29 @@
 
     function onKeydown(event) {
       if (event.key !== 'Escape') return;
-      // Escape inside the frame pauses affordances visually; the host owns
-      // real mode switches (mode.v1) so nothing crosses the wire here.
+      if (state.mode === 'select') {
+        consumeGestureEvent(event);
+        invalidateScreenshot();
+        handleMode('off');
+        post({
+          type: TYPE_MODE, contract_version: BRIDGE_CONTRACT, session_id: state.session,
+          mode: 'off', page: currentPage(revision),
+        });
+        return;
+      }
+      // Legacy explicit modes retain their previous Escape behavior.
       teardownOverlay();
+      clearSelection();
       if (state.mode !== 'off') activeOverlay().setBadge(modeHints[state.mode] || '');
     }
 
     function onUrlChanged() {
+      invalidateScreenshot();
       // SPA navigations inside the app invalidate the previous document:
       // any hover/drag/DOM selection is dropped and the host learns the new
       // page. A stale selection must not be submitted with a newer revision.
       teardownOverlay();
-      try {
-        var selection = window.getSelection && window.getSelection();
-        if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
-      } catch (error) {
-        // Some embedded runtimes do not expose an editable Selection.
-      }
+      clearSelection();
       if (state.mode !== 'off') activeOverlay().setBadge(modeHints[state.mode] || '');
       sendPageChanged();
     }
@@ -731,15 +1205,26 @@
         // A connect re-binds the frame to a fresh session; older state dies.
         // The host-minted request_id is echoed in ready so the host can
         // bind the handshake reply to the exact connect it sent.
-        state.session = safeId(payload.session_id);
-        state.connectRequestId = safeId(payload.request_id);
-        if (state.session && state.connectRequestId) {
-          sendReady(state.session);
-          handleMode(state.mode === 'off' ? 'off' : state.mode);
+        if (!validConnect(payload)) return;
+        var changed = state.session !== payload.session_id || state.connectRequestId !== payload.request_id;
+        if (changed) {
+          invalidateScreenshot();
+          // Reset BEFORE ready: a synchronous test/host can immediately
+          // send mode from its ready callback, which must not be overwritten.
+          handleMode('off');
+          clearSelection();
         }
+        state.session = payload.session_id;
+        state.connectRequestId = payload.request_id;
+        sendReady(state.session);
         return;
       }
       if (!state.session || payload.session_id !== state.session) return;
+      if (payload.type === TYPE_SCREENSHOT_REQUEST) { onScreenshotRequest(payload); return; }
+      if (payload.type === TYPE_SCREENSHOT_CANCEL) {
+        if (state.screenshotJob && state.screenshotJob.request === payload.request_id) cancelScreenshot('canceled');
+        return;
+      }
       if (payload.type === TYPE_MODE) {
         if (typeof payload.mode === 'string' && modeHints[payload.mode] !== undefined) {
           handleMode(payload.mode);
@@ -747,10 +1232,25 @@
       }
     }
 
+    function onPageHide() {
+      invalidateScreenshot();
+      handleMode('off');
+      clearSelection();
+      state.session = null;
+      state.connectRequestId = null;
+    }
+
     // Navigation notifications come from the module-level shared history
     // dispatcher; this instance only registers/unregisters its handler.
     registerInstance(onUrlChanged);
 
+    document.addEventListener('pointerdown', onPointerControl, true);
+    document.addEventListener('pointerup', onPointerControl, true);
+    document.addEventListener('mousedown', onSelectStart, true);
+    document.addEventListener('mousemove', onSelectMove, true);
+    document.addEventListener('mouseup', onSelectEnd, true);
+    document.addEventListener('dblclick', onAuxClick, true);
+    document.addEventListener('auxclick', onAuxClick, true);
     document.addEventListener('mouseover', onHover, true);
     document.addEventListener('click', onClick, true);
     document.addEventListener('mousedown', onRegionStart, true);
@@ -761,10 +1261,13 @@
     window.addEventListener('message', onMessage);
     window.addEventListener('popstate', onUrlChanged);
     window.addEventListener('hashchange', onUrlChanged);
-    window.addEventListener('pagehide', teardownOverlay);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('scroll', onCaptureEnvironmentChanged, true);
+    window.addEventListener('resize', onCaptureEnvironmentChanged);
 
-    return {
+    var instance = {
       setRevision(nextRevision) {
+        if (state.disposed) return;
         // A real revision change is a document change: run the same
         // invalidation as navigation so a region drag started under the old
         // revision cannot be released as a target stamped with the new one
@@ -785,8 +1288,18 @@
       mode() { return state.mode; },
       dispose() {
         if (state.disposed) return;
+        invalidateScreenshot();
         state.disposed = true;
+        state.mode = 'off';
         teardownOverlay();
+        clearSelection();
+        document.removeEventListener('pointerdown', onPointerControl, true);
+        document.removeEventListener('pointerup', onPointerControl, true);
+        document.removeEventListener('mousedown', onSelectStart, true);
+        document.removeEventListener('mousemove', onSelectMove, true);
+        document.removeEventListener('mouseup', onSelectEnd, true);
+        document.removeEventListener('dblclick', onAuxClick, true);
+        document.removeEventListener('auxclick', onAuxClick, true);
         document.removeEventListener('mouseover', onHover, true);
         document.removeEventListener('click', onClick, true);
         document.removeEventListener('mousedown', onRegionStart, true);
@@ -797,15 +1310,42 @@
         window.removeEventListener('message', onMessage);
         window.removeEventListener('popstate', onUrlChanged);
         window.removeEventListener('hashchange', onUrlChanged);
-        window.removeEventListener('pagehide', teardownOverlay);
+        window.removeEventListener('pagehide', onPageHide);
+        window.removeEventListener('scroll', onCaptureEnvironmentChanged, true);
+        window.removeEventListener('resize', onCaptureEnvironmentChanged);
         unregisterInstance(onUrlChanged);
         state.session = null;
+        liveInstances.delete(instance);
+        if (singleton === instance) {
+          singleton = null;
+          bootstrapStopped = true;
+          stopBootstrap(); // disposing must not silently resurrect a channel
+        }
       },
     };
+    liveInstances.set(instance, {
+      parentOrigin: parentOrigin,
+      onMessage: onMessage,
+      configure(config) {
+        // Explicit configuration upgrades the automatic instance in place.
+        if (Object.prototype.hasOwnProperty.call(config, 'getElementId')) {
+          customGetElementId = typeof config.getElementId === 'function' ? config.getElementId : null;
+        }
+        if (Object.prototype.hasOwnProperty.call(config, 'revision')) instance.setRevision(config.revision);
+      },
+    });
+    return instance;
   }
 
   window.CatsCoAnnotations = {
-    create: createInstance,
+    create: createConfigured,
+    bootstrapAttribute: bootstrapAttribute,
+    dispose() {
+      bootstrapStopped = true;
+      stopBootstrap();
+      Array.from(liveInstances.keys()).forEach(function (instance) { instance.dispose(); });
+    },
+    runtimeVersion: 'annotations-v1',
     bridgeContract: BRIDGE_CONTRACT,
     types: {
       connect: TYPE_CONNECT,
@@ -813,6 +1353,10 @@
       mode: TYPE_MODE,
       target: TYPE_TARGET,
       page: TYPE_PAGE,
+      screenshotRequest: TYPE_SCREENSHOT_REQUEST,
+      screenshotResult: TYPE_SCREENSHOT_RESULT,
+      screenshotCancel: TYPE_SCREENSHOT_CANCEL,
     },
   };
+  bootstrapAttribute(originsAttribute);
 })();

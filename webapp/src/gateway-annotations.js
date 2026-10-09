@@ -9,6 +9,35 @@
 // SDK never posts chat messages by itself.
 
 export const GATEWAY_ANNOTATIONS_CONTRACT = 'catsco.gateway-annotations.v1';
+export const ARTIFACT_OPEN_BINDING_CONTRACT = 'catsco.artifact-open-binding.v1';
+
+// Parent-only server capability. Never include this object in bridge messages.
+// Expired certificates remain readable for draft recovery; callers explicitly
+// check usability at capture and again at submit, rather than guessing a topic.
+export function normalizeArtifactOpenBinding(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || value.contract_version !== ARTIFACT_OPEN_BINDING_CONTRACT
+    || !/^aob_[A-Za-z0-9_-]{16,256}$/.test(value.open_ref || '')
+    || typeof value.topic_id !== 'string' || !value.topic_id.trim()
+    || value.topic_id.length > 256 || /[\u0000-\u001f\u007f]/.test(value.topic_id)
+    || !Number.isSafeInteger(value.agent_uid) || value.agent_uid <= 0
+    || !/^[a-z][a-z0-9_-]{0,47}$/.test(value.app_id || '')
+    || typeof value.expires_at !== 'string' || !Number.isFinite(Date.parse(value.expires_at))) return null;
+  try {
+    const origin = new URL(value.app_origin);
+    if (!['https:', 'http:'].includes(origin.protocol) || origin.origin !== value.app_origin) return null;
+  } catch { return null; }
+  return {
+    contract_version: ARTIFACT_OPEN_BINDING_CONTRACT,
+    open_ref: value.open_ref, topic_id: value.topic_id, agent_uid: value.agent_uid,
+    app_id: value.app_id, app_origin: value.app_origin, expires_at: value.expires_at,
+  };
+}
+
+export function artifactOpenBindingUsable(value, now = Date.now()) {
+  const binding = normalizeArtifactOpenBinding(value);
+  return Boolean(binding && Date.parse(binding.expires_at) > now);
+}
 export const GATEWAY_ANNOTATION_BRIDGE_CONTRACT = 'catsco.gateway-annotation-bridge.v1';
 
 export const GATEWAY_HOST_CONNECT_TYPE = 'catsco.gateway.annotation.connect.v1';
@@ -16,9 +45,65 @@ export const GATEWAY_SDK_READY_TYPE = 'catsco.gateway.annotation.ready.v1';
 export const GATEWAY_HOST_MODE_TYPE = 'catsco.gateway.annotation.mode.v1';
 export const GATEWAY_SDK_TARGET_TYPE = 'catsco.gateway.annotation.target.v1';
 export const GATEWAY_SDK_PAGE_TYPE = 'catsco.gateway.annotation.page.v1';
+export const GATEWAY_SCREENSHOT_REQUEST_TYPE = 'catsco.gateway.annotation.screenshot.request.v1';
+export const GATEWAY_SCREENSHOT_RESULT_TYPE = 'catsco.gateway.annotation.screenshot.result.v1';
+export const GATEWAY_SCREENSHOT_CANCEL_TYPE = 'catsco.gateway.annotation.screenshot.cancel.v1';
+
+const SCREENSHOT_WARNINGS = ['cross-origin-image', 'unloaded-image', 'video', 'embedded-content', 'webgl-canvas', 'unreadable-canvas', 'cross-origin-background', 'sensitive-content-masked'];
+
+function jpegDimensions(raw) {
+  let offset = 2;
+  while (offset + 4 <= raw.length) {
+    if (raw.charCodeAt(offset++) !== 255) return null;
+    while (raw.charCodeAt(offset) === 255) offset++;
+    const marker = raw.charCodeAt(offset++);
+    if (marker === 217 || marker === 218) return null;
+    const size = raw.charCodeAt(offset) * 256 + raw.charCodeAt(offset + 1);
+    if (size < 2 || offset + size > raw.length) return null;
+    if ([192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207].includes(marker)) {
+      if (size < 8) return null;
+      return { height: raw.charCodeAt(offset + 3) * 256 + raw.charCodeAt(offset + 4),
+        width: raw.charCodeAt(offset + 5) * 256 + raw.charCodeAt(offset + 6) };
+    }
+    offset += size;
+  }
+  return null;
+}
+
+// Bound each input BEFORE decoding: untrusted frame binary is never canonical
+// annotation JSON. JPEG marker + geometry checked again by UI image decoding.
+export function normalizeGatewayScreenshotResult(value) {
+  if (!plainObject(value) || !Array.isArray(value.screenshots) || value.screenshots.length !== 2
+    || !Array.isArray(value.warnings) || value.warnings.length > 16
+    || value.warnings.some((item) => !SCREENSHOT_WARNINGS.includes(item))) return null;
+  const images = [];
+  let total = 0;
+  for (let index = 0; index < 2; index++) {
+    const image = value.screenshots[index];
+    if (!plainObject(image) || image.role !== (index === 0 ? 'full' : 'crop') || image.mime_type !== 'image/jpeg'
+      || !Number.isInteger(image.width) || !Number.isInteger(image.height) || image.width < 1 || image.height < 1
+      || image.width > 2048 || image.height > 2048 || typeof image.data_url !== 'string'
+      || image.data_url.length > 23 + 4 * Math.ceil(2 * 1024 * 1024 / 3)) return null;
+    const encoded = image.data_url.slice(23);
+    if (!image.data_url.startsWith('data:image/jpeg;base64,') || !encoded.length || encoded.length % 4 !== 0
+      || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) return null;
+    const bytes = encoded.length * 3 / 4 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
+    if (bytes > 2 * 1024 * 1024) return null;
+    let raw;
+    try { raw = atob(encoded); } catch { return null; }
+    if (raw.length !== bytes || bytes < 4 || raw.charCodeAt(0) !== 255 || raw.charCodeAt(1) !== 216
+      || raw.charCodeAt(bytes - 2) !== 255 || raw.charCodeAt(bytes - 1) !== 217) return null;
+    const geometry = jpegDimensions(raw);
+    if (!geometry || geometry.width !== image.width || geometry.height !== image.height) return null;
+    total += bytes;
+    images.push({ role: image.role, mime_type: image.mime_type, data_url: image.data_url, width: image.width, height: image.height });
+  }
+  if (total > 4 * 1024 * 1024 || images[1].width > images[0].width || images[1].height > images[0].height) return null;
+  return { screenshots: images, warnings: Array.from(new Set(value.warnings)) };
+}
 
 const SUPPORTED_KINDS = ['element', 'text', 'region'];
-const SUPPORTED_MODES = ['off', 'element', 'text', 'region'];
+const SUPPORTED_MODES = ['off', 'select', 'element', 'text', 'region'];
 const SUPPORTED_CAPABILITIES = ['element', 'text', 'region'];
 
 // Gateway application ids use the same naming rule as server/artifact_launch.go.
@@ -265,7 +350,7 @@ function postToFrame(binding, message) {
 }
 
 function bindingKey(binding) {
-  return `${binding?.agentUid ?? ''}|${binding?.appId ?? ''}`;
+  return `${binding?.agentUid ?? ''}|${binding?.appId ?? ''}|${binding?.openBinding?.open_ref ?? ''}|${bindingOrigin(binding)}`;
 }
 
 // Session identity -------------------------------------------------------
@@ -290,6 +375,7 @@ export function createGatewayAnnotationHost({
   onSelection,
   onPageChange,
   onUnavailable,
+  onModeChange,
 } = {}) {
   if (typeof getBinding !== 'function') {
     throw new Error('getBinding is required');
@@ -302,6 +388,9 @@ export function createGatewayAnnotationHost({
     page: null,
     signal: null,
     onAbort: null,
+    selection: null,
+    screenshot: null,
+    screenshotSupported: false,
   };
 
   function watchSignal(binding) {
@@ -333,6 +422,9 @@ export function createGatewayAnnotationHost({
   }
 
   function revoke(reason = 'rebind', { silent = false } = {}) {
+    cancelScreenshot('stale-document');
+    state.selection = null;
+    state.screenshotSupported = false;
     const previous = state.session;
     state.session = null;
     state.readyNotified = false;
@@ -401,6 +493,7 @@ export function createGatewayAnnotationHost({
     }
     const reportedPage = normalizedPage(payload.page) ?? defaultPage();
     state.page = reportedPage;
+    state.screenshotSupported = payload.screenshot_supported === true;
     state.ready = { capabilities: capabilities.slice(), page: reportedPage };
     state.readyNotified = true;
     notify(onReady, state.ready);
@@ -428,6 +521,8 @@ export function createGatewayAnnotationHost({
     }
     // A page report is a full snapshot of the frame's current document:
     // replace, never merge — a dropped revision must actually drop.
+    cancelScreenshot('stale-document');
+    state.selection = null;
     state.page = page;
     notify(onPageChange, state.page);
   }
@@ -442,9 +537,13 @@ export function createGatewayAnnotationHost({
     // Out-of-mode messages are silent noise (a buggy or racing SDK), not
     // reportable protocol violations; kind is checked on the raw payload
     // before deeper schema validation.
-    if (payload?.selection?.kind !== mode) return;
+    if (mode === 'select' ? !SUPPORTED_KINDS.includes(payload?.selection?.kind) : payload?.selection?.kind !== mode) return;
     const selection = normalizeGatewayAnnotationSelection(payload.selection);
     if (selection === null) {
+      notify(onUnavailable, state.session.binding, 'bad-selection');
+      return;
+    }
+    if (mode === 'select' && (!selection.target.rect || selection.target.coordinate_space !== 'viewport' || !selection.target.viewport)) {
       notify(onUnavailable, state.session.binding, 'bad-selection');
       return;
     }
@@ -464,7 +563,107 @@ export function createGatewayAnnotationHost({
       notify(onUnavailable, state.session.binding, 'page-drift');
       return;
     }
+    cancelScreenshot('selection-changed');
+    state.selection = { id: selection.id, page: { ...state.page }, target: selection.target };
     notify(onSelection, selection, state.page);
+  }
+
+  function screenshotError(code) {
+    const error = new Error(code);
+    error.code = code;
+    return error;
+  }
+
+  function cancelScreenshot(reason = 'canceled') {
+    const pending = state.screenshot;
+    if (!pending) return false;
+    state.screenshot = null;
+    clearTimeout(pending.timer);
+    pending.signal?.removeEventListener('abort', pending.onAbort);
+    if (state.session && pending.session === state.session.token) postToFrame(state.session.binding, {
+      type: GATEWAY_SCREENSHOT_CANCEL_TYPE, contract_version: GATEWAY_ANNOTATION_BRIDGE_CONTRACT,
+      session_id: pending.session, request_id: pending.request,
+    });
+    pending.reject(screenshotError(reason));
+    return true;
+  }
+
+  function failScreenshot(pending, reason) {
+    if (state.screenshot !== pending) return;
+    state.screenshot = null;
+    clearTimeout(pending.timer);
+    pending.signal?.removeEventListener('abort', pending.onAbort);
+    pending.reject(screenshotError(reason));
+  }
+
+  function captureScreenshot({ selectionId, page, signal } = {}) {
+    if (state.disposed || !revalidateBinding() || !state.session || !state.ready) return Promise.reject(screenshotError('stale-document'));
+    if (!state.screenshotSupported) return Promise.reject(screenshotError('screenshot-unavailable'));
+    const targetPage = normalizedPage(page);
+    const selected = state.selection;
+    if (!selected || selectionId !== selected.id || !targetPage || targetPage.path !== state.page.path
+      || (targetPage.revision || '') !== (state.page.revision || '') || !selected.target.rect
+      || selected.target.coordinate_space !== 'viewport' || !selected.target.viewport) return Promise.reject(screenshotError('stale-selection'));
+    if (signal?.aborted) return Promise.reject(screenshotError('canceled'));
+    cancelScreenshot('superseded');
+    return new Promise((resolve, reject) => {
+      const pending = { request: createSessionToken(), session: state.session.token, selection: selected,
+        page: { ...targetPage }, resolve, reject, signal, timer: null, onAbort: null };
+      state.screenshot = pending;
+      pending.onAbort = () => cancelScreenshot('canceled');
+      signal?.addEventListener('abort', pending.onAbort, { once: true });
+      pending.timer = setTimeout(() => cancelScreenshot('capture-timeout'), 20000);
+      if (!postToFrame(state.session.binding, { type: GATEWAY_SCREENSHOT_REQUEST_TYPE,
+        contract_version: GATEWAY_ANNOTATION_BRIDGE_CONTRACT, session_id: pending.session,
+        request_id: pending.request, selection_id: selected.id, page: pending.page })) cancelScreenshot('screenshot-unavailable');
+    });
+  }
+
+  function handleScreenshot(payload) {
+    const pending = state.screenshot;
+    if (!pending || payload.request_id !== pending.request || payload.selection_id !== pending.selection.id) return;
+    const page = normalizedPage(payload.page);
+    if (!page || page.path !== pending.page.path || (page.revision || '') !== (pending.page.revision || '')
+      || state.selection !== pending.selection) { failScreenshot(pending, 'stale-document'); return; }
+    if (payload.error) {
+      const allowed = ['canceled', 'superseded', 'selection-changed', 'stale-document', 'bad-geometry', 'page-too-large',
+        'renderer-unavailable', 'capture-failed', 'capture-busy', 'image-too-large', 'encode-failed', 'canvas-unavailable'];
+      const code = plainObject(payload.error) && allowed.includes(payload.error.code) ? payload.error.code : 'capture-failed';
+      failScreenshot(pending, code);
+      return;
+    }
+    const normalized = normalizeGatewayScreenshotResult(payload);
+    const viewport = pending.selection.target.viewport;
+    const scale = normalized ? normalized.screenshots[0].width / viewport.width : 0;
+    if (!normalized || scale <= 0 || scale > 2 || Math.abs(normalized.screenshots[0].height - viewport.height * scale) > 2) {
+      failScreenshot(pending, 'bad-screenshot'); return;
+    }
+    const full = normalized.screenshots[0], crop = normalized.screenshots[1], rect = pending.selection.target.rect;
+    const left = Math.max(0, Math.floor(rect.x * full.width - 16 * full.width / viewport.width));
+    const top = Math.max(0, Math.floor(rect.y * full.height - 16 * full.height / viewport.height));
+    // Mirror the SDK exactly: multiply each axis by the bitmap dimension first,
+    // then sum. Summing the rect first can differ by one pixel on floats.
+    const right = Math.min(full.width, Math.ceil(rect.x * full.width + rect.width * full.width + 16 * full.width / viewport.width));
+    const bottom = Math.min(full.height, Math.ceil(rect.y * full.height + rect.height * full.height + 16 * full.height / viewport.height));
+    if (crop.width !== Math.max(1, right - left) || crop.height !== Math.max(1, bottom - top)) {
+      failScreenshot(pending, 'bad-screenshot'); return;
+    }
+    state.screenshot = null;
+    clearTimeout(pending.timer);
+    pending.signal?.removeEventListener('abort', pending.onAbort);
+    pending.resolve({ request_id: pending.request, session_id: pending.session, selection_id: pending.selection.id,
+      page: pending.page, ...normalized });
+  }
+
+  function handleModeExit(payload) {
+    // Only the SDK's explicit Escape exit may change host mode. It must
+    // belong to the ready document/session, never to an old page or frame.
+    if (!state.ready || state.session.mode !== 'select' || payload.mode !== 'off') return;
+    const page = normalizedPage(payload.page);
+    if (!page || page.path !== state.page.path || (page.revision || '') !== (state.page.revision || '')) return;
+    state.session.mode = 'off';
+    setModeInternal();
+    notify(onModeChange, 'off');
   }
 
   function handleWindowMessage(event) {
@@ -487,6 +686,12 @@ export function createGatewayAnnotationHost({
           return;
         case GATEWAY_SDK_PAGE_TYPE:
           handlePage(event, payload);
+          return;
+        case GATEWAY_SCREENSHOT_RESULT_TYPE:
+          handleScreenshot(payload);
+          return;
+        case GATEWAY_HOST_MODE_TYPE:
+          handleModeExit(payload);
           return;
         default:
           return;
@@ -547,6 +752,7 @@ export function createGatewayAnnotationHost({
     if (!SUPPORTED_MODES.includes(mode)) return false;
     const binding = getBinding();
     if (!binding) return false;
+    if (!revalidateBinding()) return false;
     if (!state.session) {
       const connected = connect(binding);
       if (!connected) return false;
@@ -561,6 +767,9 @@ export function createGatewayAnnotationHost({
     connect,
     setMode,
     handleWindowMessage,
+    captureScreenshot,
+    cancelScreenshot,
+    screenshotSupported: () => state.screenshotSupported && !state.disposed,
     hasSession: () => state.session !== null && !state.disposed,
     readyCapabilities: () => (state.ready ? state.ready.capabilities.slice() : []),
     deactivate() {

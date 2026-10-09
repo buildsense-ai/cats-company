@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import './gateway-annotation-popover.css';
 import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
@@ -20,6 +21,8 @@ import {
   X,
 } from 'lucide-react';
 import { api, resolveMediaURL } from '../api';
+import { getAuthRevision, getToken } from '../auth-session';
+import { normalizeArtifactOpenBinding, artifactOpenBindingUsable } from '../gateway-annotations';
 import { useFeedback } from '../components/feedback-system';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import { previewFileDescriptor } from './chat-message';
@@ -157,6 +160,10 @@ export default function CloudArtifactsPanel({
   onGatewayFrameChange,
   onGatewayAnnotationMode,
   onGatewayAnnotationState,
+  annotationCapture,
+  onAnnotationSubmit,
+  onAnnotationScreenshot,
+  onAnnotationCancel,
 }) {
   const feedback = useFeedback();
   const normalizedInitialTab = ['active', 'deleted', 'files', 'gateway'].includes(initialTab)
@@ -187,6 +194,16 @@ export default function CloudArtifactsPanel({
   const [renamingDraft, setRenamingDraft] = useState('');
   const [pendingGlobalTag, setPendingGlobalTag] = useState('');
   const gatewayBindingControllerRef = useRef(null);
+  const gatewayOpenRef = useRef(null);
+  const gatewayOpenSequenceRef = useRef(0);
+  const retireGatewayOpen = useCallback(() => {
+    ++gatewayOpenSequenceRef.current;
+    gatewayBindingControllerRef.current?.abort();
+    gatewayBindingControllerRef.current = null;
+    const previous = gatewayOpenRef.current;
+    gatewayOpenRef.current = null;
+    if (previous?.open_ref) void api.revokeArtifactOpenBinding(previous.open_ref).catch(() => {});
+  }, []);
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -229,8 +246,7 @@ export default function CloudArtifactsPanel({
     // 「文件」依赖 topicId；'gateway'（应用）是跨域公共只读清单，两者互不影响。
     if (nextTab === 'files' && !topicId) return;
     if (tab === 'gateway' && nextTab !== 'gateway') {
-      gatewayBindingControllerRef.current?.abort();
-      gatewayBindingControllerRef.current = null;
+      retireGatewayOpen();
       onGatewayFrameChange?.(null);
       setGatewayPreview(null);
       setGatewayAnnotationMode('off');
@@ -308,13 +324,27 @@ export default function CloudArtifactsPanel({
   // for any reason we still open the plain URL, so the action never dead-ends.
   const openGatewayApp = useCallback(async (app, target = 'panel') => {
     if (!app?.id || !app?.url) return;
+    // Standalone windows are identity-only: no parent annotation channel and
+    // no binding to leak/retain. Panel opens own one capability per instance.
+    const requestID = ++gatewayOpenSequenceRef.current;
+    const authRevision = getAuthRevision();
+    const token = getToken();
+    let openBinding = null;
     let viewerURL = app.url;
     let visitor = true;
     let artifact = null;
     let metadataError = '';
     try {
-      const launch = await api.requestArtifactLaunch({ app: app.id, topic_id: topicId });
+      const launch = await api.requestArtifactLaunch({ app: app.id, ...(target === 'panel' && topicId ? { topic_id: topicId } : {}) });
       if (launch?.launch_url) { viewerURL = launch.launch_url; visitor = false; }
+      openBinding = normalizeArtifactOpenBinding(launch?.open_binding);
+      if (openBinding && (openBinding.topic_id !== String(topicId || '')
+        || openBinding.agent_uid !== Number(agentUid) || openBinding.app_id !== app.id
+        || openBinding.app_origin !== new URL(app.url).origin
+        || openBinding.app_origin !== new URL(viewerURL).origin)) {
+        void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
+        openBinding = null;
+      }
     } catch {
       // Keep the plain URL; the application will render as a guest.
     }
@@ -339,11 +369,17 @@ export default function CloudArtifactsPanel({
         });
       }
     }
+    if (requestID !== gatewayOpenSequenceRef.current || getAuthRevision() !== authRevision || getToken() !== token) {
+      if (openBinding) void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
+      return;
+    }
     if (target === 'window') {
+      if (openBinding) void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
       window.open(viewerURL, '_blank', 'noopener,noreferrer');
       return;
     }
-    gatewayBindingControllerRef.current?.abort();
+    retireGatewayOpen();
+    gatewayOpenRef.current = openBinding;
     const bindingController = new AbortController();
     gatewayBindingControllerRef.current = bindingController;
     onGatewayFrameChange?.(null);
@@ -353,27 +389,39 @@ export default function CloudArtifactsPanel({
       visitor,
       artifact,
       metadataError,
+      openBinding,
       bindingSignal: bindingController.signal,
     });
     setGatewayAnnotationMode('off');
-    setGatewayAnnotationCapabilityNote('');
-  }, [agentUid, onGatewayFrameChange, topicId]);
+    setGatewayAnnotationCapabilityNote(artifactOpenBindingUsable(openBinding)
+      ? '' : '会话绑定不可用，标注已禁用，请在原会话重新打开应用');
+  }, [agentUid, onGatewayFrameChange, topicId, retireGatewayOpen]);
 
   useEffect(() => () => {
-    gatewayBindingControllerRef.current?.abort();
-    gatewayBindingControllerRef.current = null;
+    retireGatewayOpen();
     onGatewayFrameChange?.(null);
     modeSyncRef.current = null;
-  }, [onGatewayFrameChange]);
+  }, [onGatewayFrameChange, retireGatewayOpen]);
+
+  useEffect(() => {
+    const invalidate = () => {
+      retireGatewayOpen();
+      onGatewayFrameChange?.(null);
+      setGatewayPreview(null);
+      setGatewayAnnotationMode('off');
+    };
+    window.addEventListener('cc:auth-changed', invalidate);
+    return () => window.removeEventListener('cc:auth-changed', invalidate);
+  }, [onGatewayFrameChange, retireGatewayOpen]);
 
   // The toolbar renders host-acknowledged state only. User intent travels up
   // through onGatewayAnnotationMode; the host (messages view) reports the
   // accepted state back through onGatewayAnnotationState, so neither the
   // cross-origin frame nor a double-click can drive toolbar state directly.
   const handleAnnotationModeSelect = useCallback((event) => {
-    const mode = event?.currentTarget?.dataset?.annotationMode || 'off';
+    const mode = gatewayAnnotationMode === 'select' ? 'off' : 'select';
     onGatewayAnnotationMode?.(mode);
-  }, [onGatewayAnnotationMode]);
+  }, [onGatewayAnnotationMode, gatewayAnnotationMode]);
 
   useEffect(() => {
     if (typeof onGatewayAnnotationState !== 'function') return undefined;
@@ -393,6 +441,8 @@ export default function CloudArtifactsPanel({
     setArtifacts([]);
     setFiles([]);
     setGatewayApps([]);
+    retireGatewayOpen();
+    onGatewayFrameChange?.(null);
     setGatewayPreview(null);
     setViewerRelation('');
     setCanPublish(false);
@@ -418,12 +468,18 @@ export default function CloudArtifactsPanel({
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      if (annotationCapture || gatewayAnnotationMode !== 'off') {
+        event.preventDefault();
+        onAnnotationCancel?.();
+        onGatewayAnnotationMode?.('off');
+        return;
+      }
       // A nested confirmation owns Escape and must not close its parent panel.
       if (!confirmTag && !confirmArtifact) onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [confirmArtifact, confirmTag, onClose]);
+  }, [confirmArtifact, confirmTag, onClose, annotationCapture, gatewayAnnotationMode, onAnnotationCancel, onGatewayAnnotationMode]);
 
   const copyURL = async (artifact) => {
     try {
@@ -851,6 +907,21 @@ export default function CloudArtifactsPanel({
                 <ArrowLeft size={18} />
               </button>
             )}
+            {tab === 'gateway' && gatewayPreview && (
+              <button
+                type="button"
+                className={`cloud-artifacts-annotation-toggle${gatewayAnnotationMode === 'select' ? ' is-active' : ''}`}
+                aria-label="批注应用"
+                aria-pressed={gatewayAnnotationMode === 'select'}
+                title={artifactOpenBindingUsable(gatewayPreview.openBinding)
+                  ? '点击选择元素，拖动画框；评论直接发送至原会话（Esc 退出）'
+                  : '会话绑定不可用，请在原会话重新打开应用'}
+                disabled={!artifactOpenBindingUsable(gatewayPreview.openBinding)}
+                onClick={handleAnnotationModeSelect}
+              >
+                <Pencil size={18} aria-hidden="true" />
+              </button>
+            )}
             <button type="button" onClick={() => loadContent()} disabled={loading} aria-label="刷新当前栏目" title="刷新">
               <RefreshCw size={18} className={loading ? 'is-spinning' : ''} />
             </button>
@@ -968,8 +1039,7 @@ export default function CloudArtifactsPanel({
                 <button
                   type="button"
                   onClick={() => {
-                    gatewayBindingControllerRef.current?.abort();
-                    gatewayBindingControllerRef.current = null;
+                    retireGatewayOpen();
                     onGatewayFrameChange?.(null);
                     setGatewayPreview(null);
                   }}
@@ -980,31 +1050,6 @@ export default function CloudArtifactsPanel({
                 <span className="cloud-artifacts-gateway-viewer-title">
                   {gatewayPreview.title || gatewayPreview.id}
                 </span>
-                {topicId && agentUid > 0 && (
-                  <div className="cloud-artifacts-gateway-annotation-tools" role="group" aria-label="应用标注">
-                    {[['element', '元素'], ['text', '文本'], ['region', '区域']].map(([mode, modeLabel]) => (
-                      <button
-                        key={mode}
-                        type="button"
-                        data-annotation-mode={mode}
-                        className={`cloud-artifacts-gateway-annotation-mode${gatewayAnnotationMode === mode ? ' is-active' : ''}${gatewayAnnotationMode === 'off' ? '' : ' is-secondary'}`}
-                        aria-pressed={gatewayAnnotationMode === mode}
-                        onClick={handleAnnotationModeSelect}
-                      >
-                        {modeLabel}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      data-annotation-mode="off"
-                      className={`cloud-artifacts-gateway-annotation-mode is-off${gatewayAnnotationMode === 'off' ? ' is-active' : ''}`}
-                      aria-pressed={gatewayAnnotationMode === 'off'}
-                      onClick={handleAnnotationModeSelect}
-                    >
-                      取消
-                    </button>
-                  </div>
-                )}
                 <button
                   type="button"
                   aria-label={'在新页面打开 ' + (gatewayPreview.title || gatewayPreview.id || '')}
@@ -1020,9 +1065,7 @@ export default function CloudArtifactsPanel({
               )}
               {gatewayAnnotationMode !== 'off' && (
                 <p className="cloud-artifacts-gateway-annotation-hint" role="status">
-                  {gatewayAnnotationMode === 'element' && '点击应用中的一个元素进行标注（密码、令牌等敏感输入框不可标注）。'}
-                  {gatewayAnnotationMode === 'text' && '在应用中选中一段文本后释放，即可为该选区写标注。'}
-                  {gatewayAnnotationMode === 'region' && '在应用页面按住并拖出一块矩形区域进行标注。区域按截图比例记录，刷新后会失效，仅用于参考。'}
+                  点击元素或拖动画框，随后在选区旁写评论并发送至原会话。Esc 退出。
                 </p>
               )}
               {(gatewayPreview.visitor || gatewayPreview.metadataError) && (
@@ -1034,6 +1077,15 @@ export default function CloudArtifactsPanel({
                     .filter(Boolean).join('；')}
                 </p>
               )}
+              {annotationCapture && (
+                <GatewayAnnotationPopover
+                  key={annotationCapture.captureKey}
+                  capture={annotationCapture}
+                  onSubmit={onAnnotationSubmit}
+                  onScreenshot={onAnnotationScreenshot}
+                  onCancel={onAnnotationCancel}
+                />
+              )}
               <iframe
                 className="cloud-artifacts-gateway-frame"
                 src={gatewayPreview.viewerURL || gatewayPreview.url}
@@ -1043,6 +1095,7 @@ export default function CloudArtifactsPanel({
                   url: gatewayPreview.viewerURL || gatewayPreview.url,
                   artifact: gatewayPreview.artifact,
                   signal: gatewayPreview.bindingSignal,
+                  openBinding: gatewayPreview.openBinding,
                   annotationApp: {
                     appId: gatewayPreview.id,
                     title: gatewayPreview.title || gatewayPreview.id,
@@ -1138,6 +1191,137 @@ export default function CloudArtifactsPanel({
       </section>
     </>
   );
+}
+
+function GatewayAnnotationPopover({ capture, onSubmit, onScreenshot, onCancel }) {
+  const [body, setBody] = useState('');
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  const [position, setPosition] = useState(null);
+  const [screenshot, setScreenshot] = useState(null);
+  const [screenshotState, setScreenshotState] = useState('capturing');
+  const [screenshotError, setScreenshotError] = useState('');
+  const [textOnly, setTextOnly] = useState(false);
+  const screenshotGenerationRef = useRef(0);
+  const screenshotControllerRef = useRef(null);
+  const captureScreenshot = useCallback(async () => {
+    const generation = ++screenshotGenerationRef.current;
+    screenshotControllerRef.current?.abort();
+    const controller = new AbortController();
+    screenshotControllerRef.current = controller;
+    setScreenshotState('capturing'); setScreenshotError(''); setScreenshot(null); setTextOnly(false);
+    try {
+      if (typeof onScreenshot !== 'function') throw new Error('截图组件未就绪，请重试');
+      const result = await onScreenshot(capture, controller.signal);
+      if (!activeRef.current || generation !== screenshotGenerationRef.current) return;
+      setScreenshot(result); setScreenshotState('ready');
+    } catch (failure) {
+      if (!activeRef.current || generation !== screenshotGenerationRef.current) return;
+      setScreenshotState('failed'); setScreenshotError(failure?.message || '截图失败，请重试');
+    }
+  }, [capture, onScreenshot]);
+  const popupRef = useRef(null);
+  const inputRef = useRef(null);
+  const activeRef = useRef(true);
+  const sendingRef = useRef(false);
+  useEffect(() => {
+    activeRef.current = true;
+    inputRef.current?.focus();
+    return () => { activeRef.current = false; screenshotControllerRef.current?.abort(); };
+  }, []);
+  useEffect(() => { void captureScreenshot(); }, [captureScreenshot]);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const frame = capture.frame;
+      if (!frame?.isConnected) { onCancel?.(); return; }
+      const bounds = frame.getBoundingClientRect();
+      const rect = capture.target?.rect;
+      const target = rect ? {
+        left: bounds.left + rect.x * bounds.width,
+        top: bounds.top + rect.y * bounds.height,
+        width: rect.width * bounds.width,
+        height: rect.height * bounds.height,
+      } : null;
+      const width = Math.min(320, Math.max(160, window.innerWidth - 24));
+      const height = popupRef.current?.offsetHeight || 260;
+      const anchorX = target?.left ?? bounds.left + 12;
+      const below = target ? target.top + target.height + 8 : bounds.top + 12;
+      const top = below + height <= window.innerHeight - 12 ? below
+        : target ? target.top - height - 8 : below;
+      setPosition({ width, left: Math.max(12, Math.min(anchorX, window.innerWidth - width - 12)),
+        top: Math.max(12, Math.min(top, window.innerHeight - height - 12)), target });
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    observer?.observe(capture.frame);
+    if (popupRef.current) observer?.observe(popupRef.current);
+    window.addEventListener('resize', measure);
+    const scrolled = event => {
+      if (!(event.target instanceof Node) || !popupRef.current?.contains(event.target)) onCancel?.();
+    };
+    window.addEventListener('scroll', scrolled, true);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', scrolled, true); };
+  }, [capture, onCancel]);
+  const submit = async () => {
+    const comment = body.trim();
+    if (!comment || comment.length > 2000 || sendingRef.current || screenshotState === 'capturing'
+      || (!textOnly && screenshotState !== 'ready')) return;
+    sendingRef.current = true;
+    setPending(true); setError('');
+    try {
+      await onSubmit?.(capture, comment, textOnly ? null : screenshot);
+    } catch (failure) {
+      if (activeRef.current) setError(failure?.message || '发送失败，请重试');
+    } finally {
+      sendingRef.current = false;
+      if (activeRef.current) setPending(false);
+    }
+  };
+  const targetSummary = capture.target?.element_id ? `#${capture.target.element_id}`
+    : capture.target?.text || capture.target?.selector || '所选区域（仅位置参考）';
+  return createPortal(<>
+    {position?.target && <div className="gateway-annotation-target-outline" aria-hidden="true"
+      style={{ left: position.target.left, top: position.target.top,
+        width: position.target.width, height: position.target.height }} />}
+    <section ref={popupRef} className="gateway-annotation-popover" role="dialog" aria-label="应用批注"
+      style={position ? { left: position.left, top: position.top, width: position.width } : { visibility: 'hidden' }}
+      onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCancel?.(); }
+        else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault(); void submit();
+        }
+      }}>
+      <strong className="gateway-annotation-popover-target" title={targetSummary}>{targetSummary}</strong>
+      <textarea ref={inputRef} aria-label="批注内容" placeholder="写下修改建议…" value={body}
+        disabled={pending} onChange={event => setBody(event.currentTarget.value)} />
+      <div className="gateway-annotation-screenshots" aria-label="批注截图">
+        {screenshotState === 'capturing' && <p role="status">正在捕获应用视口与选区…</p>}
+        {screenshotState === 'ready' && screenshot?.screenshots.map(image => (
+          <figure key={image.role}>
+            <img src={image.data_url} alt={image.role === 'full' ? '应用视口截图' : '选区截图'} />
+            <figcaption>{image.role === 'full' ? '应用视口' : '选区及周边'}</figcaption>
+          </figure>
+        ))}
+        {screenshotState === 'failed' && <>
+          <p className="gateway-annotation-popover-error" role="alert">{screenshotError}</p>
+          <button type="button" onClick={() => void captureScreenshot()} disabled={pending}>重新捕获截图</button>
+          <label><input type="checkbox" checked={textOnly} disabled={pending}
+            onChange={event => setTextOnly(event.currentTarget.checked)} />仅发送评论和定位，不含截图</label>
+        </>}
+        {screenshot?.warnings?.length > 0 && <p role="status">部分视觉证据：{screenshot.warnings.join('；')}</p>}
+      </div>
+      <p className="gateway-annotation-popover-note">发送至原会话：评论、应用、页面与目标信息{ textOnly ? '，不含截图。' : '，附应用当前视口和选区截图。' }只截应用，不含聊天或其他窗口；视频或跨域内容可能无法完整捕获。</p>
+      {body.length > 2000 && <p role="alert">评论最多 2000 字，请缩短后发送。</p>}
+      {error && <p className="gateway-annotation-popover-error" role="alert">{error}</p>}
+      <div className="gateway-annotation-popover-actions">
+        <button type="button" onClick={onCancel}>取消</button>
+        <button type="button" disabled={pending || !body.trim() || body.length > 2000 || screenshotState === 'capturing'
+          || (!textOnly && screenshotState !== 'ready')}
+          onClick={() => void submit()}>{pending ? '发送中…' : '发送'}</button>
+      </div>
+    </section>
+  </>, document.body);
 }
 
 function ArtifactConfirm({ label, title, message, actionLabel, pending, error, onClose, onConfirm }) {

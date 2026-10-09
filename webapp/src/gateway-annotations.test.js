@@ -9,6 +9,7 @@ import {
   createGatewayAnnotationHost,
   normalizeGatewayAnnotationSelection,
   normalizeGatewayAnnotations,
+  normalizeGatewayScreenshotResult,
 } from './gateway-annotations';
 
 const BRIDGE = GATEWAY_ANNOTATION_BRIDGE_CONTRACT;
@@ -99,6 +100,270 @@ function validMetadata(overrides = {}) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('single select mode host validation', () => {
+  const evidence = {
+    rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }, coordinate_space: 'viewport',
+    viewport: { width: 1000, height: 1000, scroll_x: 0, scroll_y: 0 },
+  };
+  function readySelect(capabilities = ['element', 'text', 'region']) {
+    const onModeChange = vi.fn();
+    const bus = setup({ callbacks: { onModeChange } });
+    bus.host.connect();
+    const connect = bus.h.connectMessage();
+    const send = (payload, overrides = {}) => bus.h.handleWindowMessage({
+      data: { contract_version: BRIDGE, session_id: connect.session_id, ...payload },
+      origin: bus.h.origin, source: bus.h.contentWindow, ...overrides,
+    });
+    send({ type: GATEWAY_SDK_READY_TYPE, request_id: connect.request_id, capabilities, page: { path: '/board', revision: 'r1' } });
+    expect(bus.host.setMode('select')).toBe(true);
+    const target = (kind, extra = {}) => send({ type: GATEWAY_SDK_TARGET_TYPE, page: { path: '/board', revision: 'r1' },
+      selection: { id: `a-${kind}`, kind, label: '', target: { ...evidence, ...(kind === 'element' ? { element_id: 'button' } : kind === 'text' ? { text: 'selected' } : {}) } }, ...extra });
+    return { ...bus, send, target, onModeChange, connect };
+  }
+
+  it('select accepts all declared machine kinds with bbox while explicit mode keeps kind gating', () => {
+    const { host, callbacks, target } = readySelect();
+    for (const kind of ['element', 'text', 'region']) target(kind);
+    expect(callbacks.onSelection.mock.calls.map(([selection]) => selection.kind)).toEqual(['element', 'text', 'region']);
+    host.setMode('element'); target('region');
+    expect(callbacks.onSelection).toHaveBeenCalledTimes(3);
+    host.dispose();
+  });
+
+  it('select requires bbox evidence and declared capability without relaxing historical normalizers', () => {
+    const { host, callbacks, target } = readySelect(['element']);
+    target('text');
+    expect(callbacks.onUnavailable.mock.calls.at(-1)[1]).toBe('capability-mismatch');
+    target('element', { selection: { id: 'no-box', kind: 'element', target: { element_id: 'button' } } });
+    expect(callbacks.onUnavailable.mock.calls.at(-1)[1]).toBe('bad-selection');
+    target('element', { selection: { id: 'bad-box', kind: 'element', target: { ...evidence, element_id: 'button', rect: { x: 0.9, y: 0, width: 0.4, height: 0.1 } } } });
+    expect(callbacks.onSelection).not.toHaveBeenCalled();
+    host.setMode('element');
+    target('element', { selection: { id: 'legacy-no-box', kind: 'element', target: { element_id: 'button' } } });
+    expect(callbacks.onSelection).toHaveBeenCalledTimes(1);
+    host.dispose();
+  });
+
+  it('select still rejects stale session/page/frame/origin and open capability swap', () => {
+    const { host, callbacks, target, send, h, setBinding, connect } = readySelect();
+    target('region', { session_id: 'old-session' });
+    target('region', { page: { path: '/other', revision: 'r1' } });
+    expect(callbacks.onUnavailable.mock.calls.at(-1)[1]).toBe('page-drift');
+    const data = { type: GATEWAY_SDK_TARGET_TYPE, page: { path: '/board', revision: 'r1' }, selection: { id: 'a', kind: 'region', target: evidence } };
+    send(data, { origin: 'https://evil.example' }); send(data, { source: {} });
+    expect(callbacks.onSelection).not.toHaveBeenCalled();
+    setBinding({ ...bindingFor(h), openBinding: { open_ref: 'another-open' } });
+    target('region', { session_id: connect.session_id });
+    expect(host.hasSession()).toBe(false);
+    expect(callbacks.onSelection).not.toHaveBeenCalled();
+    host.dispose();
+  });
+
+  it('SDK Escape exit is restricted to ready select session/page and notifies parent once', () => {
+    const { host, send, target, onModeChange, callbacks } = readySelect();
+    send({ type: GATEWAY_SDK_MODE_TYPE, mode: 'off', page: { path: '/other', revision: 'r1' } });
+    send({ type: GATEWAY_SDK_MODE_TYPE, mode: 'off', session_id: 'old', page: { path: '/board', revision: 'r1' } });
+    send({ type: GATEWAY_SDK_MODE_TYPE, mode: 'element', page: { path: '/board', revision: 'r1' } });
+    expect(onModeChange).not.toHaveBeenCalled();
+    send({ type: GATEWAY_SDK_MODE_TYPE, mode: 'off', page: { path: '/board', revision: 'r1' } });
+    send({ type: GATEWAY_SDK_MODE_TYPE, mode: 'off', page: { path: '/board', revision: 'r1' } });
+    expect(onModeChange).toHaveBeenCalledExactlyOnceWith('off');
+    target('region'); expect(callbacks.onSelection).not.toHaveBeenCalled();
+    host.dispose();
+  });
+});
+
+describe('gateway screenshot result guards', () => {
+  function jpeg(width, height) {
+    // Minimal baseline JPEG frame: SOI + SOF0(geometry) + EOI, enough for
+    // the host's strict marker/geometry validation.
+    const bytes = [255, 216, 255, 192, 0, 17, 8, (height >> 8) & 255, height & 255,
+      (width >> 8) & 255, width & 255, 3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1, 255, 217];
+    return btoa(String.fromCharCode(...bytes));
+  }
+  const image = (role, width, height, extra = {}) => ({
+    role, mime_type: 'image/jpeg', width, height, data_url: `data:image/jpeg;base64,${jpeg(width, height)}`, ...extra,
+  });
+  const valid = (extra = {}) => ({ screenshots: [image('full', 400, 300), image('crop', 120, 90)], warnings: [], ...extra });
+
+  it('accepts one full/crop pair and re-deduplicates warnings', () => {
+    const result = normalizeGatewayScreenshotResult(valid({ warnings: ['video', 'video'] }));
+    expect(result.screenshots.map((image) => image.role)).toEqual(['full', 'crop']);
+    expect(result.warnings).toEqual(['video']);
+    expect(normalizeGatewayScreenshotResult(valid({ warnings: ['sensitive-content-masked'] })).warnings).toEqual(['sensitive-content-masked']);
+    expect(normalizeGatewayScreenshotResult(valid({ warnings: ['made-up'] }))).toBeNull();
+    expect(normalizeGatewayScreenshotResult(valid({ warnings: Array(17).fill('video') }))).toBeNull();
+  });
+
+  it('rejects wrong count/order/role/mime/base64/size/geometry', () => {
+    const cases = [
+      valid({ screenshots: [image('full', 400, 300)] }),
+      valid({ screenshots: [image('crop', 400, 300), image('full', 400, 300)] }),
+      valid({ screenshots: [image('full', 400, 300), image('full', 400, 300)] }),
+      valid({ screenshots: [image('full', 400, 300), image('crop', 500, 400)] }),
+      valid({ screenshots: [image('full', 400, 300), image('crop', 500, 400)] }),
+      valid({ screenshots: [image('full', 2049, 300), image('crop', 100, 90)] }),
+      valid({ screenshots: [image('full', 400, 300), image('crop', 120, 90, { data_url: 'data:image/jpeg;base64,***' })] }),
+      valid({ screenshots: [image('full', 400, 300), image('crop', 120, 90, { mime_type: 'image/png' })] }),
+      valid({ screenshots: [image('full', 400.5, 300), image('crop', 120, 90)] }),
+    ];
+    for (const value of cases) expect(normalizeGatewayScreenshotResult(value)).toBeNull();
+  });
+
+  it('rejects a JPEG whose header dimensions contradict the declared geometry', () => {
+    const forged = image('full', 400, 300);
+    forged.data_url = `data:image/jpeg;base64,${jpeg(640, 480)}`;
+    expect(normalizeGatewayScreenshotResult(valid({ screenshots: [forged, image('crop', 120, 90)] }))).toBeNull();
+  });
+
+  it('rejects a non-JPEG payload wearing the jpeg mime and data-url prefix', () => {
+    const forged = image('full', 400, 300);
+    const bytes = new TextEncoder().encode('not-a-jpeg-at-all-nope');
+    forged.data_url = `data:image/jpeg;base64,${btoa(String.fromCharCode(...bytes))}`;
+    expect(normalizeGatewayScreenshotResult(valid({ screenshots: [forged, image('crop', 120, 90)] }))).toBeNull();
+  });
+});
+
+describe('host screenshot request guards', () => {
+  function jpeg(width, height) {
+    return btoa(String.fromCharCode(255, 216, 255, 192, 0, 17, 8, (height >> 8) & 255, height & 255,
+      (width >> 8) & 255, width & 255, 3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1, 255, 217));
+  }
+  const image = (role, width, height) => ({ role, mime_type: 'image/jpeg', width, height,
+    data_url: `data:image/jpeg;base64,${jpeg(width, height)}` });
+
+  function readyWithSelection() {
+    const viewport = { width: 1000, height: 500, scroll_x: 0, scroll_y: 0 };
+    const onPageChange = vi.fn();
+    const bus = setup({ callbacks: { onPageChange } });
+    bus.host.connect();
+    const connect = bus.h.connectMessage();
+    const send = (payload) => bus.h.handleWindowMessage({ data: { contract_version: BRIDGE, session_id: connect.session_id, ...payload },
+      origin: bus.h.origin, source: bus.h.contentWindow });
+    send({ type: GATEWAY_SDK_READY_TYPE, request_id: connect.request_id, screenshot_supported: true,
+      capabilities: ['element', 'text', 'region'], page: { path: '/board', revision: 'r1' } });
+    bus.host.setMode('select');
+    send({ type: GATEWAY_SDK_TARGET_TYPE, page: { path: '/board', revision: 'r1' },
+      selection: { id: 'sel-1', kind: 'element', label: '', target: { element_id: 'btn',
+        rect: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 }, coordinate_space: 'viewport', viewport } } });
+    return { ...bus, connect, send, onPageChange,
+      capture: (extra = {}) => bus.host.captureScreenshot({ selectionId: 'sel-1', page: { path: '/board', revision: 'r1' }, ...extra }) };
+  }
+
+  it('advertises screenshot support from ready and resolves one validated pair', async () => {
+    const f = readyWithSelection();
+    expect(f.host.screenshotSupported()).toBe(true);
+    const pending = f.capture();
+    const request = f.h.posted.filter((entry) => entry.message.type === 'catsco.gateway.annotation.screenshot.request.v1').at(-1);
+    expect(request).toBeTruthy();
+    expect(request.message).toMatchObject({ contract_version: BRIDGE, session_id: f.connect.session_id, selection_id: 'sel-1', page: { path: '/board', revision: 'r1' } });
+    f.h.handleWindowMessage({ data: { type: 'catsco.gateway.annotation.screenshot.result.v1', contract_version: BRIDGE,
+      session_id: f.connect.session_id, request_id: request.message.request_id, selection_id: 'sel-1',
+      page: { path: '/board', revision: 'r1' }, screenshots: [image('full', 1000, 500), image('crop', 232, 132)],
+      warnings: ['cross-origin-image', 'cross-origin-image'] }, origin: f.h.origin, source: f.h.contentWindow });
+    const result = await pending;
+    expect(result).toMatchObject({ selection_id: 'sel-1', page: { path: '/board', revision: 'r1' }, warnings: ['cross-origin-image'] });
+    expect(result.screenshots.map((entry) => entry.role)).toEqual(['full', 'crop']);
+    f.host.dispose();
+  });
+
+  it('accepts the exact SDK crop geometry for a 1000x500 viewport (float regression)', async () => {
+    // rect .1/.1/.2/.2 on a 1000x500 viewport: the SDK computes
+    // ceil(0.1*1000 + 0.2*1000 + 16) = 316 and ceil(0.1*500 + 0.2*500 + 16) = 116,
+    // so the crop is 232x132. Summing the rect first gives 317/117 and a false reject.
+    const f = readyWithSelection();
+    const pending = f.capture();
+    const request = f.h.posted.filter((entry) => entry.message.type === 'catsco.gateway.annotation.screenshot.request.v1').at(-1);
+    f.h.handleWindowMessage({ data: { type: 'catsco.gateway.annotation.screenshot.result.v1', contract_version: BRIDGE,
+      session_id: f.connect.session_id, request_id: request.message.request_id, selection_id: 'sel-1',
+      page: { path: '/board', revision: 'r1' }, screenshots: [image('full', 1000, 500), image('crop', 232, 132)],
+      warnings: [] }, origin: f.h.origin, source: f.h.contentWindow });
+    const result = await pending;
+    expect(result.screenshots[1]).toMatchObject({ role: 'crop', width: 232, height: 132 });
+    f.host.dispose();
+  });
+
+  it('rejects mismatched crop geometry and forged JPEG geometry', async () => {
+    const f = readyWithSelection();
+    const ask = async (screenshots, sessionId = f.connect.session_id) => {
+      const pending = f.capture();
+      const request = f.h.posted.filter((entry) => entry.message.type === 'catsco.gateway.annotation.screenshot.request.v1').at(-1).message;
+      f.h.handleWindowMessage({ data: { type: 'catsco.gateway.annotation.screenshot.result.v1', contract_version: BRIDGE,
+        session_id: sessionId, request_id: request.request_id, selection_id: 'sel-1',
+        page: { path: '/board', revision: 'r1' }, screenshots, warnings: [] }, origin: f.h.origin, source: f.h.contentWindow });
+      return expect(pending).rejects.toThrow('bad-screenshot');
+    };
+    await ask([image('full', 1000, 500), image('crop', 240, 140)]);
+    await ask([image('full', 1000, 500), image('crop', 100, 100)]);
+    const forged = image('full', 1000, 500);
+    forged.width = 640;
+    await ask([forged, image('crop', 233, 133)]);
+    f.host.dispose();
+  });
+
+  it('ignores a screenshot result replayed from a foreign session', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = readyWithSelection();
+      const pending = f.capture();
+      const settled = pending.catch((error) => error);
+      f.h.handleWindowMessage({ data: { type: 'catsco.gateway.annotation.screenshot.result.v1', contract_version: BRIDGE,
+        session_id: 'attacker-session', request_id: f.h.posted.filter((entry) => entry.message.type === 'catsco.gateway.annotation.screenshot.request.v1').at(-1).message.request_id,
+        selection_id: 'sel-1', page: { path: '/board', revision: 'r1' },
+        screenshots: [image('full', 1000, 500), image('crop', 233, 133)], warnings: [] }, origin: f.h.origin, source: f.h.contentWindow });
+      await vi.advanceTimersByTimeAsync(20000);
+      await expect(settled).resolves.toBeInstanceOf(Error); expect((await settled).code).toBe('capture-timeout');
+      f.host.dispose(); // clears the timeout so nothing rejects after the case
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('cancels in-flight capture on supersede and page report, and refuses after dispose', async () => {
+    const f = readyWithSelection();
+    const first = f.capture();
+    const second = f.capture();
+    await expect(first).rejects.toThrow('superseded');
+    f.send({ type: GATEWAY_SDK_PAGE_TYPE, page: { path: '/board', revision: 'r1' } });
+    await expect(second).rejects.toThrow('stale-document');
+    expect(f.onPageChange).toHaveBeenCalled();
+    // The page report voids the selection, so no new capture may start.
+    await expect(f.capture()).rejects.toThrow('stale-selection');
+    f.host.dispose();
+    await expect(f.capture()).rejects.toThrow('stale-document');
+    expect(f.h.posted.some((entry) => entry.message.type === 'catsco.gateway.annotation.screenshot.cancel.v1')).toBe(true);
+  });
+
+  it('times out and refuses capture without screenshot support', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = readyWithSelection();
+      const pending = f.capture();
+      const settled = pending.catch((error) => error);
+      await vi.advanceTimersByTimeAsync(20000);
+      await expect(settled).resolves.toBeInstanceOf(Error); expect((await settled).code).toBe('capture-timeout');
+      f.host.dispose(); // no stray timer may outlive the case
+    } finally { vi.useRealTimers(); }
+    const bus = setup();
+    bus.host.connect();
+    const connect = bus.h.connectMessage();
+    bus.h.handleWindowMessage({ data: { type: GATEWAY_SDK_READY_TYPE, contract_version: BRIDGE, session_id: connect.session_id,
+      request_id: connect.request_id, capabilities: ['element'], page: { path: '/board' } }, origin: bus.h.origin, source: bus.h.contentWindow });
+    expect(bus.host.screenshotSupported()).toBe(false);
+    await expect(bus.host.captureScreenshot({ selectionId: 'sel-1', page: { path: '/board' } })).rejects.toThrow('screenshot-unavailable');
+    bus.host.dispose();
+  });
+
+  it('aborts through the caller signal and rejects a stale selection or page', async () => {
+    const f = readyWithSelection();
+    const controller = new AbortController();
+    const pending = f.capture({ signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow('canceled');
+    await expect(f.host.captureScreenshot({ selectionId: 'other', page: { path: '/board', revision: 'r1' } })).rejects.toThrow('stale-selection');
+    await expect(f.host.captureScreenshot({ selectionId: 'sel-1', page: { path: '/board', revision: 'r9' } })).rejects.toThrow('stale-selection');
+    f.host.dispose();
+  });
 });
 
 describe('normalizeGatewayAnnotationSelection', () => {

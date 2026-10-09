@@ -4,11 +4,34 @@ import { Simulate } from 'react-dom/test-utils';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const { artifactRefreshPreviewObserved, feedbackConfirm, feedbackNotify } = vi.hoisted(() => ({
+const { artifactRefreshPreviewObserved, feedbackConfirm, feedbackNotify, screenshotRequest, useRealScreenshotHost, legacyCapabilityOwner } = vi.hoisted(() => ({
   artifactRefreshPreviewObserved: vi.fn(),
   feedbackConfirm: vi.fn(async () => true),
   feedbackNotify: vi.fn(),
+  screenshotRequest: vi.fn(),
+  useRealScreenshotHost: { current: false },
+  legacyCapabilityOwner: { current: null },
 }));
+
+vi.mock('../utils/gateway-annotation-drafts', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, readGatewayAnnotationDrafts: (...args) => {
+    if (args[5] instanceof Map) legacyCapabilityOwner.current = args[5];
+    return actual.readGatewayAnnotationDrafts(...args);
+  } };
+});
+
+// The stub keeps UI wiring deterministic; the ordering regression drives the
+// REAL shared host directly so a premature `off` (which voids the screenshot
+// selection certificate) cannot hide behind this stub.
+vi.mock('../gateway-annotations', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, createGatewayAnnotationHost: (options) => {
+    const host = actual.createGatewayAnnotationHost(options);
+    if (!useRealScreenshotHost.current) host.captureScreenshot = screenshotRequest;
+    return host;
+  } };
+});
 
 vi.mock('../components/feedback-system', () => ({
   useFeedback: () => ({ confirm: feedbackConfirm, notify: feedbackNotify }),
@@ -223,6 +246,8 @@ vi.mock('../api', () => ({
     getArtifactTask: vi.fn(),
     failArtifactTask: vi.fn(),
     sendMessage: vi.fn(),
+    sendArtifactAnnotations: vi.fn(),
+    revokeArtifactOpenBinding: vi.fn(async () => ({})),
     uploadFile: vi.fn(),
     createMobileUploadSession: vi.fn(),
     getMobileUploadSession: vi.fn(),
@@ -9206,6 +9231,32 @@ describe('MessagesView composer draft isolation', () => {
 });
 
 describe('MessagesView gateway annotation flow', () => {
+  // Protocol-valid JPEG header bytes: SOI + SOF0 carrying the declared
+  // geometry + EOI, so the real shared host accepts the fixture.
+  function fakeJPEG(width, height) {
+    const raw = new Uint8Array([0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08,
+      height >> 8, height & 0xFF, width >> 8, width & 0xFF, 0x03,
+      0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xFF, 0xD9]);
+    let binary = '';
+    raw.forEach((byte) => { binary += String.fromCharCode(byte); });
+    return `data:image/jpeg;base64,${btoa(binary)}`;
+  }
+  const jpeg = fakeJPEG(800, 600);
+  // The host derives crop geometry from the target rect plus 16 CSSpx
+  // padding, so fixtures must use the exact expected crop size.
+  const CROP = { width: 114, height: 108 };
+  const screenshotPair = (rect = { x: 0.2, y: 0.3, width: 0.1, height: 0.08 },
+    viewport = { width: 800, height: 600 }) => {
+    const left = Math.max(0, Math.floor(rect.x * 800 - 16));
+    const top = Math.max(0, Math.floor(rect.y * 600 - 16));
+    const right = Math.min(800, Math.ceil((rect.x + rect.width) * 800 + 16));
+    const bottom = Math.min(600, Math.ceil((rect.y + rect.height) * 600 + 16));
+    return { screenshots: [
+      { role: 'full', mime_type: 'image/jpeg', data_url: fakeJPEG(800, 600), width: 800, height: 600 },
+      { role: 'crop', mime_type: 'image/jpeg', data_url: fakeJPEG(right - left, bottom - top),
+        width: right - left, height: bottom - top },
+    ] };
+  };
   let container;
   let root;
   let wsHandler;
@@ -9230,7 +9281,7 @@ describe('MessagesView gateway annotation flow', () => {
       revision: 1,
     });
     api.invalidateArtifactContextSnapshot.mockResolvedValue({ ok: true });
-    api.sendMessage.mockResolvedValue({ seq_id: 100, metadata: {} });
+    api.sendArtifactAnnotations.mockResolvedValue({ seq_id: 100, metadata: {} });
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudWorkers.mockResolvedValue({ workers: [] });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [], viewer_relation: 'owner' });
@@ -9243,7 +9294,15 @@ describe('MessagesView gateway annotation flow', () => {
         updated_at: '2026-09-17T08:36:11.972Z',
       }],
     });
-    api.requestArtifactLaunch.mockRejectedValue(new Error('guest'));
+    api.revokeArtifactOpenBinding.mockResolvedValue({});
+
+    api.requestArtifactLaunch.mockImplementation(async ({ topic_id }) => ({
+      launch_url: `${APP_ORIGIN}/saturday-demo/`,
+      open_binding: { contract_version: 'catsco.artifact-open-binding.v1',
+        open_ref: `aob_${topic_id === 'p2p_1_3' ? 'B' : 'A'}`.padEnd(40, 'x'),
+        topic_id, agent_uid: 7, app_id: 'saturday-demo', app_origin: APP_ORIGIN,
+        expires_at: '2099-01-01T00:00:00Z' },
+    }));
     api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.uploadFile.mockResolvedValue({
@@ -9259,6 +9318,10 @@ describe('MessagesView gateway annotation flow', () => {
       api_upload_url: '/api/mobile-upload/sessions/abc123/files',
     });
     api.getMobileUploadSession.mockResolvedValue({ session_id: 'abc123', files: [] });
+    screenshotRequest.mockReset().mockResolvedValue(screenshotPair());
+    useRealScreenshotHost.current = false;
+    api.uploadFile.mockImplementation(async file => ({ file_key: file.name,
+      url: `/uploads/images/${file.name}`, name: file.name, size: file.size, mime_type: 'image/jpeg' }));
     isMobileConversationShareBrowser.mockReturnValue(false);
     wsHandler = null;
     onWSMessage.mockImplementation((handler) => {
@@ -9334,6 +9397,7 @@ describe('MessagesView gateway annotation flow', () => {
         session_id: connect.session_id,
         request_id: connect.request_id,
         capabilities: ['element', 'text', 'region'],
+        screenshot_supported: true,
         page,
       });
       await Promise.resolve();
@@ -9343,7 +9407,7 @@ describe('MessagesView gateway annotation flow', () => {
 
   async function followupCapture(frame, connect, page, id = 'a1', comment = '') {
     await act(async () => {
-      document.querySelector('.cloud-artifacts-gateway-annotation-tools [data-annotation-mode="element"]').click();
+      document.querySelector('[aria-label="批注应用"]').click();
     });
     await act(async () => {
       sdkMessage(frame, {
@@ -9355,23 +9419,36 @@ describe('MessagesView gateway annotation flow', () => {
           id,
           kind: 'element',
           label: '',
-          target: { element_id: 'submit-btn', selector: 'button#submit-btn' },
+          target: { element_id: 'submit-btn', selector: 'button#submit-btn',
+            rect: { x: .2, y: .3, width: .1, height: .08 }, coordinate_space: 'viewport',
+            viewport: { width: 800, height: 600, scroll_x: 0, scroll_y: 0 } },
         },
       });
       await Promise.resolve();
     });
-    const editor = container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body');
+    const editor = document.querySelector('.gateway-annotation-popover textarea');
     expect(editor).not.toBeNull();
     if (comment) {
       await act(async () => {
         typeDraft(editor, comment);
       });
       await act(async () => {
-        container.querySelector('.v3-gateway-annotation-confirm').click();
+        document.querySelector('.gateway-annotation-popover-actions button:last-child').click();
         await Promise.resolve();
       });
     }
     return editor;
+  }
+
+
+  async function submitInline(comment) {
+    const editor = document.querySelector('.gateway-annotation-popover textarea');
+    expect(editor).not.toBeNull();
+    await act(async () => typeDraft(editor, comment));
+    await act(async () => {
+      document.querySelector('.gateway-annotation-popover-actions button:last-child').click();
+      await flushPromises();
+    });
   }
 
   async function sendMessageAndFlush() {
@@ -9391,54 +9468,533 @@ describe('MessagesView gateway annotation flow', () => {
     }
   }
 
-  test('captures an SDK target, edits the comment, and sends it as message metadata', async () => {
+
+  test('single header action captures beside iframe and sends comment directly without composer body', async () => {
     const frame = await openGatewayAppInSidebar();
-    const page = { path: '/board' };
-
-    const tools = container.querySelector('.cloud-artifacts-gateway-annotation-tools');
-    expect(tools).not.toBeNull();
-
+    const page = { path: '/board', revision: 'r1' };
     const connect = await followupReady(frame, page);
-    await followupCapture(frame, connect, page, 'a1', '改成蓝色');
-
+    const button = container.querySelector('[aria-label="批注应用"]');
+    expect(button.nextElementSibling.getAttribute('aria-label')).toBe('刷新当前栏目');
+    expect(container.querySelector('[data-annotation-mode]')).toBeNull();
+    expect(container.querySelector('.cloud-artifacts-gateway-annotation-tools')).toBeNull();
+    await followupCapture(frame, connect, page);
+    expect(document.querySelector('.gateway-annotation-popover')).not.toBeNull();
     expect(container.querySelector('.v3-gateway-annotation-editor')).toBeNull();
-    const bar = container.querySelector('.v3-gateway-annotation-bar');
-    expect(bar?.textContent).toContain('Saturday 演示应用');
-    expect(bar?.textContent).toContain('改成蓝色');
-
-    // The capture page is persisted with the draft row.
-    const storedBucket = JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'));
-    expect(storedBucket['p2p_1_2|7|saturday-demo'][0].page).toEqual(page);
-
-    const textarea = container.querySelector('.v3-composer textarea');
-    await act(async () => {
-      typeDraft(textarea, '请按标注调整');
-    });
-    await sendMessageAndFlush();
-
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);
-    const sentPayload = api.sendMessage.mock.calls[0][1];
-    expect(sentPayload.metadata.gateway_annotations).toMatchObject({
-      contract_version: 'catsco.gateway-annotations.v1',
-      agent_uid: 7,
-      app_id: 'saturday-demo',
-      page: { path: '/board' },
-      annotations: [{
-        id: 'a1',
-        kind: 'element',
-        body: '改成蓝色',
-        target: { element_id: 'submit-btn', selector: 'button#submit-btn' },
-      }],
-    });
-
-    // Success consumes the draft: bar and storage are empty.
     expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
-    const stored = sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1');
-    expect(stored === null || !stored.includes('a1')).toBe(true);
+    expect(container.querySelector('.v3-composer textarea').value).toBe('');
+    await submitInline('改成蓝色');
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    const payload = api.sendArtifactAnnotations.mock.calls[0][0];
+    expect(payload.open_ref).toBe('aob_A'.padEnd(40, 'x'));
+    expect(payload.content).toBe('改成蓝色');
+    expect(payload.gateway_annotations.page).toEqual(page);
+    expect(payload.gateway_annotations.annotations).toMatchObject([{ id: 'a1', kind: 'element', body: '改成蓝色' }]);
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    expect(feedbackNotify).toHaveBeenCalledWith({ tone: 'success', message: '已发送至原会话' });
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
   });
 
+  test('failed direct send preserves input and retry uses same client id; edited comment gets new id', async () => {
+    api.sendArtifactAnnotations.mockRejectedValueOnce(new Error('网络故障'));
+    api.sendArtifactAnnotations.mockRejectedValueOnce(new Error('网络故障'));
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    await submitInline('原评论');
+    expect(document.querySelector('.gateway-annotation-popover textarea').value).toBe('原评论');
+    expect(document.querySelector('.gateway-annotation-popover [role="alert"]').textContent).toContain('网络故障');
+    await submitInline('原评论');
+    expect(api.sendArtifactAnnotations.mock.calls[1][0].client_msg_id).toBe(api.sendArtifactAnnotations.mock.calls[0][0].client_msg_id);
+    await submitInline('新评论');
+    expect(api.sendArtifactAnnotations.mock.calls[2][0].client_msg_id).not.toBe(api.sendArtifactAnnotations.mock.calls[0][0].client_msg_id);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  test('region select positions clamped popover and Enter stays multiline; Escape cancels', async () => {
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    frame.getBoundingClientRect = () => ({ left: 900, top: 650, width: 600, height: 500 });
+    const connect = await followupReady(frame, page);
+    await act(async () => container.querySelector('[aria-label="批注应用"]').click());
+    await act(async () => sdkMessage(frame, { type: 'catsco.gateway.annotation.target.v1',
+      contract_version: 'catsco.gateway-annotation-bridge.v1', session_id: connect.session_id, page,
+      selection: { id: 'region', kind: 'region', label: '', target: {
+        rect: { x: .8, y: .8, width: .1, height: .1 }, coordinate_space: 'viewport',
+        viewport: { width: 600, height: 500, scroll_x: 0, scroll_y: 0 } } } }));
+    const popup = document.querySelector('.gateway-annotation-popover');
+    expect(popup).not.toBeNull();
+    expect(parseFloat(popup.style.left)).toBeLessThanOrEqual(window.innerWidth - 320 - 12);
+    const editor = popup.querySelector('textarea');
+    await act(async () => { typeDraft(editor, '多行\n评论'); Simulate.keyDown(editor, { key: 'Enter' }); });
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    await act(async () => Simulate.keyDown(editor, { key: 'Escape' }));
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+  });
+
+  test('reload cancels old capture; a fresh handshake uses same open and Cmd Enter direct send', async () => {
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const first = await followupReady(frame, page); await followupCapture(frame, first, page);
+    const second = await followupReady(frame, page);
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    expect(second.session_id).not.toBe(first.session_id);
+    await followupCapture(frame, second, page);
+    await act(async () => typeDraft(document.querySelector('.gateway-annotation-popover textarea'), '刷新后的评论'));
+    await act(async () => {
+      Simulate.keyDown(document.querySelector('.gateway-annotation-popover textarea'), { key: 'Enter', metaKey: true });
+      await flushPromises();
+    });
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].open_ref).toBe('aob_A'.padEnd(40, 'x'));
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+  });
+
+  test('navigation and auth changes cancel stale editor; no fallback send', async () => {
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    await act(async () => sdkMessage(frame, { type: 'catsco.gateway.annotation.page.v1',
+      contract_version: 'catsco.gateway-annotation-bridge.v1', session_id: connect.session_id, page: { path: '/other' } }));
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    const second = await followupReady(frame, { path: '/other' });
+    await followupCapture(frame, second, { path: '/other' });
+    expect(document.querySelector('.gateway-annotation-popover')).not.toBeNull();
+    const auth = await import('../auth-session');
+    await act(async () => auth.setToken('refreshed-token'));
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled(); expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  test('pending double send is suppressed and close/topic switch cannot post result to other topic', async () => {
+    let finish; api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    await submitInline('绑定 A');
+    const button = document.querySelector('.gateway-annotation-popover-actions button:last-child');
+    expect(button.disabled).toBe(true);
+    await act(async () => button.click());
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1);
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => { finish({ seq_id: 999 }); await flushPromises(); });
+    expect(container.querySelector('[data-message-id="999"]')).toBeNull();
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].open_ref).toBe('aob_A'.padEnd(40, 'x'));
+  });
+
+  test('expiry fails closed with editable comment retained; guest action disabled', async () => {
+    const now = Date.now();
+    api.requestArtifactLaunch.mockResolvedValueOnce({ launch_url: `${APP_ORIGIN}/saturday-demo/`,
+      open_binding: { contract_version: 'catsco.artifact-open-binding.v1', open_ref: 'aob_expire_123456789012345',
+        topic_id: 'p2p_1_2', agent_uid: 7, app_id: 'saturday-demo', app_origin: APP_ORIGIN,
+        expires_at: new Date(now + 60000).toISOString() } });
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 61000);
+    await submitInline('过期评论');
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    expect(document.querySelector('.gateway-annotation-popover textarea').value).toBe('过期评论');
+    expect(document.querySelector('.gateway-annotation-popover [role="alert"]').textContent).toContain('失效');
+    clock.mockRestore();
+  });
+
+  test('iframe Escape syncs header off and parent scroll closes the popover', async () => {
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page);
+    await act(async () => container.querySelector('[aria-label="批注应用"]').click());
+    expect(container.querySelector('[aria-label="批注应用"]').getAttribute('aria-pressed')).toBe('true');
+    await act(async () => sdkMessage(frame, { type: 'catsco.gateway.annotation.mode.v1',
+      contract_version: 'catsco.gateway-annotation-bridge.v1', session_id: connect.session_id, mode: 'off', page }));
+    expect(container.querySelector('[aria-label="批注应用"]').getAttribute('aria-pressed')).toBe('false');
+    await followupCapture(frame, connect, page);
+    await act(async () => window.dispatchEvent(new Event('scroll')));
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+  });
+
+  test('rapid second selection only owns its own comment and old SDK token cannot revive capture', async () => {
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page, 'first');
+    await act(async () => typeDraft(document.querySelector('.gateway-annotation-popover textarea'), 'unsent old input'));
+    // The header toggle is the explicit cancel: the pending target is dropped
+    // and nothing is sent for it.
+    await act(async () => container.querySelector('[aria-label="批注应用"]').click());
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    // A fresh selection then owns only its own comment.
+    await followupCapture(frame, connect, page, 'second');
+    expect(document.querySelector('.gateway-annotation-popover textarea').value).toBe('');
+    await submitInline('second only');
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].gateway_annotations.annotations[0].id).toBe('second');
+    // A target without viewport evidence must not reopen the popover while
+    // select stays active (the pre-fix auto-off used to accept it).
+    await act(async () => sdkMessage(frame, { type: 'catsco.gateway.annotation.target.v1',
+      contract_version: 'catsco.gateway-annotation-bridge.v1', session_id: connect.session_id, page,
+      selection: { id: 'stale', kind: 'element', target: { element_id: 'old' } } }));
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+  });
+
+  test('guest viewer disables the only annotation control', async () => {
+    api.requestArtifactLaunch.mockRejectedValueOnce(new Error('guest'));
+    await openGatewayAppInSidebar();
+    const button = container.querySelector('[aria-label="批注应用"]');
+    expect(button.disabled).toBe(true);
+    expect(button.title).toContain('绑定不可用');
+    expect(container.querySelector('[data-annotation-mode]')).toBeNull();
+  });
+
+  test('shows full/crop previews and submits exactly owned images with comment', async () => {
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    expect(document.querySelector('img[alt="应用视口截图"]').src).toBe(jpeg);
+    expect(document.querySelector('img[alt="选区截图"]').src).toBe(fakeJPEG(112, 80));
+    await submitInline('看截图调整');
+    expect(api.uploadFile).toHaveBeenCalledTimes(2);
+    expect(api.uploadFile.mock.calls.map(([file, type]) => [file.name, type])).toEqual([
+      ['gateway-full.jpg', 'image'], ['gateway-crop.jpg', 'image'],
+    ]);
+    expect(api.uploadFile.mock.calls.map(([file]) => file.size)).toEqual([23, 23]);
+    const payload = api.sendArtifactAnnotations.mock.calls[0][0];
+    expect(payload.content).toBe('看截图调整');
+    expect(payload.content_blocks).toEqual([
+      { type: 'text', text: '看截图调整' },
+      { type: 'image', payload: { url: '/uploads/images/gateway-full.jpg', file_key: 'gateway-full.jpg',
+        name: 'gateway-full.jpg', mime_type: 'image/jpeg', size: 23, width: 800, height: 600, screenshot_role: 'full' } },
+      { type: 'image', payload: { url: '/uploads/images/gateway-crop.jpg', file_key: 'gateway-crop.jpg',
+        name: 'gateway-crop.jpg', mime_type: 'image/jpeg', size: 23, width: 112, height: 80, screenshot_role: 'crop' } },
+    ]);
+    expect(JSON.stringify(payload.gateway_annotations)).not.toContain('data:image');
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
+  });
+
+  test('send failure retains previews and retry reuses upload references and message id', async () => {
+    api.sendArtifactAnnotations.mockRejectedValueOnce(new Error('lost response'));
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    await submitInline('截图重试');
+    expect(document.querySelectorAll('.gateway-annotation-screenshots img')).toHaveLength(2);
+    expect(document.querySelector('.gateway-annotation-popover textarea').value).toBe('截图重试');
+    const first = api.sendArtifactAnnotations.mock.calls[0][0];
+    await submitInline('截图重试');
+    expect(api.uploadFile).toHaveBeenCalledTimes(2);
+    expect(api.sendArtifactAnnotations.mock.calls[1][0]).toEqual(first);
+  });
+
+  test('partial upload failure caches full and retries only crop', async () => {
+    api.uploadFile.mockResolvedValueOnce({ file_key: 'full.jpg', url: '/uploads/images/full.jpg', size: 4, mime_type: 'image/jpeg' });
+    api.uploadFile.mockRejectedValueOnce(new Error('crop upload failed'));
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    await submitInline('两张图');
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    expect(document.querySelector('.gateway-annotation-popover textarea').value).toBe('两张图');
+    await submitInline('两张图');
+    expect(api.uploadFile.mock.calls.map(([file]) => file.name)).toEqual(['gateway-full.jpg', 'gateway-crop.jpg', 'gateway-crop.jpg']);
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].content_blocks[1].payload.file_key).toBe('full.jpg');
+  });
+
+  test('partial capture warnings render human Chinese, never raw codes', async () => {
+    screenshotRequest.mockResolvedValueOnce({ ...screenshotPair(), warnings: ['cross-origin-image', 'sensitive-content-masked'] });
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    const note = document.querySelector('.gateway-annotation-screenshots [role="status"]').textContent;
+    expect(note).toContain('部分视觉证据');
+    expect(note).toContain('其他站点');
+    expect(note).toContain('敏感输入');
+    expect(note).not.toContain('cross-origin-image');
+    await submitInline('带提示');
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1);
+  });
+
+  test('capture failure requires explicit text only, no automatic fallback', async () => {
+    screenshotRequest.mockRejectedValueOnce(new Error('renderer unavailable'));
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    await submitInline('仍想发送');
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    expect(document.querySelector('.gateway-annotation-popover [role="alert"]').textContent).toContain('renderer unavailable');
+    await act(async () => document.querySelector('.gateway-annotation-screenshots input').click());
+    await submitInline('仅文字');
+    expect(api.uploadFile).not.toHaveBeenCalled();
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].content_blocks).toBeUndefined();
+  });
+
+  test('same-path scroll invalidation closes popover and cancels in-flight capture', async () => {
+    let complete;
+    screenshotRequest.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    await act(async () => sdkMessage(frame, { type: 'catsco.gateway.annotation.page.v1',
+      contract_version: 'catsco.gateway-annotation-bridge.v1', session_id: connect.session_id, page }));
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    await act(async () => { complete?.(screenshotPair()); await flushPromises(); });
+    expect(api.uploadFile).not.toHaveBeenCalled(); expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+  });
+
+  test('navigation while capturing drops late pixels and blocks upload', async () => {
+    let complete;
+    screenshotRequest.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    expect(document.querySelector('.gateway-annotation-screenshots [role="status"]').textContent).toContain('正在捕获');
+    await act(async () => sdkMessage(frame, { type: 'catsco.gateway.annotation.page.v1',
+      contract_version: 'catsco.gateway-annotation-bridge.v1', session_id: connect.session_id, page: { path: '/new' } }));
+    await act(async () => { complete?.(screenshotPair()); await flushPromises(); });
+    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    expect(api.uploadFile).not.toHaveBeenCalled(); expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+  });
+
+  test('auth refresh during upload never submits stale screenshots', async () => {
+    let complete;
+    api.uploadFile.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    await submitInline('原登录');
+    const auth = await import('../auth-session');
+    await act(async () => auth.setToken('new-auth'));
+    await act(async () => { complete({ file_key: 'old.jpg', url: '/uploads/images/old.jpg', size: 4, mime_type: 'image/jpeg' }); await flushPromises(); });
+    expect(api.uploadFile).toHaveBeenCalledTimes(1);
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled(); expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+
+  test('REAL shared host: onSelection must not void the screenshot certificate', async () => {
+    useRealScreenshotHost.current = true;
+    const { createGatewayAnnotationHost, GATEWAY_HOST_CONNECT_TYPE } = await import('../gateway-annotations');
+    const posted = [];
+    const contentWindow = { postMessage: (data, origin) => posted.push({ data, origin }) };
+    const binding = { frame: { contentWindow }, url: APP_ORIGIN, agentUid: 7, appId: 'saturday-demo' };
+    let selected = null;
+    const host = createGatewayAnnotationHost({ getBinding: () => binding,
+      onSelection: (selection) => { selected = selection; } });
+    expect(host.connect()).toBe(true);
+    const connect = posted.find((p) => p.data?.type === GATEWAY_HOST_CONNECT_TYPE)?.data;
+    expect(connect).toBeTruthy();
+    host.handleWindowMessage({ origin: APP_ORIGIN, source: contentWindow, data: {
+      type: 'catsco.gateway.annotation.ready.v1', contract_version: 'catsco.gateway-annotation-bridge.v1',
+      session_id: connect.session_id, request_id: connect.request_id,
+      capabilities: ['element', 'text', 'region'], screenshot_supported: true, page: { path: '/board' } } });
+    expect(host.setMode('select')).toBe(true);
+    const offsBefore = posted.filter((p) => p.data?.type === 'catsco.gateway.annotation.mode.v1'
+      && p.data.mode === 'off').length;
+    host.handleWindowMessage({ origin: APP_ORIGIN, source: contentWindow, data: {
+      type: 'catsco.gateway.annotation.target.v1', contract_version: 'catsco.gateway-annotation-bridge.v1',
+      session_id: connect.session_id, page: { path: '/board' },
+      selection: { id: 'a1', kind: 'element', label: '',
+        target: { element_id: 'submit-btn', rect: { x: 0.2, y: 0.3, width: 0.1, height: 0.08 },
+          coordinate_space: 'viewport', viewport: { width: 800, height: 600, scroll_x: 0, scroll_y: 0 } } } } });
+    expect(selected).toBeTruthy();
+    // The integration bug: the UI exited select right after onSelection, which
+    // made the very next screenshot request stale. The host must not exit on
+    // its own, and the certificate must still be usable.
+    expect(posted.filter((p) => p.data?.type === 'catsco.gateway.annotation.mode.v1'
+      && p.data.mode === 'off')).toHaveLength(offsBefore);
+    const outcome = await Promise.race([
+      host.captureScreenshot({ selectionId: 'a1', page: { path: '/board' } }).then(() => 'resolved'),
+      new Promise((resolve) => setTimeout(() => resolve('pending'), 50)),
+    ]);
+    expect(outcome).toBe('pending');
+    expect(posted.some((p) => p.data?.type === 'catsco.gateway.annotation.screenshot.request.v1')).toBe(true);
+    host.dispose();
+    useRealScreenshotHost.current = false;
+  });
+
+});
+  function fakeJPEG(width, height) {
+    const raw = new Uint8Array([0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08,
+      height >> 8, height & 0xFF, width >> 8, width & 0xFF, 0x03,
+      0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xFF, 0xD9]);
+    let binary = '';
+    raw.forEach((byte) => { binary += String.fromCharCode(byte); });
+    return `data:image/jpeg;base64,${btoa(binary)}`;
+  }
+  function screenshotPair() {
+    return { screenshots: [
+      { role: 'full', mime_type: 'image/jpeg', data_url: fakeJPEG(800, 600), width: 800, height: 600 },
+      { role: 'crop', mime_type: 'image/jpeg', data_url: fakeJPEG(112, 80), width: 112, height: 80 },
+    ], warnings: [] };
+  }
+
+describe('MessagesView legacy saved annotation regressions', () => {
+  let container;
+  let root;
+  let wsHandler;
+  const APP_ORIGIN = 'https://artifact.catsco.cc';
+
+  beforeEach(() => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
+    sessionStorage.clear();
+    artifactPreviewChannels.length = 0;
+    vi.stubGlobal('BroadcastChannel', MockArtifactPreviewChannel);
+    api.getMessages.mockResolvedValue({ messages: [] });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({ agents: [] });
+    api.getAgentQuota.mockResolvedValue({ configured: false, shared: true });
+    api.createChannelIdentityMobileLink.mockResolvedValue({ qr_value: 'https://app.catsco.cc/mobile-link' });
+    api.getGroupInfo.mockResolvedValue({ members: [], group: null });
+    api.createArtifactContextSnapshot.mockResolvedValue({
+      contract_version: 'catsco.artifact-context-ref.v1',
+      context_ref: `acr_${'x'.repeat(43)}`,
+      expires_at: '2026-08-14T12:05:00Z',
+      revision: 1,
+    });
+    api.invalidateArtifactContextSnapshot.mockResolvedValue({ ok: true });
+    api.sendArtifactAnnotations.mockResolvedValue({ seq_id: 100, metadata: {} });
+    api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
+    api.getCloudWorkers.mockResolvedValue({ workers: [] });
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [], viewer_relation: 'owner' });
+    api.listArtifactApps.mockResolvedValue({
+      apps: [{
+        id: 'saturday-demo',
+        title: 'Saturday 演示应用',
+        url: `${APP_ORIGIN}/saturday-demo/`,
+        status: 'ready',
+        updated_at: '2026-09-17T08:36:11.972Z',
+      }],
+    });
+    api.revokeArtifactOpenBinding.mockResolvedValue({});
+    api.requestArtifactLaunch.mockImplementation(async ({ topic_id }) => ({
+      launch_url: `${APP_ORIGIN}/saturday-demo/`,
+      open_binding: { contract_version: 'catsco.artifact-open-binding.v1',
+        open_ref: `aob_${topic_id === 'p2p_1_3' ? 'B' : 'A'}`.padEnd(40, 'x'),
+        topic_id, agent_uid: 7, app_id: 'saturday-demo', app_origin: APP_ORIGIN,
+        expires_at: '2099-01-01T00:00:00Z' },
+    }));
+    api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
+    api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
+    api.uploadFile.mockResolvedValue({
+      file_key: '20260610_default.jpg',
+      url: '/uploads/images/20260610_default.jpg',
+      name: 'default.jpg',
+      size: 12,
+      mime_type: 'image/jpeg',
+    });
+    api.createMobileUploadSession.mockResolvedValue({
+      session_id: 'abc123',
+      upload_url: '/mobile-upload/abc123',
+      api_upload_url: '/api/mobile-upload/sessions/abc123/files',
+    });
+    api.getMobileUploadSession.mockResolvedValue({ session_id: 'abc123', files: [] });
+    isMobileConversationShareBrowser.mockReturnValue(false);
+    wsHandler = null;
+    onWSMessage.mockImplementation((handler) => {
+      wsHandler = handler;
+      return vi.fn();
+    });
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    container.remove();
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  async function openGatewayAppInSidebar(topic = 'p2p_1_2') {
+    await mountTopic(root, topic, {
+      cloudArtifactsRequest: {
+        requestId: 'req-annotations',
+        agentUid: 7,
+        topicId: topic,
+        initialTab: 'gateway',
+      },
+    });
+    expect(container.querySelector('.cloud-artifacts-list')).not.toBeNull();
+    await act(async () => {
+      container.querySelector('.cloud-artifact-main').click();
+      await Promise.resolve();
+    });
+    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(frame).not.toBeNull();
+    frame.dataset.legacyTopic = topic;
+    return frame;
+  }
+
+  function sdkMessage(frame, data) {
+    window.dispatchEvent(new MessageEvent('message', {
+      data,
+      origin: APP_ORIGIN,
+      source: frame.contentWindow,
+    }));
+  }
+
+  // Faithful SDK replay against the real host bridge. The connect handshake
+  // posted by the host on frame load is captured (session_id + request_id);
+  // ready echoes both, and the target arrives in the same session with the
+  // capture page attached (matching B's four-gate target validation).
+  async function followupReady(frame, page = { path: '/board' }) {
+    const posted = [];
+    const contentWindow = frame.contentWindow;
+    const original = contentWindow.postMessage.bind(contentWindow);
+    contentWindow.postMessage = (data, targetOrigin) => {
+      posted.push(data);
+      return original(data, targetOrigin);
+    };
+    await act(async () => {
+      Simulate.load(frame);
+      await Promise.resolve();
+    });
+    const connect = posted.filter((m) => m?.type === 'catsco.gateway.annotation.connect.v1').at(-1);
+    expect(connect).toBeTruthy();
+    await act(async () => {
+      sdkMessage(frame, {
+        type: 'catsco.gateway.annotation.ready.v1',
+        contract_version: 'catsco.gateway-annotation-bridge.v1',
+        session_id: connect.session_id,
+        request_id: connect.request_id,
+        capabilities: ['element', 'text', 'region'],
+        screenshot_supported: true,
+        page,
+      });
+      await Promise.resolve();
+    });
+    return connect;
+  }
+
+  // Test-only fixture migration: seed persisted comments with the current
+  // parent mount capability, never drive the removed composer capture UI.
+  // Actual production read/write/version/send/recovery functions run unchanged.
+  async function followupCapture(frame, connect, page, id = 'a1', comment = '') {
+    const drafts = await import('../utils/gateway-annotation-drafts');
+    const topic = frame.dataset.legacyTopic || 'p2p_1_2';
+    const openBinding = { contract_version: 'catsco.artifact-open-binding.v1',
+      open_ref: `aob_${topic === 'p2p_1_3' ? 'B' : 'A'}`.padEnd(40, 'x'), topic_id: topic,
+      agent_uid: 7, app_id: 'saturday-demo', app_origin: APP_ORIGIN, expires_at: '2099-01-01T00:00:00Z' };
+    const current = drafts.readGatewayAnnotationDrafts(1, topic, 7, 'saturday-demo', undefined, legacyCapabilityOwner.current);
+    const next = [...current, { id, kind: 'element', label: '', body: comment,
+      target: { element_id: 'submit-btn', selector: 'button#submit-btn' }, page: { ...page }, open_binding: openBinding }];
+    const persisted = drafts.writeGatewayAnnotationDrafts(1, topic, 7, 'saturday-demo', next,
+      undefined, { capabilities: legacyCapabilityOwner.current });
+    if (persisted) {
+      const refreshed = await followupReady(frame, page);
+      Object.assign(connect, refreshed);
+    }
+    return persisted;
+  }
+
+  async function sendMessageAndFlush() {
+    const sendButton = [...container.querySelectorAll('button')]
+      .find((button) => button.getAttribute('aria-label') === '发送');
+    expect(sendButton).not.toBeNull();
+    await act(async () => {
+      sendButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    for (let round = 0; round < 3; round += 1) {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+  }
+
   test('a failed send restores the annotation draft', async () => {
-    api.sendMessage.mockRejectedValueOnce(new Error('网络故障'));
+    api.sendArtifactAnnotations.mockRejectedValueOnce(new Error('网络故障'));
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board' };
 
@@ -9451,7 +10007,7 @@ describe('MessagesView gateway annotation flow', () => {
     });
     await sendMessageAndFlush();
 
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1);
     const bar = container.querySelector('.v3-gateway-annotation-bar');
     expect(bar?.textContent).toContain('改成蓝色');
     const textareaAfter = container.querySelector('.v3-composer textarea');
@@ -9495,7 +10051,7 @@ describe('MessagesView gateway annotation flow', () => {
       typeDraft(container.querySelector('.v3-composer textarea'), 'send-now');
     });
     await sendMessageAndFlush();
-    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
     expect(container.textContent).toMatch(/旧页面|页面已切换/);
   });
 
@@ -9523,24 +10079,17 @@ describe('MessagesView gateway annotation flow', () => {
       typeDraft(container.querySelector('.v3-composer textarea'), 'send-new');
     });
     await sendMessageAndFlush();
-    expect(api.sendMessage.mock.calls.at(-1)[1].metadata.gateway_annotations.page).toEqual(nextPage);
-    expect(api.sendMessage.mock.calls.at(-1)[1].metadata.gateway_annotations.annotations.map((a) => a.body)).toEqual(['new-comment']);
+    expect(api.sendArtifactAnnotations.mock.calls.at(-1)[0].gateway_annotations.page).toEqual(nextPage);
+    expect(api.sendArtifactAnnotations.mock.calls.at(-1)[0].gateway_annotations.annotations.map((a) => a.body)).toEqual(['new-comment']);
   });
 
   test('failed in-flight send preserves annotation despite newer ordinary text', async () => {
     let rejectSend;
-    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board', revision: 'r1' };
     const connect = await followupReady(frame, page);
-    await followupCapture(frame, connect, page);
-    await act(async () => {
-      typeDraft(container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body'), 'review-comment');
-    });
-    await act(async () => {
-      container.querySelector('.v3-gateway-annotation-confirm').click();
-      await Promise.resolve();
-    });
+    await followupCapture(frame, connect, page, 'a1', 'review-comment');
     await act(async () => {
       typeDraft(container.querySelector('.v3-composer textarea'), 'original-send');
     });
@@ -9559,7 +10108,7 @@ describe('MessagesView gateway annotation flow', () => {
   });
 
   test('a failed send restores visible drafts and an immediate retry carries them', async () => {
-    api.sendMessage.mockRejectedValueOnce(new Error('网络故障'));
+    api.sendArtifactAnnotations.mockRejectedValueOnce(new Error('网络故障'));
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board' };
     const connect = await followupReady(frame, page);
@@ -9570,7 +10119,7 @@ describe('MessagesView gateway annotation flow', () => {
       typeDraft(textarea, '第一次发送');
     });
     await sendMessageAndFlush();
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1);
 
     // The restored draft is visible in the composer bar without reopening
     // the viewer, and the page certificate is intact.
@@ -9584,10 +10133,10 @@ describe('MessagesView gateway annotation flow', () => {
       typeDraft(container.querySelector('.v3-composer textarea'), '重试正文');
     });
     await sendMessageAndFlush();
-    expect(api.sendMessage).toHaveBeenCalledTimes(2);
-    const retryPayload = api.sendMessage.mock.calls[1][1];
-    expect(retryPayload.metadata.gateway_annotations.page).toEqual(page);
-    expect(retryPayload.metadata.gateway_annotations.annotations.map((a) => a.body)).toEqual(['review-comment']);
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(2);
+    const retryPayload = api.sendArtifactAnnotations.mock.calls[1][0];
+    expect(retryPayload.gateway_annotations.page).toEqual(page);
+    expect(retryPayload.gateway_annotations.annotations.map((a) => a.body)).toEqual(['review-comment']);
     // Success clears the bucket.
     expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
     expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
@@ -9601,7 +10150,7 @@ describe('MessagesView gateway annotation flow', () => {
     // the first is in flight is refused by the composer's in-flight guard,
     // so the pollution check is on state, not on a second API call.)
     let rejectSend;
-    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board' };
     const connect = await followupReady(frame, page);
@@ -9630,34 +10179,9 @@ describe('MessagesView gateway annotation flow', () => {
     expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
   });
 
-  test('a stale capture is dropped when the frame rebinds before confirm', async () => {
-    const frame = await openGatewayAppInSidebar();
-    const page = { path: '/board' };
-    const connect = await followupReady(frame, page);
-    // Capture a target but leave the editor open.
-    await followupCapture(frame, connect, page, 'a1', '');
-    // The iframe reloads (navigation/rebind): the pending capture belongs to
-    // the previous document/session and must not be confirmable.
-    await act(async () => {
-      Simulate.load(frame);
-      await Promise.resolve();
-    });
-    await act(async () => {
-      const editor = container.querySelector('.v3-gateway-annotation-editor .v3-gateway-annotation-input.is-body');
-      if (editor) typeDraft(editor, '迟到确认');
-      container.querySelector('.v3-gateway-annotation-confirm')?.click();
-      await Promise.resolve();
-    });
-    expect(container.querySelector('.v3-gateway-annotation-editor')).toBeNull();
-    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
-    // The rebind cleared the pending capture outright (no stale editor to
-    // confirm against), so nothing was written for the new document.
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
-  });
-
   test('R2 logout cleanup cannot be undone by failed send after unmount', async () => {
     let rejectSend;
-    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board', revision: 'r1' };
     const connect = await followupReady(frame, page);
@@ -9684,7 +10208,7 @@ describe('MessagesView gateway annotation flow', () => {
 
   test('R2F late success after logout cannot delete a same-account new-session draft', async () => {
     let resolveSend;
-    api.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
+    api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board', revision: 'r1' };
     const connect = await followupReady(frame, page);
@@ -9719,7 +10243,7 @@ describe('MessagesView gateway annotation flow', () => {
 
   test('R2 failure merge must not stamp new-page annotation with snapshot old page', async () => {
     let rejectSend;
-    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
     const frame = await openGatewayAppInSidebar();
     const oldPage = { path: '/old', revision: 'r1' };
     const nextPage = { path: '/new', revision: 'r2' };
@@ -9755,7 +10279,7 @@ describe('MessagesView gateway annotation flow', () => {
       typeDraft(container.querySelector('.v3-composer textarea'), 'retry');
     });
     await sendMessageAndFlush();
-    const sent = api.sendMessage.mock.calls.at(-1)[1]?.metadata?.gateway_annotations;
+    const sent = api.sendArtifactAnnotations.mock.calls.at(-1)[0]?.gateway_annotations;
     expect(sent?.annotations?.some((a) => a.body === 'new-comment') && sent?.page?.path === '/old').toBe(false);
   });
 
@@ -9773,7 +10297,7 @@ describe('MessagesView gateway annotation flow', () => {
     await sendMessageAndFlush();
     // Legacy rows have no capture page: they cannot inherit the reopened
     // document's page, so the send is refused.
-    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
   });
 
   test('R2 over-limit comments must not delete previously persisted draft silently', async () => {
@@ -9790,7 +10314,7 @@ describe('MessagesView gateway annotation flow', () => {
 
   test('R2 success consumes snapshot only and retains pending new annotations', async () => {
     let resolveSend;
-    api.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
+    api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board', revision: 'r1' };
     const connect = await followupReady(frame, page);
@@ -9842,23 +10366,23 @@ describe('MessagesView gateway annotation flow', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalled());
-    const call = api.sendMessage.mock.calls.at(-1);
-    expect(call[0]).toBe('p2p_1_2');
-    expect(call[1]?.metadata?.gateway_annotations?.annotations?.some((a) => a.body === 'topic2-comment')).not.toBe(true);
+    // Topic switch closes/revokes A before submission: fail closed rather
+    // than leaking the prepared A payload into B or ordinary-message routing.
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
     expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent).toContain('topic2-comment');
     await act(async () => {
       typeDraft(container.querySelector('.v3-composer textarea'), 'topic2-body');
     });
     await sendMessageAndFlush();
-    const nextCall = api.sendMessage.mock.calls.at(-1);
-    expect(nextCall[0]).toBe('p2p_1_3');
-    expect(nextCall[1]?.metadata?.gateway_annotations?.annotations?.some((a) => a.body === 'topic2-comment')).toBe(true);
+    const nextCall = api.sendArtifactAnnotations.mock.calls.at(-1);
+    expect(nextCall[0].open_ref).toBe('aob_B'.padEnd(40, 'x'));
+    expect(nextCall[0]?.gateway_annotations?.annotations?.some((a) => a.body === 'topic2-comment')).toBe(true);
   });
 
   test('R2 success after skipped preclear retains annotations added while request pending', async () => {
     let resolveSend; let resolvePoll;
-    api.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
+    api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board', revision: 'r1' };
     const connect = await followupReady(frame, page);
@@ -9893,7 +10417,7 @@ describe('MessagesView gateway annotation flow', () => {
 
   test('R2 success may not wipe pending annotations if ordinary draft returned to snapshot body', async () => {
     let resolveSend; let resolvePoll;
-    api.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
+    api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board', revision: 'r1' };
     const connect = await followupReady(frame, page);
@@ -9930,27 +10454,408 @@ describe('MessagesView gateway annotation flow', () => {
     expect(stored?.['p2p_1_2|7|saturday-demo']?.map((a) => a.body)).toEqual(['pending-comment']);
   });
 
-  test('R2F over-limit capture keeps the editor open with an explicit unsaved notice', async () => {
+  test('R3 new same-bucket capture during preparation survives successful snapshot send', async () => {
+    let resolvePoll;
+    const frame = await openGatewayAppInSidebar();
+    const page = {path:'/board', revision:'r1'};
+    const connect = await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'sent','original-comment');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'original-body'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(resolve=>{resolvePoll=resolve;}));
+    await openPhoneUploadFromComposer(container);
+    await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
+    await sendMessageAndFlush();
+    await followupCapture(frame,connect,page,'new-preparation','new-preparation-comment');
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await Promise.resolve();});
+    await vi.waitFor(()=>expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1));
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].gateway_annotations.annotations.map(a=>a.body)).toEqual(['original-comment']);
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')||'').toContain('new-preparation-comment');
+  });
+
+  test('R3 failed clear keeps saved rows visible when removeItem refuses', async()=>{
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
+    const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'saved','saved-comment');
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('saved-comment');
+    const spy=vi.spyOn(sessionStorage,'removeItem').mockImplementation(()=>{throw new Error('blocked remove');});
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());
+    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent||'').toContain('saved-comment');
+    spy.mockRestore();
+  });
+
+  test('R3 failure restore persists all legal snapshot and pending rows or reports refusal', async()=>{
+    let rejectSend;
+    api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,reject)=>{rejectSend=reject;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
+    const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'old-heavy','旧'.repeat(1900));
+    await followupCapture(frame,connect,page,'old-heavy2','原'.repeat(1900));
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
+    await sendMessageAndFlush();
+    expect(rejectSend).toBeTypeOf('function');
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].gateway_annotations.annotations.map(a=>a.id)).toEqual(['old-heavy','old-heavy2']);
+    await followupCapture(frame,connect,page,'pending-heavy','新'.repeat(1900));
+    await followupCapture(frame,connect,page,'pending-heavy2','后'.repeat(1900));
+    expect(JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'].map(a=>a.id)).toEqual(['pending-heavy','pending-heavy2']);
+    await act(async()=>{rejectSend(new Error('network'));await Promise.resolve();});
+    const persisted=JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'));
+    expect(persisted?.['p2p_1_2|7|saturday-demo']?.map(a=>a.id)).toContain('old-heavy');
+  });
+  test('R3 removal refusal in a multi-bucket map keeps rows visible', async()=>{
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
+    const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'saved','saved-comment');
+    const util=await import('../utils/gateway-annotation-drafts');
+    util.writeGatewayAnnotationDrafts(1,'p2p_1_3',7,'saturday-demo',[{id:'other',kind:'element',body:'other-comment',target:{element_id:'other'},page}]);
+    const before=sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1');
+    vi.spyOn(sessionStorage,'setItem').mockImplementation(()=>{throw new Error('quota denied');});
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBe(before);
+    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent||'').toContain('saved-comment');
+  });
+
+  test('R3 failed snapshot does not overwrite newer same-ID saved edit', async()=>{
+    let rejectSend;
+    api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,reject)=>{rejectSend=reject;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
+    const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'same','original-comment');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
+    await sendMessageAndFlush();
+    // An SDK can re-emit a stable id; once preclear has removed it, a fresh
+    // capture with that same id is allowed by the UI and receives newer body.
+    await followupCapture(frame,connect,page,'same','newer-comment');
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('newer-comment');
+    await act(async()=>{rejectSend(new Error('network'));await Promise.resolve();});
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('newer-comment');
+  });
+
+  test('R3 existing row edited during skipped preparation survives success',async()=>{
+    let resolvePoll,resolveSend;
+    api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise(resolve=>{resolveSend=resolve;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
+    const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'edit','original-comment');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'old-body'));
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-body').click());
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(resolve=>{resolvePoll=resolve;}));
+    await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
+    await sendMessageAndFlush();
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'new-body'));
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await Promise.resolve();});
+    await vi.waitFor(()=>expect(resolveSend).toBeTypeOf('function'));
+    const editor=container.querySelector('.v3-gateway-annotation-bar-edit');
+    expect(editor).not.toBeNull();expect(editor.disabled).toBe(false);
+    await act(async()=>typeDraft(editor,'edited-pending-comment'));
+    await act(async()=>Simulate.keyDown(editor,{key:'Enter'}));
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('edited-pending-comment');
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].gateway_annotations.annotations[0].body).toBe('original-comment');
+    await act(async()=>{resolveSend({seq_id:124,metadata:{}});await Promise.resolve();});
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')||'').toContain('edited-pending-comment');
+  });
+
+  test('R3 refused recovery retains failed and pending comments visibly', async () => {
+    let rejectSend;
+    api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board', revision: 'r1' };
     const connect = await followupReady(frame, page);
-    // One short saved comment, then three LEGAL (<=2000) heavy comments: the
-    // last one pushes the canonical envelope over 16KiB and must be refused
-    // with a visible notice instead of a silent success.
-    await followupCapture(frame, connect, page, 'short', 'keep-me');
-    for (let i = 0; i < 3; i += 1) {
-      await followupCapture(frame, connect, page, `heavy-feedback${i}`, '批'.repeat(1900));
-    }
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('keep-me');
-    const notice = container.querySelector('.v3-gateway-annotation-notice')?.textContent || '';
-    expect(notice).toMatch(/过大|超限|无法保存|未保存|上限|限制|过长/);
-    // The refused row is not in the bar (no silent confirmation); the saved
-    // rows that fit remain visible and sendable.
-    const barRows = (container.querySelector('.v3-gateway-annotation-bar')?.textContent || '');
-    expect(barRows).toContain('keep-me');
-    expect(barRows).toContain('批'.repeat(1900)); // heavy-feedback0/1 were accepted and persisted
+    await followupCapture(frame, connect, page, 'old-quota', 'original-comment');
+    await act(async () => typeDraft(container.querySelector('.v3-composer textarea'), 'send'));
+    await sendMessageAndFlush();
+    await followupCapture(frame, connect, page, 'new-quota', 'pending-comment');
+    const refused = vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    await act(async () => { rejectSend(new Error('network')); await Promise.resolve(); });
+    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent).toContain('original-comment');
+    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent).toContain('pending-comment');
+    expect(container.querySelector('.v3-gateway-annotation-notice')?.textContent).toMatch(/无法保存|备份/);
+    refused.mockRestore();
   });
 
+  test('R3 auth changed during preparation blocks old annotation request',async()=>{
+    const auth=await import('../auth-session');auth.setToken('r3-old-session');
+    let resolvePoll;const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
+    const connect=await followupReady(frame,page);await followupCapture(frame,connect,page,'auth','old-session-comment');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(resolve=>{resolvePoll=resolve;}));
+    await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
+    await sendMessageAndFlush();
+    await act(async()=>{auth.setToken(null);auth.setToken('r3-new-session');resolvePoll({session_id:'abc123',files:[]});await Promise.resolve();});
+    await vi.waitFor(()=>expect(container.querySelector('.v3-composer-box')?.getAttribute('aria-busy')).toBe('false'));
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    auth.setToken(null);
+  });
+
+  test('R3 short failure merge retains both different-ID comments',async()=>{
+    let rejectSend;api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,reject)=>{rejectSend=reject;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'old','old-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
+    await followupCapture(frame,connect,page,'new','new-comment');await act(async()=>{rejectSend(new Error('network'));await Promise.resolve();});
+    const rows=JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'];
+    expect(rows.map(a=>a.body)).toEqual(['old-comment','new-comment']);
+  });
+
+  async function reviewerQuotaRecovery() {
+    let rejectSend;
+    api.sendArtifactAnnotations.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    const page = {path:'/board', revision:'r1'};
+    const frame = await openGatewayAppInSidebar();
+    const connect = await followupReady(frame, page);
+    await followupCapture(frame, connect, page, 'recovery-old', 'old-recovery-comment');
+    await act(async () => typeDraft(container.querySelector('.v3-composer textarea'), 'send'));
+    await sendMessageAndFlush();
+    expect(rejectSend).toBeTypeOf('function');
+    await followupCapture(frame, connect, page, 'recovery-pending', 'pending-recovery-comment');
+    const refuse = vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => {throw new Error('local quota refusal');});
+    await act(async () => {rejectSend(new Error('network')); await flushPromises();});
+    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(2);
+    expect(container.textContent).toContain('old-recovery-comment');
+    expect(container.textContent).toContain('pending-recovery-comment');
+    expect(container.querySelector('.v3-gateway-annotation-notice').textContent).toMatch(/备份/);
+    refuse.mockRestore();
+    return {frame,connect,page};
+  }
+
+  test('Reviewer recovery retry success must stay consumed when bucket reactivates', async () => {
+    await reviewerQuotaRecovery();
+    await act(async () => typeDraft(container.querySelector('.v3-composer textarea'), 'retry'));
+    await sendMessageAndFlush();
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(2);
+    expect(api.sendArtifactAnnotations.mock.calls[1][0].gateway_annotations.annotations.map(a => a.id)).toEqual(['recovery-old','recovery-pending']);
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
+    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
+    await mountTopic(root, 'p2p_1_3');
+    const frame = await openGatewayAppInSidebar('p2p_1_2');
+    await followupReady(frame, {path:'/board',revision:'r1'});
+    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
+  });
+
+  test('Reviewer successful recovery edit and capture must supersede stale recovery rows', async () => {
+    const {frame,connect,page} = await reviewerQuotaRecovery();
+    await act(async () => container.querySelector('.v3-gateway-annotation-bar-body').click());
+    await act(async () => typeDraft(container.querySelector('.v3-gateway-annotation-bar-edit'), 'edited-recovery-comment'));
+    await act(async () => Simulate.keyDown(container.querySelector('.v3-gateway-annotation-bar-edit'), {key:'Enter'}));
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('edited-recovery-comment');
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('edited-recovery-comment');
+    await followupCapture(frame,connect,page,'recovery-fresh','fresh-recovery-comment');
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('fresh-recovery-comment');
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('edited-recovery-comment');
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('fresh-recovery-comment');
+  });
+
+  test('Reviewer same-content delete recreate during preparation keeps newer version', async () => {
+    let resolvePoll;
+    const frame=await openGatewayAppInSidebar(); const page={path:'/board',revision:'r1'};
+    const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'aba','same-comment');
+    const read=() => JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'];
+    const oldRevision=read()[0].draft_revision;
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(resolve=>{resolvePoll=resolve;}));
+    await openPhoneUploadFromComposer(container); await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
+    await sendMessageAndFlush();
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());
+    await followupCapture(frame,connect,page,'aba','same-comment');
+    const newer=read()[0].draft_revision;expect(newer).toBeGreaterThan(oldRevision);
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
+    await vi.waitFor(()=>expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1));
+    expect(read()[0].draft_revision).toBe(newer);
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('same-comment');
+  });
+
+  test('Reviewer legacy page-certified same-content recreate during preparation protects ABA', async () => {
+    const bucket='p2p_1_2|7|saturday-demo'; const page={path:'/board',revision:'r1'};
+    sessionStorage.setItem('catsco_gateway_annotation_drafts:v1:1',JSON.stringify({[bucket]:[{id:'legacy-aba',kind:'element',body:'same-comment',target:{element_id:'submit-btn',selector:'button#submit-btn'},page}],[`${bucket}.meta`]:{topic_id:'p2p_1_2',agent_uid:7,app_id:'saturday-demo'}}));
+    let resolvePoll;
+    const frame=await openGatewayAppInSidebar();const connect=await followupReady(frame,page);
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(resolve=>{resolvePoll=resolve;}));
+    await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
+    await sendMessageAndFlush();
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());
+    await followupCapture(frame,connect,page,'legacy-aba','same-comment');
+    const before=sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1');expect(before).toContain('draft_revision');
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
+    // A legacy page certificate is not an open certificate. Recreating the
+    // same content cannot grant the old frozen snapshot the new capability.
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')||'').toContain('same-comment');
+  });
+
+  test('Reviewer recovery scope stays isolated after auth session changes on same mount', async () => {
+    await reviewerQuotaRecovery();
+    const auth=await import('../auth-session');
+    await act(async()=>{auth.setToken('reviewer-new-login'); sessionStorage.removeItem('catsco_gateway_annotation_drafts:v1:1');});
+    await mountTopic(root,'p2p_1_3');
+    const frame=await openGatewayAppInSidebar('p2p_1_2');await followupReady(frame,{path:'/board',revision:'r1'});
+    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
+    auth.setToken(null);
+  });
+
+
+
+
+  test('R4 recovery storage success after failed send must refresh the row version consumed by next send', async()=>{
+    let rejectSend;
+    api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,reject)=>{rejectSend=reject;}));
+    const frame=await openGatewayAppInSidebar(); const page={path:'/board',revision:'r1'}; const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'stable','original');
+    const read=()=>JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')||'{}')['p2p_1_2|7|saturday-demo']||[];
+    const firstVersion=read()[0].draft_revision;
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first')); await sendMessageAndFlush();
+    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    expect(read()[0].draft_revision).toBeGreaterThan(firstVersion);
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('original');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(2);expect(read()).toHaveLength(0);
+  });
+
+  test('R4 quota recovery retry failure must not replace memory newer same-ID comment with older persisted version',async()=>{
+    let rejectFirst,rejectRetry;
+    api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,r)=>{rejectFirst=r;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'old','old-comment');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();
+    await followupCapture(frame,connect,page,'pending','pending-comment');
+    const refuseSet=vi.spyOn(sessionStorage,'setItem').mockImplementation(()=>{throw new Error('quota');});
+    await act(async()=>{rejectFirst(new Error('network'));await flushPromises();});
+    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(2);
+    // A retry preclear is also refused; the complete recovery remains authoritative.
+    api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,r)=>{rejectRetry=r;}));
+    const refuseRemove=vi.spyOn(sessionStorage,'removeItem').mockImplementation(()=>{throw new Error('blocked');});
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();
+    expect(rejectRetry).toBeTypeOf('function');
+    expect(api.sendArtifactAnnotations.mock.calls[1][0].gateway_annotations.annotations.map(a=>a.id)).toEqual(['old','pending']);
+    await act(async()=>{rejectRetry(new Error('network'));await flushPromises();});
+    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(2);
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('old-comment');
+    refuseSet.mockRestore();refuseRemove.mockRestore();
+  });
+
+  test('R4 repeated retry with refused preclear and later successful cleanup preserves unseen same-ID edit',async()=>{
+    let resolvePoll,resolveSend;
+    const {frame,connect,page}=await reviewerQuotaRecovery();
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-body').click());
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));
+    await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
+    api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise(r=>{resolveSend=r;}));await sendMessageAndFlush();
+    await act(async()=>typeDraft(container.querySelector('.v3-gateway-annotation-bar-edit'),'new-preparation-edit'));
+    await act(async()=>Simulate.keyDown(container.querySelector('.v3-gateway-annotation-bar-edit'),{key:'Enter'}));
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
+    await vi.waitFor(()=>expect(resolveSend).toBeTypeOf('function'));
+    await act(async()=>{resolveSend({seq_id:130,metadata:{}});await flushPromises();});
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('new-preparation-edit');
+  });
+
+  test('R4 recovering over-size comments can be shortened one at a time without deleting other comments',async()=>{
+    let rejectSend;
+    api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'old-a','旧'.repeat(1900));await followupCapture(frame,connect,page,'old-b','原'.repeat(1900));
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
+    await followupCapture(frame,connect,page,'pending-a','新'.repeat(1900));await followupCapture(frame,connect,page,'pending-b','后'.repeat(1900));
+    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(4);
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-body').click());
+    await act(async()=>typeDraft(container.querySelector('.v3-gateway-annotation-bar-edit'),'short'));
+    await act(async()=>Simulate.keyDown(container.querySelector('.v3-gateway-annotation-bar-edit'),{key:'Enter'}));
+    const saved=JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'];
+    expect(saved).toHaveLength(4);expect(saved[0].body).toBe('short');
+  });
+
+  test('R4 late success in original app cannot overwrite newly active app visible drafts',async()=>{
+    let resolveSend;api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise(r=>{resolveSend=r;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
+    await followupCapture(frame,connect,page,'old','original-app');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
+    await mountTopic(root,'p2p_1_3');const next=await openGatewayAppInSidebar('p2p_1_3');const c=await followupReady(next,page);
+    await followupCapture(next,c,page,'new','other-topic-comment');
+    await act(async()=>{resolveSend({seq_id:135,metadata:{}});await flushPromises();});
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('other-topic-comment');
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('other-topic-comment');
+  });
+
+
+  test('R4 shortening multiple recovered comments must save intermediate bounded recovery set',async()=>{
+    let rejectSend;api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
+    for(const id of ['old-a','old-b'])await followupCapture(frame,connect,page,id,'批'.repeat(1900));
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
+    for(const id of ['new-a','new-b'])await followupCapture(frame,connect,page,id,'新'.repeat(1900));
+    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(4);
+    for(let i=0;i<2;i++){
+      await act(async()=>container.querySelectorAll('.v3-gateway-annotation-bar-body')[i]?.click());
+      const editor=container.querySelector('.v3-gateway-annotation-bar-edit');expect(editor).not.toBeNull();
+      await act(async()=>typeDraft(editor,'short-'+i));await act(async()=>Simulate.keyDown(editor,{key:'Enter'}));
+      expect(container.querySelector('.v3-gateway-annotation-bar-edit')).toBeNull();
+    }
+    const rows=JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'];expect(rows).toHaveLength(4);expect(rows[0].body).toBe('short-0');expect(rows[1].body).toBe('short-1');
+  });
+
+  test('R4 prepared snapshot new page guard must not read drift from newly active other topic',async()=>{
+    let resolvePoll;const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
+    await followupCapture(frame,c,page,'topic-a','old-topic');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'body-a'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();
+    await mountTopic(root,'p2p_1_3');const next=await openGatewayAppInSidebar('p2p_1_3');const c2=await followupReady(next,page);await followupCapture(next,c2,page,'topic-b','other-topic');
+    await act(async()=>{sdkMessage(next,{type:'catsco.gateway.annotation.page.v1',contract_version:'catsco.gateway-annotation-bridge.v1',session_id:c2.session_id,page:{path:'/new',revision:'r2'}});await flushPromises();});
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+
+
+  test('R5 navigation after preclear and failure restore must reject retry of old document',async()=>{
+    let rejectSend;api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));
+    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
+    await followupCapture(frame,c,page,'old','old-page-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();expect(rejectSend).toBeTypeOf('function');
+    await act(async()=>{sdkMessage(frame,{type:'catsco.gateway.annotation.page.v1',contract_version:'catsco.gateway-annotation-bridge.v1',session_id:c.session_id,page:{path:'/new',revision:'r2'}});await flushPromises();});
+    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('old-page-comment');
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1);
+  });
+
+  test('R5 reload same app to new revision during preparation must reject original page snapshot',async()=>{
+    let resolvePoll;const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
+    await followupCapture(frame,c,page,'old','old-page-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();
+    await followupReady(frame,{path:'/board',revision:'r2'});
+    expect(container.textContent).toContain('页面已切换');
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+  });
+
+  test('R5 preclear failure without navigation remains retryable control',async()=>{
+    let rejectSend;api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
+    await followupCapture(frame,c,page,'old','same-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(2);
+  });
+
+  test('R5 clear during preparation is not undone by late request failure',async()=>{
+    let resolvePoll,rejectSend;api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
+    await followupCapture(frame,c,page,'deleted','deleted-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();
+    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
+    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});await vi.waitFor(()=>expect(rejectSend).toBeTypeOf('function'));
+    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
+    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
+  });
+
+
+  test('R5 same app reload same page during preparation remains sendable control',async()=>{
+    let resolvePoll;const f=await openGatewayAppInSidebar();const p={path:'/board',revision:'r1'};const c=await followupReady(f,p);await followupCapture(f,c,p,'old','same-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();await followupReady(f,p);await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1);
+  });
+  test('R5 live drift on original unchanged binding still blocks preparation control',async()=>{
+    let resolvePoll;const f=await openGatewayAppInSidebar();const p={path:'/board',revision:'r1'};const c=await followupReady(f,p);await followupCapture(f,c,p,'old','same-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
+    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();await act(async()=>{sdkMessage(f,{type:'catsco.gateway.annotation.page.v1',contract_version:'catsco.gateway-annotation-bridge.v1',session_id:c.session_id,page:{path:'/new',revision:'r2'}});await flushPromises();});await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+  });
+  test('R5 reload after failure restoration correctly catches page mismatch control',async()=>{
+    let reject;api.sendArtifactAnnotations.mockImplementationOnce(()=>new Promise((_,r)=>{reject=r;}));const f=await openGatewayAppInSidebar();const p={path:'/board',revision:'r1'};const c=await followupReady(f,p);await followupCapture(f,c,p,'old','old-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();await act(async()=>{reject(new Error('network'));await flushPromises();});await followupReady(f,{path:'/new',revision:'r2'});await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1);
+  });
   test('R2F over-limit body edit keeps the editable row and states the refusal', async () => {
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board', revision: 'r1' };
@@ -9989,416 +10894,6 @@ describe('MessagesView gateway annotation flow', () => {
     expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('shortened-comment');
   });
 
-  test('R3 new same-bucket capture during preparation survives successful snapshot send', async () => {
-    let resolvePoll;
-    const frame = await openGatewayAppInSidebar();
-    const page = {path:'/board', revision:'r1'};
-    const connect = await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'sent','original-comment');
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'original-body'));
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(resolve=>{resolvePoll=resolve;}));
-    await openPhoneUploadFromComposer(container);
-    await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
-    await sendMessageAndFlush();
-    await followupCapture(frame,connect,page,'new-preparation','new-preparation-comment');
-    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await Promise.resolve();});
-    await vi.waitFor(()=>expect(api.sendMessage).toHaveBeenCalledTimes(1));
-    expect(api.sendMessage.mock.calls[0][1].metadata.gateway_annotations.annotations.map(a=>a.body)).toEqual(['original-comment']);
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')||'').toContain('new-preparation-comment');
-  });
 
-  test('R3 adding a capture cannot heal legacy rows with no page certificate', async()=>{
-    const bucket='p2p_1_2|7|saturday-demo';
-    sessionStorage.setItem('catsco_gateway_annotation_drafts:v1:1',JSON.stringify({[bucket]:[{id:'legacy',kind:'element',body:'legacy-comment',target:{element_id:'old'}}],[`${bucket}.meta`]:{topic_id:'p2p_1_2',agent_uid:7,app_id:'saturday-demo'}}));
-    const frame=await openGatewayAppInSidebar();const page={path:'/new',revision:'r2'};
-    const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'fresh','fresh-comment');
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
-    await sendMessageAndFlush();
-    expect(api.sendMessage).not.toHaveBeenCalled();
-  });
-
-  test('R3 failed clear keeps saved rows visible when removeItem refuses', async()=>{
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
-    const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'saved','saved-comment');
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('saved-comment');
-    const spy=vi.spyOn(sessionStorage,'removeItem').mockImplementation(()=>{throw new Error('blocked remove');});
-    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());
-    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent||'').toContain('saved-comment');
-    spy.mockRestore();
-  });
-
-  test('R3 failure restore persists all legal snapshot and pending rows or reports refusal', async()=>{
-    let rejectSend;
-    api.sendMessage.mockImplementationOnce(()=>new Promise((_,reject)=>{rejectSend=reject;}));
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
-    const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'old-heavy','旧'.repeat(1900));
-    await followupCapture(frame,connect,page,'old-heavy2','原'.repeat(1900));
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
-    await sendMessageAndFlush();
-    expect(rejectSend).toBeTypeOf('function');
-    expect(api.sendMessage.mock.calls[0][1].metadata.gateway_annotations.annotations.map(a=>a.id)).toEqual(['old-heavy','old-heavy2']);
-    await followupCapture(frame,connect,page,'pending-heavy','新'.repeat(1900));
-    await followupCapture(frame,connect,page,'pending-heavy2','后'.repeat(1900));
-    expect(JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'].map(a=>a.id)).toEqual(['pending-heavy','pending-heavy2']);
-    await act(async()=>{rejectSend(new Error('network'));await Promise.resolve();});
-    const persisted=JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'));
-    expect(persisted?.['p2p_1_2|7|saturday-demo']?.map(a=>a.id)).toContain('old-heavy');
-  });
-  test('R3 removal refusal in a multi-bucket map keeps rows visible', async()=>{
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
-    const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'saved','saved-comment');
-    const util=await import('../utils/gateway-annotation-drafts');
-    util.writeGatewayAnnotationDrafts(1,'p2p_1_3',7,'saturday-demo',[{id:'other',kind:'element',body:'other-comment',target:{element_id:'other'},page}]);
-    const before=sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1');
-    vi.spyOn(sessionStorage,'setItem').mockImplementation(()=>{throw new Error('quota denied');});
-    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBe(before);
-    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent||'').toContain('saved-comment');
-  });
-
-  test('R3 failed snapshot does not overwrite newer same-ID saved edit', async()=>{
-    let rejectSend;
-    api.sendMessage.mockImplementationOnce(()=>new Promise((_,reject)=>{rejectSend=reject;}));
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
-    const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'same','original-comment');
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
-    await sendMessageAndFlush();
-    // An SDK can re-emit a stable id; once preclear has removed it, a fresh
-    // capture with that same id is allowed by the UI and receives newer body.
-    await followupCapture(frame,connect,page,'same','newer-comment');
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('newer-comment');
-    await act(async()=>{rejectSend(new Error('network'));await Promise.resolve();});
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('newer-comment');
-  });
-
-  test('R3 existing row edited during skipped preparation survives success',async()=>{
-    let resolvePoll,resolveSend;
-    api.sendMessage.mockImplementationOnce(()=>new Promise(resolve=>{resolveSend=resolve;}));
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
-    const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'edit','original-comment');
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'old-body'));
-    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-body').click());
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(resolve=>{resolvePoll=resolve;}));
-    await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
-    await sendMessageAndFlush();
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'new-body'));
-    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await Promise.resolve();});
-    await vi.waitFor(()=>expect(resolveSend).toBeTypeOf('function'));
-    const editor=container.querySelector('.v3-gateway-annotation-bar-edit');
-    expect(editor).not.toBeNull();expect(editor.disabled).toBe(false);
-    await act(async()=>typeDraft(editor,'edited-pending-comment'));
-    await act(async()=>Simulate.keyDown(editor,{key:'Enter'}));
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('edited-pending-comment');
-    expect(api.sendMessage.mock.calls[0][1].metadata.gateway_annotations.annotations[0].body).toBe('original-comment');
-    await act(async()=>{resolveSend({seq_id:124,metadata:{}});await Promise.resolve();});
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')||'').toContain('edited-pending-comment');
-  });
-
-  test('R3 refused recovery retains failed and pending comments visibly', async () => {
-    let rejectSend;
-    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
-    const frame = await openGatewayAppInSidebar();
-    const page = { path: '/board', revision: 'r1' };
-    const connect = await followupReady(frame, page);
-    await followupCapture(frame, connect, page, 'old-quota', 'original-comment');
-    await act(async () => typeDraft(container.querySelector('.v3-composer textarea'), 'send'));
-    await sendMessageAndFlush();
-    await followupCapture(frame, connect, page, 'new-quota', 'pending-comment');
-    const refused = vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => { throw new Error('quota'); });
-    await act(async () => { rejectSend(new Error('network')); await Promise.resolve(); });
-    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent).toContain('original-comment');
-    expect(container.querySelector('.v3-gateway-annotation-bar')?.textContent).toContain('pending-comment');
-    expect(container.querySelector('.v3-gateway-annotation-notice')?.textContent).toMatch(/无法保存|备份/);
-    refused.mockRestore();
-  });
-
-  test('R3 auth changed during preparation blocks old annotation request',async()=>{
-    const auth=await import('../auth-session');auth.setToken('r3-old-session');
-    let resolvePoll;const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};
-    const connect=await followupReady(frame,page);await followupCapture(frame,connect,page,'auth','old-session-comment');
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(resolve=>{resolvePoll=resolve;}));
-    await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
-    await sendMessageAndFlush();
-    await act(async()=>{auth.setToken(null);auth.setToken('r3-new-session');resolvePoll({session_id:'abc123',files:[]});await Promise.resolve();});
-    await vi.waitFor(()=>expect(container.querySelector('.v3-composer-box')?.getAttribute('aria-busy')).toBe('false'));
-    expect(api.sendMessage).not.toHaveBeenCalled();
-    auth.setToken(null);
-  });
-
-  test('R3 short failure merge retains both different-ID comments',async()=>{
-    let rejectSend;api.sendMessage.mockImplementationOnce(()=>new Promise((_,reject)=>{rejectSend=reject;}));
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'old','old-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
-    await followupCapture(frame,connect,page,'new','new-comment');await act(async()=>{rejectSend(new Error('network'));await Promise.resolve();});
-    const rows=JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'];
-    expect(rows.map(a=>a.body)).toEqual(['old-comment','new-comment']);
-  });
-
-  async function reviewerQuotaRecovery() {
-    let rejectSend;
-    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
-    const page = {path:'/board', revision:'r1'};
-    const frame = await openGatewayAppInSidebar();
-    const connect = await followupReady(frame, page);
-    await followupCapture(frame, connect, page, 'recovery-old', 'old-recovery-comment');
-    await act(async () => typeDraft(container.querySelector('.v3-composer textarea'), 'send'));
-    await sendMessageAndFlush();
-    expect(rejectSend).toBeTypeOf('function');
-    await followupCapture(frame, connect, page, 'recovery-pending', 'pending-recovery-comment');
-    const refuse = vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => {throw new Error('local quota refusal');});
-    await act(async () => {rejectSend(new Error('network')); await flushPromises();});
-    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(2);
-    expect(container.textContent).toContain('old-recovery-comment');
-    expect(container.textContent).toContain('pending-recovery-comment');
-    expect(container.querySelector('.v3-gateway-annotation-notice').textContent).toMatch(/备份/);
-    refuse.mockRestore();
-    return {frame,connect,page};
-  }
-
-  test('Reviewer recovery retry success must stay consumed when bucket reactivates', async () => {
-    await reviewerQuotaRecovery();
-    await act(async () => typeDraft(container.querySelector('.v3-composer textarea'), 'retry'));
-    await sendMessageAndFlush();
-    expect(api.sendMessage).toHaveBeenCalledTimes(2);
-    expect(api.sendMessage.mock.calls[1][1].metadata.gateway_annotations.annotations.map(a => a.id)).toEqual(['recovery-old','recovery-pending']);
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
-    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
-    await mountTopic(root, 'p2p_1_3');
-    const frame = await openGatewayAppInSidebar('p2p_1_2');
-    await followupReady(frame, {path:'/board',revision:'r1'});
-    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
-  });
-
-  test('Reviewer successful recovery edit and capture must supersede stale recovery rows', async () => {
-    const {frame,connect,page} = await reviewerQuotaRecovery();
-    await act(async () => container.querySelector('.v3-gateway-annotation-bar-body').click());
-    await act(async () => typeDraft(container.querySelector('.v3-gateway-annotation-bar-edit'), 'edited-recovery-comment'));
-    await act(async () => Simulate.keyDown(container.querySelector('.v3-gateway-annotation-bar-edit'), {key:'Enter'}));
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('edited-recovery-comment');
-    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('edited-recovery-comment');
-    await followupCapture(frame,connect,page,'recovery-fresh','fresh-recovery-comment');
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('fresh-recovery-comment');
-    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('edited-recovery-comment');
-    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('fresh-recovery-comment');
-  });
-
-  test('Reviewer same-content delete recreate during preparation keeps newer version', async () => {
-    let resolvePoll;
-    const frame=await openGatewayAppInSidebar(); const page={path:'/board',revision:'r1'};
-    const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'aba','same-comment');
-    const read=() => JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'];
-    const oldRevision=read()[0].draft_revision;
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(resolve=>{resolvePoll=resolve;}));
-    await openPhoneUploadFromComposer(container); await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
-    await sendMessageAndFlush();
-    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());
-    await followupCapture(frame,connect,page,'aba','same-comment');
-    const newer=read()[0].draft_revision;expect(newer).toBeGreaterThan(oldRevision);
-    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
-    await vi.waitFor(()=>expect(api.sendMessage).toHaveBeenCalledTimes(1));
-    expect(read()[0].draft_revision).toBe(newer);
-    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('same-comment');
-  });
-
-  test('Reviewer legacy page-certified same-content recreate during preparation protects ABA', async () => {
-    const bucket='p2p_1_2|7|saturday-demo'; const page={path:'/board',revision:'r1'};
-    sessionStorage.setItem('catsco_gateway_annotation_drafts:v1:1',JSON.stringify({[bucket]:[{id:'legacy-aba',kind:'element',body:'same-comment',target:{element_id:'submit-btn',selector:'button#submit-btn'},page}],[`${bucket}.meta`]:{topic_id:'p2p_1_2',agent_uid:7,app_id:'saturday-demo'}}));
-    let resolvePoll;
-    const frame=await openGatewayAppInSidebar();const connect=await followupReady(frame,page);
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(resolve=>{resolvePoll=resolve;}));
-    await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
-    await sendMessageAndFlush();
-    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());
-    await followupCapture(frame,connect,page,'legacy-aba','same-comment');
-    const before=sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1');expect(before).toContain('draft_revision');
-    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
-    await vi.waitFor(()=>expect(api.sendMessage).toHaveBeenCalledTimes(1));
-    expect(api.sendMessage.mock.calls[0][1].metadata.gateway_annotations.annotations[0].body).toBe('same-comment');
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')||'').toContain('same-comment');
-  });
-
-  test('Reviewer recovery scope stays isolated after auth session changes on same mount', async () => {
-    await reviewerQuotaRecovery();
-    const auth=await import('../auth-session');
-    await act(async()=>{auth.setToken('reviewer-new-login'); sessionStorage.removeItem('catsco_gateway_annotation_drafts:v1:1');});
-    await mountTopic(root,'p2p_1_3');
-    const frame=await openGatewayAppInSidebar('p2p_1_2');await followupReady(frame,{path:'/board',revision:'r1'});
-    expect(container.querySelector('.v3-gateway-annotation-bar')).toBeNull();
-    auth.setToken(null);
-  });
-
-
-
-
-  test('R4 recovery storage success after failed send must refresh the row version consumed by next send', async()=>{
-    let rejectSend;
-    api.sendMessage.mockImplementationOnce(()=>new Promise((_,reject)=>{rejectSend=reject;}));
-    const frame=await openGatewayAppInSidebar(); const page={path:'/board',revision:'r1'}; const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'stable','original');
-    const read=()=>JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')||'{}')['p2p_1_2|7|saturday-demo']||[];
-    const firstVersion=read()[0].draft_revision;
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first')); await sendMessageAndFlush();
-    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
-    expect(read()[0].draft_revision).toBeGreaterThan(firstVersion);
-    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('original');
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();
-    expect(api.sendMessage).toHaveBeenCalledTimes(2);expect(read()).toHaveLength(0);
-  });
-
-  test('R4 quota recovery retry failure must not replace memory newer same-ID comment with older persisted version',async()=>{
-    let rejectFirst,rejectRetry;
-    api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectFirst=r;}));
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'old','old-comment');
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();
-    await followupCapture(frame,connect,page,'pending','pending-comment');
-    const refuseSet=vi.spyOn(sessionStorage,'setItem').mockImplementation(()=>{throw new Error('quota');});
-    await act(async()=>{rejectFirst(new Error('network'));await flushPromises();});
-    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(2);
-    // A retry preclear is also refused; the complete recovery remains authoritative.
-    api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectRetry=r;}));
-    const refuseRemove=vi.spyOn(sessionStorage,'removeItem').mockImplementation(()=>{throw new Error('blocked');});
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();
-    expect(rejectRetry).toBeTypeOf('function');
-    expect(api.sendMessage.mock.calls[1][1].metadata.gateway_annotations.annotations.map(a=>a.id)).toEqual(['old','pending']);
-    await act(async()=>{rejectRetry(new Error('network'));await flushPromises();});
-    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(2);
-    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('old-comment');
-    refuseSet.mockRestore();refuseRemove.mockRestore();
-  });
-
-  test('R4 repeated retry with refused preclear and later successful cleanup preserves unseen same-ID edit',async()=>{
-    let resolvePoll,resolveSend;
-    const {frame,connect,page}=await reviewerQuotaRecovery();
-    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-body').click());
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));
-    await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));
-    api.sendMessage.mockImplementationOnce(()=>new Promise(r=>{resolveSend=r;}));await sendMessageAndFlush();
-    await act(async()=>typeDraft(container.querySelector('.v3-gateway-annotation-bar-edit'),'new-preparation-edit'));
-    await act(async()=>Simulate.keyDown(container.querySelector('.v3-gateway-annotation-bar-edit'),{key:'Enter'}));
-    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
-    await vi.waitFor(()=>expect(resolveSend).toBeTypeOf('function'));
-    await act(async()=>{resolveSend({seq_id:130,metadata:{}});await flushPromises();});
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('new-preparation-edit');
-  });
-
-  test('R4 recovering over-size comments can be shortened one at a time without deleting other comments',async()=>{
-    let rejectSend;
-    api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'old-a','旧'.repeat(1900));await followupCapture(frame,connect,page,'old-b','原'.repeat(1900));
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
-    await followupCapture(frame,connect,page,'pending-a','新'.repeat(1900));await followupCapture(frame,connect,page,'pending-b','后'.repeat(1900));
-    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
-    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(4);
-    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-body').click());
-    await act(async()=>typeDraft(container.querySelector('.v3-gateway-annotation-bar-edit'),'short'));
-    await act(async()=>Simulate.keyDown(container.querySelector('.v3-gateway-annotation-bar-edit'),{key:'Enter'}));
-    const saved=JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'];
-    expect(saved).toHaveLength(4);expect(saved[0].body).toBe('short');
-  });
-
-  test('R4 late success in original app cannot overwrite newly active app visible drafts',async()=>{
-    let resolveSend;api.sendMessage.mockImplementationOnce(()=>new Promise(r=>{resolveSend=r;}));
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
-    await followupCapture(frame,connect,page,'old','original-app');
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
-    await mountTopic(root,'p2p_1_3');const next=await openGatewayAppInSidebar('p2p_1_3');const c=await followupReady(next,page);
-    await followupCapture(next,c,page,'new','other-topic-comment');
-    await act(async()=>{resolveSend({seq_id:135,metadata:{}});await flushPromises();});
-    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('other-topic-comment');
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toContain('other-topic-comment');
-  });
-
-
-  test('R4 shortening multiple recovered comments must save intermediate bounded recovery set',async()=>{
-    let rejectSend;api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const connect=await followupReady(frame,page);
-    for(const id of ['old-a','old-b'])await followupCapture(frame,connect,page,id,'批'.repeat(1900));
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'send'));await sendMessageAndFlush();
-    for(const id of ['new-a','new-b'])await followupCapture(frame,connect,page,id,'新'.repeat(1900));
-    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
-    expect(container.querySelectorAll('.v3-gateway-annotation-bar-item')).toHaveLength(4);
-    for(let i=0;i<2;i++){
-      await act(async()=>container.querySelectorAll('.v3-gateway-annotation-bar-body')[i]?.click());
-      const editor=container.querySelector('.v3-gateway-annotation-bar-edit');expect(editor).not.toBeNull();
-      await act(async()=>typeDraft(editor,'short-'+i));await act(async()=>Simulate.keyDown(editor,{key:'Enter'}));
-      expect(container.querySelector('.v3-gateway-annotation-bar-edit')).toBeNull();
-    }
-    const rows=JSON.parse(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1'))['p2p_1_2|7|saturday-demo'];expect(rows).toHaveLength(4);expect(rows[0].body).toBe('short-0');expect(rows[1].body).toBe('short-1');
-  });
-
-  test('R4 prepared snapshot new page guard must not read drift from newly active other topic',async()=>{
-    let resolvePoll;const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
-    await followupCapture(frame,c,page,'topic-a','old-topic');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'body-a'));
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();
-    await mountTopic(root,'p2p_1_3');const next=await openGatewayAppInSidebar('p2p_1_3');const c2=await followupReady(next,page);await followupCapture(next,c2,page,'topic-b','other-topic');
-    await act(async()=>{sdkMessage(next,{type:'catsco.gateway.annotation.page.v1',contract_version:'catsco.gateway-annotation-bridge.v1',session_id:c2.session_id,page:{path:'/new',revision:'r2'}});await flushPromises();});
-    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);expect(api.sendMessage.mock.calls[0][0]).toBe('p2p_1_2');expect(api.sendMessage.mock.calls[0][1].metadata.gateway_annotations.annotations[0].body).toBe('old-topic');
-  });
-
-
-
-  test('R5 navigation after preclear and failure restore must reject retry of old document',async()=>{
-    let rejectSend;api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));
-    const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
-    await followupCapture(frame,c,page,'old','old-page-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();expect(rejectSend).toBeTypeOf('function');
-    await act(async()=>{sdkMessage(frame,{type:'catsco.gateway.annotation.page.v1',contract_version:'catsco.gateway-annotation-bridge.v1',session_id:c.session_id,page:{path:'/new',revision:'r2'}});await flushPromises();});
-    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
-    expect(container.querySelector('.v3-gateway-annotation-bar').textContent).toContain('old-page-comment');
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);
-  });
-
-  test('R5 reload same app to new revision during preparation must reject original page snapshot',async()=>{
-    let resolvePoll;const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
-    await followupCapture(frame,c,page,'old','old-page-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();
-    await followupReady(frame,{path:'/board',revision:'r2'});
-    expect(container.textContent).toContain('页面已切换');
-    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});
-    expect(api.sendMessage).not.toHaveBeenCalled();
-  });
-
-  test('R5 preclear failure without navigation remains retryable control',async()=>{
-    let rejectSend;api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
-    await followupCapture(frame,c,page,'old','same-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
-    await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();expect(api.sendMessage).toHaveBeenCalledTimes(2);
-  });
-
-  test('R5 clear during preparation is not undone by late request failure',async()=>{
-    let resolvePoll,rejectSend;api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{rejectSend=r;}));const frame=await openGatewayAppInSidebar();const page={path:'/board',revision:'r1'};const c=await followupReady(frame,page);
-    await followupCapture(frame,c,page,'deleted','deleted-comment');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();
-    await act(async()=>container.querySelector('.v3-gateway-annotation-bar-clear').click());expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
-    await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});await vi.waitFor(()=>expect(rejectSend).toBeTypeOf('function'));
-    await act(async()=>{rejectSend(new Error('network'));await flushPromises();});
-    expect(sessionStorage.getItem('catsco_gateway_annotation_drafts:v1:1')).toBeNull();
-  });
-
-
-  test('R5 same app reload same page during preparation remains sendable control',async()=>{
-    let resolvePoll;const f=await openGatewayAppInSidebar();const p={path:'/board',revision:'r1'};const c=await followupReady(f,p);await followupCapture(f,c,p,'old','same-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();await followupReady(f,p);await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});expect(api.sendMessage).toHaveBeenCalledTimes(1);
-  });
-  test('R5 live drift on original unchanged binding still blocks preparation control',async()=>{
-    let resolvePoll;const f=await openGatewayAppInSidebar();const p={path:'/board',revision:'r1'};const c=await followupReady(f,p);await followupCapture(f,c,p,'old','same-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));
-    api.getMobileUploadSession.mockImplementationOnce(()=>new Promise(r=>{resolvePoll=r;}));await openPhoneUploadFromComposer(container);await vi.waitFor(()=>expect(resolvePoll).toBeTypeOf('function'));await sendMessageAndFlush();await act(async()=>{sdkMessage(f,{type:'catsco.gateway.annotation.page.v1',contract_version:'catsco.gateway-annotation-bridge.v1',session_id:c.session_id,page:{path:'/new',revision:'r2'}});await flushPromises();});await act(async()=>{resolvePoll({session_id:'abc123',files:[]});await flushPromises();});expect(api.sendMessage).not.toHaveBeenCalled();
-  });
-  test('R5 reload after failure restoration correctly catches page mismatch control',async()=>{
-    let reject;api.sendMessage.mockImplementationOnce(()=>new Promise((_,r)=>{reject=r;}));const f=await openGatewayAppInSidebar();const p={path:'/board',revision:'r1'};const c=await followupReady(f,p);await followupCapture(f,c,p,'old','old-page');await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'first'));await sendMessageAndFlush();await act(async()=>{reject(new Error('network'));await flushPromises();});await followupReady(f,{path:'/new',revision:'r2'});await act(async()=>typeDraft(container.querySelector('.v3-composer textarea'),'retry'));await sendMessageAndFlush();expect(api.sendMessage).toHaveBeenCalledTimes(1);
-  });
 
 });

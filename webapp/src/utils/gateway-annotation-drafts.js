@@ -4,7 +4,7 @@ import {
   writeStorageValue,
   removeStorageValue,
 } from './storage-access';
-import { GATEWAY_ANNOTATIONS_CONTRACT as SHARED_CONTRACT, normalizeGatewayAnnotations } from '../gateway-annotations';
+import { GATEWAY_ANNOTATIONS_CONTRACT as SHARED_CONTRACT, normalizeGatewayAnnotations, normalizeArtifactOpenBinding } from '../gateway-annotations';
 
 // Keep the contract constant sourced from the frozen shared module so the
 // client cannot drift from the bridge contract both sides validate.
@@ -28,6 +28,28 @@ export const GATEWAY_ANNOTATION_LABEL_MAX_RUNES = 256;
 // Monotonic within this mounted runtime even when a bucket is emptied. This
 // distinguishes delete/recreate and edit/revert from the version in flight.
 let nextDraftRevision = Date.now();
+// Capability associations live only in this parent JS runtime. Persisted rows
+// contain comments/page/version evidence, never open_ref or open_binding.
+// A whole-page reload therefore recovers text without granting send authority.
+function bindingBucket(userID, bucket, capabilities, create = false) {
+  if (!(capabilities instanceof Map)) return null;
+  const key = `${userID}|${bucket}`;
+  let entries = capabilities.get(key);
+  if (!entries && create) { entries = new Map(); capabilities.set(key, entries); }
+  return entries || null;
+}
+function rowEvidence(row) {
+  return JSON.stringify({ id: row.id, kind: row.kind, body: row.body,
+    label: row.label || '', target: row.target, page: row.page || null,
+    draft_revision: row.draft_revision || 0 });
+}
+function memoryRows(userID, bucket, rows, capabilities) {
+  const entries = bindingBucket(userID, bucket, capabilities);
+  return rows.map(row => {
+    const binding = entries?.get(rowEvidence(row));
+    return binding ? { ...row, open_binding: { ...binding } } : row;
+  });
+}
 
 function storageTarget(storage) {
   if (storage && typeof storage === 'object') return storage;
@@ -73,7 +95,9 @@ function writeDraftMap(userID, value, storage) {
     if (!value || typeof value !== 'object' || Object.keys(value).length === 0) {
       return removeStorageValue(key, target);
     }
-    return writeStorageValue(key, JSON.stringify(value), target) ? true : false;
+    return writeStorageValue(key, JSON.stringify(value, (name, field) => (
+      name === 'open_binding' || name === 'open_ref' ? undefined : field
+    )), target) ? true : false;
   } catch {
     // Serialization or quota failure: refuse the write so the caller can
     // tell the user, instead of reporting a persistence that never happened.
@@ -90,7 +114,7 @@ function draftBucketKey(topicId, agentUid, appId) {
     : '';
 }
 
-function validDraftAnnotation(value) {
+function validDraftAnnotation(value, parentInput = false) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const id = typeof value.id === 'string' ? value.id : '';
   const kind = value.kind === 'element' || value.kind === 'text' || value.kind === 'region'
@@ -132,6 +156,8 @@ function validDraftAnnotation(value) {
     }
     normalized.page = capturePage;
   }
+  const openBinding = parentInput ? normalizeArtifactOpenBinding(value.open_binding) : null;
+  if (openBinding) normalized.open_binding = openBinding;
   return normalized;
 }
 
@@ -149,7 +175,7 @@ function draftValueFor(bucket, stored) {
     || certificate.app_id !== bucketApp
     || certificate.topic_id !== bucketTopic) return null;
   const annotations = Array.isArray(stored[bucket])
-    ? stored[bucket].map(validDraftAnnotation).filter(Boolean)
+    ? stored[bucket].map(row => validDraftAnnotation(row)).filter(Boolean)
     : [];
   return annotations;
 }
@@ -167,12 +193,12 @@ function withCertificate(stored, bucket, annotations) {
   return next;
 }
 
-export function readGatewayAnnotationDrafts(userID, topicId, agentUid, appId, storage) {
+export function readGatewayAnnotationDrafts(userID, topicId, agentUid, appId, storage, capabilities) {
   const bucket = draftBucketKey(topicId, agentUid, appId);
   if (!bucket) return [];
   const stored = readDraftMap(userID, storage);
   if (!stored) return [];
-  return draftValueFor(bucket, stored) || [];
+  return memoryRows(userID, bucket, draftValueFor(bucket, stored) || [], capabilities);
 }
 
 // Writes (or clears) one draft bucket. Returns true when the given rows are
@@ -180,7 +206,7 @@ export function readGatewayAnnotationDrafts(userID, topicId, agentUid, appId, st
 // responsible for telling the user. A refused write never destroys the last
 // successfully persisted rows: adding one oversized comment must not delete
 // the whole previously saved draft.
-export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, annotations, storage, { recovery = false } = {}) {
+export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, annotations, storage, { recovery = false, capabilities } = {}) {
   const bucket = draftBucketKey(topicId, agentUid, appId);
   if (!bucket) return false;
   if (!Array.isArray(annotations) || annotations.length === 0) {
@@ -190,6 +216,7 @@ export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, a
       delete stored[`${bucket}.meta`];
       if (!writeDraftMap(userID, stored, storage)) return false;
     }
+    bindingBucket(userID, bucket, capabilities)?.clear();
     return true;
   }
   // Recovery storage is larger than a single send envelope. Failed sends must
@@ -198,12 +225,12 @@ export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, a
   const rowLimit = recovery ? 100 : GATEWAY_ANNOTATION_DRAFT_MAX_ANNOTATIONS;
   if (recovery && annotations.length > rowLimit) return false;
   const stored = readDraftMap(userID, storage) || {};
-  const previousRows = draftValueFor(bucket, stored) || [];
+  const previousRows = memoryRows(userID, bucket, draftValueFor(bucket, stored) || [], capabilities);
   const previousByID = new Map(previousRows.map(row => [row.id, row]));
   let revision = Number(stored[`${bucket}.meta`]?.mutation_revision) || 0;
   const bounded = annotations
     .slice(0, rowLimit)
-    .map(validDraftAnnotation)
+    .map(row => validDraftAnnotation(row, true))
     .filter(Boolean)
     .map(row => {
       const previous = previousByID.get(row.id);
@@ -221,11 +248,19 @@ export function writeGatewayAnnotationDrafts(userID, topicId, agentUid, appId, a
   // over-limit set is refused as-is: the previously persisted rows stay
   // untouched and the caller surfaces an explicit error, so no silent
   // trimming and no silent bucket destruction ever happen.
-  const serialized = new TextEncoder().encode(JSON.stringify(bounded));
+  // Parent-only binding certificates are not part of the transmitted 16KiB
+  // annotation envelope. Keep existing payload limits independent of them.
+  const serialized = new TextEncoder().encode(JSON.stringify(bounded.map(({ open_binding, ...row }) => row)));
   if (serialized.length > (recovery ? 256 * 1024 : GATEWAY_ANNOTATION_DRAFT_MAX_BYTES)) return false;
   const next = withCertificate(stored, bucket, bounded);
   next[`${bucket}.meta`].mutation_revision = revision;
-  return writeDraftMap(userID, next, storage);
+  if (!writeDraftMap(userID, next, storage)) return false;
+  const entries = bindingBucket(userID, bucket, capabilities, true);
+  entries?.clear();
+  bounded.forEach(row => {
+    if (row.open_binding) entries?.set(rowEvidence(row), { ...row.open_binding });
+  });
+  return true;
 }
 
 // Build (and validate) the gateway_annotations metadata value for one send.
@@ -264,7 +299,7 @@ export function sameGatewayAnnotationVersion(left, right) {
   if (!left || !right || left.id !== right.id) return false;
   const content = row => JSON.stringify({
     id: row.id, kind: row.kind, label: row.label || '', body: row.body,
-    target: row.target, page: row.page || null,
+    target: row.target, page: row.page || null, open_binding: row.open_binding || null,
   });
   return content(left) === content(right)
     && (left.draft_revision || 0) === (right.draft_revision || 0);

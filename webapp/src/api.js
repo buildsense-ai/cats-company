@@ -13,6 +13,33 @@ import {
   setToken as setSessionToken,
 } from './auth-session';
 import { fetchWithRequestError } from './utils/request-error';
+import { normalizeArtifactOpenBinding } from './gateway-annotations';
+
+// Each browser tab owns its opens. Capture the original auth token solely for
+// best-effort HTTP revocation after logout; never expose it (or open_ref) to apps.
+const artifactOpenBindings = new Map();
+function revokeArtifactOpenBinding(openRef) {
+  const owned = artifactOpenBindings.get(openRef);
+  artifactOpenBindings.delete(openRef);
+  return request('DELETE', `/api/artifacts/open-bindings/${encodeURIComponent(openRef)}`,
+    undefined, { timeoutMs: 3000, ...(owned ? { authToken: owned.token } : {}) });
+}
+window.addEventListener('cc:auth-changed', () => {
+  for (const [ref, owned] of artifactOpenBindings) {
+    if (!isCurrentAuthSession(owned.token, owned.revision)) {
+      void revokeArtifactOpenBinding(ref).catch(() => {});
+    }
+  }
+});
+window.addEventListener('pagehide', () => {
+  for (const [ref, owned] of artifactOpenBindings) {
+    artifactOpenBindings.delete(ref);
+    void fetch(`${API_BASE}/api/artifacts/open-bindings/${encodeURIComponent(ref)}`, {
+      method: 'DELETE', keepalive: true,
+      headers: { Authorization: `Bearer ${owned.token}` },
+    }).catch(() => {});
+  }
+});
 
 export {
   getAuthRevision,
@@ -49,11 +76,11 @@ const WS_STABLE_CONNECTION_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
 const ARTIFACT_PREVIEW_SESSION_CONTRACT = 'catsco.artifact-preview-session.v1';
-// 独立 artifact gateway 的公共只读清单（跨域，不走同源 request 封装）。
-// VITE_ARTIFACT_GATEWAY_BASE 仅用于本地 demo/联调：指向一个实现了
-// /api/apps + 一次性 launch code 的本地 gateway（见
-// scripts/local-gateway-annotations-demo.mjs）。生产环境未设置时保持官方域名。
-const ARTIFACT_GATEWAY_BASE = String(
+// Public read-only gateway catalogue. In development, use Vite's narrowly
+// scoped same-origin proxy because production CORS does not allow loopback.
+// VITE_ARTIFACT_GATEWAY_BASE also selects the dev proxy upstream for local demos.
+// Production retains the official gateway (or an explicit configured base).
+const ARTIFACT_GATEWAY_BASE = import.meta.env.DEV ? '/artifact-gateway' : String(
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_ARTIFACT_GATEWAY_BASE) || 'https://artifact.catsco.cc',
 ).replace(/\/+$/, '');
 // Asking the server for a one-time code is a short round trip; keep it bounded
@@ -901,7 +928,7 @@ export const api = {
   listArtifactApps: (agentUid) => {
     const agent = String(agentUid ?? '').trim();
     const query = /^[0-9]+$/.test(agent) ? `?agent=${agent}` : '';
-    return fetch(`${ARTIFACT_GATEWAY_BASE}/api/apps${query}`).then(
+    return fetch(`${ARTIFACT_GATEWAY_BASE}/api/apps${query}`, { credentials: 'omit' }).then(
       (response) => (response.ok
         ? response.json()
         : Promise.reject(new Error('artifact_gateway_unavailable'))),
@@ -913,11 +940,34 @@ export const api = {
   // Without it the application can only ever see a guest: the platform's login
   // state lives in storage on the platform origin and is unreadable from the
   // application's origin. Callers fall back to the plain URL when this fails.
-  requestArtifactLaunch: ({ app, topic_id }) => {
+  requestArtifactLaunch: async ({ app, topic_id }) => {
+    const token = getToken();
+    const revision = getAuthRevision();
     const payload = { app };
     if (topic_id) payload.topic_id = topic_id;
-    return request('POST', '/api/artifacts/launch', payload, { timeoutMs: ARTIFACT_LAUNCH_TIMEOUT_MS });
+    const launch = await request('POST', '/api/artifacts/launch', payload, { timeoutMs: ARTIFACT_LAUNCH_TIMEOUT_MS });
+    const binding = normalizeArtifactOpenBinding(launch?.open_binding);
+    if (binding) {
+      artifactOpenBindings.set(binding.open_ref, { token, revision });
+      if (!isCurrentAuthSession(token, revision)) {
+        void revokeArtifactOpenBinding(binding.open_ref).catch(() => {});
+        throw new Error('登录状态已变化，请重新打开应用');
+      }
+    }
+    return launch;
   },
+  sendArtifactAnnotations: async (payload) => {
+    try {
+      return await request('POST', '/api/artifacts/annotations', payload);
+    } catch (error) {
+      if (['artifact_open_binding_invalid', 'artifact_open_binding_mismatch'].includes(error?.data?.code)
+        || ['artifact_open_binding_invalid', 'artifact_open_binding_mismatch'].includes(error?.data?.error)) {
+        error.message = '应用会话绑定无效、已过期或权限已变化，请在原会话重新打开应用并重新标注';
+      }
+      throw error;
+    }
+  },
+  revokeArtifactOpenBinding,
   publishCloudArtifact: (agentUid, artifact) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts`, artifact),
   getTopicFiles: (topicId, { beforeId = 0, beforeCreatedAt = '', limit = 40 } = {}) => {
