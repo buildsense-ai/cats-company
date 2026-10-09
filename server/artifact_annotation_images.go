@@ -112,7 +112,7 @@ func (h *UploadHandler) ownedArtifactScreenshot(uid int64, payload map[string]in
 	if err != nil {
 		return types.ContentBlock{}, errors.New("screenshot has no owned upload receipt")
 	}
-	receiptData, err := io.ReadAll(io.LimitReader(receiptFile, 4097))
+	receiptData, err := io.ReadAll(io.LimitReader(receiptFile, 4096+1))
 	_ = receiptFile.Close()
 	if err != nil || len(receiptData) > 4096 {
 		return types.ContentBlock{}, errors.New("invalid screenshot upload receipt")

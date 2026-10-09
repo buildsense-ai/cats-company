@@ -86,7 +86,7 @@ async function defaultLoadDocument(url, { signal } = {}) {
   };
 }
 
-export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocument }) {
+export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocument, annotationMode = false }) {
   const canvasRef = useRef(null);
   const viewportRef = useRef(null);
   const textLayerContainerRef = useRef(null);
@@ -309,7 +309,7 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
   };
 
   const handlePointerDown = (event) => {
-    if (event.pointerType !== 'touch' || pointersRef.current.size >= 2) return;
+    if (annotationMode || event.defaultPrevented || event.pointerType !== 'touch' || pointersRef.current.size >= 2) return;
     const point = { clientX: event.clientX, clientY: event.clientY };
     pointersRef.current.set(event.pointerId, point);
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -473,17 +473,21 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
         <canvas
           ref={canvasRef}
           className="v3-mobile-pdf-canvas"
+          data-file-annotation-surface="pdf"
+          data-file-annotation-page={pageNumber}
+          data-file-annotation-ready={renderState === 'ready' ? 'true' : 'false'}
           aria-hidden="true"
         />
         <div
           ref={textLayerContainerRef}
           className="textLayer v3-mobile-pdf-text-layer"
+          style={annotationMode ? { pointerEvents: 'none' } : undefined}
           role="document"
           aria-label={pageLabel}
         />
       </div>
       <p id={hintId} className="v3-mobile-pdf-hint">
-        双指缩放，拖动查看页面；键盘可使用方向键或 Page Up / Page Down 滚动
+        {annotationMode ? '拖动框选页面区域；翻页和缩放后请重新选择' : '双指缩放，拖动查看页面；键盘可使用方向键或 Page Up / Page Down 滚动'}
       </p>
     </section>
   );

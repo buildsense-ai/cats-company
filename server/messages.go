@@ -28,17 +28,18 @@ func NewMessageHandler(db store.Store, hub *Hub) *MessageHandler {
 
 // SendMessageRequest is the JSON body for sending a message.
 type SendMessageRequest struct {
-	TopicID       string                 `json:"topic_id"`
-	ClientMsgID   string                 `json:"client_msg_id,omitempty"`
-	Content       json.RawMessage        `json:"content,omitempty"`
-	ContentBlocks []types.ContentBlock   `json:"content_blocks,omitempty"`
-	Metadata      map[string]interface{} `json:"metadata,omitempty"`
-	MsgType       string                 `json:"msg_type,omitempty"`
-	Type          string                 `json:"type,omitempty"`
-	Mode          string                 `json:"mode,omitempty"`
-	Role          string                 `json:"role,omitempty"`
-	ReplyTo       int                    `json:"reply_to,omitempty"`
-	Mentions      []string               `json:"mentions,omitempty"`
+	TopicID                string                 `json:"topic_id"`
+	ClientMsgID            string                 `json:"client_msg_id,omitempty"`
+	Content                json.RawMessage        `json:"content,omitempty"`
+	ContentBlocks          []types.ContentBlock   `json:"content_blocks,omitempty"`
+	Metadata               map[string]interface{} `json:"metadata,omitempty"`
+	MsgType                string                 `json:"msg_type,omitempty"`
+	Type                   string                 `json:"type,omitempty"`
+	Mode                   string                 `json:"mode,omitempty"`
+	Role                   string                 `json:"role,omitempty"`
+	ReplyTo                int                    `json:"reply_to,omitempty"`
+	Mentions               []string               `json:"mentions,omitempty"`
+	fileAnnotationsTrusted bool
 }
 
 type normalizedMessagePayload struct {
@@ -52,9 +53,12 @@ type normalizedMessagePayload struct {
 	Metadata            map[string]interface{}
 	ArtifactContextRef  *artifactContextDeliveryRef
 	ArtifactTaskRef     *artifactTaskDeliveryRef
-	Mode                string
-	Role                string
-	Mentions            []string
+	// FileAnnotationsRef carries the validated canonical file_annotations
+	// document through fanout; the trusted boundary marker is never durable.
+	FileAnnotationsRef *fileAnnotationsDocument
+	Mode               string
+	Role               string
+	Mentions           []string
 }
 
 type savedMessageResult struct {
@@ -79,6 +83,10 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 func (h *MessageHandler) sendMessage(w http.ResponseWriter, r *http.Request, req SendMessageRequest, beforeSave func() (func(), bool)) {
 	uid := UIDFromContext(r.Context())
 	req.TopicID = strings.TrimSpace(req.TopicID)
+	if hasFileAnnotationsMetadata(req.Metadata) && !req.fileAnnotationsTrusted {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file_annotations require the dedicated annotation endpoint"})
+		return
+	}
 
 	payload, err := normalizeMessageRequest(&req)
 	if err != nil {
@@ -113,6 +121,18 @@ func (h *MessageHandler) sendMessage(w http.ResponseWriter, r *http.Request, req
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		payload.Metadata, payload.FileAnnotationsRef, err = h.hub.validateFileAnnotationsMetadata(uid, req.TopicID, payload.Metadata, req.fileAnnotationsTrusted)
+		if err != nil {
+			if payload.ArtifactTaskRef != nil {
+				h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if payload.FileAnnotationsRef != nil && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file_annotations require a persisted visible message"})
+			return
+		}
 		if sawGatewayAnnotationsIngress && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
 			if payload.ArtifactTaskRef != nil {
 				h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
@@ -126,6 +146,7 @@ func (h *MessageHandler) sendMessage(w http.ResponseWriter, r *http.Request, req
 		payload.Metadata = metadataWithoutArtifactContext(payload.Metadata)
 		payload.Metadata = metadataWithoutGatewayAnnotationContext(payload.Metadata)
 		payload.Metadata = metadataWithoutGatewayAnnotations(payload.Metadata)
+		payload.Metadata = metadataWithoutFileAnnotations(payload.Metadata)
 	}
 	if payload.ArtifactTaskRef != nil && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
 		h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
@@ -558,6 +579,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		h.gatewayAnnotationAgentContext(uid, recipientUID, topicID, payload.Metadata),
 		recipientUID,
 	)
+	metadata = h.fileAnnotationsMetadataForRecipient(uid, recipientUID, topicID, metadata)
 	// Agent-side readability: the target Agent's fanout copy carries the
 	// validated annotations through both real consumer channels (blocks for
 	// the live parse merge, content for the history/cloud reader) while
@@ -566,6 +588,9 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 	dataContent := payload.DisplayContent
 	if modelText := h.gatewayAnnotationModelTextForPayload(uid, recipientUID, topicID, payload); modelText != "" {
 		dataContent, contentBlocks = withGatewayAnnotationAgentDelivery(contentBlocks, payload.DisplayContent, modelText, payload.DisplayType, payload.StoredType)
+	}
+	if modelText := h.fileAnnotationModelText(uid, recipientUID, topicID, payload.Metadata); modelText != "" {
+		dataContent, contentBlocks = withGatewayAnnotationAgentDelivery(contentBlocks, dataContent, modelText, payload.DisplayType, payload.StoredType)
 	}
 	metadata = withSkillConnectorMetadata(metadata, h.buildShimoSkillConnectorMetadata(uid, recipientUID, topicID, msgID))
 	return &ServerMessage{
@@ -669,7 +694,7 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 	displayContent := decodeStoredContent(message.Content)
 	// The stored annotation context key is fanout-only; a value that somehow
 	// reached the store must never be replayed to readers as server output.
-	storedMetadata := metadataWithoutGatewayAnnotationContext(metadataWithoutArtifactContext(message.Metadata))
+	storedMetadata := metadataWithoutFileAnnotationContext(metadataWithoutGatewayAnnotationContext(metadataWithoutArtifactContext(message.Metadata)))
 	// Offline agent readers rebuild their session from history (XiaoBa
 	// cloud-session-restore), which ignores metadata and prefers a non-empty
 	// string content over content_blocks. The authorized target Agent's read
@@ -682,6 +707,10 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 		readContent, contentBlocks = withGatewayAnnotationAgentDelivery(message.ContentBlocks, displayContent, modelText, envelopeDisplayType, message.MsgType)
 		displayContent = readContent
 	}
+	if modelText := h.fileAnnotationModelText(message.FromUID, recipientUID, message.TopicID, storedMetadata); modelText != "" {
+		displayContent, contentBlocks = withGatewayAnnotationAgentDelivery(contentBlocks, displayContent, modelText, envelopeDisplayType, message.MsgType)
+	}
+	storedMetadata = h.fileAnnotationsMetadataForRecipient(message.FromUID, recipientUID, message.TopicID, storedMetadata)
 	return &MsgServerData{
 		Topic:         message.TopicID,
 		From:          formatUID(message.FromUID),

@@ -97,6 +97,9 @@ var allowedFileExts = map[string]bool{
 	".csv": true, ".json": true, ".xml": true,
 	".html": true, ".htm": true,
 	".md": true, ".go": true, ".py": true, ".js": true,
+	".jsx": true, ".ts": true, ".tsx": true, ".rs": true, ".java": true,
+	".c": true, ".cpp": true, ".h": true, ".css": true,
+	".yaml": true, ".yml": true, ".sql": true, ".sh": true,
 }
 
 // UploadHandler handles file upload requests.

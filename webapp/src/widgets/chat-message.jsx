@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Bookmark, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
@@ -16,6 +16,9 @@ import {
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
+import FileAnnotationEditor from './file-annotation-editor';
+import FileAnnotationCard from './file-annotation-card';
+import '../styles/file-annotations.css';
 import {
   HTML_PREVIEW_SANDBOX,
   REMOTE_ARTIFACT_PREVIEW_SANDBOX,
@@ -38,7 +41,7 @@ const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
   'send_file',
 ]);
 const HTML_FILE_EXTENSIONS = new Set(['HTML', 'HTM', 'XHTML']);
-const TEXT_FILE_EXTENSIONS = new Set(['TXT', 'JSON', 'MD', 'CSV', 'JS', 'PY', 'GO', 'HTML', 'HTM', 'CSS', 'XML']);
+const TEXT_FILE_EXTENSIONS = new Set(['TXT', 'JSON', 'MD', 'CSV', 'JS', 'JSX', 'TS', 'TSX', 'PY', 'GO', 'RS', 'JAVA', 'C', 'CPP', 'H', 'SQL', 'YAML', 'YML', 'SH', 'HTML', 'HTM', 'CSS', 'XML']);
 const PREVIEW_FILE_EXTENSIONS = new Set(['PDF', ...TEXT_FILE_EXTENSIONS]);
 const IMAGE_FILE_EXTENSIONS = new Set(['AVIF', 'BMP', 'GIF', 'HEIC', 'JPEG', 'JPG', 'PNG', 'SVG', 'WEBP']);
 const SPREADSHEET_FILE_EXTENSIONS = new Set(['CSV', 'XLS', 'XLSX']);
@@ -1017,7 +1020,53 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage }) {
+// Match the server's filtered attachment order, which omits text/tool blocks.
+export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
+  const messageId = Number(message?.seq_id || message?.id || 0);
+  const topic = String(message?.topic_id || topicId || '');
+  if (!Number.isSafeInteger(messageId) || messageId <= 0 || !topic
+    || message?._pending || message?._streaming || !payload) return null;
+  const firstString = (value, keys) => keys.map(key => value?.[key])
+    .find(item => typeof item === 'string' && item.trim())?.trim() || '';
+  const identity = value => ({
+    url: firstString(value, ['url', 'download_url', 'file_url', 'image_url']),
+    key: firstString(value, ['file_key', 'fileKey']),
+    name: firstString(value, ['name', 'file_name', 'filename', 'title']),
+  });
+  let attachments = (Array.isArray(message.content_blocks) ? message.content_blocks : [])
+    .filter(block => ['file', 'image'].includes(String(block?.type || '').trim().toLowerCase()))
+    .map(block => block.payload)
+    .filter(value => { const item = identity(value); return item.url || item.key || item.name; });
+  if (!attachments.length && ['file', 'image'].includes(String(message.msg_type || '').toLowerCase())) {
+    try {
+      let legacy = message.content;
+      if (typeof legacy === 'string') legacy = JSON.parse(legacy);
+      if (typeof legacy === 'string') legacy = JSON.parse(legacy);
+      const value = legacy?.payload || legacy;
+      const item = identity(value);
+      if (item.url || item.key || item.name) attachments = [value];
+    } catch { /* Unparseable legacy messages cannot establish a source. */ }
+  }
+  const wanted = identity(payload);
+  let index = attachments.indexOf(payload);
+  if (index < 0) index = attachments.findIndex(value => {
+    const item = identity(value);
+    return Boolean((wanted.url && item.url === wanted.url) || (wanted.key && item.key === wanted.key))
+      && (!wanted.name || item.name === wanted.name);
+  });
+  return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
+}
+
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage }) {
+  const previewMessageFile = useCallback((payload) => {
+    if (trustedArtifactPreviewPayloads.has(payload)) {
+      onPreviewFileCallback?.(payload);
+      return;
+    }
+    onPreviewFileCallback?.({ ...payload,
+      annotation_source: fileAnnotationSourceForPreview(message, payload, annotationTopicId) });
+  }, [annotationTopicId, message, onPreviewFileCallback]);
+  const onPreviewFile = onPreviewFileCallback ? previewMessageFile : undefined;
   const [copyState, setCopyState] = useState('');
   useEffect(() => {
     if (!copyState) return undefined;
@@ -1308,6 +1357,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
           )}
 
           {workingAnnotationDoc && <GatewayAnnotationCard doc={workingAnnotationDoc} />}
+          {message?.metadata?.file_annotations && <FileAnnotationCard value={message.metadata.file_annotations} />}
 
           {(hasText || richBlocks.length > 0) && (
             <div className="v3-message-content">
@@ -1478,6 +1528,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&
+    prevProps.annotationTopicId === nextProps.annotationTopicId &&
     prevProps.activePreviewFile === nextProps.activePreviewFile &&
     prevProps.knownArtifacts === nextProps.knownArtifacts &&
     prevProps.imageGallery === nextProps.imageGallery &&
@@ -1755,6 +1806,7 @@ function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery =
           imageGallery={imageGallery}
           onOpenImage={onOpenImage}
           imageId={imageId}
+          onPreviewFile={onPreviewFile}
         />
       );
     case 'file':
@@ -1770,7 +1822,7 @@ function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery =
   }
 }
 
-function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' }) {
+function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '', onPreviewFile }) {
   const [expanded, setExpanded] = useState(false);
   const previewRef = useRef(null);
   const triggerRef = useRef(null);
@@ -1829,6 +1881,13 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' 
     }
     setExpanded(true);
   };
+  const annotateAction = onPreviewFile && payload.url ? (
+    <button className="v3-artifact-action v3-file-annotate-action" type="button"
+      aria-label={`批注图片 ${payload.name || ''}`.trim()}
+      onClick={(event) => { event.stopPropagation(); onPreviewFile({ ...payload, type: 'image' }); }}>
+      <Pencil size={15} /><span>批注</span>
+    </button>
+  ) : null;
 
   if (galleryMode) {
     return (
@@ -1854,6 +1913,7 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' 
             onDragEnd={clearChatAttachmentDrag}
           />
         </button>
+        {annotateAction}
       </div>
     );
   }
@@ -1920,6 +1980,7 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' 
           onDragEnd={clearChatAttachmentDrag}
         />
       </button>
+      {annotateAction}
       {preview}
     </div>
   );
@@ -2019,7 +2080,7 @@ function isDocxFile(payload, ext = fileExtension(payload)) {
 
 function isPreviewableFile(payload, ext = fileExtension(payload)) {
   const mime = fileMimeType(payload);
-  if (isImageFile(payload, ext)) return true;
+  if (isImageFile(payload, ext) || isInlineVideoFile(payload, ext)) return true;
   if (isSpreadsheetPreviewFile(payload, ext)) return true;
   if (PREVIEW_FILE_EXTENSIONS.has(ext) || isPdfFile(payload, ext)) return true;
   return mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml';
@@ -2032,6 +2093,9 @@ function artifactMeta(payload, ext = fileExtension(payload)) {
       className: 'image',
       subtitle: '图片文件',
     };
+  }
+  if (isInlineVideoFile(payload, ext)) {
+    return { label: '视频', className: 'video', subtitle: '视频文件' };
   }
   if (isHtmlFile(payload, ext)) {
     return {
@@ -2162,6 +2226,7 @@ export function previewFileDescriptor(payload) {
   const meta = artifactMeta(payload, ext);
   const isPdf = isPdfFile(payload, ext);
   const isImage = isImageFile(payload, ext);
+  const isVideo = isInlineVideoFile(payload, ext);
   const isMarkdown = isMarkdownFile(payload, ext);
   const isSpreadsheet = isSpreadsheetPreviewFile(payload, ext);
   const isManagedRemoteArtifact = trustedArtifactPreviewPayloads.has(payload)
@@ -2183,6 +2248,7 @@ export function previewFileDescriptor(payload) {
     meta,
     isPdf,
     isImage,
+    isVideo,
     isHtml,
     isMarkdown,
     isSpreadsheet,
@@ -2361,6 +2427,13 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
           <Play fill="currentColor" size={20} />
         </span>
       </button>
+      {onPreviewFile && (
+        <button className="v3-artifact-action v3-file-annotate-action" type="button"
+          aria-label={`批注视频 ${payload.name || ''}`.trim()}
+          onClick={(event) => { event.stopPropagation(); onPreviewFile(payload); }}>
+          <Pencil size={15} /><span>批注</span>
+        </button>
+      )}
       {previewOpen && (
         <div
           aria-label={`视频预览 ${payload.name || ''}`.trim()}
@@ -2580,7 +2653,11 @@ export function FilePreviewPanel({
   onRemoteArtifactRefreshReady,
   onRemoteArtifactRefreshFailed,
   onOpenRemoteArtifactFullscreen,
+  annotationApi,
+  onFileAnnotationSent,
 }) {
+  const [fileAnnotationMode, setFileAnnotationMode] = useState(false);
+  const fileContentRef = useRef(null);
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
   const [binaryContent, setBinaryContent] = useState(null);
@@ -2628,6 +2705,7 @@ export function FilePreviewPanel({
   const url = descriptor?.url || '';
   const isPdf = descriptor?.isPdf || false;
   const isImage = descriptor?.isImage || false;
+  const isVideo = descriptor?.isVideo || false;
   const isHtml = descriptor?.isHtml || false;
   const isMarkdown = descriptor?.isMarkdown || false;
   const isSpreadsheet = descriptor?.isSpreadsheet || false;
@@ -2864,6 +2942,7 @@ export function FilePreviewPanel({
   useEffect(() => {
     let cancelled = false;
     setPreview(Boolean(file));
+    setFileAnnotationMode(false);
     setTextContent(null);
     setBinaryContent(null);
     setImageError(false);
@@ -2888,7 +2967,7 @@ export function FilePreviewPanel({
       window.clearTimeout(shareResetTimerRef.current);
       shareResetTimerRef.current = null;
     }
-    if (!file || !descriptor?.canPreview || isPdf || isImage || isRemoteArtifact) {
+    if (!file || !descriptor?.canPreview || isPdf || isImage || isVideo || isRemoteArtifact) {
       setLoadingText(false);
       return () => {
         cancelled = true;
@@ -2937,7 +3016,7 @@ export function FilePreviewPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [currentRemoteArtifactKey, descriptor?.canPreview, file, isImage, isPdf, isRemoteArtifact, isSpreadsheet, url]);
+  }, [currentRemoteArtifactKey, descriptor?.canPreview, file, isImage, isVideo, isPdf, isRemoteArtifact, isSpreadsheet, url]);
 
   useEffect(() => {
     if (!preview) return undefined;
@@ -2958,7 +3037,7 @@ export function FilePreviewPanel({
   useEffect(() => {
     if (!preview) return undefined;
     const handleKeyDown = (event) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
       event.preventDefault();
       onClose?.();
     };
@@ -3209,7 +3288,7 @@ export function FilePreviewPanel({
           </div>
           {shareNotice && <span className="oc-visually-hidden" role="status" aria-live="polite">{shareNotice}</span>}
         </div>
-        <div className="v3-file-preview-body">
+        <div ref={fileContentRef} className="v3-file-preview-body">
           {isRemoteArtifact ? (
             <div className="v3-remote-artifact-preview">
               {[
@@ -3278,15 +3357,24 @@ export function FilePreviewPanel({
             ) : (
               <div className="v3-file-preview-image">
                 <img
-                  src={url}
+                  src={fetchableMediaURL(url)}
+                  data-file-annotation-surface="image"
                   alt={file.name || '图片预览'}
                   onError={() => setImageError(true)}
                 />
               </div>
             )
+          ) : isVideo ? (
+            <div className="v3-file-preview-image">
+              <video src={fetchableMediaURL(url)} data-file-annotation-surface="video"
+                controls={!fileAnnotationMode} playsInline preload="metadata"
+                aria-label={file.name || '视频预览'}
+                onError={() => setImageError(true)} />
+              {imageError && <p role="alert">视频加载失败，请下载原文件查看。</p>}
+            </div>
           ) : isPdf ? (
-            shouldUseSheetMode ? (
-              <MobilePdfPreview url={fetchableMediaURL(url)} />
+            shouldUseSheetMode || fileAnnotationMode ? (
+              <MobilePdfPreview url={fetchableMediaURL(url)} annotationMode={fileAnnotationMode} />
             ) : (
               <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
             )
@@ -3294,6 +3382,8 @@ export function FilePreviewPanel({
             <div className="v3-file-preview-state">加载中...</div>
           ) : previewError ? (
             <div className="v3-file-preview-state error">{previewError}</div>
+          ) : fileAnnotationMode && (isHtml || isMarkdown) ? (
+            <pre className="v3-file-preview-text" data-file-annotation-text="" data-file-annotation-surface="text">{textContent || ''}</pre>
           ) : isHtml ? (
             <iframe
               className="v3-file-preview-frame"
@@ -3313,9 +3403,21 @@ export function FilePreviewPanel({
           ) : isSpreadsheet ? (
             <SpreadsheetPreview buffer={binaryContent} kind={descriptor.spreadsheetKind} />
           ) : (
-            <pre className="v3-file-preview-text">{textContent || '暂无可预览内容。'}</pre>
+            <pre className="v3-file-preview-text" data-file-annotation-text="" data-file-annotation-surface="text">{textContent || '暂无可预览内容。'}</pre>
           )}
         </div>
+        {file.annotation_source && annotationApi && !isRemoteArtifact && (
+          <FileAnnotationEditor
+            key={`${file.annotation_source.topic_id}:${file.annotation_source.message_id}:${file.annotation_source.attachment_index}`}
+            file={file}
+            source={file.annotation_source}
+            kind={isImage ? 'image' : isVideo ? 'video' : isPdf ? 'pdf' : isSpreadsheet ? 'cells' : 'text'}
+            contentRef={fileContentRef}
+            api={annotationApi}
+            onModeChange={setFileAnnotationMode}
+            onSent={onFileAnnotationSent}
+          />
+        )}
         <div className="v3-file-preview-mobile-actions">
           <button type="button" onClick={onClose}>
             <X size={17} />

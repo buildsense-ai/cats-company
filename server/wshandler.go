@@ -1534,6 +1534,14 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		})
 		return
 	}
+	payload.Metadata, payload.FileAnnotationsRef, err = h.validateFileAnnotationsMetadata(uid, topic, payload.Metadata, false)
+	if err != nil {
+		if payload.ArtifactTaskRef != nil {
+			h.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+		}
+		h.SendToClient(client, &ServerMessage{Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 400, Text: err.Error()}})
+		return
+	}
 	if sawGatewayAnnotationsIngress && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
 		if payload.ArtifactTaskRef != nil {
 			h.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
@@ -2496,6 +2504,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				h.gatewayAnnotationAgentContext(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata),
 				m.UserID,
 			)
+			metadata = h.fileAnnotationsMetadataForRecipient(senderUID, m.UserID, msg.Data.Topic, metadata)
 			metadata = withArtifactContextDeliveryRef(
 				metadataWithoutArtifactContext(metadata),
 				h.validatedArtifactContextDeliveryRef(senderUID, msg.Data.Topic, msg.artifactContextRef, m.UserID),
@@ -2536,6 +2545,14 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				memberContent, memberBlocks := withGatewayAnnotationAgentDelivery(out.Data.ContentBlocks, out.Data.Content, modelText, out.Data.Type, out.Data.MsgType)
 				out.Data.Content = memberContent
 				out.Data.ContentBlocks = memberBlocks
+			}
+		}
+		if out != nil && out.Data != nil {
+			if modelText := h.fileAnnotationModelText(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata); modelText != "" {
+				if out == msg {
+					out = cloneDataMessageWithMetadata(msg, msg.Data.Metadata)
+				}
+				out.Data.Content, out.Data.ContentBlocks = withGatewayAnnotationAgentDelivery(out.Data.ContentBlocks, out.Data.Content, modelText, out.Data.Type, out.Data.MsgType)
 			}
 		}
 		if msg != nil && msg.artifactTaskRef != nil && msg.artifactTaskRef.AgentUID == m.UserID {

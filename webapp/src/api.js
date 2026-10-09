@@ -24,7 +24,20 @@ function revokeArtifactOpenBinding(openRef) {
   return request('DELETE', `/api/artifacts/open-bindings/${encodeURIComponent(openRef)}`,
     undefined, { timeoutMs: 3000, ...(owned ? { authToken: owned.token } : {}) });
 }
+const fileOpenBindings = new Map();
+function revokeFileAnnotationBinding(openRef) {
+  const owned = fileOpenBindings.get(openRef);
+  fileOpenBindings.delete(openRef);
+  return request('DELETE', `/api/files/open-bindings/${encodeURIComponent(openRef)}`,
+    undefined, { timeoutMs: 3000, ...(owned ? { authToken: owned.token } : {}) });
+}
+
 window.addEventListener('cc:auth-changed', () => {
+  for (const [ref, owned] of fileOpenBindings) {
+    if (!isCurrentAuthSession(owned.token, owned.revision)) {
+      void revokeFileAnnotationBinding(ref).catch(() => {});
+    }
+  }
   for (const [ref, owned] of artifactOpenBindings) {
     if (!isCurrentAuthSession(owned.token, owned.revision)) {
       void revokeArtifactOpenBinding(ref).catch(() => {});
@@ -32,6 +45,13 @@ window.addEventListener('cc:auth-changed', () => {
   }
 });
 window.addEventListener('pagehide', () => {
+  for (const [ref, owned] of fileOpenBindings) {
+    fileOpenBindings.delete(ref);
+    void fetch(`${API_BASE}/api/files/open-bindings/${encodeURIComponent(ref)}`, {
+      method: 'DELETE', keepalive: true,
+      headers: { Authorization: `Bearer ${owned.token}` },
+    }).catch(() => {});
+  }
   for (const [ref, owned] of artifactOpenBindings) {
     artifactOpenBindings.delete(ref);
     void fetch(`${API_BASE}/api/artifacts/open-bindings/${encodeURIComponent(ref)}`, {
@@ -968,6 +988,44 @@ export const api = {
     }
   },
   revokeArtifactOpenBinding,
+  openFileAnnotationBinding: async (source) => {
+    const token = getToken();
+    const revision = getAuthRevision();
+    const binding = await request('POST', '/api/files/open-bindings', {
+      topic_id: source?.topic_id,
+      message_id: source?.message_id,
+      attachment_index: source?.attachment_index,
+    });
+    const valid = binding?.contract_version === 'catsco.file-open-binding.v1'
+      && typeof binding.open_ref === 'string' && /^fob_[A-Za-z0-9_-]{43}$/.test(binding.open_ref)
+      && binding.topic_id === source?.topic_id
+      && binding.source?.topic_id === source?.topic_id
+      && binding.source?.message_id === source?.message_id
+      && binding.source?.attachment_index === source?.attachment_index
+      && typeof binding.source?.name === 'string'
+      && typeof binding.source?.url === 'string'
+      && /^[a-f0-9]{64}$/.test(binding.source?.version || '')
+      && Number.isFinite(Date.parse(binding.expires_at)) && Date.parse(binding.expires_at) > Date.now();
+    if (!valid) throw new Error('文件会话绑定无效，请在原会话重新打开文件');
+    fileOpenBindings.set(binding.open_ref, { token, revision });
+    if (!isCurrentAuthSession(token, revision)) {
+      void revokeFileAnnotationBinding(binding.open_ref).catch(() => {});
+      throw new Error('登录状态已变化，请重新打开文件');
+    }
+    return binding;
+  },
+  sendFileAnnotations: async (payload) => {
+    try {
+      return await request('POST', '/api/files/annotations', payload);
+    } catch (error) {
+      if (/^file_(open_binding|source)/.test(error?.data?.code || error?.data?.error || '')) {
+        error.message = '文件绑定已过期、原附件已变化或权限已变化，请在原会话重新打开文件';
+      }
+      throw error;
+    }
+  },
+  revokeFileAnnotationBinding,
+  uploadImage: (file) => api.uploadFile(file, 'image'),
   publishCloudArtifact: (agentUid, artifact) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts`, artifact),
   getTopicFiles: (topicId, { beforeId = 0, beforeCreatedAt = '', limit = 40 } = {}) => {

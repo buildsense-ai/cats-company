@@ -2045,6 +2045,24 @@ export default function MessagesView({
     };
   }, []);
 
+  const handleFileAnnotationSent = useCallback((result, sourceTopic) => {
+    if (!result || !historyMessageID(result) || result.topic_id !== sourceTopic
+      || !sameUID(result.from_uid, user.uid)) return;
+    const { visibleMessages } = normalizeHistoryMessages([{ ...result,
+      created_at: result.created_at || new Date().toISOString() }]);
+    if (!visibleMessages.length) return;
+    const cacheKey = historyCacheKey(user.uid, sourceTopic);
+    const cached = historyCacheRef.current.get(cacheKey);
+    if (cached) cacheHistoryPage(historyCacheRef.current, cacheKey, {
+      ...cached, messages: mergeMessages(cached.messages, visibleMessages),
+    });
+    if (activeTopicRef.current === sourceTopic) {
+      setMessages(current => mergeMessages(current, visibleMessages));
+    }
+    feedback.notify({ tone: 'success', message: '文件批注已发送至原会话' });
+    window.dispatchEvent(new Event('cc:data-changed'));
+  }, [feedback, user.uid]);
+
   const openFilePreview = useCallback((file) => {
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
@@ -2247,6 +2265,11 @@ export default function MessagesView({
       height: file.height,
       mime_type: file.mime_type,
       size: file.size,
+      annotation_source: {
+        topic_id: file.topic_id,
+        message_id: file.message_id,
+        attachment_index: file.block_index,
+      },
     });
     setCloudArtifactsListOpen(false);
     setCloudArtifactsReturnOpen(true);
@@ -6005,6 +6028,7 @@ export default function MessagesView({
                   showThinking={showThinking}
                   isConsecutive={group.isConsecutive}
                   onPreviewFile={openFilePreview}
+                  annotationTopicId={topic}
                   activePreviewFile={previewFile}
                   knownArtifacts={knownArtifacts}
                   imageGallery={imageGallery}
@@ -6067,6 +6091,7 @@ export default function MessagesView({
                   : (group.isConsecutiveWithoutWorking ?? group.isConsecutive)}
                 artifactsFirst={group.artifactsFirst}
                 onPreviewFile={openFilePreview}
+                annotationTopicId={topic}
                 activePreviewFile={previewFile}
                 knownArtifacts={knownArtifacts}
                 imageGallery={imageGallery}
@@ -6439,6 +6464,8 @@ export default function MessagesView({
                 onRemoteArtifactRefreshFailed={handleArtifactRefreshFailed}
                 onRemoteArtifactFrameChange={handleRemoteArtifactFrameChange}
                 onOpenRemoteArtifactFullscreen={openRemoteArtifactFullscreen}
+                annotationApi={api}
+                onFileAnnotationSent={handleFileAnnotationSent}
               />
             )}
           </div>

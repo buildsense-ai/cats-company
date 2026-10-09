@@ -1,0 +1,303 @@
+/* File preview annotations. Scoped to the file preview panel. */
+
+.file-annotation-editor {
+  flex: 0 0 auto;
+  color: var(--cc-text, #1f1f1f);
+  background: var(--cc-panel, #fff);
+}
+
+.file-annotation-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--cc-border, #ececef);
+  background: var(--cc-panel-raised, #f7f7f8);
+}
+
+.file-annotation-toolbar-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cc-text-secondary, #454549);
+}
+
+.file-annotation-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.file-annotation-mode {
+  border: 1px solid var(--cc-border, #ececef);
+  border-radius: 7px;
+  background: var(--cc-panel, #fff);
+  color: var(--cc-text, #1f1f1f);
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.file-annotation-mode.is-active {
+  background: var(--cc-action-bg, #454549);
+  border-color: transparent;
+  color: var(--cc-on-action, #fff);
+}
+
+.file-annotation-mode:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.file-annotation-hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--cc-text-secondary, #454549);
+}
+
+.file-annotation-hint.is-error { color: var(--cc-danger-text, #b42318); }
+
+/* The media surface owns the pointer while a region mode is active. */
+[data-file-annotation-surface] { touch-action: manipulation; }
+[data-file-annotation-mode="region"] [data-file-annotation-surface],
+[data-file-annotation-mode="cells"] [data-file-annotation-surface] {
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.file-annotation-region-outline {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  border: 2px solid #ef4444;
+  border-radius: 2px;
+  background: rgb(239 68 68 / 10%);
+}
+
+.file-annotation-popover {
+  position: absolute;
+  z-index: 40;
+  box-sizing: border-box;
+  width: min(320px, calc(100% - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--cc-border, #ececef);
+  border-radius: 10px;
+  background: var(--cc-panel, #fff);
+  color: var(--cc-text, #1f1f1f);
+  box-shadow: 0 8px 24px rgb(20 40 28 / 15%);
+  font-size: 13px;
+}
+
+.file-annotation-popover-target {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.file-annotation-popover textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  padding: 8px 9px;
+  border: 1px solid var(--cc-border, #ececef);
+  border-radius: 7px;
+  background: var(--cc-panel, #fff);
+  color: inherit;
+  font: inherit;
+}
+
+.file-annotation-popover textarea:focus-visible {
+  outline: 2px solid var(--cc-accent, #29bc95);
+  outline-offset: 2px;
+}
+
+.file-annotation-popover-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--cc-text-secondary, #454549);
+}
+
+.file-annotation-popover-error { color: var(--cc-danger-text, #b42318); }
+
+.file-annotation-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.file-annotation-popover-actions button {
+  border: 1px solid var(--cc-border, #ececef);
+  border-radius: 7px;
+  background: var(--cc-panel, #fff);
+  color: inherit;
+  padding: 5px 13px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.file-annotation-popover-actions button:last-child {
+  background: var(--cc-action-bg, #454549);
+  border-color: transparent;
+  color: var(--cc-on-action, #fff);
+}
+
+.file-annotation-popover-actions button:disabled { opacity: 0.55; cursor: default; }
+
+.file-annotation-drafts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 100px;
+  overflow-y: auto;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--cc-border, #ececef);
+}
+
+.file-annotation-draft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.file-annotation-draft-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-annotation-draft button {
+  border: 0;
+  background: transparent;
+  color: var(--cc-text-secondary, #454549);
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 4px;
+}
+
+.file-annotation-draft button:hover { color: var(--cc-text, #1f1f1f); }
+
+.file-annotation-send-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 0 10px 10px;
+}
+
+.file-annotation-send-bar button {
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 1px solid var(--cc-border, #ececef);
+  border-radius: 7px;
+  color: var(--cc-text, #1f1f1f);
+  background: var(--cc-panel, #fff);
+  font: inherit;
+  cursor: pointer;
+}
+
+.file-annotation-send-bar button:last-child {
+  color: var(--cc-on-action, #fff);
+  background: var(--cc-action-bg, #454549);
+}
+
+.file-annotation-send-bar button:disabled { opacity: .55; cursor: default; }
+
+.file-annotation-send-bar .spacer { flex: 1; }
+
+.file-annotation-text-only {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--cc-text-secondary, #454549);
+}
+
+.file-annotation-screenshots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.file-annotation-screenshots figure { flex: 1 1 100px; margin: 0; min-width: 0; }
+
+.file-annotation-screenshots img {
+  display: block;
+  width: 100%;
+  height: 72px;
+  object-fit: contain;
+  border: 1px solid var(--cc-border, #ececef);
+  border-radius: 6px;
+  background: var(--cc-panel-raised, #f7f7f8);
+}
+
+.file-annotation-screenshots figcaption {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--cc-text-secondary, #454549);
+}
+
+.file-annotation-screenshots p { flex-basis: 100%; margin: 0; font-size: 12px; }
+
+.file-annotation-screenshots button {
+  border: 1px solid var(--cc-border, #ececef);
+  border-radius: 6px;
+  background: var(--cc-panel, #fff);
+  color: inherit;
+  padding: 4px 9px;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The canvas reader also runs on desktop while PDF annotation is active. */
+@media (min-width: 768px) {
+  .v3-file-preview-panel .v3-mobile-pdf-preview { display: flex; width: 100%; height: 100%; min-height: 0; flex-direction: column; background: var(--v3-bg-main); }
+  .v3-file-preview-panel .v3-mobile-pdf-toolbar { display: flex; min-height: 48px; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--v3-border); background: var(--v3-bg-sidebar); }
+  .v3-file-preview-panel .v3-mobile-pdf-toolbar-group { display: flex; align-items: center; gap: 3px; }
+  .v3-file-preview-panel .v3-mobile-pdf-toolbar button { display: inline-grid; width: 34px; height: 34px; padding: 0; place-items: center; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--v3-text-main); cursor: pointer; }
+  .v3-file-preview-panel .v3-mobile-pdf-toolbar button:hover:not(:disabled), .v3-file-preview-panel .v3-mobile-pdf-toolbar button:focus-visible { border-color: var(--v3-border); background: var(--cc-panel-raised, #f7f7f8); }
+  .v3-file-preview-panel .v3-mobile-pdf-toolbar button:disabled { opacity: .42; cursor: default; }
+  .v3-file-preview-panel .v3-mobile-pdf-page-count, .v3-file-preview-panel .v3-mobile-pdf-zoom { min-width: 42px; color: var(--v3-text-main); font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }
+  .v3-file-preview-panel .v3-mobile-pdf-viewport { position: relative; min-height: 0; flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; touch-action: none; }
+  .v3-file-preview-panel .v3-mobile-pdf-canvas { display: block; margin: 12px auto; background: #fff; box-shadow: 0 2px 12px rgb(0 0 0 / 18%); }
+  .v3-file-preview-panel .v3-mobile-pdf-accessible-link, .v3-file-preview-panel .v3-mobile-pdf-text-layer { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); }
+  .v3-file-preview-panel .v3-mobile-pdf-accessible-link:focus { position: static; width: auto; height: auto; padding: 8px; clip: auto; clip-path: none; }
+  .v3-file-preview-panel .v3-mobile-pdf-hint { margin: 0; padding: 5px 10px; color: var(--v3-text-muted); font-size: 11px; }
+}
+
+/* Keyboard fallback: a whole-media / current-page target is always offered. */
+.file-annotation-keyboard-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  border: 1px dashed var(--cc-border-strong, #dedee2);
+  border-radius: 7px;
+  background: var(--cc-panel-raised, #f7f7f8);
+  color: var(--cc-text, #1f1f1f);
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
