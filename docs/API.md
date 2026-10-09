@@ -80,7 +80,23 @@ Cats Company 是一个独立的即时通讯平台，提供：
 - `CATSCO_SKILLHUB_SESSION_COOKIE_NAME=catsco_session`：若 SkillHub 定制了 `SKILLHUB_COOKIE_NAME`，此处保持一致。
 - 同时需正确配置 SkillHub 的介绍 read/write 与 images 开关，且 `SKILLHUB_CATSCO_BASE_URL` 指向验证当前 JWT 的 CatsCo 环境。不要将测试账号的 JWT 发往生产认证域。
 
-回滚只关闭新开关或回退 CatsCo 应用；保留上游新增表和历史图片，不撤回原 Skill 安装能力。M2b 后续还需实现 UI 的账号切换清理、过期响应抑制、Blob 图片地址释放、详情 fallback、预览确认及 CAS 冲突交互；本 PR 不声称这些前端行为已完成。
+回滚只关闭新开关或回退 CatsCo 应用；保留上游新增表和历史图片，不撤回原 Skill 安装能力。
+
+#### M2b WebApp 图文详情与作者编辑
+
+WebApp 进入 SkillHub 时读取 capabilities，关闭、旧服务器、未知 schema 或读取失败均保留原页面功能。能力库启用新分类时采用名称搜索、有界分页和全局分类计数，cursor 409 从第一页重新读取。新目录仅负责展示，不替换原 Agent 更新判断的元数据映射。全部分类仍保持同 ID 本机能力优先；具体分类仅列出云端匹配项。本地及私有能力不读取公开介绍。
+
+打开详情后才读取完整介绍。能力库使用该卡片的版本，Agent 能力总览使用已配置的精确版本，不以最新介绍代替旧版介绍。缺失/下架/读取错误退回原说明，不阻断安装与更新。React 只渲染受控结构及转义文本；所有示例均标注“示意 / 非实测”，不执行 HTML、不获取作者外链。
+
+发布者编辑入口仅在精确版本私有草稿读取成功后显示；好友 Agent 视角保持只读。Bot Owner、相同显示名或 CatsCo 管理员身份均不等于 SkillHub 编辑权。作者从详情的“编辑此版本介绍”进入，一句话用途和分类为基础，步骤、场景、限制、输入/结果、图片为选填；无永久演示发布入口，也不提供尚未实现的 AI 生成按钮。
+
+保存草稿与确认公开为独立操作。确认发布只传目标和服务器返回的 head revision，不重传或替换内容。编辑已保存草稿会收起确认按钮，需再次保存/预览。409 和未知提交结果要求显式重新读取，不自动重试写请求；重新读取或离开时确认丢弃未保存修改。仅介绍的保存/撤回不操作包、BotDefinition、设备路由或模型配置。发布后可用“刷新分类”更新目录摘要和分类。
+
+图片通过真人 Bearer 请求为 Blob，不把 JWT 放进 URL，不用私有 preview 补救 public 404。请求有完整响应体超时、2 MiB 图片流式上限；换账号/目标及卸载时取消并清理 Blob URL。上传图片仍需保存草稿和确认，移除图片仅改草稿引用，不删除历史文件。无效本地文件不会锁住文字编辑；图片上传失败保留输入。本轮不提供附件库存/历史清理管理页。
+
+本轮仍不启用生产开关，不读远程 SKILL.md、不生成内容、不调用模型、不扣费、不补全历史资料。上线前应在独立测试环境同时核验 CatsCo 与 SkillHub 的 read/write/images 开关、迁移和真人账号权限，再决定生产启用。
+
+本地验证：`cd webapp && npm test`、`npm run build`。浏览器可先在 webapp 启动 `npx vite --host 127.0.0.1 --port 5193 --strictPort`，再在仓库根运行 `node scripts/test-skillhub-marketplace-browser.mjs`。脚本复用真实页面组件，隔离网络并模拟所有 API；覆盖深浅主题、文档/图片示例、390px 无横向溢出、保存/预览/确认发布。截图默认输出到 `output/skillhub-marketplace-m2b`。这是浏览器组件验证，不等于真实环境认证或数据库联调。
 
 ### 1.1 用户认证（JWT）
 

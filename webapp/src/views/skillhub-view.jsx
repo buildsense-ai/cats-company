@@ -15,6 +15,7 @@ import {
 import { normalizeOwnedBots } from '../utils/owned-bots';
 import { getStorage } from '../utils/storage-access';
 import SkillHubContent from './skillhub-content';
+import { MarketplaceProvider } from './skillhub-marketplace-state';
 import '../css/skillhub-view.css';
 
 export {
@@ -2223,7 +2224,7 @@ export default function SkillHubView({
     });
   }, []);
 
-  return <SkillHubContent
+  return <MarketplaceProvider key={user?.uid || ''}><SkillHubContent
     actionNotice={actionNotice}
     activeSection={activeSection}
     addedSkillQuery={addedSkillQuery}
@@ -2305,5 +2306,5 @@ export default function SkillHubView({
     syncingWorkspace={syncingWorkspace}
     updatesOnly={updatesOnly}
     skillAction={skillAction}
-  />;
+  /></MarketplaceProvider>;
 }
