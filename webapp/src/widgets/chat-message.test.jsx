@@ -3913,6 +3913,7 @@ describe('ChatMessage rich file rendering', () => {
       title: 'Mini Mario 测试页',
       kind: 'mini_app',
       url: 'https://artifact.catsco.cc/mario-test/',
+      agent_uid: 365,
       updated_at: null,
     };
     const gatewayMessage = {
@@ -3971,6 +3972,37 @@ describe('ChatMessage rich file rendering', () => {
       expect(onOpenArtifactApp).toHaveBeenCalledTimes(1);
       expect(onOpenArtifactApp.mock.calls[0][0]).toMatchObject({ id: 'mario-test', kind: 'mini_app' });
       expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+    });
+
+    it('does not offer the viewer for an application the viewer cannot address', async () => {
+      // The viewer addresses an application by its owning bot. An entry without
+      // one would give the card a button that silently does nothing, which reads
+      // as a broken application. Such an entry keeps the preview path instead.
+      const ownerless = {
+        id: 'ownerless',
+        title: '缺 owner 的应用',
+        kind: 'mini_app',
+        url: 'https://artifact.catsco.cc/ownerless/',
+      };
+      const onOpenArtifactApp = vi.fn();
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{ id: 33, from_uid: 365, content: `已发布：${ownerless.url}`, created_at: '2026-10-08T00:00:00Z' }}
+            knownArtifacts={[ownerless]}
+            onOpenArtifactApp={onOpenArtifactApp}
+          />,
+        );
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await Promise.resolve();
+      });
+
+      expect(onOpenArtifactApp).not.toHaveBeenCalled();
+      expect(container.querySelector('.v3-file-preview-frame')).not.toBeNull();
     });
 
     it('keeps the card itself to one action, because the viewer owns "open in a new page"', async () => {

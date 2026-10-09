@@ -1714,10 +1714,16 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile, onOpe
   // and the visitor's identity. Falling back to the generic file preview would
   // drop both, and is also what made "open in a new page" fail.
   //
+  // The viewer addresses an application by its owning bot, so an entry without
+  // one cannot be opened that way. Such an entry keeps the preview path rather
+  // than offering a button that silently does nothing.
+  //
   // Deliberately no extra action on the card: the sidebar's viewer already
   // offers "open in a new page" with the conversation attached, and a second
   // copy here would be a second path to keep in step.
-  const isGatewayApp = artifact?.kind === 'mini_app' && typeof onOpenArtifactApp === 'function';
+  const isGatewayApp = artifact?.kind === 'mini_app'
+    && typeof onOpenArtifactApp === 'function'
+    && Number(artifact?.agent_uid || artifact?.agentUid || 0) > 0;
   const openArtifact = () => {
     if (isGatewayApp) {
       onOpenArtifactApp(artifact);
