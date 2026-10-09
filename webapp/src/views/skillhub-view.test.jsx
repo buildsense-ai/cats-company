@@ -429,13 +429,116 @@ describe('SkillHubView', () => {
     });
   }
 
+  async function chooseCategory(card, value = 'development') {
+    await act(async () => {
+      const field = card.querySelector('.cc-skillhub-category-field select');
+      if (field) Simulate.change(field, { target: { value } });
+    });
+  }
+
+  async function confirmPublishCategory(value) {
+    let dialog = document.body.querySelector('.cc-skillhub-publish-dialog');
+    expect(dialog).toBeTruthy();
+    if (value) {
+      await act(async () => {
+        Simulate.change(dialog.querySelector('.cc-skillhub-category-field select'), {
+          target: { value },
+        });
+        await Promise.resolve();
+      });
+      dialog = document.body.querySelector('.cc-skillhub-publish-dialog');
+    }
+    await act(async () => {
+      Simulate.click([...dialog.querySelectorAll('button')]
+        .find(button => button.textContent === '发布并添加'));
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+  }
+
   async function openCustomSkills() {
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button')]
         .find((button) => button.textContent.includes('运行工作区')));
       await Promise.resolve();
     });
+    for (const card of container.querySelectorAll('.cc-skillhub-local-card')) await chooseCategory(card);
   }
+
+  it('filters the library by category and intersects with name search, retaining uncategorized skills in All', async () => {
+    api.searchSkillHubSkills.mockResolvedValue({ skills: [
+      { id: 'tools/code', name: 'Code helper', primaryCategory: 'development' },
+      { id: 'tools/design', name: 'Design helper', primaryCategory: 'design' },
+      { id: 'tools/legacy', name: 'Uncategorized legacy' },
+    ] });
+    await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
+    await openCatalogue();
+    const categoryButton = label => [...container.querySelectorAll('.cc-skillhub-category-filter button')].find(button => button.textContent === label);
+    expect(container.querySelectorAll('.cc-skillhub-card')).toHaveLength(3);
+    await act(async () => { categoryButton('开发工具').click(); });
+    expect(container.querySelectorAll('.cc-skillhub-card')).toHaveLength(1);
+    expect(container.querySelector('.cc-skillhub-card h3').textContent).toBe('Code helper');
+    await act(async () => { Simulate.change(container.querySelector('#cc-skillhub-search-input'), { target: { value: 'Design' } }); });
+    expect(container.querySelectorAll('.cc-skillhub-card')).toHaveLength(0);
+    await act(async () => { categoryButton('设计创作').click(); });
+    expect(container.querySelector('.cc-skillhub-card h3').textContent).toBe('Design helper');
+    await act(async () => {
+      Simulate.change(container.querySelector('#cc-skillhub-search-input'), { target: { value: '' } });
+      categoryButton('全部').click();
+    });
+    expect(container.querySelectorAll('.cc-skillhub-card')).toHaveLength(3);
+    expect(categoryButton('其他')).toBeTruthy();
+    await act(async () => { categoryButton('其他').click(); });
+    expect(container.querySelectorAll('.cc-skillhub-card')).toHaveLength(1);
+  });
+
+  it('automatically categorizes a local library skill and saves a manual override per user', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => false));
+    api.getLocalSkills.mockResolvedValue({ skills: [{ local_skill_id: 'draft', name: 'Local draft', source: 'user', can_share: true }] });
+    await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
+    await openCatalogue();
+    const card = [...container.querySelectorAll('.cc-skillhub-card')].find(card => card.textContent.includes('Local draft'));
+    expect(card.querySelector('.cc-skillhub-category-field')).toBeNull();
+    expect(card.querySelector('.cc-skillhub-card-actions button').disabled).toBe(false);
+    await act(async () => {
+      Simulate.click(card.querySelector('.cc-skillhub-card-actions button'));
+      await Promise.resolve();
+    });
+    const publishDialog = document.body.querySelector('.cc-skillhub-publish-dialog');
+    expect(publishDialog.querySelector('.cc-skillhub-category-field select').value).toBe('other');
+    expect([...publishDialog.querySelectorAll('option')].some(option => option.textContent === '全部')).toBe(false);
+    await confirmPublishCategory('writing');
+    expect(JSON.parse(localStorage.getItem('catsco.skillhub.categories.7'))).toEqual({ 'local:draft': 'writing' });
+    await act(async () => { root.render(null); });
+    await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
+    await openCatalogue();
+    const restoredCard = [...container.querySelectorAll('.cc-skillhub-card')].find(item => item.textContent.includes('Local draft'));
+    await act(async () => {
+      Simulate.click(restoredCard.querySelector('.cc-skillhub-card-actions button'));
+      await Promise.resolve();
+    });
+    expect(document.body.querySelector('.cc-skillhub-publish-dialog .cc-skillhub-category-field select').value).toBe('writing');
+  });
+
+  it('orders All by upload time and switches card and detail copy to Chinese without changing install references', async () => {
+    const older = { id: 'tools/older', name: 'Older', uploaded_at: '2026-09-01', latestVersion: '1.0.0' };
+    const newer = { id: 'tools/newer', name: 'Newer', uploaded_at: '2026-10-01', latestVersion: '1.0.0', description: 'Original copy', translations: { 'zh-CN': { name: '新能力', description: '中文版说明' } } };
+    api.searchSkillHubSkills.mockResolvedValue({ skills: [older, newer] });
+    await act(async () => root.render(<SkillHubView user={{ uid: 7 }} />));
+    await openCatalogue();
+    expect([...container.querySelectorAll('.cc-skillhub-card h3')].map(el => el.textContent)).toEqual(['Newer', 'Older']);
+    const chineseButton = [...container.querySelectorAll('.cc-skillhub-language button')].find(b => b.textContent === '中文');
+    await act(async () => chineseButton.click());
+    const card = container.querySelector('.cc-skillhub-card');
+    expect(card.querySelector('h3').textContent).toBe('新能力');
+    expect(card.querySelector('p').textContent).toBe('中文版说明');
+    expect(localStorage.getItem('catsco.skillhub.language.7')).toBe('zh-CN');
+    await act(async () => card.querySelector('.cc-skillhub-card-open').click());
+    expect(document.body.querySelector('[role="dialog"]').textContent).toContain('tools/newer');
+    expect(document.body.querySelector('.cc-skillhub-detail-description').textContent).toBe('中文版说明');
+    expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+  });
 
   it('normalizes owner bots and SkillHub entries', () => {
     expect(normalizeOwnedBots({ bots: [
@@ -519,6 +622,10 @@ describe('SkillHubView', () => {
     })).toBe(false);
     expect(upsertSkillRef([{ skillId: 'a', version: '1' }], { skillId: 'b', version: '2' }))
       .toEqual([{ skillId: 'a', version: '1' }, { skillId: 'b', version: '2' }]);
+    expect(upsertSkillRef([{ skillId: 'z' }, { skillId: 'a' }], { skillId: 'b' }))
+      .toEqual([{ skillId: 'z' }, { skillId: 'a' }, { skillId: 'b' }]);
+    expect(upsertSkillRef([{ skillId: 'z', version: '1' }, { skillId: 'a' }], { skillId: 'z', version: '2' }))
+      .toEqual([{ skillId: 'z', version: '2' }, { skillId: 'a' }]);
     expect(resolveSkillHubEntry(
       { skillId: 'a', latestVersion: '2.0.0', contentHash: '' },
       { skill: { id: 'a', latestVersion: '2.0.0' }, versions: [{ id: 'a', version: '2.0.0', contentHash: 'c'.repeat(64) }] },
@@ -1077,12 +1184,12 @@ describe('SkillHubView', () => {
     const card = [...container.querySelectorAll('.cc-skillhub-card')]
       .find(candidate => candidate.textContent.includes('Summarize'));
     const source = card?.querySelector('.cc-skillhub-card-source');
-    const expectedTime = `发布于 ${new Intl.DateTimeFormat('zh-CN', {
+    const expectedTime = new Intl.DateTimeFormat('zh-CN', {
       year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-    }).format(new Date('2026-08-20T02:03:04Z'))}`;
-    expect(source?.textContent).toBe(`v2.0.0 · arrowhaken1 · UID 85${expectedTime}`);
-    expect(source?.getAttribute('title')).toBe(`v2.0.0 · arrowhaken1 · UID 85 · ${expectedTime}`);
-    expect(source?.querySelector('time')?.getAttribute('datetime')).toBe('2026-08-20T02:03:04Z');
+    }).format(new Date('2026-08-20T02:03:04Z'));
+    expect(source?.textContent).toBe(`发布人：arrowhaken1 · UID 85${expectedTime}版本：v2.0.0`);
+    expect(source?.getAttribute('title')).toBe(`发布人：arrowhaken1 · UID 85 · ${expectedTime} · 版本：v2.0.0`);
+    expect(source?.querySelector('time')?.getAttribute('datetime')).toBe('2026-08-20T02:03:04.000Z');
   });
 
   it('keeps catalogue metadata placeholders visible when an old response omits fields', async () => {
@@ -1100,7 +1207,7 @@ describe('SkillHubView', () => {
     const card = [...container.querySelectorAll('.cc-skillhub-card')]
       .find(candidate => candidate.textContent.includes('Legacy Tool'));
     expect(card?.querySelector('.cc-skillhub-card-source')?.textContent)
-      .toBe('版本待确认 · 发布者待确认发布时间待确认');
+      .toBe('发布人：发布者待确认上传时间待确认版本：待确认');
   });
 
   it('opens the full catalogue description without installing or requesting Agent version history', async () => {
@@ -1193,17 +1300,20 @@ describe('SkillHubView', () => {
     });
     await openCatalogue();
 
-    const cards = [...container.querySelectorAll('.cc-skillhub-card')];
+    const cards = [...container.querySelectorAll('.cc-skillhub-card')].sort((a, b) => Number(b.textContent.includes('Local Writer')) - Number(a.textContent.includes('Local Writer')));
     expect(cards[0].textContent).toContain('Local Writer');
     expect(cards[0].textContent).toContain('本机');
     expect(cards[1].textContent).not.toContain('在线');
-    expect(cards[1].textContent).toContain('v2.0.0 · arrowhaken1 · UID 85');
-    expect(cards[1].textContent).toContain('发布于');
+    expect(cards[1].textContent).toContain('arrowhaken1 · UID 85');
+    expect(cards[1].textContent).toContain('版本：v2.0.0');
+    expect(cards[1].querySelector('time')).toBeTruthy();
 
+    await chooseCategory(cards[0]);
     await act(async () => {
-      Simulate.click(cards[0].querySelector('.cc-skillhub-card-footer button'));
+      Simulate.click(cards[0].querySelector('.cc-skillhub-card-actions button'));
       await Promise.resolve();
     });
+    await confirmPublishCategory();
 
     const confirmation = document.body.querySelector('[role="alertdialog"]');
     expect(confirmation?.textContent).toContain('此能力目前只在本机');
@@ -1239,10 +1349,12 @@ describe('SkillHubView', () => {
 
     const localCard = [...container.querySelectorAll('.cc-skillhub-card')]
       .find((card) => card.textContent.includes('Local Writer'));
+    await chooseCategory(localCard);
     await act(async () => {
-      Simulate.click(localCard.querySelector('.cc-skillhub-card-footer button'));
+      Simulate.click(localCard.querySelector('.cc-skillhub-card-actions button'));
       await Promise.resolve();
     });
+    await confirmPublishCategory();
     const confirmation = document.body.querySelector('[role="alertdialog"]');
     await act(async () => {
       Simulate.click([...confirmation.querySelectorAll('button')]
@@ -1309,12 +1421,18 @@ describe('SkillHubView', () => {
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(2);
     expect(container.querySelector('.cc-skillhub-installed')).toBeNull();
     expect(container.textContent).toContain('运行工作区（真实目录）');
-    expect(container.querySelector('.cc-skillhub-availability.is-configured')?.textContent).toContain('已配置');
+    expect(container.querySelector('.cc-skillhub-availability')).toBeNull();
     expect(container.textContent).not.toContain('已配置，等待运行环境应用');
     expect(container.textContent).not.toContain('已开启');
     expect(container.querySelector('button[aria-label="复制 tools/review"]')).toBeNull();
-    expect(container.querySelector('button[aria-label="更多操作 tools/review"]')).toBeTruthy();
+    expect(container.querySelector('button[aria-label="删除 tools/review"]')).toBeTruthy();
+    expect(container.querySelector('button[aria-label="查看 tools/review 详情"]')).toBeTruthy();
     expect(container.querySelector('button[aria-label="从当前 Agent 移除 tools/review"]')).toBeFalsy();
+
+    await openCatalogue();
+    expect(container.querySelector('.cc-skillhub-agent-context')).toBeNull();
+    await openAdded();
+    expect(container.querySelector('.cc-skillhub-agent-context')).toBeTruthy();
 
     await act(async () => {
       Simulate.click(container.querySelector('.cc-skillhub-custom-entry'));
@@ -1322,6 +1440,41 @@ describe('SkillHubView', () => {
     });
     expect(container.querySelector('#skillhub-custom-title')?.textContent).toBe('运行工作区（真实目录）');
     expect(container.textContent).toContain('Skills 目录');
+  });
+
+  it('orders overview cards by addition time and retains server order for legacy references', async () => {
+    const reference = (skillId, addedAt) => ({ source: 'skillhub', skillId, version: '1.0.0', contentHash: 'a'.repeat(64), ...(addedAt ? { addedAt } : {}) });
+    api.getBotDefinitionSkills.mockResolvedValue({ botId: '42', revision: 3, skills: [
+      reference('tools/old', '2026-09-01'), reference('tools/new', '2026-10-01'),
+      reference('tools/legacy-old'), reference('tools/legacy-new'),
+    ] });
+    api.searchSkillHubSkills.mockResolvedValue({ skills: [
+      { id: 'tools/old', uploadedAt: '2026-10-08' },
+      { id: 'tools/new', uploadedAt: '2026-08-01' },
+    ] });
+    await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
+    expect([...container.querySelectorAll('.cc-skillhub-card h3')].map(el => el.textContent))
+      .toEqual(['tools/new', 'tools/old', 'tools/legacy-old', 'tools/legacy-new']);
+    expect(container.querySelector('.cc-skillhub-card-runtime')).toBeNull();
+  });
+
+  it('persists successful additions and shows them first after returning to the overview', async () => {
+    await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
+    await openCatalogue();
+    await act(async () => {
+      Simulate.click(addButton(container));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openAdded();
+    expect(container.querySelector('.cc-skillhub-card h3')?.textContent).toBe('Summarize');
+    const dates = JSON.parse(localStorage.getItem('catsco.skillhub.added-at.7.42'));
+    expect(Number.isFinite(Date.parse(dates['tools/summarize']))).toBe(true);
+    expect(dates['tools/review']).toBeUndefined();
+    api.getBotDefinitionSkills.mockResolvedValue(await api.updateBotDefinitionSkills.mock.results[0].value);
+    await act(async () => { root.render(null); });
+    await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
+    expect(container.querySelector('.cc-skillhub-card h3')?.textContent).toBe('Summarize');
   });
 
   it('filters the current Agent capability list by display name and SkillHub ID', async () => {
@@ -1443,9 +1596,9 @@ describe('SkillHubView', () => {
     expect(localItem).toBeTruthy();
     expect(container.querySelector('.cc-skillhub-content-header')).toBeNull();
     expect(container.querySelector('.cc-skillhub-navigation #cc-skillhub-added-search-input')).toBeTruthy();
-    expect(container.querySelector('[aria-label="仅运行工作区中的未同步能力"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="已配置能力"]')).toBeTruthy();
     expect(container.querySelector('.cc-skillhub-ability-group-heading')).toBeNull();
-    expect(localItem.textContent).toContain('仅运行工作区，未同步');
+    expect(localItem.querySelector('.cc-skillhub-availability')).toBeNull();
     expect(localItem.textContent).toContain('尚未发布 · 当前运行工作区');
     expect(localItem.textContent).not.toContain('版本未确认');
 
@@ -1460,13 +1613,7 @@ describe('SkillHubView', () => {
     expect(container.querySelector('.cc-skillhub-added-search-count')?.textContent).toMatch(/^1 \/\s*\d+$/);
 
     await act(async () => {
-      Simulate.click(localItem.querySelector('button[aria-label="更多操作 web-search"]'));
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    });
-    const menu = document.body.querySelector('[role="menu"][aria-label="web-search 操作"]');
-    await act(async () => {
-      Simulate.click([...menu.querySelectorAll('[role="menuitem"]')]
-        .find((button) => button.textContent.includes('查看详情')));
+      Simulate.click(localItem.querySelector('.cc-skillhub-card-open'));
       await Promise.resolve();
     });
 
@@ -1484,7 +1631,7 @@ describe('SkillHubView', () => {
     expect(api.getSkillHubVersions).not.toHaveBeenCalled();
   });
 
-  it('distinguishes applied, pending, and workspace-only Skill states', async () => {
+  it('keeps runtime status off overview cards while retaining unpublished context', async () => {
     const workspaceRevision = 'c'.repeat(64);
     api.getBotDefinitionSkills.mockResolvedValue({
       botId: '42',
@@ -1560,10 +1707,10 @@ describe('SkillHubView', () => {
 
     const itemFor = (label) => [...container.querySelectorAll('.cc-skillhub-added-item')]
       .find((item) => item.querySelector('h3')?.textContent === label);
-    expect(itemFor('applied')?.textContent).toContain('已配置，运行环境已应用');
-    expect(itemFor('tools/pending')?.textContent).toContain('已配置，等待运行环境应用');
-    expect(itemFor('tools/pending')?.textContent).not.toContain('已配置，运行环境已应用');
-    expect(itemFor('workspace-only')?.textContent).toContain('仅运行工作区，未同步');
+    expect(itemFor('applied')).toBeTruthy();
+    expect(itemFor('tools/pending')).toBeTruthy();
+    expect(container.querySelector('.cc-skillhub-availability')).toBeNull();
+    expect(itemFor('workspace-only')?.textContent).toContain('尚未发布 · 当前运行工作区');
   });
 
   it('keeps configured Skills neutral when the Runtime workspace cannot be read', async () => {
@@ -1595,7 +1742,7 @@ describe('SkillHubView', () => {
     });
 
     const configured = container.querySelector('.cc-skillhub-added-item');
-    expect(configured?.querySelector('.cc-skillhub-availability.is-configured')).toBeTruthy();
+    expect(configured?.querySelector('.cc-skillhub-availability')).toBeNull();
     expect(configured?.querySelector('.cc-skillhub-availability.is-pending')).toBeNull();
     expect(configured?.querySelector('.cc-skillhub-availability.is-applied')).toBeNull();
     expect(configured?.textContent).not.toContain('已配置，等待运行环境应用');
@@ -1631,31 +1778,23 @@ describe('SkillHubView', () => {
     });
 
     const configured = container.querySelector('.cc-skillhub-added-item');
-    expect(configured?.querySelector('.cc-skillhub-availability.is-configured')).toBeTruthy();
+    expect(configured?.querySelector('.cc-skillhub-availability')).toBeNull();
     expect(configured?.textContent).not.toContain('已配置，等待运行环境应用');
   });
 
-  it('opens accessible details and removal actions from the more menu', async () => {
+  it('opens overview card details and restores keyboard focus when closed', async () => {
     await act(async () => {
       root.render(<SkillHubView user={{ uid: 7 }} />);
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    const trigger = container.querySelector('button[aria-label="更多操作 tools/review"]');
+    const trigger = container.querySelector('button[aria-label="查看 tools/review 详情"]');
+    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(container.querySelector('button[aria-label="删除 tools/review"]')).toBeTruthy();
     await act(async () => {
+      trigger.focus();
       Simulate.click(trigger);
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    });
-
-    const menu = document.body.querySelector('[role="menu"][aria-label="tools/review 操作"]');
-    expect(trigger.getAttribute('aria-expanded')).toBe('true');
-    expect(menu).toBeTruthy();
-    expect(menu.textContent).toContain('查看详情');
-    expect(menu.textContent).toContain('从 Agent 移除');
-
-    await act(async () => {
-      Simulate.click([...menu.querySelectorAll('[role="menuitem"]')].find((button) => button.textContent.includes('查看详情')));
       await Promise.resolve();
     });
 
@@ -1671,6 +1810,8 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     expect(document.body.querySelector('[role="dialog"]')).toBeFalsy();
+    expect(document.activeElement).toBe(trigger);
+    expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
   });
 
   it('confirms before removing an ability from the current Agent', async () => {
@@ -1682,17 +1823,13 @@ describe('SkillHubView', () => {
     });
 
     await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="更多操作 tools/review"]'));
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    });
-    const menu = document.body.querySelector('[role="menu"][aria-label="tools/review 操作"]');
-    await act(async () => {
-      Simulate.click([...menu.querySelectorAll('[role="menuitem"]')].find((button) => button.textContent.includes('从 Agent 移除')));
+      Simulate.click(container.querySelector('button[aria-label="删除 tools/review"]'));
       await Promise.resolve();
     });
 
     const confirmation = document.body.querySelector('[role="alertdialog"]');
     expect(confirmation).toBeTruthy();
+    expect(document.body.querySelector('.cc-skillhub-detail-dialog')).toBeNull();
     expect(confirmation.textContent).toContain('从“Owner Bot”移除“tools/review”');
     expect(confirmation.textContent).toContain('技能本身不会从 SkillHub 删除');
     expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
@@ -1760,14 +1897,7 @@ describe('SkillHubView', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="更多操作 local-draft"]'));
-      await new Promise(resolve => requestAnimationFrame(resolve));
-    });
-    const menu = document.body.querySelector('[role="menu"][aria-label="local-draft 操作"]');
-    expect(menu.textContent).toContain('删除本地能力');
-    await act(async () => {
-      Simulate.click([...menu.querySelectorAll('[role="menuitem"]')]
-        .find(button => button.textContent.includes('删除本地能力')));
+      Simulate.click(container.querySelector('button[aria-label="删除 local-draft"]'));
       await Promise.resolve();
     });
     const confirmation = document.body.querySelector('[role="alertdialog"]');
@@ -1869,6 +1999,7 @@ describe('SkillHubView', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
       await new Promise(resolve => setTimeout(resolve, 0));
     });
+    await confirmPublishCategory();
     expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
       deviceId: 'server-42',
       toolName: 'skillhub.localSkill.share',
@@ -2431,13 +2562,7 @@ describe('SkillHubView', () => {
 
     expect(container.querySelector('.cc-skillhub-added-title h3')?.textContent).toBe('local-demo');
     await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="更多操作 local-demo"]'));
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    });
-    const menu = document.body.querySelector('[role="menu"][aria-label="local-demo 操作"]');
-    await act(async () => {
-      Simulate.click([...menu.querySelectorAll('[role="menuitem"]')]
-        .find((button) => button.textContent.includes('从 Agent 移除')));
+      Simulate.click(container.querySelector('button[aria-label="删除 local-demo"]'));
       await Promise.resolve();
     });
 
@@ -2691,7 +2816,8 @@ describe('SkillHubView', () => {
     expect(api.getDevices).not.toHaveBeenCalled();
     expect(container.textContent).toContain('cloud-html-artifact');
     expect(container.textContent).not.toContain('私有能力');
-    expect(container.textContent).toContain('第 2 版 · 最近变更：lin');
+    expect(container.textContent).toContain('版本：第 2 版');
+    expect(container.textContent).toContain('最近变更：lin');
     expect(container.textContent).not.toContain('v2');
     expect(container.querySelector('.cc-skillhub-readonly-badge')).toBeNull();
     expect(container.querySelector('.cc-skillhub-content-header')).toBeNull();
@@ -2699,11 +2825,11 @@ describe('SkillHubView', () => {
     expect(container.querySelector('.cc-skillhub-ability-group-heading')).toBeNull();
     expect(container.querySelector('.cc-skillhub-custom-entry')).toBeNull();
     expect(container.textContent).not.toContain('用此工作区覆盖 Agent 配置');
-    expect(container.querySelector('.cc-skillhub-availability.is-configured')?.textContent).toContain('已配置');
+    expect(container.querySelector('.cc-skillhub-availability')).toBeNull();
     expect(container.textContent).not.toContain('已配置，等待运行环境应用');
     expect(container.querySelector('#skillhub-added-tab')?.getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('.cc-skillhub-copy-action')).toBeNull();
-    expect(container.querySelector('.cc-skillhub-more-action')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-delete-action')).toBeNull();
 
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="查看 cloud-html-artifact 详情"]'));
@@ -2894,7 +3020,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     expect(container.querySelector('.cc-skillhub-added-title h3')?.textContent).toBe('local-demo');
-    expect(container.querySelector('.cc-skillhub-version-note')?.textContent).toContain('仅当前 Agent 可用');
+    expect(container.querySelector('.cc-skillhub-card-publisher')?.textContent).toContain('仅当前 Agent 可用');
     expect(container.textContent).not.toContain('priv_local1');
 
     expect(container.querySelector('button[aria-label="复制 local-demo"]')).toBeNull();
@@ -2918,6 +3044,7 @@ describe('SkillHubView', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    await confirmPublishCategory();
 
     expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
       deviceId: 'alice-device',
@@ -3060,6 +3187,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    await confirmPublishCategory();
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('description 校验失败');
     expect(container.querySelector('.cc-skillhub-local-card')?.textContent).toContain('ocr');
@@ -3170,6 +3298,7 @@ describe('SkillHubView', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    await confirmPublishCategory();
 
     const confirmation = document.body.querySelector('[role="alertdialog"]');
     expect(confirmation.textContent).toContain('发布“local-demo”的新版本');
@@ -3974,6 +4103,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
 
+    await openAdded();
     const picker = container.querySelector('.cc-skillhub-bot-picker select');
     await act(async () => {
       picker.value = '44';
@@ -4067,6 +4197,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
 
+    await openAdded();
     const picker = container.querySelector('.cc-skillhub-bot-picker select');
     await act(async () => {
       picker.value = '44';
@@ -4190,11 +4321,11 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     await act(async () => {
-      secondSearch.resolve({ skills: [{ id: 'latest/result', name: 'Latest result' }] });
+      secondSearch.resolve({ skills: [{ id: 'latest/result', name: 'Latest result second' }] });
       await Promise.resolve();
     });
     await act(async () => {
-      firstSearch.resolve({ skills: [{ id: 'stale/result', name: 'Stale result' }] });
+      firstSearch.resolve({ skills: [{ id: 'stale/result', name: 'Stale result first' }] });
       await Promise.resolve();
     });
 
@@ -4237,7 +4368,7 @@ describe('SkillHubView', () => {
 
     const card = [...container.querySelectorAll('.cc-skillhub-card')]
       .find((candidate) => candidate.textContent.includes('Summarize'));
-    const button = card.querySelector('.cc-skillhub-card-footer button');
+    const button = card.querySelector('.cc-skillhub-card-actions button');
     expect(button.textContent).toContain('更新');
     expect(button.textContent).not.toContain('已添加');
     expect(button.className).toContain('update');
@@ -4294,7 +4425,7 @@ describe('SkillHubView', () => {
 
     const cardFor = (name) => [...container.querySelectorAll('.cc-skillhub-card')]
       .find((candidate) => candidate.textContent.includes(name));
-    const currentButton = cardFor('Review').querySelector('.cc-skillhub-card-footer button');
+    const currentButton = cardFor('Review').querySelector('.cc-skillhub-card-actions button');
     expect(currentButton.textContent).toContain('已添加');
     expect(currentButton.disabled).toBe(true);
 
@@ -4503,7 +4634,7 @@ describe('SkillHubView', () => {
 
     const catalogueCard = () => [...container.querySelectorAll('.cc-skillhub-card')]
       .find((candidate) => candidate.textContent.includes('v1.0.2'));
-    const addButton = () => catalogueCard().querySelector('.cc-skillhub-card-footer button');
+    const addButton = () => catalogueCard().querySelector('.cc-skillhub-card-actions button');
     expect(catalogueCard()).toBeTruthy();
     expect(addButton().textContent).toContain('添加');
     expect(addButton().className).toContain('primary');

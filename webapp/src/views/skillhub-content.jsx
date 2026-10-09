@@ -1,16 +1,22 @@
-import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ArrowLeft, Bot, Check, Clipboard, FolderOpen, Globe, Info, Lock, Save, Users,
-  Package, PackageMinus, RefreshCw, Search, Share2,
-  ShieldCheck, Wrench, X,
+  ArrowLeft, Bot, Check, Clipboard, FolderOpen, Globe, Info, Plus, Trash2,
+  Activity, AppWindow, AudioLines, BookOpenCheck, BriefcaseBusiness, ChartNoAxesCombined,
+  ClipboardCheck, Code2, FileText, FlaskConical, Globe2, GraduationCap, Image as ImageIcon,
+  Landmark, Lock, Package, PackageMinus, PanelsTopLeft, Palette, PenLine, Save, ShieldCheck, Sparkles,
+  RefreshCw, Search, Share2, Users,
+  Wrench, X,
 } from 'lucide-react';
 import CustomSelect from '../widgets/custom-select';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import { useFeedback } from '../components/feedback-system';
-import { MARKET_CATEGORIES, MarketplaceFilters, mergeMarketplaceLibrary, useMarketplace, useMarketplaceCatalogue } from './skillhub-marketplace-state';
+import { mergeMarketplaceLibrary, useMarketplace, useMarketplaceCatalogue } from './skillhub-marketplace-state';
 import { MarketplaceIntroduction } from './skillhub-marketplace-intro';
 import { marketplaceApi } from '../skillhub-marketplace-api';
+import { categoryKey, readCategoryDrafts, inferSkillCategory, localizedSkillText, skillUploadedTimestamp, SkillCategoryField, SkillCategoryFilters } from './skillhub-categories';
+import { skillSourceQuery } from './skillhub-presentation';
+import { skillIconKey } from './skillhub-icons';
 import {
   formatSkillHubPublisher,
   formatSkillHubVersion,
@@ -37,6 +43,23 @@ function formatUnavailableSkillHint(skillIds = []) {
 
 export default function SkillHubContent(props) {
   const { navigate } = useMarketplace();
+  const categoryOwner = props.categoryOwnerUID || 'guest';
+  const [category, setCategory] = useState('');
+  const [languagePreference, setLanguagePreference] = useState(() => ({ owner: categoryOwner, value: readSkillLanguage(categoryOwner) }));
+  const language = languagePreference.owner === categoryOwner ? languagePreference.value : readSkillLanguage(categoryOwner);
+  const changeLanguage = value => {
+    setLanguagePreference({ owner: categoryOwner, value });
+    try { localStorage.setItem(`catsco.skillhub.language.${categoryOwner}`, value); } catch {}
+  };
+  const [categoryDrafts, setCategoryDrafts] = useState(() => ({ owner: categoryOwner, values: readCategoryDrafts(categoryOwner) }));
+  const drafts = categoryDrafts.owner === categoryOwner ? categoryDrafts.values : readCategoryDrafts(categoryOwner);
+  const categoryOf = skill => drafts[categoryKey(skill)] || inferSkillCategory(skill);
+  const changeCategory = (skill, value) => {
+    const values = { ...drafts, [categoryKey(skill)]: value };
+    setCategoryDrafts({ owner: categoryOwner, values });
+    try { localStorage.setItem(`catsco.skillhub.categories.${categoryOwner}`, JSON.stringify(values)); } catch {}
+  };
+  const categorizedProps = { ...props, language, selectedCategory: category, categoryOf, onSkillCategoryChange: changeCategory };
   const guardedProps = {
     ...props,
     onSelectAgent: (value) => navigate ? navigate(() => props.onSelectAgent(value)) : props.onSelectAgent(value),
@@ -61,12 +84,12 @@ export default function SkillHubContent(props) {
             <h1>Agent 能力</h1>
             <p>为 Agent 添加和管理可用能力。</p>
           </div>
-          <AgentContext {...guardedProps} />
+          {visibleSection !== 'catalogue' && <AgentContext {...guardedProps} />}
         </header>
         {definitionError && <div className='cc-skillhub-alert error' role='alert'>{definitionError}</div>}
         {runtimeRouteError && <div className='cc-skillhub-alert error' role='alert'>{runtimeRouteError}</div>}
         {actionNotice && <div className='cc-skillhub-alert success' role='status'>{actionNotice}</div>}
-        {visibleSection === 'custom' ? <CustomSkills {...props} /> : (
+        {visibleSection === 'custom' ? <CustomSkills {...categorizedProps} /> : (
           <>
             <SkillNavigation
               {...guardedProps}
@@ -76,19 +99,27 @@ export default function SkillHubContent(props) {
               selectedUpdateStatus={selectedUpdateStatus}
               updatesOnly={updatesOnly}
               onToggleUpdates={onToggleUpdates}
+              language={language}
+              onLanguageChange={changeLanguage}
             />
+            <SkillCategoryFilters value={category} onChange={setCategory} showOther={category === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other')} />
             {(loadingDefinition || saving) && (
               <div className='cc-skillhub-progress' role='status'>
                 <RefreshCw className='is-spinning' size={14} aria-hidden='true' />
                 {loadingDefinition ? `正在更新${selectedAgentName ? ` Agent“${selectedAgentName}”` : '当前 Agent'}的能力…` : skillAction?.type === 'remove' ? '正在移除能力…' : skillAction?.update ? '正在更新能力…' : '正在添加能力…'}
               </div>
             )}
-            {visibleSection === 'added' ? <AddedSkills key={props.selectedBotUID} {...props} /> : <Catalogue key={props.selectedBotUID} {...props} />}
+            {visibleSection === 'added' ? <AddedSkills key={props.selectedBotUID} {...categorizedProps} /> : <Catalogue key={props.selectedBotUID} {...categorizedProps} />}
           </>
         )}
       </div>
     </main>
   );
+}
+
+function readSkillLanguage(uid) {
+  try { return localStorage.getItem(`catsco.skillhub.language.${uid}`) === 'zh-CN' ? 'zh-CN' : 'source'; }
+  catch { return 'source'; }
 }
 
 function AgentContext({
@@ -181,6 +212,10 @@ function SkillNavigation(props) {
         )}
       </div>
       <div className='cc-skillhub-navigation-tools'>
+        <div className='cc-skillhub-language' role='group' aria-label='能力介绍语言'>
+          <button type='button' aria-pressed={props.language === 'source'} onClick={() => props.onLanguageChange('source')}>原文</button>
+          <button type='button' aria-pressed={props.language === 'zh-CN'} onClick={() => props.onLanguageChange('zh-CN')}>中文</button>
+        </div>
         <SkillSearch {...props} />
         {activeSection === 'added' && <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
           <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={16} aria-hidden='true' />
@@ -222,9 +257,11 @@ function AddedSkills(props) {
   const localOnlySkills = definition.skills.filter((skill) => skill.localOnly);
   const normalizedQuery = normalizeSkillSearchValue(addedSkillQuery);
   const matches = (skill) => {
+    if (props.selectedCategory && props.categoryOf({ ...skill, ...props.addedSkillPresentationByID.get(skill.skillId)?.details }) !== props.selectedCategory) return false;
     if (!normalizedQuery) return true;
     const presentation = props.addedSkillPresentationByID.get(skill.skillId);
     return [
+      localizedSkillText({ ...skill, ...presentation?.details }, 'zh-CN').name,
       presentation?.label,
       skill?.displayName,
       skill?.skillId,
@@ -239,9 +276,11 @@ function AddedSkills(props) {
     skill,
     props.addedSkillPresentationByID.get(skill.skillId)?.details,
   );
-  const visibleFormalSkills = formalSkills.filter(matches).filter((skill) => !updatesOnly || isUpdateable(skill));
-  const visibleLocalOnlySkills = localOnlySkills.filter(matches).filter((skill) => !updatesOnly || isUpdateable(skill));
-  const visibleSkillCount = visibleFormalSkills.length + visibleLocalOnlySkills.length;
+  // Keep the server order for legacy references with no recorded addition time.
+  const visibleSkills = [...definition.skills]
+    .filter(matches).filter(skill => !updatesOnly || isUpdateable(skill))
+    .sort((left, right) => skillAddedTimestamp(right) - skillAddedTimestamp(left));
+  const visibleSkillCount = visibleSkills.length;
   const totalSkillCount = formalSkills.length + localOnlySkills.length;
   return (
     <section id='skillhub-added-panel' className='cc-skillhub-surface cc-skillhub-added' role='tabpanel' aria-labelledby='skillhub-added-tab'>
@@ -260,17 +299,10 @@ function AddedSkills(props) {
         </div>
       ) : (
         <div className='cc-skillhub-added-groups'>
-          {visibleFormalSkills.length > 0 && (
+          {visibleSkills.length > 0 && (
             <AbilityGroup
               label={isReadOnly ? '已同步能力' : '已配置能力'}
-              skills={visibleFormalSkills}
-              {...props}
-            />
-          )}
-          {visibleLocalOnlySkills.length > 0 && (
-            <AbilityGroup
-              label='仅运行工作区中的未同步能力'
-              skills={visibleLocalOnlySkills}
+              skills={visibleSkills}
               {...props}
             />
           )}
@@ -297,232 +329,77 @@ function AbilityGroup({ label, skills, ...props }) {
   );
 }
 
-function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnly, onLoadSkillHistory, onRemoveSkill, onUpdateSkill, runtimeWorkspaceKnown, saving, selectedBotUID, sharingSkill, skill, skillAction }) {
+function skillAddedTimestamp(skill) {
+  const value = skill.addedAt || skill.added_at || skill.installedAt || skill.installed_at;
+  const timestamp = typeof value === 'number' ? value : Date.parse(String(value || ''));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function AddedSkillItem({ addedSkillPresentationByID, categoryOf, definitionReady, isReadOnly, language, onLoadSkillHistory, onRemoveSkill, onUpdateSkill, saving, selectedBotUID, sharingSkill, skill, skillAction }) {
   const presentation = addedSkillPresentationByID.get(skill.skillId);
-  const {
-    description, details, hasCompleteReference, label, localDetails, privateReference,
-  } = presentation;
+  const { description: originalDescription, details, label: originalLabel, localDetails, privateReference } = presentation;
+  const metadata = { ...skill, ...details };
+  const localized = localizedSkillText({ ...metadata, displayName: originalLabel, description: originalDescription }, language);
+  const label = localized.name;
   const removing = skillAction?.type === 'remove' && skillAction.skillId === skill.skillId;
-  const updating = skillAction?.skillId === skill.skillId
-    && (skillAction?.type === 'update' || skillAction?.update);
+  const updating = skillAction?.skillId === skill.skillId && (skillAction?.type === 'update' || skillAction?.update);
   const actionsDisabled = saving || Boolean(sharingSkill) || !definitionReady || Boolean(skillAction);
   const localVersionMismatch = !skill.localOnly && Boolean(skill.local) && !localDetails;
   const versionLabel = formatAddedSkillVersion(skill, privateReference);
   const updatable = !isReadOnly && !skill.localOnly && isSkillHubUpdateAvailable(skill, details);
-  const authorLabel = privateReference
-    ? `最近变更：${skill.lastChangedBy || '修改者未记录'}`
-    : formatSkillHubPublisher(details || skill);
+  const authorLabel = privateReference ? `最近变更：${skill.lastChangedBy || '修改者未记录'}` : formatSkillHubPublisher(details || skill);
+  const uploadedAt = skillUploadedTimestamp(metadata);
+  const removeLabel = skill.localOnly ? '删除本地能力'
+    : skill.local ? localVersionMismatch ? '从 Agent 移除并删除本地旧版本' : '从 Agent 移除并删除本地' : '从 Agent 移除';
   const triggerRef = useRef(null);
-  const menuRef = useRef(null);
-  const firstMenuItemRef = useRef(null);
-  const menuId = useId();
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [menuPosition, setMenuPosition] = useState(null);
-
-  useLayoutEffect(() => {
-    if (!menuOpen || !triggerRef.current) return undefined;
-    let frame = 0;
-    const updatePosition = () => {
-      const rect = triggerRef.current.getBoundingClientRect();
-      const gutter = 8;
-      const width = 190;
-      const height = menuRef.current?.offsetHeight || 92;
-      const opensAbove = window.innerHeight - rect.bottom < height + gutter && rect.top > height + gutter;
-      const top = opensAbove
-        ? Math.max(gutter, rect.top - height - gutter)
-        : Math.min(rect.bottom + gutter, Math.max(gutter, window.innerHeight - height - gutter));
-      const left = Math.min(
-        Math.max(gutter, rect.right - width),
-        Math.max(gutter, window.innerWidth - width - gutter),
-      );
-      setMenuPosition({ left, top, width });
-    };
-    updatePosition();
-    frame = window.requestAnimationFrame(updatePosition);
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [menuOpen]);
-
-  useEffect(() => {
-    if (!menuOpen) {
-      setMenuPosition(null);
-      return undefined;
-    }
-    const handlePointerDown = (event) => {
-      if (triggerRef.current?.contains(event.target) || menuRef.current?.contains(event.target)) return;
-      setMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [menuOpen]);
-
-  useEffect(() => {
-    if (!menuOpen || !menuPosition) return undefined;
-    const frame = window.requestAnimationFrame(() => firstMenuItemRef.current?.focus({ preventScroll: true }));
-    return () => window.cancelAnimationFrame(frame);
-  }, [menuOpen, menuPosition]);
-
-  const closeMenu = (returnFocus = false) => {
-    setMenuOpen(false);
-    if (returnFocus) window.requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
-  };
-
-  const handleMenuKeyDown = (event) => {
-    const items = [...(menuRef.current?.querySelectorAll('[role="menuitem"]:not(:disabled)') || [])];
-    const currentIndex = items.indexOf(document.activeElement);
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeMenu(true);
-    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const delta = event.key === 'ArrowDown' ? 1 : -1;
-      items[(currentIndex + delta + items.length) % items.length]?.focus();
-    } else if (event.key === 'Home' || event.key === 'End') {
-      event.preventDefault();
-      items[event.key === 'Home' ? 0 : items.length - 1]?.focus();
-    } else if (event.key === 'Tab') {
-      setMenuOpen(false);
-    }
-  };
-
   const closeDetails = () => {
     setDetailsOpen(false);
-    window.requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
+    triggerRef.current?.focus({ preventScroll: true });
   };
 
   return (
-    <article className='cc-skillhub-added-item'>
-      <span className='cc-skillhub-added-icon' aria-hidden='true'><Package size={17} /></span>
-      <div className='cc-skillhub-added-copy'>
-        <div className='cc-skillhub-added-title'>
-          <h3>{label}</h3>
-          <AddedSkillRuntimeStatus
-            hasCompleteReference={hasCompleteReference}
-            isReadOnly={isReadOnly}
-            localDetails={localDetails}
-            localOnly={skill.localOnly}
-            runtimeWorkspaceKnown={runtimeWorkspaceKnown}
-          />
+    <article className='cc-skillhub-card cc-skillhub-overview-card cc-skillhub-added-item'>
+      <button ref={triggerRef} type='button' className='cc-skillhub-card-open' aria-label={`查看 ${label} 详情`} aria-haspopup='dialog' onClick={() => setDetailsOpen(true)}>
+        <span className='cc-visually-hidden'>查看 {label} 详情</span>
+      </button>
+      <div className='cc-skillhub-card-main'>
+        <SkillIllustration skill={metadata} category={categoryOf(metadata)} />
+        <div className='cc-skillhub-card-copy'>
+          <div className='cc-skillhub-card-title cc-skillhub-added-title'><h3 title={label}>{label}</h3></div>
+          <p>{localized.description}</p>
         </div>
-        <p>{description}</p>
-        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.localOnly ? '尚未发布 · 当前运行工作区' : <>{versionLabel} · {authorLabel}{privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : ''}</>}</span>
+        <div className='cc-skillhub-card-actions cc-skillhub-added-actions'>
+          {updatable && <button type='button' className='cc-skillhub-update-action'
+            aria-label={`更新 ${label} 到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}
+            title={`更新到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}
+            disabled={actionsDisabled} onClick={() => onUpdateSkill?.(skill.skillId)}>
+            <RefreshCw className={updating ? 'is-spinning' : ''} size={18} aria-hidden='true' />
+            <span className='cc-visually-hidden'>{updating ? '更新中…' : `更新到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}</span>
+          </button>}
+          {!isReadOnly && <button type='button' className='cc-skillhub-delete-action' aria-label={`删除 ${label}`}
+            title={removeLabel} disabled={actionsDisabled} onClick={() => onRemoveSkill(skill.skillId)}>
+            {removing ? <RefreshCw className='is-spinning' size={18} aria-hidden='true' /> : <Trash2 size={18} aria-hidden='true' />}
+            <span className='cc-visually-hidden'>{removing ? '删除中…' : removeLabel}</span>
+          </button>}
+        </div>
       </div>
-      <div className='cc-skillhub-added-actions'>
-        {updatable && <button
-          type='button'
-          className='primary cc-skillhub-update-action'
-          aria-label={`更新 ${label} 到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}
-          title={`更新到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}
-          disabled={actionsDisabled}
-          onClick={() => onUpdateSkill?.(skill.skillId)}
-        >
-          <RefreshCw className={updating ? 'is-spinning' : ''} size={14} aria-hidden='true' />
-          {updating ? '更新中…' : `更新到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}
-        </button>}
-        {isReadOnly && !skill.localOnly && <button
-          ref={triggerRef}
-          type='button'
-          className='subtle cc-skillhub-details-action'
-          aria-label={`查看 ${label} 详情`}
-          onClick={() => setDetailsOpen(true)}
-        >
-          查看详情
-        </button>}
-        {!isReadOnly && <button
-          ref={triggerRef}
-          type='button'
-          className='subtle cc-skillhub-more-action'
-          aria-label={`更多操作 ${label}`}
-          aria-haspopup='menu'
-          aria-expanded={menuOpen}
-          aria-controls={menuOpen ? menuId : undefined}
-          disabled={actionsDisabled}
-          onClick={() => setMenuOpen((current) => !current)}
-          onKeyDown={(event) => {
-            if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && !menuOpen) {
-              event.preventDefault();
-              setMenuOpen(true);
-            } else if (event.key === 'Escape' && menuOpen) {
-              event.preventDefault();
-              closeMenu(true);
-            }
-          }}
-        >
-          更多
-        </button>}
+      <div className='cc-skillhub-card-footer'>
+        <div className='cc-skillhub-card-source'>
+          <span className='cc-skillhub-card-publisher'>{skill.localOnly ? '尚未发布 · 当前运行工作区'
+            : privateReference ? `${authorLabel} · Bot 私有 · 仅当前 Agent 可用` : `发布人：${authorLabel}`}</span>
+          <time dateTime={uploadedAt ? new Date(uploadedAt).toISOString() : undefined}>{uploadedAt ? formatCataloguePublishedTime(uploadedAt) : '上传时间待确认'}</time>
+          <span className='cc-skillhub-card-version'>版本：{versionLabel}</span>
+        </div>
       </div>
-      {menuOpen && menuPosition && createPortal(
-        <div
-          ref={menuRef}
-          id={menuId}
-          className='cc-skillhub-action-menu'
-          role='menu'
-          aria-label={`${label} 操作`}
-          style={menuPosition}
-          onKeyDown={handleMenuKeyDown}
-        >
-          <button
-            ref={firstMenuItemRef}
-            type='button'
-            role='menuitem'
-            onClick={() => {
-              setMenuOpen(false);
-              setDetailsOpen(true);
-            }}
-          >
-            <Info size={15} aria-hidden='true' /> 查看详情
-          </button>
-          <div className='cc-skillhub-action-menu-divider' role='separator' />
-          <button
-            type='button'
-            role='menuitem'
-            className='danger'
-            disabled={removing}
-            onClick={() => {
-              setMenuOpen(false);
-              onRemoveSkill(skill.skillId);
-            }}
-          >
-            <PackageMinus size={15} aria-hidden='true' /> {removing
-              ? (skill.local ? '删除中…' : '移除中…')
-              : skill.localOnly
-                ? '删除本地能力'
-                : skill.local
-                  ? localVersionMismatch ? '从 Agent 移除并删除本地旧版本' : '从 Agent 移除并删除本地'
-                  : '从 Agent 移除'}
-          </button>
-        </div>,
-        document.body,
-      )}
       {detailsOpen && createPortal(
-        <SkillDetailsDialog readOnly={isReadOnly} details={details} historyBotUID={selectedBotUID} label={label} localDetails={localDetails} onClose={closeDetails} onLoadSkillHistory={onLoadSkillHistory} privateReference={privateReference} skill={skill} />,
+        <SkillDetailsDialog readOnly={isReadOnly} details={{ ...details, description: localized.description }}
+          historyBotUID={selectedBotUID} label={label} localDetails={localDetails} onClose={closeDetails}
+          onLoadSkillHistory={onLoadSkillHistory} privateReference={privateReference} skill={skill} />,
         document.body,
       )}
     </article>
   );
-}
-
-function AddedSkillRuntimeStatus({
-  hasCompleteReference, isReadOnly, localDetails, localOnly, runtimeWorkspaceKnown,
-}) {
-  if (localOnly) {
-    return <span className='cc-skillhub-availability is-local-only' title='该 Skill 仅存在于当前运行工作区，尚未写入 BotDefinition。'><Wrench size={12} aria-hidden='true' /> 仅运行工作区，未同步</span>;
-  }
-  // Only call a Runtime state once a current workspace snapshot is available
-  // and both sides have a complete, immutable SkillHub reference.
-  if (isReadOnly || !runtimeWorkspaceKnown || !hasCompleteReference) {
-    return <span className='cc-skillhub-availability is-configured' title='该 Skill 已写入 BotDefinition；当前无法确认运行工作区是否已应用。'><ShieldCheck size={12} aria-hidden='true' /> 已配置</span>;
-  }
-  if (localDetails) {
-    return <span className='cc-skillhub-availability is-applied' title='当前运行工作区已找到相同版本和内容哈希的 Skill。'><Check size={12} aria-hidden='true' /> 已配置，运行环境已应用</span>;
-  }
-  return <span className='cc-skillhub-availability is-pending' title='已读取当前运行工作区，但尚未找到相同版本和内容哈希的 Skill。'><RefreshCw size={12} aria-hidden='true' /> 已配置，等待运行环境应用</span>;
 }
 
 function SkillDetailsDialog({ cataloguePreview = false, readOnly = false, details, historyBotUID, label, localDetails, onClose, onLoadSkillHistory, privateReference, skill }) {
@@ -802,16 +679,21 @@ function Catalogue(props) {
     catalogueError, libraryLocalError, librarySkills: legacySkills, loadingCatalogue,
     loadingLibraryLocalSkills,
   } = props;
-  const market = useMarketplaceCatalogue(props.query || '');
+  const market = useMarketplaceCatalogue(skillSourceQuery(props.query || ''));
   const hasMarketPage = market.enabled && Boolean(market.state?.skills);
   const marketPending = market.enabled && (!market.state || (market.state.loading && !market.state.skills));
-  const librarySkills = hasMarketPage
+  const availableSkills = hasMarketPage
     ? mergeMarketplaceLibrary(legacySkills, market.state.skills, market.category)
     : marketPending ? [] : legacySkills;
+  const search = normalizeSkillSearchValue(props.query);
+  const librarySkills = availableSkills
+    .filter(skill => !props.selectedCategory || props.categoryOf(skill) === props.selectedCategory)
+    .filter(skill => !search || [skill.displayName, skill.skillId, localizedSkillText(skill, 'zh-CN').name].some(value => normalizeSkillSearchValue(value).includes(search)))
+    .sort((left, right) => skillUploadedTimestamp(right) - skillUploadedTimestamp(left));
   const loading = (market.enabled ? marketPending || Boolean(market.state?.loading) : loadingCatalogue) || loadingLibraryLocalSkills;
   return (
     <section id='skillhub-catalogue-panel' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
-      <MarketplaceFilters market={market} />
+      {market.state?.error && <div className='cc-skillhub-alert error' role='status'>{market.state.error}<button type='button' className='icon-button' disabled={market.state.loading} onClick={market.refresh} aria-label='重新加载能力分类' title='重试'><RefreshCw size={15} /></button></div>}
       {!hasMarketPage && catalogueError && <div className='cc-skillhub-alert error' role='alert'>{catalogueError}</div>}
       {libraryLocalError && <div className='cc-skillhub-alert error cc-skillhub-library-alert' role='alert'>{libraryLocalError}</div>}
       {loading && librarySkills.length === 0 ? (
@@ -824,22 +706,55 @@ function Catalogue(props) {
           <div className='cc-skillhub-grid'>
             {librarySkills.map((skill) => <CatalogueCard key={skill.skillId} skill={skill} {...props} />)}
           </div>
-          {hasMarketPage && market.state.cursor && <button type='button' className='cc-market-more' disabled={market.state.loading} onClick={market.more}>{market.state.loading ? '读取中…' : '加载更多能力'}</button>}
         </>
       )}
+      {hasMarketPage && market.state.cursor && <button type='button' className='cc-market-more' disabled={market.state.loading} onClick={market.more}>{market.state.loading ? '读取中…' : '加载更多能力'}</button>}
     </section>
   );
 }
 
-function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSkill, saving, sharingSkill, skill, skillAction }) {
+function SkillIllustration({ skill, category }) {
+  const iconKey = skillIconKey(skill, category);
+  const icons = {
+    browser: Globe2,
+    app: AppWindow,
+    image: ImageIcon,
+    audio: AudioLines,
+    document: FileText,
+    review: ClipboardCheck,
+    workspace: PanelsTopLeft,
+    collaboration: PanelsTopLeft,
+    monitoring: Activity,
+    research: BookOpenCheck,
+    test: FlaskConical,
+    development: Code2,
+    design: Palette,
+    writing: PenLine,
+    office: Clipboard,
+    data: ChartNoAxesCombined,
+    business: BriefcaseBusiness,
+    finance: Landmark,
+    search: Search,
+    education: GraduationCap,
+    life: Sparkles,
+    other: Package,
+  };
+  const Icon = icons[iconKey] || Package;
+  return <span className='cc-skillhub-card-illustration' data-icon-key={iconKey} aria-hidden='true'><Icon size={30} strokeWidth={1.5} /></span>;
+}
+
+function CatalogueCard({ categoryOf, onSkillCategoryChange, definitionReady, installedByID, isReadOnly, language, onInstallSkill, saving, sharingSkill, skill, skillAction }) {
   const { enabled: marketEnabled } = useMarketplace();
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const actionRef = useRef(null);
   const detailsTriggerRef = useRef(null);
   const closeDetails = () => {
     setDetailsOpen(false);
     detailsTriggerRef.current?.focus({ preventScroll: true });
   };
-  const label = skill.displayName || skill.skillId;
+  const localized = localizedSkillText(skill, language);
+  const label = localized.name;
   const installedReference = installedByID.get(skill.skillId) || null;
   const installed = Boolean(installedReference);
   const updatable = isSkillHubUpdateAvailable(installedReference, skill);
@@ -847,61 +762,64 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
   const sharing = skill.isLocalSkill && sharingSkill === skill.localSkill?.name;
   const unavailable = skill.isLocalSkill && !skill.canBind
     && (!skill.localSkill?.canShare || skill.localSkill?.source === 'system');
-  const ActionIcon = updatable ? RefreshCw : installed ? Check : Package;
+  const ActionIcon = updatable ? RefreshCw : installed ? Check : Plus;
   const actionLabel = updatable
     ? (adding ? '更新中…' : '更新')
     : installed
       ? '已添加'
       : (adding || sharing ? '添加中…' : '添加');
-  const versionAndPublisher = [
-    formatSkillHubVersion(skill.latestVersion) || '版本待确认',
-    formatSkillHubPublisher(skill),
-  ].join(' · ');
-  const publishedTime = formatCataloguePublishedTime(skill.publishedAt);
+  const version = formatSkillHubVersion(skill.latestVersion) || '待确认';
+  const publisher = formatSkillHubPublisher(skill);
+  const uploadedAt = skillUploadedTimestamp(skill);
+  const publishedTime = uploadedAt ? formatCataloguePublishedTime(uploadedAt) : '上传时间待确认';
   const sourceMetadata = skill.isLocalSkill
     ? skill.sourceLabel || '本机'
-    : `${versionAndPublisher} · ${publishedTime}`;
+    : `发布人：${publisher} · ${publishedTime} · 版本：${version}`;
+  const summary = typeof skill.presentationSummary?.summary === 'string' ? skill.presentationSummary.summary : '';
+  const description = language === 'zh-CN' ? localized.description : (marketEnabled && summary) || skill.description;
   return (
     <article className={`cc-skillhub-card${installed ? ' is-added' : ''}`}>
-      <div className='cc-skillhub-card-title'>
-        <span className='cc-skillhub-card-icon' aria-hidden='true'><Package size={17} /></span>
-        <h3><button
-          ref={detailsTriggerRef}
-          type='button'
-          className='cc-skillhub-card-details-trigger'
-          aria-label={`查看 ${label} 详情`}
-          aria-haspopup='dialog'
-          onClick={() => setDetailsOpen(true)}
-        >{label}</button></h3>
+      <button ref={detailsTriggerRef} type='button' className='cc-skillhub-card-open' aria-label={`查看 ${label} 详情`} aria-haspopup='dialog' onClick={() => setDetailsOpen(true)}><span className='cc-visually-hidden'>查看 {label} 详情</span></button>
+      <div className='cc-skillhub-card-main'>
+        <SkillIllustration skill={skill} category={categoryOf(skill)} />
+        <div className='cc-skillhub-card-copy'>
+          <div className='cc-skillhub-card-title'>
+            <h3 title={label}>{label}</h3>
+          </div>
+          <p>{description || '这个能力暂时没有补充说明。'}</p>
+          {language === 'zh-CN' && !localized.translated && !/[\u3400-\u9fff]/.test(localized.description) && <span className='cc-skillhub-translation-note'>暂无中文介绍</span>}
+        </div>
+        <div className='cc-skillhub-card-actions'>
+          {!isReadOnly && <button
+            type='button'
+            className={updatable ? 'update' : installed ? 'added' : 'primary'}
+            aria-label={updatable ? `更新 ${label} 到 ${formatSkillHubVersion(skill.latestVersion) || '最新版本'}` : `${actionLabel} ${label}`}
+            ref={actionRef}
+            disabled={!definitionReady || (installed && !updatable) || unavailable || saving || Boolean(sharingSkill)}
+            title={unavailable
+              ? '此能力暂时不能同步'
+              : updatable ? `更新到 ${formatSkillHubVersion(skill.latestVersion)}` : `${actionLabel} ${label}`}
+            onClick={() => skill.isLocalSkill && !skill.canBind ? setPublishOpen(true) : onInstallSkill(skill)}
+          >
+            {adding || sharing ? <RefreshCw className='is-spinning' size={14} aria-hidden='true' /> : <ActionIcon size={14} aria-hidden='true' />}
+            <span className='cc-visually-hidden'>{actionLabel}</span>
+          </button>}
+        </div>
       </div>
-      {marketEnabled && skill.primaryCategory && <div className='cc-market-tags'><span>{MARKET_CATEGORIES.find(([id]) => id === skill.primaryCategory)?.[1] || '其他 / 待分类'}</span></div>}
-      <p>{(marketEnabled && typeof skill.presentationSummary?.summary === 'string' && skill.presentationSummary.summary) || skill.description || '这个能力暂时没有补充说明。'}</p>
       <div className='cc-skillhub-card-footer'>
         <div className={`cc-skillhub-card-source${skill.isLocalSkill ? ' is-local' : ''}`} title={sourceMetadata}>
           {skill.isLocalSkill ? <span>{sourceMetadata}</span> : <>
-            <span>{versionAndPublisher}</span>
-            <time dateTime={skill.publishedAt || undefined}>{publishedTime}</time>
+            <span className='cc-skillhub-card-publisher'>发布人：{publisher}</span>
+            <time dateTime={uploadedAt ? new Date(uploadedAt).toISOString() : undefined}>{publishedTime}</time>
+            <span className='cc-skillhub-card-version'>版本：{version}</span>
           </>}
         </div>
-        {!isReadOnly && <button
-          type='button'
-          className={updatable ? 'update' : installed ? 'added' : 'primary'}
-          aria-label={updatable ? `更新 ${label} 到 ${formatSkillHubVersion(skill.latestVersion) || '最新版本'}` : undefined}
-          disabled={!definitionReady || (installed && !updatable) || unavailable || saving || Boolean(sharingSkill)}
-          title={unavailable
-            ? '此能力暂时不能同步'
-            : updatable ? `更新到 ${formatSkillHubVersion(skill.latestVersion)}` : undefined}
-          onClick={() => onInstallSkill(skill)}
-        >
-          <ActionIcon size={14} aria-hidden='true' />
-          {actionLabel}
-        </button>}
       </div>
       {detailsOpen && createPortal(
         <SkillDetailsDialog
           cataloguePreview
           readOnly={isReadOnly}
-          details={skill}
+          details={{ ...skill, description: language === 'zh-CN' ? localized.description : skill.description }}
           label={label}
           skill={{
             ...skill,
@@ -913,16 +831,22 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
         />,
         document.body,
       )}
+      {publishOpen && <SkillPublishDialog skill={skill} category={categoryOf(skill)} returnFocusRef={actionRef}
+        onClose={() => setPublishOpen(false)} onConfirm={value => {
+          onSkillCategoryChange(skill, value);
+          setPublishOpen(false);
+          onInstallSkill(skill);
+        }} />}
     </article>
   );
 }
 
 function formatCataloguePublishedTime(value) {
-  const timestamp = Date.parse(String(value || ''));
+  const timestamp = typeof value === 'number' ? value : Date.parse(String(value || ''));
   if (!Number.isFinite(timestamp)) return '发布时间待确认';
-  return `发布于 ${new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-  }).format(new Date(timestamp))}`;
+  }).format(new Date(timestamp));
 }
 
 function formatAddedSkillVersion(skill, privateReference) {
@@ -1047,7 +971,9 @@ export function resolveRuntimeSkillPresentation(skill, catalogueByID, fallbackDe
   return { details, directory, displayName, publisher, skillId, version };
 }
 
-function CustomCard({ catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, skillHubUpdateDetailsByID, syncingWorkspace }) {
+function CustomCard({ categoryOf, onSkillCategoryChange, catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, skillHubUpdateDetailsByID, syncingWorkspace }) {
+  const [publishOpen, setPublishOpen] = useState(false);
+  const actionRef = useRef(null);
   const reference = skill.skillHub?.reference;
   const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
   const shared = isLocalSkillShared(skill, installedReference);
@@ -1067,11 +993,43 @@ function CustomCard({ catalogueByID, definitionReady, installedByID, isLocalSkil
         {version && <span>版本 {version}</span>}
         {publisher && <span>发布者 {publisher}</span>}
       </div>}
-      <button type='button' className={shared ? 'added' : 'primary'} disabled={!canShare || !selectedDeviceID || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill) || syncingWorkspace} onClick={() => onShareLocalSkill(skill)} title={blocked ? skill.shareError : undefined}>
+      <button ref={actionRef} type='button' className={shared ? 'added' : 'primary'} disabled={!canShare || !selectedDeviceID || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill) || syncingWorkspace} onClick={() => setPublishOpen(true)} title={blocked ? skill.shareError : undefined}>
         {blocked ? <Info size={14} aria-hidden='true' /> : shared ? <Check size={14} aria-hidden='true' /> : <Share2 size={14} aria-hidden='true' />}
         {blocked ? '请先修复此 Skill' : shared ? '已发布到团队' : sharingSkill === skill.name ? '发布并添加中…' : '发布并添加'}
       </button>
+      {publishOpen && <SkillPublishDialog skill={skill} category={categoryOf(skill)} returnFocusRef={actionRef}
+        onClose={() => setPublishOpen(false)} onConfirm={value => {
+          onSkillCategoryChange(skill, value);
+          setPublishOpen(false);
+          onShareLocalSkill(skill);
+        }} />}
     </article>
+  );
+}
+
+function SkillPublishDialog({ skill, category, onClose, onConfirm, returnFocusRef }) {
+  const [value, setValue] = useState(category);
+  const dialogRef = useRef(null);
+  const cancelRef = useRef(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  useDialogBehavior(dialogRef, { onClose, initialFocusRef: cancelRef, returnFocusRef });
+  return createPortal(
+    <div className='cc-skillhub-detail-overlay' onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+      <section ref={dialogRef} tabIndex={-1} className='cc-skillhub-detail-dialog cc-skillhub-publish-dialog' role='dialog' aria-modal='true' aria-labelledby={titleId} aria-describedby={descriptionId}>
+        <header className='cc-skillhub-detail-header'>
+          <span className='cc-skillhub-detail-icon' aria-hidden='true'><Share2 size={19} /></span>
+          <div><span>发布能力</span><h2 id={titleId}>{skill.displayName || skill.name || skill.skillId}</h2></div>
+          <button type='button' className='icon-button' aria-label='关闭发布确认' onClick={onClose}><X size={17} aria-hidden='true' /></button>
+        </header>
+        <p id={descriptionId} className='cc-skillhub-detail-description'>发布到团队，并添加到当前 Agent。</p>
+        <div className='cc-skillhub-publish-category'><SkillCategoryField skill={skill} value={value} onChange={(_, next) => setValue(next)} /></div>
+        <footer className='cc-skillhub-detail-footer'>
+          <button ref={cancelRef} type='button' onClick={onClose}>取消</button>
+          <button type='button' disabled={!value} onClick={() => onConfirm(value)}>发布并添加</button>
+        </footer>
+      </section>
+    </div>, document.body,
   );
 }
 
