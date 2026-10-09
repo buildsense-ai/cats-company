@@ -53,7 +53,6 @@ import {
   createArtifactPreviewChatCoordinator,
   createArtifactPreviewLeaseStore,
   createArtifactViewerURL,
-  createGatewayApplicationViewerURL,
   sameArtifactPreviewIdentity,
 } from '../artifact-preview-coordinator';
 import {
@@ -1250,24 +1249,12 @@ export default function MessagesView({
   // A card for a gateway application opens the same viewer the sidebar's
   // application list uses, so the conversation and the visitor's identity travel
   // with it. The generic file preview would show the entry point as a stored
-  // page and could not hand off to a new tab.
-  const openArtifactApp = useCallback((artifact, { newPage = false } = {}) => {
+  // page and could not hand off to a new tab. "Open in a new page" stays where it
+  // already is — in that viewer, which knows the conversation to carry.
+  const openArtifactApp = useCallback((artifact) => {
     const agentUid = Number(artifact?.agent_uid || artifact?.agentUid || 0);
     const appId = String(artifact?.id || artifact?.artifact_id || '').trim();
     if (agentUid <= 0 || !appId) return;
-    if (newPage) {
-      const viewerURL = createGatewayApplicationViewerURL({
-        topicId: topic,
-        agentUid,
-        artifactId: appId,
-      });
-      if (viewerURL) {
-        window.open(viewerURL, '_blank', 'noopener,noreferrer');
-        return;
-      }
-      feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
-      return;
-    }
     setPendingArtifactRefresh(null);
     setPreviewFile(null);
     clearActiveArtifactFocus();
@@ -1279,7 +1266,7 @@ export default function MessagesView({
     setCloudArtifactsInitialApp({ ...artifact });
     setCloudArtifactsReturnOpen(false);
     setCloudArtifactsListOpen(true);
-  }, [clearActiveArtifactFocus, feedback, topic]);
+  }, [clearActiveArtifactFocus]);
 
   const captureArtifactMessageContext = useCallback(async () => {
     const focus = activeArtifactFocusRef.current;

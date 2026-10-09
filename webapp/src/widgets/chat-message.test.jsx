@@ -3973,7 +3973,11 @@ describe('ChatMessage rich file rendering', () => {
       expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
     });
 
-    it('offers a separate new-page action that asks for the viewer handoff', async () => {
+    it('keeps the card itself to one action, because the viewer owns "open in a new page"', async () => {
+      // The sidebar's viewer already offers "open in a new page" with the
+      // conversation attached. A second copy on the card would be a second path
+      // to keep in step, and would make a card look unlike the same application
+      // in the sidebar's list.
       const onOpenArtifactApp = vi.fn();
       await act(async () => {
         root.render(
@@ -3986,16 +3990,9 @@ describe('ChatMessage rich file rendering', () => {
         await Promise.resolve();
       });
 
-      const newPageButton = [...container.querySelectorAll('button.v3-artifact-action')]
-        .find((button) => button.textContent.includes('新页面'));
-      expect(newPageButton).toBeTruthy();
-      await act(async () => {
-        Simulate.click(newPageButton);
-        await Promise.resolve();
-      });
-
-      expect(onOpenArtifactApp).toHaveBeenCalledTimes(1);
-      expect(onOpenArtifactApp.mock.calls[0][1]).toEqual({ newPage: true });
+      const actions = [...container.querySelectorAll('button.v3-artifact-action')];
+      expect(actions.map((button) => button.textContent)).toEqual(['预览']);
+      expect(container.querySelector('button[title="在新页面打开"]')).toBeNull();
     });
 
     it('keeps the file preview for a stored artifact rather than routing it to the viewer', async () => {
