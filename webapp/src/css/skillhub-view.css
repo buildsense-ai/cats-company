@@ -599,6 +599,7 @@
 .cc-skillhub-card-title {
   justify-content: flex-start;
   align-items: center;
+  min-width: 0;
 }
 
 .cc-skillhub-card-icon,
@@ -617,6 +618,9 @@
 }
 
 .cc-skillhub-card-title h3 {
+  min-width: 0;
+  flex: 1 1 0%;
+  overflow: hidden;
   margin: 0 0 3px;
   color: var(--cc-text);
   font-size: 14px;
