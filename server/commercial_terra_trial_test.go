@@ -11,38 +11,51 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-func TestFreeTerraTrialPackageTransitions(t *testing.T) {
+func TestFreeTerraTrialRetiredForEveryPackage(t *testing.T) {
+	// The trial retired 2026-10-08 together with its model (gpt-5.6-terra):
+	// no package combination enables it any more, including the Free baseline
+	// and operator grants.
 	now := time.Now().UTC()
 	expired, future := now.Add(-time.Hour), now.Add(time.Hour)
 	free := &types.CommercialEntitlement{PlanSlug: "catsco-free", Source: "free", State: "active", StartsAt: now.Add(-24 * time.Hour)}
 	for _, test := range []struct {
 		name  string
 		other *types.CommercialEntitlement
-		want  bool
 	}{
-		{"free", nil, true},
-		{"paid", &types.CommercialEntitlement{PlanSlug: "catsco-personal", State: "active"}, false},
-		{"max", &types.CommercialEntitlement{PlanSlug: "catsco-pro", State: "active"}, false},
-		{"internal", &types.CommercialEntitlement{PlanSlug: "internal-custom", State: "active"}, false},
-		{"legacy", &types.CommercialEntitlement{PlanSlug: "catsco-legacy-custom", Source: "legacy", State: "active"}, false},
-		{"expired paid", &types.CommercialEntitlement{PlanSlug: "catsco-personal", State: "active", ExpiresAt: &expired}, true},
-		{"future renewal", &types.CommercialEntitlement{PlanSlug: "catsco-pro", State: "active", StartsAt: future}, true},
-		{"revoked paid", &types.CommercialEntitlement{PlanSlug: "catsco-pro", State: "revoked"}, true},
+		{"free", nil},
+		{"paid", &types.CommercialEntitlement{PlanSlug: "catsco-personal", State: "active"}},
+		{"max", &types.CommercialEntitlement{PlanSlug: "catsco-pro", State: "active"}},
+		{"internal", &types.CommercialEntitlement{PlanSlug: "internal-custom", State: "active"}},
+		{"legacy", &types.CommercialEntitlement{PlanSlug: "catsco-legacy-custom", Source: "legacy", State: "active"}},
+		{"expired paid", &types.CommercialEntitlement{PlanSlug: "catsco-personal", State: "active", ExpiresAt: &expired}},
+		{"future renewal", &types.CommercialEntitlement{PlanSlug: "catsco-pro", State: "active", StartsAt: future}},
+		{"revoked paid", &types.CommercialEntitlement{PlanSlug: "catsco-pro", State: "revoked"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			summary := &types.CommercialSummary{Entitlements: []*types.CommercialEntitlement{free, test.other}}
-			if got := commercialFreeTerraTrialEnabled(summary, now); got != test.want {
-				t.Fatalf("enabled=%v, want %v", got, test.want)
+			if got := commercialFreeTerraTrialEnabled(summary, now); got {
+				t.Fatalf("retired trial must stay disabled for %s", test.name)
 			}
 		})
 	}
+	// An explicit operator grant on the retired model must not revive it either.
+	granted := &types.CommercialSummary{
+		Entitlements: []*types.CommercialEntitlement{free},
+		Grants:       []*types.CommercialQuotaGrant{{Model: commercialTerraTrialModel, AmountCNY: 100, GrantType: "operator"}},
+	}
+	if commercialFreeTerraTrialEnabled(granted, now) {
+		t.Fatal("an operator grant must not revive the retired trial")
+	}
+	if commercialFreeTerraTrialEnabled(nil, now) {
+		t.Fatal("a nil summary must stay disabled")
+	}
 }
 
-func TestTerraTrialSyncRestoresPaidAndInternalWithoutRefillingTrial(t *testing.T) {
+func TestTerraTrialSyncDisablesRetiredTrialWithoutRefillingSpend(t *testing.T) {
 	free := &types.CommercialEntitlement{PlanSlug: "catsco-free", Source: "operator", State: "active"}
 	store := &commercialRelayBaselineTestStore{commercialRelaySyncTestStore: &commercialRelaySyncTestStore{summary: &types.CommercialSummary{UID: 38}}}
 	state := commercialRelayUsageUser{Configured: true, Key: &commercialRelayKeySummary{State: "active"}, Limits: commercialRelayLimits{
-		FreeTerraTrial: &commercialRelayTerraTrial{MaxLimit: 100, CurrentUsage: 100, ResetDuration: "never"},
+		FreeTerraTrial: &commercialRelayTerraTrial{Enabled: true, MaxLimit: 100, CurrentUsage: 100, ResetDuration: "never"},
 		AvailableModelLimits: []commercialRelayModelLimit{
 			{Provider: "gpt", Model: commercialTerraTrialModel, AllowedModels: []string{commercialTerraTrialModel}},
 			{Provider: "minimax", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}},
@@ -103,8 +116,13 @@ func TestTerraTrialSyncRestoresPaidAndInternalWithoutRefillingTrial(t *testing.T
 		if _, err := syncer.SyncUID(context.Background(), 38); err != nil {
 			t.Fatalf("%s: %v", plan, err)
 		}
-		if state.Limits.FreeTerraTrial.Enabled != (plan == "free") || state.Limits.FreeTerraTrial.CurrentUsage != 100 {
-			t.Fatalf("%s changed trial spend/policy: %#v", plan, state.Limits.FreeTerraTrial)
+		// The retired trial must end up disabled for every package and the
+		// historical spend must never be refilled or changed by the sync.
+		if state.Limits.FreeTerraTrial.Enabled {
+			t.Fatalf("%s left the retired trial enabled: %#v", plan, state.Limits.FreeTerraTrial)
+		}
+		if state.Limits.FreeTerraTrial.CurrentUsage != 100 {
+			t.Fatalf("%s changed trial spend: %#v", plan, state.Limits.FreeTerraTrial)
 		}
 		if state.Limits.MonthlyBudget.MaxLimit != store.summary.TotalCNY {
 			t.Fatalf("%s shared quota changed", plan)

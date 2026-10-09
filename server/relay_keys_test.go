@@ -373,15 +373,15 @@ func TestRelayUsageHandlerKeepsSharedQuotaGrayToAllowedUID(t *testing.T) {
 		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{
 			{UID: 38, Configured: true, Limits: commercialRelayLimits{
 				MonthlyBudget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 25, ResetDuration: "1M"},
-				ModelLimits:   []commercialRelayModelLimit{{Model: "gpt-5.6-terra", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 90}}},
+				ModelLimits:   []commercialRelayModelLimit{{Model: "gpt-6.1-sol", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 90}}},
 			}},
 		}})
 	}))
 	defer admin.Close()
-	store := fixedCommercialQuotaStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{"gpt-5.6-terra": 100}}}
+	store := fixedCommercialQuotaStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{"gpt-6.1-sol": 100}}}
 	handler := &RelayKeyHandler{admin: &RelayAdminClient{baseURL: admin.URL, token: "test", client: admin.Client()}}
 	handler.SetCommercialQuotaSource(store, false, map[int64]bool{38: true})
-	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=gpt-5.6-terra", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=gpt-6.1-sol", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
 	rec := httptest.NewRecorder()
 

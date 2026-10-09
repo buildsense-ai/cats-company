@@ -64,9 +64,9 @@ const mockBotModels = [
     reasoning_efforts: ['low', 'high', 'max', 'disabled'],
     default_reasoning_effort: 'high',
   },
-  ...['terra', 'sol'].map((variant) => ({
-    id: `gpt-5.6-${variant}`,
-    label: `GPT-5.6 ${variant[0].toUpperCase()}${variant.slice(1)}`,
+  ...['6', '6.1'].map((variant) => ({
+    id: `gpt-${variant}-sol`,
+    label: `GPT-${variant} Sol`,
     description: 'OpenAI Responses，支持精细推理强度',
     provider: 'openai',
     protocol: 'OpenAI Responses',
@@ -105,10 +105,10 @@ function seedExistingBot(user) {
   if (scenario !== 'existing' && scenario !== 'showcase') return;
   const definitions = scenario === 'showcase'
     ? [
-      { username: 'code_review_agent', display_name: '代码审查助手', model: 'gpt-5.6-terra', remaining_percent: 82 },
+      { username: 'code_review_agent', display_name: '代码审查助手', model: 'gpt-6.1-sol', remaining_percent: 82 },
       { username: 'ops_data_agent', display_name: '运营数据助手', model: 'MiniMax-M3', remaining_percent: 61 },
       { username: 'research_agent', display_name: '行业研究助手', model: 'deepseek-flash', remaining_percent: 47 },
-      { username: 'content_agent', display_name: '内容策划助手', model: 'gpt-5.6-terra', remaining_percent: 28 },
+      { username: 'content_agent', display_name: '内容策划助手', model: 'gpt-6.1-sol', remaining_percent: 28 },
       { username: 'quality_agent', display_name: '质量巡检助手', model: 'MiniMax-M2.7', remaining_percent: 93 },
     ]
     : [{ username: `existing_bot_${user.id}`, display_name: 'Existing Local Bot' }];
@@ -1301,7 +1301,7 @@ async function handleApi(req, res) {
           note: '本地商业化界面演示',
           summary: {
             uid: user.id,
-            models: ['gpt-5.6-sol', 'gpt-5.6-terra'],
+            models: ['gpt-6-sol', 'gpt-6.1-sol'],
             entitlements: [{
               id: 'preview-entitlement',
               state: 'active',

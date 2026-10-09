@@ -1643,8 +1643,8 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 	if posted["monthly_budget"] != float64(2200) || posted["usage_window_start"] != "2026-08-01T08:30:00Z" {
 		t.Fatalf("shared policy mismatch: %#v", posted)
 	}
-	if len(state.Limits.ModelScopes) != 5 || !state.Limits.FreeTerraTrial.Enabled {
-		t.Fatalf("free models were not scoped: %#v", state.Limits.ModelScopes)
+	if len(state.Limits.ModelScopes) != 4 || state.Limits.FreeTerraTrial.Enabled {
+		t.Fatalf("free models were not scoped or the retired trial stayed enabled: %#v", state.Limits.ModelScopes)
 	}
 }
 

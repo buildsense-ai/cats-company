@@ -106,7 +106,7 @@ func commercialUsageSummaryForUser(summary *types.CommercialSummary) *commercial
 	out.UID = summary.UID
 	out.Entitlements = summary.Entitlements
 	for model, amount := range summary.TotalsByModel {
-		if strings.TrimSpace(model) != "" && amount > 0 && normalizeRelayModelName(model) != normalizeRelayModelName("gpt-5.6-luna") {
+		if strings.TrimSpace(model) != "" && amount > 0 && !isRetiredCatalogModel(model) {
 			out.Models = append(out.Models, strings.TrimSpace(model))
 		}
 	}
@@ -312,7 +312,7 @@ func publicCommercialSummary(summary *types.CommercialSummary) relayCommercialPu
 	}
 	for model, amount := range summary.TotalsByModel {
 		model = strings.TrimSpace(model)
-		if model != "" && amount > 0 && normalizeRelayModelName(model) != normalizeRelayModelName("gpt-5.6-luna") {
+		if model != "" && amount > 0 && !isRetiredCatalogModel(model) {
 			out.Models = append(out.Models, model)
 		}
 	}
@@ -1012,7 +1012,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 		// model to a plan even though the relay already sold it. Shipping the
 		// catalog with the plans keeps the editor and the reconcile reading the same
 		// source, and the internal-only list travels with it because the editor must
-		// offer those too: an internal package keeps gpt-5.6-sol, which is routable
+		// offer those too: an internal package keeps gpt-6.1-sol, which is routable
 		// but deliberately not sellable.
 		response := map[string]interface{}{"plans": plans}
 		if catalog, internalOnly, source, catalogErr := h.modelCatalogForEditor(); catalogErr != nil {
