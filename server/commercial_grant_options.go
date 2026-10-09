@@ -46,7 +46,7 @@ func commercialGrantModels(summary *types.CommercialSummary, relayUser *commerci
 	for _, limit := range relayUser.Limits.AvailableModelLimits {
 		model := strings.TrimSpace(limit.Model)
 		key := strings.ToLower(model)
-		if model == "" || model == "*" || key == "gpt-5.6-luna" || seen[key] || strings.TrimSpace(limit.Provider) == "" || len(limit.AllowedModels) == 0 {
+		if model == "" || model == "*" || isRetiredCatalogModel(model) || seen[key] || strings.TrimSpace(limit.Provider) == "" || len(limit.AllowedModels) == 0 {
 			continue
 		}
 		option := commercialGrantModelOption{ID: model}

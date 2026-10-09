@@ -1,12 +1,13 @@
 package server
 
 import (
-	"strings"
 	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
 
+// commercialTerraTrialModel is the retired trial model id. It stays so
+// historical ledger rows and relay payloads remain decodable.
 const commercialTerraTrialModel = "gpt-5.6-terra"
 
 type commercialRelayTerraTrial struct {
@@ -18,31 +19,14 @@ type commercialRelayTerraTrial struct {
 
 // A paid/internal entitlement wins over the Free trial even when both remain
 // in the ledger. Future renewals do not change the current access policy.
+//
+// Retired 2026-10-08: the trial's model (gpt-5.6-terra) left the relay, so no
+// account is eligible any more. The function stays as the single gate every
+// caller already uses; it now returns false unconditionally, which also makes
+// the next reconcile sync `free_terra_trial: false` to the relay for every
+// account that still carried the historical flag.
 func commercialFreeTerraTrialEnabled(summary *types.CommercialSummary, now time.Time) bool {
-	if summary == nil {
-		return false
-	}
-	free := false
-	for _, entitlement := range summary.Entitlements {
-		if entitlement == nil || entitlement.State != "active" || entitlement.StartsAt.After(now) ||
-			(entitlement.ExpiresAt != nil && !entitlement.ExpiresAt.After(now)) {
-			continue
-		}
-		if entitlement.PlanSlug == "catsco-free" || entitlement.Source == "free" {
-			free = true
-		} else {
-			return false
-		}
-	}
-	// Explicit operator/model grants must also restore ordinary Terra access.
-	for _, grant := range summary.Grants {
-		if grant != nil && grant.AmountCNY > 0 && grant.GrantType != "free" && grant.RevokedAt == nil &&
-			!grant.EffectiveAt.After(now) && (grant.ExpiresAt == nil || grant.ExpiresAt.After(now)) &&
-			(strings.EqualFold(grant.Model, commercialTerraTrialModel) || grant.Model == "*") {
-			return false
-		}
-	}
-	return free
+	return false
 }
 
 // Trial access is a separate wallet, not a recurring commercial quota grant.

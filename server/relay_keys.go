@@ -585,7 +585,9 @@ func commercialQuotaModelAllowed(summary *types.CommercialSummary, model string)
 	if target == normalizeRelayModelName("deepseek-flash") && commercialRelayHasActivePackage(summary) {
 		return true
 	}
-	if target == normalizeRelayModelName("gpt-5.6-luna") {
+	// The retired GPT-5.6 family is never allowed, even when a historical
+	// ledger row still carries the name; the successor is granted normally.
+	if isRetiredCatalogModel(model) {
 		return false
 	}
 	if target == normalizeRelayModelName(commercialTerraTrialModel) && commercialFreeTerraTrialEnabled(summary, time.Now().UTC()) {
