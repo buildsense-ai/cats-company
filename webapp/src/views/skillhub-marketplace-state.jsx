@@ -8,7 +8,12 @@ export const MARKET_CATEGORIES = [
   ['media', '图像与影音'], ['web', '网页与应用'], ['development', '编程与开发'],
   ['automation', '办公与自动化'], ['other', '其他 / 待分类'],
 ];
-const disabled = { enabled: false, writesEnabled: false };
+const disabled = {
+  enabled: false,
+  writesEnabled: false,
+  visibilityEnabled: false,
+  visibilityWritesEnabled: false,
+};
 const Context = createContext(disabled);
 export const useMarketplace = () => useContext(Context);
 
@@ -43,6 +48,8 @@ export function MarketplaceProvider({ children }) {
       if (!controller.signal.aborted) setCapabilities(value?.schemaVersion === 1 ? {
         enabled: value.enabled === true,
         writesEnabled: value.enabled === true && value.writesEnabled === true,
+        visibilityEnabled: value.visibilityEnabled === true,
+        visibilityWritesEnabled: value.visibilityEnabled === true && value.visibilityWritesEnabled === true,
       } : disabled);
     }).catch(() => {}); // Old server / feature off: original UI remains usable.
     return () => controller.abort();
