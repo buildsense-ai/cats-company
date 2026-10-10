@@ -321,7 +321,6 @@ export default function FileAnnotationEditor({
     setSending(true);
     setError('');
     const queue = drafts.filter((draft) => !sentRef.current.has(draft.id));
-    const remaining = [...drafts];
     try {
       for (const draft of queue) {
         if (!mountedRef.current) return;
@@ -365,20 +364,16 @@ export default function FileAnnotationEditor({
         // cause a second durable copy of the same draft.
         sentRef.current.add(draft.id);
         ids.delete(key);
-        const index = remaining.findIndex((item) => item.id === draft.id);
-        if (index >= 0) remaining.splice(index, 1);
-        setDrafts([...remaining]);
+        // Selection/addition stays available during send. Consume only this
+        // acknowledged row, never replace newer drafts with the send snapshot.
+        setDrafts((previous) => previous.filter((item) => item.id !== draft.id));
         onSent?.(result, sourceRef.current?.topic_id);
         window.dispatchEvent(new Event('cc:data-changed'));
       }
-      if (remaining.length === 0) {
-        setCurrent(null);
-        setScreenshots(null);
-      }
-      setNotice('');
+      // The pending selection and its evidence may have been created while
+      // this request was in flight; they are not part of the sent queue.
     } catch (failure) {
       if (mountedRef.current) {
-        setDrafts([...remaining]);
         setError(failure?.message || '发送失败，未发送的批注已保留，可重试');
       }
     } finally {

@@ -251,7 +251,7 @@ export function SpreadsheetPreview({ buffer, kind }) {
         )}
       </div>
       <div className="v3-spreadsheet-grid-wrap">
-        <table className="v3-spreadsheet-grid">
+        <table className="v3-spreadsheet-grid" data-file-annotation-surface="cells">
           <thead>
             <tr>
               <th className="v3-spreadsheet-corner" aria-label="行号" />

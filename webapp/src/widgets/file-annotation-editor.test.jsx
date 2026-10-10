@@ -248,6 +248,70 @@ describe('FileAnnotationEditor', () => {
     expect(api.uploadImage).toHaveBeenCalledTimes(4);
   });
 
+  it.each(['success', 'failure'])('preserves drafts added while a send is pending (%s)', async (outcome) => {
+    let resolveSend, rejectSend;
+    const api = makeApi({ sendFileAnnotations: vi.fn(() => new Promise((resolve, reject) => {
+      resolveSend = resolve; rejectSend = reject;
+    })) });
+    mount({ api }); imageSurface();
+    await act(async () => button('框选区域').click());
+    dragRegion(); await act(async () => { await Promise.resolve(); });
+    await act(async () => typeInto(container.querySelector('textarea'), 'Sending draft'));
+    await act(async () => button('添加批注').click());
+    await act(async () => button('发送 1 条批注').click());
+    const sent = api.sendFileAnnotations.mock.calls[0][0];
+
+    dragRegion([400, 400], [520, 500]); await act(async () => { await Promise.resolve(); });
+    await act(async () => typeInto(container.querySelector('textarea'), 'Added during send'));
+    await act(async () => button('添加批注').click());
+    expect(container.querySelectorAll('.file-annotation-draft')).toHaveLength(2);
+    await act(async () => {
+      if (outcome === 'success') resolveSend({ seq_id: 7 });
+      else rejectSend(new Error('response lost'));
+    });
+    expect(container.querySelectorAll('.file-annotation-draft')).toHaveLength(outcome === 'success' ? 1 : 2);
+    expect(container.querySelector('.file-annotation-drafts').textContent).toContain('Added during send');
+    expect(api.sendFileAnnotations).toHaveBeenCalledTimes(1);
+
+    api.sendFileAnnotations.mockResolvedValue({ seq_id: 8 });
+    await act(async () => button(outcome === 'success' ? '发送 1 条批注' : '发送 2 条批注').click());
+    if (outcome === 'failure') {
+      const retried = api.sendFileAnnotations.mock.calls[1][0];
+      expect(retried.client_msg_id).toBe(sent.client_msg_id);
+      expect(retried.content_blocks).toEqual(sent.content_blocks);
+    }
+    expect(api.sendFileAnnotations.mock.calls.at(-1)[0].file_annotations.annotations[0].body).toBe('Added during send');
+    expect(api.uploadImage).toHaveBeenCalledTimes(4);
+    expect(container.querySelectorAll('.file-annotation-draft')).toHaveLength(0);
+  });
+
+  it.each(['success', 'failure'])('preserves an unstaged selection, comment and screenshots across send completion (%s)', async (outcome) => {
+    let resolveSend, rejectSend;
+    const api = makeApi({ sendFileAnnotations: vi.fn(() => new Promise((resolve, reject) => {
+      resolveSend = resolve; rejectSend = reject;
+    })) });
+    mount({ api }); imageSurface();
+    await act(async () => button('框选区域').click());
+    dragRegion(); await act(async () => { await Promise.resolve(); });
+    await act(async () => typeInto(container.querySelector('textarea'), 'Sending draft'));
+    await act(async () => button('添加批注').click());
+    await act(async () => button('发送 1 条批注').click());
+
+    dragRegion([400, 400], [520, 500]); await act(async () => { await Promise.resolve(); });
+    await act(async () => typeInto(container.querySelector('textarea'), 'Still writing'));
+    const images = [...container.querySelectorAll('.file-annotation-screenshots img')].map(image => image.src);
+    expect(images).toHaveLength(2);
+    await act(async () => {
+      if (outcome === 'success') resolveSend({ seq_id: 7 });
+      else rejectSend(new Error('response lost'));
+    });
+    expect(container.querySelector('textarea')?.value).toBe('Still writing');
+    expect([...container.querySelectorAll('.file-annotation-screenshots img')].map(image => image.src)).toEqual(images);
+    expect(api.sendFileAnnotations).toHaveBeenCalledTimes(1);
+    await act(async () => button('添加批注').click());
+    expect(container.querySelector('.file-annotation-drafts').textContent).toContain('Still writing');
+  });
+
   it('does not restore a canceled selection after a late binding response', async () => {
     let resolve;
     const api = makeApi({ openFileAnnotationBinding: vi.fn(() => new Promise(callback => { resolve = callback; })) });
@@ -391,7 +455,7 @@ describe('FileAnnotationEditor', () => {
   it('supports cells targeting with one-based row/column and sheet name', async () => {
     const api = makeApi();
     mount({ kind: 'cells', api });
-    const wrapper = mountSurface('<table data-file-annotation-sheet="Sheet1"><tr><td data-file-annotation-surface data-file-annotation-row="1" data-file-annotation-column="2">B1</td></tr></table>', 'cells');
+    const wrapper = mountSurface('<div data-file-annotation-sheet="Sheet1"><table data-file-annotation-surface="cells"><tbody><tr><td data-file-annotation-row="1" data-file-annotation-column="2">B1</td></tr></tbody></table></div>', 'cells');
     const cell = wrapper.querySelector('td');
     await act(async () => button('表格选区').click());
     await act(async () => {

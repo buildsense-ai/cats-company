@@ -61,8 +61,18 @@ describe('file preview source and annotation integration', () => {
     await act(async () => root.render(<ChatMessage message={message()} isSelf={false} onPreviewFile={onPreviewFile} />));
     expect(container.querySelector('[aria-label="预览视频 demo.mp4"]')).not.toBeNull();
     await act(async () => container.querySelector('[aria-label="批注视频 demo.mp4"]').click());
-    expect(onPreviewFile).toHaveBeenCalledWith(expect.objectContaining({ annotation_source: {
+    expect(onPreviewFile).toHaveBeenCalledWith(expect.objectContaining({ type: 'file', annotation_source: {
       topic_id: 'p2p_7_9', message_id: 42, attachment_index: 1,
+    } }));
+  });
+  it.each(['report.pdf', 'source.ts', 'table.csv', 'photo.png'])('preserves the enclosing file kind for %s, not an inner payload claim', async name => {
+    const payload = { name, url: `/uploads/files/${name}`, type: 'image' };
+    const onPreviewFile = vi.fn();
+    await act(async () => root.render(<ChatMessage message={{ ...message(), content_blocks: [{ type: 'file', payload }] }}
+      isSelf={false} onPreviewFile={onPreviewFile} />));
+    await act(async () => container.querySelector('button[title="预览文件"]').click());
+    expect(onPreviewFile).toHaveBeenCalledWith(expect.objectContaining({ type: 'file', annotation_source: {
+      topic_id: 'p2p_7_9', message_id: 42, attachment_index: 0,
     } }));
   });
   it('recognizes video and common code files in the side preview', () => {

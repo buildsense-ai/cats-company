@@ -1058,12 +1058,14 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
 }
 
 function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
-  const previewMessageFile = useCallback((payload) => {
+  const previewMessageFile = useCallback((payload, attachmentType = payload?.type) => {
     if (trustedArtifactPreviewPayloads.has(payload)) {
       onPreviewFileCallback?.(payload);
       return;
     }
-    onPreviewFileCallback?.({ ...payload,
+    // The kind belongs to the enclosing content block (including legacy rich
+    // content), not its payload. Preserve it without weakening source checks.
+    onPreviewFileCallback?.({ ...payload, type: attachmentType,
       annotation_source: fileAnnotationSourceForPreview(message, payload, annotationTopicId) });
   }, [annotationTopicId, message, onPreviewFileCallback]);
   const onPreviewFile = onPreviewFileCallback ? previewMessageFile : undefined;
@@ -1846,7 +1848,9 @@ function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery =
     case 'file':
     case 'audio':
     case 'voice':
-      return <FileContent payload={content.payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
+      return <FileContent payload={content.payload}
+        onPreviewFile={onPreviewFile ? (payload) => onPreviewFile(payload, content.type) : undefined}
+        activePreviewFile={activePreviewFile} />;
     case 'link_preview':
       return <LinkPreviewContent payload={content.payload} />;
     case 'card':
