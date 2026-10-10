@@ -13,6 +13,12 @@
 | `provision-worker.sh` | 创建实例 + 注入身份 + 写 localConfig + 启 service | 新建云托管员工 |
 | `destroy-worker.sh` | 退订并永久销毁实例 + key pair + 本地 state | 内部运维清理 / 到期保留期结束（幂等） |
 | `reset-worker.sh` | 原实例重装（丢数据，保留包月订单/到期时间） | 重置 / 重装 |
+
+`destroy-worker.sh` 退出码契约（平台 lifecycle sweep 依赖）：
+`0`=已清理 / `1`=失败（fail-closed）/ `2`=用法错误 /
+`3`=awaiting-provider-recycle——实例已过期、超出自助退订窗口，天翼云将在保留期后
+自动删除回收；平台把该行保持为可按小时重试的待删除态（`delete_pending`），
+实例消失后重试即自然完成，不进入 `delete_failed`（无需人工重试）。
 | `renew-worker.sh` | 延长包月或恢复 `expired/freezing` 实例，并关闭自动续费 | 套餐续费后的云员工续订/恢复 |
 | `deploy-worker-version.sh` | 安装指定应用版本（保数据） | 更新 / 本地版本缺失时回滚 |
 | `rollback-worker.sh` | 切换 `/opt/catsco/current`（保数据） | 版本回滚 |

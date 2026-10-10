@@ -1718,6 +1718,7 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 		ListCloudWorkerLifecycleDue(time.Time, int) ([]CloudWorkerLifecycle, error)
 		MarkCloudWorkerLifecyclePending(int64, time.Time) error
 		ClaimCloudWorkerLifecycleDeletion(int64) (bool, error)
+		MarkCloudWorkerLifecycleAwaitingRecycle(int64, string) error
 		MarkCloudWorkerLifecycleDeleted(int64, string) error
 	})
 	if !ok || h.destroyScript == "" {
@@ -1731,7 +1732,7 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 	if len(items) == 0 {
 		return nil
 	}
-	markedPending, claimedCount, deleted, failed := 0, 0, 0, 0
+	markedPending, claimedCount, deleted, failed, awaitingRecycle := 0, 0, 0, 0, 0
 	var rebuildOwners []int64
 	queuedRebuild := map[int64]bool{}
 	for _, item := range items {
@@ -1763,9 +1764,27 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 			continue
 		}
 		claimedCount++
-		if _, err := h.runScript(h.destroyScript, "--name", item.TenantName); err != nil {
-			log.Printf("[cloud-worker] lifecycle destroy %s failed: %v", item.TenantName, err)
-			_ = store.MarkCloudWorkerLifecycleDeleted(item.ID, truncateWorkerOutput(err.Error()))
+		out, err := h.runScript(h.destroyScript, "--name", item.TenantName)
+		if err != nil {
+			if destroyAwaitingProviderRecycle(err, out) {
+				// An expired instance is past the self-service unsubscribe window:
+				// the provider recycles retained instances automatically, so a retry
+				// cannot change anything yet. Keep the destroy in the retryable
+				// pending state instead of parking it in delete_failed for an
+				// operator retry that cannot succeed; nothing local is deleted, so a
+				// late renewal can still rescue the worker.
+				log.Printf("[cloud-worker] lifecycle destroy %s awaiting provider recycle: %s", item.TenantName, truncateWorkerOutput(out))
+				if markErr := store.MarkCloudWorkerLifecycleAwaitingRecycle(item.ID, truncateWorkerOutput(out)); markErr != nil {
+					log.Printf("[cloud-worker] lifecycle awaiting-recycle mark %s failed: %v", item.TenantName, markErr)
+					failed++
+				} else {
+					awaitingRecycle++
+				}
+				continue
+			}
+			detail := truncateWorkerOutput(destroyErrorDetail(err, out))
+			log.Printf("[cloud-worker] lifecycle destroy %s failed: %s", item.TenantName, detail)
+			_ = store.MarkCloudWorkerLifecycleDeleted(item.ID, detail)
 			failed++
 			continue
 		}
@@ -1786,7 +1805,7 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 			rebuildOwners = append(rebuildOwners, item.OwnerUID)
 		}
 	}
-	log.Printf("[cloud-worker] lifecycle sweep scanned=%d pending=%d claimed=%d deleted=%d failed=%d duration=%s", len(items), markedPending, claimedCount, deleted, failed, time.Since(started).Round(time.Millisecond))
+	log.Printf("[cloud-worker] lifecycle sweep scanned=%d pending=%d claimed=%d deleted=%d failed=%d awaiting_recycle=%d duration=%s", len(items), markedPending, claimedCount, deleted, failed, awaitingRecycle, time.Since(started).Round(time.Millisecond))
 	return rebuildOwners
 }
 
@@ -2222,6 +2241,36 @@ func truncateWorkerOutput(out string) string {
 		out = out[:maxWorkerOutputLog] + "...(truncated)"
 	}
 	return out
+}
+
+// destroyAwaitingProviderRecycleExitCode is emitted by destroy-worker.sh when
+// an expired instance is past the self-service unsubscribe window. The provider
+// deletes retained instances automatically, so the sweep keeps the lifecycle
+// retryable instead of parking it in delete_failed for a manual retry that
+// cannot succeed before the provider acts.
+const destroyAwaitingProviderRecycleExitCode = 3
+
+// destroyAwaitingProviderRecycle reports whether a failed destroy actually
+// parked on provider-side recycling. The script must both exit with the
+// dedicated code and print the machine-readable status, so an unrelated script
+// failure can never be misread as a pending recycle.
+func destroyAwaitingProviderRecycle(err error, out string) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != destroyAwaitingProviderRecycleExitCode {
+		return false
+	}
+	return strings.Contains(out, `"status":"awaiting-provider-recycle"`)
+}
+
+// destroyErrorDetail keeps the script output with the error so operators see
+// the provider's actual refusal; the bare "exit status 1" hid why a destroy
+// failed (for example the unsubscribe refusal on an expired instance).
+func destroyErrorDetail(err error, out string) string {
+	detail := strings.TrimSpace(err.Error())
+	if trimmed := strings.TrimSpace(out); trimmed != "" {
+		detail = strings.TrimSpace(detail + ": " + trimmed)
+	}
+	return detail
 }
 
 // writeWorkerCredentialFile keeps worker credentials out of process argv, where

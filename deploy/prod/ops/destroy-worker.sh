@@ -9,6 +9,10 @@
 #   destroy-worker.sh --name <tenant> [--dry-run]
 #
 # 幂等：实例/key pair 不存在按"已清理"处理（exit 0）。
+# 退出码：0=已清理 / 1=失败（fail-closed，聚合报告）/ 2=用法错误 /
+#         3=awaiting-provider-recycle（实例已过期、超出退订窗口，
+#           天翼云将在保留期后自动删除回收；平台保持待删除并按小时重试，
+#           实例消失后重试即自然完成，无需人工干预）
 #
 # 依赖：ctyun-cli + jq + timeout
 # 凭据：CTYUN_AK/CTYUN_SK（ctyun-cli 环境变量或 ~/.ctyun-cli.yaml）
@@ -19,7 +23,7 @@ NAME=""
 DRY_RUN=0
 
 usage() {
-  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while (($#)); do
@@ -158,9 +162,23 @@ if [[ -n "$inst" ]]; then
       || "$instance_status" =~ ^(expired|freezing|frozen|unsubscribed|bootdiskexpired)$ ]]; then
       stop_instance "$inst" || exit 1
       if [[ "$instance_status" != "unsubscribed" ]]; then
-        ctyun ecs UnsubscribeEcsInstance \
-          --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
-          || { echo "error: instance unsubscribe failed (instance_id=$instance_id)" >&2; exit 1; }
+        unsubscribe_error=""
+        unsubscribe_error="$(ctyun ecs UnsubscribeEcsInstance \
+          --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" 2>&1 >/dev/null || true)"
+        if [[ -n "$unsubscribe_error" ]]; then
+          if [[ "$unsubscribe_error" == *"Ecs.Instance.StatusExpired"* ]]; then
+            # 已过期实例超出自助退订窗口：天翼云在保留期结束后自动删除回收。
+            # 没有可执行的自助操作，也不能当作普通失败（重试永远无法成功）；
+            # 退出码 3 让平台保持可重试的删除待办态，实例消失后即自然完成。
+            echo "warning: instance is expired and cannot be unsubscribed; waiting for the provider to recycle it automatically (instance_id=$instance_id)" >&2
+            jq -nc --arg name "$INSTANCE_NAME" --arg id "$instance_id" \
+              --arg expired "$(jq -r '.expiredTime // ""' <<<"$inst")" \
+              '{status:"awaiting-provider-recycle",instance_name:$name,instance_id:$id,expired_time:$expired}' || true
+            exit 3
+          fi
+          echo "error: instance unsubscribe failed (instance_id=$instance_id): $unsubscribe_error" >&2
+          exit 1
+        fi
       fi
 
       destroy_ready=0

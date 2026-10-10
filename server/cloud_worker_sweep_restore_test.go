@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,6 +16,7 @@ type lifecycleSweepStub struct {
 	credit int
 	rows   map[int64]CloudWorkerLifecycle
 	due    []int64
+	notes  map[int64]string
 }
 
 func (s *lifecycleSweepStub) CloudWorkerCreditSummary(int64) (int, int, error) {
@@ -46,6 +48,17 @@ func (s *lifecycleSweepStub) ClaimCloudWorkerLifecycleDeletion(id int64) (bool, 
 	return true, nil
 }
 
+func (s *lifecycleSweepStub) MarkCloudWorkerLifecycleAwaitingRecycle(id int64, note string) error {
+	row := s.rows[id]
+	row.State = "delete_pending"
+	s.rows[id] = row
+	if s.notes == nil {
+		s.notes = map[int64]string{}
+	}
+	s.notes[id] = note
+	return nil
+}
+
 func (s *lifecycleSweepStub) MarkCloudWorkerLifecycleDeleted(id int64, errText string) error {
 	row := s.rows[id]
 	if errText != "" {
@@ -54,6 +67,10 @@ func (s *lifecycleSweepStub) MarkCloudWorkerLifecycleDeleted(id int64, errText s
 		row.State = "deleted"
 	}
 	s.rows[id] = row
+	if s.notes == nil {
+		s.notes = map[int64]string{}
+	}
+	s.notes[id] = errText
 	return nil
 }
 
@@ -168,5 +185,59 @@ func TestSweepExpiredWorkersSkipsRebuildWhenDestroyFails(t *testing.T) {
 	}
 	if ts.listBotsCalls != 0 {
 		t.Fatalf("a failed destroy must not rebuild a worker before operator retry: roster lookups=%d", ts.listBotsCalls)
+	}
+}
+
+func TestSweepExpiredWorkersKeepsAwaitingRecycleRetryable(t *testing.T) {
+	// An expired instance past the self-service unsubscribe window cannot be
+	// deleted by our scripts: Tianyi recycles retained instances on its own
+	// schedule. That outcome is a pending retry, not an operator-retry failure,
+	// and nothing local may be deleted while the instance still exists.
+	script := writeWorkerOpScript(t, "awaiting-recycle")
+	if script == "" {
+		t.Skip("no script interpreter available for the destroy step")
+	}
+	h, ts := newLifecycleSweepHandler(t, script)
+	stub := &lifecycleSweepStub{credit: 1, rows: map[int64]CloudWorkerLifecycle{
+		1: {ID: 1, WorkerUID: 10, OwnerUID: 7, TenantName: "bot-bot-a", State: "delete_failed", DeleteAfter: time.Now().Add(-time.Hour)},
+	}, due: []int64{1}}
+	h.credits = stub
+
+	h.SweepExpiredWorkers(time.Now().UTC())
+
+	if got := stub.rows[1].State; got != "delete_pending" {
+		t.Fatalf("lifecycle state=%q want delete_pending (retryable)", got)
+	}
+	if !strings.Contains(stub.notes[1], "awaiting-provider-recycle") {
+		t.Fatalf("awaiting note=%q want the provider-recycle marker", stub.notes[1])
+	}
+	if len(ts.deletedBots) != 0 {
+		t.Fatalf("awaiting recycle must keep the bot record: removals=%v", ts.deletedBots)
+	}
+	if ts.listBotsCalls != 0 {
+		t.Fatalf("awaiting recycle must not rebuild a worker: roster lookups=%d", ts.listBotsCalls)
+	}
+}
+
+func TestSweepExpiredWorkersRecordsDestroyOutputForOperators(t *testing.T) {
+	// The stored last_error used to be the bare "exit status 1", which hid
+	// the provider's refusal from operators; the script output must ride along.
+	script := writeWorkerOpScript(t, "fail-detail")
+	if script == "" {
+		t.Skip("no script interpreter available for the destroy step")
+	}
+	h, _ := newLifecycleSweepHandler(t, script)
+	stub := &lifecycleSweepStub{credit: 0, rows: map[int64]CloudWorkerLifecycle{
+		1: {ID: 1, WorkerUID: 10, OwnerUID: 7, TenantName: "bot-bot-a", State: "delete_pending", DeleteAfter: time.Now().Add(-time.Hour)},
+	}, due: []int64{1}}
+	h.credits = stub
+
+	h.SweepExpiredWorkers(time.Now().UTC())
+
+	if got := stub.rows[1].State; got != "delete_failed" {
+		t.Fatalf("lifecycle state=%q want delete_failed", got)
+	}
+	if !strings.Contains(stub.notes[1], "provider refused the destroy") {
+		t.Fatalf("stored detail=%q must include the script output", stub.notes[1])
 	}
 }
