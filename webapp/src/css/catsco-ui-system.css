@@ -1763,6 +1763,38 @@ html[data-theme="liquid"] .catsco-brand-mark {
   text-align: left;
 }
 
+/* Give the primary destinations a quiet, crafted response without moving
+   their shared row geometry. The icon settles into a small hover posture
+   instead of looping through a playful bounce. */
+.cc-sidebar-primary > svg:first-child,
+.cc-compact-new-chat > svg:first-child {
+  flex: 0 0 auto;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 180ms ease;
+}
+
+.cc-sidebar-new-task-entry:is(:hover, :focus-visible) > svg:first-child,
+.cc-compact-new-chat:is(:hover, :focus-visible) > svg:first-child {
+  transform: translateY(-1px) rotate(90deg) scale(1.05);
+}
+
+.cc-sidebar-skillhub-entry:is(:hover, :focus-visible) > svg:first-child {
+  transform: translateY(-1px) rotate(-3deg) scale(1.07);
+}
+
+.cc-sidebar-apps-entry:is(:hover, :focus-visible) > svg:first-child {
+  transform: translateY(-1px) rotate(3deg) scale(1.07);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-sidebar-primary > svg:first-child,
+  .cc-compact-new-chat > svg:first-child {
+    transition: none;
+  }
+}
+
 .cc-skillhub-sidebar-update-badge {
   min-width: 20px;
   height: 20px;

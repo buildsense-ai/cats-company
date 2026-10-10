@@ -93,7 +93,7 @@ export function useMarketplaceCatalogue(query) {
   };
   useEffect(() => {
     if (!enabled) { setState(null); return undefined; }
-    const timer = window.setTimeout(() => load(), 250);
+    const timer = window.setTimeout(() => load(), 40);
     return () => { window.clearTimeout(timer); pending.current?.abort(); };
   // key encodes every filter and the explicit refresh generation.
   // eslint-disable-next-line react-hooks/exhaustive-deps

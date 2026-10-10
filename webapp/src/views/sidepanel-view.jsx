@@ -18,6 +18,8 @@ const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, proj
 // An opened project folder previews a handful of tasks so a large folder cannot
 // swallow the sidebar; the rest stay behind a muted "展开显示" row.
 const PROJECT_TASK_PREVIEW_LIMIT = 5;
+const SIDEBAR_AUTO_COLLAPSE_DELAY_MS = 420;
+const SIDEBAR_TOP_REVEAL_THRESHOLD = 8;
 const PINNED_GROUPS_STORAGE_PREFIX = 'cc_pinned_groups_v1';
 const PINNED_HISTORY_STORAGE_PREFIX = 'cc_pinned_history_v1';
 const HIDDEN_HISTORY_STORAGE_PREFIX = 'cc_hidden_history_v1';
@@ -371,6 +373,11 @@ export default function ChatListView({
   const [showNewChat, setShowNewChat] = useState(false);
   const [collapsed, setCollapsed] = useState(() => loadCollapsedSections(user?.uid));
   const [scrollCollapsed, setScrollCollapsed] = useState({ contacts: false, projects: false });
+  // Scroll-driven section changes can receive multiple wheel events before
+  // React commits the next render. Keep an imperative snapshot so the reverse
+  // reveal order remains deterministic across those events.
+  const scrollCollapsedRef = useRef(scrollCollapsed);
+  scrollCollapsedRef.current = scrollCollapsed;
   const [mobileLinkAgent, setMobileLinkAgent] = useState(null);
   const [mobileLinkGroup, setMobileLinkGroup] = useState(null);
   const [collaborationUpgradeTask, setCollaborationUpgradeTask] = useState(null);
@@ -413,6 +420,7 @@ export default function ChatListView({
   const [compactHistoryPanel, setCompactHistoryPanel] = useState(null);
   const [compactHistoryTooltip, setCompactHistoryTooltip] = useState(null);
   const compactHistoryCloseTimerRef = useRef(null);
+  const sidebarAutoCollapseTimerRef = useRef(null);
   const justHiddenHistoryRef = useRef('');
   const activeTopicRef = useRef(activeTopic);
   const userUidRef = useRef(user?.uid);
@@ -465,6 +473,7 @@ export default function ChatListView({
   const lastHistorySelectionTopicIdRef = useRef('');
 
   useEffect(() => {
+    scrollCollapsedRef.current = { contacts: false, projects: false };
     setCollapsed(loadCollapsedSections(user?.uid));
     setPinnedGroupIds(loadPinnedGroupIds(user?.uid));
     setPinnedHistoryIds(loadPinnedHistoryIds(user?.uid));
@@ -485,6 +494,7 @@ export default function ChatListView({
   }, [user?.uid]);
 
   useLayoutEffect(() => {
+    scrollCollapsedRef.current = { contacts: false, projects: false };
     setScrollCollapsed({ contacts: false, projects: false });
     if (compact) {
       setHistorySelectionMode(false);
@@ -631,7 +641,9 @@ export default function ChatListView({
   const toggleCollapsed = (section) => {
     if (scrollCollapsed[section]) {
       pendingSidebarRevealRef.current = section;
-      setScrollCollapsed((previous) => ({ ...previous, [section]: false }));
+      const nextScrollCollapsed = { ...scrollCollapsedRef.current, [section]: false };
+      scrollCollapsedRef.current = nextScrollCollapsed;
+      setScrollCollapsed(nextScrollCollapsed);
       return;
     }
     if ((section === 'contacts' || section === 'projects') && collapsed[section]) {
@@ -1208,6 +1220,7 @@ export default function ChatListView({
   const isSearching = trimmedSearch.length > 0;
   const contactsCollapsed = collapsed.contacts || scrollCollapsed.contacts;
   const projectsCollapsed = collapsed.projects || scrollCollapsed.projects;
+  const hasOtherExpandedSection = !collapsed.conversations || !collapsed.projects;
 
   useLayoutEffect(() => {
     const list = sidebarListRef.current;
@@ -1240,6 +1253,13 @@ export default function ChatListView({
     const list = sidebarListRef.current;
     if (compact || historySelectionMode || !list) return undefined;
 
+    const clearAutoCollapseTimer = () => {
+      if (sidebarAutoCollapseTimerRef.current != null) {
+        window.clearTimeout(sidebarAutoCollapseTimerRef.current);
+        sidebarAutoCollapseTimerRef.current = null;
+      }
+    };
+    clearAutoCollapseTimer();
     previousSidebarScrollTopRef.current = list.scrollTop;
     const coarsePointer = window.matchMedia?.('(hover: none), (pointer: coarse)')?.matches ?? false;
     const focusSectionToggleBeforeCollapse = (sectionRef, boundaryRef = null) => {
@@ -1257,12 +1277,41 @@ export default function ChatListView({
         contentNode = contentNode.nextElementSibling;
       }
     };
-    const evaluateSidebarAutoCollapse = ({ allowUnchangedScrollTop = false } = {}) => {
+    const scheduleAutoCollapse = () => {
+      clearAutoCollapseTimer();
+      sidebarAutoCollapseTimerRef.current = window.setTimeout(() => {
+        sidebarAutoCollapseTimerRef.current = null;
+        evaluateSidebarScrollSections({ allowUnchangedScrollTop: true, commit: true });
+      }, SIDEBAR_AUTO_COLLAPSE_DELAY_MS);
+    };
+    const evaluateSidebarScrollSections = ({ allowUnchangedScrollTop = false, allowUpwardAtTop = false, commit = false } = {}) => {
       const nextScrollTop = list.scrollTop;
       const isScrollingDown = nextScrollTop > previousSidebarScrollTopRef.current + 0.5;
+      const isScrollingUp = nextScrollTop < previousSidebarScrollTopRef.current - 0.5;
       previousSidebarScrollTopRef.current = nextScrollTop;
 
-      if ((!isScrollingDown && !allowUnchangedScrollTop) || isSearching || coarsePointer) return;
+      if (isSearching || coarsePointer) return;
+
+      // Sections collapsed by the downward scroll path return in the reverse
+      // order as the user reaches the top again. Restore one section per
+      // upward arrival at the top so the history rows stay anchored there.
+      if ((isScrollingUp || allowUpwardAtTop) && nextScrollTop <= SIDEBAR_TOP_REVEAL_THRESHOLD) {
+        const collapsedSnapshot = scrollCollapsedRef.current;
+        if (collapsedSnapshot.projects) {
+          const nextCollapsed = { ...collapsedSnapshot, projects: false };
+          scrollCollapsedRef.current = nextCollapsed;
+          setScrollCollapsed(nextCollapsed);
+          return;
+        }
+        if (collapsedSnapshot.contacts) {
+          const nextCollapsed = { ...collapsedSnapshot, contacts: false };
+          scrollCollapsedRef.current = nextCollapsed;
+          setScrollCollapsed(nextCollapsed);
+          return;
+        }
+      }
+
+      if (!isScrollingDown && !allowUnchangedScrollTop) return;
 
       const scrollViewportTop = list.getBoundingClientRect().top + list.clientTop;
       const projectsSection = projectsSectionRef.current;
@@ -1283,6 +1332,7 @@ export default function ChatListView({
 
       if (
         !contactsCollapsed
+        && hasOtherExpandedSection
         && projectsSection
         && projectsRect
         && hasReachedAutoCollapseBoundary(projectsSection, projectsRect)
@@ -1290,14 +1340,20 @@ export default function ChatListView({
         && !openFriendMenuId
         && !openChatMenuKey
       ) {
+        if (!commit) {
+          scheduleAutoCollapse();
+          return;
+        }
         focusSectionToggleBeforeCollapse(contactsSectionRef, projectsSectionRef);
         pendingSidebarScrollAnchorRef.current = {
           scrollTop: list.scrollTop,
           scrollHeight: list.scrollHeight,
         };
-        setScrollCollapsed((previous) => (
-          previous.contacts ? previous : { ...previous, contacts: true }
-        ));
+        setScrollCollapsed((previous) => {
+          const nextCollapsed = previous.contacts ? previous : { ...previous, contacts: true };
+          scrollCollapsedRef.current = nextCollapsed;
+          return nextCollapsed;
+        });
         return;
       }
 
@@ -1311,40 +1367,60 @@ export default function ChatListView({
         && openProjectMenuId == null
         && !openChatMenuKey
       ) {
+        if (!commit) {
+          scheduleAutoCollapse();
+          return;
+        }
         focusSectionToggleBeforeCollapse(projectsSectionRef, conversationsSectionRef);
         pendingSidebarScrollAnchorRef.current = {
           scrollTop: list.scrollTop,
           scrollHeight: list.scrollHeight,
         };
-        setScrollCollapsed((previous) => (
-          previous.projects ? previous : { ...previous, projects: true }
-        ));
+        setScrollCollapsed((previous) => {
+          const nextCollapsed = previous.projects ? previous : { ...previous, projects: true };
+          scrollCollapsedRef.current = nextCollapsed;
+          return nextCollapsed;
+        });
       }
     };
     const onSidebarScroll = () => {
-      evaluateSidebarAutoCollapse();
+      clearAutoCollapseTimer();
+      evaluateSidebarScrollSections();
     };
     const onSidebarWheel = (event) => {
-      if (event.ctrlKey || event.metaKey || event.deltaY <= 0) return;
+      if (event.ctrlKey || event.metaKey) return;
 
+      if (event.deltaY < 0 && list.scrollTop <= SIDEBAR_TOP_REVEAL_THRESHOLD) {
+        clearAutoCollapseTimer();
+        evaluateSidebarScrollSections({ allowUnchangedScrollTop: true, allowUpwardAtTop: true });
+        return;
+      }
+      if (event.deltaY <= 0) return;
+
+      clearAutoCollapseTimer();
       const maxScrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
       if (maxScrollTop <= 0 || list.scrollTop < maxScrollTop - 1) return;
 
       // A wheel gesture at the scroll limit does not emit another scroll event.
       // Evaluate once more so each additional downward gesture can collapse the
       // next sticky section without collapsing multiple sections in one frame.
-      evaluateSidebarAutoCollapse({ allowUnchangedScrollTop: true });
+      evaluateSidebarScrollSections({ allowUnchangedScrollTop: true });
     };
 
     list.addEventListener('scroll', onSidebarScroll, { passive: true });
-    list.addEventListener('wheel', onSidebarWheel, { passive: true });
+    // Capture wheel events from sticky headers and their child rows too. At the
+    // scroll limit the browser may not emit a scroll event, so this is the
+    // reliable signal for the second upward gesture that reveals contacts.
+    list.addEventListener('wheel', onSidebarWheel, { passive: true, capture: true });
     return () => {
+      clearAutoCollapseTimer();
       list.removeEventListener('scroll', onSidebarScroll);
-      list.removeEventListener('wheel', onSidebarWheel);
+      list.removeEventListener('wheel', onSidebarWheel, true);
     };
   }, [
     compact,
     contactsCollapsed,
+    hasOtherExpandedSection,
     historySelectionMode,
     isSearching,
     openChatMenuKey,
@@ -3253,7 +3329,7 @@ export default function ChatListView({
       )}
 
       {!compact && <div className="cc-sidebar-tools">
-        <button type="button" className="cc-sidebar-primary" onClick={() => openNewTaskDialog()}>
+        <button type="button" className="cc-sidebar-primary cc-sidebar-new-task-entry" onClick={() => openNewTaskDialog()}>
           <Plus size={17} />
           <span>新建任务</span>
         </button>

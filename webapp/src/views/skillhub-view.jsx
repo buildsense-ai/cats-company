@@ -16,6 +16,8 @@ import { normalizeOwnedBots } from '../utils/owned-bots';
 import { getStorage } from '../utils/storage-access';
 import SkillHubContent from './skillhub-content';
 import { MarketplaceProvider } from './skillhub-marketplace-state';
+import { skillSourceQuery } from './skillhub-presentation';
+import { readSkillAdditionTimes, recordSkillAdditions } from '../utils/skillhub-addition-order';
 import '../css/skillhub-view.css';
 
 export {
@@ -724,10 +726,14 @@ export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsB
 
 export function upsertSkillRef(skills, nextRef, replacedSkillId = '') {
   const previousID = String(replacedSkillId || '').trim();
-  return [...(skills || []).filter((skill) => (
-    skill.skillId !== nextRef.skillId && (!previousID || skill.skillId !== previousID)
-  )), nextRef]
-    .sort((left, right) => left.skillId.localeCompare(right.skillId));
+  let replaced = false;
+  const result = (skills || []).flatMap(skill => {
+    if (skill.skillId !== nextRef.skillId && (!previousID || skill.skillId !== previousID)) return [skill];
+    if (replaced) return [];
+    replaced = true;
+    return [nextRef];
+  });
+  return replaced ? result : [...result, nextRef];
 }
 
 export function buildSkillLibrary({ catalogue = [], installedByID = new Map(), localSkills = [], query = '' }) {
@@ -1125,10 +1131,13 @@ export default function SkillHubView({
     ]),
   ), [catalogueByID, definition.skills, localSkills, localSkillsByReference, selectedAgentIsFriend, skillHubUpdateSummary?.detailsBySkillID, viewerSkills]);
 
-  const displaySkills = useMemo(() => buildCurrentAgentSkills(
-    selectedAgentIsFriend ? viewerSkills : definition.skills,
-    selectedAgentIsFriend ? [] : localSkills,
-  ), [definition.skills, localSkills, selectedAgentIsFriend, viewerSkills]);
+  const displaySkills = useMemo(() => {
+    const addedTimes = readSkillAdditionTimes(user?.uid, selectedBotUID);
+    return buildCurrentAgentSkills(
+      selectedAgentIsFriend ? viewerSkills : definition.skills,
+      selectedAgentIsFriend ? [] : localSkills,
+    ).map(skill => ({ ...skill, addedAt: skill.addedAt || skill.added_at || skill.installedAt || skill.installed_at || addedTimes[skill.skillId] }));
+  }, [definition.skills, localSkills, selectedAgentIsFriend, selectedBotUID, user?.uid, viewerSkills]);
 
   const selectedAgent = useMemo(() => (
     bots.find((bot) => String(botUID(bot)) === selectedBotUID) || null
@@ -1317,7 +1326,7 @@ export default function SkillHubView({
     setLoadingCatalogue(true);
     setCatalogueError('');
     try {
-      const response = await api.searchSkillHubSkills(searchQuery, { searchMode: 'name' });
+      const response = await api.searchSkillHubSkills(skillSourceQuery(searchQuery), { searchMode: 'name' });
       if (requestID !== catalogueRequestRef.current) return;
       setCatalogue(normalizeSkillHubSkills(response));
     } catch (error) {
@@ -1648,9 +1657,10 @@ export default function SkillHubView({
 
   useEffect(() => {
     loadBots().catch((error) => setDefinitionError(error?.message || '无法读取 Agent 列表'));
-    api.syncSkillHubPublisherProfile()
-      .catch(() => {})
-      .finally(() => searchCatalogue('').catch(() => {}));
+    // Publisher calibration is independent of browsing. Start both requests
+    // together so the catalogue is not held behind a slow profile sync.
+    api.syncSkillHubPublisherProfile().catch(() => {});
+    searchCatalogue('').catch(() => {});
     loadLibraryLocalSkills().catch(() => {});
   }, [loadBots, loadLibraryLocalSkills, searchCatalogue]);
 
@@ -1709,6 +1719,7 @@ export default function SkillHubView({
         requestID !== saveRequestRef.current
         || requestedBotUID !== selectedBotUIDRef.current
       ) return { ok: false, stale: true };
+      recordSkillAdditions(user?.uid, requestedBotUID, definition.skills, Array.isArray(next?.skills) ? next.skills : []);
       setDefinition({
         ...next,
         skills: Array.isArray(next?.skills) ? next.skills : [],
@@ -2231,6 +2242,7 @@ export default function SkillHubView({
     addedSkillPresentationByID={addedSkillPresentationByID}
     agentOptions={agentOptions}
     catalogue={catalogue}
+    categoryOwnerUID={user?.uid}
     catalogueByID={catalogueByID}
     catalogueError={catalogueError}
     definition={{ ...definition, skills: displaySkills }}
