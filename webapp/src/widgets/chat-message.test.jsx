@@ -4005,11 +4005,10 @@ describe('ChatMessage rich file rendering', () => {
       expect(container.querySelector('.v3-file-preview-frame')).not.toBeNull();
     });
 
-    it('keeps the card itself to one action, because the viewer owns "open in a new page"', async () => {
-      // The sidebar's viewer already offers "open in a new page" with the
-      // conversation attached. A second copy on the card would be a second path
-      // to keep in step, and would make a card look unlike the same application
-      // in the sidebar's list.
+    it('offers "open in a new page" on the card itself, asking for the viewer handoff', async () => {
+      // The card is where a reader meets the application, so the handoff belongs
+      // there too. It asks the caller for the new-page form, which is what
+      // attaches this conversation's topic and the application's owner.
       const onOpenArtifactApp = vi.fn();
       await act(async () => {
         root.render(
@@ -4023,7 +4022,39 @@ describe('ChatMessage rich file rendering', () => {
       });
 
       const actions = [...container.querySelectorAll('button.v3-artifact-action')];
-      expect(actions.map((button) => button.textContent)).toEqual(['预览']);
+      expect(actions.map((button) => button.textContent)).toEqual(['预览', '新页面']);
+
+      const newPage = container.querySelector('button[title="在新页面打开"]');
+      expect(newPage).not.toBeNull();
+      await act(async () => {
+        Simulate.click(newPage);
+        await Promise.resolve();
+      });
+
+      expect(onOpenArtifactApp).toHaveBeenCalledTimes(1);
+      expect(onOpenArtifactApp.mock.calls[0][1]).toEqual({ newPage: true });
+    });
+
+    it('offers no new-page action for an application the viewer cannot address', async () => {
+      // The handoff needs an owner to build its URL from. Without one the button
+      // would be live and do nothing, so it is not offered at all.
+      const ownerless = {
+        id: 'ownerless',
+        title: '缺 owner 的应用',
+        kind: 'mini_app',
+        url: 'https://artifact.catsco.cc/ownerless/',
+      };
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{ id: 34, from_uid: 365, content: `已发布：${ownerless.url}`, created_at: '2026-10-08T00:00:00Z' }}
+            knownArtifacts={[ownerless]}
+            onOpenArtifactApp={vi.fn()}
+          />,
+        );
+        await Promise.resolve();
+      });
+
       expect(container.querySelector('button[title="在新页面打开"]')).toBeNull();
     });
 

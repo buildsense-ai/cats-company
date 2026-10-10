@@ -69,6 +69,7 @@ import {
   createArtifactPreviewChatCoordinator,
   createArtifactPreviewLeaseStore,
   createArtifactViewerURL,
+  createGatewayApplicationViewerURL,
   sameArtifactPreviewIdentity,
 } from '../artifact-preview-coordinator';
 import {
@@ -2237,10 +2238,27 @@ export default function MessagesView({
   // with it. The generic file preview would show the entry point as a stored
   // page and could not hand off to a new tab. "Open in a new page" stays where it
   // already is — in that viewer, which knows the conversation to carry.
-  const openArtifactApp = useCallback((artifact) => {
+  const openArtifactApp = useCallback((artifact, { newPage = false } = {}) => {
     const agentUid = Number(artifact?.agent_uid || artifact?.agentUid || 0);
     const appId = String(artifact?.id || artifact?.artifact_id || '').trim();
     if (agentUid <= 0 || !appId) return;
+    // The card offers the handoff directly as well as through the sidebar. It
+    // builds the same viewer URL the sidebar builds, from this conversation's
+    // topic and the application's owner, so the tab it opens joins the same
+    // session instead of starting as a guest.
+    if (newPage) {
+      const viewerURL = createGatewayApplicationViewerURL({
+        topicId: topic,
+        agentUid,
+        artifactId: appId,
+      });
+      if (viewerURL) {
+        window.open(viewerURL, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
+      return;
+    }
     setPendingArtifactRefresh(null);
     setPreviewFile(null);
     clearActiveArtifactFocus();
@@ -2252,7 +2270,7 @@ export default function MessagesView({
     setCloudArtifactsInitialApp({ ...artifact });
     setCloudArtifactsReturnOpen(false);
     setCloudArtifactsListOpen(true);
-  }, [clearActiveArtifactFocus]);
+  }, [clearActiveArtifactFocus, feedback, topic]);
 
   const captureArtifactMessageContext = useCallback(async () => {
     const focus = activeArtifactFocusRef.current;
