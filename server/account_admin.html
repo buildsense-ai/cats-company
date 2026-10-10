@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CatsCo Account Admin</title>
+  <title>CatsCo 账号管理</title>
   <style>
     :root {
       color-scheme: dark;
@@ -33,7 +33,7 @@
     }
 
     main {
-      width: min(980px, calc(100vw - 40px));
+      width: min(1240px, calc(100vw - 40px));
       margin: 0 auto;
       padding: 48px 0;
     }
@@ -75,7 +75,7 @@
       top: 0;
       z-index: 10;
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 10px;
       margin: 0 0 18px;
       padding: 10px;
@@ -366,7 +366,10 @@
     }
 
     .user-list.visible {
-      display: block;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 10px;
     }
 
     .user-toolbar {
@@ -400,11 +403,12 @@
       gap: 14px;
       align-items: center;
       padding: 14px;
-      border-top: 1px solid var(--border);
+      border: 1px solid var(--border);
+      border-radius: 8px;
     }
 
-    .user-item:first-child {
-      border-top: 0;
+    .user-item:only-child {
+      grid-column: 1 / -1;
     }
 
     .user-meta {
@@ -480,9 +484,15 @@
       overflow-x: auto;
     }
 
+    @media (max-width: 1000px) {
+      .user-list.visible {
+        grid-template-columns: 1fr;
+      }
+    }
+
     @media (max-width: 640px) {
       main {
-        width: min(100vw - 24px, 980px);
+        width: min(100vw - 24px, 1240px);
         padding: 28px 0;
       }
 
@@ -555,15 +565,15 @@
   <main>
     <header>
       <div>
-        <h1>CatsCo Account Admin</h1>
+        <h1>CatsCo 账号管理</h1>
         <p>本页面只用于 SSH 隧道后的本机管理，不走公网入口。</p>
       </div>
-      <div class="badge">Tunnel only</div>
+      <div class="badge">仅限本机隧道</div>
     </header>
 
     <nav class="admin-nav" aria-label="后台模块">
       <button type="button" class="active" data-admin-tab="accounts" aria-pressed="true">账号管理</button>
-      <button type="button" data-admin-tab="services" aria-pressed="false">Service Token</button>
+      <button type="button" data-admin-tab="services" aria-pressed="false">服务令牌</button>
       <button type="button" data-admin-tab="access" aria-pressed="false">访问方式</button>
     </nav>
 
@@ -596,13 +606,13 @@
     </section>
 
     <section class="admin-view" data-admin-view="services">
-      <h2>Service Token</h2>
+      <h2>服务令牌</h2>
       <form id="service-form">
         <input id="service-slug" name="slug" autocomplete="off" placeholder="服务标识，例如 internal-tool" />
         <input id="service-name" name="name" autocomplete="off" placeholder="显示名称，例如 内部工具" />
         <button id="service-button" type="submit">创建/轮换</button>
         <div class="scope-panel">
-          <div class="scope-title">Service Token 是内部服务访问账号中心的凭证，不属于某个用户；不确定权限时可以先不选。同一服务标识再次提交会轮换 token，并让旧 token 失效。</div>
+          <div class="scope-title">服务令牌是内部服务访问账号中心的凭证，不属于某个用户；不确定权限时可以先不选。同一服务标识再次提交会轮换 token，并让旧 token 失效。</div>
           <div class="scope-options">
             <label class="scope-option">
               <input type="checkbox" data-scope="account.introspect" />
