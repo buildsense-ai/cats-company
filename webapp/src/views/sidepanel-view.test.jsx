@@ -211,6 +211,7 @@ describe('ChatListView sidebar sections', () => {
     });
     container.remove();
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   async function mount(props = {}) {
@@ -2805,6 +2806,7 @@ describe('ChatListView sidebar sections', () => {
   });
 
   it('temporarily collapses contacts when downward scrolling reaches the projects header', async () => {
+    vi.useFakeTimers();
     await mount();
 
     const list = container.querySelector('.v3-chat-list');
@@ -2858,6 +2860,10 @@ describe('ChatListView sidebar sections', () => {
         await Promise.resolve();
       });
 
+      expect(contactsToggle.getAttribute('aria-expanded')).toBe('true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(420);
+      });
       expect(contactsToggle.getAttribute('aria-expanded')).toBe('false');
       expect(projectsToggle.getAttribute('aria-expanded')).toBe('true');
       expect(container.querySelector('[data-contact-kind="agent"]')).toBeFalsy();
@@ -2889,6 +2895,7 @@ describe('ChatListView sidebar sections', () => {
   });
 
   it('collapses sticky sections at the real reachable scroll end without requiring header overlap', async () => {
+    vi.useFakeTimers();
     await mount();
 
     const list = container.querySelector('.v3-chat-list');
@@ -2939,6 +2946,10 @@ describe('ChatListView sidebar sections', () => {
         await Promise.resolve();
       });
 
+      expect(contactsToggle.getAttribute('aria-expanded')).toBe('true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(420);
+      });
       expect(contactsToggle.getAttribute('aria-expanded')).toBe('false');
       expect(projectsToggle.getAttribute('aria-expanded')).toBe('true');
       expect(list.scrollTop).toBe(299);
@@ -2959,6 +2970,9 @@ describe('ChatListView sidebar sections', () => {
         list.dispatchEvent(new WheelEvent('wheel', { deltaY: 80 }));
         await Promise.resolve();
       });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(420);
+      });
       expect(projectsToggle.getAttribute('aria-expanded')).toBe('false');
       expect(list.scrollTop).toBe(199);
     } finally {
@@ -2967,6 +2981,7 @@ describe('ChatListView sidebar sections', () => {
   });
 
   it('clears temporary scroll collapse state when compact mode changes', async () => {
+    vi.useFakeTimers();
     await mount();
 
     const list = container.querySelector('.v3-chat-list');
@@ -3009,6 +3024,10 @@ describe('ChatListView sidebar sections', () => {
       await act(async () => {
         list.dispatchEvent(new Event('scroll'));
         await Promise.resolve();
+      });
+      expect(contactsToggle.getAttribute('aria-expanded')).toBe('true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(420);
       });
       expect(contactsToggle.getAttribute('aria-expanded')).toBe('false');
 
@@ -3116,7 +3135,52 @@ describe('ChatListView sidebar sections', () => {
     }
   });
 
+  it('keeps contacts open at the bottom when it is the only expanded section', async () => {
+    vi.useFakeTimers();
+    await mount();
+
+    const list = container.querySelector('.v3-chat-list');
+    const conversationsToggle = container.querySelector('.cc-conversation-section .cc-section-toggle');
+    const contactsToggle = container.querySelector('.cc-contacts-section .cc-section-toggle');
+    const projectsToggle = container.querySelector('.cc-project-section .cc-section-toggle');
+    await act(async () => {
+      Simulate.click(conversationsToggle);
+      Simulate.click(projectsToggle);
+    });
+    expect(conversationsToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(contactsToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(projectsToggle.getAttribute('aria-expanded')).toBe('false');
+
+    Object.defineProperty(list, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 900 });
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    const makeRect = (top, bottom) => ({
+      top, bottom, height: bottom - top, left: 0, right: 260, width: 260, x: 0, y: top,
+      toJSON: () => ({}),
+    });
+    HTMLElement.prototype.getBoundingClientRect = vi.fn(function getBoundingClientRect() {
+      if (this === list) return makeRect(0, 500);
+      if (this === container.querySelector('.cc-contacts-section')) return makeRect(0, 36);
+      if (this === container.querySelector('.cc-project-section')) return makeRect(40, 76);
+      if (this === container.querySelector('.cc-conversation-section')) return makeRect(80, 116);
+      return makeRect(0, 0);
+    });
+
+    try {
+      list.scrollTop = 400;
+      await act(async () => {
+        list.dispatchEvent(new Event('scroll'));
+        list.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(contactsToggle.getAttribute('aria-expanded')).toBe('true');
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    }
+  });
+
   it('temporarily collapses projects after contacts while preserving real focused-row scrolling', async () => {
+    vi.useFakeTimers();
     api.getProjects.mockResolvedValue({
       projects: [{ id: 12, name: 'Website', task_count: 0 }],
     });
@@ -3171,6 +3235,10 @@ describe('ChatListView sidebar sections', () => {
         await Promise.resolve();
       });
 
+      expect(contactsToggle.getAttribute('aria-expanded')).toBe('true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(420);
+      });
       expect(contactsToggle.getAttribute('aria-expanded')).toBe('false');
       expect(projectsToggle.getAttribute('aria-expanded')).toBe('true');
       expect(list.scrollTop).toBe(40);
@@ -3192,29 +3260,26 @@ describe('ChatListView sidebar sections', () => {
       });
 
       expect(contactsToggle.getAttribute('aria-expanded')).toBe('false');
+      expect(projectsToggle.getAttribute('aria-expanded')).toBe('true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(420);
+      });
       expect(projectsToggle.getAttribute('aria-expanded')).toBe('false');
       expect(container.querySelector('.cc-project-row')).toBeFalsy();
       expect(list.scrollTop).toBe(60);
       expect(document.activeElement).toBe(projectsToggle);
       expect(localStorage.getItem('cc_sidebar_collapsed_v1:7')).toBeNull();
 
-      list.scrollTop = 220;
+      list.scrollTop = 0;
       await act(async () => {
-        Simulate.click(projectsToggle);
-        await Promise.resolve();
-      });
-      expect(projectsToggle.getAttribute('aria-expanded')).toBe('true');
-      expect(container.querySelector('.cc-project-row')).toBeTruthy();
-      expect(list.scrollTop).toBe(0);
-      expect(contactsToggle.getAttribute('aria-expanded')).toBe('false');
-      expect(localStorage.getItem('cc_sidebar_collapsed_v1:7')).toBeNull();
-
-      await act(async () => {
-        Simulate.click(contactsToggle);
+        // Two wheel events can arrive before React commits the first reveal.
+        // The second event must still advance from projects to contacts.
+        list.dispatchEvent(new WheelEvent('wheel', { deltaY: -80 }));
+        list.dispatchEvent(new WheelEvent('wheel', { deltaY: -80 }));
         await Promise.resolve();
       });
       expect(contactsToggle.getAttribute('aria-expanded')).toBe('true');
-      expect(projectsToggle.getAttribute('aria-expanded')).toBe('true');
+      expect(container.querySelector('.cc-project-row')).toBeTruthy();
       expect(list.scrollTop).toBe(0);
       expect(localStorage.getItem('cc_sidebar_collapsed_v1:7')).toBeNull();
     } finally {

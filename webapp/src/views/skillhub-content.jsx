@@ -681,16 +681,18 @@ function Catalogue(props) {
   } = props;
   const market = useMarketplaceCatalogue(skillSourceQuery(props.query || ''));
   const hasMarketPage = market.enabled && Boolean(market.state?.skills);
-  const marketPending = market.enabled && (!market.state || (market.state.loading && !market.state.skills));
+  // Render the legacy catalogue immediately while the optional marketplace
+  // request is warming up. The cloud response replaces it in place once it
+  // arrives, so opening this tab never waits on a secondary capability check.
   const availableSkills = hasMarketPage
     ? mergeMarketplaceLibrary(legacySkills, market.state.skills, market.category)
-    : marketPending ? [] : legacySkills;
+    : legacySkills;
   const search = normalizeSkillSearchValue(props.query);
   const librarySkills = availableSkills
     .filter(skill => !props.selectedCategory || props.categoryOf(skill) === props.selectedCategory)
     .filter(skill => !search || [skill.displayName, skill.skillId, localizedSkillText(skill, 'zh-CN').name].some(value => normalizeSkillSearchValue(value).includes(search)))
     .sort((left, right) => skillUploadedTimestamp(right) - skillUploadedTimestamp(left));
-  const loading = (market.enabled ? marketPending || Boolean(market.state?.loading) : loadingCatalogue) || loadingLibraryLocalSkills;
+  const loading = (market.enabled ? Boolean(market.state?.loading) : loadingCatalogue) || loadingLibraryLocalSkills;
   return (
     <section id='skillhub-catalogue-panel' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
       {market.state?.error && <div className='cc-skillhub-alert error' role='status'>{market.state.error}<button type='button' className='icon-button' disabled={market.state.loading} onClick={market.refresh} aria-label='重新加载能力分类' title='重试'><RefreshCw size={15} /></button></div>}

@@ -1162,7 +1162,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     expect(api.syncSkillHubPublisherProfile).toHaveBeenCalledTimes(1);
-    expect(api.searchSkillHubSkills).not.toHaveBeenCalled();
+    expect(api.searchSkillHubSkills).toHaveBeenCalledWith('', { searchMode: 'name' });
 
     await act(async () => {
       sync.reject(new Error('SkillHub unavailable'));

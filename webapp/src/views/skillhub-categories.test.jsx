@@ -42,10 +42,10 @@ describe('Skill catalogue presentation', () => {
     expect(skill.displayName).toBe('Code');
   });
 
-  it('uses reviewed current translations but never carries them into an unknown version', () => {
+  it('keeps reviewed translations available after a catalogue version bump', () => {
     const skill = { skillId: 'yii/image-generation', latestVersion: '1.0.2', displayName: 'image-generation', description: 'Original' };
     expect(localizedSkillText(skill, 'zh-CN').name).toBe('图像生成与编辑');
     expect(localizedSkillText({ ...skill, latestVersion: '2.0.0' }, 'zh-CN'))
-      .toMatchObject({ name: 'image-generation', description: 'Original', translated: false });
+      .toMatchObject({ name: '图像生成与编辑', translated: true });
   });
 });

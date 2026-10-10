@@ -1,5 +1,5 @@
 import React from 'react';
-import { cataloguePresentation } from './skillhub-presentation';
+import { CATALOGUE_PRESENTATIONS, cataloguePresentation } from './skillhub-presentation';
 
 export const SKILL_CATEGORIES = [
   ['development', '开发工具'], ['design', '设计创作'],
@@ -58,7 +58,12 @@ export function localizedSkillText(skill, language = 'source') {
   const translations = skill?.translations || skill?.i18n || skill?.localized || {};
   const zh = translations?.['zh-CN'] || translations?.zh || translations?.['zh-cn'] || {};
   if (language === 'zh-CN') {
-    const reviewed = cataloguePresentation(skill);
+    // The public catalogue can publish a new version without changing its
+    // identity. Keep the reviewed Chinese presentation available while the
+    // catalogue metadata catches up, so a version bump does not regress the
+    // language toggle to “暂无中文介绍”.
+    const reviewed = cataloguePresentation(skill)
+      || (skill?.skillId ? CATALOGUE_PRESENTATIONS[skill.skillId] : null);
     const name = zh.name || zh.displayName || skill?.localizedName || skill?.localized_name || reviewed?.name;
     const description = zh.description || skill?.localizedDescription || skill?.localized_description || reviewed?.description;
     return {

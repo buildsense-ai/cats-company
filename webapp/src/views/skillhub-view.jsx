@@ -1657,9 +1657,10 @@ export default function SkillHubView({
 
   useEffect(() => {
     loadBots().catch((error) => setDefinitionError(error?.message || '无法读取 Agent 列表'));
-    api.syncSkillHubPublisherProfile()
-      .catch(() => {})
-      .finally(() => searchCatalogue('').catch(() => {}));
+    // Publisher calibration is independent of browsing. Start both requests
+    // together so the catalogue is not held behind a slow profile sync.
+    api.syncSkillHubPublisherProfile().catch(() => {});
+    searchCatalogue('').catch(() => {});
     loadLibraryLocalSkills().catch(() => {});
   }, [loadBots, loadLibraryLocalSkills, searchCatalogue]);
 
