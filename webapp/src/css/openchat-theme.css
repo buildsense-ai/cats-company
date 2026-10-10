@@ -1484,6 +1484,362 @@ body {
   margin-left: 4px;
 }
 
+/* Review card for messages carrying gateway_annotations metadata. */
+.v3-gateway-annotation-card {
+  margin: 0 0 8px;
+  border: 1px solid var(--v3-border);
+  border-radius: var(--v3-radius);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--cc-accent) 6%, transparent);
+  font-size: 13px;
+}
+
+.v3-gateway-annotation-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.v3-gateway-annotation-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--v3-text-main);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.v3-gateway-annotation-revision {
+  font-weight: 400;
+  color: var(--v3-text-muted);
+}
+
+.v3-gateway-annotation-toggle {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--v3-text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.v3-gateway-annotation-toggle:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 2px;
+}
+
+.v3-gateway-annotation-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.v3-gateway-annotation-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.v3-gateway-annotation-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.v3-gateway-annotation-copy em {
+  font-style: normal;
+  color: var(--v3-text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Gateway annotation controls inside the app viewer bar. */
+.cloud-artifacts-gateway-annotation-tools {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cloud-artifacts-gateway-annotation-mode {
+  padding: 5px 10px;
+  border: 1px solid var(--v3-border);
+  border-radius: var(--v3-radius);
+  background: transparent;
+  color: var(--v3-text-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.cloud-artifacts-gateway-annotation-mode:hover {
+  color: var(--v3-text-main);
+  background: var(--v3-bg-message-hover);
+}
+
+.cloud-artifacts-gateway-annotation-mode:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 2px;
+}
+
+.cloud-artifacts-gateway-annotation-mode.is-active {
+  border-color: var(--v3-primary);
+  color: var(--v3-text-main);
+  background: color-mix(in srgb, var(--v3-primary) 14%, transparent);
+}
+
+.cloud-artifacts-gateway-annotation-mode.is-secondary {
+  color: var(--v3-text-muted);
+}
+
+.cloud-artifacts-gateway-annotation-mode.is-off.is-active {
+  border-color: transparent;
+  background: transparent;
+}
+
+.cloud-artifacts-gateway-annotation-hint {
+  flex: 0 0 auto;
+  margin: 6px 2px 0;
+  font-size: 12px;
+  color: var(--v3-text-muted);
+}
+
+/* Composer annotation capture editor and draft bar. */
+.v3-gateway-annotation-editor {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.v3-gateway-annotation-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--v3-text-muted);
+}
+
+.v3-gateway-annotation-kind-label {
+  border: 1px solid var(--v3-border);
+  border-radius: var(--v3-radius);
+  padding: 1px 8px;
+  color: var(--v3-text-main);
+}
+
+.v3-gateway-annotation-editor-target {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+}
+
+.v3-gateway-annotation-input {
+  border: 1px solid var(--v3-border);
+  border-radius: var(--v3-radius);
+  background: var(--v3-panel);
+  color: var(--v3-text-main);
+  font: inherit;
+  padding: 6px 10px;
+}
+
+.v3-gateway-annotation-input.is-body {
+  min-height: 56px;
+  resize: vertical;
+}
+
+.v3-gateway-annotation-input:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 1px;
+}
+
+.v3-gateway-annotation-input.is-invalid {
+  border-color: var(--v3-danger, #c0392b);
+}
+
+.v3-gateway-annotation-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.v3-gateway-annotation-editor-actions button {
+  border: 1px solid var(--v3-border);
+  border-radius: var(--v3-radius);
+  background: transparent;
+  color: var(--v3-text-main);
+  font: inherit;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.v3-gateway-annotation-editor-actions button.v3-gateway-annotation-confirm {
+  border-color: var(--v3-primary);
+  color: var(--v3-panel);
+  background: var(--v3-primary);
+}
+
+.v3-gateway-annotation-editor-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.v3-gateway-annotation-bar {
+  padding: 8px 12px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.v3-gateway-annotation-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--v3-text-muted);
+  min-width: 0;
+}
+
+.v3-gateway-annotation-bar-head strong {
+  color: var(--v3-text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.v3-gateway-annotation-bar-page {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.v3-gateway-annotation-bar-count {
+  flex: 1 1 auto;
+  text-align: right;
+}
+
+.v3-gateway-annotation-bar-clear {
+  border: 0;
+  background: transparent;
+  color: var(--v3-danger, #c0392b);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.v3-gateway-annotation-bar-clear:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 2px;
+}
+
+.v3-gateway-annotation-bar-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.v3-gateway-annotation-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.v3-gateway-annotation-kind {
+  flex: 0 0 auto;
+  border: 1px solid var(--v3-border);
+  border-radius: var(--v3-radius);
+  padding: 1px 6px;
+  color: var(--v3-text-muted);
+  font-size: 11px;
+}
+
+.v3-gateway-annotation-bar-body {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border: 0;
+  background: transparent;
+  color: var(--v3-text-main);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: text;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2px 0;
+}
+
+.v3-gateway-annotation-bar-body strong {
+  flex: 0 0 auto;
+}
+
+.v3-gateway-annotation-bar-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--v3-border);
+  border-radius: var(--v3-radius);
+  background: var(--v3-panel);
+  color: var(--v3-text-main);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.v3-gateway-annotation-bar-remove {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--v3-text-muted);
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+}
+
+.v3-gateway-annotation-bar-remove:hover {
+  color: var(--v3-danger, #c0392b);
+}
+
+.v3-gateway-annotation-bar-remove:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 2px;
+}
+
+.v3-gateway-annotation-bar-edit:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 1px;
+}
+
+.v3-gateway-annotation-notice {
+  width: 100%;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--v3-text-muted);
+}
+
 .cloud-artifacts-body {
   flex: 1 1 auto;
   min-height: 220px;

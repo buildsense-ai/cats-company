@@ -225,7 +225,7 @@ export function SpreadsheetPreview({ buffer, kind }) {
   }
 
   return (
-    <div className="v3-spreadsheet-preview">
+    <div className="v3-spreadsheet-preview" data-file-annotation-sheet={activeSheet.name}>
       {sheets.length > 1 && (
         <div className="v3-spreadsheet-tabs" role="tablist" aria-label="工作表">
           {sheets.map((sheet, index) => (
@@ -251,7 +251,7 @@ export function SpreadsheetPreview({ buffer, kind }) {
         )}
       </div>
       <div className="v3-spreadsheet-grid-wrap">
-        <table className="v3-spreadsheet-grid">
+        <table className="v3-spreadsheet-grid" data-file-annotation-surface="cells">
           <thead>
             <tr>
               <th className="v3-spreadsheet-corner" aria-label="行号" />
@@ -267,7 +267,9 @@ export function SpreadsheetPreview({ buffer, kind }) {
                 {columns.map((column, columnIndex) => {
                   const cell = row[columnIndex] || '';
                   return (
-                    <td key={`${rowIndex}-${column}`} title={cell}>
+                    <td key={`${rowIndex}-${column}`} title={cell}
+                      data-file-annotation-row={rowIndex + 1}
+                      data-file-annotation-column={columnIndex + 1}>
                       {cell}
                     </td>
                   );

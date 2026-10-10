@@ -4082,3 +4082,143 @@ describe('artifact card subtitle', () => {
     expect(artifactSubtitle(undefined)).toBe('HTML · 云端生成物');
   });
 });
+
+describe('ChatMessage gateway annotation card', () => {
+  let container;
+  let root;
+
+  beforeEach(() => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it('renders bounded annotation metadata as a review card', async () => {
+    const message = {
+      id: 7,
+      seq_id: 7,
+      from_uid: 1,
+      type: 'text',
+      content: '请按标注调整',
+      created_at: '2026-10-06T12:00:00Z',
+      metadata: {
+        gateway_annotations: {
+          contract_version: 'catsco.gateway-annotations.v1',
+          agent_uid: 7,
+          app_id: 'saturday-demo',
+          page: { path: '/board', revision: 'r7' },
+          annotations: [{
+            id: 'a1',
+            kind: 'element',
+            label: '发布按钮',
+            body: '改成蓝色',
+            target: { element_id: 'submit-btn', selector: 'button#submit-btn' },
+          }, {
+            id: 'a2',
+            kind: 'text',
+            label: '',
+            body: '这句文案不对',
+            target: { text: '将上架时间定为下周一' },
+          }],
+        },
+      },
+    };
+    await act(async () => {
+      root.render(
+        <PreviewHarness message={message} />,
+      );
+      await flushAsync();
+    });
+
+    const card = container.querySelector('.v3-gateway-annotation-card');
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain('saturday-demo');
+    expect(card.textContent).toContain('/board');
+    expect(card.textContent).toContain('（r7）');
+    expect(card.textContent).toContain('发布按钮');
+    expect(card.textContent).toContain('改成蓝色');
+    expect(card.textContent).toContain('这句文案不对');
+    expect(card.querySelector('button.v3-gateway-annotation-toggle')).toBeNull();
+  });
+
+  it('collapses long annotation lists behind an expand toggle', async () => {
+    const annotations = Array.from({ length: 5 }, (_, index) => ({
+      id: `a${index}`,
+      kind: 'element',
+      label: '',
+      body: `批注 ${index}`,
+      target: { element_id: `node-${index}` },
+    }));
+    await act(async () => {
+      root.render(
+        <PreviewHarness message={{
+          id: 8,
+          seq_id: 8,
+          from_uid: 1,
+          type: 'text',
+          content: '按全部标注处理',
+          metadata: {
+            gateway_annotations: {
+              contract_version: 'catsco.gateway-annotations.v1',
+              agent_uid: 7,
+              app_id: 'saturday-demo',
+              page: { path: '/board' },
+              annotations,
+            },
+          },
+        }} />,
+      );
+      await flushAsync();
+    });
+    const card = container.querySelector('.v3-gateway-annotation-card');
+    expect(card.textContent).not.toContain('批注 4');
+    expect(card.textContent).toContain('全部 5 条');
+    await act(async () => {
+      card.querySelector('button.v3-gateway-annotation-toggle').click();
+      await flushAsync();
+    });
+    expect(container.querySelector('.v3-gateway-annotation-card').textContent).toContain('批注 4');
+  });
+
+  it('does not render a card for invalid or foreign metadata values', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness message={{
+          id: 9,
+          seq_id: 9,
+          from_uid: 1,
+          type: 'text',
+          content: '普通消息',
+          metadata: {
+            // Wrong contract version: the normalizer drops it entirely.
+            gateway_annotations: {
+              contract_version: 'catsco.gateway-annotations.v0',
+              agent_uid: 7,
+              app_id: 'saturday-demo',
+              page: { path: '/board' },
+              annotations: [{
+                id: 'a1',
+                kind: 'element',
+                label: '',
+                body: '恶意数据',
+                target: { element_id: 'a' },
+              }],
+            },
+          },
+        }} />,
+      );
+      await flushAsync();
+    });
+    expect(container.querySelector('.v3-gateway-annotation-card')).toBeNull();
+  });
+});

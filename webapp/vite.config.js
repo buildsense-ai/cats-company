@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { onboardingPreviewPlugin } from './scripts/onboarding-preview-plugin.mjs';
+import { artifactGatewayCatalogueProxy, artifactGatewayCatalogueRoute } from './scripts/artifact-gateway-proxy.mjs';
 
 // Vite exposes .env files through loadEnv; reading process.env alone silently
 // falls back to the retired local mock and produces a proxy 502 in the preview.
@@ -10,13 +11,12 @@ const backendTarget = process.env.VITE_BACKEND_TARGET
   || localEnv.VITE_BACKEND_TARGET
   || 'http://localhost:6061';
 const localXiaobaTarget = 'http://127.0.0.1:3800';
+const artifactGatewayTarget = process.env.VITE_ARTIFACT_GATEWAY_BASE
+  || localEnv.VITE_ARTIFACT_GATEWAY_BASE
+  || 'https://artifact.catsco.cc';
 
 const proxy = {
-  '/artifact-gateway': {
-    target: 'https://artifact.catsco.cc',
-    changeOrigin: true,
-    rewrite: (path) => path.replace(/^\/artifact-gateway/, ''),
-  },
+  [artifactGatewayCatalogueRoute]: artifactGatewayCatalogueProxy(artifactGatewayTarget),
   '/local-xiaoba': {
     target: localXiaobaTarget,
     rewrite: (path) => path.replace(/^\/local-xiaoba/, ''),

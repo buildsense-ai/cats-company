@@ -4,6 +4,7 @@ import {
   removeStorageValue,
   writeStorageValue,
 } from './storage-access';
+import { clearPersistedGatewayAnnotationDrafts } from './gateway-annotation-drafts';
 
 export const COMPOSER_DRAFT_STORAGE_PREFIX = 'catsco_composer_drafts:v1:';
 export const NEW_TASK_DRAFT_KEY = 'new-task';
@@ -181,13 +182,23 @@ export function clearPersistedComposerDrafts(storage = 'sessionStorage') {
   new Set([...registries].flatMap((registry) => [...registry.values()]))
     .forEach((store) => store.close?.());
   registries.forEach((registry) => registry.clear());
+
+  // Gateway annotation drafts share the same logout lifecycle as composer
+  // drafts (they must never outlive the login that wrote them), so the
+  // combined cleanup also sweeps their prefix. The dedicated function stays
+  // exported for callers that only target annotation drafts.
+  let gatewayRemoved = 0;
+  targetObjects.forEach((target) => {
+    gatewayRemoved += clearPersistedGatewayAnnotationDrafts(target);
+  });
+
   return [...keys].reduce((removed, key) => {
     let removedFromStorage = false;
     targetObjects.forEach((target) => {
       if (removeStorageValue(key, target)) removedFromStorage = true;
     });
     return removedFromStorage ? removed + 1 : removed;
-  }, 0);
+  }, 0) + gatewayRemoved;
 }
 
 export function createComposerDraftStore(userID, storage = 'sessionStorage') {

@@ -201,8 +201,8 @@ jobs:
         working-directory: webapp
         run: npm ci --prefer-offline --no-audit --no-fund
 
-      - name: Test local showcase mock
-        run: node --test scripts/local-onboarding-mock-server.test.mjs
+      - name: Test local showcase mock and gateway annotation demo
+        run: node --test scripts/local-onboarding-mock-server.test.mjs scripts/local-gateway-annotations-demo.test.mjs
 
       - name: SkillHub phase 1 mandatory regression
         run: npm run test:skillhub-phase1

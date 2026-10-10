@@ -13,6 +13,53 @@ import {
   setToken as setSessionToken,
 } from './auth-session';
 import { fetchWithRequestError } from './utils/request-error';
+import { normalizeArtifactOpenBinding } from './gateway-annotations';
+
+// Each browser tab owns its opens. Capture the original auth token solely for
+// best-effort HTTP revocation after logout; never expose it (or open_ref) to apps.
+const artifactOpenBindings = new Map();
+function revokeArtifactOpenBinding(openRef) {
+  const owned = artifactOpenBindings.get(openRef);
+  artifactOpenBindings.delete(openRef);
+  return request('DELETE', `/api/artifacts/open-bindings/${encodeURIComponent(openRef)}`,
+    undefined, { timeoutMs: 3000, ...(owned ? { authToken: owned.token } : {}) });
+}
+const fileOpenBindings = new Map();
+function revokeFileAnnotationBinding(openRef) {
+  const owned = fileOpenBindings.get(openRef);
+  fileOpenBindings.delete(openRef);
+  return request('DELETE', `/api/files/open-bindings/${encodeURIComponent(openRef)}`,
+    undefined, { timeoutMs: 3000, ...(owned ? { authToken: owned.token } : {}) });
+}
+
+window.addEventListener('cc:auth-changed', () => {
+  for (const [ref, owned] of fileOpenBindings) {
+    if (!isCurrentAuthSession(owned.token, owned.revision)) {
+      void revokeFileAnnotationBinding(ref).catch(() => {});
+    }
+  }
+  for (const [ref, owned] of artifactOpenBindings) {
+    if (!isCurrentAuthSession(owned.token, owned.revision)) {
+      void revokeArtifactOpenBinding(ref).catch(() => {});
+    }
+  }
+});
+window.addEventListener('pagehide', () => {
+  for (const [ref, owned] of fileOpenBindings) {
+    fileOpenBindings.delete(ref);
+    void fetch(`${API_BASE}/api/files/open-bindings/${encodeURIComponent(ref)}`, {
+      method: 'DELETE', keepalive: true,
+      headers: { Authorization: `Bearer ${owned.token}` },
+    }).catch(() => {});
+  }
+  for (const [ref, owned] of artifactOpenBindings) {
+    artifactOpenBindings.delete(ref);
+    void fetch(`${API_BASE}/api/artifacts/open-bindings/${encodeURIComponent(ref)}`, {
+      method: 'DELETE', keepalive: true,
+      headers: { Authorization: `Bearer ${owned.token}` },
+    }).catch(() => {});
+  }
+});
 
 export {
   getAuthRevision,
@@ -49,6 +96,7 @@ const WS_STABLE_CONNECTION_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
 const ARTIFACT_PREVIEW_SESSION_CONTRACT = 'catsco.artifact-preview-session.v1';
+// Development's public compatibility catalogue uses a narrowly scoped proxy.
 const DEV_ARTIFACT_GATEWAY_BASE = '/artifact-gateway';
 // Asking the server for a one-time code is a short round trip; keep it bounded
 // so a slow platform never blocks opening an application.
@@ -916,6 +964,7 @@ export const api = {
       // open. Bound it, and accept the caller's signal so a superseded request
       // stops waiting. A bare fetch has neither.
       const response = await fetchWithRequestError(`${DEV_ARTIFACT_GATEWAY_BASE}/api/apps${query}`, {
+        credentials: 'omit',
         signal: options.signal,
         timeoutMs: ARTIFACT_GATEWAY_TIMEOUT_MS,
       });
@@ -952,11 +1001,72 @@ export const api = {
   // Without it the application can only ever see a guest: the platform's login
   // state lives in storage on the platform origin and is unreadable from the
   // application's origin. Callers fall back to the plain URL when this fails.
-  requestArtifactLaunch: ({ app, topic_id }) => {
+  requestArtifactLaunch: async ({ app, topic_id }) => {
+    const token = getToken();
+    const revision = getAuthRevision();
     const payload = { app };
     if (topic_id) payload.topic_id = topic_id;
-    return request('POST', '/api/artifacts/launch', payload, { timeoutMs: ARTIFACT_LAUNCH_TIMEOUT_MS });
+    const launch = await request('POST', '/api/artifacts/launch', payload, { timeoutMs: ARTIFACT_LAUNCH_TIMEOUT_MS });
+    const binding = normalizeArtifactOpenBinding(launch?.open_binding);
+    if (binding) {
+      artifactOpenBindings.set(binding.open_ref, { token, revision });
+      if (!isCurrentAuthSession(token, revision)) {
+        void revokeArtifactOpenBinding(binding.open_ref).catch(() => {});
+        throw new Error('登录状态已变化，请重新打开应用');
+      }
+    }
+    return launch;
   },
+  sendArtifactAnnotations: async (payload) => {
+    try {
+      return await request('POST', '/api/artifacts/annotations', payload);
+    } catch (error) {
+      if (['artifact_open_binding_invalid', 'artifact_open_binding_mismatch'].includes(error?.data?.code)
+        || ['artifact_open_binding_invalid', 'artifact_open_binding_mismatch'].includes(error?.data?.error)) {
+        error.message = '应用会话绑定无效、已过期或权限已变化，请在原会话重新打开应用并重新标注';
+      }
+      throw error;
+    }
+  },
+  revokeArtifactOpenBinding,
+  openFileAnnotationBinding: async (source) => {
+    const token = getToken();
+    const revision = getAuthRevision();
+    const binding = await request('POST', '/api/files/open-bindings', {
+      topic_id: source?.topic_id,
+      message_id: source?.message_id,
+      attachment_index: source?.attachment_index,
+    });
+    const valid = binding?.contract_version === 'catsco.file-open-binding.v1'
+      && typeof binding.open_ref === 'string' && /^fob_[A-Za-z0-9_-]{43}$/.test(binding.open_ref)
+      && binding.topic_id === source?.topic_id
+      && binding.source?.topic_id === source?.topic_id
+      && binding.source?.message_id === source?.message_id
+      && binding.source?.attachment_index === source?.attachment_index
+      && typeof binding.source?.name === 'string'
+      && typeof binding.source?.url === 'string'
+      && /^[a-f0-9]{64}$/.test(binding.source?.version || '')
+      && Number.isFinite(Date.parse(binding.expires_at)) && Date.parse(binding.expires_at) > Date.now();
+    if (!valid) throw new Error('文件会话绑定无效，请在原会话重新打开文件');
+    fileOpenBindings.set(binding.open_ref, { token, revision });
+    if (!isCurrentAuthSession(token, revision)) {
+      void revokeFileAnnotationBinding(binding.open_ref).catch(() => {});
+      throw new Error('登录状态已变化，请重新打开文件');
+    }
+    return binding;
+  },
+  sendFileAnnotations: async (payload) => {
+    try {
+      return await request('POST', '/api/files/annotations', payload);
+    } catch (error) {
+      if (/^file_(open_binding|source)/.test(error?.data?.code || error?.data?.error || '')) {
+        error.message = '文件绑定已过期、原附件已变化或权限已变化，请在原会话重新打开文件';
+      }
+      throw error;
+    }
+  },
+  revokeFileAnnotationBinding,
+  uploadImage: (file) => api.uploadFile(file, 'image'),
   publishCloudArtifact: (agentUid, artifact) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts`, artifact),
   getTopicFiles: (topicId, { beforeId = 0, beforeCreatedAt = '', limit = 40 } = {}) => {

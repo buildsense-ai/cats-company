@@ -97,6 +97,9 @@ var allowedFileExts = map[string]bool{
 	".csv": true, ".json": true, ".xml": true,
 	".html": true, ".htm": true,
 	".md": true, ".go": true, ".py": true, ".js": true,
+	".jsx": true, ".ts": true, ".tsx": true, ".rs": true, ".java": true,
+	".c": true, ".cpp": true, ".h": true, ".css": true,
+	".yaml": true, ".yml": true, ".sql": true, ".sh": true,
 }
 
 // UploadHandler handles file upload requests.
@@ -269,6 +272,13 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if uploadType == "image" {
+		if err := h.rememberArtifactImageUpload(UIDFromContext(r.Context()), fileKey); err != nil {
+			_ = os.Remove(destPath)
+			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload receipt failed"})
+			return
+		}
+	}
 	url := fmt.Sprintf("%s/%s/%s", h.baseURL, subDir, fileKey)
 
 	writeUploadJSON(w, http.StatusOK, uploadPayload{
@@ -1293,6 +1303,13 @@ func (h *UploadHandler) receiveRawUpload(
 		return uploadPayload{}, false
 	}
 	tempPath = ""
+	if uploadType == "image" {
+		if err := h.rememberArtifactImageUpload(UIDFromContext(r.Context()), fileKey); err != nil {
+			_ = os.Remove(destPath)
+			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload receipt failed"})
+			return uploadPayload{}, false
+		}
+	}
 
 	return uploadPayload{
 		FileKey:  fileKey,

@@ -37,6 +37,7 @@ type ArtifactLaunchHandler struct {
 	controlToken  string
 	httpClient    *http.Client
 	configErr     error
+	openBindings  *ArtifactOpenBindingHandler
 }
 
 type artifactLaunchRequest struct {
@@ -47,10 +48,11 @@ type artifactLaunchRequest struct {
 // ArtifactLaunchResult is what the browser receives. It carries the one-time
 // code, so the client only has to follow LaunchURL.
 type ArtifactLaunchResult struct {
-	AppID     string `json:"app_id"`
-	Code      string `json:"code"`
-	ExpiresAt string `json:"expires_at"`
-	LaunchURL string `json:"launch_url"`
+	AppID       string               `json:"app_id"`
+	Code        string               `json:"code"`
+	ExpiresAt   string               `json:"expires_at"`
+	LaunchURL   string               `json:"launch_url"`
+	OpenBinding *ArtifactOpenBinding `json:"open_binding,omitempty"`
 }
 
 func NewArtifactLaunchHandlerFromEnv() *ArtifactLaunchHandler {
@@ -90,7 +92,7 @@ func NewArtifactLaunchHandlerFromEnv() *ArtifactLaunchHandler {
 // a configured value can be compared against a launch URL without normalisation.
 func validGatewayOrigin(origin string) bool {
 	parsed, err := url.Parse(origin)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.Path == "" && parsed.RawQuery == ""
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Path == "" && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == ""
 }
 
 // Enabled reports whether the handler can serve requests, so callers can decide
@@ -101,9 +103,10 @@ func (h *ArtifactLaunchHandler) Enabled() bool {
 
 // HandleLaunch turns the current login session into a one-time Artifact code.
 // The owner of the code is always the authenticated caller: the request body
-// cannot name a user, and the conversation id is only a hint for the
-// application.
+// cannot name a user. A topic launch must pass server permission checks and
+// returns a parent-only open binding; standalone identity launch has none.
 func (h *ArtifactLaunchHandler) HandleLaunch(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
@@ -149,10 +152,34 @@ func (h *ArtifactLaunchHandler) HandleLaunch(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	var bindingRecord artifactOpenBindingRecord
+	var registeredApp artifactApp
+	if topic != "" {
+		if h.openBindings == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "artifact_open_binding_unavailable"})
+			return
+		}
+		var status int
+		var code string
+		bindingRecord, registeredApp, status, code = h.openBindings.prepareLaunch(r, app, topic)
+		if code != "" {
+			openBindingFailure(w, status, code)
+			return
+		}
+	}
+
 	result, status, code := h.requestCode(r.Context(), app, uid, UsernameFromContext(r.Context()), r.Host, topic)
 	if code != "" {
 		writeJSON(w, status, map[string]string{"error": code})
 		return
+	}
+	if topic != "" {
+		binding, err := h.openBindings.finishLaunch(bindingRecord, registeredApp, result)
+		if err != nil {
+			openBindingFailure(w, http.StatusBadGateway, "artifact_open_binding_unavailable")
+			return
+		}
+		result.OpenBinding = &binding
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -228,7 +255,7 @@ func (h *ArtifactLaunchHandler) requestCode(ctx context.Context, app string, uid
 // somewhere else entirely.
 func launchURLBelongsToGateway(launchURL string, origins []string) bool {
 	launch, err := url.Parse(launchURL)
-	if err != nil || launch.Host == "" {
+	if err != nil || launch.Host == "" || launch.User != nil || launch.Fragment != "" {
 		return false
 	}
 	for _, origin := range origins {

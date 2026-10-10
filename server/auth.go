@@ -61,8 +61,15 @@ func GeneratePersistentUserToken(uid int64, username string, email string) (stri
 }
 
 func generateUserToken(uid int64, username string, email string, persistent bool) (string, error) {
+	// Distinct logins minted in the same second must not share an auth-session
+	// identity. Open bindings fingerprint the verified token, including this JTI.
+	var sessionID [16]byte
+	if _, err := rand.Read(sessionID[:]); err != nil {
+		return "", err
+	}
 	tokenType := userTokenType
 	registered := jwt.RegisteredClaims{
+		ID:       hex.EncodeToString(sessionID[:]),
 		IssuedAt: jwt.NewNumericDate(time.Now()),
 		Issuer:   "catscompany",
 	}
