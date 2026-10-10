@@ -34,15 +34,15 @@ function installCanvas(w) {
 
 // jsdom never executes <script src>, so the pinned self-host load is
 // simulated faithfully: the appended tag must carry the fixed URL + SRI,
-// and a load event exposes window.html2canvas exactly as the real bundle
+// and a load event exposes window.html2canvas as the pro browser bundle
 // does. The SDK itself is never relaxed for the fixture.
 function installRendererLoader(w, makeRenderer, behaviour = 'ok') {
   const pending = [];
   const tags = [];
   const observer = new w.MutationObserver(() => {
     for (const script of pending.splice(0)) {
-      if (!script.src.includes('/_catsco/runtime/html2canvas-1.4.1.min.js')
-        || script.integrity !== 'sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H') continue;
+      if (!script.src.includes('/_catsco/runtime/html2canvas-pro-1.6.7.min.js')
+        || script.integrity !== 'sha384-CqHBfwlOY3BunFNI9xxzy+h/+/df5g0tI05vSbd8kIwTTPk23b5jYDpyrlxfukc+') continue;
       const behaviour = script.dataset.testBehaviour ?? 'ok';
       if (behaviour === 'fail') { queueMicrotask(() => script.onerror?.(new Event('error'))); return; }
       if (behaviour === 'empty') { queueMicrotask(() => script.onload?.(new Event('load'))); return; }
@@ -374,6 +374,63 @@ describe('select-mode screenshot capture', () => {
     expect(f.results()[3].error.code).toBe('renderer-unavailable');
   });
 
+  it.each([
+    [new Error('Attempting to parse an unsupported color function "future-color"'), 'unsupported-style'],
+    [new Error('Attempting to parse an unsupported image function "future-gradient"'), 'unsupported-style'],
+    [new Error('unrelated renderer failure'), 'capture-failed'],
+    [null, 'capture-failed'],
+    ['arbitrary thrown value', 'capture-failed'],
+  ])('classifies renderer errors without returning their messages (%s)', async (error, code) => {
+    const f = fixture();
+    f.renderer.mockRejectedValue(error);
+    f.request();
+    await vi.waitFor(() => expect(f.results()).toHaveLength(1));
+    expect(f.results()[0].error).toEqual({ code });
+    expect(f.results()[0].screenshots).toBeUndefined();
+  });
+
+  it('masks cloned shadow boundaries while preserving layout and the application DOM', async () => {
+    const f = fixture();
+    const host = f.w.document.createElement('div');
+    const shadow = host.attachShadow({ mode: 'open' });
+    host.id = 'shadow-probe';
+    shadow.innerHTML = '<input value="shadow-secret"><span data-catsco-annotation-sensitive>private</span>';
+    host.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 60 });
+    f.w.document.body.append(host);
+    let cloned;
+    f.renderer.mockImplementation((element, options) => {
+      const clone = element.cloneNode(true);
+      cloned = clone.querySelector('#shadow-probe');
+      cloned.attachShadow({ mode: 'open' }).innerHTML = shadow.innerHTML;
+      cloned.getBoundingClientRect = host.getBoundingClientRect;
+      options.onclone(clone);
+      const bitmap = f.w.document.createElement('canvas');
+      bitmap.width = 1000; bitmap.height = 500;
+      return Promise.resolve(bitmap);
+    });
+    f.request();
+    await vi.waitFor(() => expect(f.results()).toHaveLength(1));
+    expect(f.results()[0].error).toBeUndefined();
+    expect(f.results()[0].warnings).toEqual(expect.arrayContaining(['embedded-content', 'sensitive-content-masked']));
+    expect(cloned.style.opacity).toBe('0');
+    expect(cloned.style.width).toBe('200px');
+    expect(cloned.style.height).toBe('60px');
+    expect(host.style.opacity).toBe('');
+    expect(shadow.querySelector('input').value).toBe('shadow-secret');
+  });
+
+  it('includes shadow descendants in the page size limit before loading the renderer', async () => {
+    const f = fixture();
+    const host = f.w.document.createElement('div');
+    host.attachShadow({ mode: 'open' }).innerHTML = '<span></span>'.repeat(10001);
+    f.w.document.body.append(host);
+    f.request();
+    await vi.waitFor(() => expect(f.results()).toHaveLength(1));
+    expect(f.results()[0].error.code).toBe('page-too-large');
+    expect(f.renderer).not.toHaveBeenCalled();
+    expect(f.loader.tags).toHaveLength(0);
+  });
+
   it('always loads the pinned self-hosted bundle with SRI and freezes that renderer', async () => {
     const f = fixture();
     // An app-provided global must NOT satisfy the SDK without our own load.
@@ -382,8 +439,8 @@ describe('select-mode screenshot capture', () => {
     f.request();
     await vi.waitFor(() => expect(f.results()).toHaveLength(1));
     const script = f.loader.tags.at(-1);
-    expect(script.getAttribute('src')).toBe(`${APP}/_catsco/runtime/html2canvas-1.4.1.min.js`);
-    expect(script.integrity).toBe('sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H');
+    expect(script.getAttribute('src')).toBe(`${APP}/_catsco/runtime/html2canvas-pro-1.6.7.min.js`);
+    expect(script.integrity).toBe('sha384-CqHBfwlOY3BunFNI9xxzy+h/+/df5g0tI05vSbd8kIwTTPk23b5jYDpyrlxfukc+');
     expect(script.getAttribute('crossorigin')).toBe('anonymous');
     expect(f.results()[0].screenshots).toHaveLength(2);
     expect(f.rendererCalls).toHaveLength(1); // verified bundle, not the app stub

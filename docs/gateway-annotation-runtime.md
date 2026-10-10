@@ -77,9 +77,11 @@ host.setMode('select');
 
 宿主使用 `captureScreenshot({selectionId,page,signal})` 请求截图，并可调用 `cancelScreenshot()`；`screenshotSupported()` 读取当前文档能力。SDK 的 ready 声明截图支持，请求和结果绑定当前 session、selection 和 page。
 
-- 固定同源资源 `/_catsco/runtime/html2canvas-1.4.1.min.js`（1.4.1）按需加载并校验 SRI。保留应用原有 global，捕获使用验证后的 renderer；不使用 CDN。
+- 固定同源资源 `/_catsco/runtime/html2canvas-pro-1.6.7.min.js`（html2canvas-pro 1.6.7）按需加载并校验 SRI。支持浏览器计算后的 `color()`、`oklab()`、`oklch()`，包括 `color-mix()` 的计算值和伪元素。保留应用原有 global，捕获使用验证后的 renderer；不使用 CDN。
+- 1.6.7 的浏览器包在 UMD 初始化后将 default export 转为 `window.html2canvas` 函数；加载器冻结这个最终函数，而不是根据包头或无 window 的 VM 推断导出形态。
 - 同一 viewport bitmap 生成 full（红框标注目标）和 crop（16 CSSpx 周边）两张 JPEG。DPR 最多2，每边最多2048，每图最多2 MiB。
-- 捕获克隆中排除批注 overlay、遮挡敏感控件并保留布局；风险提示说明跨域图、背景、视频、嵌套内容或 WebGL 可能缺失。
+- 捕获克隆中排除批注 overlay、遮挡敏感控件并保留布局；保留的 Shadow DOM 根整体遮挡，展开为普通 DOM 的节点继续按控件/敏感 subtree 遮挡。Shadow DOM 节点纳入 10,000 节点预算。风险提示说明跨域图、背景、视频、嵌套内容或 WebGL 可能缺失。
+- 不支持的颜色/图片函数解析错误仅返回 `unsupported-style`，不传递原始 CSS 或错误正文。宿主显示样式不支持提示；普通 `capture-failed` 不再误归因为资源读取失败。
 - scroll、resize、page/revision/session 变化、off、Escape 或 dispose 作废选区及在途截图；即使已捕获，滚动和尺寸变化也通知宿主撤销旧目标。
 - 图片结果经父页面上传并用 `image` content blocks 发送；不进入 annotation metadata、草稿 storage 或 SDK 的聊天请求。
 
@@ -109,7 +111,24 @@ node scripts/export-gateway-annotation-runtime.mjs \
   --out-dir /path/to/gateway/vendor --check --expected-sha256 <64位小写hex>
 ```
 
-产物：`annotations-v1.js`、`html2canvas-1.4.1.min.js`、`html2canvas-1.4.1.LICENSE`、`annotations-v1.manifest.json`。manifest 保留 SDK source/SHA-256/bytes/固定 runtime URL/配置属性，并列出三项资源的尺寸、MIME 和 SHA。renderer 与许可证有固定内容校验；SDK hash 应取当前仓库源文件。改 SDK 后重新测试并导出，gateway 不手改第二份。`annotations-v1` 为协议 URL，**不是 immutable content hash URL**，缓存应 revalidate。
+产物：`annotations-v1.js`、`html2canvas-pro-1.6.7.min.js`、`html2canvas-pro-1.6.7.LICENSE`、兼容已打开页面的 `html2canvas-1.4.1.min.js` / `.LICENSE`、`annotations-v1.manifest.json`。manifest 保留 SDK source/SHA-256/bytes/固定 runtime URL/配置属性，并列出五项资源的尺寸、MIME 和 SHA。新 renderer 从 npm 1.6.7 artifact 原样取出并验证 npm SHA-512；许可文件保留 fork 与 upstream 的 MIT 通知。renderer 与许可证有固定内容校验；SDK hash 应取当前仓库源文件。改 SDK 后重新测试并导出，gateway 不手改第二份。`annotations-v1` 为协议 URL，**不是 immutable content hash URL**，缓存应 revalidate。
+
+上线前须先部署完整资源目录，再加载包含新 renderer exact alias 的 Gateway 配置。旧 alias 保留以服务已经打开的旧 SDK 文档；重新加载应用 iframe 后采用新 SDK，旧文档不会自动替换内存中的 renderer。
+
+## 现代 CSS 真实浏览器回归（#598）
+
+```bash
+node scripts/gateway-annotation-screenshot-browser.mjs
+opencli browser screenshot-regression open http://127.0.0.1:18762/
+# 使用 open 返回的真实 target ID，激活标签页；后台标签页会节流 readiness/timer。
+opencli browser screenshot-regression tab select <targetId>
+opencli browser screenshot-regression click '#run'
+opencli browser screenshot-regression wait text 'PASS:' --timeout 10000
+opencli browser screenshot-regression eval 'window.result'
+# 再打开 http://127.0.0.1:18762/?plain 验证普通 RGB 页面。
+```
+
+fixture 使用 127.0.0.1 宿主与 localhost iframe 的真实跨 origin 通信、完整 SDK / host 和 SRI bundle；捕获真实 JPEG，再断言现代颜色、伪元素、遮罩区域像素、full 红框、crop 无红框、尺寸，以及原应用的输入和 renderer global 未变。包括保留和展开的 Shadow DOM。fixture 不上传图片，不发送 Agent 消息。
 
 ## 实际测试
 
@@ -126,4 +145,4 @@ node --test scripts/export-gateway-annotation-runtime.test.mjs
 node --check webapp/public/catsco-annotations.js
 ```
 
-当前专项结果：SDK58 + screenshot23 + host51 + bootstrap32 + open-binding3 = **167 个通过**；export Node tests **4 个通过**。测试执行公共源完整 production bytes + 真实 SDK / host 方法。覆盖首次 ready、双注入、explicit 前后升级、错误 allowlist/source/origin/session、真实 Selection/drag stale 防御、dispose、renderer 来源和遮罩、截图取消及裁图几何，以及 export 真 CLI/hash/byte/manifest 漂移。另有本地 HTTP fixture 经 jsdom 外部资源加载器实际请求两次 SDK，验证 HTML escaped 属性解码、document.currentScript 自动配置、首次 ready 和单个 element target。jsdom 回放跨 realm postMessage（模拟 structured clone），**不等价真实浏览器跨 origin / Nginx / CSP / 服务端落库 E2E**。本地核心浏览器链路另用真实 React、Gateway/Nginx 和 Go handlers 验证了 click、Esc、drag、双 JPEG 预览、发送及原会话回执；完整浏览器负向矩阵和生产环境仍须单独验证。
+当前专项结果：SDK58 + screenshot30 + host54 + bootstrap32 + open-binding3 = **177 个通过**；连同截图 UI 工具和消息流程共 **184 个通过**；export Node tests **4 个通过**。测试执行公共源完整 production bytes + 真实 SDK / host 方法。覆盖首次 ready、双注入、explicit 前后升级、错误 allowlist/source/origin/session、真实 Selection/drag stale 防御、dispose、renderer 来源和遮罩、截图取消及裁图几何，以及 export 真 CLI/hash/byte/manifest 漂移。另有本地 HTTP fixture 经 jsdom 外部资源加载器实际请求两次 SDK，验证 HTML escaped 属性解码、document.currentScript 自动配置、首次 ready 和单个 element target。jsdom 回放跨 realm postMessage（模拟 structured clone），**不等价真实浏览器跨 origin / Nginx / CSP / 服务端落库 E2E**。本地核心浏览器链路另用真实 React、Gateway/Nginx 和 Go handlers 验证了 click、Esc、drag、双 JPEG 预览、发送及原会话回执；完整浏览器负向矩阵和生产环境仍须单独验证。

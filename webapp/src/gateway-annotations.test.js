@@ -252,6 +252,18 @@ describe('host screenshot request guards', () => {
       capture: (extra = {}) => bus.host.captureScreenshot({ selectionId: 'sel-1', page: { path: '/board', revision: 'r1' }, ...extra }) };
   }
 
+  it.each(['unsupported-style', 'capture-failed', 'renderer-unavailable'])('preserves a recognized screenshot category (%s) without raw renderer details', async (code) => {
+    const f = readyWithSelection();
+    const pending = f.capture();
+    const settled = pending.catch(error => error);
+    const request = f.h.posted.filter(entry => entry.message.type === 'catsco.gateway.annotation.screenshot.request.v1').at(-1).message;
+    f.send({ type: 'catsco.gateway.annotation.screenshot.result.v1', request_id: request.request_id,
+      selection_id: 'sel-1', page: { path: '/board', revision: 'r1' }, error: { code, message: 'raw CSS or private details' } });
+    expect((await settled).code).toBe(code);
+    expect((await settled).message).not.toContain('private details');
+    f.host.dispose();
+  });
+
   it('advertises screenshot support from ready and resolves one validated pair', async () => {
     const f = readyWithSelection();
     expect(f.host.screenshotSupported()).toBe(true);

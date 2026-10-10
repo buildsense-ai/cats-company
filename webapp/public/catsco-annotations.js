@@ -151,15 +151,15 @@
     return createInstance(config);
   }
 
-  var RENDERER_URL = '/_catsco/runtime/html2canvas-1.4.1.min.js';
-  var RENDERER_INTEGRITY = 'sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H';
+  var RENDERER_URL = '/_catsco/runtime/html2canvas-pro-1.6.7.min.js';
+  var RENDERER_INTEGRITY = 'sha384-CqHBfwlOY3BunFNI9xxzy+h/+/df5g0tI05vSbd8kIwTTPk23b5jYDpyrlxfukc+';
   var rendererPromise = null;
   var verifiedRenderer = null;
 
   function loadRenderer() {
     // Always load the pinned self-hosted bundle with SRI, even when the app
     // already defines window.html2canvas: an arbitrary app-provided renderer
-    // is not the audited 1.4.1 build and must not be trusted for evidence.
+    // is not the pinned 1.6.7 build and must not be trusted for evidence.
     if (!rendererPromise) {
       rendererPromise = new Promise(function (resolve, reject) {
         var script = document.createElement('script');
@@ -178,7 +178,8 @@
         var timer = setTimeout(function () { script.remove(); restoreAppGlobal(); reject(new Error('renderer-unavailable')); }, 10000);
         script.onload = function () {
           clearTimeout(timer);
-          // Freeze exactly what the verified bundle exposed.
+          // The 1.6.7 browser bundle unwraps its UMD default export back to
+          // window.html2canvas. Freeze that final, SRI-verified function.
           if (typeof window.html2canvas !== 'function') {
             script.remove(); restoreAppGlobal(); reject(new Error('renderer-unavailable')); return;
           }
@@ -211,8 +212,18 @@
 
   function screenshotRisks() {
     var warnings = new Set();
-    var nodes = document.querySelectorAll('*');
-    if (nodes.length > 10000) throw new Error('page-too-large');
+    var nodes = Array.from(document.querySelectorAll('*'));
+    // The renderer now clones open shadow roots. Count those nodes too.
+    // Preserved roots are masked as a whole; flattened clones use ordinary
+    // control/subtree masking. Stop at the same 10,000-node budget.
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes.length > 10000) throw new Error('page-too-large');
+      if (nodes[i].shadowRoot) {
+        var children = nodes[i].shadowRoot.querySelectorAll('*');
+        if (nodes.length + children.length > 10000) throw new Error('page-too-large');
+        Array.prototype.push.apply(nodes, children);
+      }
+    }
     function external(value) {
       try {
         var url = new URL(value, window.location.href);
@@ -221,6 +232,9 @@
     }
     Array.from(nodes).forEach(function (node) {
       if (runtimeOverlay(node) || !normalizedViewportRect(node.getBoundingClientRect())) return;
+      if (node.shadowRoot) {
+        warnings.add('embedded-content'); warnings.add('sensitive-content-masked'); return;
+      }
       if (isSensitiveSubtreeRoot(node) || ['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName)) {
         warnings.add('sensitive-content-masked'); return;
       }
@@ -254,7 +268,9 @@
     // roots entirely, including nested media and pseudo-elements.
     var nodes = Array.from(clone.querySelectorAll('*'));
     var masks = nodes.filter(function (node) {
-      return isSensitiveSubtreeRoot(node) || ['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName);
+      // A cloned shadow host hides the whole boundary, including sensitive
+      // controls that document.querySelectorAll cannot see.
+      return node.shadowRoot || isSensitiveSubtreeRoot(node) || ['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName);
     }).map(function (node) { return { node: node, rect: node.getBoundingClientRect() }; });
     nodes.forEach(function (node) { if (runtimeOverlay(node)) node.remove(); });
     masks.forEach(function (entry) {
@@ -862,8 +878,11 @@
           session_id: job.session, request_id: job.request, selection_id: selected.id, page: selected.page,
           screenshots: screenshots, warnings: warnings });
       }).catch(function (error) {
+        var message = error && typeof error.message === 'string' ? error.message : '';
         var allowed = ['renderer-unavailable', 'stale-document', 'bad-geometry', 'image-too-large', 'encode-failed', 'canvas-unavailable'];
-        fail(allowed.indexOf(error.message) >= 0 ? error.message : 'capture-failed');
+        // Send a bounded category, never raw parser messages or CSS values.
+        var unsupportedStyle = /^Attempting to parse an unsupported (?:color|image) function\b/.test(message);
+        fail(allowed.indexOf(message) >= 0 ? message : unsupportedStyle ? 'unsupported-style' : 'capture-failed');
       }).finally(function () { state.rendering = false; });
     }
 

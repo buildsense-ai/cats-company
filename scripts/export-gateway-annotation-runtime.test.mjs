@@ -23,7 +23,7 @@ test('export exact canonical bytes and deterministic manifest; check and pinned 
     // One snapshot: the top-level digest and the SDK resource entry agree.
     assert.equal(result.resources[0].sha256, result.sha256);
     assert.equal(result.resources[0].bytes, result.bytes);
-    assert.deepEqual(result.resources.map((resource) => resource.filename), ['annotations-v1.js', 'html2canvas-1.4.1.min.js', 'html2canvas-1.4.1.LICENSE']);
+    assert.deepEqual(result.resources.map((resource) => resource.filename), ['annotations-v1.js', 'html2canvas-pro-1.6.7.min.js', 'html2canvas-pro-1.6.7.LICENSE', 'html2canvas-1.4.1.min.js', 'html2canvas-1.4.1.LICENSE']);
     for (const resource of result.resources) {
       const canonical = await readFile(new URL(`../${resource.source}`, import.meta.url));
       assert.deepEqual(await readFile(join(outDir, resource.filename)), canonical);
@@ -50,7 +50,7 @@ test('detect vendored bytes/manifest drift; wrong source pin cannot overwrite ou
 
 test('check detects renderer and license drift without silently replacing vendor', async () => {
   await fixture(async (outDir) => {
-    for (const filename of ['html2canvas-1.4.1.min.js', 'html2canvas-1.4.1.LICENSE']) {
+    for (const filename of ['html2canvas-pro-1.6.7.min.js', 'html2canvas-pro-1.6.7.LICENSE', 'html2canvas-1.4.1.min.js', 'html2canvas-1.4.1.LICENSE']) {
       await exportRuntime({ outDir });
       await writeFile(join(outDir, filename), 'changed');
       await assert.rejects(exportRuntime({ outDir, check: true }), /drift/);
