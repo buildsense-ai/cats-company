@@ -54,7 +54,7 @@ Cats Company 是一个独立的即时通讯平台，提供：
 
 | 方法与后缀 | 说明 |
 | --- | --- |
-| `GET /capabilities` | `{schemaVersion:1, enabled, writesEnabled}`，表示 CatsCo 本地开关，不保证上游已启用 |
+| `GET /capabilities` | `{schemaVersion:1, enabled, writesEnabled, visibilityEnabled, visibilityWritesEnabled}`，表示 CatsCo 本地开关，不保证上游已启用 |
 | `GET /catalogue/categories` | 分类列表 |
 | `GET /catalogue/skills` | 分类搜索与分页；允许 `q/category/platform/agent_version/search_mode/limit/cursor` |
 | `GET /presentations?skillId=author%2Fname&version=1.0.0` | 精确公开版本的已确认介绍 |
@@ -66,6 +66,8 @@ Cats Company 是一个独立的即时通讯平台，提供：
 | `GET /assets/:id` | 当前正式介绍所引用的 WebP 图片；不携带编辑凭据请求上游 |
 | `GET /assets/:id/preview` | 发布者/Admin 私有预览 |
 | `DELETE /assets/:id` | JSON `{skillId,version,reason?}` 丢弃从未进入介绍历史的上传 |
+| `GET /visibility?skillId=author%2Fname` | 当前 Owner/Admin 的 Skill 可见范围；无权限按 403/404 隐藏 |
+| `PATCH /visibility?skillId=author%2Fname` | JSON `{visibilityScope,sharedUserUids,expectedRevision}`，更新 `public/shared/private` 范围 |
 
 写请求必须是 JSON，介绍/删除体最大 176 KiB、图片上传体最大 3 MiB。图片响应最大 2 MiB，固定 `image/webp`，校验类型与签名，设置 `nosniff`、限制性 CSP 和 `private, no-store`；JSON 响应同样不缓存。不透传 Set-Cookie、Location 或任意上游响应头。草稿预览不得作为公开图片失效时的回退路径。
 
@@ -75,8 +77,10 @@ Cats Company 是一个独立的即时通讯平台，提供：
 
 部署顺序：SkillHub PR #15/#16 的代码及迁移先部署；本 PR 仅新增默认关闭的代理。在测试环境联合验证后，随 M2b 的真实详情/编辑 UI 再启用；本阶段不在生产打开开关。
 
-- `CATSCO_SKILLHUB_MARKETPLACE_ENABLED=false`：关闭新读写路由，但 capabilities 仍可读取。
+- `CATSCO_SKILLHUB_MARKETPLACE_ENABLED=false`：关闭新读写路由，但 capabilities 仍可读取；它不控制独立的 Skill 可见范围代理。
 - `CATSCO_SKILLHUB_MARKETPLACE_WRITES_ENABLED=false`：独立关闭写操作；只读展示可继续。
+- `CATSCO_SKILLHUB_SKILL_VISIBILITY_ENABLED=false`：关闭 Owner/Admin 的 Skill 可见范围读取代理；默认关闭，不影响旧 SkillHub 页面。
+- `CATSCO_SKILLHUB_SKILL_VISIBILITY_WRITES_ENABLED=false`：独立关闭 Skill 可见范围修改；只读管理信息可继续展示。
 - `CATSCO_SKILLHUB_SESSION_COOKIE_NAME=catsco_session`：若 SkillHub 定制了 `SKILLHUB_COOKIE_NAME`，此处保持一致。
 - 同时需正确配置 SkillHub 的介绍 read/write 与 images 开关，且 `SKILLHUB_CATSCO_BASE_URL` 指向验证当前 JWT 的 CatsCo 环境。不要将测试账号的 JWT 发往生产认证域。
 

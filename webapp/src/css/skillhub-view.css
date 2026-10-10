@@ -1030,6 +1030,22 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
 .cc-skillhub-history-heading button:focus-visible, .cc-skillhub-history-more:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 2px; }
 .cc-skillhub-history-more:disabled { cursor: wait; opacity: 0.64; }
 .cc-skillhub-detail-footer { display: flex; justify-content: flex-end; padding: 15px 18px 18px; }
+.cc-skillhub-visibility { margin: 16px 18px 0; border: 1px solid var(--cc-border); border-radius: var(--cc-radius-md); padding: 14px; background: var(--cc-panel-raised); }
+.cc-skillhub-visibility-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.cc-skillhub-visibility-heading h3 { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--cc-text); font-size: 13px; font-weight: var(--cc-font-weight-semibold); }
+.cc-skillhub-visibility-heading p { margin: 4px 0 0; color: var(--cc-muted); font-size: 11px; line-height: 1.45; }
+.cc-skillhub-visibility-badge { display: inline-flex; align-items: center; min-height: 24px; border-radius: 999px; padding: 0 8px; background: var(--cc-accent-soft); color: var(--cc-accent-text); font-size: 11px; font-weight: var(--cc-font-weight-semibold); white-space: nowrap; }
+.cc-skillhub-visibility-form { display: grid; gap: 9px; margin-top: 12px; }
+.cc-skillhub-visibility-form label { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 8px; color: var(--cc-muted); font-size: 12px; }
+.cc-skillhub-visibility-form label > span { display: inline-flex; align-items: center; gap: 4px; }
+.cc-skillhub-visibility-form select, .cc-skillhub-visibility-form input { min-height: 34px; box-sizing: border-box; border: 1px solid var(--cc-border-strong); border-radius: var(--cc-radius-md); padding: 0 9px; background: var(--cc-panel); color: var(--cc-text); font: inherit; font-size: 12px; }
+.cc-skillhub-visibility-form button.primary { justify-self: end; min-height: 32px; border: 1px solid transparent; border-radius: var(--cc-radius-md); padding: 0 12px; background: var(--cc-action-bg); color: var(--cc-on-action); cursor: pointer; font: inherit; font-size: 12px; }
+.cc-skillhub-visibility-form button.primary:hover:not(:disabled) { background: var(--cc-action-bg-hover); color: var(--cc-on-action); }
+.cc-skillhub-visibility-form button.primary:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 2px; }
+.cc-skillhub-visibility-form button.primary:disabled { cursor: wait; opacity: 0.64; }
+.cc-skillhub-visibility-readonly, .cc-skillhub-visibility-notice, .cc-skillhub-visibility-error { display: flex; align-items: center; gap: 5px; margin: 11px 0 0; color: var(--cc-muted); font-size: 11px; line-height: 1.45; }
+.cc-skillhub-visibility-notice { color: var(--cc-accent-text); }
+.cc-skillhub-visibility-error { margin: 12px 18px 0; color: var(--cc-warning-text); }
 @keyframes cc-skillhub-menu-enter { from { opacity: 0; transform: translateY(-4px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes cc-skillhub-dialog-enter { from { opacity: 0; transform: translateY(6px) scale(0.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .cc-skillhub-catalogue { overflow: hidden; }
