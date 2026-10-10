@@ -5,7 +5,12 @@
 export const promoGatewayApp = {
   id: 'promo-content-studio',
   title: '宣传内容产出应用',
+  agent: '1071',
   url: 'https://artifact.catsco.cc/promo-content-studio/',
+  urls: [
+    'https://artifact.catsco.cc/promo-content-studio/',
+    'https://artifact.catsco.cn/promo-content-studio/',
+  ],
   status: 'online',
 };
 
