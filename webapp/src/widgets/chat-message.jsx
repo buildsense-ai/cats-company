@@ -1800,16 +1800,21 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile, onOpe
   // The viewer addresses an application by its owning bot, so an entry without
   // one cannot be opened that way. Such an entry keeps the preview path rather
   // than offering a button that silently does nothing.
-  //
-  // Deliberately no extra action on the card: the sidebar's viewer already
-  // offers "open in a new page" with the conversation attached, and a second
-  // copy here would be a second path to keep in step.
   const isGatewayApp = artifact?.kind === 'mini_app'
     && typeof onOpenArtifactApp === 'function'
     && Number(artifact?.agent_uid || artifact?.agentUid || 0) > 0;
   const openArtifact = () => {
     if (isGatewayApp) {
       onOpenArtifactApp(artifact);
+      return;
+    }
+    if (descriptor?.canPreview) onPreviewFile?.(payload);
+  };
+  // The handoff carries this conversation's topic and the application's owner, so
+  // the tab it opens joins the same session rather than starting as a guest.
+  const openArtifactInNewPage = () => {
+    if (isGatewayApp) {
+      onOpenArtifactApp(artifact, { newPage: true });
       return;
     }
     if (descriptor?.canPreview) onPreviewFile?.(payload);
@@ -1828,6 +1833,17 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile, onOpe
         <button className="v3-artifact-action" disabled={!canOpen} onClick={openArtifact} title="预览" type="button">
           <Eye size={15} /><span>预览</span>
         </button>
+        {isGatewayApp && (
+          <button
+            className="v3-artifact-action"
+            onClick={openArtifactInNewPage}
+            title="在新页面打开"
+            aria-label={`在新页面打开 ${payload.name}`}
+            type="button"
+          >
+            <ExternalLink size={15} /><span>新页面</span>
+          </button>
+        )}
       </div>
     </div>
   );
