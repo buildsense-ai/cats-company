@@ -72,6 +72,7 @@ function PreviewHarness({
   message,
   knownArtifacts = [],
   isSelf = false,
+  onOpenArtifactApp = undefined,
   onOpenRemoteArtifactFullscreen = vi.fn(),
   onRemoteArtifactFrameChange = vi.fn(),
 }) {
@@ -88,6 +89,7 @@ function PreviewHarness({
           onPreviewFile={setPreviewFile}
           activePreviewFile={previewFile}
           knownArtifacts={knownArtifacts}
+          onOpenArtifactApp={onOpenArtifactApp}
         />
       </div>
       {previewFile && (
@@ -3911,6 +3913,7 @@ describe('ChatMessage rich file rendering', () => {
       title: 'Mini Mario 测试页',
       kind: 'mini_app',
       url: 'https://artifact.catsco.cc/mario-test/',
+      agent_uid: 365,
       updated_at: null,
     };
     const gatewayMessage = {
@@ -3942,9 +3945,20 @@ describe('ChatMessage rich file rendering', () => {
       expect(container.querySelector('.v3-message-artifact-list')).toBeNull();
     });
 
-    it('opens the gateway application in the preview panel', async () => {
+    it('opens the gateway application through the application viewer, not the file preview', async () => {
+      // The sidebar opens an application through the hosted viewer, which carries
+      // the conversation and the visitor's identity. A card has to take the same
+      // path: the generic file preview has neither, which is what made "open in a
+      // new page" fail and what this test pins.
+      const onOpenArtifactApp = vi.fn();
       await act(async () => {
-        root.render(<PreviewHarness message={gatewayMessage} knownArtifacts={[gatewayArtifact]} />);
+        root.render(
+          <PreviewHarness
+            message={gatewayMessage}
+            knownArtifacts={[gatewayArtifact]}
+            onOpenArtifactApp={onOpenArtifactApp}
+          />,
+        );
         await Promise.resolve();
       });
 
@@ -3955,9 +3969,92 @@ describe('ChatMessage rich file rendering', () => {
         await Promise.resolve();
       });
 
-      const frame = container.querySelector('iframe.v3-file-preview-frame');
-      expect(frame).not.toBeNull();
-      expect(frame.getAttribute('src')).toBe('https://artifact.catsco.cc/mario-test/');
+      expect(onOpenArtifactApp).toHaveBeenCalledTimes(1);
+      expect(onOpenArtifactApp.mock.calls[0][0]).toMatchObject({ id: 'mario-test', kind: 'mini_app' });
+      expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+    });
+
+    it('does not offer the viewer for an application the viewer cannot address', async () => {
+      // The viewer addresses an application by its owning bot. An entry without
+      // one would give the card a button that silently does nothing, which reads
+      // as a broken application. Such an entry keeps the preview path instead.
+      const ownerless = {
+        id: 'ownerless',
+        title: '缺 owner 的应用',
+        kind: 'mini_app',
+        url: 'https://artifact.catsco.cc/ownerless/',
+      };
+      const onOpenArtifactApp = vi.fn();
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{ id: 33, from_uid: 365, content: `已发布：${ownerless.url}`, created_at: '2026-10-08T00:00:00Z' }}
+            knownArtifacts={[ownerless]}
+            onOpenArtifactApp={onOpenArtifactApp}
+          />,
+        );
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await Promise.resolve();
+      });
+
+      expect(onOpenArtifactApp).not.toHaveBeenCalled();
+      expect(container.querySelector('.v3-file-preview-frame')).not.toBeNull();
+    });
+
+    it('keeps the card itself to one action, because the viewer owns "open in a new page"', async () => {
+      // The sidebar's viewer already offers "open in a new page" with the
+      // conversation attached. A second copy on the card would be a second path
+      // to keep in step, and would make a card look unlike the same application
+      // in the sidebar's list.
+      const onOpenArtifactApp = vi.fn();
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={gatewayMessage}
+            knownArtifacts={[gatewayArtifact]}
+            onOpenArtifactApp={onOpenArtifactApp}
+          />,
+        );
+        await Promise.resolve();
+      });
+
+      const actions = [...container.querySelectorAll('button.v3-artifact-action')];
+      expect(actions.map((button) => button.textContent)).toEqual(['预览']);
+      expect(container.querySelector('button[title="在新页面打开"]')).toBeNull();
+    });
+
+    it('keeps the file preview for a stored artifact rather than routing it to the viewer', async () => {
+      // Only a gateway application is a running service. A stored page has no
+      // viewer identity to hand over, so it must keep the existing preview path.
+      const stored = {
+        id: 'stored-page',
+        title: '已发布页面',
+        kind: 'html',
+        url: 'https://artifacts.example.test/by-agent/365/stored-page/latest/',
+      };
+      const onOpenArtifactApp = vi.fn();
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{ id: 32, from_uid: 365, content: `已发布：${stored.url}`, created_at: '2026-10-08T00:00:00Z' }}
+            knownArtifacts={[stored]}
+            onOpenArtifactApp={onOpenArtifactApp}
+          />,
+        );
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await Promise.resolve();
+      });
+
+      expect(onOpenArtifactApp).not.toHaveBeenCalled();
+      expect(container.querySelector('.v3-file-preview-frame')).not.toBeNull();
     });
   });
 

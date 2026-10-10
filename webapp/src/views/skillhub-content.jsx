@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ArrowLeft, Bot, Check, Clipboard, FolderOpen, Info,
+  ArrowLeft, Bot, Check, Clipboard, FolderOpen, Globe, Info, Lock, Save, Users,
   Package, PackageMinus, RefreshCw, Search, Share2,
   ShieldCheck, Wrench, X,
 } from 'lucide-react';
@@ -10,6 +10,7 @@ import useDialogBehavior from '../utils/use-dialog-behavior';
 import { useFeedback } from '../components/feedback-system';
 import { MARKET_CATEGORIES, MarketplaceFilters, mergeMarketplaceLibrary, useMarketplace, useMarketplaceCatalogue } from './skillhub-marketplace-state';
 import { MarketplaceIntroduction } from './skillhub-marketplace-intro';
+import { marketplaceApi } from '../skillhub-marketplace-api';
 import {
   formatSkillHubPublisher,
   formatSkillHubVersion,
@@ -530,7 +531,7 @@ function SkillDetailsDialog({ cataloguePreview = false, readOnly = false, detail
   const titleId = useId();
   const descriptionId = useId();
   const localOnly = Boolean(skill?.localOnly);
-  const { enabled: marketEnabled } = useMarketplace();
+  const { enabled: marketEnabled, visibilityEnabled, visibilityWritesEnabled } = useMarketplace();
   const feedback = useFeedback();
   const [editorState, setEditorState] = useState({ dirty: false, busy: false });
   const requestClose = async () => {
@@ -620,6 +621,11 @@ function SkillDetailsDialog({ cataloguePreview = false, readOnly = false, detail
           <div><dt>{localOnly ? '发布状态' : cataloguePreview ? '最新版本' : '当前版本'}</dt><dd>{localOnly ? '尚未发布' : formatAddedSkillVersion(skill, privateReference)}</dd></div>
           <div><dt>{localOnly ? '存放范围' : privateReference ? '可见范围' : '发布者'}</dt><dd>{localOnly ? '当前运行工作区' : privateReference ? '仅当前 Agent' : formatSkillHubPublisher(details || skill, 'SkillHub')}</dd></div>
         </dl>
+        {!localOnly && !privateReference && skill?.skillId && <SkillVisibilityControl
+          skillId={skill.skillId}
+          enabled={visibilityEnabled}
+          writesEnabled={visibilityWritesEnabled}
+        />}
         {!cataloguePreview && <section className='cc-skillhub-history' aria-labelledby={`${titleId}-history`}>
           <div className='cc-skillhub-history-heading'>
             <div>
@@ -663,6 +669,105 @@ function SkillDetailsDialog({ cataloguePreview = false, readOnly = false, detail
         </div>
       </section>
     </div>
+  );
+}
+
+const VISIBILITY_LABELS = {
+  public: '公开',
+  shared: '指定共享',
+  private: '私有',
+};
+
+function normalizeSharedUIDs(value) {
+  return [...new Set(String(value || '').split(/[\s,，、;；]+/).map((item) => item.trim()).filter((item) => /^[1-9]\d*$/.test(item)))];
+}
+
+export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
+  const [state, setState] = useState({ loading: Boolean(enabled), available: false, error: '' });
+  const [scope, setScope] = useState('public');
+  const [uids, setUIDs] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    if (!enabled || !skillId) {
+      setState({ loading: false, available: false, error: '' });
+      return undefined;
+    }
+    const controller = new AbortController();
+    setState({ loading: true, available: false, error: '' });
+    marketplaceApi.skillVisibility(skillId, controller.signal).then((result) => {
+      if (controller.signal.aborted) return;
+      const visibility = result?.visibility;
+      if (!visibility || !VISIBILITY_LABELS[visibility.visibilityScope] || !Number.isSafeInteger(Number(visibility.visibilityRevision))) throw new Error('可见范围数据格式暂不支持');
+      setScope(visibility.visibilityScope);
+      setUIDs(Array.isArray(visibility.sharedUserUids) ? visibility.sharedUserUids.join(', ') : '');
+      setState({ loading: false, available: true, visibility, error: '' });
+    }).catch((error) => {
+      if (controller.signal.aborted) return;
+      // A 403/404 is the normal result for a Skill owned by another account.
+      // Do not disclose ownership or existence in the detail dialog.
+      if (error?.status === 403 || error?.status === 404) {
+        setState({ loading: false, available: false, error: '' });
+      } else {
+        setState({ loading: false, available: false, error: '暂时无法读取可见范围' });
+      }
+    });
+    return () => controller.abort();
+  }, [enabled, skillId]);
+
+  if (!enabled || state.loading || !state.available) return state.error ? <p className='cc-skillhub-visibility-error' role='status'>{state.error}</p> : null;
+
+  const save = async () => {
+    const sharedUserUids = normalizeSharedUIDs(uids);
+    if (scope === 'shared' && sharedUserUids.length === 0) {
+      setNotice('指定共享至少需要填写一个正整数 CatsCo UID。');
+      return;
+    }
+    setBusy(true);
+    setNotice('');
+    try {
+      const result = await marketplaceApi.updateSkillVisibility({
+        skillId,
+        visibilityScope: scope,
+        sharedUserUids: scope === 'shared' ? sharedUserUids : [],
+        expectedRevision: Number(state.visibility.visibilityRevision),
+      });
+      if (result?.visibility) {
+        setState((current) => ({ ...current, visibility: result.visibility }));
+        setUIDs(Array.isArray(result.visibility.sharedUserUids) ? result.visibility.sharedUserUids.join(', ') : '');
+        setNotice('可见范围已保存。新版本会自动继承此设置。');
+      }
+    } catch (error) {
+      setNotice(error?.status === 409
+        ? '该 Skill 的可见范围已被其他操作更新，请关闭详情后重新打开再保存。'
+        : error?.status === 403
+          ? '当前账号已没有修改此 Skill 可见范围的权限。'
+          : '保存失败，请稍后重试。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className='cc-skillhub-visibility' aria-labelledby={`skill-visibility-${skillId}`}>
+      <div className='cc-skillhub-visibility-heading'>
+        <div><h3 id={`skill-visibility-${skillId}`}><Globe size={14} aria-hidden='true' /> 可见范围</h3><p>由 Skill Owner 或管理员管理；新版本会自动继承。</p></div>
+        <span className='cc-skillhub-visibility-badge'>{VISIBILITY_LABELS[state.visibility.visibilityScope]}</span>
+      </div>
+      {writesEnabled ? (
+        <div className='cc-skillhub-visibility-form'>
+          <label><span>范围</span><select value={scope} disabled={busy} onChange={(event) => setScope(event.target.value)}>
+            <option value='public'>公开：所有 SkillHub 用户可见</option>
+            <option value='shared'>指定共享：仅指定 CatsCo UID 可见</option>
+            <option value='private'>私有：仅 Owner 和管理员可见</option>
+          </select></label>
+          {scope === 'shared' && <label><span><Users size={13} aria-hidden='true' /> CatsCo UID</span><input value={uids} disabled={busy} onChange={(event) => setUIDs(event.target.value)} placeholder='例如 951, 42001' inputMode='numeric' /></label>}
+          <button type='button' className='primary' disabled={busy} onClick={save}><Save size={14} aria-hidden='true' /> {busy ? '保存中…' : '保存可见范围'}</button>
+        </div>
+      ) : <p className='cc-skillhub-visibility-readonly'><Lock size={13} aria-hidden='true' /> 当前环境只开放查看，修改入口尚未启用。</p>}
+      {notice && <p className='cc-skillhub-visibility-notice' role='status'>{notice}</p>}
+    </section>
   );
 }
 

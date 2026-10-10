@@ -108,6 +108,16 @@ vi.mock('../widgets/chat-message', () => ({
             制作分享图
           </button>
         )}
+        {props.onOpenArtifactApp && (
+          <button
+            type="button"
+            className="mock-open-artifact-app"
+            data-message-id={props.message?.id}
+            onClick={() => props.onOpenArtifactApp((props.knownArtifacts || [])[0])}
+          >
+            open-artifact-app
+          </button>
+        )}
         {fileBlock && (
           <button
             type="button"
@@ -9473,6 +9483,7 @@ describe('MessagesView composer draft isolation', () => {
     const gatewayApp = {
       id: 'mario-test',
       title: 'Mini Mario 测试页',
+      agent: '440',
       url: 'https://artifact.catsco.cc/mario-test/',
       status: 'online',
     };
@@ -9508,6 +9519,54 @@ describe('MessagesView composer draft isolation', () => {
       });
 
       expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+    });
+
+    it('opens the application in the sidebar when its card is clicked', async () => {
+      // The card and the sidebar's application list must be one path, not two:
+      // the sidebar's viewer is what carries the conversation and the visitor's
+      // identity, and it is what "open in a new page" needs.
+      api.getMessages.mockResolvedValue({
+        messages: [{
+          id: 722,
+          from_uid: 440,
+          content: `已发布：${gatewayApp.url}`,
+          created_at: '2026-10-08T00:00:00Z',
+        }],
+      });
+      api.getFriends.mockResolvedValue({ friends: [] });
+      api.getAgents.mockResolvedValue({
+        agents: [{
+          uid: 440,
+          topic_id: 'p2p_1_440',
+          username: 'doubao',
+          display_name: '豆包',
+          relation: 'friend',
+          is_bot: true,
+          account_type: 'bot',
+          cloud_artifacts_enabled: true,
+        }],
+      });
+      api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+      api.listArtifactApps.mockResolvedValue({ apps: [gatewayApp] });
+
+      await mountTopic(root, 'p2p_1_440');
+      await act(async () => {
+        await flushPromises();
+      });
+
+      const openButton = container.querySelector('.mock-open-artifact-app');
+      expect(openButton).not.toBeNull();
+      await act(async () => {
+        Simulate.click(openButton);
+        await flushPromises();
+      });
+
+      const panel = container.querySelector('.cloud-artifacts-panel');
+      expect(panel).not.toBeNull();
+      // The panel opens on the application list and selects the gateway tab; the
+      // application itself is then opened through the same viewer the sidebar uses.
+      expect(container.querySelector('button[role="tab"][aria-selected="true"]')?.textContent).toBe('应用');
+      expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'mario-test', topic_id: 'p2p_1_440' });
     });
 
     it('still lists registry artifacts when the gateway list is unavailable', async () => {
@@ -9619,6 +9678,37 @@ describe('gateway applications in the artifact registry', () => {
   it('falls back to the id when an application has no title', () => {
     const [mapped] = gatewayAppsAsArtifacts([{ id: 'unnamed', url: 'https://artifact.catsco.cc/unnamed/' }]);
     expect(mapped.title).toBe('unnamed');
+  });
+
+  it('carries the owning bot and every published address onto the card', () => {
+    // The viewer addresses an application by agent, and a launch follows the
+    // domain the caller signed in to. Dropping either leaves the card unable to
+    // open the application outside the generic file preview.
+    const [mapped] = gatewayAppsAsArtifacts([{
+      id: 'xiantu-ai',
+      title: '仙途 · AI修仙模拟器',
+      agent: '365',
+      url: 'https://artifact.catsco.cc/xiantu-ai/',
+      urls: ['https://artifact.catsco.cc/xiantu-ai/', 'https://artifact.catsco.cn/xiantu-ai/'],
+    }]);
+    expect(mapped.agent_uid).toBe(365);
+    expect(mapped.urls).toEqual([
+      'https://artifact.catsco.cc/xiantu-ai/',
+      'https://artifact.catsco.cn/xiantu-ai/',
+    ]);
+  });
+
+  it('omits an owner or address list that the gateway did not supply', () => {
+    // Absent is not the same as zero: inventing an owner would send the viewer to
+    // an application under an account that does not own it.
+    const [mapped] = gatewayAppsAsArtifacts([{ id: 'no-owner', url: 'https://artifact.catsco.cc/no-owner/' }]);
+    expect(mapped).not.toHaveProperty('agent_uid');
+    expect(mapped).not.toHaveProperty('urls');
+  });
+
+  it('ignores an owner that is not a usable agent id', () => {
+    const [mapped] = gatewayAppsAsArtifacts([{ id: 'bad-owner', agent: 'not-a-number', url: 'https://artifact.catsco.cc/bad-owner/' }]);
+    expect(mapped).not.toHaveProperty('agent_uid');
   });
 
   it('drops entries without a usable id or url instead of rendering a broken card', () => {

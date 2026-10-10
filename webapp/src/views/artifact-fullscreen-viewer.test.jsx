@@ -339,6 +339,70 @@ describe('ArtifactFullscreenViewer', () => {
     expect(mocks.createArtifactTask).not.toHaveBeenCalled();
   });
 
+  it('accepts a launch on another domain the gateway serves the application on', async () => {
+    // The gateway publishes each application on every domain it serves, and the
+    // launch follows the domain the caller is signed in to. Accepting only the
+    // address the application was listed under rejected a .cn launch as a foreign
+    // origin — the reported "only .cc opens" symptom.
+    mocks.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    mocks.listArtifactApps.mockResolvedValue({
+      apps: [{
+        id: 'risk-register',
+        url: 'https://artifact.catsco.cc/risk-register/',
+        urls: ['https://artifact.catsco.cc/risk-register/', 'https://artifact.catsco.cn/risk-register/'],
+      }],
+    });
+    mocks.requestArtifactLaunch.mockResolvedValue({
+      launch_url: 'https://artifact.catsco.cn/_launch/fresh-code?next=/risk-register/',
+    });
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={{ ...location, search: '?mode=gateway&topic=p2p_1_440&agent=440&artifact=risk-register' }} />);
+      await flushPromises(20);
+    });
+    expect(container.querySelector('iframe')?.src).toContain('https://artifact.catsco.cn/_launch/fresh-code');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('still rejects a launch on a domain the gateway does not serve the application on', async () => {
+    // Widening the accepted set must not widen it to anything: an unrelated
+    // origin is still a foreign origin.
+    mocks.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    mocks.listArtifactApps.mockResolvedValue({
+      apps: [{
+        id: 'risk-register',
+        url: 'https://artifact.catsco.cc/risk-register/',
+        urls: ['https://artifact.catsco.cc/risk-register/', 'https://artifact.catsco.cn/risk-register/'],
+      }],
+    });
+    mocks.requestArtifactLaunch.mockResolvedValue({
+      launch_url: 'https://artifact.catsco.io/_launch/fresh-code?next=/risk-register/',
+    });
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={{ ...location, search: '?mode=gateway&topic=p2p_1_440&agent=440&artifact=risk-register' }} />);
+      await flushPromises(20);
+    });
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  });
+
+  it('keeps accepting the listed address when the gateway sends no address list', async () => {
+    // Older gateway payloads carry only `url`; the check must not depend on the
+    // list being present.
+    mocks.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    mocks.listArtifactApps.mockResolvedValue({
+      apps: [{ id: 'risk-register', url: 'https://artifact.catsco.cc/risk-register/' }],
+    });
+    mocks.requestArtifactLaunch.mockResolvedValue({
+      launch_url: 'https://artifact.catsco.cc/_launch/fresh-code?next=/risk-register/',
+    });
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={{ ...location, search: '?mode=gateway&topic=p2p_1_440&agent=440&artifact=risk-register' }} />);
+      await flushPromises(20);
+    });
+    expect(container.querySelector('iframe')?.src).toContain('https://artifact.catsco.cc/_launch/fresh-code');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it.each(['wrong-agent', 'no-version', 'missing-app', 'untrusted-launch'])('fails closed for invalid gateway metadata: %s', async (problem) => {
     if (problem === 'wrong-agent' || problem === 'no-version') mocks.getCloudArtifacts.mockResolvedValue({ artifacts: [{
       id: 'risk-register', agent_uid: problem === 'wrong-agent' ? 441 : 440, publish_version: problem === 'no-version' ? 0 : 3,

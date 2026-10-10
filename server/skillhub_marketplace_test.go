@@ -130,6 +130,61 @@ func TestSkillHubMarketplaceEditorUsesOneRequestSessionAndRevokesIt(t *testing.T
 	}
 }
 
+func TestSkillHubMarketplaceVisibilityUsesTemporaryOwnerSession(t *testing.T) {
+	var actions []string
+	h := marketplaceTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		if exchangeForTest(w, r, t) {
+			actions = append(actions, "exchange")
+			return
+		}
+		cookie, err := r.Cookie("catsco_session")
+		if err != nil {
+			t.Errorf("missing temporary SkillHub session: %v", err)
+			return
+		}
+		actions = append(actions, r.Method+":"+r.URL.Path+":"+r.URL.RawQuery+":"+cookie.Value)
+		if r.URL.Path == "/api/auth/logout" {
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		if r.URL.Path != "/api/skills/author/read/visibility" || r.Header.Get("Authorization") != "" {
+			t.Errorf("unexpected visibility request path=%s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		if r.Method == http.MethodPatch {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode visibility body: %v", err)
+			}
+			if payload["visibilityScope"] != "shared" || payload["expectedRevision"] != float64(1) {
+				t.Errorf("unexpected visibility body: %#v", payload)
+			}
+		}
+		_, _ = w.Write([]byte(`{"visibility":{"visibilityScope":"shared","sharedUserUids":["951"],"visibilityRevision":2}}`))
+	})
+	h.visibilityEnabled, h.visibilityWritesEnabled = true, true
+	for _, tc := range []struct {
+		method, path, body string
+	}{
+		{http.MethodGet, "/visibility?skillId=author%2Fread", ""},
+		{http.MethodPatch, "/visibility?skillId=author%2Fread", `{"visibilityScope":"shared","sharedUserUids":["951"],"expectedRevision":1}`},
+	} {
+		w := httptest.NewRecorder()
+		h.Handle(w, marketplaceRequest(tc.method, tc.path, tc.body, 7))
+		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "not-for-browser") {
+			t.Fatalf("%s status=%d body=%s", tc.method, w.Code, w.Body.String())
+		}
+	}
+	w := httptest.NewRecorder()
+	h.Handle(w, marketplaceRequest(http.MethodGet, "/visibility?skillId=../secret", "", 7))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid visibility skill id status=%d body=%s", w.Code, w.Body.String())
+	}
+	want := "exchange,GET:/api/skills/author/read/visibility::session-7,POST:/api/auth/logout::session-7,exchange,PATCH:/api/skills/author/read/visibility::session-7,POST:/api/auth/logout::session-7"
+	if strings.Join(actions, ",") != want {
+		t.Fatalf("actions=%v", actions)
+	}
+}
+
 func TestSkillHubMarketplaceRouteMethodsAndBodyBounds(t *testing.T) {
 	var calls atomic.Int32
 	h := marketplaceTestHandler(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1) })
@@ -147,6 +202,7 @@ func TestSkillHubMarketplaceRouteMethodsAndBodyBounds(t *testing.T) {
 		{"GET", "/assets/pa_invalid", "", "", 404},
 		{"GET", "/catalogue/skills?limit=2&limit=3", "", "", 400},
 		{"GET", "/catalogue/skills?cursor=" + strings.Repeat("x", 8193), "", "", 400},
+		{"PUT", "/presentations/draft?skillId=a&skillId=b", `{}`, "application/json", 400},
 		{"PUT", "/presentations/draft", `{}`, "text/plain", 415},
 		{"PUT", "/presentations/draft", `{invalid}`, "application/json", 400},
 		{"PUT", "/presentations/draft", strings.Repeat(" ", 176<<10+1), "application/json", 413},
@@ -185,6 +241,11 @@ func TestSkillHubMarketplaceRolloutAndBearerRequirements(t *testing.T) {
 	if w.Code != 503 {
 		t.Fatalf("status=%d", w.Code)
 	}
+	w = httptest.NewRecorder()
+	h.Handle(w, marketplaceRequest("GET", "/visibility?skillId=author%2Fread", "", 7))
+	if w.Code != 503 {
+		t.Fatalf("visibility feature unexpectedly enabled: status=%d", w.Code)
+	}
 	for _, auth := range []string{"", "ApiKey bot-secret", "Bearer "} {
 		r := marketplaceRequest("GET", "/presentations?token=user-7", "", 7)
 		r.Header.Set("Authorization", auth)
@@ -201,8 +262,10 @@ func TestSkillHubMarketplaceRolloutAndBearerRequirements(t *testing.T) {
 	}
 	t.Setenv("CATSCO_SKILLHUB_MARKETPLACE_ENABLED", "")
 	t.Setenv("CATSCO_SKILLHUB_MARKETPLACE_WRITES_ENABLED", "")
+	t.Setenv("CATSCO_SKILLHUB_SKILL_VISIBILITY_ENABLED", "")
+	t.Setenv("CATSCO_SKILLHUB_SKILL_VISIBILITY_WRITES_ENABLED", "")
 	defaults := NewSkillHubMarketplaceHandlerFromEnv(h.proxy)
-	if defaults.enabled || defaults.writesEnabled {
+	if defaults.enabled || defaults.writesEnabled || defaults.visibilityEnabled || defaults.visibilityWritesEnabled {
 		t.Fatal("production gates enabled by default")
 	}
 }

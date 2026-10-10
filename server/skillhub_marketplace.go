@@ -22,15 +22,19 @@ const marketplacePrefix = "/api/skillhub/marketplace"
 // Presentation access is independent of selected Bots and device routing.
 // The production route MUST use OwnerMiddlewareWithDB (active human JWT).
 type SkillHubMarketplaceHandler struct {
-	proxy                  *SkillHubProxyHandler
-	enabled, writesEnabled bool
-	cookieName             string
+	proxy                   *SkillHubProxyHandler
+	enabled, writesEnabled  bool
+	visibilityEnabled       bool
+	visibilityWritesEnabled bool
+	cookieName              string
 }
 
 type SkillHubMarketplaceOptions struct {
-	Enabled           bool
-	WritesEnabled     bool
-	SessionCookieName string
+	Enabled                 bool
+	WritesEnabled           bool
+	VisibilityEnabled       bool
+	VisibilityWritesEnabled bool
+	SessionCookieName       string
 }
 
 func NewSkillHubMarketplaceHandler(proxy *SkillHubProxyHandler, opts SkillHubMarketplaceOptions) *SkillHubMarketplaceHandler {
@@ -38,7 +42,14 @@ func NewSkillHubMarketplaceHandler(proxy *SkillHubProxyHandler, opts SkillHubMar
 	if name == "" {
 		name = "catsco_session"
 	}
-	return &SkillHubMarketplaceHandler{proxy: proxy, enabled: opts.Enabled, writesEnabled: opts.WritesEnabled, cookieName: name}
+	return &SkillHubMarketplaceHandler{
+		proxy:                   proxy,
+		enabled:                 opts.Enabled,
+		writesEnabled:           opts.WritesEnabled,
+		visibilityEnabled:       opts.VisibilityEnabled,
+		visibilityWritesEnabled: opts.VisibilityWritesEnabled,
+		cookieName:              name,
+	}
 }
 
 func NewSkillHubMarketplaceHandlerFromEnv(proxy *SkillHubProxyHandler) *SkillHubMarketplaceHandler {
@@ -47,19 +58,22 @@ func NewSkillHubMarketplaceHandlerFromEnv(proxy *SkillHubProxyHandler) *SkillHub
 		return v == "1" || strings.EqualFold(v, "true")
 	}
 	return NewSkillHubMarketplaceHandler(proxy, SkillHubMarketplaceOptions{
-		Enabled:           enabled("CATSCO_SKILLHUB_MARKETPLACE_ENABLED"),
-		WritesEnabled:     enabled("CATSCO_SKILLHUB_MARKETPLACE_WRITES_ENABLED"),
-		SessionCookieName: strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_SESSION_COOKIE_NAME")),
+		Enabled:                 enabled("CATSCO_SKILLHUB_MARKETPLACE_ENABLED"),
+		WritesEnabled:           enabled("CATSCO_SKILLHUB_MARKETPLACE_WRITES_ENABLED"),
+		VisibilityEnabled:       enabled("CATSCO_SKILLHUB_SKILL_VISIBILITY_ENABLED"),
+		VisibilityWritesEnabled: enabled("CATSCO_SKILLHUB_SKILL_VISIBILITY_WRITES_ENABLED"),
+		SessionCookieName:       strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_SESSION_COOKIE_NAME")),
 	})
 }
 
 type marketplaceRoute struct {
-	upstream string
-	methods  string
-	private  bool
-	image    bool
-	upload   bool
-	queries  []string
+	upstream     string
+	methods      string
+	private      bool
+	image        bool
+	upload       bool
+	queries      []string
+	skillIDQuery bool
 }
 
 var marketplaceAssetPath = regexp.MustCompile(`^/assets/(pa_[a-f0-9]{32})(/preview)?$`)
@@ -78,6 +92,8 @@ func resolveMarketplaceRoute(path string) (marketplaceRoute, bool) {
 		return marketplaceRoute{upstream: "/api/skill-presentations" + strings.TrimPrefix(path, "/presentations"), methods: "POST", private: true}, true
 	case "/assets":
 		return marketplaceRoute{upstream: "/api/skill-presentations/assets", methods: "GET, POST", private: true, upload: true, queries: []string{"skillId", "version"}}, true
+	case "/visibility":
+		return marketplaceRoute{methods: "GET, PATCH", private: true, skillIDQuery: true, queries: []string{"skillId"}}, true
 	}
 	if match := marketplaceAssetPath.FindStringSubmatch(path); match != nil {
 		methods := "GET, DELETE"
@@ -111,7 +127,13 @@ func (h *SkillHubMarketplaceHandler) Handle(w http.ResponseWriter, r *http.Reque
 	}
 	path := strings.TrimPrefix(r.URL.Path, marketplacePrefix)
 	if path == "/capabilities" && r.Method == http.MethodGet {
-		writeJSON(w, http.StatusOK, map[string]any{"schemaVersion": 1, "enabled": h.enabled, "writesEnabled": h.enabled && h.writesEnabled})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"schemaVersion":           1,
+			"enabled":                 h.enabled,
+			"writesEnabled":           h.enabled && h.writesEnabled,
+			"visibilityEnabled":       h.visibilityEnabled,
+			"visibilityWritesEnabled": h.visibilityEnabled && h.visibilityWritesEnabled,
+		})
 		return
 	}
 	route, ok := resolveMarketplaceRoute(path)
@@ -125,7 +147,11 @@ func (h *SkillHubMarketplaceHandler) Handle(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	write := r.Method != http.MethodGet
-	if !h.enabled || (write && !h.writesEnabled) {
+	featureEnabled, featureWritesEnabled := h.enabled, h.writesEnabled
+	if route.skillIDQuery {
+		featureEnabled, featureWritesEnabled = h.visibilityEnabled, h.visibilityWritesEnabled
+	}
+	if !featureEnabled || (write && !featureWritesEnabled) {
 		marketplaceError(w, http.StatusServiceUnavailable, "marketplace.disabled")
 		return
 	}
@@ -134,17 +160,28 @@ func (h *SkillHubMarketplaceHandler) Handle(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	query := url.Values{}
-	if !write {
-		for _, key := range route.queries {
-			values := r.URL.Query()[key]
-			if len(values) > 1 || (len(values) == 1 && len(values[0]) > 8192) {
-				marketplaceError(w, http.StatusBadRequest, "marketplace.query_invalid")
-				return
-			}
-			if len(values) == 1 {
-				query.Set(key, values[0])
-			}
+	for _, key := range route.queries {
+		values := r.URL.Query()[key]
+		if len(values) > 1 || (len(values) == 1 && len(values[0]) > 8192) {
+			marketplaceError(w, http.StatusBadRequest, "marketplace.query_invalid")
+			return
 		}
+		if len(values) == 1 {
+			query.Set(key, values[0])
+		}
+	}
+	if route.skillIDQuery {
+		if query.Get("skillId") == "" {
+			marketplaceError(w, http.StatusBadRequest, "skill.visibility_skill_id_required")
+			return
+		}
+		upstream, valid := skillVisibilityUpstreamPath(query.Get("skillId"))
+		if !valid {
+			marketplaceError(w, http.StatusBadRequest, "skill.visibility_skill_id_invalid")
+			return
+		}
+		route.upstream = upstream
+		query.Del("skillId")
 	}
 	var payload []byte
 	if write {
@@ -316,8 +353,23 @@ func forwardMarketplaceError(w http.ResponseWriter, status int, body []byte) {
 	switch envelope.Error.Code {
 	case "presentation.disabled", "presentation.writes_disabled", "presentation.images_disabled", "presentation.schema_unavailable", "presentation.assets_schema_unavailable", "presentation.image_processor_unavailable",
 		"presentation.invalid", "presentation.not_found", "presentation.route_not_found", "presentation.revision_conflict", "presentation.draft_required", "presentation.content_type", "presentation.image_invalid", "presentation.image_busy", "presentation.asset_not_found", "presentation.asset_quota", "presentation.asset_in_use",
-		"catalogue.cursor_stale", "catalogue.cursor_filters", "catalogue.limit_invalid", "body.too_large", "body.invalid_json", "body.empty", "auth_error":
+		"catalogue.cursor_stale", "catalogue.cursor_filters", "catalogue.limit_invalid", "body.too_large", "body.invalid_json", "body.empty", "auth_error",
+		"skill.not_found", "skill.visibility_forbidden", "skill.visibility_conflict", "skill.visibility_scope_invalid", "skill.visibility_revision_invalid", "skill.visibility_uid_invalid", "skill.visibility_grants_required",
+		"skill.visibility_skill_id_required", "skill.visibility_skill_id_invalid":
 		code = envelope.Error.Code
 	}
 	marketplaceError(w, status, code)
+}
+
+func skillVisibilityUpstreamPath(skillID string) (string, bool) {
+	parts := strings.Split(strings.TrimSpace(skillID), "/")
+	if len(parts) == 0 {
+		return "", false
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, `/\\`) || strings.ContainsAny(part, "\x00\r\n") {
+			return "", false
+		}
+	}
+	return "/api/skills/" + strings.Join(parts, "/") + "/visibility", true
 }

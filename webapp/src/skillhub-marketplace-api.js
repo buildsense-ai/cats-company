@@ -47,6 +47,8 @@ export const marketplaceApi = {
   publish: (body, signal) => json('POST', '/presentations/publish', body, signal),
   unpublish: (body, signal) => json('POST', '/presentations/unpublish', body, signal),
   upload: (body, signal) => json('POST', '/assets', body, signal),
+  skillVisibility: (skillId, signal) => json('GET', `/visibility?skillId=${encodeURIComponent(skillId)}`, undefined, signal),
+  updateSkillVisibility: ({ skillId, ...body }, signal) => json('PATCH', `/visibility?skillId=${encodeURIComponent(skillId)}`, body, signal),
 };
 
 export async function marketplaceImage(assetId, { preview = false, signal } = {}) {

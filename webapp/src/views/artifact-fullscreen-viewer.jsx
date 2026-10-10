@@ -38,6 +38,23 @@ import './artifact-fullscreen-viewer.css';
 const VIEWER_HEARTBEAT_MS = 2000;
 const VIEWER_SNAPSHOT_TIMEOUT_MS = 3000;
 
+// Every domain the gateway serves this application on. The listing carries one
+// address per entry, but a launch follows the domain the caller is signed in to,
+// so accepting only the listed address rejects a legitimate launch from another
+// domain as a foreign origin.
+function gatewayAppOrigins(app) {
+  const origins = new Set();
+  for (const value of [app?.url, ...(Array.isArray(app?.urls) ? app.urls : [])]) {
+    try {
+      const parsed = new URL(String(value || '').trim());
+      if (parsed.protocol === 'https:') origins.add(parsed.origin);
+    } catch {
+      // A malformed entry contributes no origin.
+    }
+  }
+  return origins;
+}
+
 function viewerErrorMessage(error) {
   const code = String(error?.code || error?.message || error || '');
   if (code.includes('artifact_not_found')) return '这个应用已经不存在或不可访问。';
@@ -83,8 +100,11 @@ function GatewayApplicationViewer({ params }) {
       if (cancelled) return;
       // The server is the source of both URLs; additionally reject unexpected
       // origins/schemes before embedding a frame in the authenticated viewer.
+      // The gateway publishes each application on every domain it serves, and
+      // the launch URL follows the domain the caller is signed in to — so the
+      // address the app was listed under is only one of the acceptable origins.
       const url = new URL(launch?.launch_url);
-      if (url.protocol !== 'https:' || url.origin !== new URL(app.url).origin) {
+      if (url.protocol !== 'https:' || !gatewayAppOrigins(app).has(url.origin)) {
         throw new Error('artifact_viewer_invalid');
       }
       if (!artifact) {
