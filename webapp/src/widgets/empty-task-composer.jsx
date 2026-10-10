@@ -48,6 +48,7 @@ export default function EmptyTaskComposer({
   onSelectedAgentChange,
   onResolveAgentTopic,
   onActivateTopic,
+  onAcquireTaskTransition,
   voiceInputAvailable,
   createVoiceSession,
   modelInfo = null,
@@ -673,6 +674,11 @@ export default function EmptyTaskComposer({
       return;
     }
 
+    const transition = onAcquireTaskTransition?.();
+    if (onAcquireTaskTransition && !transition) {
+      setAttachmentStatus({ tone: 'info', message: '正在创建任务，请稍候再发送。' });
+      return;
+    }
     sendInFlightRef.current = true;
     setIsSubmitting(true);
     setAttachmentMenuOpen(false);
@@ -684,7 +690,7 @@ export default function EmptyTaskComposer({
     let resolvedTopic = null;
     try {
       await syncPhoneUploads({ final: true });
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || (transition && !transition.isCurrent())) return;
 
       const text = inputValueRef.current.trim();
       const attachments = [...pendingAttachmentsRef.current];
@@ -713,7 +719,7 @@ export default function EmptyTaskComposer({
       const topicId = resolveTopicId(resolvedTopic);
       if (!topicId) throw new Error('任务创建失败，请稍后重试。');
       taskCreated = true;
-      if (!mountedRef.current) {
+      if (!mountedRef.current || (transition && !transition.isCurrent())) {
         await rollbackCreatedTask(resolvedTopic);
         return;
       }
@@ -728,7 +734,7 @@ export default function EmptyTaskComposer({
         attachments,
         phoneUploadSession: sentDraftPhoneUploadSession,
       });
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || (transition && !transition.isCurrent())) return;
       if (draftCleared) {
         setInput('');
         setPendingAttachments([]);
@@ -752,10 +758,11 @@ export default function EmptyTaskComposer({
           : (error?.message || (taskCreated ? '发送失败，请稍后重试。' : '暂时无法创建任务，请稍后重试。')),
       });
     } finally {
+      transition?.release();
       sendInFlightRef.current = false;
       if (mountedRef.current) setIsSubmitting(false);
     }
-  }, [clearDraftAfterSend, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
+  }, [clearDraftAfterSend, isUploadingAttachment, onAcquireTaskTransition, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
 
   const handleKeyDown = useCallback((event) => {
     const nativeEvent = event.nativeEvent || event;
@@ -985,6 +992,7 @@ function resolveTopicId(topic) {
 }
 
 async function rollbackCreatedTask(topic) {
+  if (typeof topic?.rollback === 'function') return topic.rollback();
   const groupId = topic?.groupId || topic?.group_id || topic?.group?.id;
   if (!groupId || typeof api.disbandGroup !== 'function') return false;
   try {

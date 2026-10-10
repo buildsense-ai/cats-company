@@ -34,6 +34,7 @@ export default function StandaloneCloudArtifactsPanel({
   onTabChange,
   onClose,
   onOpenArtifact,
+  onStartAnnotation,
 }) {
   const [previewFile, setPreviewFile] = useState(null);
 
@@ -57,6 +58,7 @@ export default function StandaloneCloudArtifactsPanel({
       tab={tab}
       onTabChange={onTabChange}
       onClose={onClose}
+      onStartAnnotation={onStartAnnotation}
       onPreviewArtifact={(artifact) => {
         if (!artifact) return;
         setPreviewFile(createCloudArtifactPreviewFile({
