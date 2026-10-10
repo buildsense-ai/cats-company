@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
+import pdfWorkerURL from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 3;
@@ -63,11 +64,8 @@ function pageTextFromContent(textContent) {
 
 async function loadPdfJs() {
   if (!pdfJsPromise) {
-    pdfJsPromise = Promise.all([
-      import('pdfjs-dist/legacy/build/pdf.mjs'),
-      import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'),
-    ]).then(([pdfjs, workerModule]) => {
-      pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;
+    pdfJsPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then((pdfjs) => {
+      pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerURL;
       return pdfjs;
     }).catch((error) => {
       pdfJsPromise = null;
