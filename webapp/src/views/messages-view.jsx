@@ -1588,7 +1588,8 @@ export default function MessagesView({
         'image-too-large': '截图超过大小限制，请重新捕获或仅发送评论',
         'encode-failed': '截图编码失败，请重试',
         'canvas-unavailable': '无法读取应用画布，请重试或仅发送评论',
-        'capture-failed': '截图失败，部分页面资源可能无法读取，请重试或仅发送评论',
+        'unsupported-style': '截图暂不支持该页面的部分样式，请仅发送评论和定位',
+        'capture-failed': '截图失败，请重试或仅发送评论和定位',
       };
       if (messages[error?.code]) error.message = messages[error.code];
       throw error;

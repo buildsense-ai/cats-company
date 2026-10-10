@@ -627,7 +627,7 @@ export function createGatewayAnnotationHost({
       || state.selection !== pending.selection) { failScreenshot(pending, 'stale-document'); return; }
     if (payload.error) {
       const allowed = ['canceled', 'superseded', 'selection-changed', 'stale-document', 'bad-geometry', 'page-too-large',
-        'renderer-unavailable', 'capture-failed', 'capture-busy', 'image-too-large', 'encode-failed', 'canvas-unavailable'];
+        'renderer-unavailable', 'unsupported-style', 'capture-failed', 'capture-busy', 'image-too-large', 'encode-failed', 'canvas-unavailable'];
       const code = plainObject(payload.error) && allowed.includes(payload.error.code) ? payload.error.code : 'capture-failed';
       failScreenshot(pending, code);
       return;

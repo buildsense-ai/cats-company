@@ -24,6 +24,10 @@ export async function exportRuntime({ outDir, check = false, expectedSha256 } = 
     // The SDK bytes are reused from the single read above so the top-level
     // sha256 and the manifest resource entry can never disagree.
     { filename: 'annotations-v1.js', source: 'webapp/public/catsco-annotations.js', mime_type: 'application/javascript', data: bytes },
+    { filename: 'html2canvas-pro-1.6.7.min.js', source: 'webapp/public/catsco-runtime/html2canvas-pro-1.6.7.min.js', mime_type: 'application/javascript', pin: 'bacbbb275f41a08e6eb4db0c5b44d9477546186d3078757577f4205147d1814f' },
+    { filename: 'html2canvas-pro-1.6.7.LICENSE', source: 'webapp/public/catsco-runtime/html2canvas-pro-1.6.7.LICENSE', mime_type: 'text/plain', pin: '04092b9193d5ef3c611d82509387a6341447dccbe2330716884383c4dc9c568a' },
+    // Existing documents have already frozen the old SDK/renderer URL. Keep
+    // those exact assets available during rollout; reload picks the new SDK.
     { filename: 'html2canvas-1.4.1.min.js', source: 'webapp/public/catsco-runtime/html2canvas-1.4.1.min.js', mime_type: 'application/javascript', pin: 'e87e550794322e574a1fda0c1549a3c70dae5a93d9113417a429016838eab8cb' },
     { filename: 'html2canvas-1.4.1.LICENSE', source: 'webapp/public/catsco-runtime/html2canvas-1.4.1.LICENSE', mime_type: 'text/plain', pin: '86200ce4e92d9a22c41c8647a55f7a5fddff304ff89b4d36ecc699ed8c123d2c' },
   ];
