@@ -168,6 +168,14 @@ services:
       # upstream credential lives on the relay and never reaches this host.
       CATS_JEV_ENABLED: "${CATS_JEV_ENABLED:-}"
       CATS_JEV_API_KEY: "${CATS_JEV_API_KEY:-}"
+      # Which judge answers the activation questions. Empty (the default) keeps
+      # the Jev lane. "chat" routes the same questions to a chat model over the
+      # relay's Anthropic endpoint, which keeps judging working when the Jev
+      # upstream is unreachable — it began answering 451 "not available in your
+      # region", turning every multi-bot message into a retry-then-degrade cycle.
+      CATS_JEV_BACKEND: "${CATS_JEV_BACKEND:-}"
+      # Model used when CATS_JEV_BACKEND=chat. Defaults to deepseek-flash.
+      CATS_JEV_MODEL: "${CATS_JEV_MODEL:-}"
       # Optional prompt override, as a path inside the container. Pointing it at
       # a file in the mounted config directory lets the wording be tuned on a
       # running host without a rebuild.

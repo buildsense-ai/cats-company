@@ -169,16 +169,28 @@ func (f GroupActivationResolverFunc) Resolve(ctx context.Context, req GroupActiv
 	return f(ctx, req)
 }
 
-// JevGroupActivationResolver judges activation with the Jev model.
+// JevGroupActivationResolver judges activation with an installed judge.
+//
+// The judge is an interface rather than a concrete client so a deployment can
+// keep judging when the Jev lane is unreachable: the chat backend answers the
+// same per-bot questions, and every rule around it stays identical.
 type JevGroupActivationResolver struct {
-	client    *JevClient
+	client    activationJudge
 	threshold float64
 }
 
 // NewJevGroupActivationResolver builds the production resolver.
 func NewJevGroupActivationResolver(client *JevClient) *JevGroupActivationResolver {
+	if client == nil {
+		return &JevGroupActivationResolver{threshold: defaultActivationThreshold}
+	}
+	return NewGroupActivationResolver(client)
+}
+
+// NewGroupActivationResolver builds the resolver around any judge.
+func NewGroupActivationResolver(judge activationJudge) *JevGroupActivationResolver {
 	return &JevGroupActivationResolver{
-		client:    client,
+		client:    judge,
 		threshold: defaultActivationThreshold,
 	}
 }
@@ -292,7 +304,10 @@ func (r *JevGroupActivationResolver) Resolve(ctx context.Context, req GroupActiv
 		// to hear it would be pure waste.
 		return GroupActivationDecision{Source: activationSourceNoCandidate}
 	}
-	if !r.client.Enabled() {
+	// A resolver with no judge installed cannot judge. Reporting it as
+	// degraded is the documented behaviour: the group is told routing is
+	// unavailable instead of a member being guessed.
+	if r.client == nil || !r.client.Enabled() {
 		// Judging is switched off or unreachable. The caller reports that to
 		// the group instead of guessing an addressee.
 		return GroupActivationDecision{Source: activationSourceDegraded, Degraded: true}
