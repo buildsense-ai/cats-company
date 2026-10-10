@@ -419,7 +419,10 @@ describe('select-mode screenshot capture', () => {
     expect(shadow.querySelector('input').value).toBe('shadow-secret');
   });
 
-  it('includes shadow descendants in the page size limit before loading the renderer', async () => {
+  // Building and closing a real 10,001-node shadow tree is slower under the
+  // full CI suite. Give this size-limit stress case its own test timeout;
+  // production capture deadlines and the actual DOM assertion stay intact.
+  it('includes shadow descendants in the page size limit before loading the renderer', { timeout: 15000 }, async () => {
     const f = fixture();
     const host = f.w.document.createElement('div');
     host.attachShadow({ mode: 'open' }).innerHTML = '<span></span>'.repeat(10001);
