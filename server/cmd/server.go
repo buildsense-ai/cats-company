@@ -465,7 +465,16 @@ func main() {
 	hub.SetArtifactRuntimeManifestResolver(cloudArtifactHandler)
 	// Group activation judging is optional: without a configured relay endpoint
 	// the hub keeps the deterministic mention rules.
-	if jevClient := server.NewJevClientFromEnv(); jevClient.Enabled() {
+	//
+	// Two judges share one interface. CATS_JEV_BACKEND=chat selects a chat model
+	// over the relay's Anthropic endpoint; anything else keeps the Jev lane. The
+	// chat backend exists because the Jev upstream can become unreachable for
+	// reasons this service cannot fix — it began answering 451 "not available in
+	// your region", which turned every multi-bot message into a retry-then-
+	// degrade cycle.
+	if chatJudge := server.NewChatJudgeFromEnv(); chatJudge.Enabled() {
+		hub.SetGroupActivationResolver(server.NewGroupActivationResolver(chatJudge))
+	} else if jevClient := server.NewJevClientFromEnv(); jevClient.Enabled() {
 		hub.SetGroupActivationResolver(server.NewJevGroupActivationResolver(jevClient))
 	}
 	artifactContextSnapshotHandler := server.NewArtifactContextSnapshotHandler(hub)
