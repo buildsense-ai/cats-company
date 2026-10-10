@@ -33,7 +33,7 @@ func marketplaceTestHandler(t *testing.T, upstream http.HandlerFunc) *SkillHubMa
 
 func exchangeForTest(w http.ResponseWriter, r *http.Request, t *testing.T) bool {
 	t.Helper()
-	if r.URL.Path != "/api/auth/catsco-exchange" {
+	if !strings.HasSuffix(r.URL.Path, "/api/auth/catsco-exchange") {
 		return false
 	}
 	var payload map[string]string
@@ -52,9 +52,7 @@ func exchangeForTest(w http.ResponseWriter, r *http.Request, t *testing.T) bool 
 
 func TestSkillHubMarketplacePublicRoutesStripCredentialsAndAllowlistQuery(t *testing.T) {
 	for _, tc := range []struct{ path, wantPath, query string }{
-		{"/catalogue/skills?q=read&limit=20&cursor=abc&search_mode=name&category=documents&token=secret&url=http://evil", "/api/catalogue/skills", "category=documents&cursor=abc&limit=20&q=read&search_mode=name"},
 		{"/catalogue/categories?bot_uid=123", "/api/catalogue/categories", ""},
-		{"/presentations?skillId=author%2Fread&version=1.0.0&draft=true", "/api/skill-presentations", "skillId=author%2Fread&version=1.0.0"},
 	} {
 		t.Run(tc.wantPath, func(t *testing.T) {
 			var calls int
@@ -83,6 +81,55 @@ func TestSkillHubMarketplacePublicRoutesStripCredentialsAndAllowlistQuery(t *tes
 				t.Fatalf("response=%d %v calls=%d", w.Code, w.Header(), calls)
 			}
 		})
+	}
+}
+
+func TestSkillHubMarketplaceVisibilityReadsUseTemporarySession(t *testing.T) {
+	var actions []string
+	h := marketplaceTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		if exchangeForTest(w, r, t) {
+			actions = append(actions, "exchange")
+			return
+		}
+		cookie, err := r.Cookie("catsco_session")
+		if err != nil {
+			t.Errorf("missing temporary SkillHub session: %v", err)
+			return
+		}
+		actions = append(actions, r.Method+":"+r.URL.Path+":"+r.URL.RawQuery+":"+cookie.Value)
+		if r.URL.Path == "/api/auth/logout" {
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		for _, key := range []string{"Authorization", "Origin", "X-CatsCo-Bot-Id", "X-Real-IP"} {
+			if r.Header.Get(key) != "" {
+				t.Errorf("forwarded %s", key)
+			}
+		}
+		switch r.URL.Path {
+		case "/api/catalogue/skills":
+			_, _ = w.Write([]byte(`{"skills":[],"total":0,"nextCursor":null,"categoryCounts":[]}`))
+		case "/api/skill-presentations":
+			_, _ = w.Write([]byte(`{"presentation":null}`))
+		default:
+			t.Errorf("unexpected upstream path %s", r.URL.Path)
+		}
+	})
+	for _, path := range []string{
+		"/catalogue/skills?q=read&limit=20&cursor=abc&search_mode=name&category=documents&token=secret&url=http://evil",
+		"/presentations?skillId=author%2Fread&version=1.0.0&draft=true",
+	} {
+		r := marketplaceRequest("GET", path, "", 7)
+		r.Header.Set("Cookie", "catsco_session=another-account")
+		w := httptest.NewRecorder()
+		h.Handle(w, r)
+		if w.Code != http.StatusOK || w.Header().Get("Set-Cookie") != "" {
+			t.Fatalf("path=%s status=%d headers=%v body=%s", path, w.Code, w.Header(), w.Body)
+		}
+	}
+	want := "exchange,GET:/api/catalogue/skills:category=documents&cursor=abc&limit=20&q=read&search_mode=name:session-7,POST:/api/auth/logout::session-7,exchange,GET:/api/skill-presentations:skillId=author%2Fread&version=1.0.0:session-7,POST:/api/auth/logout::session-7"
+	if strings.Join(actions, ",") != want {
+		t.Fatalf("actions=%v", actions)
 	}
 }
 
@@ -310,8 +357,8 @@ func TestSkillHubMarketplaceImagesNeverPromotePublicReadsToEditorPreviews(t *tes
 				return
 			}
 			_, err := r.Cookie("catsco_session")
-			if preview != (err == nil) {
-				t.Errorf("cookie presence=%v preview=%v", err == nil, preview)
+			if err != nil {
+				t.Errorf("missing temporary SkillHub session: %v", err)
 			}
 			want := "/api/skill-presentations/assets/" + id
 			if preview {
@@ -333,11 +380,7 @@ func TestSkillHubMarketplaceImagesNeverPromotePublicReadsToEditorPreviews(t *tes
 		if w.Code != 200 || w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(w.Header().Get("Content-Security-Policy"), "sandbox") {
 			t.Fatalf("status/headers=%d/%v", w.Code, w.Header())
 		}
-		want := 0
-		if preview {
-			want = 1
-		}
-		if exchanges != want || logouts != want {
+		if exchanges != 1 || logouts != 1 {
 			t.Fatalf("exchange/logout=%d/%d", exchanges, logouts)
 		}
 	}
@@ -365,6 +408,13 @@ func TestSkillHubMarketplacePreservesActionableErrorsWithoutLeakingUpstreamMessa
 		code   string
 	}{{409, "presentation.revision_conflict"}, {409, "catalogue.cursor_stale"}, {404, "presentation.asset_not_found"}, {429, "presentation.asset_quota"}, {503, "presentation.disabled"}, {403, "auth_error"}} {
 		h := marketplaceTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+			if exchangeForTest(w, r, t) {
+				return
+			}
+			if r.URL.Path == "/api/auth/logout" {
+				_, _ = w.Write([]byte(`{"ok":true}`))
+				return
+			}
 			w.Header().Set("Set-Cookie", "secret=not-forwarded")
 			w.WriteHeader(tc.status)
 			_, _ = fmt.Fprintf(w, `{"error":{"code":%q,"message":"upstream private details"}}`, tc.code)
@@ -494,6 +544,13 @@ func TestSkillHubMarketplaceNeverRetriesMutationAfterLostResponse(t *testing.T) 
 
 func TestSkillHubMarketplaceConfiguredBasePathIsPreserved(t *testing.T) {
 	h := marketplaceTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		if exchangeForTest(w, r, t) {
+			return
+		}
+		if r.URL.Path == "/service/api/auth/logout" {
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
 		if r.URL.Path != "/service/api/catalogue/skills" {
 			t.Errorf("path=%s", r.URL.Path)
 		}
