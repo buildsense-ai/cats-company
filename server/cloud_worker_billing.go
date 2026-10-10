@@ -119,13 +119,16 @@ func (h *CloudWorkerHandler) HandleAdminBilling(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "only idle, unconverted trial instances may be released"})
 			return
 		}
-		_, err = h.runScript(h.destroyScript, "--name", item.TenantName)
+		var destroyOut string
+		destroyOut, err = h.runScript(h.destroyScript, "--name", item.TenantName)
 		if err == nil {
 			err = h.db.DeleteBot(item.WorkerUID)
 		}
 		message := ""
 		if err != nil {
-			message = truncateWorkerOutput(err.Error())
+			// Keep the provider's own refusal with the error; a bare exit code
+			// leaves operators guessing why the release failed.
+			message = truncateWorkerOutput(destroyErrorDetail(err, destroyOut))
 		}
 		if markErr := store.MarkCloudWorkerLifecycleDeleted(item.ID, message); err == nil {
 			err = markErr

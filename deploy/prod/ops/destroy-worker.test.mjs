@@ -76,6 +76,7 @@ if (op === "ecs ListEcsInstances") {
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs UnsubscribeEcsInstance") {
+  if (state.unsubscribeStatusExpired) { json({ statusCode: "900", errorCode: "Ecs.Instance.StatusExpired", message: "The current virtual machine has expired" }); process.exit(0); }
   if (state.failUnsubscribe) { json({ statusCode: "900", errorCode: "E.UNSUB", message: "boom" }); process.exit(0); }
   state.unsubscribedInstances = state.unsubscribedInstances || [];
   state.unsubscribedInstances.push(val("--instanceID"));
@@ -406,6 +407,23 @@ test("destroy-worker: unsubscribe failure fails closed", () => {
   const r = run(sb, ["--name", "bot-a"]);
   assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stderr, /unsubscribe failed/);
+});
+
+test("destroy-worker: expired instance past the unsubscribe window awaits provider recycle", () => {
+  const sb = setupSandbox({
+    unsubscribeStatusExpired: true,
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "expired", instanceStatus: "expired", expiredTime: "2026-09-25T05:01:17Z" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+  });
+  const r = run(sb, ["--name", "bot-a"]);
+  assert.equal(r.status, 3, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /"status":"awaiting-provider-recycle"/);
+  assert.match(r.stdout, /"instance_id":"i-1"/);
+  assert.match(r.stderr, /waiting for the provider to recycle/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal((state.destroyedInstances || []).length, 0, "nothing may be destroyed while the provider still holds the instance");
+  assert.equal((state.deletedInstances || []).length, 0);
+  assert.equal((state.deletedKeypairs || []).length, 0, "keypair cleanup must wait for the instance");
 });
 
 test("destroy-worker: permanent destroy failure fails closed after unsubscribe", () => {

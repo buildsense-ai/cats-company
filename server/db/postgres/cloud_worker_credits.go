@@ -514,6 +514,22 @@ func (a *Adapter) MarkCloudWorkerLifecycleDeleted(id int64, errText string) erro
 	return err
 }
 
+// MarkCloudWorkerLifecycleAwaitingRecycle returns a claimed destroy to the
+// retryable pending state when the provider itself must finish the job (an
+// expired instance past the self-service unsubscribe window: Tianyi recycles
+// retained instances automatically). delete_after is pushed to the next sweep
+// so the row is not flagged as overdue while waiting, and nothing is deleted
+// locally so a late renewal can still rescue the worker.
+func (a *Adapter) MarkCloudWorkerLifecycleAwaitingRecycle(id int64, note string) error {
+	_, err := a.db.Exec(`
+		UPDATE cloud_worker_lifecycles
+		SET state = 'delete_pending',
+		    delete_after = CURRENT_TIMESTAMP + INTERVAL '1 hour',
+		    last_error = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND state = 'delete_running'`, id, strings.TrimSpace(note))
+	return err
+}
+
 // grantCloudWorkerCredit is called inside the payment fulfillment transaction.
 func grantCloudWorkerCredit(tx *sql.Tx, uid int64, sourceRef string, expiresAt time.Time) error {
 	if uid <= 0 || strings.TrimSpace(sourceRef) == "" {

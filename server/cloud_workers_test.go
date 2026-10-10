@@ -120,7 +120,10 @@ func (quotaCreditStub) ListCloudWorkerLifecycleDue(time.Time, int) ([]CloudWorke
 }
 func (quotaCreditStub) MarkCloudWorkerLifecyclePending(int64, time.Time) error { return nil }
 func (quotaCreditStub) ClaimCloudWorkerLifecycleDeletion(int64) (bool, error)  { return false, nil }
-func (quotaCreditStub) MarkCloudWorkerLifecycleDeleted(int64, string) error    { return nil }
+func (quotaCreditStub) MarkCloudWorkerLifecycleAwaitingRecycle(int64, string) error {
+	return nil
+}
+func (quotaCreditStub) MarkCloudWorkerLifecycleDeleted(int64, string) error { return nil }
 
 // platformLifecycleStub adds the owner-wide lifecycle listing used by the
 // renewal report and the bound-worker counter.
@@ -386,6 +389,10 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 			body = "@echo off\r\necho ok\r\n"
 		case "fail":
 			body = "@echo off\r\nexit /b 1\r\n"
+		case "fail-detail":
+			body = "@echo off\r\necho provider refused the destroy\r\nexit /b 1\r\n"
+		case "awaiting-recycle":
+			body = "@echo off\r\necho {\"status\":\"awaiting-provider-recycle\",\"instance_id\":\"i-1\"}\r\nexit /b 3\r\n"
 		case "record":
 			body = "@echo off\r\necho %*\r\n"
 		case "tsv":
@@ -424,6 +431,10 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		body = "#!/bin/sh\necho ok\n"
 	case "fail":
 		body = "#!/bin/sh\nexit 1\n"
+	case "fail-detail":
+		body = "#!/bin/sh\necho 'provider refused the destroy'\nexit 1\n"
+	case "awaiting-recycle":
+		body = "#!/bin/sh\necho '{\"status\":\"awaiting-provider-recycle\",\"instance_id\":\"i-1\"}'\nexit 3\n"
 	case "record":
 		body = "#!/bin/sh\necho \"$@\"\n"
 	case "tsv":
