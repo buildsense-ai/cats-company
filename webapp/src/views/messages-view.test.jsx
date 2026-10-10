@@ -10031,6 +10031,42 @@ describe('MessagesView gateway annotation flow', () => {
   }
 
 
+  test('new-task handoff waits for a bound SDK handshake before selecting and sends to the new topic', async () => {
+    const topic = 'grp_901';
+    await mountTopic(root, topic, {
+      isGroup: true, groupId: 901,
+      cloudArtifactsRequest: {
+        requestId: 'new-task-annotation', topicId: topic, agentUid: 7, initialTab: 'gateway',
+        startAnnotation: true,
+        app: { id: 'saturday-demo', title: 'Saturday', url: `${APP_ORIGIN}/saturday-demo/` },
+      },
+    });
+    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(frame).not.toBeNull();
+    expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'saturday-demo', topic_id: topic });
+    expect(container.querySelector('[aria-label="批注应用"]').getAttribute('aria-pressed')).toBe('false');
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    expect(container.querySelector('[aria-label="批注应用"]').getAttribute('aria-pressed')).toBe('true');
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    await act(async () => {
+      sdkMessage(frame, {
+        type: 'catsco.gateway.annotation.target.v1', contract_version: 'catsco.gateway-annotation-bridge.v1',
+        session_id: connect.session_id, page,
+        selection: { id: 'first', kind: 'element', target: { element_id: 'submit-btn', selector: '#submit-btn',
+          rect: { x: .2, y: .3, width: .1, height: .08 }, coordinate_space: 'viewport',
+          viewport: { width: 800, height: 600, scroll_x: 0, scroll_y: 0 } } },
+      });
+      await flushPromises();
+    });
+    await submitInline('first annotation');
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1);
+    const payload = api.sendArtifactAnnotations.mock.calls[0][0];
+    expect(payload.open_ref).toBe(`aob_A`.padEnd(40, 'x'));
+    expect(payload.gateway_annotations).toMatchObject({ app_id: 'saturday-demo', agent_uid: 7 });
+    expect(payload.content_blocks.filter(block => block.type === 'image')).toHaveLength(2);
+  });
+
   test('single header action captures beside iframe and sends comment directly without composer body', async () => {
     const frame = await openGatewayAppInSidebar();
     const page = { path: '/board', revision: 'r1' };

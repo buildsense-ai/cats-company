@@ -27,6 +27,10 @@ vi.mock('../api', () => {
     getRelayUsage: vi.fn().mockResolvedValue({ summary: null }),
     login: vi.fn(),
     openAgent: vi.fn(),
+    createGroup: vi.fn(),
+    assignProjectTopic: vi.fn().mockResolvedValue({}),
+    disbandGroup: vi.fn().mockResolvedValue({}),
+    sendMessage: vi.fn(),
     redeemBotInviteCode: mocks.redeemBotInviteCode,
     unsubscribePush: vi.fn().mockResolvedValue({}),
     updateConversationTitle: vi.fn(),
@@ -68,7 +72,7 @@ vi.mock('../utils/theme-access', () => ({
 }));
 
 vi.mock('./sidepanel-view', () => ({
-  default: ({ additionalSidebarTools, onSelectTopic, onStartAgentTask }) => (
+  default: ({ additionalSidebarTools, onSelectTopic, onStartAgentTask, onOpenCloudArtifacts }) => (
     <nav>
       {additionalSidebarTools}
       <button
@@ -82,6 +86,7 @@ vi.mock('./sidepanel-view', () => ({
       >
         打开测试会话
       </button>
+      <button type="button" onClick={() => onOpenCloudArtifacts(7)}>打开新任务应用</button>
       <button
         type="button"
         onClick={() => onStartAgentTask({ uid: 7, display_name: '测试 Agent' })}
@@ -97,7 +102,10 @@ vi.mock('./skillhub-view', () => ({
 }));
 
 vi.mock('./messages-view', () => ({
-  default: ({ composerDraftStore, topic }) => (
+  default: (props) => {
+    mocks.messageProps = props;
+    const { composerDraftStore, topic } = props;
+    return (
     <textarea
       className="v3-composer-input"
       aria-label="消息草稿"
@@ -110,11 +118,24 @@ vi.mock('./messages-view', () => ({
         composerDraftStore.persist?.();
       }}
     />
-  ),
+    );
+  },
 }));
 
-vi.mock('../widgets/empty-task-composer', () => ({
-  default: ({ composerDraftStore, draftKey = 'new-task' }) => {
+vi.mock('../widgets/standalone-cloud-artifacts-panel', () => ({
+  default: (props) => {
+    mocks.standaloneProps = props;
+    return <button type="button" onClick={() => props.onStartAnnotation({
+      id: 'board', title: '看板', url: 'https://artifact.catsco.cc/board/', agent: '7',
+    }).catch(error => { mocks.annotationError = error; })}>新建任务并标注</button>;
+  },
+}));
+
+vi.mock('../widgets/empty-task-composer', () => {
+  return {
+  default: (props) => {
+    mocks.emptyProps = props;
+    const { composerDraftStore, draftKey = 'new-task' } = props;
     const key = String(draftKey || 'new-task');
     const inputDrafts = composerDraftStore?.inputDrafts;
     return (
@@ -133,7 +154,8 @@ vi.mock('../widgets/empty-task-composer', () => ({
       </div>
     );
   },
-}));
+  };
+});
 vi.mock('../widgets/catsco-download-modal', () => ({ default: () => null }));
 vi.mock('../widgets/desktop-connect-modal', () => ({
   default: ({ initialMode, onClose, onConnected, onOpenOnboardingGuide }) => (
@@ -154,6 +176,8 @@ vi.mock('../widgets/relay-access-modal', () => ({
 }));
 
 import TinodeWeb from './tinode-web';
+import { api } from '../api';
+import { readComposerInputDraft, readComposerAttachmentDraft, writeComposerAttachmentDraft } from '../utils/composer-draft-storage';
 import { workspaceOnboardingStorageKey } from '../utils/workspace-onboarding';
 
 let container;
@@ -197,6 +221,13 @@ async function openOnboardingReplayFromDesktopEntry() {
 beforeEach(() => {
   mocks.token = 'session-token';
   mocks.sessionRevision = 1;
+  mocks.annotationError = null;
+  mocks.messageProps = null;
+  mocks.emptyProps = null;
+  mocks.standaloneProps = null;
+  api.createGroup.mockReset().mockResolvedValue({ group: { id: 901, name: '标注任务', member_count: 2 }, topic: 'grp_901' });
+  api.sendMessage.mockReset();
+  api.openAgent.mockReset();
   mocks.getMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', created_at: '2026-01-01T00:00:00Z' });
   mocks.redeemBotInviteCode.mockReset().mockResolvedValue({});
   mocks.updateMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', display_name: 'Cats' });
@@ -679,4 +710,80 @@ test('restores a new-task draft when returning from SkillHub before a session ex
 
   expect(container.querySelector('textarea[aria-label="新任务草稿"]').value)
     .toBe('new task draft survives SkillHub navigation');
+});
+
+async function openUnboundApplication() {
+  await act(async () => { renderWorkspace(); await Promise.resolve(); });
+  await act(async () => {
+    [...container.querySelectorAll('button')].find(b => b.textContent === '选择 Agent 返回新任务').click();
+  });
+  await act(async () => {
+    [...container.querySelectorAll('button')].find(b => b.textContent === '打开新任务应用').click();
+  });
+}
+
+async function startAnnotation() {
+  await act(async () => {
+    [...container.querySelectorAll('button')].find(b => b.textContent === '新建任务并标注').click();
+    await Promise.resolve();
+  });
+}
+
+test('creates a real task only on annotation intent, carries drafts and sends no placeholder', async () => {
+  await openUnboundApplication();
+  expect(api.createGroup).not.toHaveBeenCalled();
+  const store = mocks.emptyProps.composerDraftStore;
+  const textarea = container.querySelector('[aria-label="新任务草稿"]');
+  await act(async () => {
+    Simulate.change(textarea, { target: { value: 'unsent instructions' } });
+    writeComposerAttachmentDraft(store, 'new-task', [{ name: 'draft.pdf', type: 'file' }]);
+  });
+  await startAnnotation();
+  expect(api.createGroup).toHaveBeenCalledTimes(1);
+  expect(api.createGroup).toHaveBeenCalledWith('unsent instructions', [7], { kind: 'agent_task' });
+  expect(mocks.messageProps.topic).toBe('grp_901');
+  expect(mocks.messageProps.cloudArtifactsRequest).toMatchObject({
+    topicId: 'grp_901', agentUid: 7, startAnnotation: true, app: { id: 'board' },
+  });
+  expect(readComposerInputDraft(store, 'grp_901')).toBe('unsent instructions');
+  expect(readComposerAttachmentDraft(store, 'grp_901')).toEqual([{ name: 'draft.pdf', type: 'file' }]);
+  expect(readComposerInputDraft(store, 'new-task')).toBe('');
+  expect(api.sendMessage).not.toHaveBeenCalled();
+  expect(api.openAgent).not.toHaveBeenCalled();
+});
+
+test('normal send owns the same transition as new-task annotation', async () => {
+  await openUnboundApplication();
+  const lease = mocks.emptyProps.onAcquireTaskTransition();
+  await startAnnotation();
+  expect(api.createGroup).not.toHaveBeenCalled();
+  expect(mocks.annotationError.message).toContain('正在创建任务或发送消息');
+  lease.release();
+  await startAnnotation();
+  expect(api.createGroup).toHaveBeenCalledTimes(1);
+});
+
+test('switching topics while creation is pending cannot activate the old annotation task', async () => {
+  await openUnboundApplication();
+  let finish;
+  api.createGroup.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  await startAnnotation();
+  await selectTestConversation();
+  await act(async () => {
+    finish({ group: { id: 902 }, topic: 'grp_902' });
+    await Promise.resolve();
+  });
+  expect(mocks.messageProps.topic).toBe('p2p_1_2');
+  expect(api.sendMessage).not.toHaveBeenCalled();
+});
+
+test('task creation failure keeps the application and permits retry', async () => {
+  await openUnboundApplication();
+  api.createGroup.mockRejectedValueOnce(new Error('offline'));
+  await startAnnotation();
+  expect(mocks.annotationError.message).toBe('offline');
+  expect(container.querySelector('[aria-label="新任务草稿"]')).not.toBeNull();
+  await startAnnotation();
+  expect(api.createGroup).toHaveBeenCalledTimes(2);
+  expect(mocks.messageProps.topic).toBe('grp_901');
 });

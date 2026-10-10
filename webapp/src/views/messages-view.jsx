@@ -781,6 +781,7 @@ export default function MessagesView({
   const [composerAnnotationBar, setComposerAnnotationBar] = useState(null);
   const gatewayAnnotationPageChangedRef = useRef(false);
   const gatewayAnnotationBindingRef = useRef(null);
+  const pendingGatewayAnnotationStartRef = useRef(null);
   const gatewayAnnotationContextRef = useRef(null);
   const gatewayAnnotationDraftsRef = useRef([]);
   const gatewayAnnotationPageRef = useRef(null);
@@ -1412,7 +1413,12 @@ export default function MessagesView({
   }, [topic, resetGatewayAnnotationBinding]);
 
   useEffect(() => {
+    if (pendingGatewayAnnotationStartRef.current?.topicId !== topic) pendingGatewayAnnotationStartRef.current = null;
+  }, [topic]);
+
+  useEffect(() => {
     const invalidate = () => {
+      pendingGatewayAnnotationStartRef.current = null;
       gatewayAnnotationBindingRef.current = null;
       gatewayAnnotationContextRef.current = null;
       gatewayAnnotationDraftsRef.current = [];
@@ -1476,6 +1482,7 @@ export default function MessagesView({
     if (!GATEWAY_HOST_MODE_TYPE) return;
     if (!['off', 'select', 'element', 'text', 'region'].includes(mode)) return;
     if (mode === 'off') {
+      pendingGatewayAnnotationStartRef.current = null;
       // The header toggle is an explicit user cancel: drop the pending comment
       // target (the textarea is only closed with the popover, so nothing is
       // silently lost from a stale document).
@@ -2030,6 +2037,17 @@ export default function MessagesView({
         setGatewayAnnotationReady(capabilities.slice());
         gatewayAnnotationApplyFramePage(page);
         gatewayAnnotationPanelStateRef.current?.setCapabilityNote('');
+        const pending = pendingGatewayAnnotationStartRef.current;
+        const binding = gatewayAnnotationBindingRef.current;
+        if (pending && pending.topicId === activeTopicRef.current
+          && pending.appId === binding?.appId && pending.agentUid === binding?.agentUid
+          && pending.authRevision === getAuthRevision() && pending.token === getToken()) {
+          pendingGatewayAnnotationStartRef.current = null;
+          if (host.setMode('select')) {
+            setGatewayAnnotationMode('select');
+            gatewayAnnotationPanelStateRef.current?.setMode('select');
+          }
+        }
       },
       onSelection: (selection, page) => {
         const binding = gatewayAnnotationBindingRef.current;
@@ -2131,6 +2149,7 @@ export default function MessagesView({
   }, [setPreviewFileWithFocus]);
 
   const closeSidePanel = useCallback(() => {
+    pendingGatewayAnnotationStartRef.current = null;
     cancelArtifactViewerHandoff();
     setPendingArtifactRefresh(null);
     clearActiveArtifactFocus();
@@ -2548,6 +2567,10 @@ export default function MessagesView({
     setCloudArtifactsAgentUID(agentUID);
     setCloudArtifactsTab(cloudArtifactsRequest.initialTab || 'files');
     setCloudArtifactsInitialApp(cloudArtifactsRequest.app || null);
+    pendingGatewayAnnotationStartRef.current = cloudArtifactsRequest.startAnnotation && cloudArtifactsRequest.app?.id
+      ? { topicId: topic, appId: String(cloudArtifactsRequest.app.id), agentUid: agentUID,
+        authRevision: getAuthRevision(), token: getToken() }
+      : null;
     if (cloudArtifactsRequest.file) {
       previewAgentFile(cloudArtifactsRequest.file);
     } else {

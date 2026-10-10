@@ -60,6 +60,7 @@ import {
   resolveScopedModelState,
 } from '../utils/conversation-model-state';
 import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
+import { createDraftTaskCoordinator } from '../utils/draft-task-coordinator';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
 import {
   clearStoredUserProfile,
@@ -89,7 +90,14 @@ import {
   createComposerDraftStore,
   NEW_TASK_DRAFT_KEY,
   persistComposerDraftStore,
+  invalidateComposerDraftRevision,
+  readComposerInputDraft,
+  readComposerAttachmentDraft,
+  readComposerPhoneUploadSession,
   readComposerTaskContextDraft,
+  writeComposerInputDraft,
+  writeComposerAttachmentDraft,
+  writeComposerPhoneUploadSession,
   writeComposerTaskContextDraft,
 } from '../utils/composer-draft-storage';
 import {
@@ -376,6 +384,15 @@ function TinodeWebApp({ location }) {
   const [messageLocationRequest, setMessageLocationRequest] = useState(null);
   const messageLocationSequenceRef = useRef(0);
   const taskDraftSequenceRef = useRef(0);
+  const draftTaskScopeRef = useRef('');
+  const draftTaskCoordinatorRef = useRef(null);
+  const pendingDraftTransferRef = useRef(null);
+  const standaloneRequestRef = useRef(null);
+  if (!draftTaskCoordinatorRef.current) {
+    draftTaskCoordinatorRef.current = createDraftTaskCoordinator(() => (
+      `${getAuthRevision()}|${getToken()}|${draftTaskScopeRef.current}`
+    ));
+  }
   const composerDraftStoreRef = useRef(null);
   const composerDraftOwnerRef = useRef('');
   const composerDraftOwner = String(user?.uid || '');
@@ -1424,17 +1441,88 @@ function TinodeWebApp({ location }) {
     syncTaskContextDraft({ agent, projectId, projectName });
   }, [syncTaskContextDraft, taskDraft]);
 
-  const createDraftAgentTaskTopic = useCallback((agent, draft = {}) => (
-    createAgentTaskTopic(agent, {
-      ...draft,
-      projectId: taskDraft
-        ? Number(taskDraft.projectId || 0)
-        : Number(persistedTaskContext?.projectId || 0),
-      projectName: taskDraft
-        ? String(taskDraft.projectName || '')
-        : String(persistedTaskContext?.projectName || ''),
-    })
-  ), [createAgentTaskTopic, persistedTaskContext?.projectId, persistedTaskContext?.projectName, taskDraft]);
+  const createDraftAgentTaskTopic = useCallback((agent, draft = {}) => {
+    const authRevision = getAuthRevision();
+    const token = getToken();
+    return draftTaskCoordinatorRef.current.ensure(async () => {
+      const created = await createAgentTaskTopic(agent, {
+        ...draft,
+        projectId: taskDraft
+          ? Number(taskDraft.projectId || 0)
+          : Number(persistedTaskContext?.projectId || 0),
+        projectName: taskDraft
+          ? String(taskDraft.projectName || '')
+          : String(persistedTaskContext?.projectName || ''),
+      });
+      return {
+        ...created,
+        rollback: async () => {
+          if (getAuthRevision() !== authRevision || getToken() !== token) return false;
+          try {
+            await api.disbandGroup(created.groupId);
+            draftTaskCoordinatorRef.current.forget();
+            return true;
+          } catch { return false; }
+        },
+      };
+    });
+  }, [createAgentTaskTopic, persistedTaskContext?.projectId, persistedTaskContext?.projectName, taskDraft]);
+
+  draftTaskScopeRef.current = `${user?.uid || ''}|${activeTopic?.topicId || ''}|${taskDraft?.key || taskDraftSequenceRef.current}|${emptyTaskSelectedAgent?.uid || emptyTaskSelectedAgent?.id || ''}|${taskDraft?.projectId || persistedTaskContext?.projectId || 0}`;
+  standaloneRequestRef.current = standaloneCloudArtifactsRequest;
+  const acquireDraftTaskTransition = useCallback(() => draftTaskCoordinatorRef.current.acquire(), []);
+
+  const startStandaloneAnnotation = useCallback(async (app, { signal } = {}) => {
+    const request = standaloneRequestRef.current;
+    const agent = emptyTaskSelectedAgent || taskDraft?.agent || persistedTaskContext?.agent;
+    const agentUid = Number(agent?.uid || agent?.id || 0);
+    if (!request || !agentUid || agentUid !== Number(request.agentUid)
+      || (app.agent && Number(app.agent) !== agentUid)) {
+      throw new Error('请先选择该应用所属的 Agent，再新建任务并标注。');
+    }
+    const transition = acquireDraftTaskTransition();
+    if (!transition) throw new Error('正在创建任务或发送消息，请稍候重试。');
+    try {
+      const created = await createDraftAgentTaskTopic(agent, {
+        text: readComposerInputDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY)
+          || `${app.title || app.id} · 标注`,
+      });
+      if (!transition.isCurrent() || signal?.aborted || standaloneRequestRef.current !== request) return;
+      pendingDraftTransferRef.current = {
+        topicId: created.topicId, store: composerDraftStoreRef.current,
+        authRevision: getAuthRevision(), token: getToken(),
+      };
+      cloudArtifactsRequestSequenceRef.current += 1;
+      setCloudArtifactsRequest({
+        requestId: cloudArtifactsRequestSequenceRef.current,
+        topicId: created.topicId, agentUid, initialTab: 'gateway',
+        app: { ...app }, startAnnotation: true,
+      });
+      activateResolvedTopic(created);
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } finally { transition.release(); }
+  }, [acquireDraftTaskTransition, activateResolvedTopic, createDraftAgentTaskTopic,
+    emptyTaskSelectedAgent, persistedTaskContext?.agent, taskDraft]);
+
+  // The old composer's layout cleanup flushes its latest input before this
+  // effect. Transfer that flushed draft, then invalidate late upload callbacks.
+  useEffect(() => {
+    const transfer = pendingDraftTransferRef.current;
+    if (!transfer) return;
+    pendingDraftTransferRef.current = null;
+    if (transfer.topicId !== activeTopic?.topicId || transfer.authRevision !== getAuthRevision()
+      || transfer.token !== getToken() || transfer.store !== composerDraftStoreRef.current) return;
+    const store = transfer.store;
+    writeComposerInputDraft(store, transfer.topicId, readComposerInputDraft(store, NEW_TASK_DRAFT_KEY));
+    writeComposerAttachmentDraft(store, transfer.topicId, readComposerAttachmentDraft(store, NEW_TASK_DRAFT_KEY));
+    writeComposerPhoneUploadSession(store, transfer.topicId, readComposerPhoneUploadSession(store, NEW_TASK_DRAFT_KEY));
+    invalidateComposerDraftRevision(store, NEW_TASK_DRAFT_KEY);
+    writeComposerInputDraft(store, NEW_TASK_DRAFT_KEY, '');
+    writeComposerAttachmentDraft(store, NEW_TASK_DRAFT_KEY, []);
+    writeComposerPhoneUploadSession(store, NEW_TASK_DRAFT_KEY, null);
+    writeComposerTaskContextDraft(store, NEW_TASK_DRAFT_KEY, null);
+    persistComposerDraftStore(store);
+  }, [activeTopic?.topicId]);
 
   const activateAgentTopic = useCallback(async (agent) => {
     const nextTopic = await resolveAgentTopic(agent);
@@ -1767,6 +1855,7 @@ function TinodeWebApp({ location }) {
                     draftKey={NEW_TASK_DRAFT_KEY}
                     onSelectedAgentChange={handleEmptyTaskSelectedAgentChange}
                     onResolveAgentTopic={createDraftAgentTaskTopic}
+                    onAcquireTaskTransition={acquireDraftTaskTransition}
                     onActivateTopic={activateResolvedTopic}
                     modelInfo={mobileModelInfo}
                   />
@@ -1783,6 +1872,7 @@ function TinodeWebApp({ location }) {
                       onTabChange={setStandaloneCloudArtifactsTab}
                       onClose={() => setStandaloneCloudArtifactsRequest(null)}
                       onOpenArtifact={openExternalArtifact}
+                      onStartAnnotation={startStandaloneAnnotation}
                     />
                   </div>
                 )}
@@ -2100,6 +2190,7 @@ function NoActiveTask({
   draftKey,
   onSelectedAgentChange,
   onResolveAgentTopic,
+  onAcquireTaskTransition,
   onActivateTopic,
   modelInfo = null,
 }) {
@@ -2116,6 +2207,7 @@ function NoActiveTask({
           draftKey={draftKey}
           onSelectedAgentChange={onSelectedAgentChange}
           onResolveAgentTopic={onResolveAgentTopic}
+          onAcquireTaskTransition={onAcquireTaskTransition}
           onActivateTopic={onActivateTopic}
           modelInfo={modelInfo}
         />

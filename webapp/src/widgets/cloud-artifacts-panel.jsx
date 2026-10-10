@@ -162,6 +162,7 @@ export default function CloudArtifactsPanel({
   onGatewayFrameChange,
   onGatewayAnnotationMode,
   onGatewayAnnotationState,
+  onStartAnnotation,
   annotationCapture,
   onAnnotationSubmit,
   onAnnotationScreenshot,
@@ -183,6 +184,8 @@ export default function CloudArtifactsPanel({
   // toolbar re-renders without touching the cross-origin iframe subtree.
   const [gatewayAnnotationMode, setGatewayAnnotationMode] = useState('off');
   const [gatewayAnnotationCapabilityNote, setGatewayAnnotationCapabilityNote] = useState('');
+  const [annotationStarting, setAnnotationStarting] = useState(false);
+  const annotationStartingRef = useRef(false);
   const modeSyncRef = useRef(null);
   const gatewayLaunchSequenceRef = useRef(0);
   const consumedInitialAppRef = useRef(null);
@@ -409,8 +412,10 @@ export default function CloudArtifactsPanel({
     });
     setGatewayAnnotationMode('off');
     setGatewayAnnotationCapabilityNote(artifactOpenBindingUsable(openBinding)
-      ? '' : '会话绑定不可用，标注已禁用，请在原会话重新打开应用');
-  }, [agentUid, onGatewayFrameChange, topicId, retireGatewayOpen]);
+      ? '' : (!topicId && onStartAnnotation
+        ? '点击标注将创建新任务，评论会作为新任务的第一条消息。'
+        : '会话绑定不可用，标注已禁用，请在原会话重新打开应用'));
+  }, [agentUid, onGatewayFrameChange, onStartAnnotation, topicId, retireGatewayOpen]);
 
   useEffect(() => () => {
     retireGatewayOpen();
@@ -433,10 +438,25 @@ export default function CloudArtifactsPanel({
   // through onGatewayAnnotationMode; the host (messages view) reports the
   // accepted state back through onGatewayAnnotationState, so neither the
   // cross-origin frame nor a double-click can drive toolbar state directly.
-  const handleAnnotationModeSelect = useCallback((event) => {
+  const handleAnnotationModeSelect = useCallback(async () => {
+    if (!topicId && onStartAnnotation && gatewayPreview) {
+      if (annotationStartingRef.current) return;
+      annotationStartingRef.current = true;
+      setAnnotationStarting(true);
+      const signal = gatewayPreview.bindingSignal;
+      try {
+        await onStartAnnotation(gatewayPreview, { signal });
+      } catch (error) {
+        if (!signal?.aborted) setGatewayAnnotationCapabilityNote(error?.message || '暂时无法创建任务，请重试。');
+      } finally {
+        annotationStartingRef.current = false;
+        setAnnotationStarting(false);
+      }
+      return;
+    }
     const mode = gatewayAnnotationMode === 'select' ? 'off' : 'select';
     onGatewayAnnotationMode?.(mode);
-  }, [onGatewayAnnotationMode, gatewayAnnotationMode]);
+  }, [gatewayPreview, onGatewayAnnotationMode, onStartAnnotation, topicId, gatewayAnnotationMode]);
 
   useEffect(() => {
     if (typeof onGatewayAnnotationState !== 'function') return undefined;
@@ -939,12 +959,15 @@ export default function CloudArtifactsPanel({
               <button
                 type="button"
                 className={`cloud-artifacts-annotation-toggle${gatewayAnnotationMode === 'select' ? ' is-active' : ''}`}
-                aria-label="批注应用"
+                aria-label={!topicId && onStartAnnotation ? '新建任务并标注' : '批注应用'}
                 aria-pressed={gatewayAnnotationMode === 'select'}
-                title={artifactOpenBindingUsable(gatewayPreview.openBinding)
-                  ? '点击选择元素，拖动画框；评论直接发送至原会话（Esc 退出）'
-                  : '会话绑定不可用，请在原会话重新打开应用'}
-                disabled={!artifactOpenBindingUsable(gatewayPreview.openBinding)}
+                aria-busy={annotationStarting}
+                title={!topicId && onStartAnnotation
+                  ? (annotationStarting ? '正在创建任务…' : '新建任务并标注，评论将发送至新任务')
+                  : artifactOpenBindingUsable(gatewayPreview.openBinding)
+                    ? '点击选择元素，拖动画框；评论直接发送至原会话（Esc 退出）'
+                    : '会话绑定不可用，请在原会话重新打开应用'}
+                disabled={annotationStarting || (!artifactOpenBindingUsable(gatewayPreview.openBinding) && !(!topicId && onStartAnnotation))}
                 onClick={handleAnnotationModeSelect}
               >
                 <Pencil size={18} aria-hidden="true" />
