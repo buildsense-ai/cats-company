@@ -83,9 +83,12 @@ func resolveMarketplaceRoute(path string) (marketplaceRoute, bool) {
 	case "/catalogue/categories":
 		return marketplaceRoute{upstream: "/api/catalogue/categories", methods: "GET"}, true
 	case "/catalogue/skills":
-		return marketplaceRoute{upstream: "/api/catalogue/skills", methods: "GET", queries: []string{"q", "category", "platform", "agent_version", "search_mode", "limit", "cursor"}}, true
+		// Catalogue results are visibility-filtered. Exchange the current
+		// CatsCo identity even for GET so shared/private Skills remain visible
+		// to their owner and explicitly granted users.
+		return marketplaceRoute{upstream: "/api/catalogue/skills", methods: "GET", private: true, queries: []string{"q", "category", "platform", "agent_version", "search_mode", "limit", "cursor"}}, true
 	case "/presentations":
-		return marketplaceRoute{upstream: "/api/skill-presentations", methods: "GET", queries: []string{"skillId", "version"}}, true
+		return marketplaceRoute{upstream: "/api/skill-presentations", methods: "GET", private: true, queries: []string{"skillId", "version"}}, true
 	case "/presentations/draft":
 		return marketplaceRoute{upstream: "/api/skill-presentations/draft", methods: "GET, PUT", private: true, queries: []string{"skillId", "version"}}, true
 	case "/presentations/publish", "/presentations/unpublish":
@@ -100,7 +103,10 @@ func resolveMarketplaceRoute(path string) (marketplaceRoute, bool) {
 		if match[2] != "" {
 			methods = "GET"
 		}
-		return marketplaceRoute{upstream: "/api/skill-presentations" + path, methods: methods, private: match[2] != "", image: true}, true
+		// Published presentation images are also guarded by the logical
+		// Skill's visibility. Do not downgrade a shared/private Skill to an
+		// anonymous asset request merely because it is a GET.
+		return marketplaceRoute{upstream: "/api/skill-presentations" + path, methods: methods, private: true, image: true}, true
 	}
 	return marketplaceRoute{}, false
 }
