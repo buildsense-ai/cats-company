@@ -97,6 +97,23 @@
       justify-content: flex-end;
     }
 
+    .dirty-badge {
+      display: inline-flex;
+      align-items: center;
+      height: 30px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(245, 158, 11, 0.42);
+      background: rgba(245, 158, 11, 0.14);
+      color: #fcd34d;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .dirty-badge[hidden] {
+      display: none;
+    }
+
     .status {
       min-height: 22px;
       color: var(--muted);
@@ -243,6 +260,7 @@
         <p>每个任务只保留标题、教程介绍、可选示例文件、可载入输入栏的 prompt。</p>
       </div>
       <div class="toolbar-actions">
+        <span class="dirty-badge" id="dirtyBadge" hidden>未保存更改</span>
         <button id="addBtn" type="button">添加任务</button>
         <button class="primary" id="saveBtn" type="button">保存修改</button>
       </div>
@@ -258,6 +276,8 @@
       tasks: [],
       saving: false,
       uploading: false,
+      dirty: false,
+      savedSnapshot: '[]',
     };
 
     const tasksEl = document.getElementById('tasks');
@@ -265,17 +285,26 @@
     const saveBtn = document.getElementById('saveBtn');
     const addBtn = document.getElementById('addBtn');
     const reloadBtn = document.getElementById('reloadBtn');
+    const dirtyBadge = document.getElementById('dirtyBadge');
 
     function setStatus(text, tone) {
       statusEl.textContent = text || '';
       statusEl.className = `status ${tone || ''}`.trim();
     }
 
+    function refreshDirty() {
+      // A snapshot comparison keeps the badge honest: editing a value and
+      // typing the old value back means there is nothing to save.
+      state.dirty = JSON.stringify(state.tasks) !== state.savedSnapshot;
+      dirtyBadge.hidden = !state.dirty;
+      saveBtn.disabled = state.saving || state.uploading || !state.dirty;
+    }
+
     function setBusy(next) {
       state.saving = next;
-      saveBtn.disabled = next || state.uploading;
       addBtn.disabled = next || state.uploading || state.tasks.length >= MAX_TASKS;
       reloadBtn.disabled = next || state.uploading;
+      refreshDirty();
     }
 
     function normalizeTask(task, index) {
@@ -370,6 +399,7 @@
       try {
         const data = await requestJSON('/local/tutorial-admin/tasks');
         state.tasks = (Array.isArray(data.tasks) ? data.tasks : []).map(normalizeTask);
+        state.savedSnapshot = JSON.stringify(state.tasks);
         setStatus(`已读取 ${state.tasks.length} 个任务`, 'ok');
       } catch (error) {
         setStatus(error.message || '读取失败', 'err');
@@ -395,6 +425,7 @@
           body: JSON.stringify({ tasks: state.tasks }),
         });
         state.tasks = (Array.isArray(data.tasks) ? data.tasks : []).map(normalizeTask);
+        state.savedSnapshot = JSON.stringify(state.tasks);
         setStatus('已保存修改', 'ok');
       } catch (error) {
         setStatus(error.message || '保存失败', 'err');
@@ -481,6 +512,7 @@
     tasksEl.addEventListener('input', (event) => {
       if (event.target.matches('[data-field]')) {
         syncFromDOM();
+        refreshDirty();
       }
     });
 
@@ -523,7 +555,15 @@
     });
 
     saveBtn.addEventListener('click', saveTasks);
-    reloadBtn.addEventListener('click', loadTasks);
+    reloadBtn.addEventListener('click', () => {
+      if (state.dirty && !window.confirm('有未保存的更改，重新读取会丢弃这些更改。继续？')) return;
+      loadTasks();
+    });
+    window.addEventListener('beforeunload', (event) => {
+      if (!state.dirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    });
     loadTasks();
   </script>
 </body>

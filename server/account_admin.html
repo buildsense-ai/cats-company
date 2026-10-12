@@ -382,6 +382,38 @@
       font-size: 13px;
     }
 
+    .user-list-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .user-list-controls .user-toolbar {
+      margin-top: 0;
+    }
+
+    .page-size-field {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .page-size-field select {
+      width: auto;
+      height: 34px;
+      font-size: 13px;
+    }
+
+    .detail-heading {
+      margin: 24px 0 0;
+      font-size: 16px;
+    }
+
     .user-pager {
       display: flex;
       align-items: center;
@@ -591,16 +623,21 @@
       </form>
       <div class="hint">默认按 UID 倒序分页展示。禁用账号后，用户 JWT introspect 会变为不可用，登录链路会拒绝该账号。</div>
       <div id="search-error" class="error"></div>
-      <div id="user-toolbar" class="user-toolbar"></div>
+      <div class="user-list-controls">
+        <div id="user-toolbar" class="user-toolbar"></div>
+        <label class="page-size-field" for="user-page-size">每页
+          <select id="user-page-size" aria-label="每页账号数">
+            <option value="20">20 条</option>
+            <option value="50">50 条</option>
+            <option value="100">100 条</option>
+          </select>
+        </label>
+      </div>
       <div id="search-result" class="user-list" aria-live="polite"></div>
       <div id="user-pager" class="user-pager"></div>
 
-      <h2 style="margin-top: 24px;">按 UID 精确查询</h2>
-      <form id="lookup-form">
-        <input id="uid" name="uid" inputmode="numeric" autocomplete="off" placeholder="输入用户 UID，例如 2" />
-        <button id="lookup-button" type="submit">查询</button>
-      </form>
-      <div class="hint">精确查询用于快速确认单个账号信息和状态；资料字段仍保持只读，避免误操作。</div>
+      <h3 class="detail-heading">账号详情</h3>
+      <div class="hint">在搜索结果里点「查看」即可显示单个账号的完整资料与状态操作；搜索框输入纯数字 UID 时按精确匹配。</div>
       <div id="error" class="error"></div>
       <div id="result" class="result" aria-live="polite"></div>
     </section>
@@ -649,7 +686,6 @@ http://127.0.0.1:26061/local/account-admin</code>
   </main>
 
   <script>
-    const form = document.querySelector('#lookup-form');
     const searchForm = document.querySelector('#search-form');
     const userQueryInput = document.querySelector('#user-query');
     const searchButton = document.querySelector('#search-button');
@@ -659,8 +695,7 @@ http://127.0.0.1:26061/local/account-admin</code>
     const searchError = document.querySelector('#search-error');
     const userToolbar = document.querySelector('#user-toolbar');
     const userPager = document.querySelector('#user-pager');
-    const uidInput = document.querySelector('#uid');
-    const button = document.querySelector('#lookup-button');
+    const userPageSizeSelect = document.querySelector('#user-page-size');
     const result = document.querySelector('#result');
     const error = document.querySelector('#error');
     const serviceForm = document.querySelector('#service-form');
@@ -674,7 +709,16 @@ http://127.0.0.1:26061/local/account-admin</code>
     let currentUserPage = 1;
     let currentUserQuery = '';
     let currentAccountType = 'all';
-    const userPageSize = 20;
+    let currentLookupUID = '';
+    let lookupPending = false;
+    function storedUserPageSize() {
+      // "1,556 accounts over 78 pages" is why the default is no longer fixed
+      // at 20: the selector offers 50/100 for scanning, and the choice sticks.
+      const saved = Number(localStorage.getItem('catsco-account-admin-page-size'));
+      return [20, 50, 100].includes(saved) ? saved : 20;
+    }
+    let userPageSize = storedUserPageSize();
+    userPageSizeSelect.value = String(userPageSize);
     const pendingUserStateUIDs = new Set();
 
     function showError(message) {
@@ -799,6 +843,7 @@ http://127.0.0.1:26061/local/account-admin</code>
 
     function render(payload) {
       const user = payload.user || {};
+      currentLookupUID = String(user.uid || '');
       result.innerHTML = [
         row('UID', user.uid),
         row('用户名', user.username),
@@ -916,8 +961,8 @@ http://127.0.0.1:26061/local/account-admin</code>
           return;
         }
         await loadUsersList(currentUserPage, currentUserQuery, currentAccountType);
-        if (uidInput.value.trim() === String(uid)) {
-          form.requestSubmit();
+        if (currentLookupUID === String(uid)) {
+          await lookupUser(uid);
         }
       } catch (err) {
         const message = err && err.message ? err.message : `${action}失败。`;
@@ -953,12 +998,18 @@ http://127.0.0.1:26061/local/account-admin</code>
       await loadUsersList(Number(target.dataset.page), currentUserQuery, currentAccountType);
     });
 
+    userPageSizeSelect.addEventListener('change', async () => {
+      const next = Number(userPageSizeSelect.value);
+      userPageSize = [20, 50, 100].includes(next) ? next : 20;
+      localStorage.setItem('catsco-account-admin-page-size', String(userPageSize));
+      await loadUsersList(1, currentUserQuery, currentAccountType);
+    });
+
     searchResult.addEventListener('click', (event) => {
       const target = event.target.closest('[data-lookup-uid], [data-state-uid]');
       if (!target || !searchResult.contains(target)) return;
       if (target.dataset.lookupUid) {
-        uidInput.value = target.dataset.lookupUid;
-        form.requestSubmit();
+        lookupUser(target.dataset.lookupUid);
       }
       if (target.dataset.stateUid) {
         updateUserState(target.dataset.stateUid, target.dataset.stateValue, 'list');
@@ -971,17 +1022,15 @@ http://127.0.0.1:26061/local/account-admin</code>
       updateUserState(target.dataset.stateUid, target.dataset.stateValue, 'lookup');
     });
 
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const uid = uidInput.value.trim();
-      if (!uid) {
-        showError('请输入 UID。');
-        return;
-      }
-
-      button.disabled = true;
+    async function lookupUser(uid) {
+      // The former standalone lookup form was redundant with the search box
+      // (a numeric query already matches the uid exactly server-side), so it
+      // is gone: the list's 查看 button and this function are the only path.
+      const target = String(uid || '').trim();
+      if (!target || lookupPending) return;
+      lookupPending = true;
       try {
-        const resp = await fetch(`/local/account-admin/users?uid=${encodeURIComponent(uid)}`, {
+        const resp = await fetch(`/local/account-admin/users?uid=${encodeURIComponent(target)}`, {
           headers: { Accept: 'application/json' },
         });
         const payload = await resp.json().catch(() => ({}));
@@ -990,12 +1039,13 @@ http://127.0.0.1:26061/local/account-admin</code>
           return;
         }
         render(payload);
+        result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       } catch (err) {
         showError(err && err.message ? err.message : '查询失败。');
       } finally {
-        button.disabled = false;
+        lookupPending = false;
       }
-    });
+    }
 
     function showServiceError(message) {
       serviceError.textContent = message;
