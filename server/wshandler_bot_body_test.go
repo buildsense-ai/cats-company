@@ -18,10 +18,36 @@ import (
 
 type wsBotBodyStore struct {
 	store.Store
-	mu     sync.Mutex
-	apiKey string
-	botUID int64
-	bodyID string
+	mu             sync.Mutex
+	apiKey         string
+	botUID         int64
+	bodyID         string
+	officialBodyID string
+}
+
+func (s *wsBotBodyStore) setOfficialBodyID(bodyID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.officialBodyID = bodyID
+}
+
+func (s *wsBotBodyStore) GetCloudWorkerOfficialBodyID(botUID int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if botUID != s.botUID {
+		return "", errors.New("bot not found")
+	}
+	return s.officialBodyID, nil
+}
+
+func (s *wsBotBodyStore) SetCloudWorkerOfficialBodyID(botUID int64, bodyID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if botUID != s.botUID {
+		return errors.New("bot not found")
+	}
+	s.officialBodyID = bodyID
+	return nil
 }
 
 func (s *wsBotBodyStore) GetBotByAPIKey(apiKey string) (int64, error) {
@@ -322,8 +348,11 @@ func TestServeWSConcurrentSameBodyDialKeepsOneActiveClient(t *testing.T) {
 }
 
 func newBotBodyTestServer(apiKey string, botUID int64) (string, *Hub, func()) {
-	store := &wsBotBodyStore{apiKey: apiKey, botUID: botUID}
-	hub := NewHub(store, nil)
+	return newBotBodyTestServerWithStore(&wsBotBodyStore{apiKey: apiKey, botUID: botUID})
+}
+
+func newBotBodyTestServerWithStore(botStore *wsBotBodyStore) (string, *Hub, func()) {
+	hub := NewHub(botStore, nil)
 	go hub.Run()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

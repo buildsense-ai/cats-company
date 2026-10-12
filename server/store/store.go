@@ -279,6 +279,10 @@ type BotStore interface {
 	EnsureBotBodyBinding(botUID int64, bodyID string) (string, bool, error)
 	SetBotBodyBinding(botUID int64, bodyID string) error
 	GetBotBodyID(botUID int64) (string, error)
+	// Cloud-managed workers pin the runtime body minted at provisioning time;
+	// see the postgres adapter for enforcement semantics.
+	GetCloudWorkerOfficialBodyID(botUID int64) (string, error)
+	SetCloudWorkerOfficialBodyID(botUID int64, bodyID string) error
 	ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error)
 	GetBotOwner(botUID int64) (int64, error)
 	DeleteBot(botUID int64) error

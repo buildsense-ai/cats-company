@@ -159,9 +159,10 @@ func TestBotBodyLeaseStatus(t *testing.T) {
 
 type botBodyStatusStore struct {
 	store.Store
-	ownerUID int64
-	bodyID   string
-	err      error
+	ownerUID     int64
+	bodyID       string
+	officialBody string
+	err          error
 }
 
 func (s *botBodyStatusStore) SetBotBodyBinding(botUID int64, bodyID string) error {
@@ -193,6 +194,24 @@ func (s *botBodyStatusStore) GetBotBodyID(botUID int64) (string, error) {
 		return "", errors.New("bot not found")
 	}
 	return s.bodyID, nil
+}
+
+func (s *botBodyStatusStore) GetCloudWorkerOfficialBodyID(botUID int64) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	if botUID != 42 {
+		return "", errors.New("bot not found")
+	}
+	return s.officialBody, nil
+}
+
+func (s *botBodyStatusStore) SetCloudWorkerOfficialBodyID(botUID int64, bodyID string) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.officialBody = bodyID
+	return nil
 }
 
 func TestHandleGetBotBodyStatus(t *testing.T) {

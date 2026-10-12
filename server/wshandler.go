@@ -1154,7 +1154,63 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 			}
 			runtimeCredentialClaims = claims
 		}
-		if err != nil {
+		// Platform-managed cloud workers take priority over both the legacy
+		// and the generic first-writer-wins paths below: the official body
+		// minted at provisioning time is the only runtime allowed to connect.
+		officialBodyID, officialErr := hub.db.GetCloudWorkerOfficialBodyID(uid)
+		if officialErr != nil {
+			log.Printf("cloud worker official body lookup failed: uid=%d err=%v", uid, officialErr)
+			http.Error(w, "failed to verify bot body binding", http.StatusInternalServerError)
+			return
+		}
+		if officialBodyID != "" {
+			if err != nil || bodyID != officialBodyID {
+				requestedBody := bodyID
+				if err != nil {
+					requestedBody = strings.TrimSpace(r.Header.Get(botBodyIDHeader))
+					if requestedBody == "" {
+						requestedBody = "(none)"
+					}
+				}
+				log.Printf("cloud worker connection denied: uid=%d requested_body=%s official_body=%s addr=%s", uid, requestedBody, officialBodyID, requestRemoteAddr(r))
+				http.Error(w, "this bot is managed by the cloud worker platform; only its provisioned runtime may connect", http.StatusConflict)
+				return
+			}
+			// The official runtime is connecting: repair a drifted durable
+			// binding and take the active lease over from any foreign holder
+			// (for example a local runtime that grabbed the binding while the
+			// worker was restarting). Without this the worker would spin on
+			// 409s silently forever.
+			boundBodyID, boundErr := hub.db.GetBotBodyID(uid)
+			if boundErr != nil {
+				log.Printf("cloud worker binding lookup failed: uid=%d err=%v", uid, boundErr)
+				http.Error(w, "failed to verify bot body binding", http.StatusInternalServerError)
+				return
+			}
+			if boundBodyID != officialBodyID {
+				if setErr := hub.db.SetBotBodyBinding(uid, officialBodyID); setErr != nil {
+					log.Printf("cloud worker binding repair failed: uid=%d err=%v", uid, setErr)
+					http.Error(w, "failed to verify bot body binding", http.StatusInternalServerError)
+					return
+				}
+				log.Printf("cloud worker binding repaired: uid=%d was=%s official_body=%s addr=%s", uid, boundBodyID, officialBodyID, requestRemoteAddr(r))
+			}
+			if existing, ok := hub.bodyLeases.conflicts(uid, officialBodyID); ok {
+				log.Printf("cloud worker takeover: uid=%d kicking_body=%s connection=%s addr=%s", uid, existing.bodyID, existing.connectionID, requestRemoteAddr(r))
+				if holder := hub.getClientByConnectionID(existing.connectionID); holder != nil {
+					_ = holder.conn.Close()
+				}
+				// The closed connection releases its lease asynchronously; wait
+				// briefly so this connection can take over without a 30s retry.
+				deadline := time.Now().Add(2 * time.Second)
+				for time.Now().Before(deadline) {
+					if _, still := hub.bodyLeases.conflicts(uid, officialBodyID); !still {
+						break
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+			}
+		} else if err != nil {
 			if strings.TrimSpace(r.Header.Get(botBodyIDHeader)) != "" || botBodyIDStrictMode() {
 				http.Error(w, "missing or invalid bot body id", http.StatusBadRequest)
 				return

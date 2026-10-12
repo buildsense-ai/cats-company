@@ -103,6 +103,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
+		migrateBotConfigAddCloudOfficialBodyID,
 		migrateBotConfigAddRole,
 		migrateBotConfigAddDescription,
 		migrateBotConfigAddArtifactUploadPolicy,
@@ -1482,6 +1483,11 @@ const migrateBotConfigAddVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT 
 const migrateBotConfigAddSkillsVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner';`
 const migrateBotConfigAddTenantName = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS body_id VARCHAR(128) DEFAULT NULL;`
+
+// cloud_official_body_id records the platform-minted runtime body for a
+// cloud-managed worker. Non-empty means the bot may only ever run on that
+// body; the WebSocket handler enforces it and repairs the binding.
+const migrateBotConfigAddCloudOfficialBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS cloud_official_body_id VARCHAR(128) NOT NULL DEFAULT '';`
 const migrateBotConfigAddRole = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'general';`
 const migrateBotConfigAddDescription = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';`
 const migrateBotConfigAddArtifactUploadPolicy = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS artifact_upload_enabled BOOLEAN NOT NULL DEFAULT TRUE;`

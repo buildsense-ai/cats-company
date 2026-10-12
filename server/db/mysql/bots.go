@@ -209,6 +209,17 @@ func (a *Adapter) SetBotBodyBinding(botUID int64, bodyID string) error {
 	return nil
 }
 
+// GetCloudWorkerOfficialBodyID always reports no platform-managed body: cloud
+// workers are a postgres-only feature, so the MySQL adapter never enforces.
+func (a *Adapter) GetCloudWorkerOfficialBodyID(botUID int64) (string, error) {
+	return "", nil
+}
+
+// SetCloudWorkerOfficialBodyID is unsupported on MySQL for the same reason.
+func (a *Adapter) SetCloudWorkerOfficialBodyID(botUID int64, bodyID string) error {
+	return fmt.Errorf("cloud workers are not supported on this database driver")
+}
+
 // GetBotBodyID returns the persistent body binding for a bot.
 func (a *Adapter) GetBotBodyID(botUID int64) (string, error) {
 	var bodyID string

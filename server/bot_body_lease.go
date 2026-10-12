@@ -41,6 +41,7 @@ type BotBodyStatus struct {
 	Active         bool       `json:"active"`
 	BodyID         string     `json:"body_id,omitempty"`
 	Bound          bool       `json:"bound"`
+	CloudDeployed  bool       `json:"cloud_deployed,omitempty"`
 	ConnectedAt    *time.Time `json:"connected_at,omitempty"`
 	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
 	LeaseTTLMS     int64      `json:"lease_ttl_ms,omitempty"`
@@ -272,4 +273,17 @@ func newBotBodyConnectionID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+// newCloudWorkerOfficialBodyID mints the runtime body identity for a cloud
+// worker. UUID v4 format matches the worker scripts' gen_uuid output and the
+// botBodyIDPattern accepted on the WebSocket upgrade path.
+func newCloudWorkerOfficialBodyID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("cw-%d", time.Now().UnixNano())
+	}
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
 }

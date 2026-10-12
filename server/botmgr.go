@@ -713,6 +713,11 @@ func (h *BotHandler) HandleGetBotBodyStatus(w http.ResponseWriter, r *http.Reque
 			status.Bound = status.Bound || boundBodyID != ""
 		}
 	}
+	// Platform-managed flag so local runtimes can refuse to start a cloud
+	// employee locally instead of stealing its binding.
+	if officialBody, offErr := h.db.GetCloudWorkerOfficialBodyID(botUID); offErr == nil && strings.TrimSpace(officialBody) != "" {
+		status.CloudDeployed = true
+	}
 	writeJSON(w, http.StatusOK, status)
 }
 
@@ -749,6 +754,20 @@ func (h *BotHandler) HandleTransferBotBody(w http.ResponseWriter, r *http.Reques
 	}
 	if actualOwner != ownerUID {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
+		return
+	}
+	// Platform-managed cloud workers own their binding: a manual transfer would
+	// hand the bot to a local runtime and silently take the cloud employee
+	// offline. Refuse; the platform repairs the binding when the worker connects.
+	if officialBody, offErr := h.db.GetCloudWorkerOfficialBodyID(input.BotUID); offErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to verify bot binding"})
+		return
+	} else if strings.TrimSpace(officialBody) != "" {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":   "this bot runs as a managed cloud employee; its runtime binding is managed by the platform",
+			"code":    "cloud_worker_managed_binding",
+			"body_id": officialBody,
+		})
 		return
 	}
 	if h.hub != nil {

@@ -1470,6 +1470,19 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Platform-managed runtime identity: mint the official body now so the
+	// WebSocket handler can enforce it from the worker's very first connect.
+	officialBodyID := newCloudWorkerOfficialBodyID()
+	if bodyErr := h.db.SetCloudWorkerOfficialBodyID(result.UID, officialBodyID); bodyErr != nil {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
+		_ = h.db.DeleteBot(result.UID)
+		log.Printf("[cloud-worker] failed to persist official body for %s: %v", tenantName, bodyErr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare cloud worker identity", "code": "cloud_worker_create_failed"})
+		return
+	}
+
 	// Provision the cloud instance (Tianyi worker image). Without a configured
 	// script this control plane cannot provision, so roll back the bot account
 	// (no cloud resource was created yet, so deleting the record is safe).
@@ -1525,6 +1538,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	defer cleanupCredentialFile()
 	provOut, err := h.runScript(h.provisionScript,
 		"--name", tenantName,
+		"--body-id", officialBodyID,
 		"--credential-file", credentialFile,
 		"--bot-uid", strconv.FormatInt(result.UID, 10),
 		"--user-uid", strconv.FormatInt(uid, 10),
@@ -2006,8 +2020,19 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 			"--user-name", owner.Username,
 			"--user-display", owner.DisplayName,
 		)
-		if bodyID, bodyErr := h.db.GetBotBodyID(worker.UID); bodyErr == nil && strings.TrimSpace(bodyID) != "" {
-			args = append(args, "--body-id", bodyID)
+		// Prefer the platform-minted official body so a reset always restores
+		// the enforced identity even when the durable binding drifted.
+		resetBodyID := ""
+		if officialBody, bodyErr := h.db.GetCloudWorkerOfficialBodyID(worker.UID); bodyErr == nil {
+			resetBodyID = strings.TrimSpace(officialBody)
+		}
+		if resetBodyID == "" {
+			if boundBody, bodyErr := h.db.GetBotBodyID(worker.UID); bodyErr == nil {
+				resetBodyID = strings.TrimSpace(boundBody)
+			}
+		}
+		if resetBodyID != "" {
+			args = append(args, "--body-id", resetBodyID)
 		}
 	}
 

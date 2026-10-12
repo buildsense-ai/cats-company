@@ -72,6 +72,14 @@ func (s *skillMutationGrantWSTestStore) GetBotBodyID(botUID int64) (string, erro
 	return s.bodyID, nil
 }
 
+func (s *skillMutationGrantWSTestStore) GetCloudWorkerOfficialBodyID(botUID int64) (string, error) {
+	return "", nil
+}
+
+func (s *skillMutationGrantWSTestStore) SetCloudWorkerOfficialBodyID(botUID int64, bodyID string) error {
+	return nil
+}
+
 func (s *skillMutationGrantWSTestStore) GetFriends(uid int64) ([]*types.User, error) {
 	return nil, nil
 }
