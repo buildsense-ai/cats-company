@@ -1167,6 +1167,7 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if boundBodyID != "" {
+				log.Printf("legacy bot websocket denied: uid=%d bound_body=%s addr=%s", uid, boundBodyID, requestRemoteAddr(r))
 				http.Error(w, fmt.Sprintf("bot is bound to body %s; update agent to send %s", boundBodyID, botBodyIDHeader), http.StatusConflict)
 				return
 			}
@@ -1180,6 +1181,7 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 			}
 			if !allowed {
 				if existing, ok := hub.bodyLeases.conflicts(uid, bodyID); ok {
+					log.Printf("bot duplicate connection denied: uid=%d body=%s existing_body=%s addr=%s", uid, bodyID, existing.bodyID, requestRemoteAddr(r))
 					http.Error(w, fmt.Sprintf("bot already connected from body %s", existing.bodyID), http.StatusConflict)
 					return
 				}
@@ -1193,6 +1195,7 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if existing, ok := hub.bodyLeases.conflicts(uid, bodyID); ok {
+			log.Printf("bot duplicate connection denied: uid=%d body=%s existing_body=%s addr=%s", uid, bodyID, existing.bodyID, requestRemoteAddr(r))
 			http.Error(w, fmt.Sprintf("bot already connected from body %s", existing.bodyID), http.StatusConflict)
 			return
 		}
