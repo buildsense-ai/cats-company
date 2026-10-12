@@ -30,8 +30,8 @@ import (
 // Security layers, in order:
 //  1. JWT auth (wired via AuthMiddlewareWithDB at route registration).
 //  2. uid whitelist (CATSCO_ADMIN_UID_WHITELIST, server-side enforced).
-//  3. path whitelist (only usage-admin /local/* paths; /internal/, /public/,
-//     /health, /api/ are never forwarded).
+//  3. path whitelist (the usage-admin console set plus the /local hub index;
+//     /internal/, /public/, /health, /api/ are never forwarded).
 //  4. rate limiting (separate read/write budgets per uid + per IP) and audit
 //     logging (writes highlighted).
 //  5. verb allowlist: GET for reads, POST only on known write paths.
@@ -433,6 +433,13 @@ func relayAdminPathAllowed(rawPath string) bool {
 		return true
 	}
 	if path == "/local/provider-capacity" || relayAdminProviderCapacityAPIPath.MatchString(path) {
+		return true
+	}
+	// The console hub. It is a static index that only links to pages already
+	// allowed below, so reaching it adds no capability; without it the "总览"
+	// nav entry inside every console would dead-end at a 403 when the console
+	// is embedded in the portal panel.
+	if path == "/local" || path == "/local/" {
 		return true
 	}
 	for _, prefix := range relayAdminAllowedPrefixes {

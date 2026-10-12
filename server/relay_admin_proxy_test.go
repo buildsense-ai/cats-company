@@ -85,6 +85,9 @@ func TestRelayAdminProvisionSurvivesOrdinaryProxyTimeout(t *testing.T) {
 
 func TestRelayAdminPathWhitelist(t *testing.T) {
 	ok := []string{
+		"/local",
+		"/local/",
+		"/local/?from=panel",
 		"/local/usage-admin",
 		"/local/usage-summary?window=24h",
 		"/local/usage-users?limit=10",
