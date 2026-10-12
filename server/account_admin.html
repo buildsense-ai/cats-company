@@ -450,6 +450,28 @@
       overflow-wrap: anywhere;
     }
 
+    /* The old meta line crammed every fact into one long sentence; a wrapping
+       label/value list scans far better while keeping the same information. */
+    .user-facts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px 14px;
+      margin-top: 6px;
+      font-size: 13px;
+    }
+
+    .user-facts span {
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
+
+    .user-facts b {
+      color: var(--muted);
+      font-weight: 600;
+      margin-right: 5px;
+      font-size: 12px;
+    }
+
     .secondary-button {
       height: 34px;
       background: transparent;
@@ -862,18 +884,20 @@ http://127.0.0.1:26061/local/account-admin</code>
 
     function renderUserItem(user) {
       const title = `${user.display_name || user.username || '未命名用户'} · UID ${user.uid}`;
-      const meta = [
-        `用户名=${user.username || '-'}`,
-        `邮箱=${user.email || '-'}`,
-        `类型=${user.account_type || '-'}`,
-        user.account_type === 'bot' ? `归属=${botOwnerLabel(user)}` : '',
-        `状态=${stateLabel(user.state)}`,
-        `创建=${user.created_at || '-'}`,
-      ].filter(Boolean).join(' · ');
+      const facts = [
+        ['用户名', user.username || '-'],
+        ['邮箱', user.email || '-'],
+        ['类型', user.account_type || '-'],
+        ...(user.account_type === 'bot' ? [['归属', botOwnerLabel(user)]] : []),
+        ['状态', stateLabel(user.state)],
+        ['创建', user.created_at || '-'],
+      ];
       return `<div class="user-item">
         <div>
           <strong>${escapeHTML(title)}</strong>
-          <div class="user-meta">${escapeHTML(meta)}</div>
+          <div class="user-facts">${facts.map(([label, value]) => (
+            `<span><b>${escapeHTML(label)}</b>${escapeHTML(value)}</span>`
+          )).join('')}</div>
         </div>
         <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
           <button class="secondary-button user-action" data-lookup-uid="${escapeHTML(user.uid)}">查看</button>
