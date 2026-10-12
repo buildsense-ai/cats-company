@@ -1157,11 +1157,16 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		// Platform-managed cloud workers take priority over both the legacy
 		// and the generic first-writer-wins paths below: the official body
 		// minted at provisioning time is the only runtime allowed to connect.
+		//
+		// Fail-open on lookup errors: this is an additive guard, and a database
+		// hiccup must never block every bot connection platform-wide. If the
+		// lookup cannot run, the connection falls through to the legacy paths
+		// exactly as before this guard existed (enforcement pauses, monitoring
+		// still covers the workers).
 		officialBodyID, officialErr := hub.db.GetCloudWorkerOfficialBodyID(uid)
 		if officialErr != nil {
-			log.Printf("cloud worker official body lookup failed: uid=%d err=%v", uid, officialErr)
-			http.Error(w, "failed to verify bot body binding", http.StatusInternalServerError)
-			return
+			log.Printf("cloud worker official body lookup failed (treating as unmanaged): uid=%d err=%v", uid, officialErr)
+			officialBodyID = ""
 		}
 		if officialBodyID != "" {
 			if err != nil || bodyID != officialBodyID {
