@@ -1,0 +1,70 @@
+package server
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// 服务调用面契约类型（设计文档 §3.3）。
+// MCP 面映射（2026-10-14）：对外经 MCP tool result 的 content（文本摘要）+
+// structuredContent（envelope JSON）承载；工具命名 catsco_<slug> 与 run 句柄协议见 Task 7。
+
+type ServiceRunState string
+
+const (
+	ServiceRunSubmitted ServiceRunState = "submitted"
+	ServiceRunRunning   ServiceRunState = "running"
+	ServiceRunCompleted ServiceRunState = "completed"
+	ServiceRunFailed    ServiceRunState = "failed"
+	ServiceRunCancelled ServiceRunState = "cancelled"
+	ServiceRunOrphaned  ServiceRunState = "orphaned"
+)
+
+type ServiceAgentSummary struct {
+	Slug                  string          `json:"slug"`
+	Name                  string          `json:"name"`
+	Version               int64           `json:"version"`
+	InputContract         json.RawMessage `json:"input_contract,omitempty"`
+	AsyncThresholdSeconds int             `json:"async_threshold_seconds"`
+}
+
+type ServiceInvokeRequest struct {
+	SessionID   string          `json:"session_id,omitempty"`
+	Input       json.RawMessage `json:"input"`
+	ClientToken string          `json:"client_token"`
+}
+
+type ServiceRunUsage struct {
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	// CostCNY：运行时未知时填 0；权威成本以 relay 记账为准。
+	CostCNY float64 `json:"cost_cny"`
+}
+
+type ServiceRunEnvelope struct {
+	ContractVersion string           `json:"contract_version"`
+	RunID           string           `json:"run_id"`
+	SessionID       string           `json:"session_id"`
+	Status          ServiceRunState  `json:"status"`
+	Output          json.RawMessage  `json:"output,omitempty"`
+	Files           []string         `json:"files,omitempty"`
+	Usage           *ServiceRunUsage `json:"usage,omitempty"`
+	Error           string           `json:"error,omitempty"`
+}
+
+type ServiceRunEvent struct {
+	EventID   int64           `json:"event_id"`
+	RunID     string          `json:"run_id"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+// ServiceAsyncNotice 即“运行句柄”的契约类型（catsco.service-run-async.v1，
+// status:"running"，经 MCP structuredContent 承载）。
+type ServiceAsyncNotice struct {
+	ContractVersion string `json:"contract_version"`
+	RunID           string `json:"run_id"`
+	SessionID       string `json:"session_id"`
+	Cause           string `json:"cause"`
+}
