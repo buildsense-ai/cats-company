@@ -19,7 +19,8 @@ import (
 // catsco_run_status 查询终态。对象均经 structuredContent 承载（content 给文本摘要）。
 type ServiceAgentsMCPHandler struct {
 	store    store.ServiceAgentStore
-	syncWait time.Duration // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
+	balance  *ServiceBalanceChecker // 计费预检（可选；未设置=跳过，调用面单测不受影响）
+	syncWait time.Duration          // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
 	http     *mcp.StreamableHTTPHandler
 }
 
@@ -37,6 +38,11 @@ func NewServiceAgentsMCPHandler(st store.ServiceAgentStore) *ServiceAgentsMCPHan
 		return h.buildServer(UIDFromContext(r.Context()))
 	}, nil)
 	return h
+}
+
+// SetBalanceChecker 注入调用方额度预检（设计 §5.3；未注入=跳过预检）。
+func (h *ServiceAgentsMCPHandler) SetBalanceChecker(checker *ServiceBalanceChecker) {
+	h.balance = checker
 }
 
 func (h *ServiceAgentsMCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +90,14 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if args.BotUID != 0 {
 		// 归属校验（GetBot(owner)==caller）留待阶段 2 接线；本期显式拒绝而不是静默忽略。
 		return serviceToolError("bot_identity_not_supported"), nil, nil
+	}
+	if h.balance != nil {
+		if err := h.balance.Check(ctx, callerUID); err != nil {
+			if errors.Is(err, ErrQuotaExhausted) {
+				return serviceToolError("quota_exhausted: 调用方额度不足，请充值后再试"), nil, nil
+			}
+			return serviceToolError("service_unavailable: 计费预检暂不可用，请稍后再试"), nil, nil
+		}
 	}
 	input, err := json.Marshal(args.Input)
 	if err != nil || len(input) == 0 || string(input) == "null" {
