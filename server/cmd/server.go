@@ -921,6 +921,14 @@ func main() {
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
 		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
+		// Orchestration internal API for runtime instances (design §4.3; instances
+		// reach it over the shared VPC). Authn = per-instance bearer token
+		// (CATS_SERVICE_INSTANCE_TOKEN); service tokens are minted on claim with
+		// CATS_SERVICE_TOKEN_SECRET, exp=+4h. The reaper reclaims expired leases
+		// so another instance can resume from the latest checkpoint.
+		serviceOrchestrator := server.NewServiceRunOrchestratorFromEnv(serviceAgentStore)
+		serviceOrchestrator.RegisterRoutes(mux)
+		go serviceOrchestrator.StartReaper(15 * time.Second)
 	} else {
 		log.Printf("service agents MCP endpoint disabled: store does not implement ServiceAgentStore")
 	}

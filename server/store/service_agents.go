@@ -65,6 +65,7 @@ type ServiceAgentDescriptor struct {
 type ServiceAgentStore interface {
 	GetServiceAgentBySlug(ctx context.Context, slug string) (id int64, name string, currentVersion int64, thresholdSeconds int, err error)
 	ListServiceAgents(ctx context.Context) ([]ServiceAgentDescriptor, error)
+	GetServiceAgentDefinition(ctx context.Context, agentID int64) (slug string, thresholdSeconds int, definitionJSON json.RawMessage, err error)
 	CreateServiceSession(ctx context.Context, agentID, definitionRev, callerUID, callerBotUID int64, assetsHash string) (string, error)
 	GetServiceSession(ctx context.Context, sessionID string) (ServiceSession, error)
 	GetServiceRun(ctx context.Context, runID string) (ServiceRun, error)

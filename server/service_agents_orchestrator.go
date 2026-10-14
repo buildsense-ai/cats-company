@@ -1,0 +1,314 @@
+package server
+
+import (
+	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/openchat/openchat/server/store"
+)
+
+// ServiceRunOrchestrator 是编排内部 API（实例↔平台；设计 §4.3/§6.3，计划① Task 8）。
+// 鉴权=实例 Bearer token（env CATS_SERVICE_INSTANCE_TOKEN）；服务 token 现场签发
+// （env CATS_SERVICE_TOKEN_SECRET，与 relay 同源），exp=+4h。网络层内网隔离之外
+// 仍做应用层校验（纵深防御）。
+type ServiceRunOrchestrator struct {
+	store         store.ServiceAgentStore
+	instanceToken string
+	tokenSecret   string
+	stopOnce      sync.Once
+	stopCh        chan struct{}
+}
+
+const (
+	serviceInstanceTokenEnv    = "CATS_SERVICE_INSTANCE_TOKEN"
+	serviceTokenSecretEnv      = "CATS_SERVICE_TOKEN_SECRET"
+	serviceTokenTTL            = 4 * time.Hour
+	serviceClaimDefaultLimit   = 10
+	serviceClaimMaxLimit       = 50
+	serviceReapDefaultInterval = 15 * time.Second
+	serviceReapTimeout         = 10 * time.Second
+)
+
+// ServiceClaimResult / ServiceClaimRun 是 claim 的下发契约（实例据此执行 run）。
+type ServiceClaimResult struct {
+	Runs []ServiceClaimRun `json:"runs"`
+}
+
+type ServiceClaimRun struct {
+	RunID            string                  `json:"run_id"`
+	SessionID        string                  `json:"session_id"`
+	DefinitionRev    int64                   `json:"definition_rev"`
+	ThresholdSeconds int                     `json:"threshold_seconds"`
+	Input            json.RawMessage         `json:"input"`
+	ServiceToken     string                  `json:"service_token"`
+	Checkpoint       *ServiceClaimCheckpoint `json:"checkpoint,omitempty"`
+}
+
+type ServiceClaimCheckpoint struct {
+	Revision int64           `json:"revision"`
+	Snapshot json.RawMessage `json:"snapshot"`
+}
+
+func NewServiceRunOrchestrator(st store.ServiceAgentStore, instanceToken, tokenSecret string) *ServiceRunOrchestrator {
+	return &ServiceRunOrchestrator{
+		store:         st,
+		instanceToken: instanceToken,
+		tokenSecret:   tokenSecret,
+		stopCh:        make(chan struct{}),
+	}
+}
+
+func NewServiceRunOrchestratorFromEnv(st store.ServiceAgentStore) *ServiceRunOrchestrator {
+	return NewServiceRunOrchestrator(
+		st,
+		strings.TrimSpace(os.Getenv(serviceInstanceTokenEnv)),
+		strings.TrimSpace(os.Getenv(serviceTokenSecretEnv)),
+	)
+}
+
+func (o *ServiceRunOrchestrator) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /internal/service-runs/claim", o.withInstanceToken(o.handleClaim))
+	mux.HandleFunc("POST /internal/service-runs/{runID}/checkpoint", o.withInstanceToken(o.handleCheckpoint))
+	mux.HandleFunc("POST /internal/service-runs/{runID}/heartbeat", o.withInstanceToken(o.handleRenewLease))
+	mux.HandleFunc("POST /internal/service-runs/{runID}/events", o.withInstanceToken(o.handleAppendEvent))
+	mux.HandleFunc("POST /internal/service-runs/{runID}/complete", o.withInstanceToken(o.handleComplete))
+	mux.HandleFunc("POST /internal/service-instances/{instanceID}/heartbeat", o.withInstanceToken(o.handleInstanceHeartbeat))
+}
+
+// StartReaper 周期回收过期租约（orphaned 供其他实例接管，设计 §4.8-1）。
+func (o *ServiceRunOrchestrator) StartReaper(interval time.Duration) {
+	if interval <= 0 {
+		interval = serviceReapDefaultInterval
+	}
+	reap := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), serviceReapTimeout)
+		defer cancel()
+		if _, err := o.ReapOnce(ctx); err != nil {
+			log.Printf("service run reaper: %v", err)
+		}
+	}
+	reap()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-o.stopCh:
+			return
+		case <-ticker.C:
+			reap()
+		}
+	}
+}
+
+func (o *ServiceRunOrchestrator) Stop() {
+	o.stopOnce.Do(func() { close(o.stopCh) })
+}
+
+func (o *ServiceRunOrchestrator) ReapOnce(ctx context.Context) (int, error) {
+	reaped, err := o.store.ReapExpiredServiceRuns(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if reaped > 0 {
+		log.Printf("service run reaper: %d run(s) orphaned", reaped)
+	}
+	return reaped, nil
+}
+
+func (o *ServiceRunOrchestrator) withInstanceToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if o.instanceToken == "" || token == "" ||
+			subtle.ConstantTimeCompare([]byte(token), []byte(o.instanceToken)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (o *ServiceRunOrchestrator) handleClaim(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Limit      int    `json:"limit"`
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_body"})
+		return
+	}
+	req.InstanceID = strings.TrimSpace(req.InstanceID)
+	if req.InstanceID == "" {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "instance_id_required"})
+		return
+	}
+	if req.Limit <= 0 {
+		req.Limit = serviceClaimDefaultLimit
+	}
+	if req.Limit > serviceClaimMaxLimit {
+		req.Limit = serviceClaimMaxLimit
+	}
+	runs, err := o.store.ClaimServiceRuns(r.Context(), req.InstanceID, req.Limit)
+	if err != nil {
+		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "claim_failed"})
+		return
+	}
+	result := ServiceClaimResult{Runs: make([]ServiceClaimRun, 0, len(runs))}
+	for _, run := range runs {
+		entry, err := o.buildClaimEntry(r.Context(), run)
+		if err != nil {
+			// 单条组装失败不阻断整批（租约到期后会被 reaper 回收重派）。
+			log.Printf("service claim build entry run=%s: %v", run.RunID, err)
+			continue
+		}
+		result.Runs = append(result.Runs, entry)
+	}
+	writeServiceJSON(w, http.StatusOK, result)
+}
+
+func (o *ServiceRunOrchestrator) buildClaimEntry(ctx context.Context, run store.ServiceRun) (ServiceClaimRun, error) {
+	session, err := o.store.GetServiceSession(ctx, run.SessionID)
+	if err != nil {
+		return ServiceClaimRun{}, fmt.Errorf("session: %w", err)
+	}
+	// 注：取 agent 当前版本定义；版本更新流（阶段 2）落地后按 session.DefinitionRev 精确取。
+	slug, threshold, definition, err := o.store.GetServiceAgentDefinition(ctx, session.AgentID)
+	if err != nil {
+		return ServiceClaimRun{}, fmt.Errorf("definition: %w", err)
+	}
+	var parsed struct {
+		Models []string `json:"models"`
+	}
+	_ = json.Unmarshal(definition, &parsed)
+	token := IssueServiceToken(o.tokenSecret, ServiceTokenClaims{
+		CallerUID: session.CallerUID,
+		Agent:     slug,
+		Models:    parsed.Models,
+		RunID:     run.RunID,
+		Purpose:   "service",
+		ExpiresAt: time.Now().Add(serviceTokenTTL),
+	})
+	entry := ServiceClaimRun{
+		RunID:            run.RunID,
+		SessionID:        run.SessionID,
+		DefinitionRev:    session.DefinitionRev,
+		ThresholdSeconds: threshold,
+		Input:            run.Input,
+		ServiceToken:     token,
+	}
+	if revision, snapshot, err := o.store.LatestServiceCheckpoint(ctx, run.SessionID); err == nil && revision > 0 && len(snapshot) > 0 {
+		entry.Checkpoint = &ServiceClaimCheckpoint{Revision: revision, Snapshot: snapshot}
+	}
+	return entry, nil
+}
+
+func (o *ServiceRunOrchestrator) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	var req struct {
+		Revision int64           `json:"revision"`
+		Snapshot json.RawMessage `json:"snapshot"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Revision <= 0 || len(req.Snapshot) == 0 {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_body"})
+		return
+	}
+	run, err := o.store.GetServiceRun(r.Context(), runID)
+	if err != nil {
+		writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "run_not_found"})
+		return
+	}
+	if err := o.store.SaveServiceCheckpoint(r.Context(), run.SessionID, req.Revision, req.Snapshot); err != nil {
+		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "save_failed"})
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{"saved": true})
+}
+
+func (o *ServiceRunOrchestrator) handleRenewLease(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	var req struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.InstanceID) == "" {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_body"})
+		return
+	}
+	renewed, err := o.store.RenewServiceLease(r.Context(), runID, req.InstanceID)
+	if err != nil {
+		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "renew_failed"})
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{"renewed": renewed})
+}
+
+func (o *ServiceRunOrchestrator) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	var req struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Type) == "" {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_body"})
+		return
+	}
+	seq, err := o.store.AppendServiceRunEvent(r.Context(), runID, req.Type, req.Payload)
+	if err != nil {
+		if errors.Is(err, store.ErrServiceRunNotFound) {
+			writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "run_not_found"})
+			return
+		}
+		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "append_failed"})
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{"seq": seq})
+}
+
+func (o *ServiceRunOrchestrator) handleComplete(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	var req struct {
+		ResultID string          `json:"result_id"`
+		Result   json.RawMessage `json:"result"`
+		Usage    json.RawMessage `json:"usage"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.ResultID) == "" {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_body"})
+		return
+	}
+	completed, err := o.store.CompleteServiceRun(r.Context(), runID, req.ResultID, req.Result, req.Usage)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrServiceRunNotFound):
+			writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "run_not_found"})
+		case errors.Is(err, store.ErrServiceRunConflict):
+			writeServiceJSON(w, http.StatusConflict, map[string]any{"error": "state_conflict"})
+		default:
+			writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "complete_failed"})
+		}
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{"completed": completed, "idempotent": !completed})
+}
+
+func (o *ServiceRunOrchestrator) handleInstanceHeartbeat(w http.ResponseWriter, r *http.Request) {
+	// 先只回执不落库（监控采集=阶段 2）。
+	var req struct {
+		ActiveRuns int            `json:"active_runs"`
+		Metrics    map[string]any `json:"metrics"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	writeServiceJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func writeServiceJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
