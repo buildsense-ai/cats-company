@@ -81,6 +81,7 @@ func (o *ServiceRunOrchestrator) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /internal/service-runs/{runID}/heartbeat", o.withInstanceToken(o.handleRenewLease))
 	mux.HandleFunc("POST /internal/service-runs/{runID}/events", o.withInstanceToken(o.handleAppendEvent))
 	mux.HandleFunc("POST /internal/service-runs/{runID}/complete", o.withInstanceToken(o.handleComplete))
+	mux.HandleFunc("POST /internal/service-runs/{runID}/fail", o.withInstanceToken(o.handleFailRun))
 	mux.HandleFunc("POST /internal/service-instances/{instanceID}/heartbeat", o.withInstanceToken(o.handleInstanceHeartbeat))
 }
 
@@ -295,6 +296,29 @@ func (o *ServiceRunOrchestrator) handleComplete(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"completed": completed, "idempotent": !completed})
+}
+
+// handleFailRun 处理实例上报的不可恢复/可重试失败（设计 §4.8；计划② PlatformClient.failRun）。
+// retryable=true → orphaned（可被接管重试）；false → failed（终态）。仅对 running 生效（store 层保障）。
+func (o *ServiceRunOrchestrator) handleFailRun(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	var req struct {
+		ErrorText string `json:"error_text"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_body"})
+		return
+	}
+	if err := o.store.FailServiceRun(r.Context(), runID, req.ErrorText, req.Retryable); err != nil {
+		if errors.Is(err, store.ErrServiceRunNotFound) {
+			writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "run_not_found"})
+			return
+		}
+		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "fail_failed"})
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (o *ServiceRunOrchestrator) handleInstanceHeartbeat(w http.ResponseWriter, r *http.Request) {
