@@ -48,6 +48,13 @@ func (a *Adapter) CreateSchema() error {
 		createChannelGroupBindingsTable,
 		createChannelNativeGroupsTable,
 		createWeixinClawBotTokensTable,
+		createServiceAgentsTable,
+		createServiceAgentVersionsTable,
+		createServiceSessionsTable,
+		createServiceRunsTable,
+		createServiceRunEventsTable,
+		createServiceSessionCheckpointsTable,
+		seedServiceAgentsHello,
 	}
 	for _, q := range tables {
 		if _, err := a.db.Exec(q); err != nil {
@@ -449,6 +456,105 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_admission_lock (
 
 const seedArtifactRuntimeAdmissionLock = `
 INSERT IGNORE INTO artifact_runtime_admission_lock (lock_id) VALUES (1);
+`
+
+// ---- service agents（计划① Task 2；设计 §3.3/§4）----
+
+const createServiceAgentsTable = `
+CREATE TABLE IF NOT EXISTS service_agents (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    slug VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_service_agents_slug (slug)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createServiceAgentVersionsTable = `
+CREATE TABLE IF NOT EXISTS service_agent_versions (
+    agent_id BIGINT NOT NULL,
+    version BIGINT NOT NULL,
+    definition_json JSON NOT NULL,
+    assets_hash VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (agent_id, version),
+    FOREIGN KEY (agent_id) REFERENCES service_agents(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createServiceSessionsTable = `
+CREATE TABLE IF NOT EXISTS service_sessions (
+    session_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    agent_id BIGINT NOT NULL,
+    definition_rev BIGINT NOT NULL,
+    assets_hash VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    caller_uid BIGINT NOT NULL,
+    caller_bot_uid BIGINT NOT NULL DEFAULT 0,
+    state VARCHAR(16) NOT NULL DEFAULT 'active',
+    last_event_seq BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (session_id),
+    INDEX idx_service_sessions_caller (agent_id, caller_uid, caller_bot_uid),
+    FOREIGN KEY (agent_id) REFERENCES service_agents(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createServiceRunsTable = `
+CREATE TABLE IF NOT EXISTS service_runs (
+    run_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    session_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'submitted',
+    client_token VARCHAR(128) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    input_json JSON NOT NULL,
+    instance_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    lease_epoch BIGINT NOT NULL DEFAULT 0,
+    lease_expires_at TIMESTAMP(6) NULL DEFAULT NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    result_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    usage_json JSON NULL,
+    result_json JSON NULL,
+    checkpoint_ref VARCHAR(128) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    error_text TEXT NOT NULL,
+    started_at TIMESTAMP(6) NULL DEFAULT NULL,
+    finished_at TIMESTAMP(6) NULL DEFAULT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (run_id),
+    UNIQUE KEY uk_service_runs_session_client (session_id, client_token),
+    FOREIGN KEY (session_id) REFERENCES service_sessions(session_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createServiceRunEventsTable = `
+CREATE TABLE IF NOT EXISTS service_run_events (
+    run_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    seq BIGINT NOT NULL,
+    type VARCHAR(48) NOT NULL,
+    payload_json JSON NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (run_id, seq),
+    FOREIGN KEY (run_id) REFERENCES service_runs(run_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createServiceSessionCheckpointsTable = `
+CREATE TABLE IF NOT EXISTS service_session_checkpoints (
+    session_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    revision BIGINT NOT NULL,
+    snapshot_json JSON NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (session_id, revision),
+    FOREIGN KEY (session_id) REFERENCES service_sessions(session_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const seedServiceAgentsHello = `
+INSERT IGNORE INTO service_agents (slug, name) VALUES ('hello', 'Hello 试点应用');
+INSERT IGNORE INTO service_agent_versions (agent_id, version, definition_json, assets_hash)
+SELECT id, 1, '{"async_threshold_seconds": 60, "models": ["gpt-6.1-sol"]}', '' FROM service_agents WHERE slug = 'hello';
 `
 
 const migrateArtifactRuntimeRunsAddDeliveryClaimedAt = `
