@@ -67,6 +67,7 @@ func TestRelaySessionReturnsSignedRelayURL(t *testing.T) {
 	}
 	if payload.UID != 12 ||
 		payload.Username != "mira" ||
+		payload.Email != "mira@example.com" ||
 		payload.Issuer != "catscompany" ||
 		payload.Audience != "cats-relay" ||
 		payload.JTI == "" ||

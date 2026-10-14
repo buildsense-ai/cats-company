@@ -144,10 +144,12 @@ type contextKey string
 
 const uidKey contextKey = "uid"
 const usernameKey contextKey = "username"
+const emailKey contextKey = "email"
 
 func contextWithClaims(ctx context.Context, claims *JWTClaims) context.Context {
 	ctx = context.WithValue(ctx, uidKey, claims.UID)
 	ctx = context.WithValue(ctx, usernameKey, claims.Username)
+	ctx = context.WithValue(ctx, emailKey, claims.Email)
 	return ctx
 }
 
@@ -402,6 +404,14 @@ func UIDFromContext(ctx context.Context) int64 {
 func UsernameFromContext(ctx context.Context) string {
 	username, _ := ctx.Value(usernameKey).(string)
 	return username
+}
+
+// EmailFromContext extracts the account email from the request context.
+// The JWT claims carry it, so downstream self-service calls can mirror it
+// without an extra user lookup.
+func EmailFromContext(ctx context.Context) string {
+	email, _ := ctx.Value(emailKey).(string)
+	return email
 }
 
 // extractToken gets the token from Authorization header or query param.

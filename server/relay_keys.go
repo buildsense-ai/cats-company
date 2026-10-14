@@ -59,6 +59,7 @@ type relayKeyRequest struct {
 type relayKeyProxyRequest struct {
 	Name     string `json:"name,omitempty"`
 	Username string `json:"username,omitempty"`
+	Email    string `json:"email,omitempty"`
 }
 
 // defaultRelayKeyName is stable per CatsCompany user while remaining unique
@@ -183,6 +184,7 @@ func (h *RelayKeyHandler) HandleKey(w http.ResponseWriter, r *http.Request) {
 		h.forward(w, r, http.MethodPost, uid, "", relayKeyProxyRequest{
 			Name:     name,
 			Username: UsernameFromContext(r.Context()),
+			Email:    EmailFromContext(r.Context()),
 		})
 	case http.MethodDelete:
 		h.forward(w, r, http.MethodDelete, uid, "", nil)

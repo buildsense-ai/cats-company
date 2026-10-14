@@ -164,6 +164,9 @@ func TestRelayKeyCreateAndRotateProxy(t *testing.T) {
 	if seenCreateBody.Name != "CatsCo API Key 7" || seenCreateBody.Username != "charlie" {
 		t.Fatalf("unexpected create body: %+v", seenCreateBody)
 	}
+	if seenCreateBody.Email != "charlie@example.com" {
+		t.Fatalf("unexpected email in create body: %+v", seenCreateBody)
+	}
 	if !strings.Contains(createRec.Body.String(), "sk-bf-created") {
 		t.Fatalf("expected one-time key in create response, body=%s", createRec.Body.String())
 	}

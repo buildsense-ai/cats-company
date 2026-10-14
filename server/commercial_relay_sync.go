@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,6 +25,7 @@ type CommercialRelayManagedStore interface {
 	ReplaceCommercialManagedRelayBudgets(uid int64, budgets []*types.CommercialManagedRelayBudget) error
 	CommercialRelaySyncRequired(uid int64) (bool, error)
 	ListCommercialReconcileUIDs(afterUID int64, limit int) ([]int64, error)
+	GetUser(uid int64) (*types.User, error)
 }
 
 type commercialRelayBaselineStore interface {
@@ -109,6 +111,7 @@ func (s *CommercialRelaySyncer) Start(ctx context.Context) {
 	}
 	go s.run(ctx)
 	go s.runReconciliation(ctx)
+	go s.runRelayIdentitySync(ctx)
 	if s.enforceEnabled {
 		go s.bootstrapConfiguredRelayUsers(ctx)
 	}
@@ -154,6 +157,81 @@ func (s *CommercialRelaySyncer) bootstrapConfiguredRelayUsersOnce(ctx context.Co
 			}
 		}
 		if len(page.Users) < pageSize || (page.TotalCount > 0 && offset+len(page.Users) >= page.TotalCount) {
+			return nil
+		}
+	}
+}
+
+// runRelayIdentitySync mirrors owner-platform usernames and emails onto relay
+// key rows so operators can search the relay console by either. It is
+// deliberately independent of commercial enforcement: identity is
+// presentation metadata and every relay key has a platform owner regardless
+// of billing state. Failures retry until the relay side accepts the writes
+// (e.g. while a relay release that predates the identity endpoint drains).
+func (s *CommercialRelaySyncer) runRelayIdentitySync(ctx context.Context) {
+	for {
+		if err := s.syncRelayIdentitiesOnce(ctx); err == nil {
+			return
+		}
+		timer := time.NewTimer(30 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *CommercialRelaySyncer) syncRelayIdentitiesOnce(ctx context.Context) error {
+	const pageSize = 20
+	updated := 0
+	for offset := 0; ; offset += pageSize {
+		var page commercialRelayUsageResponse
+		path := fmt.Sprintf("/internal/usage/users?offset=%d&limit=%d&include_summary=0", offset, pageSize)
+		if err := s.relayAdmin.Do(ctx, http.MethodGet, path, nil, &page); err != nil {
+			return fmt.Errorf("offset %d: %w", offset, err)
+		}
+		for index := range page.Users {
+			user := &page.Users[index]
+			if user.UID <= 0 || !user.Configured {
+				continue
+			}
+			account, err := s.store.GetUser(user.UID)
+			if err != nil {
+				log.Printf("relay identity sync load user failed uid=%d: %v", user.UID, err)
+				continue
+			}
+			if account == nil {
+				continue
+			}
+			payload := map[string]interface{}{}
+			if username := strings.TrimSpace(account.Username); username != "" && username != strings.TrimSpace(user.Username) {
+				payload["username"] = username
+			}
+			if email := strings.TrimSpace(account.Email); email != "" && email != strings.TrimSpace(user.Email) {
+				payload["email"] = email
+			}
+			if len(payload) == 0 {
+				continue
+			}
+			var response map[string]interface{}
+			err = s.relayAdmin.Do(ctx, http.MethodPost, fmt.Sprintf("/internal/users/%d/identity", user.UID), payload, &response)
+			if err != nil {
+				var relayErr relayAdminError
+				if errors.As(err, &relayErr) && relayErr.status == http.StatusNotFound {
+					// The key row vanished between listing and push (revoked/deleted
+					// concurrently); there is nothing left to mirror.
+					continue
+				}
+				return fmt.Errorf("uid %d: %w", user.UID, err)
+			}
+			updated++
+		}
+		if len(page.Users) < pageSize || (page.TotalCount > 0 && offset+len(page.Users) >= page.TotalCount) {
+			if updated > 0 {
+				log.Printf("relay identity sync mirrored %d user identities", updated)
+			}
 			return nil
 		}
 	}

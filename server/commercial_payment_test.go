@@ -37,6 +37,11 @@ type commercialRelaySyncTestStore struct {
 	reconcileUIDs []int64
 	replacedCh    chan struct{}
 	replacedUIDCh chan int64
+	users         map[int64]*types.User
+}
+
+func (s *commercialRelaySyncTestStore) GetUser(uid int64) (*types.User, error) {
+	return s.users[uid], nil
 }
 
 type commercialRelayBaselineTestStore struct {

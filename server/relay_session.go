@@ -25,6 +25,7 @@ type relaySessionResponse struct {
 type relaySSOPayload struct {
 	UID      int64  `json:"uid"`
 	Username string `json:"username"`
+	Email    string `json:"email,omitempty"`
 	Issuer   string `json:"iss"`
 	Audience string `json:"aud"`
 	JTI      string `json:"jti"`
@@ -100,6 +101,7 @@ func (h *RelayConfigHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 	ticket, err := signRelaySSOTicket(relaySSOPayload{
 		UID:      uid,
 		Username: UsernameFromContext(r.Context()),
+		Email:    EmailFromContext(r.Context()),
 		Issuer:   "catscompany",
 		Audience: "cats-relay",
 		JTI:      jti,

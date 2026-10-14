@@ -244,6 +244,14 @@ func newCommercialDeployRelayServer(t *testing.T, failures int32) *commercialDep
 }
 
 func (s *commercialDeployRelayServer) handle(w http.ResponseWriter, r *http.Request) {
+	// The relay identity sweep runs beside the commercial sync and is
+	// orthogonal to what these deploy-window tests count, block or fail. It is
+	// identifiable by include_summary=0; serve it an empty page without
+	// consuming the deploy-window failures or the request budget.
+	if r.Method == http.MethodGet && r.URL.Query().Get("include_summary") == "0" {
+		_ = json.NewEncoder(w).Encode(commercialRelayUsageResponse{})
+		return
+	}
 	s.requestCount.Add(1)
 	if r.Method == http.MethodGet {
 		if s.blockFirst.CompareAndSwap(true, false) {
