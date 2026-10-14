@@ -50,11 +50,21 @@ type ServiceRunEventRecord struct {
 	CreatedAt time.Time
 }
 
+// ServiceAgentDescriptor 是服务目录条目（MCP tools/list 的来源；每个 agent 取当前版本）。
+type ServiceAgentDescriptor struct {
+	ID                    int64
+	Slug                  string
+	Name                  string
+	Version               int64
+	AsyncThresholdSeconds int
+}
+
 // ServiceAgentStore 是服务调用面的编排存储（PG 主实现 + MySQL 镜像）。
 // 同会话保串行的核心：CreateServiceRunIdempotent 在单事务内锁 session 行，
 // client_token 命中返回既有 run；否则存在活跃 run 时返回 ErrServiceSessionBusy。
 type ServiceAgentStore interface {
 	GetServiceAgentBySlug(ctx context.Context, slug string) (id int64, name string, currentVersion int64, thresholdSeconds int, err error)
+	ListServiceAgents(ctx context.Context) ([]ServiceAgentDescriptor, error)
 	CreateServiceSession(ctx context.Context, agentID, definitionRev, callerUID, callerBotUID int64, assetsHash string) (string, error)
 	GetServiceSession(ctx context.Context, sessionID string) (ServiceSession, error)
 	GetServiceRun(ctx context.Context, runID string) (ServiceRun, error)
