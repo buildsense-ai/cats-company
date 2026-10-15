@@ -45,7 +45,10 @@ func (o *ServiceRunOrchestrator) handlePublishServiceAgentPackage(w http.Respons
 		return
 	}
 	packageHash := CanonicalServiceBundleHash(bundle.Files)
-	version, err := o.store.PublishServiceAgentPackage(r.Context(), slug, definitionJSON, packageHash, bundleJSON)
+	// force=1：同 hash 也建新版本（回滚通道：重发旧包 → 新版本指向旧内容，claim 立即切回）。
+	forceValue := strings.TrimSpace(r.URL.Query().Get("force"))
+	force := forceValue == "1" || strings.EqualFold(forceValue, "true")
+	version, err := o.store.PublishServiceAgentPackage(r.Context(), slug, definitionJSON, packageHash, bundleJSON, force)
 	if errors.Is(err, store.ErrServiceAgentNotFound) {
 		writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "agent_not_found"})
 		return
@@ -57,13 +60,13 @@ func (o *ServiceRunOrchestrator) handlePublishServiceAgentPackage(w http.Respons
 	}
 	log.Printf("service package published slug=%s version=%d hash=%s", slug, version, packageHash)
 	writeServiceJSON(w, http.StatusOK, map[string]any{
-		"slug":               slug,
-		"version":            version,
-		"package_hash":       packageHash,
-		"definition":         definition,
-		"async_threshold":    definition.AsyncThresholdSeconds,
-		"knowledge_files":    countBundleFiles(bundle.Files, "knowledge/"),
-		"skill_files":        countBundleFiles(bundle.Files, "skills/"),
+		"slug":            slug,
+		"version":         version,
+		"package_hash":    packageHash,
+		"definition":      definition,
+		"async_threshold": definition.AsyncThresholdSeconds,
+		"knowledge_files": countBundleFiles(bundle.Files, "knowledge/"),
+		"skill_files":     countBundleFiles(bundle.Files, "skills/"),
 	})
 }
 

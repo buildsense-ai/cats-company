@@ -18,16 +18,23 @@ import (
 
 // fakeServiceAgentStore 是 service 编排存储的内存假实现（MCP 面测试专用）。
 type fakeServiceAgentStore struct {
-	mu                sync.Mutex
-	agents            []store.ServiceAgentDescriptor
-	sessions          map[string]store.ServiceSession
-	runs              map[string]store.ServiceRun
-	events            map[string][]store.ServiceRunEventRecord
-	tokens            map[string]string // session|token -> runID
-	packages          map[string]json.RawMessage
-	packageHashes     map[int64]string // agentID -> 最新版本内容 hash
-	autoCompleteAfter time.Duration
-	nextID            int64
+	mu                   sync.Mutex
+	agents               []store.ServiceAgentDescriptor
+	sessions             map[string]store.ServiceSession
+	runs                 map[string]store.ServiceRun
+	events               map[string][]store.ServiceRunEventRecord
+	tokens               map[string]string // session|token -> runID
+	packages             map[string]json.RawMessage
+	agentPackageVersions map[int64][]fakePackageVersion // agentID -> 版本序列（升序，行为=真实 PG）
+	definitionRevs       []int64                        // 记录 claim 请求的定义版本（会话钉定断言用）
+	autoCompleteAfter    time.Duration
+	nextID               int64
+}
+
+// fakePackageVersion 模拟 service_agent_versions 的一行（内容寻址 hash + 版本号）。
+type fakePackageVersion struct {
+	Version int64
+	Hash    string
 }
 
 func newFakeServiceAgentStore() *fakeServiceAgentStore {
@@ -35,18 +42,18 @@ func newFakeServiceAgentStore() *fakeServiceAgentStore {
 		agents: []store.ServiceAgentDescriptor{
 			{ID: 1, Slug: "hello", Name: "Hello 试点应用", Version: 1, AsyncThresholdSeconds: 60},
 		},
-		sessions:      map[string]store.ServiceSession{},
-		runs:          map[string]store.ServiceRun{},
-		events:        map[string][]store.ServiceRunEventRecord{},
-		tokens:        map[string]string{},
-		packages:      map[string]json.RawMessage{},
-		packageHashes: map[int64]string{},
+		sessions:             map[string]store.ServiceSession{},
+		runs:                 map[string]store.ServiceRun{},
+		events:               map[string][]store.ServiceRunEventRecord{},
+		tokens:               map[string]string{},
+		packages:             map[string]json.RawMessage{},
+		agentPackageVersions: map[int64][]fakePackageVersion{},
 	}
 }
 
 // ---- 云端包分发（store.ServiceAgentStore 扩展方法）----
 
-func (f *fakeServiceAgentStore) PublishServiceAgentPackage(_ context.Context, slug string, _ json.RawMessage, packageHash string, bundle json.RawMessage) (int64, error) {
+func (f *fakeServiceAgentStore) PublishServiceAgentPackage(_ context.Context, slug string, _ json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	agentID := int64(0)
@@ -61,10 +68,19 @@ func (f *fakeServiceAgentStore) PublishServiceAgentPackage(_ context.Context, sl
 	}
 	if _, ok := f.packages[packageHash]; !ok {
 		f.packages[packageHash] = append(json.RawMessage(nil), bundle...)
-		f.nextID++
 	}
-	f.packageHashes[agentID] = packageHash
-	return f.nextID, nil
+	// 同 hash：非 force 幂等返回既有版本；force 建新版本（回滚通道）。
+	for _, pv := range f.agentPackageVersions[agentID] {
+		if pv.Hash == packageHash && !force {
+			return pv.Version, nil
+		}
+	}
+	next := int64(1)
+	if existing := f.agentPackageVersions[agentID]; len(existing) > 0 {
+		next = existing[len(existing)-1].Version + 1
+	}
+	f.agentPackageVersions[agentID] = append(f.agentPackageVersions[agentID], fakePackageVersion{Version: next, Hash: packageHash})
+	return next, nil
 }
 
 func (f *fakeServiceAgentStore) GetServiceAgentPackage(_ context.Context, packageHash string) (json.RawMessage, error) {
@@ -80,7 +96,11 @@ func (f *fakeServiceAgentStore) GetServiceAgentPackage(_ context.Context, packag
 func (f *fakeServiceAgentStore) GetServiceAgentPackageHash(_ context.Context, agentID int64) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.packageHashes[agentID], nil
+	versions := f.agentPackageVersions[agentID]
+	if len(versions) == 0 {
+		return "", nil
+	}
+	return versions[len(versions)-1].Hash, nil
 }
 
 func (f *fakeServiceAgentStore) GetServiceAgentBySlug(_ context.Context, slug string) (int64, string, int64, int, error) {
@@ -446,5 +466,35 @@ func TestServiceAgentsMCPSessionBusy(t *testing.T) {
 	}
 	if !strings.Contains(busyText, "session_busy") {
 		t.Fatalf("busy error text = %q, want session_busy", busyText)
+	}
+}
+
+// MCP 建会话时钉定当时最新包 hash（设计 A §2 会话钉快照）——之后的新发布不影响本会话。
+func TestServiceAgentsMCPSessionPinsPackageHash(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.autoCompleteAfter = 5 * time.Millisecond
+	hashA := strings.Repeat("a", 64)
+	if _, err := st.PublishServiceAgentPackage(context.Background(), "hello", json.RawMessage(`{"models":["m1"]}`), hashA, json.RawMessage(`{"schema":"x"}`), false); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	handler := NewServiceAgentsMCPHandler(st)
+	ts := httptest.NewServer(mcpAuthStub(441, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+	ctx := context.Background()
+
+	call, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "catsco_hello", Arguments: map[string]any{"input": map[string]any{"topic": "x"}}})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	env := decodeServiceEnvelope(t, call.StructuredContent)
+	if env.SessionID == "" {
+		t.Fatalf("session id missing: %+v", env)
+	}
+	st.mu.Lock()
+	pinned := st.sessions[env.SessionID].AssetsHash
+	st.mu.Unlock()
+	if pinned != hashA {
+		t.Fatalf("session assets_hash = %q, want pinned %q", pinned, hashA)
 	}
 }

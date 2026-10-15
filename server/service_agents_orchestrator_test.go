@@ -17,9 +17,13 @@ import (
 // ---- fake 扩展（同包共享 fakeServiceAgentStore；计划① Task 8）----
 
 // GetServiceAgentDefinition 让 fakeServiceAgentStore 满足带定义查询的扩后接口。
-func (f *fakeServiceAgentStore) GetServiceAgentDefinition(_ context.Context, agentID int64) (string, int, json.RawMessage, error) {
+// 记录请求的版本（会话钉定断言用）；定义内容固定（现有用例依赖 gpt-6.1-sol）。
+func (f *fakeServiceAgentStore) GetServiceAgentDefinition(_ context.Context, agentID int64, definitionRev int64) (string, int, json.RawMessage, error) {
 	for _, a := range f.agents {
 		if a.ID == agentID {
+			f.mu.Lock()
+			f.definitionRevs = append(f.definitionRevs, definitionRev)
+			f.mu.Unlock()
 			definition := json.RawMessage(`{"async_threshold_seconds": 60, "models": ["gpt-6.1-sol"]}`)
 			return a.Slug, a.AsyncThresholdSeconds, definition, nil
 		}
@@ -364,4 +368,66 @@ func TestServiceOrchestratorReapAndReclaim(t *testing.T) {
 		t.Fatalf("run after reclaim = %+v", final)
 	}
 	_ = sessionID
+}
+
+// 会话钉快照（设计 A §2）：claim 按会话创建时固化的 package hash 与 definition_rev 下发；
+// 旧式会话（无钉定）回退最新版本 hash——发布新包不影响进行中会话（防"半新半旧"）。
+func TestServiceClaimPinsSessionSnapshot(t *testing.T) {
+	st := newFakeOrchestratorStore()
+	_, base := newOrchestratorServer(t, st)
+	ctx := context.Background()
+	hashA := strings.Repeat("a", 64)
+	hashB := strings.Repeat("b", 64)
+
+	// 发布 A（v1）→ 建会话（钉定 A；MCP 语义：建会话时固化当时最新）
+	if _, err := st.PublishServiceAgentPackage(ctx, "hello", json.RawMessage(`{"models":["m1"]}`), hashA, json.RawMessage(`{"schema":"x"}`), false); err != nil {
+		t.Fatalf("publish A: %v", err)
+	}
+	pinnedSession, err := st.CreateServiceSession(ctx, 1, 1, 441, 0, hashA)
+	if err != nil {
+		t.Fatalf("create pinned session: %v", err)
+	}
+
+	// 发布 B（v2；最新变为 B）
+	if _, err := st.PublishServiceAgentPackage(ctx, "hello", json.RawMessage(`{"models":["m2"]}`), hashB, json.RawMessage(`{"schema":"y"}`), false); err != nil {
+		t.Fatalf("publish B: %v", err)
+	}
+
+	// 钉定会话 + 旧式会话（钉定上线前创建，definition_rev=0 且无 hash）各挂一个 run
+	legacySession, err := st.CreateServiceSession(ctx, 1, 0, 442, 0, "")
+	if err != nil {
+		t.Fatalf("create legacy session: %v", err)
+	}
+	st.mu.Lock()
+	st.runs["run_pin_1"] = store.ServiceRun{RunID: "run_pin_1", SessionID: pinnedSession, State: "submitted", Input: json.RawMessage(`{}`)}
+	st.runs["run_pin_2"] = store.ServiceRun{RunID: "run_pin_2", SessionID: legacySession, State: "submitted", Input: json.RawMessage(`{}`)}
+	st.mu.Unlock()
+	st.claimable = append(st.claimable, "run_pin_1", "run_pin_2")
+
+	status, payload := doInternal(t, "POST", base+"/internal/service-runs/claim", "inst-token-1", `{"limit":5,"instance_id":"inst-a"}`)
+	if status != http.StatusOK {
+		t.Fatalf("claim status = %d body=%s", status, payload)
+	}
+	var claim ServiceClaimResult
+	if err := json.Unmarshal(payload, &claim); err != nil || len(claim.Runs) != 2 {
+		t.Fatalf("claim decode: %v %+v", err, claim)
+	}
+	byRunID := map[string]ServiceClaimRun{}
+	for _, entry := range claim.Runs {
+		byRunID[entry.RunID] = entry
+	}
+	if got := byRunID["run_pin_1"].PackageHash; got != hashA {
+		t.Fatalf("pinned session package_hash = %q, want %q (不受新发布影响)", got, hashA)
+	}
+	if got := byRunID["run_pin_2"].PackageHash; got != hashB {
+		t.Fatalf("legacy session package_hash = %q, want latest %q (回退语义)", got, hashB)
+	}
+
+	// 定义版本透传：钉定会话=其 definition_rev（1）；旧式会话=0（存储层回退最新）
+	st.mu.Lock()
+	revs := append([]int64(nil), st.definitionRevs...)
+	st.mu.Unlock()
+	if len(revs) != 2 || revs[0] != 1 || revs[1] != 0 {
+		t.Fatalf("definition revs = %v, want [1 0]（按 claim 顺序）", revs)
+	}
 }

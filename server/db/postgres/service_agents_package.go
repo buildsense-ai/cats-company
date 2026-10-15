@@ -12,8 +12,9 @@ import (
 
 // PublishServiceAgentPackage 发布一个 agent 新版本（云端包分发；设计 A §2）。
 // packageHash 为内容寻址：同 hash 已存在（任意版本）→ 幂等返回既有版本号，不重复入库。
+// force=true 时跳过幂等分支：同 hash 也建新版本（回滚通道：重发旧包使新版本指向旧内容）。
 // definition 由平台从包 manifest 派生（消除"包内模型 vs 平台定义"双写裂缝）。
-func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, definition json.RawMessage, packageHash string, bundle json.RawMessage) (int64, error) {
+func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, definition json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (int64, error) {
 	if packageHash == "" {
 		return 0, fmt.Errorf("publish service agent package: empty package hash")
 	}
@@ -38,23 +39,25 @@ func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, d
 		return 0, fmt.Errorf("publish service agent package: %w", err)
 	}
 
-	var existing int64
-	err = tx.QueryRowContext(ctx, `
-		SELECT version FROM service_agent_versions
-		WHERE agent_id = $1 AND assets_hash = $2 AND package_json IS NOT NULL
-		ORDER BY version DESC LIMIT 1`, agentID, packageHash).Scan(&existing)
-	if err == nil {
-		// 同内容重发：definition_json 是内容的派生值，重算覆盖（修正历史派生 bug 的路径）。
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE service_agent_versions SET definition_json = $3::jsonb
-			WHERE agent_id = $1 AND assets_hash = $2 AND package_json IS NOT NULL`,
-			agentID, packageHash, string(definition)); err != nil {
+	if !force {
+		var existing int64
+		err = tx.QueryRowContext(ctx, `
+			SELECT version FROM service_agent_versions
+			WHERE agent_id = $1 AND assets_hash = $2 AND package_json IS NOT NULL
+			ORDER BY version DESC LIMIT 1`, agentID, packageHash).Scan(&existing)
+		if err == nil {
+			// 同内容重发：definition_json 是内容的派生值，重算覆盖（修正历史派生 bug 的路径）。
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE service_agent_versions SET definition_json = $3::jsonb
+				WHERE agent_id = $1 AND assets_hash = $2 AND package_json IS NOT NULL`,
+				agentID, packageHash, string(definition)); err != nil {
+				return 0, fmt.Errorf("publish service agent package: %w", err)
+			}
+			return existing, tx.Commit()
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
 			return 0, fmt.Errorf("publish service agent package: %w", err)
 		}
-		return existing, tx.Commit()
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("publish service agent package: %w", err)
 	}
 
 	var version int64

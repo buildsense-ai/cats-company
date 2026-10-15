@@ -11,8 +11,9 @@ import (
 )
 
 // PublishServiceAgentPackage 发布一个 agent 新版本（云端包分发；PG 同语义镜像）。
-// 同 hash 已存在 → 幂等返回既有版本号；definition 由平台从包 manifest 派生。
-func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, definition json.RawMessage, packageHash string, bundle json.RawMessage) (int64, error) {
+// 同 hash 已存在 → 幂等返回既有版本号；force=true 时同 hash 也建新版本（回滚通道）。
+// definition 由平台从包 manifest 派生。
+func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, definition json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (int64, error) {
 	if packageHash == "" {
 		return 0, fmt.Errorf("publish service agent package: empty package hash")
 	}
@@ -35,23 +36,25 @@ func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, d
 		return 0, fmt.Errorf("publish service agent package: %w", err)
 	}
 
-	var existing int64
-	err = tx.QueryRowContext(ctx, `
-		SELECT version FROM service_agent_versions
-		WHERE agent_id = ? AND assets_hash = ? AND package_json IS NOT NULL
-		ORDER BY version DESC LIMIT 1`, agentID, packageHash).Scan(&existing)
-	if err == nil {
-		// 同内容重发：definition_json 是内容的派生值，重算覆盖（修正历史派生 bug 的路径）。
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE service_agent_versions SET definition_json = ?
-			WHERE agent_id = ? AND assets_hash = ? AND package_json IS NOT NULL`,
-			string(definition), agentID, packageHash); err != nil {
+	if !force {
+		var existing int64
+		err = tx.QueryRowContext(ctx, `
+			SELECT version FROM service_agent_versions
+			WHERE agent_id = ? AND assets_hash = ? AND package_json IS NOT NULL
+			ORDER BY version DESC LIMIT 1`, agentID, packageHash).Scan(&existing)
+		if err == nil {
+			// 同内容重发：definition_json 是内容的派生值，重算覆盖（修正历史派生 bug 的路径）。
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE service_agent_versions SET definition_json = ?
+				WHERE agent_id = ? AND assets_hash = ? AND package_json IS NOT NULL`,
+				string(definition), agentID, packageHash); err != nil {
+				return 0, fmt.Errorf("publish service agent package: %w", err)
+			}
+			return existing, tx.Commit()
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
 			return 0, fmt.Errorf("publish service agent package: %w", err)
 		}
-		return existing, tx.Commit()
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("publish service agent package: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -61,10 +64,7 @@ func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, d
 		return 0, fmt.Errorf("publish service agent package: %w", err)
 	}
 	var version int64
-	if err := tx.QueryRowContext(ctx, `
-		SELECT version FROM service_agent_versions
-		WHERE agent_id = ? AND assets_hash = ? AND package_json IS NOT NULL
-		ORDER BY version DESC LIMIT 1`, agentID, packageHash).Scan(&version); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(version) FROM service_agent_versions WHERE agent_id = ?`, agentID).Scan(&version); err != nil {
 		return 0, fmt.Errorf("publish service agent package: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

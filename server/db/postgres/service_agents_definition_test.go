@@ -14,7 +14,7 @@ func TestServiceAgentDefinitionHello(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get hello: %v", err)
 	}
-	slug, threshold, definition, err := db.GetServiceAgentDefinition(ctx, id)
+	slug, threshold, definition, err := db.GetServiceAgentDefinition(ctx, id, 0)
 	if err != nil {
 		t.Fatalf("definition: %v", err)
 	}
@@ -29,7 +29,11 @@ func TestServiceAgentDefinitionHello(t *testing.T) {
 	if len(models) != 1 || models[0] != "gpt-6.1-sol" {
 		t.Fatalf("models = %+v", parsed["models"])
 	}
-	if _, _, _, err := db.GetServiceAgentDefinition(ctx, 999999); err == nil {
+	// 指定不存在的版本 → 回退最新（会话钉定兑底语义）
+	if _, _, _, err := db.GetServiceAgentDefinition(ctx, id, 9999); err != nil {
+		t.Fatalf("missing version should fall back to latest: %v", err)
+	}
+	if _, _, _, err := db.GetServiceAgentDefinition(ctx, 999999, 0); err == nil {
 		t.Fatal("missing agent should error")
 	}
 }

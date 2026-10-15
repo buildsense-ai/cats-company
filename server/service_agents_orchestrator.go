@@ -185,8 +185,9 @@ func (o *ServiceRunOrchestrator) buildClaimEntry(ctx context.Context, run store.
 	if err != nil {
 		return ServiceClaimRun{}, fmt.Errorf("session: %w", err)
 	}
-	// 注：取 agent 当前版本定义；版本更新流（阶段 2）落地后按 session.DefinitionRev 精确取。
-	slug, threshold, definition, err := o.store.GetServiceAgentDefinition(ctx, session.AgentID)
+	// 会话钉快照（设计 A §2）：定义按会话创建时固化的 definition_rev 取（防"半新半旧"）；
+	// definition_rev<=0 或该版本缺失 → 存储层兑底最新版本。
+	slug, threshold, definition, err := o.store.GetServiceAgentDefinition(ctx, session.AgentID, session.DefinitionRev)
 	if err != nil {
 		return ServiceClaimRun{}, fmt.Errorf("definition: %w", err)
 	}
@@ -194,11 +195,15 @@ func (o *ServiceRunOrchestrator) buildClaimEntry(ctx context.Context, run store.
 		Models []string `json:"models"`
 	}
 	_ = json.Unmarshal(definition, &parsed)
-	// 云端包分发：下发最新版本包 hash（无包/旧库 → 空，实例回退内置包）。
-	packageHash, err := o.store.GetServiceAgentPackageHash(ctx, session.AgentID)
-	if err != nil {
-		log.Printf("service claim package hash agent=%d: %v", session.AgentID, err)
-		packageHash = ""
+	// 云端包分发：优先会话钉定的包 hash；空值（钉定上线前建的旧会话/未发布过包）
+	// 回退最新版本 hash（无包/旧库 → 空，实例回退内置包）。
+	packageHash := session.AssetsHash
+	if packageHash == "" {
+		packageHash, err = o.store.GetServiceAgentPackageHash(ctx, session.AgentID)
+		if err != nil {
+			log.Printf("service claim package hash agent=%d: %v", session.AgentID, err)
+			packageHash = ""
+		}
 	}
 	token := IssueServiceToken(o.tokenSecret, ServiceTokenClaims{
 		CallerUID: session.CallerUID,

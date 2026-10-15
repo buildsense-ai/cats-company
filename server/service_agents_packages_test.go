@@ -81,6 +81,23 @@ func TestServicePackagePublishAndDownload(t *testing.T) {
 		t.Fatalf("republish not idempotent: %+v vs %+v", replayed, published)
 	}
 
+	// force 重发：同 hash 也建新版本（回滚通道：重发旧包 → 新版本指向旧内容）
+	status, forced := doInternal(t, "POST", base+"/internal/service-agents/hello/publish?force=1", "inst-token-1", string(bundleJSON))
+	if status != http.StatusOK {
+		t.Fatalf("force publish status = %d body=%s", status, forced)
+	}
+	var forcedResult struct {
+		Version     int64  `json:"version"`
+		PackageHash string `json:"package_hash"`
+	}
+	_ = json.Unmarshal(forced, &forcedResult)
+	if forcedResult.Version != published.Version+1 {
+		t.Fatalf("force version = %d, want %d", forcedResult.Version, published.Version+1)
+	}
+	if forcedResult.PackageHash != published.PackageHash {
+		t.Fatalf("force hash = %q, want unchanged %q", forcedResult.PackageHash, published.PackageHash)
+	}
+
 	// 拉取：鉴权 / 未知 hash / 命中
 	if status, _ := doInternal(t, "GET", base+"/internal/service-agent-packages/"+published.PackageHash, "", ""); status != http.StatusUnauthorized {
 		t.Fatalf("download without token status = %d, want 401", status)

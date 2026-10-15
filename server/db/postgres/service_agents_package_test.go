@@ -68,29 +68,55 @@ func TestServiceAgentPackagePublishRoundtrip(t *testing.T) {
 	// 模拟事故现场：首次发布派生值缺模型白名单，重发同内容时应自愈。
 	definition := json.RawMessage(`{"async_threshold_seconds": 60, "models": []}`)
 
-	version, err := db.PublishServiceAgentPackage(ctx, "hello", definition, hash, bundle)
+	version, err := db.PublishServiceAgentPackage(ctx, "hello", definition, hash, bundle, false)
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if version <= 0 {
 		t.Fatalf("version = %d", version)
 	}
-	replayed, err := db.PublishServiceAgentPackage(ctx, "hello", definition, hash, bundle)
+	replayed, err := db.PublishServiceAgentPackage(ctx, "hello", definition, hash, bundle, false)
 	if err != nil || replayed != version {
 		t.Fatalf("republish: version=%d err=%v, want idempotent %d", replayed, err, version)
 	}
 
 	// 同 hash 重发新派生值 → definition_json 覆盖（修正历史派生 bug 的自愈路径）。
 	fixed := json.RawMessage(`{"async_threshold_seconds": 60, "models": ["MiniMax-M3"]}`)
-	if _, err := db.PublishServiceAgentPackage(ctx, "hello", fixed, hash, bundle); err != nil {
+	if _, err := db.PublishServiceAgentPackage(ctx, "hello", fixed, hash, bundle, false); err != nil {
 		t.Fatalf("republish with fixed definition: %v", err)
 	}
-	_, _, latestDefinition, err := db.GetServiceAgentDefinition(ctx, id)
+	_, _, latestDefinition, err := db.GetServiceAgentDefinition(ctx, id, 0)
 	if err != nil {
 		t.Fatalf("definition after republish: %v", err)
 	}
 	if !strings.Contains(string(latestDefinition), "MiniMax-M3") {
 		t.Fatalf("definition not updated by republish: %s", latestDefinition)
+	}
+
+	// 会话钉定语义：版本级定义查询精确命中（v1=种子定义，v2=发布定义）；缺失版本回退最新。
+	_, _, v1Definition, err := db.GetServiceAgentDefinition(ctx, id, 1)
+	if err != nil || !strings.Contains(string(v1Definition), "gpt-6.1-sol") {
+		t.Fatalf("v1 definition = %s err=%v, want seeded gpt-6.1-sol", v1Definition, err)
+	}
+	_, _, v2Definition, err := db.GetServiceAgentDefinition(ctx, id, version)
+	if err != nil || !strings.Contains(string(v2Definition), "MiniMax-M3") {
+		t.Fatalf("v%d definition = %s err=%v, want MiniMax-M3", version, v2Definition, err)
+	}
+	_, _, fallbackDefinition, err := db.GetServiceAgentDefinition(ctx, id, 9999)
+	if err != nil || !strings.Contains(string(fallbackDefinition), "MiniMax-M3") {
+		t.Fatalf("missing version fallback = %s err=%v, want latest", fallbackDefinition, err)
+	}
+
+	// force 重发：同 hash 也建新版本（回滚通道：重发旧包 → 新版本指向旧内容）。
+	forced, err := db.PublishServiceAgentPackage(ctx, "hello", fixed, hash, bundle, true)
+	if err != nil {
+		t.Fatalf("force publish: %v", err)
+	}
+	if forced != version+1 {
+		t.Fatalf("force version = %d, want %d", forced, version+1)
+	}
+	if latestAfterForce, err := db.GetServiceAgentPackageHash(ctx, id); err != nil || latestAfterForce != hash {
+		t.Fatalf("latest after force = %q err=%v, want %s", latestAfterForce, err, hash)
 	}
 
 	got, err := db.GetServiceAgentPackage(ctx, hash)
@@ -116,7 +142,7 @@ func TestServiceAgentPackagePublishRoundtrip(t *testing.T) {
 	if _, err := db.GetServiceAgentPackage(ctx, strings.Repeat("cd", 32)); !errors.Is(err, store.ErrServicePackageNotFound) {
 		t.Fatalf("unknown hash err = %v, want ErrServicePackageNotFound", err)
 	}
-	if _, err := db.PublishServiceAgentPackage(ctx, "ghost", definition, hash, bundle); !errors.Is(err, store.ErrServiceAgentNotFound) {
+	if _, err := db.PublishServiceAgentPackage(ctx, "ghost", definition, hash, bundle, false); !errors.Is(err, store.ErrServiceAgentNotFound) {
 		t.Fatalf("unknown slug err = %v, want ErrServiceAgentNotFound", err)
 	}
 

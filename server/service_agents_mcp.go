@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -125,7 +126,14 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 
 func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent store.ServiceAgentDescriptor, callerUID int64, sessionID string) (store.ServiceSession, error) {
 	if sessionID == "" {
-		id, err := h.store.CreateServiceSession(ctx, agent.ID, agent.Version, callerUID, 0, "")
+		// 会话钉快照（设计 A §2）：建会话时固化当时最新包 hash；此后发布新包不影响本会话。
+		assetsHash := ""
+		if hash, err := h.store.GetServiceAgentPackageHash(ctx, agent.ID); err == nil {
+			assetsHash = hash
+		} else {
+			log.Printf("service mcp pin package hash agent=%s: %v", agent.Slug, err)
+		}
+		id, err := h.store.CreateServiceSession(ctx, agent.ID, agent.Version, callerUID, 0, assetsHash)
 		if err != nil {
 			return store.ServiceSession{}, err
 		}
