@@ -138,6 +138,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceAgentVersionsAssetsHashIndex,
 		createServiceSessionsTable,
 		createServiceRunsTable,
+		migrateServiceRunsClientTokenNullable,
 		createServiceRunEventsTable,
 		createServiceSessionCheckpointsTable,
 		seedServiceAgentsHello,
@@ -505,7 +506,7 @@ CREATE TABLE IF NOT EXISTS service_runs (
     run_id VARCHAR(64) PRIMARY KEY,
     session_id VARCHAR(64) NOT NULL REFERENCES service_sessions(session_id) ON DELETE CASCADE,
     state VARCHAR(16) NOT NULL DEFAULT 'submitted',
-    client_token VARCHAR(128) NOT NULL DEFAULT '',
+    client_token VARCHAR(128) DEFAULT NULL,
     input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     instance_id VARCHAR(64) NOT NULL DEFAULT '',
     lease_epoch BIGINT NOT NULL DEFAULT 0,
@@ -521,6 +522,12 @@ CREATE TABLE IF NOT EXISTS service_runs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (session_id, client_token)
 );`
+
+// 000030 镜像：幂等键可选 → NULL 语义（多 NULL 不违反 UNIQUE；此前空串使同会话
+// 第二次不带 client_token 的调用永久撞唯一约束）。
+const migrateServiceRunsClientTokenNullable = `
+ALTER TABLE service_runs
+    ALTER COLUMN client_token DROP NOT NULL;`
 
 const createServiceRunEventsTable = `
 CREATE TABLE IF NOT EXISTS service_run_events (

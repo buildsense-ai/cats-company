@@ -25,12 +25,15 @@ func scanPostgresServiceRun(scanner postgresServiceRunScanner) (store.ServiceRun
 	var run store.ServiceRun
 	var input, result []byte
 	var leaseExpires sql.NullTime
+	var clientToken sql.NullString
 	if err := scanner.Scan(
-		&run.RunID, &run.SessionID, &run.State, &run.ClientToken, &input, &run.InstanceID,
+		&run.RunID, &run.SessionID, &run.State, &clientToken, &input, &run.InstanceID,
 		&run.LeaseEpoch, &leaseExpires, &run.Attempts, &result, &run.CheckpointRef,
 	); err != nil {
 		return store.ServiceRun{}, err
 	}
+	// 幂等键未提供 = NULL（区别于空串；同会话多次无 token 调用各自成 run）。
+	run.ClientToken = clientToken.String
 	run.Input = append(json.RawMessage(nil), input...)
 	if len(result) > 0 {
 		run.Result = append(json.RawMessage(nil), result...)
@@ -170,7 +173,7 @@ func (a *Adapter) CreateServiceRunIdempotent(ctx context.Context, sessionID, cli
 	}
 	run, err := scanPostgresServiceRun(tx.QueryRowContext(ctx, `
 		INSERT INTO service_runs (run_id, session_id, state, client_token, input_json)
-		VALUES ($1, $2, 'submitted', $3, $4)
+		VALUES ($1, $2, 'submitted', NULLIF($3, ''), $4)
 		RETURNING `+postgresServiceRunColumns, runID, sessionID, clientToken, []byte(input)))
 	if err != nil {
 		return store.ServiceRun{}, false, fmt.Errorf("create service run: %w", err)

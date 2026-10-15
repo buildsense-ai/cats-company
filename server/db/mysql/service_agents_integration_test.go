@@ -222,3 +222,35 @@ func TestMySQLServiceRunFailAndAttemptsExhaustion(t *testing.T) {
 		t.Fatalf("fatal fail expect failed: %+v %v", got2, err)
 	}
 }
+
+// 幂等键可选（PG 同语义镜像）：不带 client_token 的调用每次入库新 run（NULL 语义）。
+func TestMySQLServiceRunsWithoutClientToken(t *testing.T) {
+	db := mysqlTestAdapter(t)
+	ctx := context.Background()
+	aID := seedMySQLServiceAgent(t, db)
+
+	sessID, err := db.CreateServiceSession(ctx, aID, 1, 441, 0, "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	first, existed, err := db.CreateServiceRunIdempotent(ctx, sessID, "", json.RawMessage(`{"n":1}`))
+	if err != nil || existed {
+		t.Fatalf("first tokenless run: %+v existed=%v err=%v", first, existed, err)
+	}
+	if claimed, err := db.ClaimServiceRuns(ctx, "inst_nt", 10); err != nil || len(claimed) != 1 {
+		t.Fatalf("claim first: %+v err=%v", claimed, err)
+	}
+	if _, err := db.CompleteServiceRun(ctx, first.RunID, "res_nt_m1", json.RawMessage(`{"ok":true}`), nil); err != nil {
+		t.Fatalf("complete first: %v", err)
+	}
+	second, existed, err := db.CreateServiceRunIdempotent(ctx, sessID, "", json.RawMessage(`{"n":2}`))
+	if err != nil || existed {
+		t.Fatalf("second tokenless run must succeed: %+v existed=%v err=%v", second, existed, err)
+	}
+	if second.RunID == first.RunID {
+		t.Fatalf("tokenless runs must be distinct: %s", second.RunID)
+	}
+	if second.ClientToken != "" {
+		t.Fatalf("NULL token must scan back as empty string, got %q", second.ClientToken)
+	}
+}

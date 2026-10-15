@@ -75,10 +75,20 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1 -v
 
+      - name: Test PostgreSQL service agent store
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: go test ./server/db/postgres -run '^TestService' -count=1 -v
+
       - name: Test MySQL Artifact Runtime and application metadata
         env:
           CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
         run: go test ./server/db/mysql -run 'TestMySQL(ArtifactRuntimeEventSequenceFollowsCommitOrder|AdminUserSearch|ArtifactAppMetadataPersistence)' -count=1 -v
+
+      - name: Test MySQL service agent store
+        env:
+          CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
+        run: go test ./server/db/mysql -run '^TestMySQLService' -count=1 -v
 
   node_sdk:
     name: TypeScript SDK tests

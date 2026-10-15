@@ -138,6 +138,8 @@ func (a *Adapter) CreateSchema() error {
 		migrateConversationTaskStatusSourcesUpdatedAtPrecision,
 		migrateServiceAgentVersionsAddPackageJson,
 		createServiceAgentVersionsAssetsHashIndex,
+		migrateServiceRunsClientTokenNullable,
+		migrateServiceRunsClientTokenBackfill,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -498,6 +500,15 @@ const createServiceAgentVersionsAssetsHashIndex = `
 CREATE INDEX idx_service_agent_versions_assets_hash ON service_agent_versions (assets_hash);
 `
 
+// 000030 PG 镜像（MySQL 内联）：幂等键可选 → NULL 语义 + 历史行回填。
+const migrateServiceRunsClientTokenNullable = `
+ALTER TABLE service_runs MODIFY client_token VARCHAR(128) COLLATE utf8mb4_bin DEFAULT NULL;
+`
+
+const migrateServiceRunsClientTokenBackfill = `
+UPDATE service_runs SET client_token = NULL WHERE client_token = '';
+`
+
 const createServiceSessionsTable = `
 CREATE TABLE IF NOT EXISTS service_sessions (
     session_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
@@ -521,7 +532,7 @@ CREATE TABLE IF NOT EXISTS service_runs (
     run_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
     session_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
     state VARCHAR(16) NOT NULL DEFAULT 'submitted',
-    client_token VARCHAR(128) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    client_token VARCHAR(128) COLLATE utf8mb4_bin DEFAULT NULL,
     input_json JSON NOT NULL,
     instance_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
     lease_epoch BIGINT NOT NULL DEFAULT 0,

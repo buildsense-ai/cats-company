@@ -202,3 +202,39 @@ func TestServiceRunFailAndAttemptsExhaustion(t *testing.T) {
 		t.Fatalf("fatal fail expect failed: %+v %v", got2, err)
 	}
 }
+
+// 幂等键可选：不带 client_token 的调用每次入库新 run（NULL 语义；此前空串参与
+// UNIQUE(session_id, client_token) → 同会话第二次无 token 调用永久撞唯一约束）。
+func TestServiceRunsWithoutClientToken(t *testing.T) {
+	db := pgTestDB(t)
+	seedHelloAgent(t, db)
+	// 000027 是历史 DDL（client_token NOT NULL）；新语义需 000030 迁移（结构变更 + 回填）。
+	execRetireV4MigrationFile(t, db, "000030_service_runs_client_token_nullable.up.sql")
+	ctx := context.Background()
+	aID := agentID(t, db, "hello")
+
+	sessID, err := db.CreateServiceSession(ctx, aID, 1, 441, 0, "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	first, existed, err := db.CreateServiceRunIdempotent(ctx, sessID, "", json.RawMessage(`{"n":1}`))
+	if err != nil || existed {
+		t.Fatalf("first tokenless run: %+v existed=%v err=%v", first, existed, err)
+	}
+	if claimed, err := db.ClaimServiceRuns(ctx, "inst_nt", 10); err != nil || len(claimed) != 1 {
+		t.Fatalf("claim first: %+v err=%v", claimed, err)
+	}
+	if _, err := db.CompleteServiceRun(ctx, first.RunID, "res_nt_1", json.RawMessage(`{"ok":true}`), nil); err != nil {
+		t.Fatalf("complete first: %v", err)
+	}
+	second, existed, err := db.CreateServiceRunIdempotent(ctx, sessID, "", json.RawMessage(`{"n":2}`))
+	if err != nil || existed {
+		t.Fatalf("second tokenless run must succeed: %+v existed=%v err=%v", second, existed, err)
+	}
+	if second.RunID == first.RunID {
+		t.Fatalf("tokenless runs must be distinct: %s", second.RunID)
+	}
+	if second.ClientToken != "" {
+		t.Fatalf("NULL token must scan back as empty string, got %q", second.ClientToken)
+	}
+}
