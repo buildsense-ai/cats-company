@@ -524,7 +524,7 @@ CREATE TABLE IF NOT EXISTS service_runs (
     UNIQUE (session_id, client_token)
 );`
 
-// 000030 镜像：幂等键可选 → NULL 语义（多 NULL 不违反 UNIQUE；此前空串使同会话
+// 000031 镜像：幂等键可选 → NULL 语义（多 NULL 不违反 UNIQUE；此前空串使同会话
 // 第二次不带 client_token 的调用永久撞唯一约束）。
 const migrateServiceRunsClientTokenNullable = `
 ALTER TABLE service_runs

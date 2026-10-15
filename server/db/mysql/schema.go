@@ -500,7 +500,7 @@ const createServiceAgentVersionsAssetsHashIndex = `
 CREATE INDEX idx_service_agent_versions_assets_hash ON service_agent_versions (assets_hash);
 `
 
-// 000030 PG 镜像（MySQL 内联）：幂等键可选 → NULL 语义 + 历史行回填。
+// 000031 PG 镜像（MySQL 内联）：幂等键可选 → NULL 语义 + 历史行回填。
 const migrateServiceRunsClientTokenNullable = `
 ALTER TABLE service_runs MODIFY client_token VARCHAR(128) COLLATE utf8mb4_bin DEFAULT NULL;
 `

@@ -208,8 +208,8 @@ func TestServiceRunFailAndAttemptsExhaustion(t *testing.T) {
 func TestServiceRunsWithoutClientToken(t *testing.T) {
 	db := pgTestDB(t)
 	seedHelloAgent(t, db)
-	// 000027 是历史 DDL（client_token NOT NULL）；新语义需 000030 迁移（结构变更 + 回填）。
-	execRetireV4MigrationFile(t, db, "000030_service_runs_client_token_nullable.up.sql")
+	// 000027 是历史 DDL（client_token NOT NULL）；新语义需 000031 迁移（结构变更 + 回填）。
+	execRetireV4MigrationFile(t, db, "000031_service_runs_client_token_nullable.up.sql")
 	ctx := context.Background()
 	aID := agentID(t, db, "hello")
 
