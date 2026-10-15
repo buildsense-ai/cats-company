@@ -389,7 +389,11 @@ else
   create_args+=(--onDemand true)
 fi
 if [[ "$EXT_IP" == "1" ]]; then
-  create_args+=(--bandwidth 10 --ipVersion ipv4 --lineType standalone)
+  # 5 Mbps is the standard worker bandwidth: the monthly EIP price scales with
+  # the peak (Foshan 7: 5M ≈ 35 CNY/month vs 10M ≈ 98 CNY/month), and 5M is
+  # ample for the worker control channel and artifact downloads. Raise it only
+  # together with a measured workload that actually saturates the link.
+  create_args+=(--bandwidth 5 --ipVersion ipv4 --lineType standalone)
   # demandBillingType applies only to an automatically allocated EIP on an
   # on-demand instance. Monthly EIPs follow the provider's cycle purchase.
   if [[ "$BILLING_MODE" == "ondemand" ]]; then

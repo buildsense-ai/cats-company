@@ -468,7 +468,7 @@ test("provision-worker: public IP is an explicit legacy override", () => {
   if (r.status !== 0) assert.equal(r.status, 0, r.stderr);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.match(state.createArgs, /--extIP 1/);
-  assert.match(state.createArgs, /--bandwidth 10/);
+  assert.match(state.createArgs, /--bandwidth 5/);
   assert.match(state.createArgs, /--onDemand false/);
   assert.doesNotMatch(state.createArgs, /--demandBillingType/);
 });
