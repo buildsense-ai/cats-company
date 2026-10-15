@@ -46,6 +46,7 @@ type ServiceClaimResult struct {
 type ServiceClaimRun struct {
 	RunID            string                  `json:"run_id"`
 	SessionID        string                  `json:"session_id"`
+	AgentSlug        string                  `json:"agent_slug"`
 	DefinitionRev    int64                   `json:"definition_rev"`
 	ThresholdSeconds int                     `json:"threshold_seconds"`
 	Input            json.RawMessage         `json:"input"`
@@ -200,6 +201,7 @@ func (o *ServiceRunOrchestrator) buildClaimEntry(ctx context.Context, run store.
 	entry := ServiceClaimRun{
 		RunID:            run.RunID,
 		SessionID:        run.SessionID,
+		AgentSlug:        slug,
 		DefinitionRev:    session.DefinitionRev,
 		ThresholdSeconds: threshold,
 		Input:            run.Input,
