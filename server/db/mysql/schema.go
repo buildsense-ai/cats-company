@@ -136,6 +136,8 @@ func (a *Adapter) CreateSchema() error {
 		migrateConversationTaskStatusSourcesEventUpdatedAtNotNull,
 		migrateConversationTaskStatusSourcesCreatedAtPrecision,
 		migrateConversationTaskStatusSourcesUpdatedAtPrecision,
+		migrateServiceAgentVersionsAddPackageJson,
+		createServiceAgentVersionsAssetsHashIndex,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -480,10 +482,20 @@ CREATE TABLE IF NOT EXISTS service_agent_versions (
     version BIGINT NOT NULL,
     definition_json JSON NOT NULL,
     assets_hash VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    package_json JSON DEFAULT NULL,
     created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (agent_id, version),
     FOREIGN KEY (agent_id) REFERENCES service_agents(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+// 云端包分发（MySQL 不入编号迁移系统，兼容修复内联）：老库补列 + hash 索引。
+const migrateServiceAgentVersionsAddPackageJson = `
+ALTER TABLE service_agent_versions ADD COLUMN package_json JSON DEFAULT NULL;
+`
+
+const createServiceAgentVersionsAssetsHashIndex = `
+CREATE INDEX idx_service_agent_versions_assets_hash ON service_agent_versions (assets_hash);
 `
 
 const createServiceSessionsTable = `

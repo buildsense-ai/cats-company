@@ -24,6 +24,8 @@ type fakeServiceAgentStore struct {
 	runs              map[string]store.ServiceRun
 	events            map[string][]store.ServiceRunEventRecord
 	tokens            map[string]string // session|token -> runID
+	packages          map[string]json.RawMessage
+	packageHashes     map[int64]string // agentID -> 最新版本内容 hash
 	autoCompleteAfter time.Duration
 	nextID            int64
 }
@@ -33,11 +35,52 @@ func newFakeServiceAgentStore() *fakeServiceAgentStore {
 		agents: []store.ServiceAgentDescriptor{
 			{ID: 1, Slug: "hello", Name: "Hello 试点应用", Version: 1, AsyncThresholdSeconds: 60},
 		},
-		sessions: map[string]store.ServiceSession{},
-		runs:     map[string]store.ServiceRun{},
-		events:   map[string][]store.ServiceRunEventRecord{},
-		tokens:   map[string]string{},
+		sessions:      map[string]store.ServiceSession{},
+		runs:          map[string]store.ServiceRun{},
+		events:        map[string][]store.ServiceRunEventRecord{},
+		tokens:        map[string]string{},
+		packages:      map[string]json.RawMessage{},
+		packageHashes: map[int64]string{},
 	}
+}
+
+// ---- 云端包分发（store.ServiceAgentStore 扩展方法）----
+
+func (f *fakeServiceAgentStore) PublishServiceAgentPackage(_ context.Context, slug string, _ json.RawMessage, packageHash string, bundle json.RawMessage) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	agentID := int64(0)
+	for _, a := range f.agents {
+		if a.Slug == slug {
+			agentID = a.ID
+			break
+		}
+	}
+	if agentID == 0 {
+		return 0, store.ErrServiceAgentNotFound
+	}
+	if _, ok := f.packages[packageHash]; !ok {
+		f.packages[packageHash] = append(json.RawMessage(nil), bundle...)
+		f.nextID++
+	}
+	f.packageHashes[agentID] = packageHash
+	return f.nextID, nil
+}
+
+func (f *fakeServiceAgentStore) GetServiceAgentPackage(_ context.Context, packageHash string) (json.RawMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	bundle, ok := f.packages[packageHash]
+	if !ok {
+		return nil, store.ErrServicePackageNotFound
+	}
+	return bundle, nil
+}
+
+func (f *fakeServiceAgentStore) GetServiceAgentPackageHash(_ context.Context, agentID int64) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.packageHashes[agentID], nil
 }
 
 func (f *fakeServiceAgentStore) GetServiceAgentBySlug(_ context.Context, slug string) (int64, string, int64, int, error) {

@@ -47,6 +47,7 @@ type ServiceClaimRun struct {
 	RunID            string                  `json:"run_id"`
 	SessionID        string                  `json:"session_id"`
 	AgentSlug        string                  `json:"agent_slug"`
+	PackageHash      string                  `json:"package_hash,omitempty"`
 	DefinitionRev    int64                   `json:"definition_rev"`
 	ThresholdSeconds int                     `json:"threshold_seconds"`
 	Input            json.RawMessage         `json:"input"`
@@ -84,6 +85,9 @@ func (o *ServiceRunOrchestrator) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /internal/service-runs/{runID}/complete", o.withInstanceToken(o.handleComplete))
 	mux.HandleFunc("POST /internal/service-runs/{runID}/fail", o.withInstanceToken(o.handleFailRun))
 	mux.HandleFunc("POST /internal/service-instances/{instanceID}/heartbeat", o.withInstanceToken(o.handleInstanceHeartbeat))
+	// 云端包分发（设计 A §2）：发布（写新版本行）与按内容 hash 拉取。
+	mux.HandleFunc("POST /internal/service-agents/{slug}/publish", o.withInstanceToken(o.handlePublishServiceAgentPackage))
+	mux.HandleFunc("GET /internal/service-agent-packages/{packageHash}", o.withInstanceToken(o.handleGetServiceAgentPackage))
 }
 
 // StartReaper 周期回收过期租约（orphaned 供其他实例接管，设计 §4.8-1）。
@@ -190,6 +194,12 @@ func (o *ServiceRunOrchestrator) buildClaimEntry(ctx context.Context, run store.
 		Models []string `json:"models"`
 	}
 	_ = json.Unmarshal(definition, &parsed)
+	// 云端包分发：下发最新版本包 hash（无包/旧库 → 空，实例回退内置包）。
+	packageHash, err := o.store.GetServiceAgentPackageHash(ctx, session.AgentID)
+	if err != nil {
+		log.Printf("service claim package hash agent=%d: %v", session.AgentID, err)
+		packageHash = ""
+	}
 	token := IssueServiceToken(o.tokenSecret, ServiceTokenClaims{
 		CallerUID: session.CallerUID,
 		Agent:     slug,
@@ -202,6 +212,7 @@ func (o *ServiceRunOrchestrator) buildClaimEntry(ctx context.Context, run store.
 		RunID:            run.RunID,
 		SessionID:        run.SessionID,
 		AgentSlug:        slug,
+		PackageHash:      packageHash,
 		DefinitionRev:    session.DefinitionRev,
 		ThresholdSeconds: threshold,
 		Input:            run.Input,

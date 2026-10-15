@@ -15,6 +15,7 @@ var (
 	ErrServiceRunNotFound     = errors.New("service run not found")
 	ErrServiceSessionBusy     = errors.New("service session busy")
 	ErrServiceRunConflict     = errors.New("service run conflict")
+	ErrServicePackageNotFound = errors.New("service agent package not found")
 )
 
 type ServiceSession struct {
@@ -66,6 +67,11 @@ type ServiceAgentStore interface {
 	GetServiceAgentBySlug(ctx context.Context, slug string) (id int64, name string, currentVersion int64, thresholdSeconds int, err error)
 	ListServiceAgents(ctx context.Context) ([]ServiceAgentDescriptor, error)
 	GetServiceAgentDefinition(ctx context.Context, agentID int64) (slug string, thresholdSeconds int, definitionJSON json.RawMessage, err error)
+	// 云端包分发：发布新版本（packageHash 内容寻址；同 hash 幂等返回既有版本）与按 hash 取包。
+	PublishServiceAgentPackage(ctx context.Context, slug string, definition json.RawMessage, packageHash string, bundle json.RawMessage) (version int64, err error)
+	GetServiceAgentPackage(ctx context.Context, packageHash string) (bundle json.RawMessage, err error)
+	// GetServiceAgentPackageHash 返回该 agent 当前最新版本的 assets_hash（无包时为空串）。
+	GetServiceAgentPackageHash(ctx context.Context, agentID int64) (string, error)
 	CreateServiceSession(ctx context.Context, agentID, definitionRev, callerUID, callerBotUID int64, assetsHash string) (string, error)
 	GetServiceSession(ctx context.Context, sessionID string) (ServiceSession, error)
 	GetServiceRun(ctx context.Context, runID string) (ServiceRun, error)

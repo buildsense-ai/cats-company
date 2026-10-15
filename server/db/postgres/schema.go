@@ -134,6 +134,8 @@ func (a *Adapter) CreateSchema() error {
 		migrateConversationTaskStatusSourcesAddEventUpdatedAt,
 		createServiceAgentsTable,
 		createServiceAgentVersionsTable,
+		migrateServiceAgentVersionsAddPackageJson,
+		createServiceAgentVersionsAssetsHashIndex,
 		createServiceSessionsTable,
 		createServiceRunsTable,
 		createServiceRunEventsTable,
@@ -468,9 +470,19 @@ CREATE TABLE IF NOT EXISTS service_agent_versions (
     version BIGINT NOT NULL,
     definition_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     assets_hash VARCHAR(64) NOT NULL DEFAULT '',
+    package_json JSONB DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (agent_id, version)
 );`
+
+// 云端包分发（000029 编号迁移镜像）：老库补列 + 内容寻址按 hash 查包索引。
+const migrateServiceAgentVersionsAddPackageJson = `
+ALTER TABLE service_agent_versions
+    ADD COLUMN IF NOT EXISTS package_json JSONB DEFAULT NULL;`
+
+const createServiceAgentVersionsAssetsHashIndex = `
+CREATE INDEX IF NOT EXISTS idx_service_agent_versions_assets_hash
+    ON service_agent_versions (assets_hash);`
 
 const createServiceSessionsTable = `
 CREATE TABLE IF NOT EXISTS service_sessions (
