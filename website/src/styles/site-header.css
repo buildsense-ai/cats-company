@@ -210,6 +210,61 @@
   display: none;
 }
 
+/* The home and pricing pages share these dark-header action states. */
+body:has(main > .hero-section) .site-header .header-download,
+.min-h-screen:has(.pricing-page) > .site-header .header-download {
+  color: #d2d2d2;
+  background: #2b2b2b;
+}
+
+body:has(main > .hero-section) .site-header .header-download:hover,
+.min-h-screen:has(.pricing-page) > .site-header .header-download:hover {
+  color: #f5f5f5;
+  background: #303030;
+}
+
+body:has(main > .hero-section) .site-header .header-download:active,
+.min-h-screen:has(.pricing-page) > .site-header .header-download:active {
+  color: #f5f5f5;
+  background: #3a3a3a;
+}
+
+body:has(main > .hero-section) .site-header .header-social-link,
+.min-h-screen:has(.pricing-page) > .site-header .header-social-link {
+  color: #ededed;
+  background: #2b2b2b;
+}
+
+body:has(main > .hero-section) .site-header .header-social-link:hover,
+.min-h-screen:has(.pricing-page) > .site-header .header-social-link:hover {
+  color: #fff;
+  background: #303030;
+}
+
+body:has(main > .hero-section) .site-header .header-social-link:active,
+.min-h-screen:has(.pricing-page) > .site-header .header-social-link:active {
+  color: #fff;
+  background: #3a3a3a;
+}
+
+body:has(main > .hero-section) .site-header .header-login,
+.min-h-screen:has(.pricing-page) > .site-header .header-login {
+  color: #b8b8b8;
+  background: #2b2b2b;
+}
+
+body:has(main > .hero-section) .site-header .header-login:hover,
+.min-h-screen:has(.pricing-page) > .site-header .header-login:hover {
+  color: #fff;
+  background: #5dc6b0;
+}
+
+body:has(main > .hero-section) .site-header .header-login:active,
+.min-h-screen:has(.pricing-page) > .site-header .header-login:active {
+  color: #fff;
+  background: #11745b;
+}
+
 @media (max-width: 767px) {
   .site-header > div {
     height: 68px;

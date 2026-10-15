@@ -2,9 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/inter-latin-wght-normal.woff2") format("woff2");
+}
+
 :root {
-  /* Self-hosted variable fonts (see main.tsx); system CJK fonts cover the swap window. */
-  font-family: "Inter Variable", Inter, "Noto Sans SC Variable", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* Noto remains a system fallback; no Noto web font is downloaded. */
+  font-family: "Inter Variable", Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: #15231f;
   background: #f8f8f8;
   font-synthesis: none;
