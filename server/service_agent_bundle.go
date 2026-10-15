@@ -134,6 +134,15 @@ func ValidateServiceAgentBundle(bundle ServiceAgentBundle, expectedSlug string) 
 		Behavior struct {
 			AsyncThresholdSeconds *int `json:"async_threshold_seconds"`
 		} `json:"behavior"`
+		// 标准包用 model.primary/fallbacks 声明模型；顶层 models 为简化写法（两者兼容）。
+		Model struct {
+			Primary struct {
+				Model string `json:"model"`
+			} `json:"primary"`
+			Fallbacks []struct {
+				Model string `json:"model"`
+			} `json:"fallbacks"`
+		} `json:"model"`
 		Models []string `json:"models"`
 	}
 	if err := json.Unmarshal([]byte(manifestRaw), &manifest); err != nil {
@@ -156,9 +165,23 @@ func ValidateServiceAgentBundle(bundle ServiceAgentBundle, expectedSlug string) 
 	if manifest.Behavior.AsyncThresholdSeconds != nil {
 		threshold = *manifest.Behavior.AsyncThresholdSeconds
 	}
-	models := manifest.Models
-	if models == nil {
-		models = []string{}
+	// 模型白名单 = primary + fallbacks（去重保序），再并入顶层 models 兼容写法。
+	models := make([]string, 0, 1+len(manifest.Model.Fallbacks)+len(manifest.Models))
+	seenModel := map[string]bool{}
+	appendModel := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seenModel[name] {
+			return
+		}
+		seenModel[name] = true
+		models = append(models, name)
+	}
+	appendModel(manifest.Model.Primary.Model)
+	for _, fallback := range manifest.Model.Fallbacks {
+		appendModel(fallback.Model)
+	}
+	for _, name := range manifest.Models {
+		appendModel(name)
 	}
 	return ServiceAgentDerivedDefinition{AsyncThresholdSeconds: threshold, Models: models}, nil
 }

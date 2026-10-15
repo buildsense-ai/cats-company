@@ -44,6 +44,13 @@ func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, d
 		WHERE agent_id = $1 AND assets_hash = $2 AND package_json IS NOT NULL
 		ORDER BY version DESC LIMIT 1`, agentID, packageHash).Scan(&existing)
 	if err == nil {
+		// 同内容重发：definition_json 是内容的派生值，重算覆盖（修正历史派生 bug 的路径）。
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE service_agent_versions SET definition_json = $3::jsonb
+			WHERE agent_id = $1 AND assets_hash = $2 AND package_json IS NOT NULL`,
+			agentID, packageHash, string(definition)); err != nil {
+			return 0, fmt.Errorf("publish service agent package: %w", err)
+		}
 		return existing, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {

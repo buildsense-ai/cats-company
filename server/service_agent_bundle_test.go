@@ -96,6 +96,67 @@ func TestServiceAgentBundleValidateRejects(t *testing.T) {
 	}
 }
 
+// 跨语言契约钉定：与 catsco-agents tests/service-agent-bundle.test.ts 同 fixture、同期望值。
+// 两侧算法若有任何漂移（归一化/排序/编码），双仓 CI 同时红。
+func TestServiceAgentBundleGoldenHash(t *testing.T) {
+	files := []ServiceAgentBundleFile{
+		{Path: "agent.json", Content: `{"schema":"catsco.service-agent.v1","slug":"weekly-report","prompt":{"system":"system-prompt.md"},"behavior":{"async_threshold_seconds":60},"models":["claude-sonnet-5-5"]}`},
+		{Path: "system-prompt.md", Content: "你是周报助手。\n"},
+		{Path: "skills/company-style.md", Content: "# 文风\n正式。\n"},
+		{Path: "knowledge/glossary.md", Content: "| 术语 |\n| --- |\n"},
+	}
+	const golden = "2d5b78ac17ef250323346e330d75b760fffaf9a2f05563bbd387b7fe86f44b48"
+	if got := CanonicalServiceBundleHash(files); got != golden {
+		t.Fatalf("golden hash drift: %s", got)
+	}
+}
+
+// 真实包用 model.primary/fallbacks 声明模型——派生必须覆盖（2026-10-15 生产事故：
+// 只读顶层 models 导致服务 token 白名单为空 → relay 400 service_model_not_allowed）。
+func TestServiceAgentBundleDerivesModelsFromModelBinding(t *testing.T) {
+	bundle := validBundleFixture()
+	bundle.Files[0].Content = `{
+  "schema": "catsco.service-agent.v1",
+  "slug": "weekly-report",
+  "prompt": {"system": "system-prompt.md"},
+  "model": {
+    "primary": {"provider": "anthropic", "model": "claude-sonnet-5-5"},
+    "fallbacks": [{"provider": "anthropic", "model": "claude-haiku-4-5"}]
+  },
+  "behavior": {"async_threshold_seconds": 60}
+}`
+	definition, err := ValidateServiceAgentBundle(bundle, "weekly-report")
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	want := []string{"claude-sonnet-5-5", "claude-haiku-4-5"}
+	if len(definition.Models) != len(want) {
+		t.Fatalf("models = %v, want %v", definition.Models, want)
+	}
+	for i := range want {
+		if definition.Models[i] != want[i] {
+			t.Fatalf("models = %v, want %v", definition.Models, want)
+		}
+	}
+
+	// 顶层 models 与 model.primary 混用：去重保序（primary 在前）。
+	bundle.Files[0].Content = strings.Replace(bundle.Files[0].Content,
+		`"behavior"`, `"models": ["claude-haiku-4-5", "extra-model"], "behavior"`, 1)
+	definition, err = ValidateServiceAgentBundle(bundle, "weekly-report")
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	want = []string{"claude-sonnet-5-5", "claude-haiku-4-5", "extra-model"}
+	if len(definition.Models) != len(want) {
+		t.Fatalf("mixed models = %v, want %v", definition.Models, want)
+	}
+	for i := range want {
+		if definition.Models[i] != want[i] {
+			t.Fatalf("mixed models = %v, want %v", definition.Models, want)
+		}
+	}
+}
+
 func TestServiceAgentBundleDefaults(t *testing.T) {
 	bundle := validBundleFixture()
 	bundle.Files[0].Content = `{"schema":"catsco.service-agent.v1","slug":"weekly-report","prompt":{"system":"system-prompt.md"}}`
