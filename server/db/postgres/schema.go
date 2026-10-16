@@ -144,6 +144,8 @@ func (a *Adapter) CreateSchema() error {
 		createServiceSessionCheckpointsTable,
 		createServiceInstancesTable,
 		createServiceRunsCreatedAtIndex,
+		createServiceRunReceiptsTable,
+		createServiceRunReceiptsPendingIndex,
 		seedServiceAgentsHello,
 		createUsersIndexes,
 		createFriendsIndexes,
@@ -564,6 +566,24 @@ CREATE TABLE IF NOT EXISTS service_instances (
 const createServiceRunsCreatedAtIndex = `
 CREATE INDEX IF NOT EXISTS idx_service_runs_created_at
     ON service_runs (created_at DESC);`
+
+// 生命周期回注收件箱（000033 编号迁移镜像；设计 §3.3-2/§4.8-2）。
+const createServiceRunReceiptsTable = `
+CREATE TABLE IF NOT EXISTS service_run_receipts (
+    receipt_id VARCHAR(64) PRIMARY KEY,
+    run_id VARCHAR(64) NOT NULL REFERENCES service_runs(run_id) ON DELETE CASCADE,
+    session_id VARCHAR(64) NOT NULL,
+    caller_uid BIGINT NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    delivery_attempts INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    delivered_at TIMESTAMPTZ
+);`
+
+const createServiceRunReceiptsPendingIndex = `
+CREATE INDEX IF NOT EXISTS idx_service_run_receipts_pending
+    ON service_run_receipts (created_at) WHERE delivered_at IS NULL;`
 
 const seedServiceAgentsHello = `
 INSERT INTO service_agents (slug, name) VALUES ('hello', 'Hello 试点应用')

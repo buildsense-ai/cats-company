@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // ---- fake 扩展（同包共享 fakeServiceAgentStore；计划① Task 8）----
@@ -442,5 +443,164 @@ func TestServiceClaimPinsSessionSnapshot(t *testing.T) {
 	st.mu.Unlock()
 	if len(revs) != 2 || revs[0] != 1 || revs[1] != 0 {
 		t.Fatalf("definition revs = %v, want [1 0]（按 claim 顺序）", revs)
+	}
+}
+
+// ---- 回合制返问（awaiting_input）+ 生命周期回注 ----
+
+// AwaitServiceRunInput 覆盖基类 fake：resultIDs 幂等 + 回执写入（与真实 store 同语义）。
+func (f *fakeOrchestratorStore) AwaitServiceRunInput(_ context.Context, runID, resultID string, result json.RawMessage) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	run, ok := f.runs[runID]
+	if !ok {
+		return false, store.ErrServiceRunNotFound
+	}
+	if run.State == "awaiting_input" && f.resultIDs[runID] == resultID {
+		return false, nil // 幂等重放
+	}
+	if run.State != "running" {
+		return false, fmt.Errorf("await service run state=%s: %w", run.State, store.ErrServiceRunConflict)
+	}
+	run.State = "awaiting_input"
+	run.Result = result
+	f.runs[runID] = run
+	f.resultIDs[runID] = resultID
+	f.appendReceiptLocked(runID, run.SessionID, "awaiting_input", store.ServiceAwaitQuestionFromResult(result), "")
+	return true, nil
+}
+
+type fakeReceiptKicker struct {
+	kicks int
+}
+
+func (f *fakeReceiptKicker) Kick() { f.kicks++ }
+
+func TestServiceOrchestratorAwaitInput(t *testing.T) {
+	st, _, runID := seedOrchestratorFixture(t)
+	orchestrator, base := newOrchestratorServer(t, st)
+	kicker := &fakeReceiptKicker{}
+	orchestrator.SetReceiptKicker(kicker)
+
+	// claim → running
+	if status, payload := doInternal(t, "POST", base+"/internal/service-runs/claim", "inst-token-1", `{"limit":5,"instance_id":"inst-a"}`); status != http.StatusOK {
+		t.Fatalf("claim status = %d body=%s", status, payload)
+	}
+
+	awaitBody := `{"result_id":"awt_` + runID + `","result":{"contract_version":"catsco.service-run-result.v1","run_id":"` + runID + `","session_id":"sess_orch_1","status":"awaiting_input","output":{"question":"请提供周报起止日期"}}}`
+	// 鉴权：无 token → 401
+	if status, _ := doInternal(t, "POST", base+"/internal/service-runs/"+runID+"/await-input", "", awaitBody); status != http.StatusUnauthorized {
+		t.Fatalf("await-input no token = %d, want 401", status)
+	}
+	// 坏体 → 400
+	if status, _ := doInternal(t, "POST", base+"/internal/service-runs/"+runID+"/await-input", "inst-token-1", `{}`); status != http.StatusBadRequest {
+		t.Fatalf("await-input bad body = %d, want 400", status)
+	}
+	// 正常收尾 → 200 awaited
+	status, payload := doInternal(t, "POST", base+"/internal/service-runs/"+runID+"/await-input", "inst-token-1", awaitBody)
+	if status != http.StatusOK {
+		t.Fatalf("await-input status = %d body=%s", status, payload)
+	}
+	var resp struct {
+		AwaitingInput bool `json:"awaiting_input"`
+		Idempotent    bool `json:"idempotent"`
+	}
+	if err := json.Unmarshal(payload, &resp); err != nil || !resp.AwaitingInput || resp.Idempotent {
+		t.Fatalf("await-input resp = %s (err=%v)", payload, err)
+	}
+	// 投递唤醒：终态后 Kick 一次
+	if kicker.kicks != 1 {
+		t.Fatalf("kicker kicks = %d, want 1", kicker.kicks)
+	}
+	// store 状态 + 回执
+	run, err := st.GetServiceRun(context.Background(), runID)
+	if err != nil || run.State != "awaiting_input" {
+		t.Fatalf("run after await-input = %+v err=%v", run, err)
+	}
+	receipts, err := st.ListUndeliveredServiceRunReceipts(context.Background(), 10)
+	if err != nil || len(receipts) != 1 {
+		t.Fatalf("receipts = %+v err=%v", receipts, err)
+	}
+	if receipts[0].Status != "awaiting_input" || !strings.Contains(string(receipts[0].Payload), "请提供周报起止日期") {
+		t.Fatalf("receipt payload = %s", receipts[0].Payload)
+	}
+	if !strings.Contains(string(receipts[0].Payload), `"contract_version":"catsco.service-run-receipt.v1"`) {
+		t.Fatalf("receipt contract = %s", receipts[0].Payload)
+	}
+	// 幂等重放（同 result_id）→ 200 idempotent，不再 Kick
+	status, payload = doInternal(t, "POST", base+"/internal/service-runs/"+runID+"/await-input", "inst-token-1", awaitBody)
+	if status != http.StatusOK {
+		t.Fatalf("await-input replay status = %d body=%s", status, payload)
+	}
+	resp = struct {
+		AwaitingInput bool `json:"awaiting_input"`
+		Idempotent    bool `json:"idempotent"`
+	}{}
+	if err := json.Unmarshal(payload, &resp); err != nil || resp.AwaitingInput || !resp.Idempotent {
+		t.Fatalf("await-input replay resp = %s (err=%v)", payload, err)
+	}
+	if kicker.kicks != 1 {
+		t.Fatalf("replay must not kick, kicks = %d", kicker.kicks)
+	}
+	// 错态（已 awaiting 且不同 result_id）→ 409
+	if status, _ := doInternal(t, "POST", base+"/internal/service-runs/"+runID+"/await-input", "inst-token-1", `{"result_id":"other","result":{}}`); status != http.StatusConflict {
+		t.Fatalf("await-input conflict = %d, want 409", status)
+	}
+	// 未知 run → 404
+	if status, _ := doInternal(t, "POST", base+"/internal/service-runs/run_missing/await-input", "inst-token-1", `{"result_id":"x","result":{}}`); status != http.StatusNotFound {
+		t.Fatalf("await-input unknown run = %d, want 404", status)
+	}
+}
+
+// 回注投递 worker：在线 → 推送并标记送达；离线 → 留存 attempts 累计（离线待取）。
+func TestServiceRunReceiptDeliverer(t *testing.T) {
+	st := newFakeOrchestratorStore()
+	ctx := context.Background()
+	sessionID, err := st.CreateServiceSession(ctx, 1, 1, 441, 0, "")
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	st.mu.Lock()
+	st.runs["run_rcp_1"] = store.ServiceRun{RunID: "run_rcp_1", SessionID: sessionID, State: "running"}
+	st.appendReceiptLocked("run_rcp_1", sessionID, "completed", "", "")
+	st.mu.Unlock()
+
+	hub := &Hub{clients: map[int64]map[*Client]struct{}{}}
+	deliverer := NewServiceRunReceiptDeliverer(st, hub)
+
+	// 离线：无在线连接 → 不送达，attempts 累计
+	if delivered, err := deliverer.SweepOnce(ctx); err != nil || delivered != 0 {
+		t.Fatalf("offline sweep delivered=%d err=%v, want 0", delivered, err)
+	}
+	receipts, _ := st.ListUndeliveredServiceRunReceipts(ctx, 10)
+	if len(receipts) != 1 || receipts[0].DeliveryAttempts != 1 {
+		t.Fatalf("after offline sweep receipts = %+v", receipts)
+	}
+
+	// 上线：注册一个调用方连接 → 下一轮补投 + 标记送达
+	clientSend := make(chan []byte, 8)
+	client := &Client{uid: 441, accountType: types.AccountHuman, send: clientSend}
+	hub.mu.Lock()
+	hub.clients[441] = map[*Client]struct{}{client: {}}
+	hub.mu.Unlock()
+	if delivered, err := deliverer.SweepOnce(ctx); err != nil || delivered != 1 {
+		t.Fatalf("online sweep delivered=%d err=%v, want 1", delivered, err)
+	}
+	receipts, _ = st.ListUndeliveredServiceRunReceipts(ctx, 10)
+	if len(receipts) != 0 {
+		t.Fatalf("receipt must be marked delivered, pending = %+v", receipts)
+	}
+	select {
+	case raw := <-clientSend:
+		var msg ServerMessage
+		if err := json.Unmarshal(raw, &msg); err != nil || msg.ServiceRunReceipt == nil {
+			t.Fatalf("pushed message = %s (err=%v)", raw, err)
+		}
+		if msg.ServiceRunReceipt.ReceiptID != "rcp_rcp_1" || msg.ServiceRunReceipt.RunID != "run_rcp_1" ||
+			msg.ServiceRunReceipt.Status != "completed" || msg.ServiceRunReceipt.ContractVersion != store.ServiceRunReceiptContract {
+			t.Fatalf("receipt message = %+v", msg.ServiceRunReceipt)
+		}
+	default:
+		t.Fatal("expected a pushed receipt on the client channel")
 	}
 }

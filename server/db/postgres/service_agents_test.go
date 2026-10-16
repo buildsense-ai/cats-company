@@ -12,6 +12,8 @@ import (
 func seedHelloAgent(t *testing.T, db *Adapter) {
 	t.Helper()
 	execRetireV4MigrationFile(t, db, "000027_service_agents.up.sql")
+	// 终态事务含回执写入（000033）——与生产迁移顺序一致。
+	execRetireV4MigrationFile(t, db, "000033_service_run_receipts.up.sql")
 }
 
 func agentID(t *testing.T, st *Adapter, slug string) int64 {

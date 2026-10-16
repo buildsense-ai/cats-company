@@ -18,6 +18,9 @@ const (
 	ServiceRunFailed    ServiceRunState = "failed"
 	ServiceRunCancelled ServiceRunState = "cancelled"
 	ServiceRunOrphaned  ServiceRunState = "orphaned"
+	// ServiceRunAwaitingInput 是回合制返问的收尾态（设计 §3.3-8）：本次 run 以
+	// 「待补充输入」终结并随生命周期回注推回调用方；补充 = 同一会话的下一次 tools/call。
+	ServiceRunAwaitingInput ServiceRunState = "awaiting_input"
 )
 
 type ServiceAgentSummary struct {
@@ -35,8 +38,8 @@ type ServiceInvokeRequest struct {
 }
 
 type ServiceRunUsage struct {
-	PromptTokens     int64   `json:"prompt_tokens"`
-	CompletionTokens int64   `json:"completion_tokens"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
 	// CostCNY：运行时未知时填 0；权威成本以 relay 记账为准。
 	CostCNY float64 `json:"cost_cny"`
 }

@@ -60,6 +60,13 @@ func TestServiceAgentsEndToEnd(t *testing.T) {
 	if _, err := scoped.Exec(string(migration)); err != nil {
 		t.Fatalf("apply service agents migration: %v", err)
 	}
+	receiptsMigration, err := os.ReadFile("db/migrations/postgres/000033_service_run_receipts.up.sql")
+	if err != nil {
+		t.Fatalf("read service run receipts migration: %v", err)
+	}
+	if _, err := scoped.Exec(string(receiptsMigration)); err != nil {
+		t.Fatalf("apply service run receipts migration: %v", err)
+	}
 	adapter := &postgres.Adapter{}
 	if err := adapter.Open(scopedDSN); err != nil {
 		t.Fatalf("open store adapter: %v", err)
@@ -298,5 +305,96 @@ func TestServiceAgentsEndToEnd(t *testing.T) {
 	}
 	if sessionCount != 1 {
 		t.Fatalf("sessions = %d, want 1 (precheck must run before session creation)", sessionCount)
+	}
+
+	// ---- Run 5：回合制返问（awaiting_input）→ 同会话补充 → completed ----
+	relayBlocked.Store(false)
+	mcpHandler.syncWait = 5 * time.Second
+	awaitOutcomes := make(chan callOutcome, 1)
+	go func() {
+		call, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "catsco_hello",
+			Arguments: map[string]any{"input": map[string]any{"q": "vague"}, "client_token": "ct_e2e_await"},
+		})
+		awaitOutcomes <- callOutcome{call, err}
+	}()
+	fifthRun := claimRuns("inst-a")[0]
+	// 实例上报返问收尾：result 事件（envelope awaiting_input）+ await-input（终态 + 回执）
+	awaitEnvelope := fmt.Sprintf(`{"contract_version":"catsco.service-run-result.v1","run_id":%q,"session_id":%q,"status":"awaiting_input","output":{"question":"请补充周报日期范围"}}`,
+		fifthRun.RunID, fifthRun.SessionID)
+	if status, body := doInternal(t, "POST", ts.URL+"/internal/service-runs/"+fifthRun.RunID+"/events", "inst-token-1",
+		fmt.Sprintf(`{"type":"result","payload":%s}`, awaitEnvelope)); status != http.StatusOK {
+		t.Fatalf("await result event status=%d body=%s", status, body)
+	}
+	if status, body := doInternal(t, "POST", ts.URL+"/internal/service-runs/"+fifthRun.RunID+"/await-input", "inst-token-1",
+		fmt.Sprintf(`{"result_id":"awt_e2e_1","result":%s}`, awaitEnvelope)); status != http.StatusOK {
+		t.Fatalf("await-input status=%d body=%s", status, body)
+	}
+	var awaitOutcome callOutcome
+	select {
+	case awaitOutcome = <-awaitOutcomes:
+	case <-time.After(10 * time.Second):
+		t.Fatal("awaiting MCP call did not return")
+	}
+	if awaitOutcome.err != nil || awaitOutcome.call.IsError {
+		t.Fatalf("awaiting call: err=%v result=%+v", awaitOutcome.err, awaitOutcome.call)
+	}
+	awaitEnv := decodeServiceEnvelope(t, awaitOutcome.call.StructuredContent)
+	if awaitEnv.Status != ServiceRunAwaitingInput || awaitEnv.RunID != fifthRun.RunID {
+		t.Fatalf("awaiting envelope = %+v", awaitEnv)
+	}
+	awaitText := ""
+	for _, content := range awaitOutcome.call.Content {
+		if text, ok := content.(*mcp.TextContent); ok {
+			awaitText += text.Text
+		}
+	}
+	if !strings.Contains(awaitText, "请补充周报日期范围") {
+		t.Fatalf("awaiting tool text must carry the question: %q", awaitText)
+	}
+	// 回执已入箱（awaiting_input + question）
+	pendingReceipts, err := adapter.ListUndeliveredServiceRunReceipts(ctx, 20)
+	if err != nil {
+		t.Fatalf("list receipts: %v", err)
+	}
+	var awaitReceiptFound bool
+	for _, receipt := range pendingReceipts {
+		if receipt.RunID == fifthRun.RunID {
+			awaitReceiptFound = receipt.Status == "awaiting_input" && strings.Contains(string(receipt.Payload), "请补充周报日期范围")
+		}
+	}
+	if !awaitReceiptFound {
+		t.Fatalf("awaiting receipt missing: %+v", pendingReceipts)
+	}
+
+	// 补充输入 = 同会话下一次 tools/call（await 收尾不占会话串行位）→ completed
+	contOutcomes := make(chan callOutcome, 1)
+	go func() {
+		call, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name: "catsco_hello",
+			Arguments: map[string]any{
+				"input": map[string]any{"q": "1 月 1 日至 1 月 7 日"}, "client_token": "ct_e2e_await_2", "session_id": awaitEnv.SessionID,
+			},
+		})
+		contOutcomes <- callOutcome{call, err}
+	}()
+	contRun := claimRuns("inst-a")[0]
+	if contRun.SessionID != awaitEnv.SessionID || contRun.RunID == fifthRun.RunID {
+		t.Fatalf("continuation claim mismatch: %+v vs %+v", contRun, awaitEnv)
+	}
+	emitResultEvent(contRun, "hello-continued")
+	completeRun(contRun, "res_e2e_5", "hello-continued", `{"prompt_tokens":6,"completion_tokens":8}`)
+	var contOutcome callOutcome
+	select {
+	case contOutcome = <-contOutcomes:
+	case <-time.After(10 * time.Second):
+		t.Fatal("continuation MCP call did not return")
+	}
+	if contOutcome.err != nil || contOutcome.call.IsError {
+		t.Fatalf("continuation call: err=%v result=%+v", contOutcome.err, contOutcome.call)
+	}
+	contEnv := decodeServiceEnvelope(t, contOutcome.call.StructuredContent)
+	if contEnv.Status != ServiceRunCompleted || contEnv.SessionID != awaitEnv.SessionID || !strings.Contains(string(contEnv.Output), "hello-continued") {
+		t.Fatalf("continuation envelope = %+v", contEnv)
 	}
 }

@@ -211,6 +211,16 @@ func serviceRunTerminalEnvelope(run store.ServiceRun) (bool, ServiceRunEnvelope)
 			ContractVersion: serviceRunResultContractVersion,
 			RunID:           run.RunID, SessionID: run.SessionID, Status: ServiceRunCompleted,
 		}
+	case "awaiting_input":
+		// 回合制返问收尾（设计 §3.3-8）：视同终态交付；调用方以同一 session_id 补充输入续跑。
+		var env ServiceRunEnvelope
+		if len(run.Result) > 0 && json.Unmarshal(run.Result, &env) == nil && env.ContractVersion != "" {
+			return true, env
+		}
+		return true, ServiceRunEnvelope{
+			ContractVersion: serviceRunResultContractVersion,
+			RunID:           run.RunID, SessionID: run.SessionID, Status: ServiceRunAwaitingInput,
+		}
 	case "failed", "cancelled":
 		return true, ServiceRunEnvelope{
 			ContractVersion: serviceRunResultContractVersion,
@@ -259,7 +269,22 @@ func serviceRunToolResult(env ServiceRunEnvelope) *mcp.CallToolResult {
 	if env.Error != "" {
 		text += " error=" + env.Error
 	}
+	if env.Status == ServiceRunAwaitingInput {
+		// 返问：把问题直接带进文本摘要，调用方 LLM 无需解析 structuredContent 即可续聊。
+		text += " question=" + serviceAwaitQuestionText(env) + "（补充=以同一 session_id 再次调用）"
+	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+}
+
+// serviceAwaitQuestionText 从 await envelope 的 output.question 提取问题文本（展示用）。
+func serviceAwaitQuestionText(env ServiceRunEnvelope) string {
+	var parsed struct {
+		Question string `json:"question"`
+	}
+	if err := json.Unmarshal(env.Output, &parsed); err != nil || parsed.Question == "" {
+		return "(问题内容缺失——请用 catsco_run_status 复核 run)"
+	}
+	return parsed.Question
 }
 
 func serviceToolError(message string) *mcp.CallToolResult {

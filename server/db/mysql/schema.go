@@ -55,6 +55,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceRunEventsTable,
 		createServiceSessionCheckpointsTable,
 		createServiceInstancesTable,
+		createServiceRunReceiptsTable,
 		seedServiceAgentsHello,
 		seedServiceAgentVersionsHello,
 	}
@@ -141,6 +142,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceAgentVersionsAssetsHashIndex,
 		migrateServiceRunsClientTokenNullable,
 		migrateServiceRunsClientTokenBackfill,
+		migrateServiceRunReceiptsPendingIndex,
 		migrateServiceRunsCreatedAtIndex,
 	}
 	for _, m := range migrations {
@@ -592,6 +594,28 @@ CREATE TABLE IF NOT EXISTS service_instances (
 // 监控板聚合查询用（重复创建走 1061 幂等忽略）。
 const migrateServiceRunsCreatedAtIndex = `
 CREATE INDEX idx_service_runs_created_at ON service_runs (created_at);
+`
+
+// 生命周期回注收件箱（PG 000033 镜像；设计 §3.3-2/§4.8-2）。
+const createServiceRunReceiptsTable = `
+CREATE TABLE IF NOT EXISTS service_run_receipts (
+    receipt_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    session_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    caller_uid BIGINT NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    payload_json JSON NOT NULL,
+    delivery_attempts INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    delivered_at TIMESTAMP(6) NULL DEFAULT NULL,
+    PRIMARY KEY (receipt_id),
+    FOREIGN KEY (run_id) REFERENCES service_runs(run_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+// 待投递扫描索引（MySQL 无部分索引，退化为普通复合索引；重复创建走 1061 幂等忽略）。
+const migrateServiceRunReceiptsPendingIndex = `
+CREATE INDEX idx_service_run_receipts_pending ON service_run_receipts (delivered_at, created_at);
 `
 
 const seedServiceAgentsHello = `

@@ -26,6 +26,13 @@ type ServiceRunOrchestrator struct {
 	tokenSecret   string
 	stopOnce      sync.Once
 	stopCh        chan struct{}
+	// receiptKicker 回注投递器（可选）：终态转换后即时唤醒投递（未注入=由投递器周期扫描兜底）。
+	receiptKicker serviceReceiptKicker
+}
+
+// serviceReceiptKicker 是回注投递器的唤醒接口（由 service_run_receipt_delivery.go 实现）。
+type serviceReceiptKicker interface {
+	Kick()
 }
 
 const (
@@ -71,6 +78,17 @@ func NewServiceRunOrchestrator(st store.ServiceAgentStore, instanceToken, tokenS
 	}
 }
 
+// SetReceiptKicker 注入回注投递器（设计 §4.8-2；未注入时终态回执等投递器下轮扫描）。
+func (o *ServiceRunOrchestrator) SetReceiptKicker(k serviceReceiptKicker) {
+	o.receiptKicker = k
+}
+
+func (o *ServiceRunOrchestrator) kickReceiptDelivery() {
+	if o.receiptKicker != nil {
+		o.receiptKicker.Kick()
+	}
+}
+
 func NewServiceRunOrchestratorFromEnv(st store.ServiceAgentStore) *ServiceRunOrchestrator {
 	return NewServiceRunOrchestrator(
 		st,
@@ -85,6 +103,7 @@ func (o *ServiceRunOrchestrator) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /internal/service-runs/{runID}/heartbeat", o.withInstanceToken(o.handleRenewLease))
 	mux.HandleFunc("POST /internal/service-runs/{runID}/events", o.withInstanceToken(o.handleAppendEvent))
 	mux.HandleFunc("POST /internal/service-runs/{runID}/complete", o.withInstanceToken(o.handleComplete))
+	mux.HandleFunc("POST /internal/service-runs/{runID}/await-input", o.withInstanceToken(o.handleAwaitInput))
 	mux.HandleFunc("POST /internal/service-runs/{runID}/fail", o.withInstanceToken(o.handleFailRun))
 	mux.HandleFunc("POST /internal/service-instances/{instanceID}/heartbeat", o.withInstanceToken(o.handleInstanceHeartbeat))
 	// 云端包分发（设计 A §2）：发布（写新版本行）与按内容 hash 拉取。
@@ -315,7 +334,41 @@ func (o *ServiceRunOrchestrator) handleComplete(w http.ResponseWriter, r *http.R
 		}
 		return
 	}
+	if completed {
+		// 生命周期回注：终态已落（含回执）→ 唤醒投递（在线即推）。
+		o.kickReceiptDelivery()
+	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"completed": completed, "idempotent": !completed})
+}
+
+// handleAwaitInput 处理实例上报的「待补充输入」收尾（回合制返问；设计 §3.3-8）。
+// 语义与 complete 一致（幂等重放/错态 409）；调用方补充 = 同一会话的下一次 tools/call。
+func (o *ServiceRunOrchestrator) handleAwaitInput(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	var req struct {
+		ResultID string          `json:"result_id"`
+		Result   json.RawMessage `json:"result"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.ResultID) == "" {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_body"})
+		return
+	}
+	awaited, err := o.store.AwaitServiceRunInput(r.Context(), runID, req.ResultID, req.Result)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrServiceRunNotFound):
+			writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "run_not_found"})
+		case errors.Is(err, store.ErrServiceRunConflict):
+			writeServiceJSON(w, http.StatusConflict, map[string]any{"error": "state_conflict"})
+		default:
+			writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "await_input_failed"})
+		}
+		return
+	}
+	if awaited {
+		o.kickReceiptDelivery()
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{"awaiting_input": awaited, "idempotent": !awaited})
 }
 
 // handleFailRun 处理实例上报的不可恢复/可重试失败（设计 §4.8；计划② PlatformClient.failRun）。
@@ -337,6 +390,10 @@ func (o *ServiceRunOrchestrator) handleFailRun(w http.ResponseWriter, r *http.Re
 		}
 		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "fail_failed"})
 		return
+	}
+	if !req.Retryable {
+		// 不可重试失败=终态（回执已入箱）→ 唤醒投递。
+		o.kickReceiptDelivery()
 	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

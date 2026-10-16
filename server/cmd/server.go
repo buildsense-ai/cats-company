@@ -933,6 +933,12 @@ func main() {
 		serviceOrchestrator := server.NewServiceRunOrchestratorFromEnv(serviceAgentStore)
 		serviceOrchestrator.RegisterRoutes(mux)
 		go serviceOrchestrator.StartReaper(15 * time.Second)
+		// Lifecycle write-back delivery (design §3.3-2/§4.8-2): receipts persisted
+		// in the same transaction as terminal run transitions are pushed to the
+		// caller's live connections; offline receipts are retained and retried.
+		receiptDeliverer := server.NewServiceRunReceiptDeliverer(serviceAgentStore, hub)
+		serviceOrchestrator.SetReceiptKicker(receiptDeliverer)
+		go receiptDeliverer.Start(5 * time.Second)
 	} else {
 		log.Printf("service agents MCP endpoint disabled: store does not implement ServiceAgentStore")
 	}

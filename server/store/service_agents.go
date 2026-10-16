@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -51,6 +52,67 @@ type ServiceRunEventRecord struct {
 	CreatedAt time.Time
 }
 
+// ServiceRunReceiptContract 是回执 payload 的契约版本（= WS 消息体，设计 §3.3-2 回流通道）。
+const ServiceRunReceiptContract = "catsco.service-run-receipt.v1"
+
+// ServiceRunReceipt 是生命周期回注收件箱条目（设计 §4.8-2：至少一次投递 + 幂等去重 + 离线待取）。
+// receipt_id 由 run_id 确定性派生（rcp_<run_id 去前缀>）——同 run 至多一份回执，重投不产生重复。
+type ServiceRunReceipt struct {
+	ReceiptID        string
+	RunID            string
+	SessionID        string
+	CallerUID        int64
+	Status           string
+	Payload          json.RawMessage
+	DeliveryAttempts int
+	CreatedAt        time.Time
+}
+
+// BuildServiceRunReceiptPayload 组装回执 JSON（双方言共用；字段即 WS 消息载荷）。
+func BuildServiceRunReceiptPayload(receiptID, runID, sessionID, status, question, errorText string) json.RawMessage {
+	payload := map[string]any{
+		"contract_version": ServiceRunReceiptContract,
+		"receipt_id":       receiptID,
+		"run_id":           runID,
+		"session_id":       sessionID,
+		"status":           status,
+		"created_at":       time.Now().UTC().Format(time.RFC3339),
+	}
+	if question != "" {
+		payload["question"] = question
+	}
+	if errorText != "" {
+		payload["error"] = errorText
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return encoded
+}
+
+// ServiceRunReceiptIDForRun 由 run_id 派生回执 id（幂等去重载体；"run_xxx" → "rcp_xxx"）。
+func ServiceRunReceiptIDForRun(runID string) string {
+	suffix := strings.TrimPrefix(runID, "run_")
+	if suffix == "" {
+		suffix = runID
+	}
+	return "rcp_" + suffix
+}
+
+// ServiceAwaitQuestionFromResult 从 await 收尾 envelope 提取问题文本（回执展示用；缺失则空）。
+func ServiceAwaitQuestionFromResult(result json.RawMessage) string {
+	var parsed struct {
+		Output struct {
+			Question string `json:"question"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Output.Question)
+}
+
 // ServiceAgentDescriptor 是服务目录条目（MCP tools/list 的来源；每个 agent 取当前版本）。
 type ServiceAgentDescriptor struct {
 	ID                    int64
@@ -87,8 +149,19 @@ type ServiceAgentStore interface {
 	SaveServiceCheckpoint(ctx context.Context, sessionID string, revision int64, snapshot json.RawMessage) error
 	LatestServiceCheckpoint(ctx context.Context, sessionID string) (revision int64, snapshot json.RawMessage, err error)
 	CompleteServiceRun(ctx context.Context, runID, resultID string, result json.RawMessage, usage json.RawMessage) (bool, error)
+	// AwaitServiceRunInput 把 running run 收尾为 awaiting_input（回合制返问；设计 §3.3-8）。
+	// 语义同 CompleteServiceRun：同 result_id 幂等重放返回 (false, nil)；非 running → ErrServiceRunConflict。
+	// 收尾时同事务写入回执（回注通道），question 从 result envelope 的 output.question 提取。
+	AwaitServiceRunInput(ctx context.Context, runID, resultID string, result json.RawMessage) (bool, error)
 	FailServiceRun(ctx context.Context, runID, errorText string, retryable bool) error
 	ReapExpiredServiceRuns(ctx context.Context) (int, error)
+	// ---- 生命周期回注收件箱（设计 §4.8-2）----
+	// ListUndeliveredServiceRunReceipts 按创建序返回待投递回执（投递 worker 扫描用）。
+	ListUndeliveredServiceRunReceipts(ctx context.Context, limit int) ([]ServiceRunReceipt, error)
+	// MarkServiceRunReceiptDelivered 标记回执已送达（≥1 在线连接接收）；已送达则无操作。
+	MarkServiceRunReceiptDelivered(ctx context.Context, receiptID string) error
+	// TouchServiceRunReceiptDelivery 记录一次投递尝试（离线未送达时累计，可观测）。
+	TouchServiceRunReceiptDelivery(ctx context.Context, receiptID string) error
 	// RecordServiceInstanceHeartbeat 落库实例心跳（监控数据源；设计 §7.1"实例在线数"）。
 	// UPSERT 语义：每实例一行最新值；last_seen_at 刷新（在线判定=now-last_seen < 阈值）。
 	RecordServiceInstanceHeartbeat(ctx context.Context, instanceID string, activeRuns int, metrics json.RawMessage) error

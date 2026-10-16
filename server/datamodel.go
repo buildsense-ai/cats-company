@@ -43,6 +43,9 @@ type ServerMessage struct {
 	ThinToolRPC        *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
 	ArtifactResult     *MsgArtifactResult            `json:"artifact_result,omitempty"`
 	SkillMutationGrant *MsgSkillMutationGrant        `json:"skill_mutation_grant,omitempty"`
+	// ServiceRunReceipt 是定制应用 run 的生命周期回注回执（完成/失败/待补充输入；
+	// 设计 §3.3-2 回流通道）。跟账号投递：在线即推、离线留存补投。
+	ServiceRunReceipt *MsgServiceRunReceipt `json:"service_run_receipt,omitempty"`
 
 	// suppressPushNotification is server-only provenance. It must never be
 	// serialized to a web client or be set from client-provided metadata.
@@ -248,6 +251,19 @@ type MsgArtifactResult struct {
 	ExpectedStateRevision string          `json:"expected_state_revision,omitempty"`
 	Payload               json.RawMessage `json:"payload,omitempty"`
 	Receipt               json.RawMessage `json:"receipt,omitempty"`
+}
+
+// MsgServiceRunReceipt 是定制应用 run 的生命周期回注回执（设计 §3.3-2 回流通道）。
+// 字段与 store.BuildServiceRunReceiptPayload 完全同构；receipt_id 即幂等去重键。
+type MsgServiceRunReceipt struct {
+	ContractVersion string `json:"contract_version"`
+	ReceiptID       string `json:"receipt_id"`
+	RunID           string `json:"run_id"`
+	SessionID       string `json:"session_id"`
+	Status          string `json:"status"`
+	Question        string `json:"question,omitempty"`
+	Error           string `json:"error,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
 }
 
 // --- Server messages ---

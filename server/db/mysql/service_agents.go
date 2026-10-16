@@ -405,12 +405,13 @@ func (a *Adapter) CompleteServiceRun(ctx context.Context, runID, resultID string
 	defer func() { _ = tx.Rollback() }()
 
 	var (
-		state    string
-		existing string
+		state     string
+		existing  string
+		sessionID string
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT state, result_id FROM service_runs WHERE run_id = ? FOR UPDATE`, runID).
-		Scan(&state, &existing)
+		`SELECT state, result_id, session_id FROM service_runs WHERE run_id = ? FOR UPDATE`, runID).
+		Scan(&state, &existing, &sessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, store.ErrServiceRunNotFound
 	}
@@ -440,55 +441,177 @@ func (a *Adapter) CompleteServiceRun(ctx context.Context, runID, resultID string
 		WHERE run_id = ?`, resultID, resultVal, usageVal, runID); err != nil {
 		return false, fmt.Errorf("complete service run: %w", err)
 	}
+	// 生命周期回注：终态与回执同事务。
+	if err := insertServiceRunReceiptTx(ctx, tx, runID, sessionID, "completed", "", ""); err != nil {
+		return false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit complete service run: %w", err)
 	}
 	return true, nil
 }
 
+// AwaitServiceRunInput 把 running run 收尾为 awaiting_input（PG 镜像；设计 §3.3-8）。
+func (a *Adapter) AwaitServiceRunInput(ctx context.Context, runID, resultID string, result json.RawMessage) (bool, error) {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin await service run input: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		state     string
+		existing  string
+		sessionID string
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT state, result_id, session_id FROM service_runs WHERE run_id = ? FOR UPDATE`, runID).
+		Scan(&state, &existing, &sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, store.ErrServiceRunNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("lock service run for await input: %w", err)
+	}
+	if state == "awaiting_input" && existing == resultID {
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("commit awaiting service run replay: %w", err)
+		}
+		return false, nil
+	}
+	if state != "running" {
+		return false, fmt.Errorf("await service run state=%s: %w", state, store.ErrServiceRunConflict)
+	}
+	var resultVal interface{}
+	if len(result) > 0 {
+		resultVal = []byte(result)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE service_runs SET
+			state = 'awaiting_input', result_id = ?, result_json = ?,
+			finished_at = NOW(6), instance_id = '', lease_expires_at = NULL
+		WHERE run_id = ?`, resultID, resultVal, runID); err != nil {
+		return false, fmt.Errorf("await service run input: %w", err)
+	}
+	if err := insertServiceRunReceiptTx(ctx, tx, runID, sessionID, "awaiting_input", store.ServiceAwaitQuestionFromResult(result), ""); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit await service run input: %w", err)
+	}
+	return true, nil
+}
+
 func (a *Adapter) FailServiceRun(ctx context.Context, runID, errorText string, retryable bool) error {
-	res, err := a.db.ExecContext(ctx, `
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin fail service run: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		state     string
+		sessionID string
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT state, session_id FROM service_runs WHERE run_id = ? FOR UPDATE`, runID).
+		Scan(&state, &sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ErrServiceRunNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lock service run for fail: %w", err)
+	}
+	if state != "running" {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit failed service run noop: %w", err)
+		}
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE service_runs SET
 			state = CASE WHEN ? THEN 'orphaned' ELSE 'failed' END,
 			error_text = ?,
 			instance_id = '',
 			lease_expires_at = NULL,
 			finished_at = CASE WHEN ? THEN finished_at ELSE COALESCE(finished_at, NOW(6)) END
-		WHERE run_id = ? AND state = 'running'`, retryable, errorText, retryable, runID)
-	if err != nil {
+		WHERE run_id = ?`, retryable, errorText, retryable, runID); err != nil {
 		return fmt.Errorf("fail service run: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("fail service run affected: %w", err)
+	if !retryable {
+		// 不可重试失败=终态 → 回执入箱；orphaned 是中间态，不产生回执。
+		if err := insertServiceRunReceiptTx(ctx, tx, runID, sessionID, "failed", "", errorText); err != nil {
+			return err
+		}
 	}
-	if n > 0 {
-		return nil
-	}
-	var exists int
-	err = a.db.QueryRowContext(ctx, `SELECT 1 FROM service_runs WHERE run_id = ?`, runID).Scan(&exists)
-	if errors.Is(err, sql.ErrNoRows) {
-		return store.ErrServiceRunNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("check failed service run: %w", err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit fail service run: %w", err)
 	}
 	return nil
 }
 
 func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
-	res, err := a.db.ExecContext(ctx, `
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin reap service runs: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT run_id, session_id, attempts FROM service_runs
+		WHERE state = 'running' AND lease_expires_at < NOW(6)
+		FOR UPDATE`)
+	if err != nil {
+		return 0, fmt.Errorf("reap service runs query: %w", err)
+	}
+	type reapedRun struct {
+		runID     string
+		sessionID string
+		failed    bool
+	}
+	var reaped []reapedRun
+	for rows.Next() {
+		var (
+			r        reapedRun
+			attempts int
+		)
+		if err := rows.Scan(&r.runID, &r.sessionID, &attempts); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan reaped service run: %w", err)
+		}
+		r.failed = attempts >= 3
+		reaped = append(reaped, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate reaped service runs: %w", err)
+	}
+	rows.Close()
+	if len(reaped) == 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit reap service runs: %w", err)
+		}
+		return 0, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE service_runs SET
 			state = CASE WHEN attempts >= 3 THEN 'failed' ELSE 'orphaned' END,
 			error_text = CASE WHEN attempts >= 3 THEN 'lease_expired_attempts' ELSE error_text END,
 			instance_id = ''
-		WHERE state = 'running' AND lease_expires_at < NOW(6)`)
-	if err != nil {
+		WHERE state = 'running' AND lease_expires_at < NOW(6)`); err != nil {
 		return 0, fmt.Errorf("reap service runs: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("reap service runs affected: %w", err)
+	for _, r := range reaped {
+		if !r.failed {
+			continue
+		}
+		// 接管次数耗尽 → 终态失败：回执入箱（orphaned 中间态不产生回执）。
+		if err := insertServiceRunReceiptTx(ctx, tx, r.runID, r.sessionID, "failed", "", "lease_expired_attempts"); err != nil {
+			return 0, err
+		}
 	}
-	return int(n), nil
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit reap service runs: %w", err)
+	}
+	return len(reaped), nil
 }

@@ -28,7 +28,11 @@ type fakeServiceAgentStore struct {
 	agentPackageVersions map[int64][]fakePackageVersion // agentID -> 版本序列（升序，行为=真实 PG）
 	definitionRevs       []int64                        // 记录 claim 请求的定义版本（会话钉定断言用）
 	instanceHeartbeats   map[string]fakeInstanceHeartbeat
+	receipts             map[string]*store.ServiceRunReceipt // 回执收件箱（回注测试用）
+	receiptSeq           []string                            // 回执插入序（ListUndelivered 排序）
+	deliveredReceipts    map[string]bool                     // 已送达标记
 	autoCompleteAfter    time.Duration
+	autoAwaitAfter       time.Duration // 到点把 run 收尾为 awaiting_input（返问同步路径测试用）
 	nextID               int64
 }
 
@@ -49,6 +53,8 @@ func newFakeServiceAgentStore() *fakeServiceAgentStore {
 		tokens:               map[string]string{},
 		packages:             map[string]json.RawMessage{},
 		agentPackageVersions: map[int64][]fakePackageVersion{},
+		receipts:             map[string]*store.ServiceRunReceipt{},
+		deliveredReceipts:    map[string]bool{},
 	}
 }
 
@@ -184,6 +190,13 @@ func (f *fakeServiceAgentStore) CreateServiceRunIdempotent(_ context.Context, se
 			f.completeRun(runID)
 		}()
 	}
+	if f.autoAwaitAfter > 0 {
+		delay := f.autoAwaitAfter
+		go func() {
+			time.Sleep(delay)
+			f.awaitInputRun(runID)
+		}()
+	}
 	return run, false, nil
 }
 
@@ -206,6 +219,33 @@ func (f *fakeServiceAgentStore) completeRun(runID string) {
 	payload, _ := json.Marshal(env)
 	run.Result = payload
 	f.runs[runID] = run
+	f.appendReceiptLocked(runID, run.SessionID, "completed", "", "")
+	f.events[runID] = append(f.events[runID], store.ServiceRunEventRecord{
+		RunID: runID, Seq: int64(len(f.events[runID]) + 1), Type: "result", Payload: payload, CreatedAt: time.Now(),
+	})
+}
+
+// awaitInputRun 模拟实例把 run 收尾为 awaiting_input（返问；含 result 事件 + 回执）。
+func (f *fakeServiceAgentStore) awaitInputRun(runID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	run, ok := f.runs[runID]
+	if !ok || run.State == "awaiting_input" || run.State == "completed" {
+		return
+	}
+	run.State = "awaiting_input"
+	env := ServiceRunEnvelope{
+		ContractVersion: "catsco.service-run-result.v1",
+		RunID:           runID,
+		SessionID:       run.SessionID,
+		Status:          ServiceRunAwaitingInput,
+		Output:          json.RawMessage(`{"question":"请补充必要素材"}`),
+		Usage:           &ServiceRunUsage{PromptTokens: 2, CompletionTokens: 3},
+	}
+	payload, _ := json.Marshal(env)
+	run.Result = payload
+	f.runs[runID] = run
+	f.appendReceiptLocked(runID, run.SessionID, "awaiting_input", "请补充必要素材", "")
 	f.events[runID] = append(f.events[runID], store.ServiceRunEventRecord{
 		RunID: runID, Seq: int64(len(f.events[runID]) + 1), Type: "result", Payload: payload, CreatedAt: time.Now(),
 	})
@@ -265,10 +305,44 @@ func (f *fakeServiceAgentStore) CompleteServiceRun(_ context.Context, runID, res
 	run.State = "completed"
 	run.Result = result
 	f.runs[runID] = run
+	f.appendReceiptLocked(runID, run.SessionID, "completed", "", "")
 	return true, nil
 }
 
-func (f *fakeServiceAgentStore) FailServiceRun(context.Context, string, string, bool) error {
+// AwaitServiceRunInput 模拟回合制返问收尾（含回执，question 从 result 提取）。
+func (f *fakeServiceAgentStore) AwaitServiceRunInput(_ context.Context, runID, resultID string, result json.RawMessage) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	run, ok := f.runs[runID]
+	if !ok {
+		return false, store.ErrServiceRunNotFound
+	}
+	if run.State == "awaiting_input" {
+		return false, nil
+	}
+	if run.State != "running" && run.State != "submitted" {
+		return false, fmt.Errorf("await service run state=%s: %w", run.State, store.ErrServiceRunConflict)
+	}
+	run.State = "awaiting_input"
+	run.Result = result
+	f.runs[runID] = run
+	f.appendReceiptLocked(runID, run.SessionID, "awaiting_input", store.ServiceAwaitQuestionFromResult(result), "")
+	return true, nil
+}
+
+func (f *fakeServiceAgentStore) FailServiceRun(_ context.Context, runID, errorText string, retryable bool) error {
+	if retryable {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	run, ok := f.runs[runID]
+	if !ok {
+		return store.ErrServiceRunNotFound
+	}
+	run.State = "failed"
+	f.runs[runID] = run
+	f.appendReceiptLocked(runID, run.SessionID, "failed", "", errorText)
 	return nil
 }
 
@@ -291,6 +365,60 @@ func (f *fakeServiceAgentStore) RecordServiceInstanceHeartbeat(_ context.Context
 type fakeInstanceHeartbeat struct {
 	ActiveRuns int
 	Metrics    json.RawMessage
+}
+
+// appendReceiptLocked 写入回执（模拟 store 终态事务中的回执插入；同 run 幂等）。
+func (f *fakeServiceAgentStore) appendReceiptLocked(runID, sessionID, status, question, errorText string) {
+	receiptID := store.ServiceRunReceiptIDForRun(runID)
+	if _, ok := f.receipts[receiptID]; ok {
+		return
+	}
+	callerUID := int64(0)
+	if s, ok := f.sessions[sessionID]; ok {
+		callerUID = s.CallerUID
+	}
+	payload := store.BuildServiceRunReceiptPayload(receiptID, runID, sessionID, status, question, errorText)
+	f.receipts[receiptID] = &store.ServiceRunReceipt{
+		ReceiptID: receiptID, RunID: runID, SessionID: sessionID,
+		CallerUID: callerUID, Status: status, Payload: payload,
+	}
+	f.receiptSeq = append(f.receiptSeq, receiptID)
+}
+
+func (f *fakeServiceAgentStore) ListUndeliveredServiceRunReceipts(_ context.Context, limit int) ([]store.ServiceRunReceipt, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []store.ServiceRunReceipt
+	for _, id := range f.receiptSeq {
+		if f.deliveredReceipts[id] {
+			continue
+		}
+		receipt := f.receipts[id]
+		if receipt == nil {
+			continue
+		}
+		out = append(out, *receipt)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeServiceAgentStore) MarkServiceRunReceiptDelivered(_ context.Context, receiptID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deliveredReceipts[receiptID] = true
+	return nil
+}
+
+func (f *fakeServiceAgentStore) TouchServiceRunReceiptDelivery(_ context.Context, receiptID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if receipt := f.receipts[receiptID]; receipt != nil {
+		receipt.DeliveryAttempts++
+	}
+	return nil
 }
 
 func mcpAuthStub(uid int64, next http.Handler) http.Handler {
@@ -520,5 +648,83 @@ func TestServiceAgentsMCPSessionPinsPackageHash(t *testing.T) {
 	st.mu.Unlock()
 	if pinned != hashA {
 		t.Fatalf("session assets_hash = %q, want pinned %q", pinned, hashA)
+	}
+}
+
+// 回合制返问（awaiting_input；设计 §3.3-8）：同步等待路径交付返问信封（question 进文本摘要）；
+// 补充 = 同一会话的下一次 tools/call（await 收尾不占会话串行位）；两轮各出一份回执。
+func TestServiceAgentsMCPAwaitingInput(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.autoAwaitAfter = 5 * time.Millisecond
+	handler := NewServiceAgentsMCPHandler(st)
+	ts := httptest.NewServer(mcpAuthStub(441, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+	ctx := context.Background()
+
+	call, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "catsco_hello", Arguments: map[string]any{
+		"input": map[string]any{"topic": "写周报"},
+	}})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if call.IsError {
+		t.Fatalf("awaiting call must not be a tool error: %+v", call.Content)
+	}
+	env := decodeServiceEnvelope(t, call.StructuredContent)
+	if env.Status != ServiceRunAwaitingInput || env.SessionID == "" || env.RunID == "" {
+		t.Fatalf("awaiting envelope = %+v", env)
+	}
+	text := ""
+	for _, content := range call.Content {
+		if tc, ok := content.(*mcp.TextContent); ok {
+			text += tc.Text
+		}
+	}
+	if !strings.Contains(text, "awaiting_input") || !strings.Contains(text, "请补充必要素材") {
+		t.Fatalf("awaiting text = %q（须含状态与问题文本）", text)
+	}
+
+	// run_status 对 awaiting run 同样交付返问信封（断线补取通道）
+	statusCall, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "catsco_run_status", Arguments: map[string]any{"run_id": env.RunID}})
+	if err != nil {
+		t.Fatalf("run_status call: %v", err)
+	}
+	statusEnv := decodeServiceEnvelope(t, statusCall.StructuredContent)
+	if statusEnv.Status != ServiceRunAwaitingInput || statusEnv.RunID != env.RunID {
+		t.Fatalf("run_status envelope = %+v", statusEnv)
+	}
+
+	// 补充输入 = 同会话下一次 tools/call → 第二轮 completed
+	st.mu.Lock()
+	st.autoAwaitAfter = 0
+	st.autoCompleteAfter = 5 * time.Millisecond
+	st.mu.Unlock()
+	second, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "catsco_hello", Arguments: map[string]any{
+		"input":      map[string]any{"text": "起止：1 月 1 日至 1 月 7 日"},
+		"session_id": env.SessionID,
+	}})
+	if err != nil {
+		t.Fatalf("continuation call: %v", err)
+	}
+	if second.IsError {
+		t.Fatalf("continuation tool error: %+v", second.Content)
+	}
+	secondEnv := decodeServiceEnvelope(t, second.StructuredContent)
+	if secondEnv.Status != ServiceRunCompleted || secondEnv.SessionID != env.SessionID || secondEnv.RunID == env.RunID {
+		t.Fatalf("continuation envelope = %+v", secondEnv)
+	}
+
+	// 回执收件箱：awaiting_input + completed 各一份（回注通道数据面）
+	pending, err := st.ListUndeliveredServiceRunReceipts(ctx, 10)
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("receipts = %+v err=%v, want 2", pending, err)
+	}
+	statuses := map[string]bool{}
+	for _, receipt := range pending {
+		statuses[receipt.Status] = true
+	}
+	if !statuses["awaiting_input"] || !statuses["completed"] {
+		t.Fatalf("receipt statuses = %v", statuses)
 	}
 }
