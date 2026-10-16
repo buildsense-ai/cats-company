@@ -2860,6 +2860,75 @@ describe('ChatMessage rich file rendering', () => {
     expect(downloadLink.getAttribute('target')).toBe('_blank');
   });
 
+  it('renders the pdf.js reader for Safari desktop and the iframe viewer elsewhere', async () => {
+    const message = {
+      id: 46,
+      from_uid: 2,
+      content: '[文件] safari-report.pdf',
+      content_blocks: [{
+        type: 'file',
+        payload: {
+          name: 'safari-report.pdf',
+          url: '/uploads/files/safari-report.pdf',
+          size: 2048,
+          mime_type: 'application/pdf',
+        },
+      }],
+      created_at: '2026-06-09T00:00:00Z',
+    };
+    const originalUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+    const originalMatchMedia = window.matchMedia;
+    // Desktop width so the sheet-mode reader is not selected on its own.
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    });
+
+    const openPreview = async () => {
+      await act(async () => {
+        root.render(<PreviewHarness message={message} />);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await Promise.resolve();
+      });
+      return container.querySelector('.v3-file-preview-panel');
+    };
+
+    try {
+      Object.defineProperty(navigator, 'userAgent', {
+        configurable: true,
+        value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+      });
+      const safariPanel = await openPreview();
+      expect(safariPanel).not.toBeNull();
+      expect(safariPanel.querySelector('.v3-mobile-pdf-preview-mock').dataset.url)
+        .toBe('/uploads/files/safari-report.pdf');
+      expect(safariPanel.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+      await act(async () => root.unmount());
+      root = createRoot(container);
+
+      Object.defineProperty(navigator, 'userAgent', {
+        configurable: true,
+        value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      });
+      const chromePanel = await openPreview();
+      expect(chromePanel).not.toBeNull();
+      expect(chromePanel.querySelector('iframe.v3-file-preview-frame')).not.toBeNull();
+      expect(chromePanel.querySelector('.v3-mobile-pdf-preview-mock')).toBeNull();
+    } finally {
+      if (originalUA) Object.defineProperty(navigator, 'userAgent', originalUA);
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+      await act(async () => root.unmount());
+      root = createRoot(container);
+    }
+  });
+
   it('keeps PDF sharing inside the preview and shares the inline URL', async () => {
     const originalShare = Object.getOwnPropertyDescriptor(navigator, 'share');
     const share = vi.fn().mockResolvedValue(undefined);

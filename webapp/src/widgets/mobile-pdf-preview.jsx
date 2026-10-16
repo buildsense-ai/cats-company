@@ -292,6 +292,47 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
     };
   }, [pageNumber, pdfDocument, viewportWidth, zoom]);
 
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  const gestureZoomRef = useRef(null);
+
+  // Ctrl/Meta + wheel zooms like the image viewer. React attaches wheel
+  // handlers passively, so a native non-passive listener is required for
+  // preventDefault to stop the browser page zoom. Safari fires non-standard
+  // gesture* events for trackpad pinch instead of ctrlKey wheel events.
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return undefined;
+    const handleWheel = (event) => {
+      if (annotationMode || (!event.ctrlKey && !event.metaKey)) return;
+      event.preventDefault();
+      changeZoom(zoomRef.current * Math.exp(-Math.max(-100, Math.min(100, event.deltaY)) * 0.008));
+    };
+    const handleGestureStart = (event) => {
+      if (annotationMode) return;
+      event.preventDefault();
+      gestureZoomRef.current = zoomRef.current;
+    };
+    const handleGestureChange = (event) => {
+      if (annotationMode || !gestureZoomRef.current) return;
+      event.preventDefault();
+      changeZoom(gestureZoomRef.current * event.scale);
+    };
+    const handleGestureEnd = () => {
+      gestureZoomRef.current = null;
+    };
+    viewport.addEventListener('wheel', handleWheel, { passive: false });
+    viewport.addEventListener('gesturestart', handleGestureStart);
+    viewport.addEventListener('gesturechange', handleGestureChange);
+    viewport.addEventListener('gestureend', handleGestureEnd);
+    return () => {
+      viewport.removeEventListener('wheel', handleWheel);
+      viewport.removeEventListener('gesturestart', handleGestureStart);
+      viewport.removeEventListener('gesturechange', handleGestureChange);
+      viewport.removeEventListener('gestureend', handleGestureEnd);
+    };
+  }, [annotationMode]);
+
   const changeZoom = (nextZoom) => setZoom(clampZoom(nextZoom));
   const changePage = (nextPage) => {
     const boundedPage = Math.min(pageCount, Math.max(1, nextPage));

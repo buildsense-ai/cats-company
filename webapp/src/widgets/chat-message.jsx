@@ -2363,6 +2363,16 @@ function isSameOriginURL(url) {
   }
 }
 
+// Safari's embedded PDF viewer renders inside the iframe without any zoom
+// controls and ignores #zoom= fragment parameters, so PDF previews fall back
+// to the pdf.js reader there. Chromium/Firefox keep their native viewers.
+export function isWebKitPdfPreview() {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /AppleWebKit/.test(ua) && /Safari/.test(ua)
+    && !/(Chrome|Chromium|Edg|OPR|OPiOS|CriOS|FxiOS|Firefox|SamsungBrowser)/.test(ua);
+}
+
 export function previewFileDescriptor(payload) {
   if (!payload) return null;
   const ext = fileExtension(payload);
@@ -3552,7 +3562,7 @@ export function FilePreviewPanel({
               {imageError && <p role="alert">视频加载失败，请下载原文件查看。</p>}
             </div>
           ) : isPdf ? (
-            shouldUseSheetMode || fileAnnotationMode ? (
+            shouldUseSheetMode || fileAnnotationMode || isWebKitPdfPreview() ? (
               <MobilePdfPreview url={fetchableMediaURL(url)} annotationMode={fileAnnotationMode} />
             ) : (
               <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />

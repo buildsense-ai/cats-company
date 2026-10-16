@@ -385,4 +385,59 @@ describe('MobilePdfPreview', () => {
     expect(fixture.document.destroy).toHaveBeenCalledTimes(1);
     root = createRoot(container);
   });
+
+  it('zooms on ctrl/meta wheel and ignores a plain scroll wheel', async () => {
+    const fixture = createPdfFixture();
+    await act(async () => {
+      root.render(
+        <MobilePdfPreview url="/uploads/report.pdf" loadDocument={() => Promise.resolve(fixture.document)} />,
+      );
+      await flushAsync();
+    });
+    expect(container.querySelector('.v3-mobile-pdf-zoom').textContent).toBe('100%');
+
+    const viewport = container.querySelector('.v3-mobile-pdf-viewport');
+    const plainWheel = new WheelEvent('wheel', { deltaY: -120, cancelable: true, bubbles: true });
+    await act(async () => {
+      viewport.dispatchEvent(plainWheel);
+      await flushAsync();
+    });
+    expect(plainWheel.defaultPrevented).toBe(false);
+    expect(container.querySelector('.v3-mobile-pdf-zoom').textContent).toBe('100%');
+
+    const zoomInWheel = new WheelEvent('wheel', { deltaY: -120, ctrlKey: true, cancelable: true, bubbles: true });
+    await act(async () => {
+      viewport.dispatchEvent(zoomInWheel);
+      await flushAsync();
+    });
+    expect(zoomInWheel.defaultPrevented).toBe(true);
+    const zoomedIn = Number.parseInt(container.querySelector('.v3-mobile-pdf-zoom').textContent, 10);
+    expect(zoomedIn).toBeGreaterThan(100);
+
+    const zoomOutWheel = new WheelEvent('wheel', { deltaY: 480, metaKey: true, cancelable: true, bubbles: true });
+    await act(async () => {
+      viewport.dispatchEvent(zoomOutWheel);
+      await flushAsync();
+    });
+    expect(zoomOutWheel.defaultPrevented).toBe(true);
+    const zoomedOut = Number.parseInt(container.querySelector('.v3-mobile-pdf-zoom').textContent, 10);
+    expect(zoomedOut).toBeLessThan(zoomedIn);
+    expect(zoomedOut).toBeGreaterThanOrEqual(50);
+
+    // Safari trackpad pinch dispatches gesture* events instead of wheel.
+    const gestureStart = new Event('gesturestart', { cancelable: true, bubbles: true });
+    gestureStart.scale = 1;
+    const gestureChange = new Event('gesturechange', { cancelable: true, bubbles: true });
+    gestureChange.scale = 1.5;
+    const gestureEnd = new Event('gestureend', { cancelable: true, bubbles: true });
+    gestureEnd.scale = 1.5;
+    await act(async () => {
+      viewport.dispatchEvent(gestureStart);
+      viewport.dispatchEvent(gestureChange);
+      viewport.dispatchEvent(gestureEnd);
+      await flushAsync();
+    });
+    const pinched = Number.parseInt(container.querySelector('.v3-mobile-pdf-zoom').textContent, 10);
+    expect(pinched).toBeGreaterThan(zoomedOut);
+  });
 });
