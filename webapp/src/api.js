@@ -489,6 +489,8 @@ export const api = {
   getRelayAdminAccess: () => request('GET', '/api/admin/relay/access'),
   relayAdminProxyURL: (path) => `/api/admin/relay${path}`,
   // 应用目录（服务 agent 订阅清单；设计 §3.3-9）：清单跟账号，变更即时同步在线 MCP 会话。
+  // 内测门（2026-10-16）：catalog/access 汇报本账号是否可见入口（非白名单静默隐藏）。
+  getServiceAgentsCatalogAccess: () => request('GET', '/api/service-agents/catalog/access'),
   getServiceAgentsCatalog: () => request('GET', '/api/service-agents/catalog'),
   addServiceAgentSubscription: (slug) => (
     request('PUT', `/api/service-agents/${encodeURIComponent(slug)}/subscription`)

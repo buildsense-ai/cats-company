@@ -23,6 +23,7 @@ vi.mock('../api', () => {
     getGroupInfo: vi.fn().mockResolvedValue({}),
     getMe: mocks.getMe,
     getRelayAdminAccess: vi.fn().mockResolvedValue({ allowed: false }),
+    getServiceAgentsCatalogAccess: vi.fn().mockResolvedValue({ allowed: false }),
     getRelayConfig: vi.fn().mockResolvedValue({}),
     getRelayUsage: vi.fn().mockResolvedValue({ summary: null }),
     login: vi.fn(),

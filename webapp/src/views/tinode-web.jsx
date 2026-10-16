@@ -524,6 +524,7 @@ function TinodeWebApp({ location }) {
   const [relayLinkHandled, setRelayLinkHandled] = useState(false);
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
+  const [serviceAgentsAllowed, setServiceAgentsAllowed] = useState(false);
   const [serviceAgentsOpen, setServiceAgentsOpen] = useState(false);
   const recoveredProfileRef = useRef(null);
   const showAutomaticWorkspaceOnboarding = activeView !== 'skillhub'
@@ -584,6 +585,16 @@ function TinodeWebApp({ location }) {
     if (!user) return undefined;
     api.getRelayAdminAccess()
       .then((res) => { if (!cancelled) setRelayAdminAllowed(Boolean(res?.allowed)); })
+      .catch(() => { /* non-whitelisted users just see no button */ });
+    return () => { cancelled = true; };
+  }, [user?.uid]);
+
+  // 应用目录内测门（2026-10-16）：仅白名单 uid 可见入口（服务端静默判定）。
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) return undefined;
+    api.getServiceAgentsCatalogAccess()
+      .then((res) => { if (!cancelled) setServiceAgentsAllowed(Boolean(res?.allowed)); })
       .catch(() => { /* non-whitelisted users just see no button */ });
     return () => { cancelled = true; };
   }, [user?.uid]);
@@ -1624,7 +1635,7 @@ function TinodeWebApp({ location }) {
       onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
       relayAdminAllowed={relayAdminAllowed}
       onOpenRelayAdmin={() => setRelayAdminOpen(true)}
-      onOpenServiceAgents={() => setServiceAgentsOpen(true)}
+      onOpenServiceAgents={serviceAgentsAllowed ? () => setServiceAgentsOpen(true) : undefined}
     />
   );
 
@@ -1887,7 +1898,7 @@ function TinodeWebApp({ location }) {
               <RelayAdminPanel onClose={() => setRelayAdminOpen(false)} />
             </Suspense>
           )}
-          {serviceAgentsOpen && (
+          {serviceAgentsAllowed && serviceAgentsOpen && (
             <Suspense fallback={<SecondaryViewLoading label="应用目录" />}>
               <ServiceAgentsPanel onClose={() => setServiceAgentsOpen(false)} />
             </Suspense>
@@ -2100,9 +2111,11 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
         </div>
       )}
       <div className="v3-shell-actions">
-        <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenServiceAgents} aria-label="应用目录" title="应用目录（定制应用管理）">
-          <Package size={17} />
-        </button>
+        {onOpenServiceAgents && (
+          <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenServiceAgents} aria-label="应用目录" title="应用目录（定制应用管理）">
+            <Package size={17} />
+          </button>
+        )}
         {relayAdminAllowed && (
           <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenRelayAdmin} aria-label="模型用量" title="模型用量管理">
             <Settings2 size={17} />
@@ -2141,10 +2154,12 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
                 <Plus size={16} aria-hidden="true" />
                 <span>新建任务</span>
               </button>
-              <button type="button" role="menuitem" aria-label="应用目录" onClick={() => { closeMobileActions(); onOpenServiceAgents?.(); }}>
-                <Package size={16} aria-hidden="true" />
-                <span>应用目录</span>
-              </button>
+              {onOpenServiceAgents && (
+                <button type="button" role="menuitem" aria-label="应用目录" onClick={() => { closeMobileActions(); onOpenServiceAgents?.(); }}>
+                  <Package size={16} aria-hidden="true" />
+                  <span>应用目录</span>
+                </button>
+              )}
               {relayAdminAllowed && (
                 <button type="button" role="menuitem" aria-label="模型用量" onClick={() => { closeMobileActions(); onOpenRelayAdmin?.(); }}>
                   <Settings2 size={16} aria-hidden="true" />

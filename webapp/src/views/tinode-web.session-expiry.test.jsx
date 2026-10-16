@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../api', () => {
   const api = {
     getRelayAdminAccess: vi.fn().mockResolvedValue({ allowed: false }),
+    getServiceAgentsCatalogAccess: vi.fn().mockResolvedValue({ allowed: false }),
     getRelayUsage: vi.fn().mockResolvedValue({ summary: null }),
     getRelayConfig: vi.fn().mockResolvedValue({}),
     getMe: mocks.getMe,

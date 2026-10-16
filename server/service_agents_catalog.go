@@ -3,6 +3,8 @@ package server
 import (
 	"errors"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/openchat/openchat/server/store"
@@ -11,14 +13,20 @@ import (
 // 应用目录管理 API（设计 §3.3-9 目录与订阅；网页 cats 的目录/管理界面数据面）。
 //
 //	GET    /api/service-agents/catalog              全部 active agent + 本账号清单状态
+//	GET    /api/service-agents/catalog/access       本账号是否可进入应用目录（内测门）
 //	PUT    /api/service-agents/{slug}/subscription  添加（恢复默认可见）
 //	DELETE /api/service-agents/{slug}/subscription  删除（屏蔽：tools/list 隐去、调用拒绝）
 //
 // 语义=模式二（默认开放 + 个人清单）：无行=默认可见；删除写屏蔽行；添加=删行。
 // 清单跟账号（uid）；发布权仅内部（本 API 不提供创建/发布）。
+//
+// 内测门（2026-10-16）：目录管理面暂只对白名单 uid 开放（env
+// CATSCO_SERVICE_CATALOG_UID_WHITELIST，逗号分隔；未配置=禁用）。与 relay 用量
+// 面板同一模式：非白名单用户静默看不到（access 返回 allowed=false），管理 API 403。
 type ServiceAgentCatalogHandler struct {
-	store    store.ServiceAgentStore
-	notifier serviceSubscriptionNotifier
+	store       store.ServiceAgentStore
+	notifier    serviceSubscriptionNotifier
+	allowedUIDs []int64
 }
 
 // serviceSubscriptionNotifier 清单变更后的在线 MCP 会话同步器（MCP handler 实现）。
@@ -30,9 +38,43 @@ func NewServiceAgentCatalogHandler(st store.ServiceAgentStore) *ServiceAgentCata
 	return &ServiceAgentCatalogHandler{store: st}
 }
 
+// NewServiceAgentCatalogHandlerFromEnv 按环境白名单构造（生产接线用）。
+func NewServiceAgentCatalogHandlerFromEnv(st store.ServiceAgentStore) *ServiceAgentCatalogHandler {
+	h := NewServiceAgentCatalogHandler(st)
+	for _, raw := range strings.Split(os.Getenv(serviceCatalogWhitelistEnv), ",") {
+		uid, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err == nil && uid > 0 {
+			h.allowedUIDs = append(h.allowedUIDs, uid)
+		}
+	}
+	return h
+}
+
+const serviceCatalogWhitelistEnv = "CATSCO_SERVICE_CATALOG_UID_WHITELIST"
+
+func (h *ServiceAgentCatalogHandler) allows(uid int64) bool {
+	for _, id := range h.allowedUIDs {
+		if id == uid {
+			return true
+		}
+	}
+	return false
+}
+
 // SetSubscriptionNotifier 注入在线会话同步器（未注入=仅数据面生效，在线会话等客户端重查）。
 func (h *ServiceAgentCatalogHandler) SetSubscriptionNotifier(n serviceSubscriptionNotifier) {
 	h.notifier = n
+}
+
+// HandleAccess 汇报本账号是否可进入应用目录（内测门；不解释原因）。
+func (h *ServiceAgentCatalogHandler) HandleAccess(w http.ResponseWriter, r *http.Request) {
+	uid := UIDFromContext(r.Context())
+	if uid == 0 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeServiceJSON(w, http.StatusOK, map[string]bool{"allowed": h.allows(uid)})
 }
 
 type serviceCatalogEntry struct {
@@ -43,10 +85,23 @@ type serviceCatalogEntry struct {
 	Hidden                bool   `json:"hidden"`
 }
 
-func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *http.Request) {
+// ensureAllowed 内测门：非白名单账号管理 API 一律 403（静默功能不存在）。
+func (h *ServiceAgentCatalogHandler) ensureAllowed(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	uid := UIDFromContext(r.Context())
 	if uid == 0 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return 0, false
+	}
+	if !h.allows(uid) {
+		writeServiceJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+		return 0, false
+	}
+	return uid, true
+}
+
+func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *http.Request) {
+	uid, ok := h.ensureAllowed(w, r)
+	if !ok {
 		return
 	}
 	agents, err := h.store.ListServiceAgents(r.Context())
@@ -88,9 +143,8 @@ func (h *ServiceAgentCatalogHandler) HandleRemove(w http.ResponseWriter, r *http
 }
 
 func (h *ServiceAgentCatalogHandler) setHidden(w http.ResponseWriter, r *http.Request, hidden bool) {
-	uid := UIDFromContext(r.Context())
-	if uid == 0 {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	uid, ok := h.ensureAllowed(w, r)
+	if !ok {
 		return
 	}
 	slug := strings.TrimSpace(r.PathValue("slug"))

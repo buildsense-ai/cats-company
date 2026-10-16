@@ -159,15 +159,23 @@ func TestServiceAgentsMCPSubscriptionListChanged(t *testing.T) {
 
 // ---- 应用目录管理 API ----
 
-func newCatalogServer(t *testing.T, st *fakeServiceAgentStore, uid int64) (*ServiceAgentCatalogHandler, string) {
+func newCatalogServer(t *testing.T, st *fakeServiceAgentStore, uid int64, whitelist ...int64) (*ServiceAgentCatalogHandler, string) {
 	t.Helper()
 	handler := NewServiceAgentCatalogHandler(st)
+	// 内测门：默认把当前测试 uid 放进白名单（不传则以空名单构造，专测禁用路径）。
+	if len(whitelist) == 0 {
+		whitelist = []int64{uid}
+	} else if whitelist[0] < 0 {
+		whitelist = nil
+	}
+	handler.allowedUIDs = whitelist
 	mux := http.NewServeMux()
 	wrap := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			mcpAuthStub(uid, next).ServeHTTP(w, r)
 		}
 	}
+	mux.HandleFunc("GET /api/service-agents/catalog/access", wrap(handler.HandleAccess))
 	mux.HandleFunc("GET /api/service-agents/catalog", wrap(handler.HandleCatalog))
 	mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", wrap(handler.HandleAdd))
 	mux.HandleFunc("DELETE /api/service-agents/{slug}/subscription", wrap(handler.HandleRemove))
@@ -258,5 +266,49 @@ func TestServiceAgentCatalogAPI(t *testing.T) {
 		if uid != 441 {
 			t.Fatalf("notifier uid = %d, want 441", uid)
 		}
+	}
+}
+
+// 内测门（2026-10-16）：白名单 uid 可见可用；非白名单静默看不到（access=false）+ 管理 API 403。
+func TestServiceAgentCatalogInternalGate(t *testing.T) {
+	st := newFakeServiceAgentStore()
+
+	// 白名单内（uid 38）：access=true + 管理 API 正常
+	_, baseAllowed := newCatalogServer(t, st, 38)
+	status, payload := doCatalog(t, "GET", baseAllowed+"/api/service-agents/catalog/access")
+	if status != http.StatusOK || !strings.Contains(string(payload), `"allowed":true`) {
+		t.Fatalf("whitelisted access status=%d body=%s", status, payload)
+	}
+	if status, _ := doCatalog(t, "GET", baseAllowed+"/api/service-agents/catalog"); status != http.StatusOK {
+		t.Fatalf("whitelisted catalog status = %d, want 200", status)
+	}
+	if status, _ := doCatalog(t, "PUT", baseAllowed+"/api/service-agents/hello/subscription"); status != http.StatusOK {
+		t.Fatalf("whitelisted add status = %d, want 200", status)
+	}
+
+	// 白名单外（uid 442，白名单仍只含 38）：access=false + 管理 API 403
+	_, baseDenied := newCatalogServer(t, st, 442, 38)
+	status, payload = doCatalog(t, "GET", baseDenied+"/api/service-agents/catalog/access")
+	if status != http.StatusOK || !strings.Contains(string(payload), `"allowed":false`) {
+		t.Fatalf("non-whitelisted access status=%d body=%s", status, payload)
+	}
+	for _, probe := range []struct{ method, path string }{
+		{"GET", "/api/service-agents/catalog"},
+		{"PUT", "/api/service-agents/hello/subscription"},
+		{"DELETE", "/api/service-agents/hello/subscription"},
+	} {
+		if status, _ := doCatalog(t, probe.method, baseDenied+probe.path); status != http.StatusForbidden {
+			t.Fatalf("%s %s status = %d, want 403", probe.method, probe.path, status)
+		}
+	}
+
+	// 空白名单（未配置）：全员禁用（含任意 uid）
+	_, baseDisabled := newCatalogServer(t, st, 38, -1)
+	status, payload = doCatalog(t, "GET", baseDisabled+"/api/service-agents/catalog/access")
+	if status != http.StatusOK || !strings.Contains(string(payload), `"allowed":false`) {
+		t.Fatalf("empty whitelist access status=%d body=%s", status, payload)
+	}
+	if status, _ := doCatalog(t, "GET", baseDisabled+"/api/service-agents/catalog"); status != http.StatusForbidden {
+		t.Fatalf("empty whitelist catalog status = %d, want 403", status)
 	}
 }
