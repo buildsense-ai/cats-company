@@ -101,11 +101,11 @@ describe('ServiceAgentsPanel', () => {
   it('renders close button wired to onClose and refresh re-fetches', async () => {
     const onClose = vi.fn();
     await renderPanel({ onClose });
-    const close = container.querySelector('button[aria-label="关闭应用目录"]');
+    const close = container.querySelector('button[aria-label="关闭 Agent 工具"]');
     await act(async () => close.click());
     expect(onClose).toHaveBeenCalledTimes(1);
 
-    const refresh = container.querySelector('button[aria-label="刷新应用目录"]');
+    const refresh = container.querySelector('button[aria-label="刷新 Agent 工具"]');
     await act(async () => {
       refresh.click();
       await Promise.resolve();

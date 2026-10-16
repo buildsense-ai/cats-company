@@ -589,7 +589,7 @@ function TinodeWebApp({ location }) {
     return () => { cancelled = true; };
   }, [user?.uid]);
 
-  // 应用目录内测门（2026-10-16）：仅白名单 uid 可见入口（服务端静默判定）。
+  // Agent 工具内测门（2026-10-16）：仅白名单 uid 可见入口（服务端静默判定）。
   useEffect(() => {
     let cancelled = false;
     if (!user) return undefined;
@@ -1899,7 +1899,7 @@ function TinodeWebApp({ location }) {
             </Suspense>
           )}
           {serviceAgentsAllowed && serviceAgentsOpen && (
-            <Suspense fallback={<SecondaryViewLoading label="应用目录" />}>
+            <Suspense fallback={<SecondaryViewLoading label="Agent 工具" />}>
               <ServiceAgentsPanel onClose={() => setServiceAgentsOpen(false)} />
             </Suspense>
           )}
@@ -2112,7 +2112,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
       )}
       <div className="v3-shell-actions">
         {onOpenServiceAgents && (
-          <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenServiceAgents} aria-label="应用目录" title="应用目录（定制应用管理）">
+          <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenServiceAgents} aria-label="Agent 工具" title="Agent 工具（定制 Agent 工具集）">
             <Package size={17} />
           </button>
         )}
@@ -2155,9 +2155,9 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
                 <span>新建任务</span>
               </button>
               {onOpenServiceAgents && (
-                <button type="button" role="menuitem" aria-label="应用目录" onClick={() => { closeMobileActions(); onOpenServiceAgents?.(); }}>
+                <button type="button" role="menuitem" aria-label="Agent 工具" onClick={() => { closeMobileActions(); onOpenServiceAgents?.(); }}>
                   <Package size={16} aria-hidden="true" />
-                  <span>应用目录</span>
+                  <span>Agent 工具</span>
                 </button>
               )}
               {relayAdminAllowed && (

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Plus, RefreshCw, X } from 'lucide-react';
 import { api } from '../api';
 
-// 应用目录（服务 agent 订阅清单；设计 §3.3-9"模式二：默认开放 + 个人清单"）。
+// Agent 工具（CatsCo 定制 agent 的工具集管理；设计 §3.3-9"模式二：默认开放 + 个人清单"）。
 // 添加/删除跟账号、跨设备生效：删除后从你的 Agent 工具集（tools/list）隐去、调用也被拒绝；
 // 重新添加即恢复。变更即时同步在线 MCP 会话（服务端 list_changed）。
 export default function ServiceAgentsPanel({ onClose }) {
@@ -18,7 +18,7 @@ export default function ServiceAgentsPanel({ onClose }) {
       const data = await api.getServiceAgentsCatalog();
       setAgents(Array.isArray(data?.agents) ? data.agents : []);
     } catch (err) {
-      setError(err?.message || '应用目录加载失败，请稍后重试。');
+      setError(err?.message || 'Agent 工具加载失败，请稍后重试。');
     } finally {
       setLoading(false);
     }
@@ -52,26 +52,26 @@ export default function ServiceAgentsPanel({ onClose }) {
   }, [pending]);
 
   return (
-    <aside className="v3-service-agents-panel" aria-label="应用目录">
+    <aside className="v3-service-agents-panel" aria-label="Agent 工具">
       <div className="v3-service-agents-header">
-        <span>应用目录</span>
+        <span>Agent 工具</span>
         <div className="v3-service-agents-header-actions">
-          <button type="button" onClick={load} aria-label="刷新应用目录" title="刷新">
+          <button type="button" onClick={load} aria-label="刷新 Agent 工具" title="刷新">
             <RefreshCw size={16} />
           </button>
-          <button type="button" onClick={onClose} aria-label="关闭应用目录" title="关闭">
+          <button type="button" onClick={onClose} aria-label="关闭 Agent 工具" title="关闭">
             <X size={16} />
           </button>
         </div>
       </div>
       <p className="v3-service-agents-hint">
-        CatsCo 定制应用（服务 agent）。添加的会出现在你的 Agent 工具集中；删除的将被移除，调用也会被拒绝。
+        CatsCo 定制 Agent（以工具形式接入）。添加的会出现在你的 Agent 工具集中；删除的将被移除，调用也会被拒绝。
       </p>
       {error && <div className="v3-service-agents-error" role="alert">{error}</div>}
       {loading ? (
         <div className="v3-service-agents-empty">加载中…</div>
       ) : agents.length === 0 ? (
-        <div className="v3-service-agents-empty">暂无可用应用。</div>
+        <div className="v3-service-agents-empty">暂无可用工具。</div>
       ) : (
         <ul className="v3-service-agents-list">
           {agents.map((agent) => {
@@ -92,7 +92,7 @@ export default function ServiceAgentsPanel({ onClose }) {
                   disabled={busy}
                   onClick={() => toggleSubscription(agent)}
                   aria-label={`${hidden ? '添加' : '删除'}${agent.name || agent.slug}`}
-                  title={hidden ? '重新添加该应用' : '从我的清单中删除该应用'}
+                  title={hidden ? '重新添加该工具' : '从我的清单中删除该工具'}
                 >
                   {hidden ? <Plus size={15} /> : <X size={15} />}
                   <span>{hidden ? '添加' : '删除'}</span>

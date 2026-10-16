@@ -456,14 +456,14 @@ describe('LocalAssistantBar model selector', () => {
     expect(container.querySelector('button[aria-label="模型用量"]')).toBeNull();
   });
 
-  // 应用目录内测门（2026-10-16）：入口仅在父级授予回调时渲染（白名单 uid 才拿到回调）。
+  // Agent 工具内测门（2026-10-16）：入口仅在父级授予回调时渲染（白名单 uid 才拿到回调）。
   it('renders the service-agents entry only when the parent grants access', async () => {
     await renderBar({});
-    expect(container.querySelector('button[aria-label="应用目录"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Agent 工具"]')).toBeNull();
 
     const onOpenServiceAgents = vi.fn();
     await renderBar({ onOpenServiceAgents });
-    const button = container.querySelector('button[aria-label="应用目录"]');
+    const button = container.querySelector('button[aria-label="Agent 工具"]');
     expect(button).toBeTruthy();
     await act(async () => button.click());
     expect(onOpenServiceAgents).toHaveBeenCalledTimes(1);
@@ -473,7 +473,7 @@ describe('LocalAssistantBar model selector', () => {
     const moreButton = container.querySelector('button[aria-label="更多操作"]');
     await act(async () => moreButton.click());
     const menu = container.querySelector('[role="menu"][aria-label="更多操作"]');
-    expect(menu.textContent).not.toContain('应用目录');
+    expect(menu.textContent).not.toContain('Agent 工具');
   });
 
   it('opens the unified CatsCo desktop modal from the top-right desktop button', async () => {
