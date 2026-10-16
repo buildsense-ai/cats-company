@@ -36,6 +36,8 @@ const (
 	serviceClaimMaxLimit       = 50
 	serviceReapDefaultInterval = 15 * time.Second
 	serviceReapTimeout         = 10 * time.Second
+	// 心跳请求体上限（metrics 快照为小 JSON；防异常体打爆解析）。
+	serviceInstanceHeartbeatLimit = 64 << 10
 )
 
 // ServiceClaimResult / ServiceClaimRun 是 claim 的下发契约（实例据此执行 run）。
@@ -340,12 +342,28 @@ func (o *ServiceRunOrchestrator) handleFailRun(w http.ResponseWriter, r *http.Re
 }
 
 func (o *ServiceRunOrchestrator) handleInstanceHeartbeat(w http.ResponseWriter, r *http.Request) {
-	// 先只回执不落库（监控采集=阶段 2）。
+	instanceID := strings.TrimSpace(r.PathValue("instanceID"))
+	if instanceID == "" || len(instanceID) > 64 {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "instance_id_required"})
+		return
+	}
 	var req struct {
 		ActiveRuns int            `json:"active_runs"`
 		Metrics    map[string]any `json:"metrics"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	body := http.MaxBytesReader(w, r.Body, serviceInstanceHeartbeatLimit)
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_body"})
+		return
+	}
+	// 心跳落库（监控数据源，设计 §7.1）；落库失败不影响回执语义（实例无需感知）。
+	metrics, err := json.Marshal(req.Metrics)
+	if err != nil || len(metrics) == 0 {
+		metrics = json.RawMessage(`{}`)
+	}
+	if err := o.store.RecordServiceInstanceHeartbeat(r.Context(), instanceID, req.ActiveRuns, metrics); err != nil {
+		log.Printf("service instance heartbeat persist instance=%s: %v", instanceID, err)
+	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

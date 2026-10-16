@@ -142,6 +142,8 @@ func (a *Adapter) CreateSchema() error {
 		migrateServiceRunsClientTokenNullable,
 		createServiceRunEventsTable,
 		createServiceSessionCheckpointsTable,
+		createServiceInstancesTable,
+		createServiceRunsCreatedAtIndex,
 		seedServiceAgentsHello,
 		createUsersIndexes,
 		createFriendsIndexes,
@@ -548,6 +550,20 @@ CREATE TABLE IF NOT EXISTS service_session_checkpoints (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id, revision)
 );`
+
+// 实例心跳注册（000032 编号迁移镜像；设计 §7.1“实例在线数”数据源）。
+const createServiceInstancesTable = `
+CREATE TABLE IF NOT EXISTS service_instances (
+    instance_id VARCHAR(64) PRIMARY KEY,
+    active_runs INT NOT NULL DEFAULT 0,
+    metrics_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);`
+
+const createServiceRunsCreatedAtIndex = `
+CREATE INDEX IF NOT EXISTS idx_service_runs_created_at
+    ON service_runs (created_at DESC);`
 
 const seedServiceAgentsHello = `
 INSERT INTO service_agents (slug, name) VALUES ('hello', 'Hello 试点应用')

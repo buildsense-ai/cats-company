@@ -27,6 +27,7 @@ type fakeServiceAgentStore struct {
 	packages             map[string]json.RawMessage
 	agentPackageVersions map[int64][]fakePackageVersion // agentID -> 版本序列（升序，行为=真实 PG）
 	definitionRevs       []int64                        // 记录 claim 请求的定义版本（会话钉定断言用）
+	instanceHeartbeats   map[string]fakeInstanceHeartbeat
 	autoCompleteAfter    time.Duration
 	nextID               int64
 }
@@ -273,6 +274,23 @@ func (f *fakeServiceAgentStore) FailServiceRun(context.Context, string, string, 
 
 func (f *fakeServiceAgentStore) ReapExpiredServiceRuns(context.Context) (int, error) {
 	return 0, nil
+}
+
+// RecordServiceInstanceHeartbeat 记录实例心跳（监控落库断言用）。
+func (f *fakeServiceAgentStore) RecordServiceInstanceHeartbeat(_ context.Context, instanceID string, activeRuns int, metrics json.RawMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.instanceHeartbeats == nil {
+		f.instanceHeartbeats = map[string]fakeInstanceHeartbeat{}
+	}
+	f.instanceHeartbeats[instanceID] = fakeInstanceHeartbeat{ActiveRuns: activeRuns, Metrics: append(json.RawMessage(nil), metrics...)}
+	return nil
+}
+
+// fakeInstanceHeartbeat 是 RecordServiceInstanceHeartbeat 的落库快照（测试断言用）。
+type fakeInstanceHeartbeat struct {
+	ActiveRuns int
+	Metrics    json.RawMessage
 }
 
 func mcpAuthStub(uid int64, next http.Handler) http.Handler {

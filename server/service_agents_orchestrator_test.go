@@ -305,10 +305,23 @@ func TestServiceOrchestratorClaimLifecycle(t *testing.T) {
 		t.Fatal("usage should be forwarded to the store")
 	}
 
-	// 实例心跳：只回执
+	// 实例心跳：回执 + 落库（监控数据源）
 	status, payload = doInternal(t, "POST", base+"/internal/service-instances/inst-a/heartbeat", "inst-token-1", `{"active_runs":1,"metrics":{"cpu":0.5}}`)
 	if status != http.StatusOK || !strings.Contains(string(payload), `"ok":true`) {
 		t.Fatalf("instance heartbeat status=%d body=%s", status, payload)
+	}
+	st.mu.Lock()
+	recorded, ok := st.instanceHeartbeats["inst-a"]
+	st.mu.Unlock()
+	if !ok {
+		t.Fatal("instance heartbeat must be persisted")
+	}
+	if recorded.ActiveRuns != 1 || !strings.Contains(string(recorded.Metrics), `"cpu":0.5`) {
+		t.Fatalf("persisted heartbeat = %+v", recorded)
+	}
+	// 坏体 → 400（不再静默回执）
+	if status, _ := doInternal(t, "POST", base+"/internal/service-instances/inst-a/heartbeat", "inst-token-1", `{oops`); status != http.StatusBadRequest {
+		t.Fatalf("invalid heartbeat body status = %d, want 400", status)
 	}
 }
 

@@ -54,6 +54,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceRunsTable,
 		createServiceRunEventsTable,
 		createServiceSessionCheckpointsTable,
+		createServiceInstancesTable,
 		seedServiceAgentsHello,
 		seedServiceAgentVersionsHello,
 	}
@@ -140,6 +141,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceAgentVersionsAssetsHashIndex,
 		migrateServiceRunsClientTokenNullable,
 		migrateServiceRunsClientTokenBackfill,
+		migrateServiceRunsCreatedAtIndex,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -573,6 +575,23 @@ CREATE TABLE IF NOT EXISTS service_session_checkpoints (
     PRIMARY KEY (session_id, revision),
     FOREIGN KEY (session_id) REFERENCES service_sessions(session_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+// 实例心跳注册（PG 000032 镜像；设计 §7.1“实例在线数”数据源）。
+const createServiceInstancesTable = `
+CREATE TABLE IF NOT EXISTS service_instances (
+    instance_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    active_runs INT NOT NULL DEFAULT 0,
+    metrics_json JSON NOT NULL,
+    first_seen_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    last_seen_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (instance_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+// 监控板聚合查询用（重复创建走 1061 幂等忽略）。
+const migrateServiceRunsCreatedAtIndex = `
+CREATE INDEX idx_service_runs_created_at ON service_runs (created_at);
 `
 
 const seedServiceAgentsHello = `

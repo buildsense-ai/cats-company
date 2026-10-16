@@ -89,4 +89,7 @@ type ServiceAgentStore interface {
 	CompleteServiceRun(ctx context.Context, runID, resultID string, result json.RawMessage, usage json.RawMessage) (bool, error)
 	FailServiceRun(ctx context.Context, runID, errorText string, retryable bool) error
 	ReapExpiredServiceRuns(ctx context.Context) (int, error)
+	// RecordServiceInstanceHeartbeat 落库实例心跳（监控数据源；设计 §7.1"实例在线数"）。
+	// UPSERT 语义：每实例一行最新值；last_seen_at 刷新（在线判定=now-last_seen < 阈值）。
+	RecordServiceInstanceHeartbeat(ctx context.Context, instanceID string, activeRuns int, metrics json.RawMessage) error
 }
