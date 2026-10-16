@@ -114,6 +114,7 @@ import {
 } from '../utils/auth-routes';
 import { AppWindow, Cloud, Download, Frown, KeyRound, Laptop, MoreHorizontal, Package, Plus, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import './workspace-styles';
+import CloudArtifactsPreview from '../dev/cloud-artifacts-preview';
 
 // Keep the active conversation eager; fetch secondary tools only when opened.
 // Chunk failures still use the app's existing WorkspaceLoadErrorBoundary.
@@ -341,6 +342,11 @@ export default function TinodeWeb({ location = window.location } = {}) {
   }
 
   const demoParams = new URLSearchParams(search);
+  const showCloudArtifactsDemo = import.meta.env.DEV && demoParams.get('cloud_artifacts_demo') === '1';
+  if (showCloudArtifactsDemo) {
+    return <CloudArtifactsPreview />;
+  }
+
   const showWorkflowDemo = demoParams.get('workflow_demo') === '1';
   if (showWorkflowDemo) {
     return (
@@ -601,6 +607,7 @@ function TinodeWebApp({ location }) {
   const [cloudArtifactsRequest, setCloudArtifactsRequest] = useState(null);
   const [standaloneCloudArtifactsRequest, setStandaloneCloudArtifactsRequest] = useState(null);
   const [standaloneCloudArtifactsTab, setStandaloneCloudArtifactsTab] = useState('active');
+  const [standaloneCloudArtifactsExpanded, setStandaloneCloudArtifactsExpanded] = useState(false);
   const cloudArtifactsRequestSequenceRef = useRef(0);
   const consumeCloudArtifactsRequest = useCallback((requestId) => {
     if (!requestId) return;
@@ -683,12 +690,45 @@ function TinodeWebApp({ location }) {
     }
     setCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsTab(request.initialTab);
+    setStandaloneCloudArtifactsExpanded(false);
     setStandaloneCloudArtifactsRequest(request);
   }, [activeTopicId]);
 
   const handleOpenCloudArtifacts = useCallback((selection) => {
     openCloudArtifactsForAgent(displayedActiveAgent?.uid || displayedActiveAgent?.id, selection);
   }, [displayedActiveAgent?.id, displayedActiveAgent?.uid, openCloudArtifactsForAgent]);
+
+  const restoreStandaloneCloudArtifacts = useCallback(() => {
+    setStandaloneCloudArtifactsExpanded(false);
+    window.requestAnimationFrame?.(() => {
+      document.querySelector('.v3-file-preview-shell .cc-workspace-fullscreen-action')?.focus({ preventScroll: true });
+    });
+  }, []);
+
+  const toggleStandaloneCloudArtifacts = useCallback(() => {
+    if (standaloneCloudArtifactsExpanded) {
+      restoreStandaloneCloudArtifacts();
+    } else if (window.innerWidth > 1024) {
+      setStandaloneCloudArtifactsExpanded(true);
+    }
+  }, [restoreStandaloneCloudArtifacts, standaloneCloudArtifactsExpanded]);
+
+  useEffect(() => {
+    const restoreOnSmallViewport = () => {
+      if (window.innerWidth <= 1024) setStandaloneCloudArtifactsExpanded(false);
+    };
+    const restoreOnEscape = (event) => {
+      if (!standaloneCloudArtifactsRequest || !standaloneCloudArtifactsExpanded || event.key !== 'Escape') return;
+      event.preventDefault();
+      restoreStandaloneCloudArtifacts();
+    };
+    window.addEventListener('resize', restoreOnSmallViewport);
+    window.addEventListener('keydown', restoreOnEscape);
+    return () => {
+      window.removeEventListener('resize', restoreOnSmallViewport);
+      window.removeEventListener('keydown', restoreOnEscape);
+    };
+  }, [restoreStandaloneCloudArtifacts, standaloneCloudArtifactsExpanded, standaloneCloudArtifactsRequest]);
 
   const handleOpenManagedAgentArtifacts = useCallback((agentUid) => {
     setActiveView('chats');
@@ -1858,7 +1898,7 @@ function TinodeWebApp({ location }) {
                 modelInfo={mobileModelInfo}
               />
             ) : (
-              <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}`}>
+              <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}${standaloneCloudArtifactsRequest && standaloneCloudArtifactsExpanded ? ' cc-app-focus' : ''}`}>
                 <div className="v3-chat-column">
                   {localAssistantBar}
                   <NoActiveTask
@@ -1884,9 +1924,17 @@ function TinodeWebApp({ location }) {
                       initialApp={standaloneCloudArtifactsRequest.app}
                       tab={standaloneCloudArtifactsTab}
                       onTabChange={setStandaloneCloudArtifactsTab}
-                      onClose={() => setStandaloneCloudArtifactsRequest(null)}
+                      onClose={() => {
+                        restoreStandaloneCloudArtifacts();
+                        setStandaloneCloudArtifactsRequest(null);
+                      }}
                       onOpenArtifact={openExternalArtifact}
                       onStartAnnotation={startStandaloneAnnotation}
+                      workspaceFullscreen={standaloneCloudArtifactsExpanded}
+                      onToggleWorkspaceFullscreen={toggleStandaloneCloudArtifacts}
+                      onWorkspacePreviewChange={(active) => {
+                        if (!active) restoreStandaloneCloudArtifacts();
+                      }}
                     />
                   </div>
                 )}

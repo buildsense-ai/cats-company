@@ -2736,6 +2736,7 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsAgentUID(agentUID);
     setCloudArtifactsTab(cloudArtifactsRequest.initialTab || 'files');
+    setPreviewExpanded(false);
     setCloudArtifactsInitialApp(cloudArtifactsRequest.app || null);
     pendingGatewayAnnotationStartRef.current = cloudArtifactsRequest.startAnnotation && cloudArtifactsRequest.app?.id
       ? { topicId: topic, appId: String(cloudArtifactsRequest.app.id), agentUid: agentUID,
@@ -6337,7 +6338,7 @@ export default function MessagesView({
     previewScrollBeforeExpandRef.current = null;
   }, [topic]);
   useEffect(() => {
-    if (!sidePanelOpen || (cloudArtifactsListOpen && cloudArtifactsTab !== 'gateway')) {
+    if (!sidePanelOpen) {
       setPreviewExpanded(false);
       setPreviewContextOpen(false);
       setPreviewComposerMinimized(false);
@@ -7317,6 +7318,7 @@ export default function MessagesView({
                 onRemoteArtifactRefreshFailed={handleArtifactRefreshFailed}
                 onRemoteArtifactFrameChange={handleRemoteArtifactFrameChange}
                 onOpenRemoteArtifactFullscreen={openRemoteArtifactFullscreen}
+                allowWorkspaceFullscreen
                 annotationApi={api}
                 onFileAnnotationSent={handleFileAnnotationSent}
               />

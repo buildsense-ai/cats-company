@@ -35,6 +35,9 @@ export default function StandaloneCloudArtifactsPanel({
   onClose,
   onOpenArtifact,
   onStartAnnotation,
+  workspaceFullscreen = false,
+  onToggleWorkspaceFullscreen,
+  onWorkspacePreviewChange,
 }) {
   const [previewFile, setPreviewFile] = useState(null);
 
@@ -45,6 +48,9 @@ export default function StandaloneCloudArtifactsPanel({
         onBack={() => setPreviewFile(null)}
         onClose={onClose}
         onOpenRemoteArtifactFullscreen={onOpenArtifact}
+        workspaceFullscreen={workspaceFullscreen}
+        onToggleWorkspaceFullscreen={onToggleWorkspaceFullscreen}
+        allowWorkspaceFullscreen
       />
     );
   }
@@ -59,6 +65,9 @@ export default function StandaloneCloudArtifactsPanel({
       onTabChange={onTabChange}
       onClose={onClose}
       onStartAnnotation={onStartAnnotation}
+      workspaceFullscreen={workspaceFullscreen}
+      onToggleWorkspaceFullscreen={onToggleWorkspaceFullscreen}
+      onWorkspacePreviewChange={onWorkspacePreviewChange}
       onPreviewArtifact={(artifact) => {
         if (!artifact) return;
         setPreviewFile(createCloudArtifactPreviewFile({

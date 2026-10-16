@@ -694,7 +694,17 @@ describe('CloudArtifactsPanel', () => {
     expect([...container.querySelectorAll('button')].some((button) => button.textContent === '重试')).toBe(true);
   });
 
-  test('offers workspace expansion only for an open app and retains its iframe when restored', async () => {
+  test('offers workspace expansion for cloud lists', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({ artifacts: [activeArtifact], viewer_relation: 'owner' });
+    const onToggleWorkspaceFullscreen = vi.fn();
+    await renderPanel({ onToggleWorkspaceFullscreen });
+    const button = container.querySelector('[aria-label="全屏查看云内容"]');
+    expect(button).not.toBeNull();
+    await act(async () => button.click());
+    expect(onToggleWorkspaceFullscreen).toHaveBeenCalledTimes(1);
+  });
+
+  test('offers workspace expansion for cloud content and retains an open app iframe', async () => {
     const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
     // An app launched directly stays visible even if the catalogue is empty.
     api.listArtifactApps.mockResolvedValue({ apps: [] });

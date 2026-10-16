@@ -2815,6 +2815,7 @@ export function FilePreviewPanel({
   onOpenRemoteArtifactFullscreen,
   workspaceFullscreen = false,
   onToggleWorkspaceFullscreen,
+  allowWorkspaceFullscreen = false,
   annotationApi,
   onFileAnnotationSent,
 }) {
@@ -2876,6 +2877,10 @@ export function FilePreviewPanel({
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
   const downloadURL = descriptor?.downloadURL || url;
+  const canWorkspaceFullscreen = Boolean(
+    onToggleWorkspaceFullscreen && allowWorkspaceFullscreen,
+  );
+  const workspaceFullscreenLabel = isRemoteArtifact || isHtml ? '应用' : '预览';
   const currentRemoteArtifactKey = remoteArtifactPreviewKey(file, descriptor);
   const pendingRemoteArtifactKey = remoteArtifactPreviewKey(
     pendingRemoteArtifactFile,
@@ -3411,10 +3416,10 @@ export function FilePreviewPanel({
             </div>
           </div>
           <div className="v3-file-preview-actions">
-            {(isHtml || isRemoteArtifact) && onToggleWorkspaceFullscreen && (
+            {canWorkspaceFullscreen && (
               <button className="cc-workspace-fullscreen-action" type="button"
-                aria-label={workspaceFullscreen ? '还原应用视图' : '全屏查看应用'}
-                title={workspaceFullscreen ? '还原应用视图（Esc）' : '全屏查看应用'}
+                aria-label={workspaceFullscreen ? `还原${workspaceFullscreenLabel}视图` : `全屏查看${workspaceFullscreenLabel}`}
+                title={workspaceFullscreen ? `还原${workspaceFullscreenLabel}视图（Esc）` : `全屏查看${workspaceFullscreenLabel}`}
                 aria-pressed={workspaceFullscreen} onClick={onToggleWorkspaceFullscreen}>
                 {workspaceFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
               </button>

@@ -186,7 +186,14 @@ export default function CloudArtifactsPanel({
   const [files, setFiles] = useState([]);
   const [gatewayApps, setGatewayApps] = useState([]);
   const [gatewayPreview, setGatewayPreview] = useState(null);
-  const workspacePreviewActive = tab === 'gateway' && Boolean(gatewayPreview);
+  // Gateway exposes focus mode only while an app iframe is open. The other
+  // cloud tabs are themselves workspace content and can always be expanded.
+  const workspacePreviewActive = tab === 'gateway'
+    ? Boolean(gatewayPreview)
+    : Boolean(onToggleWorkspaceFullscreen);
+  const workspaceFullscreenLabel = tab === 'gateway' && gatewayPreview
+    ? '应用'
+    : '云内容';
   useEffect(() => {
     onWorkspacePreviewChange?.(workspacePreviewActive);
   }, [workspacePreviewActive, onWorkspacePreviewChange]);
@@ -957,8 +964,8 @@ export default function CloudArtifactsPanel({
           <div className="cloud-artifacts-header-actions">
             {workspacePreviewActive && onToggleWorkspaceFullscreen && (
               <button className="cc-workspace-fullscreen-action" type="button"
-                aria-label={workspaceFullscreen ? '还原应用视图' : '全屏查看应用'}
-                title={workspaceFullscreen ? '还原应用视图（Esc）' : '全屏查看应用'}
+                aria-label={workspaceFullscreen ? `还原${workspaceFullscreenLabel}视图` : `全屏查看${workspaceFullscreenLabel}`}
+                title={workspaceFullscreen ? `还原${workspaceFullscreenLabel}视图（Esc）` : `全屏查看${workspaceFullscreenLabel}`}
                 aria-pressed={workspaceFullscreen} onClick={onToggleWorkspaceFullscreen}>
                 {workspaceFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
               </button>

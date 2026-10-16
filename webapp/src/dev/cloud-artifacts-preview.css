@@ -1,0 +1,183 @@
+.cc-cloud-artifacts-demo {
+  --cc-demo-panel-width: min(46vw, 680px);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--cc-bg, #101412);
+  color: var(--cc-text, #edf4f0);
+  font-family: var(--cc-font-sans, Inter, sans-serif);
+}
+
+.cc-cloud-artifacts-demo-topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 64px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--cc-border, #29332f);
+  background: var(--cc-panel, #171d1a);
+}
+
+.cc-cloud-artifacts-demo-brand,
+.cc-cloud-artifacts-demo-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 650;
+}
+
+.cc-cloud-artifacts-demo-brand {
+  color: var(--cc-text, #edf4f0);
+}
+
+.cc-cloud-artifacts-demo-brand .catsco-brand-mark {
+  width: 20px;
+  height: 20px;
+}
+
+.cc-cloud-artifacts-demo-title {
+  color: var(--cc-accent-text, #65d9b0);
+  font-size: 14px;
+}
+
+.cc-cloud-artifacts-demo-hint {
+  margin-left: auto;
+  color: var(--cc-muted, #9aa8a1);
+  font-size: 12px;
+}
+
+.cc-cloud-artifacts-demo-workspace {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--cc-bg, #101412);
+}
+
+.cc-cloud-artifacts-demo-context {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: clamp(28px, 6vw, 86px);
+  background: color-mix(in srgb, var(--cc-bg, #101412) 92%, var(--cc-accent, #46bd8c));
+}
+
+.cc-cloud-artifacts-demo-context-copy {
+  max-width: 480px;
+}
+
+.cc-cloud-artifacts-demo-kicker {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--cc-accent-text, #65d9b0);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.cc-cloud-artifacts-demo-context h1 {
+  margin: 0;
+  color: var(--cc-text, #edf4f0);
+  font-size: clamp(24px, 3vw, 38px);
+  line-height: 1.1;
+  letter-spacing: -.025em;
+}
+
+.cc-cloud-artifacts-demo-context-copy p {
+  margin: 16px 0 0;
+  color: var(--cc-muted, #9aa8a1);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.cc-cloud-artifacts-demo-message {
+  display: flex;
+  gap: 12px;
+  max-width: 460px;
+  padding: 16px;
+  border: 1px solid var(--cc-border, #29332f);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--cc-panel, #171d1a) 86%, transparent);
+}
+
+.cc-cloud-artifacts-demo-message .catsco-brand-mark {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+}
+
+.cc-cloud-artifacts-demo-message strong {
+  color: var(--cc-text, #edf4f0);
+  font-size: 13px;
+}
+
+.cc-cloud-artifacts-demo-message p {
+  margin: 6px 0 0;
+  color: var(--cc-muted, #9aa8a1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.cc-cloud-artifacts-demo-panel {
+  min-width: 0;
+}
+
+@media (min-width: 1025px) {
+  .cc-cloud-artifacts-demo-workspace.has-preview {
+    grid-template-columns: minmax(0, 1fr) var(--cc-demo-panel-width);
+  }
+
+  .cc-cloud-artifacts-demo-workspace.is-cloud-panel-expanded {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.cc-cloud-artifacts-demo-workspace.is-cloud-panel-expanded > .cc-cloud-artifacts-demo-context {
+  display: none;
+}
+
+.cc-cloud-artifacts-demo-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 50px;
+  padding: 0 20px;
+  border-top: 1px solid var(--cc-border, #29332f);
+  background: var(--cc-panel, #171d1a);
+  color: var(--cc-muted, #9aa8a1);
+  font-size: 12px;
+}
+
+.cc-cloud-artifacts-demo-footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--cc-border-strong, #3e4c45);
+  border-radius: 8px;
+  background: var(--cc-control-surface, #202823);
+  color: var(--cc-text, #edf4f0);
+  cursor: pointer;
+  font: inherit;
+}
+
+.cc-cloud-artifacts-demo-footer button:hover {
+  border-color: var(--cc-accent, #46bd8c);
+  color: var(--cc-accent-text, #65d9b0);
+}
+
+@media (max-width: 1024px) {
+  .cc-cloud-artifacts-demo-topbar {
+    padding: 0 16px;
+  }
+
+  .cc-cloud-artifacts-demo-hint {
+    display: none;
+  }
+
+  .cc-cloud-artifacts-demo-context {
+    padding: 28px 20px;
+  }
+}
