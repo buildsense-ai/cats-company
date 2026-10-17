@@ -22,7 +22,7 @@ func TestAgentContextHistoryCarriesAttachmentAddressForCloudRead(t *testing.T) {
 	stored := `{"type":"file","payload":{"url":"/uploads/files/report.txt","name":"report.txt","size":12}}`
 	message := &types.Message{ID: 5, TopicID: "grp_80", FromUID: 7, MsgType: "file", Content: stored}
 
-	agentCopy := hub.agentContextHistoryAPIMessageForRecipient(42, message, users)
+	agentCopy := hub.agentContextHistoryAPIMessageForRecipient(42, message, users, nil)
 	if agentCopy == nil {
 		t.Fatal("agent context copy missing")
 	}
@@ -64,7 +64,7 @@ func TestAgentContextHistoryKeepsAttachmentWithoutPublicOrigin(t *testing.T) {
 		Content: `{"type":"file","payload":{"url":"/uploads/files/report.txt","name":"report.txt"}}`,
 	}
 
-	agentCopy := hub.agentContextHistoryAPIMessageForRecipient(42, message, users)
+	agentCopy := hub.agentContextHistoryAPIMessageForRecipient(42, message, users, nil)
 	if agentCopy == nil {
 		t.Fatal("agent context copy missing")
 	}
@@ -84,7 +84,7 @@ func TestAgentContextHistoryLeavesTextMessagesAlone(t *testing.T) {
 	hub := NewHub(&identityMessageStore{users: users}, nil)
 	message := &types.Message{ID: 7, TopicID: "grp_80", FromUID: 7, MsgType: "text", Content: "看下这个文件"}
 
-	agentCopy := hub.agentContextHistoryAPIMessageForRecipient(42, message, users)
+	agentCopy := hub.agentContextHistoryAPIMessageForRecipient(42, message, users, nil)
 	if agentCopy["content"] != "看下这个文件" {
 		t.Fatalf("text content changed: %#v", agentCopy["content"])
 	}

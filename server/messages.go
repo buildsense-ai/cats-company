@@ -1248,9 +1248,10 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		identityUsers := h.loadHistoryUsers(uid, rawMsgs)
+		mentionNames := h.mentionNamesForAgentContext(topicID, identityUsers)
 		msgs := make([]map[string]interface{}, 0, len(rawMsgs))
 		for _, message := range rawMsgs {
-			if formatted := h.hub.agentContextHistoryAPIMessageForRecipient(uid, message, identityUsers); formatted != nil {
+			if formatted := h.hub.agentContextHistoryAPIMessageForRecipient(uid, message, identityUsers, mentionNames); formatted != nil {
 				msgs = append(msgs, formatted)
 			}
 		}
@@ -1387,7 +1388,7 @@ func (h *MessageHandler) loadHistoryUsers(recipientUID int64, messages []*types.
 	return users
 }
 
-func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message *types.Message, identityUsers map[int64]*types.User) map[string]interface{} {
+func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message *types.Message, identityUsers map[int64]*types.User, mentionNames map[string]string) map[string]interface{} {
 	formatted := h.historyAPIMessageForRecipient(agentUID, message, identityUsers)
 	if formatted == nil || message == nil {
 		return nil
@@ -1395,8 +1396,17 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 
 	displayType, _ := formatted["type"].(string)
 	role := "user"
-	eligible := isDurableAgentContextMessage(message, displayType)
+	durable := isDurableAgentContextMessage(message, displayType)
+	eligible := durable
 	reason := "participant_message"
+	// Whether this is a peer's runtime traffic with nothing worth reading. This
+	// must use the fine-grained predicate, not `durable`: `durable` is false for
+	// any message that merely *contains* an internal block, so a peer's final
+	// answer wrapped as `thinking + assistant_text` counts as not-durable. Using
+	// it here would label that answer `other_agent_working`, and readers drop
+	// working traffic — silently losing the peer's actual reply. Only a message
+	// whose blocks are internal *and* carry no readable block is traffic.
+	peerWorking := isInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks)
 	if message.FromUID == agentUID {
 		role = "assistant"
 		reason = "current_agent_message"
@@ -1406,8 +1416,20 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 	} else if sender.AccountType == types.AccountBot {
 		role = "other_agent"
 		eligible = false
-		reason = "other_agent_message"
+		if peerWorking {
+			reason = "other_agent_working"
+		} else {
+			reason = "other_agent_message"
+		}
 	}
+
+	// A person's client resolves @usr<id> against its own member list, so it
+	// renders a name. A cloud Agent only ever sees the raw token, and peers end
+	// up guessing who was addressed from their own session file names. Rewrite
+	// the tokens to names on the Agent's read copy; the stored value and human
+	// readers keep the raw token they already resolve themselves. The
+	// structured `mentions` array stays raw so activation matching is unchanged.
+	withMentionNamesForAgentCopy(formatted, mentionNames)
 
 	mentions := structuredMentionsFromMessage(formatted)
 	if eligible && isGroupTopic(message.TopicID) && role == "user" && len(mentions) > 0 {
@@ -1546,6 +1568,144 @@ func mentionValues(raw interface{}) []string {
 	default:
 		return nil
 	}
+}
+
+// mentionNamesForAgentContext builds the `usr<id>` → display-name map used to
+// rewrite `@` tokens on an Agent's history read copy.
+//
+// The member list, not the page's senders, is the right source: a member who
+// has not spoken on this page is exactly who a peer cannot identify. Non-group
+// topics have no member list and no `@` addressing to resolve, so they get
+// nothing and the rewrite is a no-op there.
+func (h *MessageHandler) mentionNamesForAgentContext(topicID string, identityUsers map[int64]*types.User) map[string]string {
+	groupID := extractGroupID(topicID)
+	if groupID <= 0 || h == nil || h.db == nil {
+		return nil
+	}
+	members, err := h.db.GetGroupMembers(groupID)
+	if err != nil || len(members) == 0 {
+		return nil
+	}
+	names := make(map[string]string, len(members)+1)
+	for _, member := range members {
+		if member == nil || member.UserID <= 0 {
+			continue
+		}
+		if name := strings.TrimSpace(firstNonEmpty(member.DisplayName, member.Username)); name != "" {
+			names[formatUID(member.UserID)] = name
+		}
+	}
+	// A page sender missing from the member list (left the group, or a store
+	// without joined fields) still gets a name when identityUsers has one.
+	for uid, user := range identityUsers {
+		if uid <= 0 || user == nil {
+			continue
+		}
+		key := formatUID(uid)
+		if _, exists := names[key]; exists {
+			continue
+		}
+		if name := strings.TrimSpace(firstNonEmpty(user.DisplayName, user.Username)); name != "" {
+			names[key] = name
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	names[structuredMentionAllBots] = "所有人"
+	return names
+}
+
+// withMentionNamesForAgentCopy rewrites raw `@usr<id>` tokens into `@<name>` on
+// the Agent's read copy only.
+//
+// A person's client already resolves the token against its own member list, so
+// the raw form never reaches a human. A cloud Agent has no member list and only
+// sees the token, so peers end up identifying each other by scraping their own
+// session file names — on a live group, both Agents guessed who `@usr365` was
+// that way and said so in the room. The structured `mentions` array stays raw
+// (activation matching compares it against `usr<id>`), and the stored value and
+// human copies are untouched.
+//
+// `names` maps `usr<id>` (and the `all` sentinel) to a display name. It is built
+// once per history page by the caller: building it per message would repeat the
+// same work for every row, and a name map keyed off `identityUsers` alone would
+// miss every member who has not spoken on this page — exactly the case the
+// rewrite exists for.
+func withMentionNamesForAgentCopy(formatted map[string]interface{}, names map[string]string) {
+	if formatted == nil || len(names) == 0 {
+		return
+	}
+
+	if content, ok := formatted["content"].(string); ok && content != "" {
+		formatted["content"] = replaceMentionTokens(content, names)
+	}
+	switch blocks := formatted["content_blocks"].(type) {
+	case []types.ContentBlock:
+		next := make([]types.ContentBlock, len(blocks))
+		copy(next, blocks)
+		for index := range next {
+			if next[index].Type != "text" || next[index].Text == "" {
+				continue
+			}
+			next[index].Text = replaceMentionTokens(next[index].Text, names)
+		}
+		formatted["content_blocks"] = next
+	case []interface{}:
+		next := make([]interface{}, len(blocks))
+		copy(next, blocks)
+		for index, rawBlock := range next {
+			block, ok := rawBlock.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			text, ok := block["text"].(string)
+			if !ok || text == "" {
+				continue
+			}
+			replaced := make(map[string]interface{}, len(block))
+			for key, value := range block {
+				replaced[key] = value
+			}
+			replaced["text"] = replaceMentionTokens(text, names)
+			next[index] = replaced
+		}
+		formatted["content_blocks"] = next
+	}
+}
+
+// replaceMentionTokens swaps whole `@usr<id>` / `@all` tokens for their names.
+// Matching is boundary-aware so an id that is a prefix of a longer one (usr36
+// inside usr365) cannot be rewritten in its place.
+func replaceMentionTokens(text string, names map[string]string) string {
+	if text == "" || !strings.Contains(text, "@") {
+		return text
+	}
+	var builder strings.Builder
+	builder.Grow(len(text))
+	for index := 0; index < len(text); {
+		if text[index] != '@' {
+			builder.WriteByte(text[index])
+			index++
+			continue
+		}
+		end := index + 1
+		for end < len(text) && isMentionTokenChar(text[end]) {
+			end++
+		}
+		token := text[index+1 : end]
+		if name, ok := names[token]; ok {
+			builder.WriteString("@" + name)
+		} else {
+			builder.WriteString(text[index:end])
+		}
+		index = end
+	}
+	return builder.String()
+}
+
+func isMentionTokenChar(char byte) bool {
+	return (char >= '0' && char <= '9') || (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
 }
 
 func withStructuredMentionBlocks(blocks []types.ContentBlock, displayContent interface{}, mentions []string) []types.ContentBlock {
