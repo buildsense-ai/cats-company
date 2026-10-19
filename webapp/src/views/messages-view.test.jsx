@@ -3738,6 +3738,76 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('[data-working-only="true"]').dataset.executionState).toBe('completed');
   });
 
+  it('applies task_status to run-key-less working groups from the same sender', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 750, from_uid: 1, type: 'text', content: '执行长任务' },
+      // XiaoBa-style messages carry no run_id/turn_id metadata.
+      { id: 751, from_uid: 2, type: 'tool_use', content: 'read' },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    const currentState = () => container.querySelector('[data-working-only="true"]').dataset.executionState;
+    // A task from a different sender must not leak into this group.
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 9, run_id: 'xiaoba-9', state: 'failed',
+      updated_at: '2026-10-19T01:00:00Z' } }));
+    expect(currentState()).toBe('idle');
+    // The same sender's newest task drives the group even without run keys.
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'xiaoba-1', state: 'running',
+      updated_at: '2026-10-19T01:00:00Z' } }));
+    expect(currentState()).toBe('running');
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'xiaoba-1', state: 'completed',
+      updated_at: '2026-10-19T01:01:00Z' } }));
+    expect(currentState()).toBe('completed');
+  });
+
+  it('keeps an explicit run-keyed group on its own run even when another run finishes', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 760, from_uid: 1, type: 'text', content: '执行长任务' },
+      { id: 761, from_uid: 2, type: 'tool_use', content: 'read', metadata: { run_id: 'run-explicit' } },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    const currentState = () => container.querySelector('[data-working-only="true"]').dataset.executionState;
+    // A terminal event for a different run must not fall back onto this group.
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'run-other', state: 'completed',
+      updated_at: '2026-10-19T01:00:00Z' } }));
+    expect(currentState()).toBe('idle');
+  });
+
+  it('keeps a terminal state when a stale running event arrives afterwards', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 770, from_uid: 1, type: 'text', content: '执行' },
+      { id: 771, from_uid: 2, type: 'tool_use', content: 'read', metadata: { run_id: 'run-guard' } },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    const currentState = () => container.querySelector('[data-working-only="true"]').dataset.executionState;
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'run-guard', state: 'completed',
+      updated_at: '2026-10-19T01:00:00Z' } }));
+    expect(currentState()).toBe('completed');
+    // A reordered running event with a NEWER server timestamp must not resurrect the run.
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'run-guard', state: 'running',
+      updated_at: '2026-10-19T01:02:00Z' } }));
+    expect(currentState()).toBe('completed');
+  });
+
+  it('lets task_status hold the running state beyond the activity timeout', async () => {
+    vi.useFakeTimers();
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 780, from_uid: 1, type: 'text', content: '执行长任务' },
+      { id: 781, from_uid: 2, type: 'tool_use', content: 'read', metadata: { run_id: 'run-long' } },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    const currentState = () => container.querySelector('[data-working-only="true"]').dataset.executionState;
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'run-long', state: 'running',
+      updated_at: '2026-10-19T01:00:00Z' } }));
+    // Even without any further conversation activity, the running receipt keeps
+    // the group in the running state instead of decaying to idle.
+    await act(async () => { vi.advanceTimersByTime(60_000); });
+    expect(currentState()).toBe('running');
+  });
+
   it('reuses the pending liquid reply component through stream updates and the persisted final', async () => {
     document.documentElement.dataset.theme = 'liquid';
     api.getAgents.mockResolvedValueOnce({ agents: [{ uid: 2, is_bot: true, topic_id: 'p2p_1_2', display_name: '达芬奇' }] });

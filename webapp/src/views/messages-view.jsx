@@ -5769,17 +5769,36 @@ export default function MessagesView({
     if (stop) return stop.state;
     if (!latest && !runActive) return 'idle';
     if (conversationConnection !== 'connected') return conversationConnection;
-    if (task && ['idle', 'stale'].includes(task.state)) return 'idle';
+    if (task?.state === 'stale') return 'stale';
+    if (task?.state === 'idle') return 'idle';
     if (task?.state === 'waiting') return 'waiting';
+    // Publisher-backed task_status outranks the 30s conversation-activity
+    // guess: agents can stay silent between progress events far longer.
+    if (task?.state === 'running') return 'running';
     return runActive || (latest && conversationActivity[uid]) ? 'running' : 'idle';
   };
   function conversationTaskForGroup(group) {
     const uid = messageSenderIdentity(group.messages[0]);
+    let hasRunKey = false;
     for (const message of [...group.messages].reverse()) {
       const run = message.metadata?.run_id || assistantReplyTurnKey(message);
-      if (run && conversationTasks[`${uid}:${run}`]) return conversationTasks[`${uid}:${run}`];
+      if (!run) continue;
+      hasRunKey = true;
+      if (conversationTasks[`${uid}:${run}`]) return conversationTasks[`${uid}:${run}`];
     }
-    return null;
+    // Groups that carry explicit run/turn keys but match nothing belong to a
+    // different run, so they must not inherit an unrelated task status.
+    if (hasRunKey) return null;
+    // Fallback: publishers that do not stamp run_id on their messages
+    // (e.g. XiaoBa) still publish task_status events keyed by a synthetic
+    // run id. Match the server's per-topic aggregate semantics by picking
+    // the newest task from this sender.
+    let newest = null;
+    for (const [key, task] of Object.entries(conversationTasks)) {
+      if (!key.startsWith(`${uid}:`) || !task?.updated_at) continue;
+      if (!newest || Date.parse(task.updated_at) > Date.parse(newest.updated_at)) newest = task;
+    }
+    return newest;
   }
   const pendingConversationState = conversationConnection !== 'connected' ? conversationConnection
     : conversationActivity[`${parseUid(selectedAgent?.uid || selectedAgent?.id)}:waiting`] || peerTyping ? 'waiting' : 'idle';

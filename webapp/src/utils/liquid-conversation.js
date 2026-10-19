@@ -27,6 +27,11 @@ export function mergeConversationTaskStatus(current, status, topic) {
   const key = `${Number(status.source_uid)}:${status.run_id}`;
   const prior = current[key];
   if (prior && Date.parse(status.updated_at) <= Date.parse(prior.updated_at)) return current;
+  // Never let an active state resurrect a run that already reached a
+  // terminal state: mirrors the server's ErrConversationTaskRunTerminal
+  // rule and guards against HTTP-fallback reordering on the publisher.
+  if (prior && ['completed', 'failed', 'cancelled', 'stale'].includes(prior.state)
+    && ['running', 'waiting'].includes(status.state)) return current;
   return { ...current, [key]: status };
 }
 
@@ -51,5 +56,6 @@ export const EXECUTION_LABELS = {
   completed: '已完成',
   failed: '执行失败',
   cancelled: '已停止',
+  stale: '任务已自动中止',
   waiting: '等待 Agent 继续处理',
 };
