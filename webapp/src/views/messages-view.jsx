@@ -941,6 +941,21 @@ export default function MessagesView({
   const [conversationActivity, setConversationActivity] = useState({});
   const [conversationStops, setConversationStops] = useState([]);
   const [conversationTasks, setConversationTasks] = useState({});
+  const conversationTaskBindingsRef = useRef({ topic, bindings: new Map() });
+  const [conversationTaskExpiryRevision, setConversationTaskExpiryRevision] = useState(0);
+  // Expiry does not generate a server event. Render again at the next active
+  // receipt's deadline, including when no further messages arrive.
+  useEffect(() => {
+    const now = Date.now();
+    const expiries = Object.values(conversationTasks)
+      .filter(task => task.topic_id === topic && ['running', 'waiting'].includes(task.state))
+      .map(task => Date.parse(task.expires_at))
+      .filter(expiry => Number.isFinite(expiry) && expiry > now);
+    if (!expiries.length) return undefined;
+    const timer = setTimeout(() => setConversationTaskExpiryRevision(revision => revision + 1),
+      Math.min(Math.min(...expiries) - now, 2_147_483_647));
+    return () => clearTimeout(timer);
+  }, [conversationTasks, conversationTaskExpiryRevision, topic]);
   const [conversationNotice, setConversationNotice] = useState('');
   const reconnectingConversation = conversationConnection === 'reconnecting';
   useEffect(() => {
@@ -5749,6 +5764,37 @@ export default function MessagesView({
       }
     }
   });
+  // A sender-only receipt can be inferred for the current turn once. Keep that
+  // association when another turn starts, rather than rewriting every old group.
+  const conversationTaskBindings = new Map(conversationTaskBindingsRef.current.topic === topic
+    ? conversationTaskBindingsRef.current.bindings : []);
+  const latestHumanGroup = [...groupedMessages].reverse().find(group => group.type === 'text' && !group.assistantAuthored
+    && isFinalTextMessage(group.message));
+  const latestHumanMessage = latestHumanGroup?.sourceMessages?.at(-1) || latestHumanGroup?.message;
+  const latestHumanPromptKey = latestHumanMessage ? messageTurnIdentity(latestHumanMessage) : '';
+  for (const [uid, group] of latestConversationWorking) {
+    if (conversationTaskBindings.has(group.renderKey)
+      || group.messages.some(message => message.metadata?.run_id || assistantReplyTurnKey(message))) continue;
+    // A receipt arriving before the new turn's first working message must not
+    // attach to the previous prompt's group.
+    if (latestHumanPromptKey && group.fallbackTurnKey !== `${uid}:prompt:${latestHumanPromptKey}`) continue;
+    let newestKey = null;
+    for (const [key, task] of Object.entries(conversationTasks)) {
+      if (task.topic_id !== topic || !key.startsWith(`${uid}:`)) continue;
+      if (!newestKey || Date.parse(task.updated_at) > Date.parse(conversationTasks[newestKey].updated_at)) newestKey = key;
+    }
+    if (!newestKey || [...conversationTaskBindings.values()].includes(newestKey)) continue;
+    if (Date.parse(conversationTasks[newestKey].updated_at) < Date.parse(latestHumanMessage?.created_at)) continue;
+    conversationTaskBindings.set(group.renderKey, newestKey);
+  }
+  useLayoutEffect(() => {
+    conversationTaskBindingsRef.current = { topic, bindings: conversationTaskBindings };
+  });
+  const unexpiredConversationTask = (key) => {
+    const task = conversationTasks[key];
+    return task && ['running', 'waiting'].includes(task.state) && Date.parse(task.expires_at) <= Date.now()
+      ? null : task;
+  };
   const conversationExecutionState = (group) => {
     const uid = messageSenderIdentity(group.messages[0]);
     const task = conversationTaskForGroup(group);
@@ -5784,21 +5830,11 @@ export default function MessagesView({
       const run = message.metadata?.run_id || assistantReplyTurnKey(message);
       if (!run) continue;
       hasRunKey = true;
-      if (conversationTasks[`${uid}:${run}`]) return conversationTasks[`${uid}:${run}`];
+      if (conversationTasks[`${uid}:${run}`]) return unexpiredConversationTask(`${uid}:${run}`);
     }
-    // Groups that carry explicit run/turn keys but match nothing belong to a
-    // different run, so they must not inherit an unrelated task status.
-    if (hasRunKey) return null;
-    // Fallback: publishers that do not stamp run_id on their messages
-    // (e.g. XiaoBa) still publish task_status events keyed by a synthetic
-    // run id. Match the server's per-topic aggregate semantics by picking
-    // the newest task from this sender.
-    let newest = null;
-    for (const [key, task] of Object.entries(conversationTasks)) {
-      if (!key.startsWith(`${uid}:`) || !task?.updated_at) continue;
-      if (!newest || Date.parse(task.updated_at) > Date.parse(newest.updated_at)) newest = task;
-    }
-    return newest;
+    // Explicit run/turn keys never fall back to a different run. Unkeyed
+    // groups only consume the receipt already associated with their turn.
+    return hasRunKey ? null : unexpiredConversationTask(conversationTaskBindings.get(group.renderKey));
   }
   const pendingConversationState = conversationConnection !== 'connected' ? conversationConnection
     : conversationActivity[`${parseUid(selectedAgent?.uid || selectedAgent?.id)}:waiting`] || peerTyping ? 'waiting' : 'idle';
