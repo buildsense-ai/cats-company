@@ -941,7 +941,7 @@ export default function MessagesView({
   const [conversationActivity, setConversationActivity] = useState({});
   const [conversationStops, setConversationStops] = useState([]);
   const [conversationTasks, setConversationTasks] = useState({});
-  const conversationTaskBindingsRef = useRef({ topic, bindings: new Map() });
+  const conversationTaskBindingsRef = useRef({ topic, bindings: new Map(), owners: new Map() });
   const [conversationTaskExpiryRevision, setConversationTaskExpiryRevision] = useState(0);
   // Expiry does not generate a server event. Render again at the next active
   // receipt's deadline, including when no further messages arrive.
@@ -5764,17 +5764,18 @@ export default function MessagesView({
       }
     }
   });
-  // A sender-only receipt can be inferred for the current turn once. Keep that
-  // association when another turn starts, rather than rewriting every old group.
+  // Only the current turn can revise an inferred receipt association. Keep
+  // historical bindings and run ownership when later turns start.
   const conversationTaskBindings = new Map(conversationTaskBindingsRef.current.topic === topic
     ? conversationTaskBindingsRef.current.bindings : []);
+  const conversationTaskOwners = new Map(conversationTaskBindingsRef.current.topic === topic
+    ? conversationTaskBindingsRef.current.owners : []);
   const latestHumanGroup = [...groupedMessages].reverse().find(group => group.type === 'text' && !group.assistantAuthored
     && isFinalTextMessage(group.message));
   const latestHumanMessage = latestHumanGroup?.sourceMessages?.at(-1) || latestHumanGroup?.message;
   const latestHumanPromptKey = latestHumanMessage ? messageTurnIdentity(latestHumanMessage) : '';
   for (const [uid, group] of latestConversationWorking) {
-    if (conversationTaskBindings.has(group.renderKey)
-      || group.messages.some(message => message.metadata?.run_id || assistantReplyTurnKey(message))) continue;
+    if (group.messages.some(message => message.metadata?.run_id || assistantReplyTurnKey(message))) continue;
     // A receipt arriving before the new turn's first working message must not
     // attach to the previous prompt's group.
     if (latestHumanPromptKey && group.fallbackTurnKey !== `${uid}:prompt:${latestHumanPromptKey}`) continue;
@@ -5783,12 +5784,16 @@ export default function MessagesView({
       if (task.topic_id !== topic || !key.startsWith(`${uid}:`)) continue;
       if (!newestKey || Date.parse(task.updated_at) > Date.parse(conversationTasks[newestKey].updated_at)) newestKey = key;
     }
-    if (!newestKey || [...conversationTaskBindings.values()].includes(newestKey)) continue;
+    if (!newestKey) continue;
+    const owner = conversationTaskOwners.get(newestKey);
+    if (owner && owner !== group.renderKey) continue;
     if (Date.parse(conversationTasks[newestKey].updated_at) < Date.parse(latestHumanMessage?.created_at)) continue;
     conversationTaskBindings.set(group.renderKey, newestKey);
+    // A corrected inference must not free the previous run for another group.
+    conversationTaskOwners.set(newestKey, group.renderKey);
   }
   useLayoutEffect(() => {
-    conversationTaskBindingsRef.current = { topic, bindings: conversationTaskBindings };
+    conversationTaskBindingsRef.current = { topic, bindings: conversationTaskBindings, owners: conversationTaskOwners };
   });
   const unexpiredConversationTask = (key) => {
     const task = conversationTasks[key];

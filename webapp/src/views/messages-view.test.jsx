@@ -3791,6 +3791,104 @@ describe('MessagesView composer draft isolation', () => {
     expect(currentState()).toBe('completed');
   });
 
+  it('accepts a newer run when the current unkeyed working turn resumes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-19T01:00:00Z'));
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 901, from_uid: 1, type: 'text', content: 'execute task', created_at: '2026-10-19T01:00:00Z' },
+      { id: 902, from_uid: 2, type: 'tool_use', content: 'read', created_at: '2026-10-19T01:00:01Z' },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    const state = () => container.querySelector('[data-working-only="true"]').dataset.executionState;
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'first-attempt', state: 'failed',
+      updated_at: '2026-10-19T01:01:00Z' } }));
+    expect(state()).toBe('failed');
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'retry-attempt', state: 'running',
+      updated_at: '2026-10-19T01:02:00Z' } }));
+    await act(async () => wsHandler({ data: { topic: 'p2p_1_2', from: 'usr2', seq: 903, type: 'tool_use', content: 'retry read',
+      created_at: '2026-10-19T01:02:01Z' } }));
+    await act(async () => { vi.advanceTimersByTime(60_000); });
+    expect(state()).toBe('running');
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'retry-attempt', state: 'completed',
+      updated_at: '2026-10-19T01:03:00Z' } }));
+    expect(state()).toBe('completed');
+  });
+
+  it('corrects the current inferred binding after an older run is restored first', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    const summary = deferred();
+    api.getConversations.mockReturnValueOnce(summary.promise);
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 911, from_uid: 1, type: 'text', content: 'first request', created_at: '2026-10-19T01:00:00Z' },
+      { id: 912, from_uid: 2, type: 'tool_use', content: 'read', created_at: '2026-10-19T01:00:01Z' },
+      { id: 913, from_uid: 1, type: 'text', content: 'second request', created_at: '2026-10-19T01:01:00Z' },
+      { id: 914, from_uid: 2, type: 'tool_use', content: 'write', created_at: '2026-10-19T01:03:00Z' },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      summary.resolve({ conversations: [{ id: 'p2p_1_2', task_status: {
+        topic_id: 'p2p_1_2', source_uid: 2, run_id: 'first-run', state: 'completed', updated_at: '2026-10-19T01:02:00Z',
+      } }] });
+      await flushPromises();
+    });
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'second-run', state: 'running',
+      updated_at: '2026-10-19T01:03:00Z' } }));
+    const states = () => [...container.querySelectorAll('[data-working-only="true"]')].map(node => node.dataset.executionState);
+    expect(states()).toEqual(['idle', 'running']);
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'second-run', state: 'completed',
+      updated_at: '2026-10-19T01:04:00Z' } }));
+    expect(states()).toEqual(['idle', 'completed']);
+  });
+
+  it('does not let an older delayed snapshot replace the current run', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    const summary = deferred();
+    api.getConversations.mockReturnValueOnce(summary.promise);
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 921, from_uid: 1, type: 'text', content: 'request', created_at: '2026-10-19T01:00:00Z' },
+      { id: 922, from_uid: 2, type: 'tool_use', content: 'read' },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'current-run', state: 'running',
+      updated_at: '2026-10-19T01:03:00Z' } }));
+    await act(async () => {
+      summary.resolve({ conversations: [{ id: 'p2p_1_2', task_status: {
+        topic_id: 'p2p_1_2', source_uid: 2, run_id: 'old-run', state: 'completed', updated_at: '2026-10-19T01:02:00Z',
+      } }] });
+      await flushPromises();
+    });
+    expect(container.querySelector('[data-working-only="true"]').dataset.executionState).toBe('running');
+  });
+
+  it('keeps superseded inferred runs owned by their original group', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 931, from_uid: 1, type: 'text', content: 'request', created_at: '2026-10-19T01:00:00Z' },
+      { id: 932, from_uid: 2, type: 'tool_use', content: 'read', created_at: '2026-10-19T01:00:01Z' },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    for (const [run_id, state, updated_at] of [
+      ['first-attempt', 'failed', '2026-10-19T01:01:00Z'],
+      ['retry-attempt', 'running', '2026-10-19T01:02:00Z'],
+      ['retry-attempt', 'completed', '2026-10-19T01:03:00Z'],
+    ]) {
+      await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id, state, updated_at } }));
+    }
+    const states = () => [...container.querySelectorAll('[data-working-only="true"]')].map(node => node.dataset.executionState);
+    expect(states()).toEqual(['completed']);
+    await act(async () => wsHandler({ data: { topic: 'p2p_1_2', from: 'usr1', seq: 933, type: 'text', content: 'next request',
+      created_at: '2026-10-19T01:04:00Z' } }));
+    await act(async () => wsHandler({ data: { topic: 'p2p_1_2', from: 'usr2', seq: 934, type: 'tool_use', content: 'write',
+      created_at: '2026-10-19T01:04:01Z' } }));
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'first-attempt', state: 'failed',
+      updated_at: '2026-10-19T01:05:00Z' } }));
+    expect(states()).toEqual(['completed', 'running']);
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'next-run', state: 'completed',
+      updated_at: '2026-10-19T01:06:00Z' } }));
+    expect(states()).toEqual(['completed', 'completed']);
+  });
+
   it('lets task_status hold the running state beyond the activity timeout', async () => {
     vi.useFakeTimers();
     document.documentElement.dataset.theme = 'liquid';
