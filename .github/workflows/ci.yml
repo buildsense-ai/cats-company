@@ -81,6 +81,21 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      # 这些契约测试对每个用例都执行完整 migration（大量 DDL/COMMIT）。
+      # CI 库是纯临时的，关掉 fsync/WAL 持久化可显著缩短提交延迟，
+      # 不改变任何断言语义（崩溃恢复能力不在本 job 的验证范围内）。
+      - name: Tune PostgreSQL for throwaway CI data
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET fsync = off"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET synchronous_commit = off"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET full_page_writes = off"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET autovacuum = off"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "SELECT pg_reload_conf()"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW fsync"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW synchronous_commit"
+
       - name: Verify restricted MySQL schema failure
         env:
           MYSQL_CONTAINER_ID: ${{ job.services.mysql.id }}
@@ -121,11 +136,13 @@ jobs:
       - name: Test PostgreSQL SkillHub publication entries
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: |
-          # 全量契约先跑（无 race，快）；
-          go test ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1
-          # race 只覆盖并发/竞态相关用例，保留关键检测同时避免全量 race 的 4~5 分钟耗时。
-          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication.*(Concurren|Race|Fencing|Atomic|Replay|Recovery)' -count=1
+        run: go test ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1
+
+      - name: Test PostgreSQL SkillHub publication race hotspots
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        # race 只覆盖并发/竞态相关用例，保留关键检测同时避免全量 race 的 4~5 分钟耗时。
+        run: go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication.*(Concurren|Race|Fencing|Atomic|Replay|Recovery)' -count=1
 
       - name: Test PostgreSQL SkillHub dispatcher recovery
         env:
