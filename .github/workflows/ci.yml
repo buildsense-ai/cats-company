@@ -17,6 +17,31 @@ jobs:
     name: Backend tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Test backend
+        run: go test ./server/...
+
+      - name: Test race-sensitive concurrency
+        run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|CaptureTransport|Peer|CommitClient|CommitDispatcher|HumanCommit|CancellationTransport|CancellationDispatcher)' -count=1
+
+      - name: Scan Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+  # DB 契约测试独立成 job：与 backend（编译/单测/race/漏洞扫描）并行，
+  # 避免 4~5 分钟的单步把整体墙钟拖到 9 分钟。
+  backend_db:
+    name: Backend DB contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:18-alpine
@@ -56,9 +81,6 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Test backend
-        run: go test ./server/...
-
       - name: Verify restricted MySQL schema failure
         env:
           MYSQL_CONTAINER_ID: ${{ job.services.mysql.id }}
@@ -91,12 +113,6 @@ jobs:
           test -n "$CATS_SESSION_FORK_PG_TEST_DSN"
           go test ./server/db/postgres -run '^TestSessionForkPostgres' -count=1 -v
 
-      - name: Test race-sensitive concurrency
-        run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|CaptureTransport|Peer|CommitClient|CommitDispatcher|HumanCommit|CancellationTransport|CancellationDispatcher)' -count=1
-
-      - name: Scan Go vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-
       - name: Test PostgreSQL store contract
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
@@ -105,7 +121,11 @@ jobs:
       - name: Test PostgreSQL SkillHub publication entries
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1 -v
+        run: |
+          # 全量契约先跑（无 race，快）；
+          go test ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1
+          # race 只覆盖并发/竞态相关用例，保留关键检测同时避免全量 race 的 4~5 分钟耗时。
+          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication.*(Concurren|Race|Fencing|Atomic|Replay|Recovery)' -count=1
 
       - name: Test PostgreSQL SkillHub dispatcher recovery
         env:
@@ -404,6 +424,7 @@ jobs:
     if: ${{ always() }}
     needs:
       - backend
+      - backend_db
       - node_sdk
       - bot_example
       - shimo_worker
