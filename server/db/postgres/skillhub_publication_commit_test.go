@@ -52,6 +52,7 @@ func authorizeCommit(t *testing.T, db *Adapter, c store.SkillHubPublicationCommi
 	return p
 }
 func TestPostgresSkillHubPublicationCommitLifecycle(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, c, _ := commitFixture(t)
 	ctx := context.Background()
 	if _, err := db.AuthorizeSkillHubPublicationCommit(ctx, c); !errors.Is(err, store.ErrSkillHubPublicationConflict) {
@@ -91,6 +92,7 @@ func TestPostgresSkillHubPublicationCommitLifecycle(t *testing.T) {
 	}
 }
 func TestPostgresSkillHubPublicationCommitExactScope(t *testing.T) {
+	t.Parallel()
 	db, _, in, c, other := commitFixture(t)
 	ctx := context.Background()
 	if _, err := db.RecordSkillHubPublicationCommitIntent(ctx, other, c); !errors.Is(err, store.ErrSkillHubPublicationDenied) {
@@ -140,6 +142,7 @@ func TestPostgresSkillHubPublicationCommitExactScope(t *testing.T) {
 	}
 }
 func TestPostgresSkillHubPublicationCommitAuthorityAndHistory(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"cancel", "human_disabled", "bot_disabled", "bot_account_disabled", "transfer", "body"} {
 		t.Run(change, func(t *testing.T) {
 			for _, after := range []bool{false, true} {
@@ -193,6 +196,7 @@ func TestPostgresSkillHubPublicationCommitAuthorityAndHistory(t *testing.T) {
 	}
 }
 func TestPostgresSkillHubPublicationCommitConcurrency(t *testing.T) {
+	t.Parallel()
 	db, _, in, c, _ := commitFixture(t)
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -282,6 +286,7 @@ func TestPostgresSkillHubPublicationCommitConcurrency(t *testing.T) {
 	}
 }
 func TestPostgresSkillHubPublicationCommitMigrationAndGuards(t *testing.T) {
+	t.Parallel()
 	db, _, in, c, _ := commitFixture(t)
 	up, down := publicationCommitMigration(t, "up"), publicationCommitMigration(t, "down")
 	deliveryExec(t, db, commitDeliveryMigration(t, "down")) // reverse migration dependency order
@@ -325,6 +330,7 @@ func TestPostgresSkillHubPublicationCommitMigrationAndGuards(t *testing.T) {
 	}
 }
 func TestPostgresSkillHubPublicationCommitFailureAtomicity(t *testing.T) {
+	t.Parallel()
 	db, _, in, c, _ := commitFixture(t)
 	ctx := context.Background()
 	deliveryExec(t, db, commitDeliveryMigration(t, "down"))
@@ -353,6 +359,7 @@ func TestPostgresSkillHubPublicationCommitFailureAtomicity(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCommitRequiresReceiptAndRetainsEpoch(t *testing.T) {
+	t.Parallel()
 	db, _, in, other := uploadGrantFixture(t)
 	ctx := context.Background()
 	g, _ := issueUpload(t, db, in)

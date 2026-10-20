@@ -11,6 +11,7 @@ import (
 )
 
 func TestPostgresSkillHubPublicationIntrospectionIdentityAndReadOnly(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, _ := uploadGrantFixture(t)
 	g, token := issueUpload(t, db, in)
 	ctx := context.Background()
@@ -61,6 +62,7 @@ func TestPostgresSkillHubPublicationIntrospectionIdentityAndReadOnly(t *testing.
 }
 
 func TestPostgresSkillHubPublicationIntrospectionAuthority(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"cancel", "disabled", "transfer", "rebind", "reconnect", "expired", "rotate"} {
 		t.Run(mode, func(t *testing.T) {
 			db, _, in, other := uploadGrantFixture(t)
@@ -95,6 +97,7 @@ func TestPostgresSkillHubPublicationIntrospectionAuthority(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationIntrospectionConcurrentCancel(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	g, token := issueUpload(t, db, in)
 	start := make(chan struct{})

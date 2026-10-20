@@ -50,6 +50,7 @@ func TestSkillHubPublicationCaptureMigrationMatchesStartup(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCaptureRenumberedMigrationPreservesEvidence(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := captureFixture(t)
 	first := recordCaptureForTest(t, db, in)
 	u := uploadForCapture(in)
@@ -81,6 +82,7 @@ func TestPostgresSkillHubPublicationCaptureRenumberedMigrationPreservesEvidence(
 }
 
 func TestPostgresSkillHubPublicationCaptureRequiredAndImmutable(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, _ := captureFixture(t)
 	ctx := context.Background()
 	u := uploadForCapture(in)
@@ -135,6 +137,7 @@ func TestPostgresSkillHubPublicationCaptureRequiredAndImmutable(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCaptureReconnect(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := captureFixture(t)
 	ctx := context.Background()
 	first := recordCaptureForTest(t, db, in)
@@ -165,6 +168,7 @@ func TestPostgresSkillHubPublicationCaptureReconnect(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCaptureGrantSizeBoundary(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"startup", "migration"} {
 		t.Run(mode, func(t *testing.T) {
 			for _, size := range []int64{32*1024*1024 + 1, 75 * 1024 * 1024, 75*1024*1024 + 1} {
@@ -216,6 +220,7 @@ func TestPostgresSkillHubPublicationCaptureGrantSizeBoundary(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCaptureAuthority(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"unverified", "owner", "human_disabled", "bot_disabled", "body", "cancel", "source", "device", "install", "context"} {
 		t.Run(mode, func(t *testing.T) {
 			db, _, in, other := captureFixture(t)
@@ -258,6 +263,7 @@ func TestPostgresSkillHubPublicationCaptureAuthority(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCaptureConcurrentReplayAndCancel(t *testing.T) {
+	t.Parallel()
 	for _, cancelled := range []bool{false, true} {
 		db, _, in, _ := captureFixture(t)
 		ctx := context.Background()
@@ -312,6 +318,7 @@ func TestPostgresSkillHubPublicationCaptureConcurrentReplayAndCancel(t *testing.
 }
 
 func TestPostgresSkillHubPublicationCaptureWriteFailure(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := captureFixture(t)
 	deliveryExec(t, db, `CREATE FUNCTION fail_capture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic capture failure'; END $$;
 		CREATE TRIGGER fail_capture BEFORE INSERT ON skillhub_publication_captures FOR EACH ROW EXECUTE FUNCTION fail_capture();`)
@@ -327,6 +334,7 @@ func TestPostgresSkillHubPublicationCaptureWriteFailure(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCaptureRevokedReplay(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"cancel", "owner", "body", "disabled"} {
 		t.Run(mode, func(t *testing.T) {
 			db, _, in, other := captureFixture(t)
@@ -364,6 +372,7 @@ func TestPostgresSkillHubPublicationCaptureRevokedReplay(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCaptureConflictingRace(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := captureFixture(t)
 	ctx := context.Background()
 	start := make(chan struct{})
@@ -424,6 +433,7 @@ func seedLegacyUploadGrant(t *testing.T, db *Adapter, in store.SkillHubPublicati
 }
 
 func TestPostgresSkillHubPublicationCaptureMigrationNoBackfill(t *testing.T) {
+	t.Parallel()
 	for _, order := range []string{"sql_first", "startup_first"} {
 		t.Run(order, func(t *testing.T) {
 			db, _, in, _ := captureFixture(t)

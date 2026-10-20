@@ -36,6 +36,7 @@ func cloudStatusLedgerSnapshot(t *testing.T, db *Adapter, id string) string {
 }
 
 func TestPostgresSkillHubPublicationCloudStatusLifecycle(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, _ := uploadGrantFixture(t)
 	readCloudStatus(t, db, in.Binding.ActorUID, in.EntryID, "waiting_runtime", false)
 	g, _ := issueUpload(t, db, in)
@@ -74,6 +75,7 @@ func TestPostgresSkillHubPublicationCloudStatusLifecycle(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCloudStatusLateReceiptAfterCancellation(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	g, _ := issueUpload(t, db, in)
 	if _, err := db.CancelSkillHubPublicationEntry(context.Background(), in.Binding.ActorUID, in.EntryID); err != nil {
@@ -89,6 +91,7 @@ func TestPostgresSkillHubPublicationCloudStatusLateReceiptAfterCancellation(t *t
 }
 
 func TestPostgresSkillHubPublicationCloudStatusPrivacy(t *testing.T) {
+	t.Parallel()
 	db, _, in, other := uploadGrantFixture(t)
 	g, _ := issueUpload(t, db, in)
 	recordReceipt(t, db, receiptForGrant(g), false)
@@ -132,6 +135,7 @@ func TestPostgresSkillHubPublicationCloudStatusPrivacy(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCloudStatusConcurrentReceipt(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	g, _ := issueUpload(t, db, in)
 	// Reads may observe either committed side of the callback, without changing

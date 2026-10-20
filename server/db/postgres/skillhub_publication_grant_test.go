@@ -40,6 +40,7 @@ func ageUpload(t *testing.T, db *Adapter, id string, age string) {
 }
 
 func TestPostgresSkillHubPublicationUploadLifecycle(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, _ := uploadGrantFixture(t)
 	ctx := context.Background()
 	g, token := issueUpload(t, db, in)
@@ -104,6 +105,7 @@ func TestPostgresSkillHubPublicationUploadLifecycle(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationUploadScope(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	g, token := issueUpload(t, db, in)
 	ageUpload(t, db, in.EntryID, "6 seconds")
@@ -149,6 +151,7 @@ func TestPostgresSkillHubPublicationUploadScope(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationUploadAuthority(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"cancelled", "human disabled", "bot disabled", "owner transfer", "body changed", "reconnect"} {
 		t.Run(mode, func(t *testing.T) {
 			db, _, in, other := uploadGrantFixture(t)
@@ -198,6 +201,7 @@ func TestPostgresSkillHubPublicationUploadAuthority(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationUploadRequiresProbe(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	deliveryExec(t, db, `UPDATE skillhub_publication_outbox SET delivery_state='needs_user_action',last_code='publication.source_changed',source_verified_at=NULL WHERE entry_id=$1`, in.EntryID)
 	if _, _, err := db.IssueSkillHubPublicationUploadGrant(context.Background(), in); !errors.Is(err, store.ErrSkillHubPublicationDenied) {
@@ -215,6 +219,7 @@ func TestPostgresSkillHubPublicationUploadRequiresProbe(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationUploadConcurrentIssueAndCancel(t *testing.T) {
+	t.Parallel()
 	for _, cancelRequest := range []bool{false, true} {
 		db, _, in, _ := uploadGrantFixture(t)
 		start := make(chan struct{})
@@ -269,6 +274,7 @@ func TestPostgresSkillHubPublicationUploadConcurrentIssueAndCancel(t *testing.T)
 }
 
 func TestPostgresSkillHubPublicationUploadExpiryUsesDatabaseTime(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	g, token := issueUpload(t, db, in)
 	// A future issue time is invalid too; no caller supplied clock is accepted.
@@ -284,6 +290,7 @@ func TestPostgresSkillHubPublicationUploadExpiryUsesDatabaseTime(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationUploadWriteFailureAtomicity(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	deliveryExec(t, db, `CREATE FUNCTION reject_upload_grant() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN RAISE EXCEPTION 'synthetic grant failure'; END $$;

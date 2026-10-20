@@ -48,6 +48,7 @@ func confirmedCancellation() store.SkillHubPublicationCancellationOutcome {
 	return store.SkillHubPublicationCancellationOutcome{Kind: "confirmed", CancelledAt: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC), ObservedAt: time.Date(2026, 10, 19, 0, 0, 1, 0, time.UTC)}
 }
 func TestPostgresSkillHubPublicationCancelDeliveryLifecycle(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, _ := cancelDeliveryFixture(t)
 	ctx := context.Background()
 	before := cancellationIntentSnapshot(t, db, in.EntryID)
@@ -84,6 +85,7 @@ func TestPostgresSkillHubPublicationCancelDeliveryLifecycle(t *testing.T) {
 	}
 }
 func TestPostgresSkillHubPublicationCancelDeliveryLateReceiptAndScope(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"local_only", "waiting_receipt", "legacy"} {
 		t.Run(stage, func(t *testing.T) {
 			db, _, in, _ := uploadGrantFixture(t)
@@ -122,6 +124,7 @@ func TestPostgresSkillHubPublicationCancelDeliveryLateReceiptAndScope(t *testing
 	}
 }
 func TestPostgresSkillHubPublicationCancelDeliveryConcurrencyAndFencing(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := cancelDeliveryFixture(t)
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -163,6 +166,7 @@ func TestPostgresSkillHubPublicationCancelDeliveryConcurrencyAndFencing(t *testi
 	}
 }
 func TestPostgresSkillHubPublicationCancelDeliveryBudget(t *testing.T) {
+	t.Parallel()
 	for _, crash := range []bool{false, true} {
 		t.Run(map[bool]string{false: "responses", true: "crashes"}[crash], func(t *testing.T) {
 			db, _, in, _ := cancelDeliveryFixture(t)
@@ -197,6 +201,7 @@ func TestPostgresSkillHubPublicationCancelDeliveryBudget(t *testing.T) {
 	}
 }
 func TestPostgresSkillHubPublicationCancelDeliveryAuthorityAndConflict(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"confirmed", "not_found", "conflict"} {
 		t.Run(kind, func(t *testing.T) {
 			db, _, in, other := cancelDeliveryFixture(t)
@@ -230,6 +235,7 @@ func TestPostgresSkillHubPublicationCancelDeliveryAuthorityAndConflict(t *testin
 	}
 }
 func TestPostgresSkillHubPublicationCancelDeliveryMigrationAndGuards(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := cancelDeliveryFixture(t)
 	ctx := context.Background()
 	up, down := publicationCancelDeliveryMigration(t, "up"), publicationCancelDeliveryMigration(t, "down")
@@ -255,6 +261,7 @@ func TestPostgresSkillHubPublicationCancelDeliveryMigrationAndGuards(t *testing.
 	}
 }
 func TestPostgresSkillHubPublicationCancelDeliveryAtomicFailure(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := cancelDeliveryFixture(t)
 	ctx := context.Background()
 	deliveryExec(t, db, `CREATE FUNCTION fail_cancel_delivery() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fault'; END; $$;

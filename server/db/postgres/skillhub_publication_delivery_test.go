@@ -40,6 +40,7 @@ func deliveryClaim(t *testing.T, db *Adapter, id string, b store.SkillHubPublica
 }
 
 func TestPostgresSkillHubPublicationDeliveryPersistence(t *testing.T) {
+	t.Parallel()
 	db, dsn, id, b, _ := publicationDeliveryFixture(t)
 	ctx := context.Background()
 	ids, err := db.ListSkillHubPublicationDeliveries(ctx, b.BotUID, 32)
@@ -94,6 +95,7 @@ func TestPostgresSkillHubPublicationDeliveryPersistence(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationDeliveryReconnectFence(t *testing.T) {
+	t.Parallel()
 	db, dsn, id, b, _ := publicationDeliveryFixture(t)
 	ctx := context.Background()
 	old := deliveryClaim(t, db, id, b)
@@ -133,6 +135,7 @@ func TestPostgresSkillHubPublicationDeliveryReconnectFence(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationDeliveryConcurrentClaims(t *testing.T) {
+	t.Parallel()
 	db, dsn, id, b, _ := publicationDeliveryFixture(t)
 	other := &Adapter{}
 	if err := other.Open(dsn); err != nil {
@@ -173,6 +176,7 @@ func TestPostgresSkillHubPublicationDeliveryConcurrentClaims(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationDeliveryAuthority(t *testing.T) {
+	t.Parallel()
 	db, _, id, b, other := publicationDeliveryFixture(t)
 	ctx := context.Background()
 	l := deliveryClaim(t, db, id, b)
@@ -226,6 +230,7 @@ func TestPostgresSkillHubPublicationDeliveryAuthority(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationDeliveryReceiptRace(t *testing.T) {
+	t.Parallel()
 	db, _, id, b, _ := publicationDeliveryFixture(t)
 	l := deliveryClaim(t, db, id, b)
 	var wg sync.WaitGroup
@@ -248,6 +253,7 @@ func TestPostgresSkillHubPublicationDeliveryReceiptRace(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationDeliveryAuthorityRace(t *testing.T) {
+	t.Parallel()
 	for _, receipt := range []bool{false, true} {
 		db, _, id, b, other := publicationDeliveryFixture(t)
 		var lease *store.SkillHubPublicationDeliveryLeaseRecord
@@ -294,6 +300,7 @@ func TestPostgresSkillHubPublicationDeliveryAuthorityRace(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationDeliveryExpiredReceipt(t *testing.T) {
+	t.Parallel()
 	db, _, id, b, _ := publicationDeliveryFixture(t)
 	l := deliveryClaim(t, db, id, b)
 	deliveryExec(t, db, `UPDATE skillhub_publication_outbox SET lease_until=clock_timestamp()-INTERVAL '1 second' WHERE entry_id=$1`, id)
@@ -310,6 +317,7 @@ func TestPostgresSkillHubPublicationDeliveryExpiredReceipt(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationDeliveryRetries(t *testing.T) {
+	t.Parallel()
 	for _, crashLast := range []bool{false, true} {
 		db, _, id, b, _ := publicationDeliveryFixture(t)
 		ctx := context.Background()
@@ -359,6 +367,7 @@ func TestPostgresSkillHubPublicationDeliveryRetries(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationDeliveryRejectedAndCancelled(t *testing.T) {
+	t.Parallel()
 	db, _, id, b, _ := publicationDeliveryFixture(t)
 	ctx := context.Background()
 	cancelled, cancel := context.WithCancel(ctx)

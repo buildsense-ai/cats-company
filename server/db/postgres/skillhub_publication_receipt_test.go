@@ -33,6 +33,7 @@ func receiptSnapshot(t *testing.T, db *Adapter, id string) string {
 }
 
 func TestPostgresSkillHubPublicationReceiptRecovery(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, _ := uploadGrantFixture(t)
 	g, token := issueUpload(t, db, in)
 	r := receiptForGrant(g)
@@ -75,6 +76,7 @@ func TestPostgresSkillHubPublicationReceiptRecovery(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationReceiptStrictBindings(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	g, _ := issueUpload(t, db, in)
 	r := receiptForGrant(g)
@@ -125,6 +127,7 @@ func TestPostgresSkillHubPublicationReceiptStrictBindings(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationReceiptAfterAuthorityLoss(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"cancel", "human disabled", "transfer", "body changed", "disconnect"} {
 		t.Run(mode, func(t *testing.T) {
 			db, _, in, other := uploadGrantFixture(t)
@@ -160,6 +163,7 @@ func TestPostgresSkillHubPublicationReceiptAfterAuthorityLoss(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationReceiptConcurrentAndCancel(t *testing.T) {
+	t.Parallel()
 	for _, raceCancel := range []bool{false, true} {
 		db, _, in, _ := uploadGrantFixture(t)
 		g, _ := issueUpload(t, db, in)
@@ -215,6 +219,7 @@ func TestPostgresSkillHubPublicationReceiptConcurrentAndCancel(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationReceiptCrossEntryCollision(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	g, _ := issueUpload(t, db, in)
 	first := receiptForGrant(g)
@@ -249,6 +254,7 @@ func TestPostgresSkillHubPublicationReceiptCrossEntryCollision(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationReceiptAtomicFailureAndGuards(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	g, _ := issueUpload(t, db, in)
 	r := receiptForGrant(g)

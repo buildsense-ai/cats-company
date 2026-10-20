@@ -11,6 +11,7 @@ import (
 )
 
 func TestPostgresSkillHubPublicationCancellationLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"pending", "leased", "source_verified", "needs_user_action"} {
 		t.Run(phase, func(t *testing.T) {
 			db, dsn, id, b, _ := publicationDeliveryFixture(t)
@@ -94,6 +95,7 @@ func TestPostgresSkillHubPublicationCancellationLifecycle(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCancellationAuthority(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"friend", "bot", "disabled_actor", "transfer_original", "transfer_new", "disabled_bot", "rebound_bot"} {
 		t.Run(mode, func(t *testing.T) {
 			db, _, id, b, other := publicationDeliveryFixture(t)
@@ -137,6 +139,7 @@ func TestPostgresSkillHubPublicationCancellationAuthority(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCancellationConcurrentReceipt(t *testing.T) {
+	t.Parallel()
 	for i := 0; i < 6; i++ {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			db, dsn, id, b, _ := publicationDeliveryFixture(t)
@@ -177,6 +180,7 @@ func TestPostgresSkillHubPublicationCancellationConcurrentReceipt(t *testing.T) 
 }
 
 func TestPostgresSkillHubPublicationCancellationConcurrentClaim(t *testing.T) {
+	t.Parallel()
 	db, _, id, b, _ := publicationDeliveryFixture(t)
 	var wg sync.WaitGroup
 	start := make(chan struct{})

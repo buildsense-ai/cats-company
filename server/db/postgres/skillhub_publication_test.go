@@ -86,6 +86,7 @@ func publicationCounts(t *testing.T, db *Adapter, expected int) {
 }
 
 func TestPostgresSkillHubPublicationPersistence(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, other := publicationDatabase(t)
 	ctx := context.Background()
 	policy := store.SkillHubPublicationEntryPolicy{MaxEntries: 1, MaxEntriesPerActor: 1, MaxCreatesPerMinute: 1}
@@ -166,6 +167,7 @@ func TestPostgresSkillHubPublicationPersistence(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationAuthority(t *testing.T) {
+	t.Parallel()
 	db, _, in, other := publicationDatabase(t)
 	ctx := context.Background()
 	policy := store.DefaultSkillHubPublicationEntryPolicy()
@@ -207,6 +209,7 @@ func TestPostgresSkillHubPublicationAuthority(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationAtomicOutbox(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := publicationDatabase(t)
 	ctx := context.Background()
 	_, err := db.db.Exec(`CREATE FUNCTION reject_publication_event() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -236,6 +239,7 @@ func TestPostgresSkillHubPublicationAtomicOutbox(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationConcurrentReplay(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, _ := publicationDatabase(t)
 	second := &Adapter{}
 	if err := second.Open(dsn); err != nil {
@@ -296,6 +300,7 @@ func TestPostgresSkillHubPublicationConcurrentReplay(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationOwnerRace(t *testing.T) {
+	t.Parallel()
 	db, _, in, other := publicationDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -327,6 +332,7 @@ func TestPostgresSkillHubPublicationOwnerRace(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationRateAndCancellation(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := publicationDatabase(t)
 	ctx := context.Background()
 	policy := store.SkillHubPublicationEntryPolicy{MaxEntries: 10, MaxEntriesPerActor: 10, MaxCreatesPerMinute: 1}
@@ -349,6 +355,7 @@ func TestPostgresSkillHubPublicationRateAndCancellation(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationIdentityIsolation(t *testing.T) {
+	t.Parallel()
 	db, _, in, other := publicationDatabase(t)
 	ctx := context.Background()
 	policy := store.DefaultSkillHubPublicationEntryPolicy()

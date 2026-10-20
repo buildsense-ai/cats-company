@@ -23,6 +23,7 @@ func TestSkillHubPublicationCancelIntentMigrationMatchesStartup(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCancellationIntentMigration(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"new", "grant", "receipt", "legacy_cancelled"} {
 		t.Run(phase, func(t *testing.T) {
 			db, _, in, _ := uploadGrantFixture(t)
@@ -81,6 +82,7 @@ func TestPostgresSkillHubPublicationCancellationIntentMigration(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCancellationIntentMissingSchema(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	deliveryExec(t, db, publicationCancelDeliveryMigration(t, "down"))
 	deliveryExec(t, db, publicationCancelIntentMigration(t, "down"))

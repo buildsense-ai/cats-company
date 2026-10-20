@@ -25,6 +25,7 @@ func TestSkillHubPublicationDeliveryMigrationMatchesStartup(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationDeliveryMigration(t *testing.T) {
+	t.Parallel()
 	for _, order := range []string{"empty_sql", "historical_sql_first", "historical_startup_first"} {
 		t.Run(order, func(t *testing.T) {
 			db, _ := publicationEmptyDatabase(t)

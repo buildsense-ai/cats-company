@@ -9,6 +9,7 @@ import (
 )
 
 func TestPostgresSkillHubPublicationCommitContextPrivacyAndRecovery(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, c, other := commitFixture(t)
 	ctx := context.Background()
 	before := cloudStatusLedgerSnapshot(t, db, in.EntryID)
@@ -59,6 +60,7 @@ func TestPostgresSkillHubPublicationCommitContextPrivacyAndRecovery(t *testing.T
 }
 
 func TestPostgresSkillHubPublicationCommitContextMissingReceiptAndCancellation(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	ctx := context.Background()
 	s, err := db.GetSkillHubPublicationCommitContext(ctx, in.Binding.ActorUID, in.EntryID, true)

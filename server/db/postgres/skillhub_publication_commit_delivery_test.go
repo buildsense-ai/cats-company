@@ -36,6 +36,7 @@ func claimCommitDelivery(t *testing.T, db *Adapter, c store.SkillHubPublicationC
 	return l
 }
 func TestPostgresSkillHubPublicationCommitDeliveryLifecycleAndRecovery(t *testing.T) {
+	t.Parallel()
 	db, dsn, in, c, other := commitFixture(t)
 	ctx := context.Background()
 	if l, e := db.ClaimSkillHubPublicationCommitDelivery(ctx, commitDeliveryScope(c)); e != nil || l != nil {
@@ -90,6 +91,7 @@ func TestPostgresSkillHubPublicationCommitDeliveryLifecycleAndRecovery(t *testin
 }
 
 func TestPostgresSkillHubPublicationCommitDeliveryConcurrencyAndBudget(t *testing.T) {
+	t.Parallel()
 	db, _, in, c, _ := commitFixture(t)
 	ctx := context.Background()
 	recordCommit(t, db, in.Binding.ActorUID, c)
@@ -148,6 +150,7 @@ func TestPostgresSkillHubPublicationCommitDeliveryConcurrencyAndBudget(t *testin
 }
 
 func TestPostgresSkillHubPublicationCommitDeliveryMigrationAndTerminalEvidence(t *testing.T) {
+	t.Parallel()
 	db, _, in, c, _ := commitFixture(t)
 	ctx := context.Background()
 	down, up := commitDeliveryMigration(t, "down"), commitDeliveryMigration(t, "up")
@@ -190,6 +193,7 @@ func TestPostgresSkillHubPublicationCommitDeliveryMigrationAndTerminalEvidence(t
 }
 
 func TestPostgresSkillHubPublicationCommitDeliveryExpiryAndWriteFailure(t *testing.T) {
+	t.Parallel()
 	db, _, in, c, _ := commitFixture(t)
 	ctx := context.Background()
 	recordCommit(t, db, in.Binding.ActorUID, c)

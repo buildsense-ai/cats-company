@@ -19,6 +19,7 @@ func readPublicationStatus(t *testing.T, db *Adapter, uid int64, id, state strin
 }
 
 func TestPostgresSkillHubPublicationSourceStatusLifecycle(t *testing.T) {
+	t.Parallel()
 	db, dsn, id, b, _ := publicationDeliveryFixture(t)
 	s := readPublicationStatus(t, db, b.ActorUID, id, "pending", 0)
 	if s.LeaseUntil != nil || s.SourceVerifiedAt != nil || s.LastCode != "" {
@@ -58,6 +59,7 @@ func TestPostgresSkillHubPublicationSourceStatusLifecycle(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationSourceStatusReadDoesNotRecover(t *testing.T) {
+	t.Parallel()
 	db, _, id, b, _ := publicationDeliveryFixture(t)
 	deliveryClaim(t, db, id, b)
 	deliveryExec(t, db, `UPDATE skillhub_publication_outbox SET delivery_attempts=8,lease_until=clock_timestamp()-INTERVAL '1 second' WHERE entry_id=$1`, id)
@@ -87,6 +89,7 @@ func TestPostgresSkillHubPublicationSourceStatusReadDoesNotRecover(t *testing.T)
 }
 
 func TestPostgresSkillHubPublicationSourceStatusPrivacy(t *testing.T) {
+	t.Parallel()
 	db, _, id, b, other := publicationDeliveryFixture(t)
 	ctx := context.Background()
 	for _, uid := range []int64{other, b.BotUID, 999999} {
@@ -127,6 +130,7 @@ func TestPostgresSkillHubPublicationSourceStatusPrivacy(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationSourceStatusConcurrentReceipt(t *testing.T) {
+	t.Parallel()
 	db, _, id, b, _ := publicationDeliveryFixture(t)
 	lease := deliveryClaim(t, db, id, b)
 	var wg sync.WaitGroup

@@ -29,6 +29,7 @@ func cancellationIntentSnapshot(t *testing.T, db *Adapter, id string) string {
 }
 
 func TestPostgresSkillHubPublicationCancellationIntentLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"no_grant", "grant", "receipt"} {
 		t.Run(stage, func(t *testing.T) {
 			db, dsn, in, _ := uploadGrantFixture(t)
@@ -107,6 +108,7 @@ func TestPostgresSkillHubPublicationCancellationIntentLifecycle(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCancellationIntentAuthority(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"friend", "bot", "disabled_human", "transferred_original", "transferred_new", "disabled_bot", "rebound_bot"} {
 		t.Run(mode, func(t *testing.T) {
 			db, _, in, other := uploadGrantFixture(t)
@@ -149,6 +151,7 @@ func TestPostgresSkillHubPublicationCancellationIntentAuthority(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCancellationIntentHistoricalRead(t *testing.T) {
+	t.Parallel()
 	db, _, in, other := uploadGrantFixture(t)
 	g, _ := issueUpload(t, db, in)
 	first := requestCancelIntent(t, db, in.Binding.ActorUID, in.EntryID, "waiting_receipt")
@@ -187,6 +190,7 @@ func TestPostgresSkillHubPublicationCancellationIntentHistoricalRead(t *testing.
 }
 
 func TestPostgresSkillHubPublicationCancellationIntentConcurrentReceipt(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	g, _ := issueUpload(t, db, in)
 	ctx := context.Background()
@@ -231,6 +235,7 @@ func TestPostgresSkillHubPublicationCancellationIntentConcurrentReceipt(t *testi
 }
 
 func TestPostgresSkillHubPublicationCancellationIntentUploadRace(t *testing.T) {
+	t.Parallel()
 	for i := 0; i < 5; i++ {
 		db, _, in, _ := uploadGrantFixture(t)
 		ctx := context.Background()
@@ -264,6 +269,7 @@ func TestPostgresSkillHubPublicationCancellationIntentUploadRace(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationCancellationIntentAtomicFailure(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	ctx := context.Background()
 	deliveryExec(t, db, `CREATE FUNCTION fail_cancel_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected failure'; END; $$;
@@ -288,6 +294,7 @@ func TestPostgresSkillHubPublicationCancellationIntentAtomicFailure(t *testing.T
 }
 
 func TestPostgresSkillHubPublicationCancellationIntentGuardsAndLegacy(t *testing.T) {
+	t.Parallel()
 	db, _, in, _ := uploadGrantFixture(t)
 	ctx := context.Background()
 	if _, err := db.db.Exec(`INSERT INTO skillhub_publication_cancel_intents(entry_id,cancel_id,requires_cloud) VALUES($1,$2,false)`, in.EntryID, "pubcancel_"+strings.Repeat("1", 32)); err == nil {
