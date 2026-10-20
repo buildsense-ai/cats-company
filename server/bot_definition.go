@@ -222,6 +222,11 @@ func (h *BotDefinitionHandler) HandleOwnerServiceAgents(w http.ResponseWriter, r
 	if !ok {
 		return
 	}
+	// 内测门禁：与「Agent 工具」目录同一白名单；非白名单账号不可配置（普通用户无感）。
+	if !serviceCatalogUIDAllowed(ownerUID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "service catalog access denied"})
+		return
+	}
 	var req botDefinitionServiceAgentsPatchRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32*1024))
 	decoder.DisallowUnknownFields()

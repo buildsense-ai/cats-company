@@ -307,6 +307,7 @@ func TestBotDefinitionRejectsStaleRevisionAndNonOwner(t *testing.T) {
 }
 
 func TestBotDefinitionServiceAgentsUpdateAndNormalize(t *testing.T) {
+	t.Setenv("CATSCO_SERVICE_CATALOG_UID_WHITELIST", "7")
 	db := &botDefinitionTestStore{
 		owners: map[int64]int64{43: 7},
 		records: map[int64]*types.BotDefinitionRecord{
@@ -354,6 +355,18 @@ func TestBotDefinitionServiceAgentsUpdateAndNormalize(t *testing.T) {
 	}
 	if got := db.records[43].Definition.ServiceAgents; !reflect.DeepEqual(got, []string{"codex", "claude"}) {
 		t.Fatalf("stale write leaked: %v", got)
+	}
+
+	// 内测门禁：白名单外账号 → 403
+	t.Setenv("CATSCO_SERVICE_CATALOG_UID_WHITELIST", "99")
+	deniedReq := httptest.NewRequest(http.MethodPatch, "/api/bots/definition/service-agents?uid=43", strings.NewReader(
+		`{"revision":4,"serviceAgents":[]}`,
+	))
+	deniedReq = deniedReq.WithContext(context.WithValue(deniedReq.Context(), uidKey, int64(7)))
+	deniedRec := httptest.NewRecorder()
+	handler.HandleOwnerServiceAgents(deniedRec, deniedReq)
+	if deniedRec.Code != http.StatusForbidden {
+		t.Fatalf("denied status=%d body=%s", deniedRec.Code, deniedRec.Body.String())
 	}
 }
 

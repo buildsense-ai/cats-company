@@ -41,16 +41,33 @@ func NewServiceAgentCatalogHandler(st store.ServiceAgentStore) *ServiceAgentCata
 // NewServiceAgentCatalogHandlerFromEnv 按环境白名单构造（生产接线用）。
 func NewServiceAgentCatalogHandlerFromEnv(st store.ServiceAgentStore) *ServiceAgentCatalogHandler {
 	h := NewServiceAgentCatalogHandler(st)
-	for _, raw := range strings.Split(os.Getenv(serviceCatalogWhitelistEnv), ",") {
-		uid, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-		if err == nil && uid > 0 {
-			h.allowedUIDs = append(h.allowedUIDs, uid)
-		}
-	}
+	h.allowedUIDs = serviceCatalogAllowedUIDs()
 	return h
 }
 
 const serviceCatalogWhitelistEnv = "CATSCO_SERVICE_CATALOG_UID_WHITELIST"
+
+// serviceCatalogAllowedUIDs 解析白名单（逗号分隔；未配置/非法项忽略）。
+func serviceCatalogAllowedUIDs() []int64 {
+	var allowed []int64
+	for _, raw := range strings.Split(os.Getenv(serviceCatalogWhitelistEnv), ",") {
+		uid, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err == nil && uid > 0 {
+			allowed = append(allowed, uid)
+		}
+	}
+	return allowed
+}
+
+// serviceCatalogUIDAllowed 当前账号是否在 Agent 工具内测白名单内。
+func serviceCatalogUIDAllowed(uid int64) bool {
+	for _, id := range serviceCatalogAllowedUIDs() {
+		if id == uid {
+			return true
+		}
+	}
+	return false
+}
 
 func (h *ServiceAgentCatalogHandler) allows(uid int64) bool {
 	for _, id := range h.allowedUIDs {
