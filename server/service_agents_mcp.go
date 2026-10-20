@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // ServiceAgentsMCPHandler 是服务调用面的 MCP 端点（Streamable HTTP；设计 §3.3）。
@@ -26,8 +27,9 @@ import (
 // notifications/tools/list_changed；客户端亦可随时重查 tools/list（刷新兜底）。
 type ServiceAgentsMCPHandler struct {
 	store    store.ServiceAgentStore
-	balance  *ServiceBalanceChecker // 计费预检（可选；未设置=跳过，调用面单测不受影响）
-	syncWait time.Duration          // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
+	bots     ServiceAgentBotIdentity // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
+	balance  *ServiceBalanceChecker  // 计费预检（可选；未设置=跳过，调用面单测不受影响）
+	syncWait time.Duration           // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
 	http     *mcp.StreamableHTTPHandler
 
 	// liveMu/liveServers 跟踪每账号的在线 MCP 会话 server（getServer 每新会话调用一次，
@@ -58,6 +60,21 @@ func NewServiceAgentsMCPHandler(st store.ServiceAgentStore) *ServiceAgentsMCPHan
 // SetBalanceChecker 注入调用方额度预检（设计 §5.3；未注入=跳过预检）。
 func (h *ServiceAgentsMCPHandler) SetBalanceChecker(checker *ServiceBalanceChecker) {
 	h.balance = checker
+}
+
+// ServiceAgentBotIdentity 是调用面校验 bot 身份所需的最小存储接口（主库实现）。
+// 归属校验：bot 的 owner 必须是调用者；清单校验：bot 定义里若显式设了
+// serviceAgents，则该 agent 必须在内（nil=未限制，与 XiaoBa 侧过滤语义一致）。
+type ServiceAgentBotIdentity interface {
+	GetBotOwner(botUID int64) (int64, error)
+	GetBotDefinition(botUID int64) (*types.BotDefinitionRecord, error)
+}
+
+// SetBotIdentity 注入 bot 身份来源（设计 P1b：tools/call 携带 bot_uid）。
+// 未注入时，带 bot_uid（>0）的调用会被显式拒绝（bot_identity_unavailable），
+// 不会静默降级成账号级调用——避免归属与计费错位。
+func (h *ServiceAgentsMCPHandler) SetBotIdentity(identity ServiceAgentBotIdentity) {
+	h.bots = identity
 }
 
 func (h *ServiceAgentsMCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +214,7 @@ type serviceInvokeToolArgs struct {
 	Input       any    `json:"input,omitempty" jsonschema:"调用参数（任意 JSON）"`
 	SessionID   string `json:"session_id,omitempty" jsonschema:"续聊会话 id；不传=新会话"`
 	ClientToken string `json:"client_token,omitempty" jsonschema:"幂等键（同会话同 token 重发返回同一 run）"`
-	BotUID      int64  `json:"bot_uid,omitempty" jsonschema:"预留：bot 身份（当前不支持，须为 0）"`
+	BotUID      int64  `json:"bot_uid,omitempty" jsonschema:"调用方 bot 身份（可选）；传了就按该 bot 归属校验并写入会话"`
 }
 
 func (h *ServiceAgentsMCPHandler) addAgentTool(srv *mcp.Server, agent store.ServiceAgentDescriptor, callerUID int64) {
@@ -214,9 +231,11 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if callerUID == 0 {
 		return serviceToolError("unauthorized"), nil, nil
 	}
-	if args.BotUID != 0 {
-		// 归属校验（GetBot(owner)==caller）留待阶段 2 接线；本期显式拒绝而不是静默忽略。
-		return serviceToolError("bot_identity_not_supported"), nil, nil
+	// bot 身份（设计 P1b）：bot_uid=0 仍允许（账号级调用，兼容旧客户端）；
+	// >0 则必须归属本账号，且（若 bot 定义了工具清单）该 agent 在清单内。
+	botUID, botErr := h.resolveBotScope(ctx, callerUID, args.BotUID, agent.Slug)
+	if botErr != nil {
+		return botErr, nil, nil
 	}
 	if h.balance != nil {
 		if err := h.balance.Check(ctx, callerUID); err != nil {
@@ -237,7 +256,7 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if err != nil || len(input) == 0 || string(input) == "null" {
 		input = json.RawMessage(`{}`)
 	}
-	session, err := h.resolveSession(ctx, agent, callerUID, args.SessionID)
+	session, err := h.resolveSession(ctx, agent, callerUID, botUID, args.SessionID)
 	if err != nil {
 		if errors.Is(err, errServiceRunNotOwned) || errors.Is(err, store.ErrServiceSessionNotFound) {
 			return serviceToolError("session_not_found_or_not_owned"), nil, nil
@@ -257,7 +276,43 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds)
 }
 
-func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent store.ServiceAgentDescriptor, callerUID int64, sessionID string) (store.ServiceSession, error) {
+// resolveBotScope 校验可选的 bot 身份，返回要写进会话的 callerBotUID（0=账号级）。
+// 失败时返回可直接回给客户端的工具错误结果。
+func (h *ServiceAgentsMCPHandler) resolveBotScope(ctx context.Context, callerUID, botUID int64, agentSlug string) (int64, *mcp.CallToolResult) {
+	if botUID == 0 {
+		return 0, nil
+	}
+	if h.bots == nil {
+		return 0, serviceToolError("bot_identity_unavailable: 服务端未启用 bot 身份校验，请暂不要传 bot_uid")
+	}
+	owner, err := h.bots.GetBotOwner(botUID)
+	if err != nil {
+		return 0, serviceToolError("bot_not_found: 指定的 bot 不存在或已删除")
+	}
+	if owner != callerUID {
+		return 0, serviceToolError("bot_not_owned: 该 bot 不属于当前账号")
+	}
+	definition, err := h.bots.GetBotDefinition(botUID)
+	if err != nil || definition == nil {
+		// 清单是“该 bot 要哪几个工具”的偏好设置，不是访问控制——读取失败按不限制降级，不阻断调用。
+		if err != nil {
+			log.Printf("service mcp bot definition bot=%d caller=%d: %v", botUID, callerUID, err)
+		}
+		return botUID, nil
+	}
+	slugs := definition.Definition.ServiceAgents
+	if slugs == nil {
+		return botUID, nil // nil=未限制（账号可见全部）
+	}
+	for _, slug := range slugs {
+		if slug == agentSlug {
+			return botUID, nil
+		}
+	}
+	return 0, serviceToolError("agent_not_enabled_for_bot: 该 bot 的工具清单里没有这个应用（请在「Agent 工具」面板勾选后重试）")
+}
+
+func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent store.ServiceAgentDescriptor, callerUID, botUID int64, sessionID string) (store.ServiceSession, error) {
 	if sessionID == "" {
 		// 会话钉快照（设计 A §2）：建会话时固化当时最新包 hash；此后发布新包不影响本会话。
 		assetsHash := ""
@@ -266,7 +321,7 @@ func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent stor
 		} else {
 			log.Printf("service mcp pin package hash agent=%s: %v", agent.Slug, err)
 		}
-		id, err := h.store.CreateServiceSession(ctx, agent.ID, agent.Version, callerUID, 0, assetsHash)
+		id, err := h.store.CreateServiceSession(ctx, agent.ID, agent.Version, callerUID, botUID, assetsHash)
 		if err != nil {
 			return store.ServiceSession{}, err
 		}
@@ -276,7 +331,8 @@ func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent stor
 	if err != nil {
 		return store.ServiceSession{}, err
 	}
-	if session.CallerUID != callerUID || session.AgentID != agent.ID {
+	// 会话归属：账号一致且 bot 身份一致（账号级会话不能用 bot 身份续，反之亦然）。
+	if session.CallerUID != callerUID || session.AgentID != agent.ID || session.CallerBotUID != botUID {
 		return store.ServiceSession{}, errServiceRunNotOwned
 	}
 	return session, nil

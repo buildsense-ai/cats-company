@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // fakeServiceAgentStore 是 service 编排存储的内存假实现（MCP 面测试专用）。
@@ -756,5 +758,172 @@ func TestServiceAgentsMCPAwaitingInput(t *testing.T) {
 	}
 	if !statuses["awaiting_input"] || !statuses["completed"] {
 		t.Fatalf("receipt statuses = %v", statuses)
+	}
+}
+
+// ---- bot 身份（设计 P1b）：tools/call 可携带 bot_uid ----
+
+// fakeBotIdentity 是 ServiceAgentBotIdentity 的内存假实现。
+type fakeBotIdentity struct {
+	owners map[int64]int64
+	defs   map[int64]*types.BotDefinitionRecord
+}
+
+func (f *fakeBotIdentity) GetBotOwner(botUID int64) (int64, error) {
+	owner, ok := f.owners[botUID]
+	if !ok {
+		return 0, errors.New("bot not found")
+	}
+	return owner, nil
+}
+
+func (f *fakeBotIdentity) GetBotDefinition(botUID int64) (*types.BotDefinitionRecord, error) {
+	if def, ok := f.defs[botUID]; ok {
+		return def, nil
+	}
+	return nil, errors.New("bot definition not found")
+}
+
+func newFakeBotIdentity(botUID, owner int64, serviceAgents []string) *fakeBotIdentity {
+	return &fakeBotIdentity{
+		owners: map[int64]int64{botUID: owner},
+		defs: map[int64]*types.BotDefinitionRecord{
+			botUID: {Definition: types.BotDefinition{Schema: "xiaoba.bot-definition.v1", ServiceAgents: serviceAgents}, Exists: true},
+		},
+	}
+}
+
+func mcpToolErrorText(call *mcp.CallToolResult) string {
+	if call == nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, content := range call.Content {
+		if text, ok := content.(*mcp.TextContent); ok {
+			sb.WriteString(text.Text)
+		}
+	}
+	return sb.String()
+}
+
+// 只有主库注入 bot 身份时才允许携带 bot_uid；归属、清单、未接线三种拒绝路径都要显式。
+func TestServiceAgentsMCPBotIdentityScope(t *testing.T) {
+	const caller = int64(441)
+	cases := []struct {
+		name         string
+		botUID       int64
+		identity     *fakeBotIdentity
+		wireIdentity bool
+		wantCode     string
+		wantSessionB int64
+	}{
+		{name: "account level without bot_uid", botUID: 0, wantSessionB: 0},
+		{name: "owned bot without list", botUID: 7001, identity: newFakeBotIdentity(7001, caller, nil), wireIdentity: true, wantSessionB: 7001},
+		{name: "owned bot with slug in list", botUID: 7001, identity: newFakeBotIdentity(7001, caller, []string{"hello"}), wireIdentity: true, wantSessionB: 7001},
+		{name: "owned bot with slug missing from list", botUID: 7001, identity: newFakeBotIdentity(7001, caller, []string{"codex"}), wireIdentity: true, wantCode: "agent_not_enabled_for_bot"},
+		{name: "owned bot with empty list", botUID: 7001, identity: newFakeBotIdentity(7001, caller, []string{}), wireIdentity: true, wantCode: "agent_not_enabled_for_bot"},
+		{name: "bot owned by someone else", botUID: 7001, identity: newFakeBotIdentity(7001, 999, nil), wireIdentity: true, wantCode: "bot_not_owned"},
+		{name: "unknown bot", botUID: 7002, identity: newFakeBotIdentity(7001, caller, nil), wireIdentity: true, wantCode: "bot_not_found"},
+		{name: "identity not wired", botUID: 7001, wireIdentity: false, wantCode: "bot_identity_unavailable"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeServiceAgentStore()
+			st.autoCompleteAfter = 5 * time.Millisecond
+			handler := NewServiceAgentsMCPHandler(st)
+			if tc.wireIdentity {
+				handler.SetBotIdentity(tc.identity)
+			}
+			ts := httptest.NewServer(mcpAuthStub(caller, handler))
+			t.Cleanup(ts.Close)
+			session := newMCPSession(t, ts.URL)
+
+			args := map[string]any{"input": map[string]any{"topic": "x"}}
+			if tc.botUID != 0 {
+				args["bot_uid"] = tc.botUID
+			}
+			call, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "catsco_hello", Arguments: args})
+			if err != nil {
+				t.Fatalf("call tool: %v", err)
+			}
+
+			if tc.wantCode != "" {
+				if !call.IsError {
+					t.Fatalf("want tool error %q, got %+v", tc.wantCode, call.StructuredContent)
+				}
+				if text := mcpToolErrorText(call); !strings.Contains(text, tc.wantCode) {
+					t.Fatalf("error text = %q, want %q", text, tc.wantCode)
+				}
+				if len(st.sessions) != 0 {
+					t.Fatalf("rejected call must not create a session: %+v", st.sessions)
+				}
+				return
+			}
+
+			if call.IsError {
+				t.Fatalf("unexpected tool error: %s", mcpToolErrorText(call))
+			}
+			env := decodeServiceEnvelope(t, call.StructuredContent)
+			if env.SessionID == "" {
+				t.Fatalf("session id missing: %+v", env)
+			}
+			created, ok := st.sessions[env.SessionID]
+			if !ok {
+				t.Fatalf("session %s not stored", env.SessionID)
+			}
+			if created.CallerBotUID != tc.wantSessionB {
+				t.Fatalf("caller_bot_uid = %d, want %d", created.CallerBotUID, tc.wantSessionB)
+			}
+		})
+	}
+}
+
+// 会话与 bot 身份绑定：跨 bot 续聊、账号级会话用 bot 身份续聊，都必须拒绝。
+func TestServiceAgentsMCPBotSessionIsolation(t *testing.T) {
+	const caller = int64(441)
+	st := newFakeServiceAgentStore()
+	st.autoCompleteAfter = 5 * time.Millisecond
+	handler := NewServiceAgentsMCPHandler(st)
+	identity := newFakeBotIdentity(7001, caller, nil)
+	identity.owners[7002] = caller
+	identity.defs[7002] = identity.defs[7001]
+	handler.SetBotIdentity(identity)
+	ts := httptest.NewServer(mcpAuthStub(caller, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+	ctx := context.Background()
+
+	first, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "catsco_hello", Arguments: map[string]any{
+		"input": map[string]any{"step": 1}, "bot_uid": 7001,
+	}})
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if first.IsError {
+		t.Fatalf("first call error: %s", mcpToolErrorText(first))
+	}
+	env := decodeServiceEnvelope(t, first.StructuredContent)
+
+	// 换 bot 续聊
+	other, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "catsco_hello", Arguments: map[string]any{
+		"input": map[string]any{"step": 2}, "bot_uid": 7002, "session_id": env.SessionID,
+	}})
+	if err != nil {
+		t.Fatalf("other bot call: %v", err)
+	}
+	if !other.IsError || !strings.Contains(mcpToolErrorText(other), "session_not_found_or_not_owned") {
+		t.Fatalf("cross-bot continuation should be rejected: %+v / %s", other.StructuredContent, mcpToolErrorText(other))
+	}
+
+	// 去掉 bot_uid 续聊（账号级）
+	account, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "catsco_hello", Arguments: map[string]any{
+		"input": map[string]any{"step": 3}, "session_id": env.SessionID,
+	}})
+	if err != nil {
+		t.Fatalf("account call: %v", err)
+	}
+	if !account.IsError || !strings.Contains(mcpToolErrorText(account), "session_not_found_or_not_owned") {
+		t.Fatalf("account-level continuation of a bot session should be rejected: %s", mcpToolErrorText(account))
 	}
 }

@@ -937,6 +937,11 @@ func main() {
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
 		serviceAgentsMCPHandler.SetBalanceChecker(server.NewServiceBalanceCheckerFromEnv())
+		// bot 身份（设计 P1b）：tools/call 可携带 bot_uid，校验 owner==caller 与
+		// bot 定义的 serviceAgents 清单，并把 caller_bot_uid 落进会话。
+		if botIdentity, ok := db.(server.ServiceAgentBotIdentity); ok {
+			serviceAgentsMCPHandler.SetBotIdentity(botIdentity)
+		}
 		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
 		// 应用目录管理 API（设计 §3.3-9 目录与订阅）：网页 cats 的目录/管理界面数据面；
 		// 清单跟账号，变更即时同步在线 MCP 会话（list_changed）。
