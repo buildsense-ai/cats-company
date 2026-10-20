@@ -52,8 +52,9 @@ func TestMySQLServiceRunLedgerListAndRecord(t *testing.T) {
 		t.Fatalf("seed session: %v", err)
 	}
 	if _, err := db.db.ExecContext(ctx, `
-		INSERT INTO service_runs (run_id, session_id, state, usage_json, started_at, finished_at)
+		INSERT INTO service_runs (run_id, session_id, state, input_json, usage_json, started_at, finished_at)
 		VALUES ('run_ledger_m1', 'sess_ledger_m1', 'completed',
+		        JSON_OBJECT(),
 		        JSON_OBJECT('prompt_tokens', 1000, 'completion_tokens', 500),
 		        DATE_SUB(NOW(6), INTERVAL 3 SECOND), NOW(6))`); err != nil {
 		t.Fatalf("seed run: %v", err)
