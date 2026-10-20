@@ -176,3 +176,42 @@ X-Catsco-Signature: sha256=<hex(hmac_sha256(SECRET, body))>
 
 - 进程重启会丢失「已创建但未转发」的 run（需等 reaper 收尾）；后续可加启动扫描补齐
 - 只实现 `http`；`mcp`（对端 MCP server）留待 P3-b
+
+## 计费：谁调用谁付费、按量给
+
+设计 §4.5。agent 在 definition 里声明单价；未声明 = 免费（金额记 0，但调用关系与用量照记，便于后续定价回溯重算）。
+
+```jsonc
+"definition": {
+  "pricing": { "unit": "token",  "per_1k_tokens": 0.02, "currency": "CNY" }
+  // 也支持 {"unit":"run","per_run":0.05} / {"unit":"second","per_second":0.001}
+}
+```
+
+### 账本表 `service_run_ledger`
+
+每个终态 run 一行（`run_id` 主键 → 重扫幂等）：
+
+| 列 | 含义 |
+|---|---|
+| `payer_uid` | **调用者**（谁调用谁给钱） |
+| `payee_uid` | agent owner（`owner_kind=internal` → 0 = 平台自营） |
+| `gross_micros` / `fee_micros` / `net_micros` | 应付 / 平台抽成 / owner 应得，单位**微元**（1e-6 货币单位，整数避免浮点误差） |
+| `pricing_json` | 计价快照（与当时 definition 绑定，后续改价不影响历史账） |
+| `prompt_tokens` / `completion_tokens` / `duration_ms` | 实际用量（来自 run 的 `usage_json` 与 `started_at→finished_at`） |
+| `runner_type` | `codex` / `http`（外部执行后端） |
+
+### 怎么记
+
+**补账扫描**（`ServiceRunLedgerWriter`，30s 一轮），不埋点：扫「已终态 + 48h 内 + 无账本行」的 run，按会话钉定版本的 `pricing` 算钱后落行。原因：run 有 4 条终态路径（worker complete / awaiting_input / fail / 外部 runner），逐条埋点容易漏。
+
+### 平台抽成
+
+`CATS_SERVICE_PLATFORM_FEE_BPS`（万分比，默认 **0** = 全额归 agent owner）。
+`fee_micros = round(gross * bps / 10000)`，`net_micros = gross - fee`。
+
+### 边界
+
+- **只记账不动钱**：本表是结算的输入，真正扣费/入账读它另做
+- 未定价 agent：`gross=0`，但 `payer/payee/用量` 仍记录 → 后续定价可回溯重算
+- 扫描窗口 48h：更早的历史 run 不会自动补账（需要时用同一条 SQL 手工回填）

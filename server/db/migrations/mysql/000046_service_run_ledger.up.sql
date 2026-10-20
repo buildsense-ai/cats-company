@@ -1,0 +1,30 @@
+-- 000046_service_run_ledger (up, MySQL)
+-- run 级账本（设计 §4.5）：谁调用谁付费、按量计费。
+CREATE TABLE IF NOT EXISTS service_run_ledger (
+    run_id            VARCHAR(64) NOT NULL,
+    session_id        VARCHAR(64) NOT NULL,
+    agent_id          BIGINT NOT NULL,
+    agent_slug        VARCHAR(64) NOT NULL,
+    owner_kind        VARCHAR(16) NOT NULL DEFAULT 'internal',
+    owner_uid         BIGINT NOT NULL DEFAULT 0,
+    caller_uid        BIGINT NOT NULL,
+    caller_bot_uid    BIGINT NOT NULL DEFAULT 0,
+    runner_type       VARCHAR(16) NOT NULL DEFAULT 'codex',
+    status            VARCHAR(16) NOT NULL,
+    prompt_tokens     BIGINT NOT NULL DEFAULT 0,
+    completion_tokens BIGINT NOT NULL DEFAULT 0,
+    duration_ms       BIGINT NOT NULL DEFAULT 0,
+    pricing_json      JSON DEFAULT NULL,
+    currency          VARCHAR(8) NOT NULL DEFAULT 'CNY',
+    gross_micros      BIGINT NOT NULL DEFAULT 0,
+    fee_micros        BIGINT NOT NULL DEFAULT 0,
+    net_micros        BIGINT NOT NULL DEFAULT 0,
+    payer_uid         BIGINT NOT NULL DEFAULT 0,
+    payee_uid         BIGINT NOT NULL DEFAULT 0,
+    finished_at       TIMESTAMP(6) NOT NULL,
+    created_at        TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (run_id),
+    KEY idx_service_run_ledger_payer (payer_uid, finished_at),
+    KEY idx_service_run_ledger_payee (payee_uid, finished_at),
+    KEY idx_service_run_ledger_agent (agent_id, finished_at)
+);

@@ -149,6 +149,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateServiceRunsClientTokenBackfill,
 		migrateServiceRunReceiptsPendingIndex,
 		migrateServiceRunsCreatedAtIndex,
+		createServiceRunLedgerTable,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -638,6 +639,38 @@ CREATE TABLE IF NOT EXISTS service_run_receipts (
 // 待投递扫描索引（MySQL 无部分索引，退化为普通复合索引；重复创建走 1061 幂等忽略）。
 const migrateServiceRunReceiptsPendingIndex = `
 CREATE INDEX idx_service_run_receipts_pending ON service_run_receipts (delivered_at, created_at);
+`
+
+// run 级账本（000046 / 设计 §4.5）：谁调用谁付费、按量计费。
+const createServiceRunLedgerTable = `
+CREATE TABLE IF NOT EXISTS service_run_ledger (
+    run_id VARCHAR(64) NOT NULL,
+    session_id VARCHAR(64) NOT NULL,
+    agent_id BIGINT NOT NULL,
+    agent_slug VARCHAR(64) NOT NULL,
+    owner_kind VARCHAR(16) NOT NULL DEFAULT 'internal',
+    owner_uid BIGINT NOT NULL DEFAULT 0,
+    caller_uid BIGINT NOT NULL,
+    caller_bot_uid BIGINT NOT NULL DEFAULT 0,
+    runner_type VARCHAR(16) NOT NULL DEFAULT 'codex',
+    status VARCHAR(16) NOT NULL,
+    prompt_tokens BIGINT NOT NULL DEFAULT 0,
+    completion_tokens BIGINT NOT NULL DEFAULT 0,
+    duration_ms BIGINT NOT NULL DEFAULT 0,
+    pricing_json JSON NULL DEFAULT NULL,
+    currency VARCHAR(8) NOT NULL DEFAULT 'CNY',
+    gross_micros BIGINT NOT NULL DEFAULT 0,
+    fee_micros BIGINT NOT NULL DEFAULT 0,
+    net_micros BIGINT NOT NULL DEFAULT 0,
+    payer_uid BIGINT NOT NULL DEFAULT 0,
+    payee_uid BIGINT NOT NULL DEFAULT 0,
+    finished_at TIMESTAMP(6) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (run_id),
+    KEY idx_service_run_ledger_payer (payer_uid, finished_at),
+    KEY idx_service_run_ledger_payee (payee_uid, finished_at),
+    KEY idx_service_run_ledger_agent (agent_id, finished_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
 // 应用目录订阅清单（PG 000034 镜像；设计 §3.3-9："模式二：默认开放 + 个人清单"）。

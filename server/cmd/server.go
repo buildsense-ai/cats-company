@@ -972,6 +972,9 @@ func main() {
 		receiptDeliverer := server.NewServiceRunReceiptDeliverer(serviceAgentStore, hub)
 		serviceOrchestrator.SetReceiptKicker(receiptDeliverer)
 		go receiptDeliverer.Start(5 * time.Second)
+		// run 级账本（设计 §4.5）：谁调用谁付费、按量给。补账扫描，只记账不动钱。
+		ledgerWriter := server.NewServiceRunLedgerWriterFromEnv(serviceAgentStore)
+		go ledgerWriter.Start(30 * time.Second)
 	} else {
 		log.Printf("service agents MCP endpoint disabled: store does not implement ServiceAgentStore")
 	}

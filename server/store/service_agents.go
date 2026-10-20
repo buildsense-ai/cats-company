@@ -181,6 +181,11 @@ type ServiceAgentStore interface {
 	// StartServiceRun 把指定 run 从 submitted 推到 running 并写入租约（外部执行后端用）。
 	// 返回 false = 已被其他执行方接管或已终态（调用方应放弃本次执行）。
 	StartServiceRun(ctx context.Context, runID, instanceID string, leaseSeconds int) (bool, error)
+	// ---- run 级账本（设计 §4.5：谁调用谁付费、按量计费）----
+	// ListBillableServiceRuns 列出已终态但尚未记账的 run（含 agent/会话归属与定义快照）。
+	ListBillableServiceRuns(ctx context.Context, limit int) ([]ServiceRunBillable, error)
+	// RecordServiceRunLedger 写入一行账本；run 已记账 → (false, nil)（幂等）。
+	RecordServiceRunLedger(ctx context.Context, entry ServiceRunLedgerEntry) (bool, error)
 	RenewServiceLease(ctx context.Context, runID, instanceID string) (bool, error)
 	AppendServiceRunEvent(ctx context.Context, runID, typ string, payload json.RawMessage) (int64, error)
 	ListServiceRunEvents(ctx context.Context, runID string, afterSeq int64, limit int) ([]ServiceRunEventRecord, error)

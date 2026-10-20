@@ -314,6 +314,15 @@ func (f *fakeServiceAgentStore) StartServiceRun(_ context.Context, runID, instan
 	return true, nil
 }
 
+// ListBillableServiceRuns / RecordServiceRunLedger：默认空实现（账本用例用专属替身）。
+func (f *fakeServiceAgentStore) ListBillableServiceRuns(context.Context, int) ([]store.ServiceRunBillable, error) {
+	return nil, nil
+}
+
+func (f *fakeServiceAgentStore) RecordServiceRunLedger(context.Context, store.ServiceRunLedgerEntry) (bool, error) {
+	return false, nil
+}
+
 func (f *fakeServiceAgentStore) RenewServiceLease(context.Context, string, string) (bool, error) {
 	return false, nil
 }
