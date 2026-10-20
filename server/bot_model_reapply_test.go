@@ -222,6 +222,10 @@ func (s *botModelDefinitionTestStore) UpdateBotDefinitionSkills(botUID, expected
 	return nil, errors.New("not implemented")
 }
 
+func (s *botModelDefinitionTestStore) UpdateBotDefinitionServiceAgents(botUID, expectedRevision int64, serviceAgents []string) (*types.BotDefinitionRecord, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *botModelDefinitionTestStore) UpdateBotPromptVisibility(botUID int64, visibility types.BotPromptVisibility) (*types.BotDefinitionRecord, error) {
 	return nil, errors.New("not implemented")
 }
