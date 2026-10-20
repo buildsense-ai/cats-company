@@ -146,6 +146,8 @@ func (a *Adapter) CreateSchema() error {
 		createServiceAgentVersionsTable,
 		migrateServiceAgentVersionsAddPackageJson,
 		createServiceAgentVersionsAssetsHashIndex,
+		migrateServiceAgentsAddOwnership,
+		createServiceAgentsOwnerIndex,
 		createServiceSessionsTable,
 		createServiceRunsTable,
 		migrateServiceRunsClientTokenNullable,
@@ -502,6 +504,17 @@ ALTER TABLE service_agent_versions
 const createServiceAgentVersionsAssetsHashIndex = `
 CREATE INDEX IF NOT EXISTS idx_service_agent_versions_assets_hash
     ON service_agent_versions (assets_hash);`
+
+// 归属与可见性（设计 §4.3 P2）：internal=平台/运维发布，user=用户自助上架。
+const migrateServiceAgentsAddOwnership = `
+ALTER TABLE service_agents
+    ADD COLUMN IF NOT EXISTS owner_kind VARCHAR(16) NOT NULL DEFAULT 'internal',
+    ADD COLUMN IF NOT EXISTS owner_uid BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'public';`
+
+const createServiceAgentsOwnerIndex = `
+CREATE INDEX IF NOT EXISTS idx_service_agents_owner
+    ON service_agents (owner_uid);`
 
 const createServiceSessionsTable = `
 CREATE TABLE IF NOT EXISTS service_sessions (

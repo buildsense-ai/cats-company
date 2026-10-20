@@ -100,6 +100,10 @@ type serviceCatalogEntry struct {
 	Version               int64  `json:"version"`
 	AsyncThresholdSeconds int    `json:"async_threshold_seconds,omitempty"`
 	Hidden                bool   `json:"hidden"`
+	// 归属与可见性（设计 P2）：mine=true 表示当前账号是发布者。
+	OwnerKind  string `json:"owner_kind,omitempty"`
+	Mine       bool   `json:"mine"`
+	Visibility string `json:"visibility,omitempty"`
 }
 
 // ensureAllowed 内测门：非白名单账号管理 API 一律 403（静默功能不存在）。
@@ -137,6 +141,10 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 	}
 	entries := make([]serviceCatalogEntry, 0, len(agents))
 	for _, agent := range agents {
+		// 可见性（设计 L2）：private 只进 owner 自己的目录。
+		if !store.ServiceAgentVisibleTo(agent, uid) {
+			continue
+		}
 		_, blocked := hidden[agent.ID]
 		entries = append(entries, serviceCatalogEntry{
 			Slug:                  agent.Slug,
@@ -144,6 +152,9 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 			Version:               agent.Version,
 			AsyncThresholdSeconds: agent.AsyncThresholdSeconds,
 			Hidden:                blocked,
+			OwnerKind:             agent.OwnerKind,
+			Mine:                  agent.OwnerUID != 0 && agent.OwnerUID == uid,
+			Visibility:            agent.Visibility,
 		})
 	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"agents": entries})

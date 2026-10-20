@@ -89,3 +89,37 @@ relay 据此将用量归因到**调用方**额度（见 relay `service_tokens.py
 | `CATS_SERVICE_INSTANCE_TOKEN` | 实例访问编排内部 API 的 Bearer token（未配置 → 全部 401） |
 | `CATS_SERVICE_TOKEN_SECRET` | 服务 token HMAC 密钥（与 relay 同源） |
 | `CATS_RELAY_ADMIN_URL` / `CATS_RELAY_ADMIN_TOKEN` | 计费预检（relay admin；未配置 → 跳过预检） |
+
+## 用户自助上架（`POST /api/service-agents/publish`）
+
+设计 §4.3 P2。内部发布通道（`/internal/service-agents/{slug}/publish`，实例令牌）之外，
+真人账号可通过本条上架自己的 agent。
+
+- 鉴权：JWT + 内测白名单（与 `GET /api/service-agents/catalog` 同一套
+  `CATSCO_SERVICE_CATALOG_UID_WHITELIST`）。未在白名单 → 403。
+- 归属：首次发布即写入 `owner_uid`；之后只有本人能继续发版；
+  平台内部 slug（`owner_kind=internal`）不可抢占（409 `slug_reserved`），
+  他人已占（409 `slug_taken`）。
+- 版本：`package_hash = sha256(bundle)` 内容寻址，与内部通道共用版本/会话钉快照；
+  同内容重发幂等返回既有版本，`force=true` 可强制建新版本（回滚通道）。
+
+请求：
+
+```jsonc
+{
+  "slug": "my-helper",            // ^[a-z0-9][a-z0-9-]{1,63}$
+  "name": "我的助手",              // 可选，默认=slug，≤64 字
+  "visibility": "public",          // public（默认）| private（仅自己可见可调）
+  "definition": { "async_threshold_seconds": 30 },   // 可选，平台派生字段
+  "bundle_base64": "…",            // 必填，agent 包原文（≤20 MiB，可用 CATSCO_SERVICE_AGENT_MAX_BUNDLE_BYTES 调整）
+  "force": false
+}
+```
+
+响应：`{ "slug", "version", "package_hash", "visibility", "owner_uid" }`。
+
+可见性语义：`public` 进所有人目录并可被调用；`private` 只进 owner 自己的
+`tools/list` 与目录，别人即使知道 slug 也拿不到工具、硬调返回 `agent_not_found`。
+
+目录接口 `GET /api/service-agents/catalog` 的条目新增 `mine` / `owner_kind` /
+`visibility` 三个字段，便于前端区分「平台应用」与「我上架的」。

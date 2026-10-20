@@ -141,6 +141,10 @@ func (a *Adapter) CreateSchema() error {
 		migrateConversationTaskStatusSourcesUpdatedAtPrecision,
 		migrateServiceAgentVersionsAddPackageJson,
 		createServiceAgentVersionsAssetsHashIndex,
+		migrateServiceAgentsAddOwnership,
+		migrateServiceAgentsAddOwnerUID,
+		migrateServiceAgentsAddVisibility,
+		createServiceAgentsOwnerIndex,
 		migrateServiceRunsClientTokenNullable,
 		migrateServiceRunsClientTokenBackfill,
 		migrateServiceRunReceiptsPendingIndex,
@@ -499,6 +503,23 @@ CREATE TABLE IF NOT EXISTS service_agent_versions (
 // 云端包分发（MySQL 不入编号迁移系统，兼容修复内联）：老库补列 + hash 索引。
 const migrateServiceAgentVersionsAddPackageJson = `
 ALTER TABLE service_agent_versions ADD COLUMN package_json JSON DEFAULT NULL;
+`
+
+// 归属与可见性（设计 §4.3 P2）：internal=平台/运维发布，user=用户自助上架。
+const migrateServiceAgentsAddOwnership = `
+ALTER TABLE service_agents ADD COLUMN owner_kind VARCHAR(16) NOT NULL DEFAULT 'internal';
+`
+
+const migrateServiceAgentsAddOwnerUID = `
+ALTER TABLE service_agents ADD COLUMN owner_uid BIGINT NOT NULL DEFAULT 0;
+`
+
+const migrateServiceAgentsAddVisibility = `
+ALTER TABLE service_agents ADD COLUMN visibility VARCHAR(16) NOT NULL DEFAULT 'public';
+`
+
+const createServiceAgentsOwnerIndex = `
+CREATE INDEX idx_service_agents_owner ON service_agents (owner_uid);
 `
 
 const createServiceAgentVersionsAssetsHashIndex = `

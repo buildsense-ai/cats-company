@@ -120,6 +120,35 @@ type ServiceAgentDescriptor struct {
 	Name                  string
 	Version               int64
 	AsyncThresholdSeconds int
+	// 归属与可见性（设计 P2）：internal=平台/运维发布，user=用户自助上架。
+	OwnerKind  string
+	OwnerUID   int64
+	Visibility string
+}
+
+// Service agent 归属与可见性常量（设计 §4.3）。
+const (
+	ServiceAgentOwnerInternal = "internal"
+	ServiceAgentOwnerUser     = "user"
+
+	ServiceAgentVisibilityPublic  = "public"  // 目录可见，任何人可加/可调
+	ServiceAgentVisibilityPrivate = "private" // 仅 owner 自己可见可调（不出现在别人的目录）
+)
+
+var (
+	// ErrServiceAgentOwnedByOther 表示 slug 已被别的 owner 占用（用户自助上架撞名）。
+	ErrServiceAgentOwnedByOther = errors.New("service agent owned by another owner")
+	// ErrServiceAgentInternalReserved 表示用户试图抢占平台内部 agent 的 slug。
+	ErrServiceAgentInternalReserved = errors.New("service agent slug reserved for internal publishing")
+)
+
+// ServiceAgentVisibleTo 判断 agent 是否对调用者可见（目录过滤 + 调用准入共用）。
+// public 对所有人可见；其余（private）仅对 owner 本人可见。
+func ServiceAgentVisibleTo(agent ServiceAgentDescriptor, callerUID int64) bool {
+	if agent.Visibility == "" || agent.Visibility == ServiceAgentVisibilityPublic {
+		return true
+	}
+	return agent.OwnerUID != 0 && agent.OwnerUID == callerUID
 }
 
 // ServiceAgentStore 是服务调用面的编排存储（PG 主实现 + MySQL 镜像）。
@@ -135,6 +164,12 @@ type ServiceAgentStore interface {
 	// slug 不存在时用 name 自动注册新 agent（发布即上架，设计 A §3）；已存在且非 active → ErrServiceAgentNotFound。
 	// force=true 时同 hash 也建新版本（回滚通道：重发旧包 → 新版本指向旧内容）。
 	PublishServiceAgentPackage(ctx context.Context, slug, name string, definition json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (version int64, err error)
+	// ClaimServiceAgentOwnership 为用户自助上架占位 slug（设计 P2）。
+	//   - slug 不存在：以给定 owner/visibility 建立条目（state=active）；
+	//   - 已存在且 owner 匹配：更新 name/visibility；
+	//   - 已存在且 owner 不同（含平台 internal 条目）→ ErrServiceAgentOwnedByOther / ErrServiceAgentInternalReserved。
+	// 幂等：同一 owner 重复调用不报错（用于重复发布时刷新可见性）。
+	ClaimServiceAgentOwnership(ctx context.Context, slug, name, ownerKind string, ownerUID int64, visibility string) error
 	GetServiceAgentPackage(ctx context.Context, packageHash string) (bundle json.RawMessage, err error)
 	// GetServiceAgentPackageHash 返回该 agent 当前最新版本的 assets_hash（无包时为空串）。
 	GetServiceAgentPackageHash(ctx context.Context, agentID int64) (string, error)

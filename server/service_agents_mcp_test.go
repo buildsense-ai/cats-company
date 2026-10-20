@@ -110,8 +110,46 @@ func (f *fakeServiceAgentStore) GetServiceAgentPackage(_ context.Context, packag
 	return bundle, nil
 }
 
-func (f *fakeServiceAgentStore) GetServiceAgentPackageHash(_ context.Context, agentID int64) (string, error) {
+// ClaimServiceAgentOwnership 内存实现：不存在则建；owner 不同按 internal / 他人占用区分。
+func (f *fakeServiceAgentStore) ClaimServiceAgentOwnership(_ context.Context, slug, name, ownerKind string, ownerUID int64, visibility string) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if slug == "" {
+		return store.ErrServiceAgentNotFound
+	}
+	if name == "" {
+		name = slug
+	}
+	if ownerKind == "" {
+		ownerKind = store.ServiceAgentOwnerUser
+	}
+	if visibility == "" {
+		visibility = store.ServiceAgentVisibilityPublic
+	}
+	for i := range f.agents {
+		if f.agents[i].Slug != slug {
+			continue
+		}
+		cur := f.agents[i]
+		if cur.OwnerUID != ownerUID || (ownerKind == store.ServiceAgentOwnerUser && cur.OwnerKind != store.ServiceAgentOwnerUser) {
+			if cur.OwnerKind == store.ServiceAgentOwnerInternal || cur.OwnerUID == 0 {
+				return store.ErrServiceAgentInternalReserved
+			}
+			return store.ErrServiceAgentOwnedByOther
+		}
+		f.agents[i].Name = name
+		f.agents[i].Visibility = visibility
+		return nil
+	}
+	f.nextID++
+	f.agents = append(f.agents, store.ServiceAgentDescriptor{
+		ID: 1000 + f.nextID, Slug: slug, Name: name, Version: 1, AsyncThresholdSeconds: 60,
+		OwnerKind: ownerKind, OwnerUID: ownerUID, Visibility: visibility,
+	})
+	return nil
+}
+
+func (f *fakeServiceAgentStore) GetServiceAgentPackageHash(_ context.Context, agentID int64) (string, error) {	f.mu.Lock()
 	defer f.mu.Unlock()
 	versions := f.agentPackageVersions[agentID]
 	if len(versions) == 0 {

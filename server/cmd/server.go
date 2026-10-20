@@ -952,6 +952,10 @@ func main() {
 		mux.HandleFunc("GET /api/service-agents/catalog", jwtAuthWithDB(catalogHandler.HandleCatalog))
 		mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleAdd))
 		mux.HandleFunc("DELETE /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleRemove))
+		// 用户自助上架（设计 §4.3 P2）：JWT + 同一套内测白名单；首次发布占位 owner，
+		// 之后仅本人可继续发版；平台内部 slug 不可抢占。
+		publishHandler := server.NewServiceAgentPublishHandlerFromEnv(serviceAgentStore)
+		mux.HandleFunc("POST /api/service-agents/publish", jwtAuthWithDB(publishHandler.HandlePublish))
 		// Orchestration internal API for runtime instances (design §4.3; instances
 		// reach it over the shared VPC). Authn = per-instance bearer token
 		// (CATS_SERVICE_INSTANCE_TOKEN); service tokens are minted on claim with

@@ -97,17 +97,24 @@ func (h *ServiceAgentsMCPHandler) visibleServiceAgents(ctx context.Context, call
 	hiddenIDs, err := h.store.ListHiddenServiceAgentIDs(ctx, callerUID)
 	if err != nil {
 		log.Printf("service mcp list hidden agents uid=%d: %v", callerUID, err)
-		return agents
-	}
-	if len(hiddenIDs) == 0 {
-		return agents
+		// 只跳过「个人屏蔽」这一层过滤（它只是聚焦设置）；可见性过滤必须照旧执行。
+		return serviceAgentsVisibleOnly(agents, callerUID, nil)
 	}
 	hidden := make(map[int64]struct{}, len(hiddenIDs))
 	for _, id := range hiddenIDs {
 		hidden[id] = struct{}{}
 	}
+	return serviceAgentsVisibleOnly(agents, callerUID, hidden)
+}
+
+// serviceAgentsVisibleOnly 按可见性（+ 可选个人屏蔽集）过滤 agent 清单。
+func serviceAgentsVisibleOnly(agents []store.ServiceAgentDescriptor, callerUID int64, hidden map[int64]struct{}) []store.ServiceAgentDescriptor {
 	visible := make([]store.ServiceAgentDescriptor, 0, len(agents))
 	for _, agent := range agents {
+		// 可见性（设计 L2）：private 只对 owner 本人可见，不进别人的 tools/list。
+		if !store.ServiceAgentVisibleTo(agent, callerUID) {
+			continue
+		}
 		if _, blocked := hidden[agent.ID]; blocked {
 			continue
 		}
@@ -230,6 +237,10 @@ func (h *ServiceAgentsMCPHandler) addAgentTool(srv *mcp.Server, agent store.Serv
 func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.ServiceAgentDescriptor, callerUID int64, args serviceInvokeToolArgs) (*mcp.CallToolResult, any, error) {
 	if callerUID == 0 {
 		return serviceToolError("unauthorized"), nil, nil
+	}
+	// 可见性准入：private agent 即便被猜到 slug 也不能调用（tools/list 里也不会出现）。
+	if !store.ServiceAgentVisibleTo(agent, callerUID) {
+		return serviceToolError("agent_not_found"), nil, nil
 	}
 	// bot 身份（设计 P1b）：bot_uid=0 仍允许（账号级调用，兼容旧客户端）；
 	// >0 则必须归属本账号，且（若 bot 定义了工具清单）该 agent 在清单内。
