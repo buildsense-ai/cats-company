@@ -16,6 +16,8 @@ func seedHelloAgent(t *testing.T, db *Adapter) {
 	execRetireV4MigrationFile(t, db, "000033_service_run_receipts.up.sql")
 	// 目录订阅清单（000034）——与生产迁移顺序一致。
 	execRetireV4MigrationFile(t, db, "000034_service_agent_subscriptions.up.sql")
+	// 归属与可见性（000045）。
+	execRetireV4MigrationFile(t, db, "000045_service_agents_ownership.up.sql")
 }
 
 func agentID(t *testing.T, st *Adapter, slug string) int64 {

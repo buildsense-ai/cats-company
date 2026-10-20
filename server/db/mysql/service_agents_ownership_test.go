@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -41,6 +42,11 @@ func TestMySQLServiceAgentOwnershipClaim(t *testing.T) {
 	slug := strings.ReplaceAll(strings.ToLower(t.Name()), "_", "-")
 	if err := db.ClaimServiceAgentOwnership(ctx, slug, "归属测试", store.ServiceAgentOwnerUser, 441, store.ServiceAgentVisibilityPrivate); err != nil {
 		t.Fatalf("first claim: %v", err)
+	}
+	// 目录只列有包的 agent：发一个版本。
+	if _, err := db.PublishServiceAgentPackage(ctx, slug, "归属测试",
+		json.RawMessage(`{}`), strings.Repeat("cd", 32), json.RawMessage(`{"schema":"x"}`), false); err != nil {
+		t.Fatalf("publish: %v", err)
 	}
 
 	agents, err := db.ListServiceAgents(ctx)

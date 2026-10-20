@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -58,6 +59,11 @@ func TestServiceAgentOwnershipClaim(t *testing.T) {
 
 	if err := adapter.ClaimServiceAgentOwnership(ctx, slug, "归属测试", store.ServiceAgentOwnerUser, 441, store.ServiceAgentVisibilityPrivate); err != nil {
 		t.Fatalf("first claim: %v", err)
+	}
+	// 目录只列有包的 agent：发一个版本（与生产「先占位再发布」顺序一致）。
+	if _, err := adapter.PublishServiceAgentPackage(ctx, slug, "归属测试",
+		json.RawMessage(`{}`), strings.Repeat("cd", 32), json.RawMessage(`{"schema":"x"}`), false); err != nil {
+		t.Fatalf("publish: %v", err)
 	}
 
 	agents, err := adapter.ListServiceAgents(ctx)
