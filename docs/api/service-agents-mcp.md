@@ -123,3 +123,56 @@ relay 据此将用量归因到**调用方**额度（见 relay `service_tokens.py
 
 目录接口 `GET /api/service-agents/catalog` 的条目新增 `mine` / `owner_kind` /
 `visibility` 三个字段，便于前端区分「平台应用」与「我上架的」。
+
+## 外部执行后端（`runner.type=http`）
+
+设计 §4.4 / P3-a。用户在 agent definition 里声明 runner，run 由**用户自己的服务**执行，平台只负责转发、签名与结果回填：
+
+```jsonc
+{
+  "slug": "my-helper",
+  "definition": {
+    "async_threshold_seconds": 30,
+    "runner": { "type": "http", "url": "https://user.example/catsco/run", "timeout_seconds": 60 }
+  }
+  // 外部 runner 不需要代码包：bundle_base64 可省略（平台生成占位包占住内容寻址）
+}
+```
+
+### 转发契约 `catsco.service-run-request.v1`
+
+```http
+POST <runner.url>
+Content-Type: application/json
+X-Catsco-Run-Id: run_xxx
+X-Catsco-Signature: sha256=<hex(hmac_sha256(SECRET, body))>
+
+{"contract_version":"catsco.service-run-request.v1","run_id":"run_xxx","session_id":"sess_xxx",
+ "agent":"my-helper","caller_uid":441,"bot_uid":0,"input":{…},"deadline_ms":60000}
+```
+
+`SECRET` = 平台 env `CATS_SERVICE_EXTERNAL_RUNNER_SECRET`（**未配置时不转发**，避免无签名裸奔）。
+对端必须校验签名；`run_id` 可作为幂等键。
+
+### 对端应答（同一次 HTTP 响应）
+
+| `status` | 平台行为 |
+|---|---|
+| `completed` | 写 `result` 事件 + run → `completed`（附 `output` / `files` / `usage`） |
+| `awaiting_input` | run → `awaiting_input`（`output.question` 进入回执） |
+| `failed` | run → `failed`（`error` 文本落库） |
+| `running` | 保持 running，调用方用 `catsco_run_status` 轮询 |
+
+失败一律按**终态**处理：外部执行没有 worker 会接管重跑，标记可重试只会让 run 卡在 `orphaned`。对端可在自己内部重试，或让调用方重新发起 run。
+
+### 准入限制
+
+- 默认只接受 **https**；`CATS_SERVICE_EXTERNAL_ALLOW_HTTP=1` 放开（本地联调）
+- 默认拒绝 loopback / 私网 / 链路本地 / 组播地址（DNS 解析后逐 IP 校验）；`CATS_SERVICE_EXTERNAL_ALLOW_PRIVATE=1` 放开
+- 超时：`timeout_seconds`（默认 60s，封顶 10 分钟）
+- 已知残余风险：DNS rebinding（MVP 接受，后续可加固定解析/IP 白名单）
+
+### 已知限制
+
+- 进程重启会丢失「已创建但未转发」的 run（需等 reaper 收尾）；后续可加启动扫描补齐
+- 只实现 `http`；`mcp`（对端 MCP server）留待 P3-b

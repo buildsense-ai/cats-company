@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -128,6 +129,11 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 	if err != nil {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_bundle", "detail": err.Error()})
 		return
+	}
+	// 外部执行后端（runner.type=http/mcp）没有代码包：用确定性占位包占住内容寻址。
+	runnerSpec := ParseServiceAgentRunnerSpec(req.Definition)
+	if len(bundle) == 0 && runnerSpec != nil && runnerSpec.Type != "" && runnerSpec.Type != "codex" {
+		bundle = []byte(fmt.Sprintf(`{"schema":"catsco.service-agent.external.v1","slug":%q,"files":[]}`, slug))
 	}
 	if int64(len(bundle)) > h.maxBundle {
 		writeServiceJSON(w, http.StatusRequestEntityTooLarge, map[string]any{

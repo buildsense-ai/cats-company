@@ -297,6 +297,23 @@ func (f *fakeServiceAgentStore) ClaimServiceRuns(context.Context, string, int) (
 	return nil, nil
 }
 
+// StartServiceRun 内存实现：submitted → running（外部执行后端用）。
+func (f *fakeServiceAgentStore) StartServiceRun(_ context.Context, runID, instanceID string, _ int) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	run, ok := f.runs[runID]
+	if !ok {
+		return false, store.ErrServiceRunNotFound
+	}
+	if run.State != "submitted" {
+		return false, nil
+	}
+	run.State = "running"
+	run.InstanceID = instanceID
+	f.runs[runID] = run
+	return true, nil
+}
+
 func (f *fakeServiceAgentStore) RenewServiceLease(context.Context, string, string) (bool, error) {
 	return false, nil
 }

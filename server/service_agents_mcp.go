@@ -28,6 +28,7 @@ import (
 type ServiceAgentsMCPHandler struct {
 	store    store.ServiceAgentStore
 	bots     ServiceAgentBotIdentity // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
+	external *ServiceExternalRunner  // 外部执行后端（runner.type=http；可选）
 	balance  *ServiceBalanceChecker  // 计费预检（可选；未设置=跳过，调用面单测不受影响）
 	syncWait time.Duration           // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
 	http     *mcp.StreamableHTTPHandler
@@ -75,6 +76,12 @@ type ServiceAgentBotIdentity interface {
 // 不会静默降级成账号级调用——避免归属与计费错位。
 func (h *ServiceAgentsMCPHandler) SetBotIdentity(identity ServiceAgentBotIdentity) {
 	h.bots = identity
+}
+
+// SetExternalRunner 注入外部执行后端（设计 §4.4 P3-a）：声明了 runner.type=http 的
+// agent 由平台把 run 转发到用户 endpoint；未注入 = 只支持平台自带执行。
+func (h *ServiceAgentsMCPHandler) SetExternalRunner(runner *ServiceExternalRunner) {
+	h.external = runner
 }
 
 func (h *ServiceAgentsMCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -277,12 +284,17 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 		}
 		return serviceToolError(fmt.Sprintf("session_error: %v", err)), nil, nil
 	}
-	run, _, err := h.store.CreateServiceRunIdempotent(ctx, session.SessionID, args.ClientToken, input)
+	run, created, err := h.store.CreateServiceRunIdempotent(ctx, session.SessionID, args.ClientToken, input)
 	if err != nil {
 		if errors.Is(err, store.ErrServiceSessionBusy) {
 			return serviceToolError("session_busy: 同会话已有进行中的 run（可先查询 catsco_run_status）"), nil, nil
 		}
 		return serviceToolError(fmt.Sprintf("create_run_failed: %v", err)), nil, nil
+	}
+	if created {
+		// 外部执行后端（runner.type=http）：异步转发到用户 endpoint，结果写成 result 事件；
+		// 平台自带执行（codex）不声张，照旧由 worker claim。
+		h.external.MaybeDispatch(ctx, agent, run, callerUID, botUID)
 	}
 	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds)
 }

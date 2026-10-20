@@ -178,6 +178,9 @@ type ServiceAgentStore interface {
 	GetServiceRun(ctx context.Context, runID string) (ServiceRun, error)
 	CreateServiceRunIdempotent(ctx context.Context, sessionID, clientToken string, input json.RawMessage) (ServiceRun, bool, error)
 	ClaimServiceRuns(ctx context.Context, instanceID string, limit int) ([]ServiceRun, error)
+	// StartServiceRun 把指定 run 从 submitted 推到 running 并写入租约（外部执行后端用）。
+	// 返回 false = 已被其他执行方接管或已终态（调用方应放弃本次执行）。
+	StartServiceRun(ctx context.Context, runID, instanceID string, leaseSeconds int) (bool, error)
 	RenewServiceLease(ctx context.Context, runID, instanceID string) (bool, error)
 	AppendServiceRunEvent(ctx context.Context, runID, typ string, payload json.RawMessage) (int64, error)
 	ListServiceRunEvents(ctx context.Context, runID string, afterSeq int64, limit int) ([]ServiceRunEventRecord, error)
