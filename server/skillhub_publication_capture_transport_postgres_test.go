@@ -24,12 +24,21 @@ type captureTransportPostgresStore struct {
 	store.SkillHubPublicationEntryStore
 	store.SkillHubPublicationSourceStatusReader
 	store.SkillHubPublicationCaptureStore
+	store.SkillHubPublicationCaptureDeliveryStore
 	store.ConversationTaskGenerationStore
 }
 
 // Real Hub routing and PostgreSQL, synthetic runtime reply. This does not claim
 // a live XiaoBa capture, uploader, scheduling or end-to-end user acceptance.
 func TestSkillHubPublicationCaptureTransportPostgres(t *testing.T) {
+	testPublicationCapturePostgres(t, false)
+}
+
+func TestSkillHubPublicationCaptureDispatcherPostgres(t *testing.T) {
+	testPublicationCapturePostgres(t, true)
+}
+
+func testPublicationCapturePostgres(t *testing.T, scheduled bool) {
 	dsn := os.Getenv("CATS_PG_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set CATS_PG_TEST_DSN for capture transport persistence")
@@ -91,7 +100,7 @@ func TestSkillHubPublicationCaptureTransportPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		h := NewHub(&captureTransportPostgresStore{db, db, db, db, db}, nil)
+		h := NewHub(&captureTransportPostgresStore{db, db, db, db, db, db}, nil)
 		c := &Client{uid: bot, accountType: types.AccountBot, bodyID: "capture-body", installationID: "capture-install", send: make(chan []byte, 16)}
 		h.addClient(c)
 		if _, err := h.bodyLeases.acquire(bot, c.bodyID, c.connectionID); err != nil {
@@ -119,6 +128,69 @@ func TestSkillHubPublicationCaptureTransportPostgres(t *testing.T) {
 	}
 	if err := a.FinishSkillHubPublicationDelivery(context.Background(), *probe, ""); err != nil {
 		t.Fatal(err)
+	}
+	if scheduled {
+		t.Setenv("CATSCO_SKILLHUB_PUBLICATION_CAPTURE_DISPATCH_ENABLED", "true")
+		for _, transient := range []bool{true, false} {
+			// New dispatcher per iteration models process-local state loss.
+			w := newPublicationCaptureDispatcherFromEnv(h)
+			if w == nil {
+				t.Fatal("missing scheduler")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			done := make(chan error, 1)
+			go func() { done <- w.runOnce(ctx) }()
+			var msg ServerMessage
+			select {
+			case raw := <-c.send:
+				if err := json.Unmarshal(raw, &msg); err != nil || msg.ThinToolRPC == nil {
+					t.Fatal("capture request", err)
+				}
+			case err := <-done:
+				t.Fatal("dispatch ended before send", err)
+			case <-ctx.Done():
+				t.Fatal("dispatch timed out")
+			}
+			reply := captureReply(msg.ThinToolRPC)
+			reply.Result.(map[string]interface{})["entryId"] = entry.ID
+			if transient {
+				reply.Result = nil
+				reply.Error = &MsgDeviceRPCError{Code: "publication.runtime_unavailable", Message: "private upstream detail must not persist"}
+			}
+			h.handleThinToolRPCResult(c, reply)
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("finish timed out")
+			}
+			cancel()
+			status := 200
+			if transient {
+				status = 422
+			}
+			deliveryAckStatus(t, c, status)
+			var state string
+			var attempts int
+			if err := scoped.QueryRow(`SELECT state,attempts FROM skillhub_publication_capture_deliveries WHERE entry_id=$1`, entry.ID).Scan(&state, &attempts); err != nil {
+				t.Fatal(err)
+			}
+			wantState, wantAttempts := "captured", 2
+			if transient {
+				wantState, wantAttempts = "pending", 1
+			}
+			if state != wantState || attempts != wantAttempts {
+				t.Fatal("durable outcome", state, attempts)
+			}
+			if err := w.runOnce(context.Background()); err != nil || len(c.send) != 0 {
+				t.Fatal("backoff/evidence ignored", err)
+			}
+			if _, err := scoped.Exec(`UPDATE skillhub_publication_capture_deliveries SET next_attempt_at=clock_timestamp()-interval '1 second'`); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	call := func(h *Hub, c *Client, change bool, beforeReply func()) captureCallResult {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

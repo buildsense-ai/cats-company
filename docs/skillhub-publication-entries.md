@@ -1275,9 +1275,56 @@ a legacy grant. No new grants are backfilled or automatically issued.
 Tests explicitly seed trusted-runtime receipts where an upload is required;
 source-probe dispatch tests are **not** live capture tests. The Cloud commit-peer
 contract fixture must likewise record its actual captured digests when its CatsCo
-pin advances past this change. Live capture dispatch, authenticated runtime RPC,
-grant delivery and complete isolated publishing acceptance remain separate work.
-No production flag, capability, UI or background worker is enabled here.
+pin advances past this change. Authenticated Runtime capture RPC is implemented
+in XiaoBa PR546. The default-off scheduler below consumes that capability;
+upload grant delivery and complete isolated publishing acceptance remain separate
+work. No production flag, capability or UI is enabled here.
+
+### Durable capture scheduling
+
+`CATSCO_SKILLHUB_PUBLICATION_CAPTURE_DISPATCH_ENABLED` is a separate default-off
+gate. A worker is started only on the final server Hub, with an enabled capture
+transport (which also requires the workspace-entry and capture gates). Shutdown
+cancels and joins its goroutines. Unsupported stores have no in-memory fallback.
+No deployment configuration enables this gate.
+
+Every sweep visits up to 16 local Bots in rotating order, selects at most eight
+tasks, and uses at most four concurrent workers. A sweep is followed by a
+five-second pause. Selection has its own five-second deadline. Only the exact
+online owner/Bot/device/body/installation with capture capability is considered;
+offline or unsupported runtimes consume no attempt. SQL applies that scope
+before LIMIT and accepts only verified sources lacking immutable capture evidence.
+Each claim and receipt independently rechecks current authority.
+
+Migration 000044 and startup DDL add a separate durable capture-delivery ledger.
+An entry row lock serializes claims with cancellation and capture recording.
+Each claim has a fresh token, exact route binding, attempt and 40-second lease.
+The transport still has a 25-second deadline; the caller reserves five seconds
+before lease expiry for settlement. Retry backoff starts at five seconds and is
+exponential, capped at five minutes. At most eight transport attempts survive
+restarts; this is **not** the three-round format-repair budget.
+
+Only well-formed, bound runtime busy/timeout errors are transient. Malformed
+receipts and source/security rejections stop at `needs_attention`; raw runtime
+messages never enter the ledger or logs. Route loss and database/network failures
+are bounded retries. A stale finisher cannot change another lease. A persisted
+capture always removes the entry from scheduling, even if the process died before
+marking the lease finished. No source probe, successful send or timeout can
+fabricate capture evidence. Populated rollback refuses to erase retry history.
+
+Internal diagnostics use `skillhub_publication_capture_deliveries` for attempts
+and fixed codes and `skillhub_publication_captures` for authoritative evidence.
+If evidence exists, a stale `leased` diagnostic row only means the finishing ACK
+was lost. These internal states are not a published Skill, Cloud task, upload
+authorization or user-facing completion. Capture status projection and upload
+grant delivery are subsequent integration work; do not enable this worker as a
+standalone user release.
+
+Tests include real PostgreSQL restart/lease/exhaustion/migration checks and a
+real Hub plus PostgreSQL scheduler round trip with a **simulated runtime reply**.
+That contract covers busy → persisted backoff → rebuilt dispatcher → capture,
+not deployed XiaoBa upload or full publishing acceptance. CI runs the dispatcher
+and PostgreSQL cases with the race detector.
 
 Pure store tests cover bounded inputs, policies and immutable identity fields.
 HTTP tests use real signed JWTs and adapter doubles to cover active-human-only

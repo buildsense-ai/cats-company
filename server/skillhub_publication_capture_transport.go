@@ -82,7 +82,7 @@ func newPublicationCaptureTransport(h *Hub) *publicationCaptureTransport {
 }
 
 // CaptureSkillHubPublication is an internal service operation, not an HTTP,
-// browser/model tool or scheduler. It accepts only an existing entry and actor;
+// browser/model tool. The internal durable scheduler calls it with an entry and actor;
 // identity/source facts come from durable admission and the authenticated local
 // runtime. A caller's cancellation/lifecycle bounds the complete operation.
 // It never issues grants, uploads bytes, confirms intent or marks publication done.
@@ -266,6 +266,14 @@ func (w *publicationCaptureTransport) acceptResult(client *Client, msg *MsgThinT
 	}
 	r := publicationCaptureReply{client: client, id: msg.ID, err: store.ErrSkillHubPublicationInvalid}
 	result, ok := msg.Result.(map[string]interface{})
+	// Only a correctly bound, scalar error envelope may request a retry.
+	// Unknown/source/security errors and malformed envelopes remain terminal.
+	if msg.Error != nil && msg.Result == nil && msg.Type == thinToolRPCTypeResult &&
+		msg.ToolName == string(DeviceCapabilitySkillHubPublicationCapture) && msg.DeviceID == b.Source.DeviceID &&
+		msg.TargetDeviceID == b.Source.DeviceID && msg.TargetOwnerUserID == formatUID(b.ActorUID) && len(msg.Payload) == 0 &&
+		(msg.Error.Code == "publication.runtime_unavailable" || msg.Error.Code == "publication.runtime_timeout") {
+		r.err = store.ErrSkillHubPublicationBusy
+	}
 	if ok && msg.Error == nil && len(result) == 6 && result["schemaVersion"] == float64(1) && result["candidateRevision"] == float64(1) && result["entryId"] == p.entryID &&
 		msg.Type == thinToolRPCTypeResult && msg.ToolName == string(DeviceCapabilitySkillHubPublicationCapture) && msg.DeviceID == b.Source.DeviceID &&
 		msg.TargetDeviceID == b.Source.DeviceID && msg.TargetOwnerUserID == formatUID(b.ActorUID) && len(msg.Payload) == 0 {

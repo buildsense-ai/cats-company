@@ -65,6 +65,7 @@ func TestPostgresSkillHubPublicationMigration(t *testing.T) {
 			// Empty rollback is atomic and does not touch historical user/Bot data.
 			// Later FK-dependent tables must roll back first, just as migrate down
 			// would do. The applied 000028 migration remains unchanged.
+			exec(captureDeliveryMigration(t, "down"))
 			exec(captureMigration(t, "down"))
 			exec(commitDeliveryMigration(t, "down"))
 			exec(publicationCommitMigration(t, "down"))

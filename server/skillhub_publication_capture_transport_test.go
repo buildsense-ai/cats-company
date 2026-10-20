@@ -40,10 +40,17 @@ func (s *publicationCaptureTestStore) RecordSkillHubPublicationCapture(ctx conte
 }
 
 func newCaptureTransportFixture(t *testing.T) (*publicationWorkspaceFixture, *publicationCaptureTestStore) {
+	return newCaptureTransportFixtureWithStore(t, nil)
+}
+
+func newCaptureTransportFixtureWithStore(t *testing.T, wrap func(*publicationCaptureTestStore) store.Store) (*publicationWorkspaceFixture, *publicationCaptureTestStore) {
 	t.Helper()
 	var s *publicationCaptureTestStore
 	f := newPublicationWorkspaceFixtureWithStore(t, func(base *publicationWorkspaceTestStore) store.Store {
 		s = &publicationCaptureTestStore{publicationWorkspaceTestStore: base}
+		if wrap != nil {
+			return wrap(s)
+		}
 		return s
 	})
 	device, err := f.h.userDevices.register(7, RegisterUserDeviceRequest{BotUID: 42, DeviceID: f.device.DeviceID, BodyID: f.device.BodyID, InstallationID: f.device.InstallationID, RuntimeRole: "server", Status: "online", Capabilities: []string{string(DeviceCapabilitySkillHubPublicationProbe), string(DeviceCapabilitySkillHubPublicationCapture)}})

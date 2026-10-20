@@ -310,6 +310,8 @@ func main() {
 	publicationCtx, stopPublicationDelivery := context.WithCancel(context.Background())
 	defer stopPublicationDelivery()
 	go hub.RunPublicationDeliveries(publicationCtx)
+	stopCaptureDispatch := server.StartSkillHubPublicationCaptureDispatch(publicationCtx, hub)
+	defer stopCaptureDispatch()
 	stopCommitDispatch := server.StartSkillHubPublicationCommitDispatch(publicationCtx, db)
 	defer stopCommitDispatch()
 

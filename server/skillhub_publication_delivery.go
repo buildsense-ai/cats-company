@@ -161,16 +161,20 @@ type publicationDeliveryBot struct {
 // Only this node's authenticated Bot sockets are candidates. Never forward
 // private source selectors through Redis or synthesize an Owner Client.
 func (w *publicationDeliveryWorker) localBots() []publicationDeliveryBot {
-	w.h.mu.RLock()
+	return w.h.publicationLocalBots(w.cursor)
+}
+
+func (h *Hub) publicationLocalBots(cursor int64) []publicationDeliveryBot {
+	h.mu.RLock()
 	byUID := make(map[int64]publicationDeliveryBot)
-	for uid, clients := range w.h.clients {
+	for uid, clients := range h.clients {
 		for c := range clients {
 			if c.accountType == types.AccountBot && c.deviceConnector == nil && c.wikiAgentUID == 0 && c.deviceOwnerUID > 0 && c.deviceID != "" {
 				byUID[uid] = publicationDeliveryBot{uid, c.deviceOwnerUID, c.deviceID}
 			}
 		}
 	}
-	w.h.mu.RUnlock()
+	h.mu.RUnlock()
 	ids := make([]int64, 0, len(byUID))
 	for id := range byUID {
 		ids = append(ids, id)
@@ -179,7 +183,7 @@ func (w *publicationDeliveryWorker) localBots() []publicationDeliveryBot {
 	if len(ids) == 0 {
 		return nil
 	}
-	start := sort.Search(len(ids), func(i int) bool { return ids[i] > w.cursor })
+	start := sort.Search(len(ids), func(i int) bool { return ids[i] > cursor })
 	out := make([]publicationDeliveryBot, 0, publicationDeliveryBotBatch)
 	for i := 0; i < len(ids) && i < publicationDeliveryBotBatch; i++ {
 		out = append(out, byUID[ids[(start+i)%len(ids)]])
