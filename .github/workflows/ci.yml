@@ -38,6 +38,60 @@ jobs:
 
   # DB 契约测试独立成 job：与 backend（编译/单测/race/漏洞扫描）并行，
   # 避免 4~5 分钟的单步把整体墙钟拖到 9 分钟。
+  # publication 套件（88 个用例，全部并行化）是 DB 契约里最重的一块，
+  # 单独成 job 与 backend_db 并行，避免它串在所有其他契约后面拉长关键路径。
+  backend_publication:
+    name: Backend publication contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: cats_test
+          POSTGRES_USER: catsco
+          POSTGRES_PASSWORD: catsco_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U catsco -d cats_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Tune PostgreSQL for throwaway CI data
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET fsync = off"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET synchronous_commit = off"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET full_page_writes = off"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET autovacuum = off"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "SELECT pg_reload_conf()"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW fsync"
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW synchronous_commit"
+
+      - name: Test PostgreSQL SkillHub publication entries
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: go test ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1
+
+      - name: Test PostgreSQL SkillHub publication race hotspots
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        # race 只覆盖并发/竞态相关用例，保留关键检测同时避免全量 race 的 4~5 分钟耗时。
+        run: go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication.*(Concurren|Race|Fencing|Atomic|Replay|Recovery)' -count=1
+
   backend_db:
     name: Backend DB contracts
     runs-on: ubuntu-latest
@@ -132,17 +186,6 @@ jobs:
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test ./server/db/postgres -run 'TestPostgres(AdminUserSearch|StoreContract|CloudWorkerDeploymentContract|CommercialPlanManagement|CommercialPaymentContract|CommercialAdjustmentContract|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|CommercialNativeSearchFlashMigrationPreservesManualQuotaAndRollsBack|CommercialRetireV4FlashMigrationPreservesManualQuotaAndRollsBack|CommercialFreeImageModelsMigrationGrantsAndRollsBack|CommercialAutoRenewConfigAndRuns|CommercialRecordsBeyondFirstHundred|CommercialPublicModelsPreserveRenewalAndCustomQuota|CommercialImageModels|CommercialInviteRedeemerUIDs|ArtifactRuntimeEventSequenceFollowsCommitOrder|ArtifactAppMetadataPersistence)' -count=1 -v
-
-      - name: Test PostgreSQL SkillHub publication entries
-        env:
-          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: go test ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1
-
-      - name: Test PostgreSQL SkillHub publication race hotspots
-        env:
-          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        # race 只覆盖并发/竞态相关用例，保留关键检测同时避免全量 race 的 4~5 分钟耗时。
-        run: go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication.*(Concurren|Race|Fencing|Atomic|Replay|Recovery)' -count=1
 
       - name: Test PostgreSQL SkillHub dispatcher recovery
         env:
@@ -442,6 +485,7 @@ jobs:
     needs:
       - backend
       - backend_db
+      - backend_publication
       - node_sdk
       - bot_example
       - shimo_worker
