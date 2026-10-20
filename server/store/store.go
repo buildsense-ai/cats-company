@@ -411,6 +411,7 @@ type BotDefinitionStore interface {
 	UpdateBotDefinitionModel(botUID, expectedRevision int64, model types.BotDefinitionModel) (*types.BotDefinitionRecord, error)
 	UpdateBotDefinitionPrompt(botUID, expectedRevision int64, prompt types.BotPromptDefinition) (*types.BotDefinitionRecord, error)
 	UpdateBotDefinitionSkills(botUID, expectedRevision int64, skills []types.BotSkillRef) (*types.BotDefinitionRecord, error)
+	UpdateBotDefinitionServiceAgents(botUID, expectedRevision int64, serviceAgents []string) (*types.BotDefinitionRecord, error)
 	UpdateBotPromptVisibility(botUID int64, visibility types.BotPromptVisibility) (*types.BotDefinitionRecord, error)
 	ReportBotDefaultPrompt(botUID int64, snapshot types.BotDefaultPromptSnapshot) (*types.BotDefinitionRecord, bool, error)
 	AckBotDefinition(botUID, revision int64, applyError string) (*types.BotDefinitionRecord, error)

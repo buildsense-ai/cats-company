@@ -1060,6 +1060,7 @@ func main() {
 	mux.HandleFunc("/api/bots/definition/prompt", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPrompt))
 	mux.HandleFunc("/api/bots/definition/prompt-visibility", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPromptVisibility))
 	mux.HandleFunc("/api/bots/definition/skills", ownerAuthWithDB(botDefinitionHandler.HandleOwnerSkills))
+	mux.HandleFunc("/api/bots/definition/service-agents", ownerAuthWithDB(botDefinitionHandler.HandleOwnerServiceAgents))
 	mux.HandleFunc("/api/agents/prompt", jwtAuthWithDB(botDefinitionHandler.HandleViewerPrompt))
 	mux.HandleFunc("/api/agents/skills", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkills))
 	mux.HandleFunc("/api/agents/skill-versions", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkillHistory))

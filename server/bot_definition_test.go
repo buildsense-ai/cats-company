@@ -117,6 +117,28 @@ func (s *botDefinitionTestStore) UpdateBotDefinitionSkills(
 	return cloneBotDefinitionRecord(record), nil
 }
 
+func (s *botDefinitionTestStore) UpdateBotDefinitionServiceAgents(
+	botUID, expectedRevision int64,
+	serviceAgents []string,
+) (*types.BotDefinitionRecord, error) {
+	record := s.ensure(botUID)
+	if expectedRevision >= 0 && expectedRevision != record.Runtime.DesiredRevision {
+		return nil, store.ErrStaleBotModelRevision
+	}
+	if reflect.DeepEqual(record.Definition.ServiceAgents, serviceAgents) {
+		return cloneBotDefinitionRecord(record), nil
+	}
+	record.Definition.ServiceAgents = append([]string(nil), serviceAgents...)
+	if record.Definition.Model.Kind == "" {
+		record.Definition.Model = types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"}
+	}
+	if record.Definition.Prompt == nil {
+		record.Definition.Prompt = &types.BotPromptDefinition{Selected: "default"}
+	}
+	record.Runtime.DesiredRevision++
+	return cloneBotDefinitionRecord(record), nil
+}
+
 func (s *botDefinitionTestStore) UpdateBotPromptVisibility(
 	botUID int64,
 	visibility types.BotPromptVisibility,
@@ -281,6 +303,57 @@ func TestBotDefinitionRejectsStaleRevisionAndNonOwner(t *testing.T) {
 	handler.HandleOwnerDefinition(friendRec, friendReq)
 	if friendRec.Code != http.StatusForbidden {
 		t.Fatalf("friend status=%d body=%s", friendRec.Code, friendRec.Body.String())
+	}
+}
+
+func TestBotDefinitionServiceAgentsUpdateAndNormalize(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners: map[int64]int64{43: 7},
+		records: map[int64]*types.BotDefinitionRecord{
+			43: {
+				Definition: types.BotDefinition{
+					Schema: types.BotDefinitionSchema,
+					BotID:  "43",
+					Model:  types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"},
+					Prompt: &types.BotPromptDefinition{Selected: "default"},
+				},
+				Runtime: types.BotDefinitionRuntime{DesiredRevision: 3},
+				Exists:  true,
+			},
+		},
+	}
+	models := &botModelConfigTestStore{owners: db.owners, models: map[int64]*types.BotModelConfig{}}
+	handler := NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models))
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/bots/definition/service-agents?uid=43", strings.NewReader(
+		`{"revision":3,"serviceAgents":[" codex ","claude","codex",""]}`,
+	))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleOwnerServiceAgents(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	record := db.records[43]
+	if got := record.Definition.ServiceAgents; !reflect.DeepEqual(got, []string{"codex", "claude"}) {
+		t.Fatalf("serviceAgents=%v", got)
+	}
+	if record.Runtime.DesiredRevision != 4 {
+		t.Fatalf("revision=%d", record.Runtime.DesiredRevision)
+	}
+
+	// 旧 revision → 409，不得覆盖
+	staleReq := httptest.NewRequest(http.MethodPatch, "/api/bots/definition/service-agents?uid=43", strings.NewReader(
+		`{"revision":1,"serviceAgents":[]}`,
+	))
+	staleReq = staleReq.WithContext(context.WithValue(staleReq.Context(), uidKey, int64(7)))
+	staleRec := httptest.NewRecorder()
+	handler.HandleOwnerServiceAgents(staleRec, staleReq)
+	if staleRec.Code != http.StatusConflict {
+		t.Fatalf("stale status=%d body=%s", staleRec.Code, staleRec.Body.String())
+	}
+	if got := db.records[43].Definition.ServiceAgents; !reflect.DeepEqual(got, []string{"codex", "claude"}) {
+		t.Fatalf("stale write leaked: %v", got)
 	}
 }
 

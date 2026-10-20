@@ -6,6 +6,9 @@ const mocks = vi.hoisted(() => ({
   getServiceAgentsCatalog: vi.fn(),
   addServiceAgentSubscription: vi.fn(),
   removeServiceAgentSubscription: vi.fn(),
+  getMyBots: vi.fn(),
+  getBotDefinitionPrompt: vi.fn(),
+  updateBotDefinitionServiceAgents: vi.fn(),
 }));
 
 vi.mock('../api', () => ({
@@ -33,6 +36,13 @@ describe('ServiceAgentsPanel', () => {
     mocks.getServiceAgentsCatalog.mockResolvedValue(catalog());
     mocks.addServiceAgentSubscription.mockResolvedValue({ slug: 'weekly-report', hidden: false });
     mocks.removeServiceAgentSubscription.mockResolvedValue({ slug: 'hello', hidden: true });
+    mocks.getMyBots.mockResolvedValue({ bots: [{ uid: 63, name: '我的助手' }] });
+    mocks.getBotDefinitionPrompt.mockResolvedValue({ configured: true, revision: 5, definition: { botId: '63' } });
+    mocks.updateBotDefinitionServiceAgents.mockResolvedValue({
+      configured: true,
+      revision: 6,
+      definition: { botId: '63', serviceAgents: ['hello'] },
+    });
   });
 
   afterEach(async () => {
@@ -112,5 +122,41 @@ describe('ServiceAgentsPanel', () => {
       await Promise.resolve();
     });
     expect(mocks.getServiceAgentsCatalog.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('scopes tools per Agent: 未配置=全部可见，切换后按清单保存', async () => {
+    await renderPanel();
+    const select = container.querySelector('#v3-service-agents-scope-select');
+    expect(select).toBeTruthy();
+    expect(select.options.length).toBe(2); // 账号 + 我的助手
+
+    await act(async () => {
+      select.value = '63';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.getBotDefinitionPrompt).toHaveBeenCalledWith('63');
+    // 未配置 serviceAgents → 账号可见的 hello 视为已选；账号已移除的 weekly-report 不可选
+    expect(container.querySelector('button[aria-label="删除Hello 试点应用"]')).toBeTruthy();
+    const weekly = container.querySelector('button[aria-label="添加周报助手"]');
+    expect(weekly).toBeTruthy();
+    expect(weekly.disabled).toBe(true);
+
+    // 从该 Agent 移除 hello → 保存空清单
+    mocks.updateBotDefinitionServiceAgents.mockResolvedValueOnce({
+      configured: true,
+      revision: 6,
+      definition: { botId: '63', serviceAgents: [] },
+    });
+    const remove = container.querySelector('button[aria-label="删除Hello 试点应用"]');
+    await act(async () => {
+      remove.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.updateBotDefinitionServiceAgents).toHaveBeenCalledWith('63', 5, []);
+    expect(container.querySelector('button[aria-label="添加Hello 试点应用"]')).toBeTruthy();
   });
 });

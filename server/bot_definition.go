@@ -86,6 +86,11 @@ type botDefinitionPromptPatchRequest struct {
 	Prompt   types.BotPromptDefinition `json:"prompt"`
 }
 
+type botDefinitionServiceAgentsPatchRequest struct {
+	Revision      *int64   `json:"revision,omitempty"`
+	ServiceAgents []string `json:"serviceAgents"`
+}
+
 type botDefinitionAckRequest struct {
 	Revision int64  `json:"revision"`
 	Error    string `json:"error,omitempty"`
@@ -204,6 +209,67 @@ func (h *BotDefinitionHandler) HandleOwnerModel(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// HandleOwnerServiceAgents 设置本 Agent 可调用的 CatsCo 定制 Agent 清单（slug）。
+// 空数组 = 仅保留 run_status；不设置（nil）= 账号可见全部（兼容旧行为）。
+func (h *BotDefinitionHandler) HandleOwnerServiceAgents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	ownerUID, botUID, ok := h.authorizeOwner(w, r)
+	if !ok {
+		return
+	}
+	var req botDefinitionServiceAgentsPatchRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32*1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	expected := int64(-1)
+	if req.Revision != nil {
+		expected = *req.Revision
+	}
+	record, err := h.definitions.UpdateBotDefinitionServiceAgents(botUID, expected, normalizeServiceAgentSlugs(req.ServiceAgents))
+	if errors.Is(err, store.ErrStaleBotModelRevision) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "bot definition changed before it was saved"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save bot service agents"})
+		return
+	}
+	response, err := h.definitionResponse(ownerUID, botUID, record, false)
+	if err != nil {
+		log.Printf("prepare owner bot definition failed bot_uid=%d: %v", botUID, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot definition could not be prepared"})
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// normalizeServiceAgentSlugs 去空/去重/截断，避免存脏数据。
+func normalizeServiceAgentSlugs(list []string) []string {
+	seen := make(map[string]struct{}, len(list))
+	out := make([]string, 0, len(list))
+	for _, raw := range list {
+		slug := strings.TrimSpace(raw)
+		if slug == "" || len(slug) > 64 {
+			continue
+		}
+		if _, exists := seen[slug]; exists {
+			continue
+		}
+		seen[slug] = struct{}{}
+		out = append(out, slug)
+		if len(out) >= 64 {
+			break
+		}
+	}
+	return out
 }
 
 func (h *BotDefinitionHandler) HandleOwnerPrompt(w http.ResponseWriter, r *http.Request) {

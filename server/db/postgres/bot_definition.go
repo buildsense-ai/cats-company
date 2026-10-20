@@ -136,6 +136,28 @@ func (a *Adapter) UpdateBotDefinitionSkills(
 	})
 }
 
+func (a *Adapter) UpdateBotDefinitionServiceAgents(
+	botUID, expectedRevision int64,
+	serviceAgents []string,
+) (*types.BotDefinitionRecord, error) {
+	return a.updateBotDefinition(botUID, func(record *types.BotDefinitionRecord, now string) error {
+		if expectedRevision >= 0 && record.Runtime.DesiredRevision != expectedRevision {
+			return store.ErrStaleBotModelRevision
+		}
+		if reflect.DeepEqual(record.Definition.ServiceAgents, serviceAgents) {
+			return nil
+		}
+		record.Definition.ServiceAgents = append([]string(nil), serviceAgents...)
+		record.Runtime.DesiredRevision++
+		record.Runtime.UpdatedAt = now
+		record.Runtime.LastAttemptRevision = 0
+		record.Runtime.LastAttemptAt = ""
+		record.Runtime.LastError = ""
+		record.Exists = true
+		return nil
+	})
+}
+
 func (a *Adapter) UpdateBotPromptVisibility(
 	botUID int64,
 	visibility types.BotPromptVisibility,

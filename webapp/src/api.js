@@ -889,6 +889,11 @@ export const api = {
     `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`,
     { revision, skills: toWritableBotSkillRefs(skills) },
   ),
+  updateBotDefinitionServiceAgents: (uid, revision, serviceAgents) => request(
+    'PATCH',
+    `/api/bots/definition/service-agents?uid=${encodeURIComponent(uid)}`,
+    { revision, serviceAgents },
+  ),
   switchLocalBot: (botUid) => localRequest('POST', '/api/cats/switch-bot', { botUid }),
   getLocalCatsStatus: () => localRequest('GET', '/api/cats/status'),
   getLocalSkills: getLocalSkillsWithFallback,

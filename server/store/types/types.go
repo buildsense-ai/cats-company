@@ -913,6 +913,8 @@ type BotDefinition struct {
 	Model  BotDefinitionModel   `json:"model"`
 	Prompt *BotPromptDefinition `json:"prompt,omitempty"`
 	Skills []BotSkillRef        `json:"skills"`
+	// ServiceAgents 是本 Agent 可调用的 CatsCo 定制 Agent（slug）；缺省=nil 表示不过滤。
+	ServiceAgents []string `json:"serviceAgents,omitempty"`
 }
 
 // BotDefinitionRuntime tracks application progress without polluting the
