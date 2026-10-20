@@ -323,6 +323,10 @@ func (f *fakeServiceAgentStore) RecordServiceRunLedger(context.Context, store.Se
 	return false, nil
 }
 
+func (f *fakeServiceAgentStore) SumPendingCallerChargeMicros(context.Context, int64) (int64, error) {
+	return 0, nil
+}
+
 func (f *fakeServiceAgentStore) RenewServiceLease(context.Context, string, string) (bool, error) {
 	return false, nil
 }

@@ -664,6 +664,7 @@ CREATE TABLE IF NOT EXISTS service_run_ledger (
     net_micros BIGINT NOT NULL DEFAULT 0,
     payer_uid BIGINT NOT NULL DEFAULT 0,
     payee_uid BIGINT NOT NULL DEFAULT 0,
+    billing_state VARCHAR(24) NOT NULL DEFAULT 'free',
     finished_at TIMESTAMP(6) NOT NULL,
     created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (run_id),

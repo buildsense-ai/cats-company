@@ -19,7 +19,14 @@ var (
 // 执行期仍由 relay 网关兜底）；限制未配置（max_limit<=0）放行并告警；
 // relay 请求失败即拒（对应调用面 503）。
 type ServiceBalanceChecker struct {
-	admin *RelayAdminClient
+	admin   *RelayAdminClient
+	pending ServicePendingChargeReader
+}
+
+// ServicePendingChargeReader 提供「调用方待扣金额」(微元)：外部执行后端自报用量、
+// 平台侧尚无扣费通道的部分，预检时并入已用额度，避免绕过预算无限调用。
+type ServicePendingChargeReader interface {
+	SumPendingCallerChargeMicros(ctx context.Context, payerUID int64) (int64, error)
 }
 
 func NewServiceBalanceChecker(admin *RelayAdminClient) *ServiceBalanceChecker {
@@ -28,6 +35,11 @@ func NewServiceBalanceChecker(admin *RelayAdminClient) *ServiceBalanceChecker {
 
 func NewServiceBalanceCheckerFromEnv() *ServiceBalanceChecker {
 	return NewServiceBalanceChecker(NewRelayAdminClientFromEnv())
+}
+
+// SetPendingChargeReader 注入待扣金额来源（账本）。
+func (c *ServiceBalanceChecker) SetPendingChargeReader(reader ServicePendingChargeReader) {
+	c.pending = reader
 }
 
 func (c *ServiceBalanceChecker) Check(ctx context.Context, callerUID int64) error {
@@ -42,8 +54,18 @@ func (c *ServiceBalanceChecker) Check(ctx context.Context, callerUID int64) erro
 	if user == nil {
 		return nil
 	}
+	// 待扣金额（外部执行后端自报）并入已用额度：按会话请求实时看账。
+	pendingCNY := 0.0
+	if c.pending != nil {
+		micros, err := c.pending.SumPendingCallerChargeMicros(ctx, callerUID)
+		if err != nil {
+			log.Printf("service balance precheck: pending charge uid=%d: %v", callerUID, err)
+		} else if micros > 0 {
+			pendingCNY = float64(micros) / 1_000_000.0
+		}
+	}
 	exhausted := func(budget commercialRelayBudget) bool {
-		return budget.MaxLimit > 0 && budget.CurrentUsage >= budget.MaxLimit
+		return budget.MaxLimit > 0 && budget.CurrentUsage+pendingCNY >= budget.MaxLimit
 	}
 	checked := 0
 	if user.Limits.MonthlyBudget.MaxLimit > 0 {

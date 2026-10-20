@@ -186,6 +186,9 @@ type ServiceAgentStore interface {
 	ListBillableServiceRuns(ctx context.Context, limit int) ([]ServiceRunBillable, error)
 	// RecordServiceRunLedger 写入一行账本；run 已记账 → (false, nil)（幂等）。
 	RecordServiceRunLedger(ctx context.Context, entry ServiceRunLedgerEntry) (bool, error)
+	// SumPendingCallerChargeMicros 汇总该调用方「待扣」金额（外部执行后端自报用量）。
+	// 预检时并入已用额度，避免外部 agent 绕过预算无限调用。
+	SumPendingCallerChargeMicros(ctx context.Context, payerUID int64) (int64, error)
 	RenewServiceLease(ctx context.Context, runID, instanceID string) (bool, error)
 	AppendServiceRunEvent(ctx context.Context, runID, typ string, payload json.RawMessage) (int64, error)
 	ListServiceRunEvents(ctx context.Context, runID string, afterSeq int64, limit int) ([]ServiceRunEventRecord, error)

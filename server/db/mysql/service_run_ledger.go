@@ -60,6 +60,10 @@ func (a *Adapter) ListBillableServiceRuns(ctx context.Context, limit int) ([]sto
 
 // RecordServiceRunLedger 写入一行账本（INSERT IGNORE = 幂等）。
 func (a *Adapter) RecordServiceRunLedger(ctx context.Context, entry store.ServiceRunLedgerEntry) (bool, error) {
+	billingState := entry.BillingState
+	if billingState == "" {
+		billingState = store.ServiceBillingFree
+	}
 	var pricing interface{}
 	if len(entry.PricingJSON) > 0 {
 		pricing = []byte(entry.PricingJSON)
@@ -70,13 +74,13 @@ func (a *Adapter) RecordServiceRunLedger(ctx context.Context, entry store.Servic
 			caller_uid, caller_bot_uid, runner_type, status,
 			prompt_tokens, completion_tokens, duration_ms,
 			pricing_json, currency, gross_micros, fee_micros, net_micros,
-			payer_uid, payee_uid, finished_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			payer_uid, payee_uid, billing_state, finished_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		entry.RunID, entry.SessionID, entry.AgentID, entry.AgentSlug, entry.OwnerKind, entry.OwnerUID,
 		entry.CallerUID, entry.CallerBotUID, entry.RunnerType, entry.Status,
 		entry.PromptTokens, entry.CompletionTokens, entry.DurationMs,
 		pricing, entry.Currency, entry.GrossMicros, entry.FeeMicros, entry.NetMicros,
-		entry.PayerUID, entry.PayeeUID, entry.FinishedAt)
+		entry.PayerUID, entry.PayeeUID, billingState, entry.FinishedAt)
 	if err != nil {
 		return false, fmt.Errorf("record service run ledger: %w", err)
 	}
@@ -85,4 +89,17 @@ func (a *Adapter) RecordServiceRunLedger(ctx context.Context, entry store.Servic
 		return false, fmt.Errorf("record service run ledger: %w", err)
 	}
 	return affected > 0, nil
+}
+
+// SumPendingCallerChargeMicros 汇总该调用方「待扣」金额（PG 同语义镜像）。
+func (a *Adapter) SumPendingCallerChargeMicros(ctx context.Context, payerUID int64) (int64, error) {
+var total int64
+err := a.db.QueryRowContext(ctx, `
+SELECT COALESCE(SUM(gross_micros - fee_micros), 0)
+FROM service_run_ledger
+WHERE payer_uid = ? AND billing_state = 'pending_credit'`, payerUID).Scan(&total)
+if err != nil {
+return 0, fmt.Errorf("sum pending caller charge: %w", err)
+}
+return total, nil
 }

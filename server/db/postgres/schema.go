@@ -636,6 +636,7 @@ CREATE TABLE IF NOT EXISTS service_run_ledger (
     net_micros        BIGINT NOT NULL DEFAULT 0,
     payer_uid         BIGINT NOT NULL DEFAULT 0,
     payee_uid         BIGINT NOT NULL DEFAULT 0,
+    billing_state     VARCHAR(24) NOT NULL DEFAULT 'free',
     finished_at       TIMESTAMPTZ NOT NULL,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
@@ -646,7 +647,9 @@ CREATE INDEX IF NOT EXISTS idx_service_run_ledger_payer
 CREATE INDEX IF NOT EXISTS idx_service_run_ledger_payee
     ON service_run_ledger (payee_uid, finished_at DESC);
 CREATE INDEX IF NOT EXISTS idx_service_run_ledger_agent
-    ON service_run_ledger (agent_id, finished_at DESC);`
+    ON service_run_ledger (agent_id, finished_at DESC);
+CREATE INDEX IF NOT EXISTS idx_service_run_ledger_pending
+    ON service_run_ledger (payer_uid) WHERE billing_state = 'pending_credit';`
 
 const createServiceAgentSubscriptionsTable = `
 CREATE TABLE IF NOT EXISTS service_agent_subscriptions (

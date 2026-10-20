@@ -39,4 +39,17 @@ type ServiceRunLedgerEntry struct {
 	// PayerUID = 调用者（谁调用谁给钱）；PayeeUID = agent owner（internal → 0 = 平台自营）。
 	PayerUID int64
 	PayeeUID int64
+	// BillingState 结算状态：free / settled_platform / pending_credit（见常量）。
+	BillingState string
 }
+
+// 结算状态（设计 §4.5：按会话请求实时结算）。
+const (
+	// ServiceBillingFree：未定价（默认免费分享），无需扣费。
+	ServiceBillingFree = "free"
+	// ServiceBillingSettledPlatform：调用方额度已由 relay 在模型调用时实时扣除。
+	ServiceBillingSettledPlatform = "settled_platform"
+	// ServiceBillingPendingCredit：外部执行后端自报用量，平台侧尚无扣费通道；
+	// 金额计入调用方「待扣」累计，预检时一并算作已用额度。
+	ServiceBillingPendingCredit = "pending_credit"
+)

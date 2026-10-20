@@ -115,8 +115,25 @@ func (w *ServiceRunLedgerWriter) buildEntry(run store.ServiceRunBillable) store.
 		FeeMicros:          charge.Fee,
 		NetMicros:          charge.Net,
 		// 谁调用谁给钱；收款方是 agent owner（internal agent → 0 = 平台自营）。
-		PayerUID: run.CallerUID,
-		PayeeUID: run.OwnerUID,
+		PayerUID:     run.CallerUID,
+		PayeeUID:     run.OwnerUID,
+		BillingState: resolveBillingState(run.RunnerType, charge.Gross),
+	}
+}
+
+// resolveBillingState 判定这次 run 的结算归属（设计 §4.5：按会话请求实时结算）。
+//   - 免费（未定价）→ free
+//   - 平台自带执行（codex）→ 调用方额度已在 relay 模型调用时实时扣除
+//   - 外部执行后端（http/mcp）→ 对端自报用量，金额计入调用方「待扣」，预检时算作已用
+func resolveBillingState(runnerType string, grossMicros int64) string {
+	if grossMicros <= 0 {
+		return store.ServiceBillingFree
+	}
+	switch runnerType {
+	case "http", "mcp":
+		return store.ServiceBillingPendingCredit
+	default:
+		return store.ServiceBillingSettledPlatform
 	}
 }
 

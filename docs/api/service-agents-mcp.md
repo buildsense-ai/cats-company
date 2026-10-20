@@ -215,3 +215,16 @@ X-Catsco-Signature: sha256=<hex(hmac_sha256(SECRET, body))>
 - **只记账不动钱**：本表是结算的输入，真正扣费/入账读它另做
 - 未定价 agent：`gross=0`，但 `payer/payee/用量` 仍记录 → 后续定价可回溯重算
 - 扫描窗口 48h：更早的历史 run 不会自动补账（需要时用同一条 SQL 手工回填）
+
+### 结算状态 `billing_state`（按会话请求实时结算）
+
+| 状态 | 含义 | 预检是否计入 |
+|---|---|---|
+| `free` | 未定价（默认免费分享） | 否（金额 0） |
+| `settled_platform` | 平台自带执行（codex）：调用方额度已由 **relay 在模型调用时实时扣除** | relay 已算，不重复计 |
+| `pending_credit` | 外部执行后端（`runner.type=http`）：对端自报用量，平台侧暂无扣费通道 | **是** —— 金额并入调用方已用额度 |
+
+`pending_credit` 的设计意图：外部 agent 的模型调用不经过我们的 relay，平台扣不到；
+但这笔账不能白算 —— 预检（`ServiceBalanceChecker`）会把这部分「待扣」加到
+relay 的 `current_usage` 上再比 `max_limit`，所以**碰额度上限一样会被拒单**，
+不会出现"免费无限调外部 agent"。
