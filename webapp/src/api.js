@@ -498,6 +498,8 @@ export const api = {
   removeServiceAgentSubscription: (slug) => (
     request('DELETE', `/api/service-agents/${encodeURIComponent(slug)}/subscription`)
   ),
+  // 上架自己的 agent（白名单 uid）：worker=由本机 service-run-worker 执行；http=转发到自建服务。
+  publishServiceAgent: (payload) => request('POST', '/api/service-agents/publish', payload),
   getPushConfig: (signal) => request('GET', '/api/push/config', undefined, { signal }),
   subscribePush: (subscription, registrationID, signal) => (
     request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })

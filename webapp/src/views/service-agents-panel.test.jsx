@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getServiceAgentsCatalog: vi.fn(),
   addServiceAgentSubscription: vi.fn(),
   removeServiceAgentSubscription: vi.fn(),
+  publishServiceAgent: vi.fn(),
   getMyBots: vi.fn(),
   getBotDefinitionPrompt: vi.fn(),
   updateBotDefinitionServiceAgents: vi.fn(),
@@ -37,6 +38,7 @@ describe('ServiceAgentsPanel', () => {
     mocks.addServiceAgentSubscription.mockResolvedValue({ slug: 'weekly-report', hidden: false });
     mocks.removeServiceAgentSubscription.mockResolvedValue({ slug: 'hello', hidden: true });
     mocks.getMyBots.mockResolvedValue({ bots: [{ uid: 63, name: '我的助手' }] });
+    mocks.publishServiceAgent.mockResolvedValue({ slug: 'my-agent', version: 1, visibility: 'private' });
     mocks.getBotDefinitionPrompt.mockResolvedValue({ configured: true, revision: 5, definition: { botId: '63' } });
     mocks.updateBotDefinitionServiceAgents.mockResolvedValue({
       configured: true,
@@ -213,6 +215,75 @@ describe('ServiceAgentsPanel', () => {
     const staticScope = container.querySelector('.v3-service-agents-scope-control.is-static');
     expect(staticScope).toBeTruthy();
     expect(staticScope.textContent).toContain('账号（所有 Agent 共用）');
+  });
+
+  it('从面板直接发布应用：填名称自动生成调用名，提交后给出 catsco_<slug>', async () => {
+    await renderPanel();
+    const openBtn = container.querySelector('button[aria-label="发布应用"]');
+    expect(openBtn).toBeTruthy();
+    await act(async () => {
+      openBtn.click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    expect(form).toBeTruthy();
+
+    const [nameInput, slugInput] = form.querySelectorAll('input');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(nameInput, '我的助手');
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+    // 中文名无法自动转写：slug 留空，由用户手填英文调用名（表单会校验）。
+    expect(slugInput.value).toBe('');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(slugInput, 'my-agent');
+      slugInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
+    const payload = mocks.publishServiceAgent.mock.calls[0][0];
+    expect(payload).toMatchObject({ slug: 'my-agent', name: '我的助手', visibility: 'private' });
+    expect(payload.definition).toMatchObject({ name: '我的助手', runner: { type: 'worker' } });
+
+    const banner = container.querySelector('.v3-service-agents-published');
+    expect(banner?.textContent).toContain('catsco_my-agent');
+    expect(banner?.textContent).toContain('service-run-worker -agents my-agent');
+  });
+
+  it('发布表单会校验调用名，非法时不发请求', async () => {
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="发布应用"]').click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    const [nameInput, slugInput] = form.querySelectorAll('input');
+    const setValue = (node, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(node, value);
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    await act(async () => {
+      setValue(nameInput, 'My Agent');
+      setValue(slugInput, 'BAD SLUG!');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
+    expect(container.querySelector('.v3-service-agents-publish [role="alert"]')?.textContent).toContain('调用名');
   });
 
   it('展示归属徽标与工具计数', async () => {    mocks.getServiceAgentsCatalog.mockResolvedValue({

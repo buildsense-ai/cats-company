@@ -14,6 +14,20 @@ export default function ServiceAgentsPanel({ onClose }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(() => new Set());
+  // 发布表单（把自己的 agent 上架成 catsco_<slug> 工具）
+  const [showPublish, setShowPublish] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState('');
+  const [publishResult, setPublishResult] = useState(null);
+  const [form, setForm] = useState({
+    name: '',
+    slug: '',
+    slugTouched: false,
+    visibility: 'private',
+    runner: 'worker',
+    url: '',
+    price: '',
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -118,9 +132,65 @@ export default function ServiceAgentsPanel({ onClose }) {
     }
   }, [agents, botDefinition, pending, scopeBotUid]);
 
+  // 发布（上架自己的 agent）：名称 → 调用名可自动生成，也可手改。
+  const slugify = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+
+  const updateForm = useCallback((patch) => {
+    setForm((prev) => {
+      const next = { ...prev, ...patch };
+      if (patch.name !== undefined && !prev.slugTouched) {
+        next.slug = slugify(patch.name);
+      }
+      if (patch.slug !== undefined) next.slugTouched = true;
+      return next;
+    });
+  }, []);
+
+  const submitPublish = useCallback(async () => {
+    const name = form.name.trim();
+    const slug = form.slug.trim();
+    if (!name) { setPublishError('请填写应用名称'); return; }
+    if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(slug)) {
+      setPublishError('调用名只能用小写字母/数字/中划线，2~64 位');
+      return;
+    }
+    const definition = { name };
+    if (form.runner === 'http') {
+      const url = form.url.trim();
+      if (!/^https?:\/\//.test(url)) { setPublishError('选 HTTP 执行时要填 http(s):// 地址'); return; }
+      definition.runner = { type: 'http', url, timeout_seconds: 60 };
+    } else {
+      definition.runner = { type: 'worker' };
+    }
+    const price = Number(form.price);
+    if (form.price && Number.isFinite(price) && price > 0) {
+      definition.pricing = { unit: 'token', per_1k_tokens: price, currency: 'CNY' };
+    }
+    setPublishing(true);
+    setPublishError('');
+    try {
+      const result = await api.publishServiceAgent({ slug, name, visibility: form.visibility, definition });
+      setPublishResult({
+        slug: result?.slug || slug,
+        visibility: result?.visibility || form.visibility,
+        runner: form.runner,
+      });
+      setShowPublish(false);
+      setForm({ name: '', slug: '', slugTouched: false, visibility: 'private', runner: 'worker', url: '', price: '' });
+      await load();
+    } catch (err) {
+      setPublishError(err?.message || '发布失败，请稍后重试。');
+    } finally {
+      setPublishing(false);
+    }
+  }, [form, load]);
+
   return (
-    <aside className="v3-service-agents-panel" aria-label="Agent 工具">
-      <div className="v3-service-agents-header">
+    <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
         <span className="v3-service-agents-title">
           Agent 工具
           {!loading && agents.length > 0 ? (
@@ -130,6 +200,18 @@ export default function ServiceAgentsPanel({ onClose }) {
           ) : null}
         </span>
         <div className="v3-service-agents-header-actions">
+          <button
+            type="button"
+            onClick={() => {
+              setShowPublish((prev) => !prev);
+              setPublishError('');
+            }}
+            aria-label="发布应用"
+            title="发布应用（把自己的 agent 上架成工具）"
+            className={showPublish ? 'is-active' : undefined}
+          >
+            <Plus size={16} />
+          </button>
           <button
             type="button"
             onClick={load}
@@ -144,6 +226,132 @@ export default function ServiceAgentsPanel({ onClose }) {
           </button>
         </div>
       </div>
+      {showPublish ? (
+        <form
+          className="v3-service-agents-publish"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!publishing) submitPublish();
+          }}
+        >
+          <div className="v3-service-agents-publish-title">发布应用</div>
+          <label className="v3-service-agents-field">
+            <span>名称</span>
+            <input
+              value={form.name}
+              onChange={(event) => updateForm({ name: event.target.value })}
+              placeholder="我的助手"
+              autoFocus
+            />
+          </label>
+          <label className="v3-service-agents-field">
+            <span>调用名（工具名 catsco_&lt;调用名&gt;）</span>
+            <input
+              value={form.slug}
+              onChange={(event) => updateForm({ slug: event.target.value })}
+              placeholder="my-agent"
+              spellCheck={false}
+            />
+          </label>
+          <div className="v3-service-agents-field">
+            <span>可见性</span>
+            <div className="v3-service-agents-choices">
+              <label>
+                <input
+                  type="radio"
+                  name="visibility"
+                  checked={form.visibility === 'private'}
+                  onChange={() => updateForm({ visibility: 'private' })}
+                />
+                仅自己
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="visibility"
+                  checked={form.visibility === 'public'}
+                  onChange={() => updateForm({ visibility: 'public' })}
+                />
+                公开（别人也能调用）
+              </label>
+            </div>
+          </div>
+          <div className="v3-service-agents-field">
+            <span>执行位置</span>
+            <div className="v3-service-agents-choices">
+              <label>
+                <input
+                  type="radio"
+                  name="runner"
+                  checked={form.runner === 'worker'}
+                  onChange={() => updateForm({ runner: 'worker' })}
+                />
+                我的电脑（worker）
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="runner"
+                  checked={form.runner === 'http'}
+                  onChange={() => updateForm({ runner: 'http' })}
+                />
+                HTTP 服务
+              </label>
+            </div>
+          </div>
+          {form.runner === 'http' ? (
+            <label className="v3-service-agents-field">
+              <span>服务地址</span>
+              <input
+                value={form.url}
+                onChange={(event) => updateForm({ url: event.target.value })}
+                placeholder="https://your-host/run"
+                spellCheck={false}
+              />
+            </label>
+          ) : null}
+          <label className="v3-service-agents-field">
+            <span>定价（元 / 千 tokens，留空=免费）</span>
+            <input
+              value={form.price}
+              onChange={(event) => updateForm({ price: event.target.value })}
+              placeholder="2"
+              inputMode="decimal"
+            />
+          </label>
+          {publishError ? <div className="v3-service-agents-error" role="alert">{publishError}</div> : null}
+          <div className="v3-service-agents-publish-actions">
+            <button type="submit" className="is-primary" disabled={publishing}>
+              {publishing ? '发布中…' : '发布'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowPublish(false);
+                setPublishError('');
+              }}
+              disabled={publishing}
+            >
+              取消
+            </button>
+          </div>
+        </form>
+      ) : null}
+      {publishResult ? (
+        <div className="v3-service-agents-published" role="status">
+          <div>
+            已发布 <code>catsco_{publishResult.slug}</code>
+            {publishResult.visibility === 'public' ? ' · 公开，别人也能调用' : ' · 仅自己可用'}
+          </div>
+          {publishResult.runner === 'worker' ? (
+            <div className="v3-service-agents-published-hint">
+              在你自己的机器上运行 worker 才会执行：
+              <code>service-run-worker -agents {publishResult.slug} -cmd &apos;…&apos;</code>
+            </div>
+          ) : null}
+          <button type="button" onClick={() => setPublishResult(null)}>知道了</button>
+        </div>
+      ) : null}
       <div className="v3-service-agents-scope">
         <label className="v3-service-agents-scope-label" htmlFor="v3-service-agents-scope-select">
           配置范围
