@@ -159,4 +159,62 @@ describe('ServiceAgentsPanel', () => {
     expect(mocks.updateBotDefinitionServiceAgents).toHaveBeenCalledWith('63', 5, []);
     expect(container.querySelector('button[aria-label="添加Hello 试点应用"]')).toBeTruthy();
   });
+
+  it('空目录时给出引导式空态而不是一句"暂无可用工具"', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({ agents: [] });
+    await renderPanel();
+    expect(container.querySelector('.v3-service-agents-list')).toBeNull();
+    const placeholder = container.querySelector('.v3-service-agents-placeholder');
+    expect(placeholder).toBeTruthy();
+    expect(placeholder.textContent).toContain('还没有可用的 Agent 工具');
+    expect(placeholder.textContent).toContain('catsco_');
+    const refresh = placeholder.querySelector('button');
+    expect(refresh.textContent).toContain('刷新目录');
+    await act(async () => {
+      refresh.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.getServiceAgentsCatalog.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('加载中显示骨架屏；失败时给出重试并可从错误态恢复', async () => {
+    let resolveCatalog;
+    mocks.getServiceAgentsCatalog.mockImplementation(() => new Promise((resolve) => {
+      resolveCatalog = resolve;
+    }));
+    await renderPanel();
+    expect(container.querySelector('.v3-service-agents-skeleton')).toBeTruthy();
+
+    await act(async () => {
+      resolveCatalog(Promise.reject(new Error('目录加载失败')));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('目录加载失败');
+    const retry = alert.querySelector('button');
+    expect(retry.textContent).toContain('重试');
+
+    mocks.getServiceAgentsCatalog.mockResolvedValue(catalog());
+    await act(async () => {
+      retry.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelectorAll('.v3-service-agent-row').length).toBe(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('展示归属徽标与工具计数', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [
+        { slug: 'mine-app', name: '我的应用', version: 1, hidden: false, mine: true, visibility: 'private' },
+      ],
+    });
+    await renderPanel();
+    expect(container.querySelector('.v3-service-agents-count')?.textContent).toBe('1');
+    expect(container.querySelector('.v3-service-agent-badge')?.textContent).toBe('我的');
+    expect(container.querySelector('.v3-service-agent-badge.is-private')?.textContent).toBe('私有');
+  });
 });
