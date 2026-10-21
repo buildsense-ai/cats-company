@@ -1167,6 +1167,78 @@ func TestCommercialRelaySyncWritesScopeAndNarrowedBudgetTogether(t *testing.T) {
 	}
 }
 
+func TestCommercialRelaySyncWritesTokenQuota(t *testing.T) {
+	store := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{
+		UID:                38,
+		TotalsByModel:      map[string]float64{},
+		TokenQuota:         30_000_000,
+		TokenQuotaDuration: "1M",
+	}}
+	var posts []struct {
+		TokenLimit            int64   `json:"token_limit"`
+		TokenLimitDuration    string  `json:"token_limit_duration"`
+		MonthlyBudget         float64 `json:"monthly_budget"`
+		MonthlyBudgetDuration string  `json:"monthly_budget_duration"`
+	}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			current := commercialRelayRateLimit{}
+			budget := commercialRelayBudget{}
+			if len(posts) > 0 {
+				last := posts[len(posts)-1]
+				current = commercialRelayRateLimit{
+					TokenMaxLimit:      last.TokenLimit,
+					TokenResetDuration: last.TokenLimitDuration,
+				}
+				budget = commercialRelayBudget{MaxLimit: last.MonthlyBudget, ResetDuration: last.MonthlyBudgetDuration}
+			}
+			_ = json.NewEncoder(w).Encode(commercialRelayUsageUser{
+				Configured: true,
+				Key:        &commercialRelayKeySummary{State: "active"},
+				Limits:     commercialRelayLimits{RateLimit: current, MonthlyBudget: budget},
+			})
+		case http.MethodPost:
+			var body struct {
+				TokenLimit            int64   `json:"token_limit"`
+				TokenLimitDuration    string  `json:"token_limit_duration"`
+				MonthlyBudget         float64 `json:"monthly_budget"`
+				MonthlyBudgetDuration string  `json:"monthly_budget_duration"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			posts = append(posts, body)
+			_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer relay.Close()
+
+	syncer := NewCommercialRelaySyncer(
+		store,
+		&RelayAdminClient{baseURL: relay.URL, token: "test-token", client: relay.Client()},
+		CommercialRelaySyncerOptions{EnforceUIDs: map[int64]bool{38: true}},
+	)
+	if _, err := syncer.SyncUID(context.Background(), 38); err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != 1 || posts[0].TokenLimit != 30_000_000 || posts[0].TokenLimitDuration != "1M" {
+		t.Fatalf("token quota was not written: %#v", posts)
+	}
+
+	// An expired package clears the token cap instead of leaving it behind.
+	store.summary.TokenQuota = 0
+	store.summary.TokenQuotaDuration = ""
+	if _, err := syncer.SyncUID(context.Background(), 38); err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != 2 || posts[1].TokenLimit != 0 {
+		t.Fatalf("expired token quota was not cleared: %#v", posts)
+	}
+}
+
 func TestCommercialRelayManagedPlanSumsSharedProviderBudget(t *testing.T) {
 	shared := []string{"model-a", "model-b"}
 	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{

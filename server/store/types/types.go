@@ -79,9 +79,14 @@ type CommercialPlan struct {
 	// InternalQuotaTokens is an operator-only SOL-equivalent capacity reference.
 	// Relay enforcement continues to use the CNY budgets above.
 	InternalQuotaTokens int64 `json:"internal_quota_tokens,omitempty"`
-	DurationDays        int   `json:"duration_days"`
-	State               int   `json:"state"`
-	SortOrder           int   `json:"sort_order"`
+	// TokenQuota is the enforced per-period token allowance (Bifrost
+	// token_max_limit). 0 keeps the relay's legacy CNY-only behaviour.
+	TokenQuota int64 `json:"token_quota,omitempty"`
+	// TokenQuotaDuration is "1w" or "1M"; empty derives it from DurationDays.
+	TokenQuotaDuration string `json:"token_quota_duration,omitempty"`
+	DurationDays       int    `json:"duration_days"`
+	State              int    `json:"state"`
+	SortOrder          int    `json:"sort_order"`
 	// AutoUpdateModels controls whether the startup reconcile may add newly
 	// onboarded relay models to this plan. It defaults to true; plans that sell
 	// a fixed model set turn it off. A retired model is removed either way,
@@ -335,6 +340,10 @@ type CommercialSummary struct {
 	Ledger             []*CommercialLedgerEntry `json:"ledger,omitempty"`
 	TotalsByModel      map[string]float64       `json:"totals_by_model,omitempty"`
 	TotalCNY           float64                  `json:"total_cny"`
+	// TokenQuota is the active package's enforced token allowance; 0 means
+	// the account is limited only by CNY budgets.
+	TokenQuota         int64  `json:"token_quota,omitempty"`
+	TokenQuotaDuration string `json:"token_quota_duration,omitempty"`
 }
 
 // CommercialRelayBaselineCandidate is one active legacy baseline entitlement

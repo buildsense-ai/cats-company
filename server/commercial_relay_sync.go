@@ -592,9 +592,21 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 	}
 	sharedLimit := commercialRelaySharedLimit(summary)
 	usageWindowStart := commercialRelayUsageWindowStartForSync(summary, relayUser)
-	policyNeedsSync := sharedQuota && (!nearlyEqual(relayUser.Limits.MonthlyBudget.MaxLimit, sharedLimit) ||
-		defaultRelayResetDuration(relayUser.Limits.MonthlyBudget.ResetDuration) != "1M" ||
-		!sameCommercialRelayTimestamp(relayUser.UsageWindowStart, usageWindowStart))
+	tokenQuota := summary.TokenQuota
+	tokenQuotaDuration := strings.TrimSpace(summary.TokenQuotaDuration)
+	if tokenQuota > 0 && tokenQuotaDuration == "" {
+		tokenQuotaDuration = "1M"
+	}
+	tokenLimitNeedsSync := tokenQuota > 0 &&
+		(relayUser.Limits.RateLimit.TokenMaxLimit != tokenQuota ||
+			strings.TrimSpace(relayUser.Limits.RateLimit.TokenResetDuration) != tokenQuotaDuration)
+	tokenLimitNeedsClear := tokenQuota == 0 && s.EnforcedFor(uid) && relayUser.Limits.RateLimit.TokenMaxLimit > 0
+	policyNeedsSync := tokenLimitNeedsSync || tokenLimitNeedsClear
+	if sharedQuota {
+		policyNeedsSync = policyNeedsSync || !nearlyEqual(relayUser.Limits.MonthlyBudget.MaxLimit, sharedLimit) ||
+			defaultRelayResetDuration(relayUser.Limits.MonthlyBudget.ResetDuration) != "1M" ||
+			!sameCommercialRelayTimestamp(relayUser.UsageWindowStart, usageWindowStart)
+	}
 	if len(updates) > 0 || scopesChanged || policyNeedsSync || trialChanged {
 		payload := map[string]interface{}{}
 		if relayUser.Limits.FreeTerraTrial != nil {
@@ -614,6 +626,15 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 			} else {
 				payload["usage_window_start"] = usageWindowStart
 			}
+		}
+		if tokenQuota > 0 {
+			payload["token_limit"] = tokenQuota
+			payload["token_limit_duration"] = tokenQuotaDuration
+		} else if tokenLimitNeedsClear {
+			// Relay treats a zero token limit as "no token cap"; this clears a
+			// quota that belonged to an expired package.
+			payload["token_limit"] = 0
+			payload["token_limit_duration"] = "1M"
 		}
 		var response map[string]interface{}
 		if err := s.relayAdmin.Do(ctx, http.MethodPost, fmt.Sprintf("/internal/users/%d/key/limits", uid), payload, &response); err != nil {
@@ -636,6 +657,13 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 			if err := verifyCommercialRelaySharedPolicy(sharedLimit, usageWindowStart, verified); err != nil {
 				return nil, err
 			}
+		}
+		if tokenQuota > 0 && (verified.Limits.RateLimit.TokenMaxLimit != tokenQuota ||
+			strings.TrimSpace(verified.Limits.RateLimit.TokenResetDuration) != tokenQuotaDuration) {
+			return nil, fmt.Errorf("Relay token quota policy verification failed")
+		}
+		if tokenLimitNeedsClear && verified.Limits.RateLimit.TokenMaxLimit != 0 {
+			return nil, fmt.Errorf("Relay token quota was not cleared")
 		}
 	}
 	if err := s.store.ReplaceCommercialManagedRelayBudgets(uid, nextManaged); err != nil {

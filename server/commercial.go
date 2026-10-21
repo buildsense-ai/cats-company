@@ -87,6 +87,8 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 	copy.RealCostCNY = 0
 	copy.ModelBudgets = nil
 	copy.InternalQuotaTokens = 0
+	copy.TokenQuota = 0
+	copy.TokenQuotaDuration = ""
 	copy.CloudWorkerBillingMode = ""
 	return &copy
 }
@@ -353,9 +355,15 @@ type commercialRelayModelScope struct {
 	AllowedModels []string `json:"allowed_models"`
 }
 
+type commercialRelayRateLimit struct {
+	TokenMaxLimit      int64  `json:"token_max_limit"`
+	TokenResetDuration string `json:"token_reset_duration"`
+}
+
 type commercialRelayLimits struct {
 	FreeTerraTrial       *commercialRelayTerraTrial  `json:"free_terra_trial,omitempty"`
 	MonthlyBudget        commercialRelayBudget       `json:"monthly_budget"`
+	RateLimit            commercialRelayRateLimit    `json:"rate_limit"`
 	ModelLimits          []commercialRelayModelLimit `json:"model_limits"`
 	AvailableModelLimits []commercialRelayModelLimit `json:"available_model_limits,omitempty"`
 	ModelScopes          []commercialRelayModelScope `json:"model_scopes,omitempty"`
@@ -1263,6 +1271,8 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			RealCostCNY            float64            `json:"real_cost_cny"`
 			ModelBudgets           map[string]float64 `json:"model_budgets"`
 			InternalQuota          int64              `json:"internal_quota_tokens"`
+			TokenQuota             int64              `json:"token_quota"`
+			TokenQuotaDuration     string             `json:"token_quota_duration"`
 			DurationDays           int                `json:"duration_days"`
 			State                  int                `json:"state"`
 			SortOrder              int                `json:"sort_order"`
@@ -1289,8 +1299,8 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "monthly budget and real cost must be non-negative"})
 			return
 		}
-		if req.PriceFen < 0 || req.PurchaseLimit < 0 || req.InternalQuota < 0 {
-			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "price, purchase limit and internal quota must be non-negative"})
+		if req.PriceFen < 0 || req.PurchaseLimit < 0 || req.InternalQuota < 0 || req.TokenQuota < 0 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "price, purchase limit, internal quota and token quota must be non-negative"})
 			return
 		}
 		req.Currency = strings.ToUpper(strings.TrimSpace(req.Currency))
@@ -1349,6 +1359,8 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			RealCostCNY:            req.RealCostCNY,
 			ModelBudgets:           modelBudgets,
 			InternalQuotaTokens:    req.InternalQuota,
+			TokenQuota:             req.TokenQuota,
+			TokenQuotaDuration:     req.TokenQuotaDuration,
 			CloudWorkerBillingMode: req.CloudWorkerBillingMode,
 			DurationDays:           req.DurationDays,
 			State:                  req.State,

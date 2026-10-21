@@ -68,6 +68,74 @@ func scanCommercialPlan(scanner interface {
 	return &plan, nil
 }
 
+func normalizeCommercialTokenQuotaDuration(value string, durationDays int) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		if durationDays > 0 && durationDays <= 7 {
+			return "1w", nil
+		}
+		return "1M", nil
+	}
+	if value != "1w" && value != "1M" {
+		return "", fmt.Errorf("token quota duration must be 1w or 1M")
+	}
+	return value, nil
+}
+
+func (a *Adapter) upsertCommercialPlanTokenQuota(planID, quota int64, duration string) error {
+	if planID <= 0 || quota < 0 {
+		return fmt.Errorf("invalid token quota")
+	}
+	_, err := a.db.Exec(`
+		INSERT INTO commercial_plan_token_quotas(plan_id, token_quota, reset_duration)
+		VALUES ($1, $2, $3)
+		ON CONFLICT(plan_id) DO UPDATE SET
+			token_quota = EXCLUDED.token_quota,
+			reset_duration = EXCLUDED.reset_duration,
+			updated_at = CURRENT_TIMESTAMP`, planID, quota, duration)
+	if err != nil {
+		return fmt.Errorf("save plan token quota: %w", err)
+	}
+	return nil
+}
+
+func (a *Adapter) attachCommercialPlanTokenQuotas(plans []*types.CommercialPlan) error {
+	if len(plans) == 0 {
+		return nil
+	}
+	rows, err := a.db.Query(`SELECT plan_id, token_quota, reset_duration FROM commercial_plan_token_quotas`)
+	if err != nil {
+		return fmt.Errorf("list plan token quotas: %w", err)
+	}
+	defer rows.Close()
+	type quota struct {
+		tokens   int64
+		duration string
+	}
+	byPlan := map[int64]quota{}
+	for rows.Next() {
+		var planID int64
+		var q quota
+		if err := rows.Scan(&planID, &q.tokens, &q.duration); err != nil {
+			return fmt.Errorf("scan plan token quota: %w", err)
+		}
+		byPlan[planID] = q
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, plan := range plans {
+		if plan == nil {
+			continue
+		}
+		if q, ok := byPlan[plan.ID]; ok {
+			plan.TokenQuota = q.tokens
+			plan.TokenQuotaDuration = q.duration
+		}
+	}
+	return nil
+}
+
 func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.CommercialPlan, error) {
 	where := "WHERE archived_at IS NULL"
 	if !includeDisabled {
@@ -91,7 +159,13 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 		}
 		plans = append(plans, plan)
 	}
-	return plans, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := a.attachCommercialPlanTokenQuotas(plans); err != nil {
+		return nil, err
+	}
+	return plans, nil
 }
 
 func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error) {
@@ -100,6 +174,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	}
 	if plan.InternalQuotaTokens < 0 {
 		return 0, fmt.Errorf("commercial plan internal quota must be non-negative")
+	}
+	if plan.TokenQuota < 0 {
+		return 0, fmt.Errorf("commercial plan token quota must be non-negative")
 	}
 	if plan.RealCostCNY < 0 {
 		return 0, fmt.Errorf("commercial plan real cost must be non-negative")
@@ -115,6 +192,10 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	durationDays := plan.DurationDays
 	if durationDays == 0 {
 		durationDays = 30
+	}
+	tokenQuotaDuration, err := normalizeCommercialTokenQuotaDuration(plan.TokenQuotaDuration, durationDays)
+	if err != nil {
+		return 0, err
 	}
 	if durationDays < -1 || (durationDays == -1 && (plan.PriceFen != 0 || normalizeCommercialSaleState(plan.SaleState) != "hidden")) {
 		return 0, fmt.Errorf("permanent plans must be hidden and free to assign")
@@ -167,6 +248,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create commercial plan: %w", err)
+	}
+	if err := a.upsertCommercialPlanTokenQuota(id, plan.TokenQuota, tokenQuotaDuration); err != nil {
+		return 0, err
 	}
 	return id, nil
 }
@@ -641,6 +725,23 @@ func (a *Adapter) GetCommercialSummary(uid int64) (*types.CommercialSummary, err
 	if err := grantRows.Close(); err != nil {
 		return nil, err
 	}
+
+	var tokenQuota int64
+	var tokenQuotaDuration string
+	err = a.db.QueryRow(`
+		SELECT q.token_quota, q.reset_duration
+		FROM commercial_entitlements e
+		JOIN commercial_plan_token_quotas q ON q.plan_id = e.plan_id
+		WHERE e.uid = $1 AND e.state = 'active'
+		  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+		  AND q.token_quota > 0
+		ORDER BY q.token_quota DESC, e.expires_at DESC NULLS LAST, e.id DESC
+		LIMIT 1`, uid).Scan(&tokenQuota, &tokenQuotaDuration)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("load commercial token quota: %w", err)
+	}
+	summary.TokenQuota = tokenQuota
+	summary.TokenQuotaDuration = tokenQuotaDuration
 
 	ledgerRows, err := a.db.Query(`
 		SELECT id, uid, model, amount_cny, entry_type, source_type, COALESCE(source_id, 0), note, created_at
