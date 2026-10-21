@@ -954,7 +954,10 @@ func main() {
 			serviceAgentsMCPHandler.SetBotIdentity(botIdentity)
 		}
 		// 外部执行后端（设计 §4.4）：声明 runner.type=http 的 agent 由平台转发执行。
-		serviceAgentsMCPHandler.SetExternalRunner(server.NewServiceExternalRunnerFromEnv(serviceAgentStore))
+		externalRunner := server.NewServiceExternalRunnerFromEnv(serviceAgentStore)
+		serviceAgentsMCPHandler.SetExternalRunner(externalRunner)
+		// 进程重启后把「已创建但没转发成功」的外部 run 重新派发（否则永远卡在 submitted）。
+		externalRunner.StartPendingRecovery(time.Minute, 10*time.Second)
 		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
 		// 应用目录管理 API（设计 §3.3-9 目录与订阅）：网页 cats 的目录/管理界面数据面；
 		// 清单跟账号，变更即时同步在线 MCP 会话（list_changed）。

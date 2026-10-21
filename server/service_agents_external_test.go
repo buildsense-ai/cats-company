@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ---- 外部执行后端（runner.type=http；设计 §4.4 P3-a）----
@@ -309,4 +311,99 @@ func TestExternalRunnerSkipsPlatformRunner(t *testing.T) {
 	if spec := runner.SpecFor(context.Background(), agent); spec.IsExternal() {
 		t.Fatalf("platform agent must not be dispatched externally: %+v", spec)
 	}
+}
+
+// 进程重启后：已创建但从没转发成功的外部 run 会被重新派发（否则永远停在 submitted）。
+func TestExternalRunnerRecoversUnclaimedRun(t *testing.T) {
+	var hits int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte(`{"status":"completed","output":{"text":"recovered"}}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	st := newFakeServiceAgentStore()
+	st.definitions[1] = json.RawMessage(`{"async_threshold_seconds":1,"runner":{"type":"http","url":"` + ts.URL + `","timeout_seconds":5}}`)
+
+	// 直接建 run（不经 invoke）——等价于 run 建好后、转发前进程崩溃。
+	sessionID, runID := newExternalTestRun(t, st)
+
+	runner := externalRunnerForTest(t, st, "test-secret")
+	n, err := runner.RecoverPending(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("recovered = %d, want 1 (session=%s)", n, sessionID)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if run, err := st.GetServiceRun(context.Background(), runID); err == nil && run.State == "completed" {
+			if got := atomic.LoadInt32(&hits); got != 1 {
+				t.Fatalf("endpoint hits = %d, want 1", got)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	run, _ := st.GetServiceRun(context.Background(), runID)
+	t.Fatalf("run state = %s, want completed after recovery", run.State)
+}
+
+// 恢复扫描不能把 worker 型 run 当成外部 run 转发（worker 自己会认领）。
+func TestExternalRunnerRecoverySkipsWorkerRuns(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.definitions[1] = json.RawMessage(`{"runner":{"type":"worker","command":"echo hi"}}`)
+	_, runID := newExternalTestRun(t, st)
+
+	runner := externalRunnerForTest(t, st, "s")
+	n, err := runner.RecoverPending(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("recovered = %d, want 0 for worker agent", n)
+	}
+	if run, _ := st.GetServiceRun(context.Background(), runID); run.State != "submitted" {
+		t.Fatalf("worker run state = %s, want submitted（交给 worker 认领）", run.State)
+	}
+}
+
+// runner.type=mcp：平台当 MCP client 调对端工具，input 作为 arguments，结果写回 output。
+func TestExternalRunnerMCPCompleted(t *testing.T) {
+	peer := mcp.NewServer(&mcp.Implementation{Name: "peer-agent", Version: "1"}, nil)
+	mcp.AddTool(peer, &mcp.Tool{Name: "run"}, func(_ context.Context, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
+		text, _ := args["text"].(string)
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "peer-saw:" + text}},
+		}, nil, nil
+	})
+	peerHTTP := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return peer }, nil)
+	ts := httptest.NewServer(peerHTTP)
+	t.Cleanup(ts.Close)
+
+	st := newFakeServiceAgentStore()
+	// 不声明 tool：对端只有一个工具，应自动选中。
+	st.definitions[1] = json.RawMessage(`{"async_threshold_seconds":1,"runner":{"type":"mcp","url":"` + ts.URL + `","timeout_seconds":5}}`)
+	_, runID := newExternalTestRun(t, st)
+
+	runner := externalRunnerForTest(t, st, "s")
+	if _, err := runner.RecoverPending(context.Background(), 0, 10); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := st.GetServiceRun(context.Background(), runID)
+		if err == nil && run.State == "completed" {
+			if !strings.Contains(string(run.Result), "peer-saw:hi") {
+				t.Fatalf("result = %s, want peer-saw:hi", run.Result)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	run, _ := st.GetServiceRun(context.Background(), runID)
+	t.Fatalf("run state = %s err=%s, want completed", run.State, run.Result)
 }

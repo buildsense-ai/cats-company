@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 )
@@ -198,6 +199,40 @@ func (a *Adapter) ClaimServiceRunsScoped(ctx context.Context, instanceID string,
 // per-user worker 凭据下的作用域限制：拿到凭据也领不到别人的 run。
 func (a *Adapter) ClaimServiceRunsOwnedBy(ctx context.Context, instanceID string, limit int, ownerUID int64) ([]store.ServiceRun, error) {
 	return a.claimServiceRuns(ctx, instanceID, limit, nil, ownerUID)
+}
+
+// ListUnclaimedServiceRuns 列出「已创建但还没被任何执行方领过」的 run（重启后重新转发用）。
+func (a *Adapter) ListUnclaimedServiceRuns(ctx context.Context, olderThan time.Duration, limit int) ([]store.ServiceRun, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if olderThan <= 0 {
+		olderThan = 5 * time.Second
+	}
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT run_id, session_id, state, COALESCE(client_token, ''), input_json, instance_id, lease_epoch, attempts
+		FROM service_runs
+		WHERE state = 'submitted' AND attempts = 0
+		  AND created_at < CURRENT_TIMESTAMP - ($1 * INTERVAL '1 second')
+		ORDER BY created_at
+		LIMIT $2`, int(olderThan.Seconds()), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list unclaimed service runs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ServiceRun
+	for rows.Next() {
+		var run store.ServiceRun
+		if err := rows.Scan(&run.RunID, &run.SessionID, &run.State, &run.ClientToken,
+			&run.Input, &run.InstanceID, &run.LeaseEpoch, &run.Attempts); err != nil {
+			return nil, fmt.Errorf("scan unclaimed service run: %w", err)
+		}
+		out = append(out, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate unclaimed service runs: %w", err)
+	}
+	return out, nil
 }
 
 func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit int, agentSlugs []string, ownerUID int64) ([]store.ServiceRun, error) {

@@ -176,6 +176,26 @@ func (f *fakeServiceAgentStore) GetServiceAgentBySlug(_ context.Context, slug st
 	return 0, "", 0, 0, store.ErrServiceAgentNotFound
 }
 
+// ListUnclaimedServiceRuns 模拟重启恢复扫描：submitted 且 attempts=0 的 run。
+func (f *fakeServiceAgentStore) ListUnclaimedServiceRuns(_ context.Context, _ time.Duration, limit int) ([]store.ServiceRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if limit <= 0 {
+		limit = 20
+	}
+	out := make([]store.ServiceRun, 0, limit)
+	for _, run := range f.runs {
+		if run.State != "submitted" || run.Attempts != 0 {
+			continue
+		}
+		out = append(out, run)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 // SetServiceAgentState 模拟下架/上架：只有 user owner 本人能操作。
 func (f *fakeServiceAgentStore) SetServiceAgentState(_ context.Context, slug string, ownerUID int64, active bool) error {
 	f.mu.Lock()

@@ -185,6 +185,9 @@ type ServiceAgentStore interface {
 	// 复用了既有 run（调用方不应重复触发执行），false=本次新建了 run。
 	CreateServiceRunIdempotent(ctx context.Context, sessionID, clientToken string, input json.RawMessage) (ServiceRun, bool, error)
 	ClaimServiceRuns(ctx context.Context, instanceID string, limit int) ([]ServiceRun, error)
+	// ListUnclaimedServiceRuns 列出「已创建但还没被任何执行方领过」的 run（olderThan 之前创建）。
+	// 用于进程重启后重新转发外部 runner 的 run（worker/codex 型由各自执行方认领，不会误转发）。
+	ListUnclaimedServiceRuns(ctx context.Context, olderThan time.Duration, limit int) ([]ServiceRun, error)
 	// StartServiceRun 把指定 run 从 submitted 推到 running 并写入租约（外部执行后端用）。
 	// 返回 false = 已被其他执行方接管或已终态（调用方应放弃本次执行）。
 	StartServiceRun(ctx context.Context, runID, instanceID string, leaseSeconds int) (bool, error)

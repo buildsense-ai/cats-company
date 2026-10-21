@@ -312,6 +312,62 @@ describe('ServiceAgentsPanel', () => {
     expect(banner.textContent).not.toContain('-cmd');
   });
 
+  it('发布 MCP 服务：runner.type=mcp 带地址与工具名', async () => {
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'peer-mcp', version: 1, visibility: 'public' });
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="发布应用"]').click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    const setValue = (node, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(node, value);
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await act(async () => {
+      setValue(nameInput, '对端 MCP');
+      setValue(slugInput, 'peer-mcp');
+      await Promise.resolve();
+    });
+
+    // 切到「MCP 服务」
+    const mcpRadio = [...form.querySelectorAll('input[type="radio"]')]
+      .find((node) => node.closest('label')?.textContent.includes('MCP 服务'));
+    expect(mcpRadio).toBeTruthy();
+    await act(async () => {
+      mcpRadio.click();
+      await Promise.resolve();
+    });
+
+    const urlInput = form.querySelector('input[placeholder="https://your-host/mcp"]');
+    const toolInput = form.querySelector('input[placeholder="run"]');
+    expect(urlInput).toBeTruthy();
+    expect(toolInput).toBeTruthy();
+    await act(async () => {
+      setValue(urlInput, 'https://peer.example/mcp');
+      setValue(toolInput, 'do-work');
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const payload = mocks.publishServiceAgent.mock.calls[0][0];
+    expect(payload.definition.runner).toMatchObject({
+      type: 'mcp',
+      url: 'https://peer.example/mcp',
+      tool: 'do-work',
+    });
+    // MCP 应用不需要本机 worker，布局里不应出现 worker 启动命令
+    const banner = container.querySelector('.v3-service-agents-published');
+    expect(banner?.textContent).not.toContain('service-run-worker');
+  });
+
   it('发布表单会校验调用名，非法时不发请求', async () => {
     await renderPanel();
     await act(async () => {

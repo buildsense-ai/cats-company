@@ -42,6 +42,7 @@ export default function ServiceAgentsPanel({ onClose }) {
     visibility: 'private',
     runner: 'worker',
     url: '',
+    tool: '',
     command: '',
     price: '',
   });
@@ -184,6 +185,12 @@ export default function ServiceAgentsPanel({ onClose }) {
       const url = form.url.trim();
       if (!/^https?:\/\//.test(url)) { setPublishError('选 HTTP 执行时要填 http(s):// 地址'); return; }
       definition.runner = { type: 'http', url, timeout_seconds: 60 };
+    } else if (form.runner === 'mcp') {
+      const url = form.url.trim();
+      if (!/^https?:\/\//.test(url)) { setPublishError('选 MCP 服务时要填 http(s):// 地址'); return; }
+      definition.runner = { type: 'mcp', url, timeout_seconds: 60 };
+      const tool = form.tool.trim();
+      if (tool) definition.runner.tool = tool;
     } else {
       definition.runner = { type: 'worker' };
       const command = form.command.trim();
@@ -204,7 +211,7 @@ export default function ServiceAgentsPanel({ onClose }) {
         hasCommand: form.runner === 'worker' && Boolean(form.command.trim()),
       });
       setShowPublish(false);
-      setForm({ name: '', slug: '', slugTouched: false, visibility: 'private', runner: 'worker', url: '', command: '', price: '' });
+      setForm({ name: '', slug: '', slugTouched: false, visibility: 'private', runner: 'worker', url: '', tool: '', command: '', price: '' });
       await load();
     } catch (err) {
       setPublishError(err?.message || '发布失败，请稍后重试。');
@@ -407,17 +414,31 @@ export default function ServiceAgentsPanel({ onClose }) {
                 />
                 HTTP 服务
               </label>
+              <label>
+                <input
+                  type="radio"
+                  name="runner"
+                  checked={form.runner === 'mcp'}
+                  onChange={() => updateForm({ runner: 'mcp' })}
+                />
+                MCP 服务
+              </label>
             </div>
           </div>
-          {form.runner === 'http' ? (
+          {form.runner === 'http' || form.runner === 'mcp' ? (
             <label className="v3-service-agents-field">
-              <span>服务地址</span>
+              <span>{form.runner === 'mcp' ? 'MCP 服务地址' : '服务地址'}</span>
               <input
                 value={form.url}
                 onChange={(event) => updateForm({ url: event.target.value })}
-                placeholder="https://your-host/run"
+                placeholder={form.runner === 'mcp' ? 'https://your-host/mcp' : 'https://your-host/run'}
                 spellCheck={false}
               />
+              {form.runner === 'mcp' ? (
+                <span className="v3-service-agents-field-hint">
+                  平台会当 MCP 客户端连它并调用工具，不需要你自己的 worker
+                </span>
+              ) : null}
             </label>
           ) : (
             <label className="v3-service-agents-field">
@@ -433,6 +454,17 @@ export default function ServiceAgentsPanel({ onClose }) {
               </span>
             </label>
           )}
+          {form.runner === 'mcp' ? (
+            <label className="v3-service-agents-field">
+              <span>工具名（留空=对端只有一个工具时自动选）</span>
+              <input
+                value={form.tool}
+                onChange={(event) => updateForm({ tool: event.target.value })}
+                placeholder="run"
+                spellCheck={false}
+              />
+            </label>
+          ) : null}
           <label className="v3-service-agents-field">
             <span>定价（元 / 千 tokens，留空=免费）</span>
             <input
