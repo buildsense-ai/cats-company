@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -95,6 +96,63 @@ func externalRunnerForTest(t *testing.T, st *fakeServiceAgentStore, secret strin
 	runner.AllowInsecureTargets(true)
 	runner.client = &http.Client{Timeout: 5 * time.Second}
 	return runner
+}
+
+// 回归：转发条件曾经写成 `if created`，而 CreateServiceRunIdempotent 的布尔值
+// 语义是 reused（true=幂等命中、false=本次新建），于是新建 run 永远不会被转发到
+// 外部执行器，调用方只能拿到一个永远 submitted 的句柄。
+func TestInvokeDispatchesExternalRunnerOnlyForFreshRun(t *testing.T) {
+	var hits int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte(`{"status":"completed","output":{"text":"ok"},"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	st := newFakeServiceAgentStore()
+	st.definitions[1] = json.RawMessage(`{"async_threshold_seconds":1,"runner":{"type":"http","url":"` + ts.URL + `","timeout_seconds":5}}`)
+
+	handler := NewServiceAgentsMCPHandler(st)
+	handler.SetExternalRunner(externalRunnerForTest(t, st, "test-secret"))
+	handler.syncWait = 20 * time.Millisecond // 不等终态，直接拿句柄
+
+	agent := st.agents[0]
+	args := serviceInvokeToolArgs{Input: map[string]any{"text": "hi"}, ClientToken: "ct-dispatch-1"}
+	if _, _, err := handler.invoke(context.Background(), agent, 441, args); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	waitHits := func(want int32) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if atomic.LoadInt32(&hits) == want {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("dispatch hits = %d, want %d", atomic.LoadInt32(&hits), want)
+	}
+	waitHits(1)
+
+	// 同会话同 client_token 重发 = 幂等命中既有 run，不能再转一次（对端只应收到一次）。
+	st.mu.Lock()
+	var sessionID string
+	for id := range st.sessions {
+		sessionID = id
+	}
+	st.mu.Unlock()
+	if sessionID == "" {
+		t.Fatal("expected one session after fresh invoke")
+	}
+	args.SessionID = sessionID
+	if _, _, err := handler.invoke(context.Background(), agent, 441, args); err != nil {
+		t.Fatalf("invoke reuse: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Fatalf("idempotent reuse dispatched again: hits=%d", got)
+	}
 }
 
 // 成功路径：签名正确、请求体契约、结果写成 result 事件并完成 run。

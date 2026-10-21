@@ -176,6 +176,8 @@ type ServiceAgentStore interface {
 	CreateServiceSession(ctx context.Context, agentID, definitionRev, callerUID, callerBotUID int64, assetsHash string) (string, error)
 	GetServiceSession(ctx context.Context, sessionID string) (ServiceSession, error)
 	GetServiceRun(ctx context.Context, runID string) (ServiceRun, error)
+	// CreateServiceRunIdempotent 的第二个返回值为 reused：true=命中 client_token
+	// 复用了既有 run（调用方不应重复触发执行），false=本次新建了 run。
 	CreateServiceRunIdempotent(ctx context.Context, sessionID, clientToken string, input json.RawMessage) (ServiceRun, bool, error)
 	ClaimServiceRuns(ctx context.Context, instanceID string, limit int) ([]ServiceRun, error)
 	// StartServiceRun 把指定 run 从 submitted 推到 running 并写入租约（外部执行后端用）。

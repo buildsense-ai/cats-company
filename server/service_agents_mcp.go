@@ -284,14 +284,16 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 		}
 		return serviceToolError(fmt.Sprintf("session_error: %v", err)), nil, nil
 	}
-	run, created, err := h.store.CreateServiceRunIdempotent(ctx, session.SessionID, args.ClientToken, input)
+	run, reused, err := h.store.CreateServiceRunIdempotent(ctx, session.SessionID, args.ClientToken, input)
 	if err != nil {
 		if errors.Is(err, store.ErrServiceSessionBusy) {
 			return serviceToolError("session_busy: 同会话已有进行中的 run（可先查询 catsco_run_status）"), nil, nil
 		}
 		return serviceToolError(fmt.Sprintf("create_run_failed: %v", err)), nil, nil
 	}
-	if created {
+	// 只有「本次新建」的 run 才转发：幂等命中（reused）说明上一次调用已经转发过，
+	// 重复转发会让对端收到两次同一个 run。
+	if !reused {
 		// 外部执行后端（runner.type=http）：异步转发到用户 endpoint，结果写成 result 事件；
 		// 平台自带执行（codex）不声张，照旧由 worker claim。
 		h.external.MaybeDispatch(ctx, agent, run, callerUID, botUID)

@@ -26,6 +26,9 @@ func (f *fakeServiceAgentStore) GetServiceAgentDefinition(_ context.Context, age
 			f.definitionRevs = append(f.definitionRevs, definitionRev)
 			f.mu.Unlock()
 			definition := json.RawMessage(`{"async_threshold_seconds": 60, "models": ["gpt-6.1-sol"]}`)
+			if custom, ok := f.definitions[agentID]; ok {
+				definition = custom
+			}
 			return a.Slug, a.AsyncThresholdSeconds, definition, nil
 		}
 	}

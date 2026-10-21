@@ -27,6 +27,7 @@ type fakeServiceAgentStore struct {
 	events               map[string][]store.ServiceRunEventRecord
 	tokens               map[string]string // session|token -> runID
 	packages             map[string]json.RawMessage
+	definitions          map[int64]json.RawMessage      // agentID -> definition（覆盖 fake 默认定义）
 	agentPackageVersions map[int64][]fakePackageVersion // agentID -> 版本序列（升序，行为=真实 PG）
 	definitionRevs       []int64                        // 记录 claim 请求的定义版本（会话钉定断言用）
 	instanceHeartbeats   map[string]fakeInstanceHeartbeat
@@ -55,6 +56,7 @@ func newFakeServiceAgentStore() *fakeServiceAgentStore {
 		events:               map[string][]store.ServiceRunEventRecord{},
 		tokens:               map[string]string{},
 		packages:             map[string]json.RawMessage{},
+		definitions:          map[int64]json.RawMessage{},
 		agentPackageVersions: map[int64][]fakePackageVersion{},
 		receipts:             map[string]*store.ServiceRunReceipt{},
 		hiddenAgents:         map[int64]map[int64]bool{},
@@ -149,7 +151,8 @@ func (f *fakeServiceAgentStore) ClaimServiceAgentOwnership(_ context.Context, sl
 	return nil
 }
 
-func (f *fakeServiceAgentStore) GetServiceAgentPackageHash(_ context.Context, agentID int64) (string, error) {	f.mu.Lock()
+func (f *fakeServiceAgentStore) GetServiceAgentPackageHash(_ context.Context, agentID int64) (string, error) {
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	versions := f.agentPackageVersions[agentID]
 	if len(versions) == 0 {
@@ -492,6 +495,7 @@ func (f *fakeServiceAgentStore) TouchServiceRunReceiptDelivery(_ context.Context
 	}
 	return nil
 }
+
 // ---- 应用目录订阅清单（设计 §3.3-9）----
 
 func (f *fakeServiceAgentStore) ListHiddenServiceAgentIDs(_ context.Context, uid int64) ([]int64, error) {
@@ -519,7 +523,6 @@ func (f *fakeServiceAgentStore) SetServiceAgentSubscriptionHidden(_ context.Cont
 	}
 	return nil
 }
-
 
 func mcpAuthStub(uid int64, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
