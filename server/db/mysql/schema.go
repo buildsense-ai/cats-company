@@ -152,6 +152,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceRunLedgerTable,
 		// 000047：已存在的表不会被 CREATE TABLE IF NOT EXISTS 补列。
 		migrateServiceRunLedgerAddBillingState,
+		migrateServiceRunLedgerBillingStateIndex,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -678,11 +679,14 @@ CREATE TABLE IF NOT EXISTS service_run_ledger (
 
 // 结算状态（000047）：free / settled_platform / pending_credit。
 // 历史库的 service_run_ledger 建表时还没有这一列，CREATE TABLE IF NOT EXISTS
-// 不会补列，必须显式 ALTER；重复列/索引错误由 isIgnorableMigrationError 吞掉。
+// 不会补列，必须显式 ALTER；重复列错误由 isIgnorableMigrationError 吞掉。
+// 注意：go-sql-driver 不开 multiStatements，每条迁移只能是一句 SQL，
+// 所以 ALTER 与建索引必须拆成两个常量。
 const migrateServiceRunLedgerAddBillingState = `
-ALTER TABLE service_run_ledger ADD COLUMN billing_state VARCHAR(24) NOT NULL DEFAULT 'free';
-CREATE INDEX idx_service_run_ledger_pending ON service_run_ledger (payer_uid);
-`
+ALTER TABLE service_run_ledger ADD COLUMN billing_state VARCHAR(24) NOT NULL DEFAULT 'free';`
+
+const migrateServiceRunLedgerBillingStateIndex = `
+CREATE INDEX idx_service_run_ledger_pending ON service_run_ledger (payer_uid);`
 
 // 应用目录订阅清单（PG 000034 镜像；设计 §3.3-9："模式二：默认开放 + 个人清单"）。
 const createServiceAgentSubscriptionsTable = `
