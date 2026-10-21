@@ -5774,8 +5774,12 @@ export default function MessagesView({
     && isFinalTextMessage(group.message));
   const latestHumanMessage = latestHumanGroup?.sourceMessages?.at(-1) || latestHumanGroup?.message;
   const latestHumanPromptKey = latestHumanMessage ? messageTurnIdentity(latestHumanMessage) : '';
+  // Cached history may omit a newer turn. Only infer ownership after a
+  // successful refresh; keep existing associations while loading or on error.
+  const canInferConversationTasks = historyLoaded && !refreshingHistory && !historyError;
   for (const [uid, group] of latestConversationWorking) {
-    if (group.messages.some(message => message.metadata?.run_id || assistantReplyTurnKey(message))) continue;
+    if (!canInferConversationTasks
+      || group.messages.some(message => message.metadata?.run_id || assistantReplyTurnKey(message))) continue;
     // A receipt arriving before the new turn's first working message must not
     // attach to the previous prompt's group.
     if (latestHumanPromptKey && group.fallbackTurnKey !== `${uid}:prompt:${latestHumanPromptKey}`) continue;
@@ -5803,7 +5807,7 @@ export default function MessagesView({
   const conversationExecutionState = (group) => {
     const uid = messageSenderIdentity(group.messages[0]);
     const task = conversationTaskForGroup(group);
-    if (task && ['completed', 'failed', 'cancelled'].includes(task.state)) return task.state;
+    if (task && ['completed', 'failed', 'cancelled', 'stale'].includes(task.state)) return task.state;
     const lastWorkingOrder = Math.max(...group.messages.map(message => conversationMessageOrder.get(message.id) ?? -1));
     const replyOrder = conversationReplies.get(group.explicitTurnKey || group.fallbackTurnKey) ?? -1;
     if (!task && (replyOrder > lastWorkingOrder || group.conversationReplied)) return 'replied';
@@ -5820,7 +5824,6 @@ export default function MessagesView({
     if (stop) return stop.state;
     if (!latest && !runActive) return 'idle';
     if (conversationConnection !== 'connected') return conversationConnection;
-    if (task?.state === 'stale') return 'stale';
     if (task?.state === 'idle') return 'idle';
     if (task?.state === 'waiting') return 'waiting';
     // Publisher-backed task_status outranks the 30s conversation-activity

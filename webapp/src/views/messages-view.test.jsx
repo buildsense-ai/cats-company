@@ -3791,6 +3791,118 @@ describe('MessagesView composer draft isolation', () => {
     expect(currentState()).toBe('completed');
   });
 
+  it.each(['summary', 'websocket'])('waits for fresh history before inferring ownership from a %s receipt', async (source) => {
+    document.documentElement.dataset.theme = 'liquid';
+    const oldMessages = [
+      { id: 951, from_uid: 1, type: 'text', content: 'first request', created_at: '2026-10-19T01:00:00Z' },
+      { id: 952, from_uid: 2, type: 'tool_use', content: 'read', created_at: '2026-10-19T01:00:01Z' },
+      { id: 953, from_uid: 2, type: 'text', role: 'assistant', content: 'first result', created_at: '2026-10-19T01:01:00Z' },
+    ];
+    api.getMessages.mockResolvedValueOnce({ messages: oldMessages });
+    await mountTopic(root, 'p2p_1_2');
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+    await mountTopic(root, 'p2p_1_3');
+    const refreshedHistory = deferred();
+    const status = { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'second-run', state: 'failed', updated_at: '2026-10-19T01:04:00Z' };
+    api.getMessages.mockReturnValueOnce(refreshedHistory.promise);
+    if (source === 'summary') {
+      api.getConversations.mockResolvedValueOnce({ conversations: [{ id: 'p2p_1_2', task_status: status }] });
+    }
+    await mountTopic(root, 'p2p_1_2');
+    if (source === 'websocket') await act(async () => wsHandler({ task_status: status }));
+    const states = () => [...container.querySelectorAll('[data-working-only="true"]')].map(node => node.dataset.executionState);
+    expect(states()).toEqual(['replied']);
+    await act(async () => {
+      refreshedHistory.resolve({ messages: [...oldMessages,
+        { id: 954, from_uid: 1, type: 'text', content: 'second request', created_at: '2026-10-19T01:02:00Z' },
+        { id: 955, from_uid: 2, type: 'tool_use', content: 'write', created_at: '2026-10-19T01:03:00Z' },
+      ] });
+      await flushPromises();
+    });
+    expect(states()).toEqual(['replied', 'failed']);
+  });
+
+  it('keeps unkeyed cached history unbound after a failed refresh until retry succeeds', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    const oldMessages = [
+      { id: 971, from_uid: 1, type: 'text', content: 'first request', created_at: '2026-10-19T01:00:00Z' },
+      { id: 972, from_uid: 2, type: 'tool_use', content: 'read', created_at: '2026-10-19T01:00:01Z' },
+      { id: 973, from_uid: 2, type: 'text', role: 'assistant', content: 'first result', created_at: '2026-10-19T01:01:00Z' },
+    ];
+    api.getMessages.mockResolvedValueOnce({ messages: oldMessages });
+    await mountTopic(root, 'p2p_1_2');
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+    await mountTopic(root, 'p2p_1_3');
+    const failedRefresh = deferred();
+    api.getMessages.mockReturnValueOnce(failedRefresh.promise);
+    api.getConversations.mockResolvedValueOnce({ conversations: [{ id: 'p2p_1_2', task_status: {
+      topic_id: 'p2p_1_2', source_uid: 2, run_id: 'second-run', state: 'failed', updated_at: '2026-10-19T01:04:00Z',
+    } }] });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      failedRefresh.reject(Object.assign(new Error('bad gateway'), { status: 502 }));
+      await flushPromises();
+    });
+    const states = () => [...container.querySelectorAll('[data-working-only="true"]')].map(node => node.dataset.executionState);
+    expect(states()).toEqual(['replied']);
+    const retriedRefresh = deferred();
+    api.getMessages.mockReturnValueOnce(retriedRefresh.promise);
+    await act(async () => Simulate.click(container.querySelector('.v3-history-retry')));
+    expect(states()).toEqual(['replied']);
+    await act(async () => {
+      retriedRefresh.resolve({ messages: [...oldMessages,
+        { id: 974, from_uid: 1, type: 'text', content: 'second request', created_at: '2026-10-19T01:02:00Z' },
+        { id: 975, from_uid: 2, type: 'tool_use', content: 'write', created_at: '2026-10-19T01:03:00Z' },
+      ] });
+      await flushPromises();
+    });
+    expect(states()).toEqual(['replied', 'failed']);
+  });
+
+  it('still matches explicit run receipts while cached history is refreshing', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    const messages = [{ id: 981, from_uid: 2, type: 'tool_use', content: 'read', metadata: { run_id: 'explicit-run' } }];
+    api.getMessages.mockResolvedValueOnce({ messages });
+    await mountTopic(root, 'p2p_1_2');
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+    await mountTopic(root, 'p2p_1_3');
+    const refreshedHistory = deferred();
+    api.getMessages.mockReturnValueOnce(refreshedHistory.promise);
+    api.getConversations.mockResolvedValueOnce({ conversations: [{ id: 'p2p_1_2', task_status: {
+      topic_id: 'p2p_1_2', source_uid: 2, run_id: 'explicit-run', state: 'failed', updated_at: '2026-10-19T01:04:00Z',
+    } }] });
+    await mountTopic(root, 'p2p_1_2');
+    expect(container.querySelector('[data-working-only="true"]').dataset.executionState).toBe('failed');
+    await act(async () => {
+      refreshedHistory.resolve({ messages });
+      await flushPromises();
+    });
+    expect(container.querySelector('[data-working-only="true"]').dataset.executionState).toBe('failed');
+  });
+
+  it.each(['stale', 'completed', 'failed', 'cancelled'].flatMap(state => ['explicit', 'inferred'].map(binding => ({ state, binding }))))
+  ('preserves a $state terminal receipt with $binding binding when another turn starts', async ({ state, binding }) => {
+    vi.useFakeTimers();
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 961, from_uid: 1, type: 'text', content: 'first request' },
+      { id: 962, from_uid: 2, type: 'tool_use', content: 'read',
+        ...(binding === 'explicit' ? { metadata: { run_id: 'finished-run' } } : {}) },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'finished-run', state,
+      updated_at: '2026-10-19T01:01:00Z' } }));
+    const firstState = () => container.querySelector('[data-working-only="true"]').dataset.executionState;
+    expect(firstState()).toBe(state);
+    await act(async () => wsHandler({ data: { topic: 'p2p_1_2', from: 'usr1', seq: 963, type: 'text', content: 'second request' } }));
+    await act(async () => wsHandler({ data: { topic: 'p2p_1_2', from: 'usr2', seq: 964, type: 'tool_use', content: 'write',
+      metadata: { run_id: 'new-run' } } }));
+    await act(async () => { vi.advanceTimersByTime(60_000); });
+    expect(firstState()).toBe(state);
+    await act(async () => wsHandler({ _type: 'ws_close' }));
+    expect(firstState()).toBe(state);
+  });
+
   it('accepts a newer run when the current unkeyed working turn resumes', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-19T01:00:00Z'));
