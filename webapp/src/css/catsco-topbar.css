@@ -1549,6 +1549,111 @@
   cursor: pointer;
 }
 
+/* ---- 本机 worker 凭据（per-user）---- */
+
+.v3-service-worker-credentials {
+  flex: 0 0 auto;
+  margin: 10px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.06);
+  font-size: 12px;
+}
+
+.v3-service-worker-credentials-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.v3-service-worker-credentials-head button,
+.v3-service-worker-credentials-issued-actions button,
+.v3-service-worker-credentials-list button {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.v3-service-worker-credentials-head button:disabled,
+.v3-service-worker-credentials-list button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.v3-service-worker-credentials-empty {
+  margin: 8px 0 0;
+  color: var(--cc-muted, #6b7280);
+  line-height: 1.6;
+}
+
+.v3-service-worker-credentials-issued {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(4, 120, 87, 0.35);
+  border-radius: 8px;
+  background: rgba(4, 120, 87, 0.08);
+}
+
+.v3-service-worker-credentials-issued-title {
+  margin-bottom: 6px;
+}
+
+.v3-service-worker-credentials-issued code {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.35);
+  font-family: var(--cc-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.v3-service-worker-credentials-issued-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.v3-service-worker-credentials-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.v3-service-worker-credentials-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.v3-service-worker-credentials-list code {
+  flex: 0 0 auto;
+  font-family: var(--cc-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+}
+
+.v3-service-worker-credentials-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--cc-muted, #6b7280);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---- 面板状态与徽标（空态/骨架/错误/计数） ---- */
 
 .v3-service-agents-title {

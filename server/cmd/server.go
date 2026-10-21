@@ -980,6 +980,15 @@ func main() {
 		// so another instance can resume from the latest checkpoint.
 		serviceOrchestrator := server.NewServiceRunOrchestratorFromEnv(serviceAgentStore)
 		serviceOrchestrator.RegisterRoutes(mux)
+		// per-user worker 凭据：worker 跑在用户自己机器上，凭据只能认领
+		// 「自己名下应用」的 run（不再把全局实例 token 发给用户）。
+		if workerTokenStore, ok := db.(store.ServiceWorkerTokenStore); ok {
+			serviceOrchestrator.SetWorkerTokenStore(workerTokenStore)
+			credentialHandler := server.NewServiceWorkerCredentialHandlerFromEnv(workerTokenStore)
+			mux.HandleFunc("GET /api/service-worker/credentials", jwtAuthWithDB(credentialHandler.HandleList))
+			mux.HandleFunc("POST /api/service-worker/credentials", jwtAuthWithDB(credentialHandler.HandleCreate))
+			mux.HandleFunc("DELETE /api/service-worker/credentials/{id}", jwtAuthWithDB(credentialHandler.HandleRevoke))
+		}
 		go serviceOrchestrator.StartReaper(15 * time.Second)
 		// Lifecycle write-back delivery (design §3.3-2/§4.8-2): receipts persisted
 		// in the same transaction as terminal run transitions are pushed to the

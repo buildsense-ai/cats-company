@@ -56,6 +56,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceRunEventsTable,
 		createServiceSessionCheckpointsTable,
 		createServiceInstancesTable,
+		createServiceWorkerTokensTable,
 		createServiceRunReceiptsTable,
 		createServiceAgentSubscriptionsTable,
 	}
@@ -613,6 +614,22 @@ CREATE TABLE IF NOT EXISTS service_instances (
     first_seen_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     last_seen_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (instance_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+// 用户自己的 worker 凭据（PG 镜像；只存 sha256，明文仅创建时返回）。
+const createServiceWorkerTokensTable = `
+CREATE TABLE IF NOT EXISTS service_worker_tokens (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    uid BIGINT NOT NULL,
+    token_hash VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    token_prefix VARCHAR(16) NOT NULL DEFAULT '',
+    label VARCHAR(64) NOT NULL DEFAULT '',
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    last_used_at TIMESTAMP(6) NULL DEFAULT NULL,
+    revoked_at TIMESTAMP(6) NULL DEFAULT NULL,
+    UNIQUE KEY uk_service_worker_tokens_hash (token_hash),
+    KEY idx_service_worker_tokens_uid (uid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

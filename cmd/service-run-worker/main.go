@@ -103,7 +103,7 @@ func parseConfig(args []string) (config, error) {
 	fs := flag.NewFlagSet("service-run-worker", flag.ContinueOnError)
 	base := fs.String("base", envOr("CATSCO_BASE_URL", defaultBaseURL), "平台地址（https://app.catsco.cn）")
 	apiPrefix := fs.String("api-prefix", envOr("CATSCO_WORKER_API_PREFIX", defaultAPIPrefix), "worker API 前缀（一般不用改；前面有反向代理时才需要）")
-	token := fs.String("token", os.Getenv("CATS_SERVICE_INSTANCE_TOKEN"), "实例 token（默认读 CATS_SERVICE_INSTANCE_TOKEN）")
+	token := fs.String("token", envOr("CATS_WORKER_TOKEN", os.Getenv("CATS_SERVICE_INSTANCE_TOKEN")), "worker 凭据（cwk_...，在网页「Agent 工具 → 本机 worker 凭据」生成）")
 	instance := fs.String("instance", envOr("CATSCO_WORKER_INSTANCE_ID", defaultInstanceID()), "实例 id（≤64 字符）")
 	command := fs.String("cmd", os.Getenv("CATSCO_WORKER_CMD"), "执行命令模板；可用占位符 {slug} {run_id} {session_id} {input_file}，输入 JSON 同时写到 stdin")
 	agents := fs.String("agents", os.Getenv("CATSCO_WORKER_AGENTS"), "只认领这些 slug（逗号分隔）；空=认领所有应用（多租户下不推荐）")
@@ -127,7 +127,11 @@ func parseConfig(args []string) (config, error) {
 		once:       *once,
 	}
 	if cfg.token == "" {
-		return cfg, errors.New("缺少实例 token：-token 或 CATS_SERVICE_INSTANCE_TOKEN")
+		return cfg, errors.New("缺少 worker 凭据：-token、CATS_WORKER_TOKEN 或 CATS_SERVICE_INSTANCE_TOKEN")
+	}
+	// 公网 worker 面只认 per-user 凭据（cwk_...）；旧的全实例 token 会在服务端 401。
+	if !strings.HasPrefix(cfg.token, "cwk_") {
+		log.Printf("提示：凭据不是 cwk_ 前缀，公网 /api/service-worker 只接受网页生成的 worker 凭据（Agent 工具 → 本机 worker 凭据）")
 	}
 	// -cmd 不是必填：命令可以按应用下发（definition.runner.command），
 	// 一个 worker 就能同时服务多个 agent。只有"既没有 -cmd 也没限定 -agents"

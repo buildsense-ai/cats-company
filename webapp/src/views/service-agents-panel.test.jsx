@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
   removeServiceAgentSubscription: vi.fn(),
   publishServiceAgent: vi.fn(),
   unpublishServiceAgent: vi.fn(),
+  listServiceWorkerCredentials: vi.fn(),
+  createServiceWorkerCredential: vi.fn(),
+  revokeServiceWorkerCredential: vi.fn(),
   getMyBots: vi.fn(),
   getBotDefinitionPrompt: vi.fn(),
   updateBotDefinitionServiceAgents: vi.fn(),
@@ -41,6 +44,15 @@ describe('ServiceAgentsPanel', () => {
     mocks.getMyBots.mockResolvedValue({ bots: [{ uid: 63, name: '我的助手' }] });
     mocks.publishServiceAgent.mockResolvedValue({ slug: 'my-agent', version: 1, visibility: 'private' });
     mocks.unpublishServiceAgent.mockResolvedValue({ slug: 'hello', state: 'inactive' });
+    mocks.listServiceWorkerCredentials.mockResolvedValue({ credentials: [], prefix: 'cwk_' });
+    mocks.createServiceWorkerCredential.mockResolvedValue({
+      id: 11,
+      token: `cwk_${'a'.repeat(64)}`,
+      prefix: 'cwk_aaaaaaaa',
+      label: '本机 worker',
+      shown_once: true,
+    });
+    mocks.revokeServiceWorkerCredential.mockResolvedValue({ id: 11, revoked: true });
     mocks.getBotDefinitionPrompt.mockResolvedValue({ configured: true, revision: 5, definition: { botId: '63' } });
     mocks.updateBotDefinitionServiceAgents.mockResolvedValue({
       configured: true,
@@ -400,5 +412,39 @@ describe('ServiceAgentsPanel', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('只有发布者本人能收回该应用');
     expect(container.querySelector('.v3-service-agent-slug')?.textContent).toBe('catsco_my-local');
     expect(container.querySelector('.v3-service-agents-notice')).toBeNull();
+  });
+
+  it('生成本机 worker 凭据：一次性展示明文，撤销后从列表消失', async () => {
+    await renderPanel();
+    const generate = [...container.querySelectorAll('.v3-service-worker-credentials-head button')]
+      .find((node) => node.textContent.includes('生成'));
+    expect(generate).toBeTruthy();
+
+    await act(async () => {
+      generate.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.createServiceWorkerCredential).toHaveBeenCalled();
+    const issued = container.querySelector('.v3-service-worker-credentials-issued');
+    expect(issued?.textContent).toContain('只显示这一次');
+    // 明文出现在可复制的 code 里（仅这一次）
+    expect(issued?.querySelector('code')?.textContent).toBe(`cwk_${'a'.repeat(64)}`);
+    // 列表里只显示短前缀
+    const row = container.querySelector('.v3-service-worker-credentials-list li');
+    expect(row?.textContent).toContain('cwk_aaaaaaaa');
+    expect(row?.textContent).not.toContain('a'.repeat(64));
+
+    const revoke = [...container.querySelectorAll('.v3-service-worker-credentials-list button')]
+      .find((node) => node.textContent.includes('撤销'));
+    await act(async () => {
+      revoke.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.revokeServiceWorkerCredential).toHaveBeenCalledWith(11);
+    expect(container.querySelector('.v3-service-worker-credentials-list')).toBeNull();
+    expect(container.querySelector('.v3-service-worker-credentials-issued')).toBeNull();
   });
 });

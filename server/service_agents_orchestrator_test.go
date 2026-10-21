@@ -153,6 +153,67 @@ func newFakeOrchestratorStore() *fakeOrchestratorStore {
 	}
 }
 
+// ClaimServiceRunsOwnedBy 模拟 per-user 凭据的认领作用域：只领 ownerUID 名下应用的 run。
+func (f *fakeOrchestratorStore) ClaimServiceRunsOwnedBy(_ context.Context, instanceID string, limit int, ownerUID int64) ([]store.ServiceRun, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	allowed := map[int64]bool{}
+	for _, agent := range f.agents {
+		if agent.OwnerKind == store.ServiceAgentOwnerUser && agent.OwnerUID == ownerUID {
+			allowed[agent.ID] = true
+		}
+	}
+	var claimed []store.ServiceRun
+	for _, runID := range f.claimable {
+		if len(claimed) >= limit {
+			break
+		}
+		run, ok := f.runs[runID]
+		if !ok || (run.State != "submitted" && run.State != "orphaned") {
+			continue
+		}
+		session, ok := f.sessions[run.SessionID]
+		if !ok || !allowed[session.AgentID] {
+			continue
+		}
+		run.State = "running"
+		run.InstanceID = instanceID
+		run.LeaseEpoch++
+		run.Attempts++
+		run.LeaseExpiresAt = time.Now().Add(30 * time.Second)
+		f.runs[runID] = run
+		claimed = append(claimed, run)
+	}
+	return claimed, nil
+}
+
+// ServiceRunOwnerUID 返回 run 所属应用的 owner_uid（internal 应用返回 0）。
+func (f *fakeOrchestratorStore) ServiceRunOwnerUID(_ context.Context, runID string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	run, ok := f.runs[runID]
+	if !ok {
+		return 0, store.ErrServiceRunNotFound
+	}
+	session, ok := f.sessions[run.SessionID]
+	if !ok {
+		return 0, store.ErrServiceRunNotFound
+	}
+	for _, agent := range f.agents {
+		if agent.ID != session.AgentID {
+			continue
+		}
+		if agent.OwnerKind != store.ServiceAgentOwnerUser {
+			return 0, nil
+		}
+		return agent.OwnerUID, nil
+	}
+	return 0, store.ErrServiceAgentNotFound
+}
+
 func seedOrchestratorFixture(t *testing.T) (*fakeOrchestratorStore, string, string) {
 	t.Helper()
 	st := newFakeOrchestratorStore()

@@ -6,15 +6,12 @@
 - 调用时平台创建 run → **本 worker 认领并在这台机器上执行** → 结果回填给调用方
 - 不需要公网端口、不需要反向代理；worker 主动出网轮询
 
-## 1. 前置
+## 1. 前置：拿到你自己的 worker 凭据
 
-平台侧需要配好实例 token（运维在 `prod.env` 里设置，容器已有）：
+在网页「Agent 工具」面板 →「本机 worker 凭据」→ 生成，复制 `cwk_...`（**只显示一次**）。
 
-```
-CATS_SERVICE_INSTANCE_TOKEN=<64 位随机串>
-```
-
-> 这个 token 是**实例身份**，谁拿到谁就能认领 run，务必只放在自己机器上。
+> 凭据是**按账号**的：只能认领你自己名下应用的 run，拿不到别人的。
+> 撤销后立即失效（下一次 claim 就 401）。多台机器可以各生成一个。
 
 ## 2. 编译
 
@@ -25,7 +22,7 @@ go build -o service-run-worker ./cmd/service-run-worker
 ## 3. 运行
 
 ```bash
-export CATS_SERVICE_INSTANCE_TOKEN=<平台给的 token>
+export CATS_WORKER_TOKEN=cwk_...
 
 ./service-run-worker \
   -base https://app.catsco.cn \
@@ -39,7 +36,7 @@ export CATS_SERVICE_INSTANCE_TOKEN=<平台给的 token>
 |---|---|
 | `-base` | 平台地址，默认 `https://app.catsco.cn` |
 | `-api-prefix` | worker API 前缀，默认 `/api/service-worker`（一般不用改，只有前面又套了一层反向代理时才需要） |
-| `-token` | 实例 token（也可用环境变量） |
+| `-token` | worker 凭据（`cwk_...`；也可用 `CATS_WORKER_TOKEN` / 旧的 `CATS_SERVICE_INSTANCE_TOKEN`） |
 | `-instance` | 实例 id，≤64 字符，默认 `主机名-pid`；**同一实例 id 重启会接管上次的租约** |
 | `-cmd` | 执行命令模板（**可选**，应用自己声明了命令就不用给）；占位符 `{slug}` `{run_id}` `{session_id}` `{input_file}` |
 | `-agents` | **只认领这些 slug**（逗号分隔）；空 = 认领所有应用的 run（多租户不推荐） |
@@ -145,7 +142,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-Environment=CATS_SERVICE_INSTANCE_TOKEN=<token>
+Environment=CATS_WORKER_TOKEN=cwk_...
 Environment=CATSCO_WORKER_CMD=/usr/local/bin/my-agent --input {input_file}
 ExecStart=/usr/local/bin/service-run-worker -base https://app.catsco.cn -instance my-host
 Restart=always
@@ -175,7 +172,7 @@ exec curl -sS -X POST http://127.0.0.1:9xxx/run \
 
 | 现象 | 原因 |
 |---|---|
-| `401 unauthorized` | token 不对，或平台没配 `CATS_SERVICE_INSTANCE_TOKEN` |
+| `401 unauthorized` | 凭据不对/已撤销（去网页重新生成），或不是 `cwk_` 前缀 |
 | run 一直 `submitted` | worker 没在跑 / 实例 id 冲突 / 认领接口被墙 |
 | run 变 `orphaned` | 租约过期（worker 卡死或网络断），会被重新派发 |
 | `exit_1: …` | 你的命令非 0 退出，看 stderr 尾部 |

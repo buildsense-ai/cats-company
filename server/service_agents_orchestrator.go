@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,8 +26,11 @@ type ServiceRunOrchestrator struct {
 	store         store.ServiceAgentStore
 	instanceToken string
 	tokenSecret   string
-	stopOnce      sync.Once
-	stopCh        chan struct{}
+	// workerTokens 是可选的 per-user worker 凭据存储；注入后公网 worker 面只认 cwk_ 凭据
+	// （每个凭据只能认领自己名下应用的 run），不再把全局实例 token 发给每个用户。
+	workerTokens store.ServiceWorkerTokenStore
+	stopOnce     sync.Once
+	stopCh       chan struct{}
 	// receiptKicker 回注投递器（可选）：终态转换后即时唤醒投递（未注入=由投递器周期扫描兜底）。
 	receiptKicker serviceReceiptKicker
 }
@@ -51,10 +56,23 @@ const (
 //
 // /internal/ 只在 Compose 网络内可达（生产 nginx 对该前缀直接 return 404），所以
 // 跑在用户自己电脑上的 service-run-worker 需要一个公网前缀；nginx 已经反向代理
-// /api/，因此这里新增路由无需改 nginx。鉴权与 /internal 完全一致（实例 token）。
+// /api/，因此这里新增路由无需改 nginx。
+//
+// 鉴权是 per-user worker 凭据（store.ServiceWorkerTokenPrefix）：凭据只能认领
+// 「自己名下应用」的 run —— 全局实例 token 不再对外发放。
 //
 // 改动这里要同步 cmd/service-run-worker 的 defaultAPIPrefix。
 const ServiceWorkerAPIPrefix = "/api/service-worker"
+
+// serviceWorkerUIDKey 是 per-user worker 凭据解析出的账号 id（存在=公网凭据身份）。
+type serviceWorkerUIDKey struct{}
+
+func serviceWorkerUID(ctx context.Context) int64 {
+	if uid, ok := ctx.Value(serviceWorkerUIDKey{}).(int64); ok {
+		return uid
+	}
+	return 0
+}
 
 // ServiceClaimResult / ServiceClaimRun 是 claim 的下发契约（实例据此执行 run）。
 type ServiceClaimResult struct {
@@ -94,6 +112,13 @@ func (o *ServiceRunOrchestrator) SetReceiptKicker(k serviceReceiptKicker) {
 	o.receiptKicker = k
 }
 
+// SetWorkerTokenStore 注入 per-user worker 凭据存储。
+// 注入后：公网 /api/service-worker/* 只接受 cwk_ 凭据（只认自己名下应用的 run）；
+// 未注入时公网一面直接 401（fail closed），/internal 仍可用实例 token。
+func (o *ServiceRunOrchestrator) SetWorkerTokenStore(st store.ServiceWorkerTokenStore) {
+	o.workerTokens = st
+}
+
 func (o *ServiceRunOrchestrator) kickReceiptDelivery() {
 	if o.receiptKicker != nil {
 		o.receiptKicker.Kick()
@@ -123,13 +148,13 @@ func (o *ServiceRunOrchestrator) RegisterRoutes(mux *http.ServeMux) {
 
 	// 公网 worker 面（ServiceWorkerAPIPrefix）：用户自己电脑上跑的 service-run-worker
 	// 必须走公网，而 nginx 对 /internal/ 一律 404（内部调用只留 Compose 网络）。
-	// 这里只导出 worker 实际需要的那 5 条，鉴权与 /internal 完全相同（实例 token），
+	// 鉴权 = per-user 凭据（cwk_...），只能认领自己名下应用的 run；
 	// 包分发、checkpoint、events 等仍只在内部网络可用。
-	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/claim", o.withInstanceToken(o.handleClaim))
-	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/runs/{runID}/heartbeat", o.withInstanceToken(o.handleRenewLease))
-	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/runs/{runID}/complete", o.withInstanceToken(o.handleComplete))
-	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/runs/{runID}/fail", o.withInstanceToken(o.handleFailRun))
-	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/instances/{instanceID}/heartbeat", o.withInstanceToken(o.handleInstanceHeartbeat))
+	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/claim", o.withUserWorkerToken(o.handleClaim))
+	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/runs/{runID}/heartbeat", o.withUserWorkerToken(o.handleRenewLease))
+	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/runs/{runID}/complete", o.withUserWorkerToken(o.handleComplete))
+	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/runs/{runID}/fail", o.withUserWorkerToken(o.handleFailRun))
+	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/instances/{instanceID}/heartbeat", o.withUserWorkerToken(o.handleInstanceHeartbeat))
 }
 
 // StartReaper 周期回收过期租约（orphaned 供其他实例接管，设计 §4.8-1）。
@@ -184,6 +209,48 @@ func (o *ServiceRunOrchestrator) withInstanceToken(next http.HandlerFunc) http.H
 	}
 }
 
+// withUserWorkerToken 校验 per-user worker 凭据（cwk_...）：解析出 uid 放进 context。
+// 公网 worker 面只走这条；未配置凭据存储时 fail closed（401）。
+func (o *ServiceRunOrchestrator) withUserWorkerToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if o.workerTokens == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		// 只有 cwk_ 前缀的凭据走这里；全局实例 token 不再对外发放。
+		if !strings.HasPrefix(token, store.ServiceWorkerTokenPrefix) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		sum := sha256.Sum256([]byte(token))
+		uid, err := o.workerTokens.ResolveServiceWorkerToken(r.Context(), hex.EncodeToString(sum[:]))
+		if err != nil || uid == 0 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), serviceWorkerUIDKey{}, uid)))
+	}
+}
+
+// authorizeWorkerRun 做 run 级鉴权：per-user 凭据只能操作自己名下应用的 run；
+// 实例 token（内部/运维）不受限。返回 false 时调用方回 404（不泄露存在性）。
+func (o *ServiceRunOrchestrator) authorizeWorkerRun(r *http.Request, runID string) bool {
+	uid := serviceWorkerUID(r.Context())
+	if uid == 0 {
+		return true
+	}
+	resolver, ok := o.store.(serviceRunOwnerResolver)
+	if !ok {
+		return false
+	}
+	owner, err := resolver.ServiceRunOwnerUID(r.Context(), runID)
+	if err != nil {
+		return false
+	}
+	return owner == uid
+}
+
 func (o *ServiceRunOrchestrator) handleClaim(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Limit      int      `json:"limit"`
@@ -205,7 +272,7 @@ func (o *ServiceRunOrchestrator) handleClaim(w http.ResponseWriter, r *http.Requ
 	if req.Limit > serviceClaimMaxLimit {
 		req.Limit = serviceClaimMaxLimit
 	}
-	runs, err := o.claimRuns(r.Context(), req.InstanceID, req.Limit, req.AgentSlugs)
+	runs, err := o.claimRunsForCaller(r.Context(), req.InstanceID, req.Limit, req.AgentSlugs, serviceWorkerUID(r.Context()))
 	if err != nil {
 		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "claim_failed"})
 		return
@@ -227,6 +294,29 @@ func (o *ServiceRunOrchestrator) handleClaim(w http.ResponseWriter, r *http.Requ
 // 未实现的存储（测试替身）退化为不带过滤的认领。
 type serviceRunScopedClaimer interface {
 	ClaimServiceRunsScoped(ctx context.Context, instanceID string, limit int, agentSlugs []string) ([]store.ServiceRun, error)
+}
+
+// serviceRunOwnedClaimer 是可选的「按应用 owner 过滤」认领能力（per-user worker 凭据）。
+type serviceRunOwnedClaimer interface {
+	ClaimServiceRunsOwnedBy(ctx context.Context, instanceID string, limit int, ownerUID int64) ([]store.ServiceRun, error)
+}
+
+// serviceRunOwnerResolver 返回 run 所属应用的 owner_uid（run 级鉴权用）。
+type serviceRunOwnerResolver interface {
+	ServiceRunOwnerUID(ctx context.Context, runID string) (int64, error)
+}
+
+// claimRunsForCaller 按调用身份选认领范围：per-user 凭据只领自己名下应用；
+// 实例 token（内部/运维）沿用原有的 slug 过滤。
+func (o *ServiceRunOrchestrator) claimRunsForCaller(ctx context.Context, instanceID string, limit int, agentSlugs []string, workerUID int64) ([]store.ServiceRun, error) {
+	if workerUID > 0 {
+		owned, ok := o.store.(serviceRunOwnedClaimer)
+		if !ok {
+			return nil, errors.New("per-user worker claim unsupported by store")
+		}
+		return owned.ClaimServiceRunsOwnedBy(ctx, instanceID, limit, workerUID)
+	}
+	return o.claimRuns(ctx, instanceID, limit, agentSlugs)
 }
 
 func (o *ServiceRunOrchestrator) claimRuns(ctx context.Context, instanceID string, limit int, agentSlugs []string) ([]store.ServiceRun, error) {
@@ -319,6 +409,10 @@ func (o *ServiceRunOrchestrator) handleCheckpoint(w http.ResponseWriter, r *http
 
 func (o *ServiceRunOrchestrator) handleRenewLease(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runID")
+	if !o.authorizeWorkerRun(r, runID) {
+		writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "run_not_found"})
+		return
+	}
 	var req struct {
 		InstanceID string `json:"instance_id"`
 	}
@@ -358,6 +452,10 @@ func (o *ServiceRunOrchestrator) handleAppendEvent(w http.ResponseWriter, r *htt
 
 func (o *ServiceRunOrchestrator) handleComplete(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runID")
+	if !o.authorizeWorkerRun(r, runID) {
+		writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "run_not_found"})
+		return
+	}
 	var req struct {
 		ResultID string          `json:"result_id"`
 		Result   json.RawMessage `json:"result"`
@@ -420,6 +518,10 @@ func (o *ServiceRunOrchestrator) handleAwaitInput(w http.ResponseWriter, r *http
 // retryable=true → orphaned（可被接管重试）；false → failed（终态）。仅对 running 生效（store 层保障）。
 func (o *ServiceRunOrchestrator) handleFailRun(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runID")
+	if !o.authorizeWorkerRun(r, runID) {
+		writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "run_not_found"})
+		return
+	}
 	var req struct {
 		ErrorText string `json:"error_text"`
 		Retryable bool   `json:"retryable"`

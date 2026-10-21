@@ -5,6 +5,14 @@ import { api } from '../api';
 // Agent 工具（CatsCo 定制 agent 的工具集管理；设计 §3.3-9"模式二：默认开放 + 个人清单"）。
 // 添加/删除跟账号、跨设备生效：删除后从你的 Agent 工具集（tools/list）隐去、调用也被拒绝；
 // 重新添加即恢复。变更即时同步在线 MCP 会话（服务端 list_changed）。
+
+// 凭据时间只用于「最近使用」提示，解析失败就不显示。
+const formatCredentialTime = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString();
+};
+
 export default function ServiceAgentsPanel({ onClose }) {
   const [agents, setAgents] = useState([]);
   const [bots, setBots] = useState([]);
@@ -23,6 +31,10 @@ export default function ServiceAgentsPanel({ onClose }) {
   const [unpublishTarget, setUnpublishTarget] = useState('');
   const [unpublishing, setUnpublishing] = useState(() => new Set());
   const [notice, setNotice] = useState(null);
+  // 本机 worker 凭据（per-user）：只能领自己名下应用的 run，明文只显示一次。
+  const [credentials, setCredentials] = useState([]);
+  const [issued, setIssued] = useState(null);
+  const [credentialBusy, setCredentialBusy] = useState(false);
   const [form, setForm] = useState({
     name: '',
     slug: '',
@@ -38,11 +50,15 @@ export default function ServiceAgentsPanel({ onClose }) {
     setLoading(true);
     setError('');
     try {
-      const [catalogData, botsData] = await Promise.all([
+      const [catalogData, botsData, credentialData] = await Promise.all([
         api.getServiceAgentsCatalog(),
         typeof api.getMyBots === 'function' ? api.getMyBots().catch(() => null) : Promise.resolve(null),
+        typeof api.listServiceWorkerCredentials === 'function'
+          ? api.listServiceWorkerCredentials().catch(() => null)
+          : Promise.resolve(null),
       ]);
       setAgents(Array.isArray(catalogData?.agents) ? catalogData.agents : []);
+      setCredentials(Array.isArray(credentialData?.credentials) ? credentialData.credentials : []);
       const rawBots = botsData?.bots ?? botsData?.agents ?? botsData;
       setBots(Array.isArray(rawBots) ? rawBots : []);
     } catch (err) {
@@ -228,6 +244,60 @@ export default function ServiceAgentsPanel({ onClose }) {
       setUnpublishTarget('');
     }
   }, [unpublishing]);
+
+  // 本机 worker 凭据：生成 → 一次性明文；撤销即时生效（下次 claim 就 401）。
+  const createCredential = useCallback(async () => {
+    if (credentialBusy) return;
+    setCredentialBusy(true);
+    setError('');
+    try {
+      const result = await api.createServiceWorkerCredential('本机 worker');
+      setIssued({
+        token: result?.token || '',
+        prefix: result?.prefix || '',
+        id: result?.id,
+        createdAt: result?.created_at || '',
+      });
+      setCredentials((prev) => [
+        {
+          id: result?.id,
+          prefix: result?.prefix || '',
+          label: result?.label || '',
+          created_at: result?.created_at || '',
+        },
+        ...prev.filter((item) => item.id !== result?.id),
+      ]);
+    } catch (err) {
+      setError(err?.message || '生成凭据失败，请稍后重试。');
+    } finally {
+      setCredentialBusy(false);
+    }
+  }, [credentialBusy]);
+
+  const revokeCredential = useCallback(async (credential) => {
+    const id = credential?.id;
+    if (!id || credentialBusy) return;
+    setCredentialBusy(true);
+    setError('');
+    try {
+      await api.revokeServiceWorkerCredential(id);
+      setCredentials((prev) => prev.filter((item) => item.id !== id));
+      setIssued((prev) => (prev?.id === id ? null : prev));
+    } catch (err) {
+      setError(err?.message || '撤销凭据失败，请稍后重试。');
+    } finally {
+      setCredentialBusy(false);
+    }
+  }, [credentialBusy]);
+
+  const copyCredential = useCallback(async (token) => {
+    try {
+      await navigator.clipboard.writeText(token);
+      setError('');
+    } catch {
+      setError('复制失败，请手动选中上面的凭据复制。');
+    }
+  }, []);
 
   return (
     <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
@@ -424,6 +494,46 @@ export default function ServiceAgentsPanel({ onClose }) {
           <button type="button" onClick={() => setNotice(null)}>知道了</button>
         </div>
       ) : null}
+      <div className="v3-service-worker-credentials">
+        <div className="v3-service-worker-credentials-head">
+          <span>本机 worker 凭据</span>
+          <button type="button" onClick={createCredential} disabled={credentialBusy}>
+            {credentialBusy ? '处理中…' : '生成'}
+          </button>
+        </div>
+        {issued ? (
+          <div className="v3-service-worker-credentials-issued" role="status">
+            <div className="v3-service-worker-credentials-issued-title">
+              已生成，<strong>只显示这一次</strong>，请立即复制：
+            </div>
+            <code title={issued.token}>{issued.token}</code>
+            <div className="v3-service-worker-credentials-issued-actions">
+              <button type="button" onClick={() => copyCredential(issued.token)}>复制</button>
+              <button type="button" onClick={() => setIssued(null)}>我已保存</button>
+            </div>
+          </div>
+        ) : null}
+        {credentials.length === 0 ? (
+          <p className="v3-service-worker-credentials-empty">
+            还没有凭据。生成后填到自己机器的 worker 里，它
+            <strong>只能认领你自己应用</strong>的 run，撤销即刻失效。
+          </p>
+        ) : (
+          <ul className="v3-service-worker-credentials-list">
+            {credentials.map((credential) => (
+              <li key={credential.id}>
+                <code title={credential.prefix}>{credential.prefix}…</code>
+                <span className="v3-service-worker-credentials-meta">
+                  {credential.last_used_at ? `最近使用 ${formatCredentialTime(credential.last_used_at)}` : '尚未使用'}
+                </span>
+                <button type="button" onClick={() => revokeCredential(credential)} disabled={credentialBusy}>
+                  撤销
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       <div className="v3-service-agents-scope">
         <label className="v3-service-agents-scope-label" htmlFor="v3-service-agents-scope-select">
           配置范围

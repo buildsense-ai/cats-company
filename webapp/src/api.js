@@ -503,6 +503,10 @@ export const api = {
   // 收回分享（下架）：只有发布者本人能调用；下架后目录与 tools/list 立即不可见，
   // 已缓存工具名的客户端再调用会拿到 agent_not_found。重新发布会恢复上架。
   unpublishServiceAgent: (slug) => request('DELETE', `/api/service-agents/${encodeURIComponent(slug)}`),
+  // 本机 worker 凭据（per-user）：凭据只能认领自己名下应用的 run，明文只在创建时返回一次。
+  listServiceWorkerCredentials: () => request('GET', '/api/service-worker/credentials'),
+  createServiceWorkerCredential: (label) => request('POST', '/api/service-worker/credentials', { label }),
+  revokeServiceWorkerCredential: (id) => request('DELETE', `/api/service-worker/credentials/${encodeURIComponent(id)}`),
   getPushConfig: (signal) => request('GET', '/api/push/config', undefined, { signal }),
   subscribePush: (subscription, registrationID, signal) => (
     request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })

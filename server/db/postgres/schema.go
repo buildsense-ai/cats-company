@@ -156,6 +156,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceRunEventsTable,
 		createServiceSessionCheckpointsTable,
 		createServiceInstancesTable,
+		createServiceWorkerTokensTable,
 		createServiceRunsCreatedAtIndex,
 		createServiceRunReceiptsTable,
 		createServiceRunReceiptsPendingIndex,
@@ -595,6 +596,22 @@ CREATE TABLE IF NOT EXISTS service_instances (
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );`
+
+// 用户自己的 worker 凭据（per-user）：worker 用它只能认领「自己拥有的应用」的 run，
+// 不再依赖全局实例 token（拿到就能领别人的 run）。库里只存 sha256，明文仅创建时返回。
+const createServiceWorkerTokensTable = `
+CREATE TABLE IF NOT EXISTS service_worker_tokens (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    uid BIGINT NOT NULL,
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    token_prefix VARCHAR(16) NOT NULL DEFAULT '',
+    label VARCHAR(64) NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_service_worker_tokens_uid
+    ON service_worker_tokens (uid);`
 
 const createServiceRunsCreatedAtIndex = `
 CREATE INDEX IF NOT EXISTS idx_service_runs_created_at
