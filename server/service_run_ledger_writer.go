@@ -131,6 +131,11 @@ func resolveBillingState(runnerType string, grossMicros int64) string {
 	}
 	switch runnerType {
 	case "http", "mcp":
+		// 外部执行后端自报用量，平台没有扣费通道 → 记「待扣」。
+		return store.ServiceBillingPendingCredit
+	case "worker":
+		// 用户自己的 worker（cmd/service-run-worker）认领执行：平台只做编排，
+		// 调用方额度是否被扣取决于该 worker 有没有走 relay，平台侧无法确认 → 同样记「待扣」。
 		return store.ServiceBillingPendingCredit
 	default:
 		return store.ServiceBillingSettledPlatform

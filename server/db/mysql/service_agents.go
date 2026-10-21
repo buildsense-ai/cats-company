@@ -184,8 +184,24 @@ func (a *Adapter) CreateServiceRunIdempotent(ctx context.Context, sessionID, cli
 }
 
 func (a *Adapter) ClaimServiceRuns(ctx context.Context, instanceID string, limit int) ([]store.ServiceRun, error) {
+	return a.claimServiceRuns(ctx, instanceID, limit, nil)
+}
+
+// ClaimServiceRunsScoped 只认领指定 slug 的 run（worker 声明自己服务哪些应用）。
+// agentSlugs 为空 = 不限（等价 ClaimServiceRuns）。
+func (a *Adapter) ClaimServiceRunsScoped(ctx context.Context, instanceID string, limit int, agentSlugs []string) ([]store.ServiceRun, error) {
+	return a.claimServiceRuns(ctx, instanceID, limit, agentSlugs)
+}
+
+func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit int, agentSlugs []string) ([]store.ServiceRun, error) {
 	if limit <= 0 {
 		limit = 10
+	}
+	slugs := make([]string, 0, len(agentSlugs))
+	for _, slug := range agentSlugs {
+		if trimmed := strings.TrimSpace(slug); trimmed != "" {
+			slugs = append(slugs, trimmed)
+		}
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -193,12 +209,27 @@ func (a *Adapter) ClaimServiceRuns(ctx context.Context, instanceID string, limit
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	rows, err := tx.QueryContext(ctx, `
+	query := `
 		SELECT run_id FROM service_runs
 		WHERE state IN ('submitted','orphaned')
 		ORDER BY created_at
 		LIMIT ?
-		FOR UPDATE SKIP LOCKED`, limit)
+		FOR UPDATE SKIP LOCKED`
+	queryArgs := []any{limit}
+	if len(slugs) > 0 {
+		// 按 agent slug 过滤：worker 只领自己声明的应用（FIND_IN_SET 兼容 MySQL 5.7）。
+		query = `
+		SELECT r.run_id
+		FROM service_runs r
+		JOIN service_sessions s ON s.session_id = r.session_id
+		JOIN service_agents a ON a.id = s.agent_id
+		WHERE r.state IN ('submitted','orphaned') AND FIND_IN_SET(a.slug, ?) > 0
+		ORDER BY r.created_at
+		LIMIT ?
+		FOR UPDATE SKIP LOCKED`
+		queryArgs = []any{strings.Join(slugs, ","), limit}
+	}
+	rows, err := tx.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("select claimable service runs: %w", err)
 	}

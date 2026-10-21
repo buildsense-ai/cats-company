@@ -165,8 +165,9 @@ func (o *ServiceRunOrchestrator) withInstanceToken(next http.HandlerFunc) http.H
 
 func (o *ServiceRunOrchestrator) handleClaim(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Limit      int    `json:"limit"`
-		InstanceID string `json:"instance_id"`
+		Limit      int      `json:"limit"`
+		InstanceID string   `json:"instance_id"`
+		AgentSlugs []string `json:"agent_slugs"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_body"})
@@ -183,7 +184,7 @@ func (o *ServiceRunOrchestrator) handleClaim(w http.ResponseWriter, r *http.Requ
 	if req.Limit > serviceClaimMaxLimit {
 		req.Limit = serviceClaimMaxLimit
 	}
-	runs, err := o.store.ClaimServiceRuns(r.Context(), req.InstanceID, req.Limit)
+	runs, err := o.claimRuns(r.Context(), req.InstanceID, req.Limit, req.AgentSlugs)
 	if err != nil {
 		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "claim_failed"})
 		return
@@ -199,6 +200,28 @@ func (o *ServiceRunOrchestrator) handleClaim(w http.ResponseWriter, r *http.Requ
 		result.Runs = append(result.Runs, entry)
 	}
 	writeServiceJSON(w, http.StatusOK, result)
+}
+
+// serviceRunScopedClaimer 是可选的「按 agent slug 过滤」认领能力（PG/MySQL 适配器实现）。
+// 未实现的存储（测试替身）退化为不带过滤的认领。
+type serviceRunScopedClaimer interface {
+	ClaimServiceRunsScoped(ctx context.Context, instanceID string, limit int, agentSlugs []string) ([]store.ServiceRun, error)
+}
+
+func (o *ServiceRunOrchestrator) claimRuns(ctx context.Context, instanceID string, limit int, agentSlugs []string) ([]store.ServiceRun, error) {
+	slugs := make([]string, 0, len(agentSlugs))
+	for _, slug := range agentSlugs {
+		if trimmed := strings.TrimSpace(slug); trimmed != "" {
+			slugs = append(slugs, trimmed)
+		}
+	}
+	if len(slugs) == 0 {
+		return o.store.ClaimServiceRuns(ctx, instanceID, limit)
+	}
+	if scoped, ok := o.store.(serviceRunScopedClaimer); ok {
+		return scoped.ClaimServiceRunsScoped(ctx, instanceID, limit, slugs)
+	}
+	return o.store.ClaimServiceRuns(ctx, instanceID, limit)
 }
 
 func (o *ServiceRunOrchestrator) buildClaimEntry(ctx context.Context, run store.ServiceRun) (ServiceClaimRun, error) {
