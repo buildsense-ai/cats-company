@@ -500,6 +500,9 @@ export const api = {
   ),
   // 上架自己的 agent（白名单 uid）：worker=由本机 service-run-worker 执行；http=转发到自建服务。
   publishServiceAgent: (payload) => request('POST', '/api/service-agents/publish', payload),
+  // 收回分享（下架）：只有发布者本人能调用；下架后目录与 tools/list 立即不可见，
+  // 已缓存工具名的客户端再调用会拿到 agent_not_found。重新发布会恢复上架。
+  unpublishServiceAgent: (slug) => request('DELETE', `/api/service-agents/${encodeURIComponent(slug)}`),
   getPushConfig: (signal) => request('GET', '/api/push/config', undefined, { signal }),
   subscribePush: (subscription, registrationID, signal) => (
     request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })

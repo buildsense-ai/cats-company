@@ -54,9 +54,45 @@ func (a *Adapter) ClaimServiceAgentOwnership(ctx context.Context, slug, name, ow
 	}
 
 	if _, err := a.db.ExecContext(ctx, `
-		UPDATE service_agents SET name = ?, visibility = ? WHERE slug = ?`,
+		UPDATE service_agents SET name = ?, visibility = ?, state = 'active' WHERE slug = ?`,
 		name, visibility, slug); err != nil {
 		return fmt.Errorf("claim service agent ownership: %w", err)
 	}
 	return nil
+}
+
+// SetServiceAgentState 上架/下架自己的应用（语义与 PG 实现一致：只有 user owner 本人可操作）。
+func (a *Adapter) SetServiceAgentState(ctx context.Context, slug string, ownerUID int64, active bool) error {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return fmt.Errorf("set service agent state: empty slug")
+	}
+	state := "inactive"
+	if active {
+		state = "active"
+	}
+	res, err := a.db.ExecContext(ctx, `
+		UPDATE service_agents SET state = ?
+		WHERE slug = ? AND owner_uid = ? AND owner_kind = 'user'`, state, slug, ownerUID)
+	if err != nil {
+		return fmt.Errorf("set service agent state: %w", err)
+	}
+	if affected, err := res.RowsAffected(); err == nil && affected > 0 {
+		return nil
+	}
+	var currentOwner int64
+	var currentKind string
+	err = a.db.QueryRowContext(ctx, `
+		SELECT owner_uid, owner_kind FROM service_agents WHERE slug = ?`, slug).
+		Scan(&currentOwner, &currentKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ErrServiceAgentNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("set service agent state: %w", err)
+	}
+	if currentKind == store.ServiceAgentOwnerUser && currentOwner == ownerUID {
+		return nil // 已是目标状态（幂等）
+	}
+	return store.ErrServiceAgentOwnedByOther
 }

@@ -1455,6 +1455,100 @@
   border-color: rgba(4, 120, 87, 0.35);
 }
 
+/* ---- 收回分享（下架）---- */
+
+.v3-service-agent-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.v3-service-agent-unpublish {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-muted, #6b7280);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.v3-service-agent-unpublish:hover:not(:disabled) {
+  background: rgba(180, 83, 9, 0.10);
+  border-color: rgba(180, 83, 9, 0.35);
+  color: #b45309;
+}
+
+.v3-service-agent-unpublish:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.v3-service-agent-unpublish.is-confirm {
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.4);
+  background: rgba(220, 38, 38, 0.08);
+}
+
+/* 收回成功通知（长 slug 优雅截断，见 title 提示全名） */
+.v3-service-agents-notice {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(180, 83, 9, 0.3);
+  border-radius: 10px;
+  background: rgba(180, 83, 9, 0.08);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.v3-service-agents-notice-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.v3-service-agents-notice-title {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.v3-service-agents-notice-title code {
+  min-width: 0;
+  font-family: var(--cc-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.v3-service-agents-notice-hint {
+  color: var(--cc-muted, #6b7280);
+}
+
+.v3-service-agents-notice button {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid rgba(180, 83, 9, 0.35);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
 /* ---- 面板状态与徽标（空态/骨架/错误/计数） ---- */
 
 .v3-service-agents-title {

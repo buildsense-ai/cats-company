@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ChevronDown, Plus, RefreshCw, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Plus, RefreshCw, Sparkles, Undo2, X } from 'lucide-react';
 import { api } from '../api';
 
 // Agent 工具（CatsCo 定制 agent 的工具集管理；设计 §3.3-9"模式二：默认开放 + 个人清单"）。
@@ -19,6 +19,10 @@ export default function ServiceAgentsPanel({ onClose }) {
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState('');
   const [publishResult, setPublishResult] = useState(null);
+  // 收回分享：二次确认（避免误点）+ 逐行进行中状态 + 成功通知。
+  const [unpublishTarget, setUnpublishTarget] = useState('');
+  const [unpublishing, setUnpublishing] = useState(() => new Set());
+  const [notice, setNotice] = useState(null);
   const [form, setForm] = useState({
     name: '',
     slug: '',
@@ -192,6 +196,38 @@ export default function ServiceAgentsPanel({ onClose }) {
       setPublishing(false);
     }
   }, [form, load]);
+
+  // 收回分享：下架后目录与别人的 tools/list 立即不可见，已缓存工具名的客户端再调用
+  // 会拿到 "该应用已被发布者收回"。重新发布同一调用名即可恢复。
+  const submitUnpublish = useCallback(async (agent) => {
+    const slug = agent?.slug;
+    if (!slug || unpublishing.has(slug)) return;
+    setUnpublishing((prev) => new Set(prev).add(slug));
+    setError('');
+    setNotice(null);
+    try {
+      await api.unpublishServiceAgent(slug);
+      setAgents((prev) => prev.filter((item) => item.slug !== slug));
+      setNotice({ slug, name: agent?.name || slug, alreadyGone: false });
+    } catch (err) {
+      if (err?.status === 404) {
+        // 已经不在了（可能刚被收回）：按成功处理，顺手刷掉这一行。
+        setAgents((prev) => prev.filter((item) => item.slug !== slug));
+        setNotice({ slug, name: agent?.name || slug, alreadyGone: true });
+      } else if (err?.status === 403) {
+        setError('只有发布者本人能收回该应用。');
+      } else {
+        setError(err?.message || '收回失败，请稍后重试。');
+      }
+    } finally {
+      setUnpublishing((prev) => {
+        const next = new Set(prev);
+        next.delete(slug);
+        return next;
+      });
+      setUnpublishTarget('');
+    }
+  }, [unpublishing]);
 
   return (
     <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
@@ -372,6 +408,22 @@ export default function ServiceAgentsPanel({ onClose }) {
           <button type="button" onClick={() => setPublishResult(null)}>知道了</button>
         </div>
       ) : null}
+      {notice ? (
+        <div className="v3-service-agents-notice" role="status">
+          <div className="v3-service-agents-notice-body">
+            <div className="v3-service-agents-notice-title">
+              已收回 <code title={`catsco_${notice.slug}`}>catsco_{notice.slug}</code>
+            </div>
+            <div className="v3-service-agents-notice-hint">
+              {notice.alreadyGone
+                ? '该应用此前已不在目录中。'
+                : '别人的工具列表里会立即消失，再调用会提示“已被发布者收回”。'}
+              重新发布同一调用名即可恢复分享。
+            </div>
+          </div>
+          <button type="button" onClick={() => setNotice(null)}>知道了</button>
+        </div>
+      ) : null}
       <div className="v3-service-agents-scope">
         <label className="v3-service-agents-scope-label" htmlFor="v3-service-agents-scope-select">
           配置范围
@@ -447,7 +499,9 @@ export default function ServiceAgentsPanel({ onClose }) {
       ) : (
         <ul className="v3-service-agents-list">
           {agents.map((agent) => {
-            const busy = pending.has(agent.slug) || (scopeBotUid && scopeLoading);
+            const busy = pending.has(agent.slug)
+              || unpublishing.has(agent.slug)
+              || (scopeBotUid && scopeLoading);
             const accountHidden = Boolean(agent.hidden);
             const selected = scopeBotUid
               ? (accountHidden
@@ -474,23 +528,60 @@ export default function ServiceAgentsPanel({ onClose }) {
                     <div className="v3-service-agent-note">账号清单中已移除</div>
                   ) : null}
                 </div>
-                <button
-                  type="button"
-                  className={`v3-service-agent-toggle${hidden ? ' is-add' : ' is-remove'}`}
-                  disabled={busy || (scopeBotUid && accountHidden)}
-                  onClick={() => toggle(agent)}
-                  aria-label={`${hidden ? '添加' : '删除'}${agent.name || agent.slug}`}
-                  title={
-                    scopeBotUid && accountHidden
-                      ? '先在账号清单中添加该工具'
-                      : hidden
-                        ? (scopeBotUid ? '添加到该 Agent 的工具清单' : '重新添加该工具')
-                        : (scopeBotUid ? '从该 Agent 的工具清单移除' : '从我的清单中删除该工具')
-                  }
-                >
-                  {hidden ? <Plus size={15} /> : <X size={15} />}
-                  <span>{hidden ? '添加' : '删除'}</span>
-                </button>
+                <div className="v3-service-agent-actions">
+                  {agent.mine ? (
+                    unpublishTarget === agent.slug ? (
+                      <>
+                        <button
+                          type="button"
+                          className="v3-service-agent-unpublish is-confirm"
+                          disabled={unpublishing.has(agent.slug)}
+                          onClick={() => submitUnpublish(agent)}
+                          title="确认从目录下架该应用"
+                        >
+                          {unpublishing.has(agent.slug) ? '收回中…' : '确认收回'}
+                        </button>
+                        <button
+                          type="button"
+                          className="v3-service-agent-unpublish"
+                          disabled={unpublishing.has(agent.slug)}
+                          onClick={() => setUnpublishTarget('')}
+                        >
+                          取消
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="v3-service-agent-unpublish"
+                        disabled={busy}
+                        onClick={() => setUnpublishTarget(agent.slug)}
+                        aria-label={`收回${agent.name || agent.slug}的分享`}
+                        title="收回分享：下架后别人就调不到了（重新发布同一调用名即可恢复）"
+                      >
+                        <Undo2 size={15} />
+                        <span>收回</span>
+                      </button>
+                    )
+                  ) : null}
+                  <button
+                    type="button"
+                    className={`v3-service-agent-toggle${hidden ? ' is-add' : ' is-remove'}`}
+                    disabled={busy || (scopeBotUid && accountHidden)}
+                    onClick={() => toggle(agent)}
+                    aria-label={`${hidden ? '添加' : '删除'}${agent.name || agent.slug}`}
+                    title={
+                      scopeBotUid && accountHidden
+                        ? '先在账号清单中添加该工具'
+                        : hidden
+                          ? (scopeBotUid ? '添加到该 Agent 的工具清单' : '重新添加该工具')
+                          : (scopeBotUid ? '从该 Agent 的工具清单移除' : '从我的清单中删除该工具')
+                    }
+                  >
+                    {hidden ? <Plus size={15} /> : <X size={15} />}
+                    <span>{hidden ? '添加' : '删除'}</span>
+                  </button>
+                </div>
               </li>
             );
           })}

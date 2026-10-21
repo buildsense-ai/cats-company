@@ -64,7 +64,7 @@ func (a *Adapter) GetServiceAgentBySlug(ctx context.Context, slug string) (int64
 		       COALESCE((v.definition_json->>'async_threshold_seconds')::int, 60)
 		FROM service_agents a
 		JOIN service_agent_versions v ON v.agent_id = a.id
-		WHERE a.slug = $1
+		WHERE a.slug = $1 AND a.state = 'active'
 		ORDER BY v.version DESC
 		LIMIT 1`, slug).Scan(&id, &name, &version, &threshold)
 	if errors.Is(err, sql.ErrNoRows) {

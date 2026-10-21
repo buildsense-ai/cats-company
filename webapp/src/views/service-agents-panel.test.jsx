@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   addServiceAgentSubscription: vi.fn(),
   removeServiceAgentSubscription: vi.fn(),
   publishServiceAgent: vi.fn(),
+  unpublishServiceAgent: vi.fn(),
   getMyBots: vi.fn(),
   getBotDefinitionPrompt: vi.fn(),
   updateBotDefinitionServiceAgents: vi.fn(),
@@ -39,6 +40,7 @@ describe('ServiceAgentsPanel', () => {
     mocks.removeServiceAgentSubscription.mockResolvedValue({ slug: 'hello', hidden: true });
     mocks.getMyBots.mockResolvedValue({ bots: [{ uid: 63, name: '我的助手' }] });
     mocks.publishServiceAgent.mockResolvedValue({ slug: 'my-agent', version: 1, visibility: 'private' });
+    mocks.unpublishServiceAgent.mockResolvedValue({ slug: 'hello', state: 'inactive' });
     mocks.getBotDefinitionPrompt.mockResolvedValue({ configured: true, revision: 5, definition: { botId: '63' } });
     mocks.updateBotDefinitionServiceAgents.mockResolvedValue({
       configured: true,
@@ -333,5 +335,70 @@ describe('ServiceAgentsPanel', () => {
     expect(container.querySelector('.v3-service-agents-count')?.textContent).toBe('1');
     expect(container.querySelector('.v3-service-agent-badge')?.textContent).toBe('我的');
     expect(container.querySelector('.v3-service-agent-badge.is-private')?.textContent).toBe('私有');
+  });
+
+  it('收回分享：二次确认后下架、从列表移除并给出可恢复的提示', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValueOnce({
+      agents: [
+        { slug: 'my-local', name: '我本机的 agent', version: 2, hidden: false, mine: true, visibility: 'public' },
+        { slug: 'other-agent', name: '别人的应用', version: 1, hidden: false, mine: false },
+      ],
+    });
+    mocks.unpublishServiceAgent.mockResolvedValue({ slug: 'my-local', state: 'inactive' });
+    await renderPanel();
+
+    // 只有自己发布的应用才有「收回」
+    expect(container.querySelectorAll('.v3-service-agent-unpublish').length).toBe(1);
+    expect(container.querySelector('button[aria-label="收回我本机的 agent的分享"]')).toBeTruthy();
+
+    await act(async () => {
+      container.querySelector('button[aria-label="收回我本机的 agent的分享"]').click();
+      await Promise.resolve();
+    });
+    // 第一下只是二次确认，不能直接发请求
+    expect(mocks.unpublishServiceAgent).not.toHaveBeenCalled();
+    const confirm = [...container.querySelectorAll('.v3-service-agent-unpublish')]
+      .find((node) => node.textContent.includes('确认收回'));
+    expect(confirm).toBeTruthy();
+
+    await act(async () => {
+      confirm.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.unpublishServiceAgent).toHaveBeenCalledWith('my-local');
+    // 下架的行从列表消失，只留别人的
+    expect(container.querySelectorAll('.v3-service-agent-row').length).toBe(1);
+    expect(container.querySelector('.v3-service-agent-slug')?.textContent).toBe('catsco_other-agent');
+    const notice = container.querySelector('.v3-service-agents-notice');
+    expect(notice?.textContent).toContain('catsco_my-local');
+    expect(notice?.textContent).toContain('别人的工具列表里会立即消失');
+    expect(notice?.textContent).toContain('重新发布同一调用名即可恢复分享');
+  });
+
+  it('收回失败（不是发布者本人）时保留该行并说明原因', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValueOnce({
+      agents: [{ slug: 'my-local', name: '我本机的 agent', version: 1, hidden: false, mine: true }],
+    });
+    const forbidden = new Error('只有发布者本人能收回该应用。');
+    forbidden.status = 403;
+    mocks.unpublishServiceAgent.mockRejectedValueOnce(forbidden);
+    await renderPanel();
+
+    await act(async () => {
+      container.querySelector('button[aria-label="收回我本机的 agent的分享"]').click();
+      await Promise.resolve();
+    });
+    const confirm = [...container.querySelectorAll('.v3-service-agent-unpublish')]
+      .find((node) => node.textContent.includes('确认收回'));
+    await act(async () => {
+      confirm.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('只有发布者本人能收回该应用');
+    expect(container.querySelector('.v3-service-agent-slug')?.textContent).toBe('catsco_my-local');
+    expect(container.querySelector('.v3-service-agents-notice')).toBeNull();
   });
 });

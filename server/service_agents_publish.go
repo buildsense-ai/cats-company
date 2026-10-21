@@ -39,6 +39,18 @@ type ServiceAgentPublishHandler struct {
 	store     store.ServiceAgentStore
 	allowed   func(int64) bool
 	maxBundle int64
+	notifier  serviceAgentCatalogNotifier
+}
+
+// serviceAgentCatalogNotifier 在目录/可见性变化后同步在线 MCP 会话的工具集（list_changed）。
+// 由 ServiceAgentsMCPHandler 实现；未注入时仅影响下次 tools/list（兼容测试）。
+type serviceAgentCatalogNotifier interface {
+	NotifyCatalogChanged()
+}
+
+// SetCatalogNotifier 注入目录变更通知器（线上由 MCP handler 实现）。
+func (h *ServiceAgentPublishHandler) SetCatalogNotifier(notifier serviceAgentCatalogNotifier) {
+	h.notifier = notifier
 }
 
 // NewServiceAgentPublishHandlerFromEnv 构造上架接口（白名单与目录接口共用）。
@@ -178,6 +190,54 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		"visibility":   visibility,
 		"owner_uid":    uid,
 	})
+}
+
+// HandleUnpublish DELETE /api/service-agents/{slug}
+//
+// 收回分享：把已上架的应用置为 inactive。效果：
+//   - 目录（自己的和别人的）立即不再列出；
+//   - 已缓存工具名的 MCP 会话收到 list_changed，工具消失；
+//   - 直接调用旧工具名 → agent_not_found（invoke 里做实时状态校验）；
+//   - 重新发布同一 slug 即重新上架（ClaimServiceAgentOwnership 会把 state 拉回 active）。
+//
+// 只有发布者本人能收回（平台 internal 条目不可）。幂等：重复收回返回同样的 200。
+func (h *ServiceAgentPublishHandler) HandleUnpublish(w http.ResponseWriter, r *http.Request) {
+	uid := UIDFromContext(r.Context())
+	if uid == 0 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if h.allowed != nil && !h.allowed(uid) {
+		writeServiceJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+		return
+	}
+	slug := strings.TrimSpace(r.PathValue("slug"))
+	if !serviceAgentSlugRe.MatchString(slug) {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "invalid_slug", "detail": "slug 需匹配 " + serviceAgentSlugPattern,
+		})
+		return
+	}
+
+	err := h.store.SetServiceAgentState(r.Context(), slug, uid, false)
+	switch {
+	case errors.Is(err, store.ErrServiceAgentNotFound):
+		writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "agent_not_found"})
+		return
+	case errors.Is(err, store.ErrServiceAgentOwnedByOther), errors.Is(err, store.ErrServiceAgentInternalReserved):
+		writeServiceJSON(w, http.StatusForbidden, map[string]any{
+			"error": "not_owner", "detail": "只有发布者本人能收回该应用",
+		})
+		return
+	case err != nil:
+		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "unpublish_unavailable"})
+		return
+	}
+
+	if h.notifier != nil {
+		h.notifier.NotifyCatalogChanged()
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{"slug": slug, "state": "inactive"})
 }
 
 // decodeServiceAgentBundle 解 base64（兼容 data URL 前缀），并做基本大小/格式校验。

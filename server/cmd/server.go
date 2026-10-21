@@ -968,7 +968,11 @@ func main() {
 		// 用户自助上架（设计 §4.3 P2）：JWT + 同一套内测白名单；首次发布占位 owner，
 		// 之后仅本人可继续发版；平台内部 slug 不可抢占。
 		publishHandler := server.NewServiceAgentPublishHandlerFromEnv(serviceAgentStore)
+		// 下架/上架都会改变目录可见性 → 让在线 MCP 会话立即收到 list_changed。
+		publishHandler.SetCatalogNotifier(serviceAgentsMCPHandler)
 		mux.HandleFunc("POST /api/service-agents/publish", jwtAuthWithDB(publishHandler.HandlePublish))
+		// 收回分享（下架）：只有发布者本人能操作；重新发布同一 slug 即重新上架。
+		mux.HandleFunc("DELETE /api/service-agents/{slug}", jwtAuthWithDB(publishHandler.HandleUnpublish))
 		// Orchestration internal API for runtime instances (design §4.3; instances
 		// reach it over the shared VPC). Authn = per-instance bearer token
 		// (CATS_SERVICE_INSTANCE_TOKEN); service tokens are minted on claim with

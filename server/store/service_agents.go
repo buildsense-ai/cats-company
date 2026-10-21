@@ -166,10 +166,15 @@ type ServiceAgentStore interface {
 	PublishServiceAgentPackage(ctx context.Context, slug, name string, definition json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (version int64, err error)
 	// ClaimServiceAgentOwnership 为用户自助上架占位 slug（设计 P2）。
 	//   - slug 不存在：以给定 owner/visibility 建立条目（state=active）；
-	//   - 已存在且 owner 匹配：更新 name/visibility；
+	//   - 已存在且 owner 匹配：更新 name/visibility（并把已下架的条目重新置为 active）；
 	//   - 已存在且 owner 不同（含平台 internal 条目）→ ErrServiceAgentOwnedByOther / ErrServiceAgentInternalReserved。
 	// 幂等：同一 owner 重复调用不报错（用于重复发布时刷新可见性）。
 	ClaimServiceAgentOwnership(ctx context.Context, slug, name, ownerKind string, ownerUID int64, visibility string) error
+	// SetServiceAgentState 上架/下架自己的应用（只有 user owner 本人可操作）。
+	// active=false → 目录与 tools/list 立即不可见、调用返回 agent_not_found；
+	// 重新发布会把它恢复为 active（幂等，见 ClaimServiceAgentOwnership）。
+	// 不存在 → ErrServiceAgentNotFound；不是本人（含平台 internal 条目）→ ErrServiceAgentOwnedByOther。
+	SetServiceAgentState(ctx context.Context, slug string, ownerUID int64, active bool) error
 	GetServiceAgentPackage(ctx context.Context, packageHash string) (bundle json.RawMessage, err error)
 	// GetServiceAgentPackageHash 返回该 agent 当前最新版本的 assets_hash（无包时为空串）。
 	GetServiceAgentPackageHash(ctx context.Context, agentID int64) (string, error)

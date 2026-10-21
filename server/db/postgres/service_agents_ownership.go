@@ -60,11 +60,52 @@ func (a *Adapter) ClaimServiceAgentOwnership(ctx context.Context, slug, name, ow
 	}
 
 	// 同一 owner 重复发布：刷新展示名与可见性（不改归属，不允许把自己改成 internal）。
+	// 顺带把已下架的条目重新置为 active —— 重新发布即重新上架。
 	if _, err := a.db.ExecContext(ctx, `
 		UPDATE service_agents
-		SET name = $2, visibility = $3, updated_at = CURRENT_TIMESTAMP
+		SET name = $2, visibility = $3, state = 'active', updated_at = CURRENT_TIMESTAMP
 		WHERE slug = $1`, slug, name, visibility); err != nil {
 		return fmt.Errorf("claim service agent ownership: %w", err)
 	}
 	return nil
+}
+
+// SetServiceAgentState 上架/下架自己的应用（设计 P2：分享可收回）。
+// 只允许 user owner 本人操作；平台 internal 条目与别人的条目一律 ErrServiceAgentOwnedByOther。
+func (a *Adapter) SetServiceAgentState(ctx context.Context, slug string, ownerUID int64, active bool) error {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return fmt.Errorf("set service agent state: empty slug")
+	}
+	state := "inactive"
+	if active {
+		state = "active"
+	}
+	res, err := a.db.ExecContext(ctx, `
+		UPDATE service_agents
+		SET state = $3, updated_at = CURRENT_TIMESTAMP
+		WHERE slug = $1 AND owner_uid = $2 AND owner_kind = 'user'`, slug, ownerUID, state)
+	if err != nil {
+		return fmt.Errorf("set service agent state: %w", err)
+	}
+	if affected, err := res.RowsAffected(); err == nil && affected > 0 {
+		return nil
+	}
+	// 没改到行：区分「不存在」与「不是本人」。
+	var ownerUID0 int64
+	var ownerKind string
+	err = a.db.QueryRowContext(ctx, `
+		SELECT owner_uid, owner_kind FROM service_agents WHERE slug = $1`, slug).
+		Scan(&ownerUID0, &ownerKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ErrServiceAgentNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("set service agent state: %w", err)
+	}
+	if ownerKind == store.ServiceAgentOwnerUser && ownerUID0 == ownerUID {
+		// 状态本来就是目标值（幂等）。
+		return nil
+	}
+	return store.ErrServiceAgentOwnedByOther
 }

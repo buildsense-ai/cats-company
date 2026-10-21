@@ -35,6 +35,7 @@ type fakeServiceAgentStore struct {
 	receiptSeq           []string                            // 回执插入序（ListUndelivered 排序）
 	deliveredReceipts    map[string]bool                     // 已送达标记
 	hiddenAgents         map[int64]map[int64]bool            // uid → agentID → hidden（目录清单）
+	inactive             map[string]bool                     // slug → 已下架（SetServiceAgentState）
 	autoCompleteAfter    time.Duration
 	autoAwaitAfter       time.Duration // 到点把 run 收尾为 awaiting_input（返问同步路径测试用）
 	nextID               int64
@@ -141,6 +142,8 @@ func (f *fakeServiceAgentStore) ClaimServiceAgentOwnership(_ context.Context, sl
 		}
 		f.agents[i].Name = name
 		f.agents[i].Visibility = visibility
+		// 重新发布把下架的条目拉回 active（真实 PG 的 ClaimServiceAgentOwnership 同样如此）。
+		delete(f.inactive, slug)
 		return nil
 	}
 	f.nextID++
@@ -164,16 +167,46 @@ func (f *fakeServiceAgentStore) GetServiceAgentPackageHash(_ context.Context, ag
 func (f *fakeServiceAgentStore) GetServiceAgentBySlug(_ context.Context, slug string) (int64, string, int64, int, error) {
 	for _, a := range f.agents {
 		if a.Slug == slug {
+			if f.inactive[slug] {
+				continue // 下架后等同不存在（真实 PG 用 state='active' 过滤）
+			}
 			return a.ID, a.Name, a.Version, a.AsyncThresholdSeconds, nil
 		}
 	}
 	return 0, "", 0, 0, store.ErrServiceAgentNotFound
 }
 
+// SetServiceAgentState 模拟下架/上架：只有 user owner 本人能操作。
+func (f *fakeServiceAgentStore) SetServiceAgentState(_ context.Context, slug string, ownerUID int64, active bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.agents {
+		if a.Slug != slug {
+			continue
+		}
+		if a.OwnerKind != store.ServiceAgentOwnerUser || a.OwnerUID != ownerUID {
+			return store.ErrServiceAgentOwnedByOther
+		}
+		if f.inactive == nil {
+			f.inactive = map[string]bool{}
+		}
+		f.inactive[slug] = !active
+		return nil
+	}
+	return store.ErrServiceAgentNotFound
+}
+
 func (f *fakeServiceAgentStore) ListServiceAgents(context.Context) ([]store.ServiceAgentDescriptor, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]store.ServiceAgentDescriptor(nil), f.agents...), nil
+	out := make([]store.ServiceAgentDescriptor, 0, len(f.agents))
+	for _, a := range f.agents {
+		if f.inactive[a.Slug] {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 func (f *fakeServiceAgentStore) CreateServiceSession(_ context.Context, agentID, definitionRev, callerUID, callerBotUID int64, assetsHash string) (string, error) {

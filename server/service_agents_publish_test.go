@@ -66,7 +66,7 @@ func TestServiceAgentPublishValidatesInput(t *testing.T) {
 		name   string
 		body   map[string]any
 		status int
-		errKey  string
+		errKey string
 	}{
 		{name: "bad slug", body: map[string]any{"slug": "Bad Slug!", "bundle_base64": bundleB64("x")}, status: 400, errKey: "invalid_slug"},
 		{name: "bad visibility", body: map[string]any{"slug": "ok-slug", "visibility": "secret", "bundle_base64": bundleB64("x")}, status: 400, errKey: "invalid_visibility"},
@@ -237,5 +237,112 @@ func TestServiceAgentVisibilityScope(t *testing.T) {
 	}
 	if res != nil && res.IsError {
 		t.Fatalf("owner should be allowed: %s", mcpToolErrorText(res))
+	}
+}
+
+// 收回分享（下架）：只有发布者本人能操作；下架后目录/tools/list 来源立即不含它，
+// 已缓存工具名的客户端再调用拿到“已被发布者收回”；重复收回幂等；重新发布恢复上架。
+func TestServiceAgentUnpublishRevokesShare(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.autoCompleteAfter = 5 * time.Millisecond
+	owner := int64(441)
+	other := int64(442)
+	t.Setenv("CATSCO_SERVICE_CATALOG_UID_WHITELIST", "441,442")
+
+	ctx := context.Background()
+	if err := st.ClaimServiceAgentOwnership(ctx, "shared-agent", "分享的应用", "user", owner, "public"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := st.PublishServiceAgentPackage(ctx, "shared-agent", "分享的应用",
+		json.RawMessage(`{}`), "hash-shared", json.RawMessage(`{"schema":"x"}`), false); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	var descriptor store.ServiceAgentDescriptor
+	agents, err := st.ListServiceAgents(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, agent := range agents {
+		if agent.Slug == "shared-agent" {
+			descriptor = agent
+		}
+	}
+	if descriptor.Slug == "" {
+		t.Fatalf("published agent not listed: %+v", agents)
+	}
+
+	publishHandler := NewServiceAgentPublishHandlerFromEnv(st)
+	publishHandler.SetAllowed(func(int64) bool { return true })
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /api/service-agents/{slug}", publishHandler.HandleUnpublish)
+	ownerSrv := httptest.NewServer(mcpAuthStub(owner, mux))
+	t.Cleanup(ownerSrv.Close)
+	otherSrv := httptest.NewServer(mcpAuthStub(other, mux))
+	t.Cleanup(otherSrv.Close)
+
+	del := func(base string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodDelete, base+"/api/service-agents/shared-agent", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		defer resp.Body.Close()
+		var payload map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&payload)
+		return resp.StatusCode, payload
+	}
+
+	// 别人不能收回，且应用仍然上架。
+	if status, payload := del(otherSrv.URL); status != http.StatusForbidden {
+		t.Fatalf("other delete = %d %v, want 403", status, payload)
+	}
+	if _, _, _, _, err := st.GetServiceAgentBySlug(ctx, "shared-agent"); err != nil {
+		t.Fatalf("agent should still be active after foreign delete: %v", err)
+	}
+
+	// 本人收回。
+	if status, payload := del(ownerSrv.URL); status != http.StatusOK || payload["state"] != "inactive" {
+		t.Fatalf("owner delete = %d %v, want 200 inactive", status, payload)
+	}
+	// 目录来源不再包含（tools/list 与目录接口都走这个列表）。
+	agents, err = st.ListServiceAgents(ctx)
+	if err != nil {
+		t.Fatalf("list after unpublish: %v", err)
+	}
+	for _, agent := range agents {
+		if agent.Slug == "shared-agent" {
+			t.Fatalf("unpublished agent still listed: %+v", agents)
+		}
+	}
+	if _, _, _, _, err := st.GetServiceAgentBySlug(ctx, "shared-agent"); err == nil {
+		t.Fatal("GetServiceAgentBySlug should fail after unpublish")
+	}
+
+	// 已缓存工具名的客户端再调用 → 明确告知已被收回。
+	handler := NewServiceAgentsMCPHandler(st)
+	res, _, err := handler.invoke(ctx, descriptor, other, serviceInvokeToolArgs{Input: map[string]any{"q": "hi"}})
+	if err != nil {
+		t.Fatalf("invoke after unpublish: %v", err)
+	}
+	if res == nil || !res.IsError || !strings.Contains(mcpToolErrorText(res), "已被发布者收回") {
+		t.Fatalf("invoke after unpublish = %s, want 已被发布者收回", mcpToolErrorText(res))
+	}
+
+	// 重复收回幂等。
+	if status, _ := del(ownerSrv.URL); status != http.StatusOK {
+		t.Fatalf("repeat delete = %d, want 200", status)
+	}
+
+	// 重新发布同一调用名即可恢复上架。
+	if err := st.ClaimServiceAgentOwnership(ctx, "shared-agent", "分享的应用", "user", owner, "public"); err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	if _, _, _, _, err := st.GetServiceAgentBySlug(ctx, "shared-agent"); err != nil {
+		t.Fatalf("re-publish should restore active: %v", err)
 	}
 }

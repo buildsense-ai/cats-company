@@ -202,6 +202,20 @@ func (h *ServiceAgentsMCPHandler) NotifySubscriptionChanged(callerUID int64) {
 	}
 }
 
+// NotifyCatalogChanged 目录发生全局变化（上架/下架）后，把所有在线 MCP 会话的工具集
+// 对齐到最新可见清单。逐个账号走 NotifySubscriptionChanged（幂等差量 + list_changed）。
+func (h *ServiceAgentsMCPHandler) NotifyCatalogChanged() {
+	h.liveMu.Lock()
+	uids := make([]int64, 0, len(h.liveServers))
+	for uid := range h.liveServers {
+		uids = append(uids, uid)
+	}
+	h.liveMu.Unlock()
+	for _, uid := range uids {
+		h.NotifySubscriptionChanged(uid)
+	}
+}
+
 // serviceMCPHasLiveSessions 判断 server 是否仍挂着会话（用于注册表剪枝）。
 func serviceMCPHasLiveSessions(srv *mcp.Server) bool {
 	for range srv.Sessions() {
@@ -248,6 +262,14 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	// 可见性准入：private agent 即便被猜到 slug 也不能调用（tools/list 里也不会出现）。
 	if !store.ServiceAgentVisibleTo(agent, callerUID) {
 		return serviceToolError("agent_not_found"), nil, nil
+	}
+	// 上架状态实时校验：tool 名可能已被客户端缓存，但应用被发布者收回后必须立即失效
+	// （GetServiceAgentBySlug 只看 state=active 的条目）。
+	if _, _, _, _, err := h.store.GetServiceAgentBySlug(ctx, agent.Slug); err != nil {
+		if errors.Is(err, store.ErrServiceAgentNotFound) {
+			return serviceToolError("agent_not_found: 该应用已被发布者收回"), nil, nil
+		}
+		return serviceToolError("service_unavailable: 应用状态校验失败，请稍后重试"), nil, nil
 	}
 	// bot 身份（设计 P1b）：bot_uid=0 仍允许（账号级调用，兼容旧客户端）；
 	// >0 则必须归属本账号，且（若 bot 定义了工具清单）该 agent 在清单内。
