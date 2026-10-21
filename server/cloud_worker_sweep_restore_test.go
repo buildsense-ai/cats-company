@@ -100,6 +100,55 @@ func newLifecycleSweepHandler(t *testing.T, destroyScript string) (*CloudWorkerH
 	return h, ts
 }
 
+func newLifecycleSweepHandlerWithExpire(t *testing.T, expireScript string) (*CloudWorkerHandler, *cloudWorkerTestStore) {
+	t.Helper()
+	ok := writeWorkerOpScript(t, "ok")
+	h, ts := newCloudWorkerTestHandlerCfg(CloudWorkerConfig{
+		DestroyScript:   ok,
+		ProvisionScript: ok,
+		ExpireScript:    expireScript,
+		CreateQuota:     "7=0",
+	})
+	ts.listBotsErr = errRebuildStop
+	return h, ts
+}
+
+func TestSweepExpiredWorkersPausesPackedWorkerBeforeArchive(t *testing.T) {
+	expire := writeWorkerOpScript(t, "ok")
+	if expire == "" {
+		t.Skip("no script interpreter available for the expire step")
+	}
+	h, _ := newLifecycleSweepHandlerWithExpire(t, expire)
+	stub := &lifecycleSweepStub{credit: 1, rows: map[int64]CloudWorkerLifecycle{
+		1: {ID: 1, WorkerUID: 10, OwnerUID: 7, TenantName: "bot-bot-a", State: "active", PackageExpiresAt: time.Now().Add(-time.Hour), DeleteAfter: time.Now().Add(14 * 24 * time.Hour), BillingMode: "month"},
+	}, due: []int64{1}}
+	h.credits = stub
+
+	h.SweepExpiredWorkers(time.Now().UTC())
+
+	if got := stub.rows[1].State; got != "delete_pending" {
+		t.Fatalf("lifecycle state=%q want delete_pending after expire hook", got)
+	}
+}
+
+func TestSweepExpiredWorkersKeepsRowActiveWhenExpireHookFails(t *testing.T) {
+	expire := writeWorkerOpScript(t, "fail")
+	if expire == "" {
+		t.Skip("no script interpreter available for the expire step")
+	}
+	h, _ := newLifecycleSweepHandlerWithExpire(t, expire)
+	stub := &lifecycleSweepStub{credit: 1, rows: map[int64]CloudWorkerLifecycle{
+		1: {ID: 1, WorkerUID: 10, OwnerUID: 7, TenantName: "bot-bot-a", State: "active", PackageExpiresAt: time.Now().Add(-time.Hour), DeleteAfter: time.Now().Add(14 * 24 * time.Hour), BillingMode: "month"},
+	}, due: []int64{1}}
+	h.credits = stub
+
+	h.SweepExpiredWorkers(time.Now().UTC())
+
+	if got := stub.rows[1].State; got != "active" {
+		t.Fatalf("lifecycle state=%q want active when expire hook fails", got)
+	}
+}
+
 func TestSweepExpiredWorkersRebuildsPaidWorkerAfterDeletion(t *testing.T) {
 	script := writeWorkerOpScript(t, "ok")
 	if script == "" {

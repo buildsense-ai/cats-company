@@ -57,6 +57,7 @@ type CloudWorkerHandler struct {
 	updateScript      string
 	rollbackScript    string
 	destroyScript     string
+	expireScript      string
 	imagesScript      string
 	releasesScript    string
 	statusScript      string
@@ -149,6 +150,7 @@ type CloudWorkerConfig struct {
 	UpdateScript      string // CATSCO_WORKER_UPDATE_SCRIPT
 	RollbackScript    string // CATSCO_WORKER_ROLLBACK_SCRIPT
 	DestroyScript     string // CATSCO_WORKER_DESTROY_SCRIPT
+	ExpireScript      string // CATSCO_WORKER_EXPIRE_SCRIPT (optional; stops a packed worker at package expiry)
 	ImagesScript      string // CATSCO_WORKER_IMAGES_SCRIPT
 	ReleasesScript    string // CATSCO_WORKER_RELEASES_SCRIPT
 	StatusScript      string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
@@ -233,6 +235,7 @@ func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 		UpdateScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
 		RollbackScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
 		DestroyScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
+		ExpireScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_EXPIRE_SCRIPT")),
 		ImagesScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
 		ReleasesScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_RELEASES_SCRIPT")),
 		StatusScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
@@ -262,6 +265,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		updateScript:      cfg.UpdateScript,
 		rollbackScript:    cfg.RollbackScript,
 		destroyScript:     cfg.DestroyScript,
+		expireScript:      cfg.ExpireScript,
 		imagesScript:      cfg.ImagesScript,
 		releasesScript:    cfg.ReleasesScript,
 		statusScript:      cfg.StatusScript,
@@ -1762,6 +1766,17 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 			continue
 		}
 		if item.State == "active" {
+			// Optional deployment hook: stop the worker while keeping its data
+			// for the grace window. If it fails, leave the row active so the
+			// next sweep retries instead of silently skipping the pause.
+			if h.expireScript != "" {
+				out, err := h.runScript(h.expireScript, "--name", item.TenantName)
+				if err != nil {
+					failed++
+					log.Printf("[cloud-worker] lifecycle expire-suspend %s failed: %s", item.TenantName, truncateWorkerOutput(destroyErrorDetail(err, out)))
+					continue
+				}
+			}
 			if err := store.MarkCloudWorkerLifecyclePending(item.ID, item.DeleteAfter); err != nil {
 				log.Printf("[cloud-worker] lifecycle %s archive failed: %v", item.TenantName, err)
 				failed++
