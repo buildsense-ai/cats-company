@@ -26,6 +26,7 @@ export default function ServiceAgentsPanel({ onClose }) {
     visibility: 'private',
     runner: 'worker',
     url: '',
+    command: '',
     price: '',
   });
 
@@ -165,6 +166,8 @@ export default function ServiceAgentsPanel({ onClose }) {
       definition.runner = { type: 'http', url, timeout_seconds: 60 };
     } else {
       definition.runner = { type: 'worker' };
+      const command = form.command.trim();
+      if (command) definition.runner.command = command;
     }
     const price = Number(form.price);
     if (form.price && Number.isFinite(price) && price > 0) {
@@ -178,9 +181,10 @@ export default function ServiceAgentsPanel({ onClose }) {
         slug: result?.slug || slug,
         visibility: result?.visibility || form.visibility,
         runner: form.runner,
+        hasCommand: form.runner === 'worker' && Boolean(form.command.trim()),
       });
       setShowPublish(false);
-      setForm({ name: '', slug: '', slugTouched: false, visibility: 'private', runner: 'worker', url: '', price: '' });
+      setForm({ name: '', slug: '', slugTouched: false, visibility: 'private', runner: 'worker', url: '', command: '', price: '' });
       await load();
     } catch (err) {
       setPublishError(err?.message || '发布失败，请稍后重试。');
@@ -309,7 +313,20 @@ export default function ServiceAgentsPanel({ onClose }) {
                 spellCheck={false}
               />
             </label>
-          ) : null}
+          ) : (
+            <label className="v3-service-agents-field">
+              <span>本机执行命令（这个应用用哪个 agent 跑）</span>
+              <input
+                value={form.command}
+                onChange={(event) => updateForm({ command: event.target.value })}
+                placeholder="claude -p {input_file}"
+                spellCheck={false}
+              />
+              <span className="v3-service-agents-field-hint">
+                留空 = 用 worker 的 -cmd；多个 agent 各填各的即可，一个 worker 能同时服务它们
+              </span>
+            </label>
+          )}
           <label className="v3-service-agents-field">
             <span>定价（元 / 千 tokens，留空=免费）</span>
             <input
@@ -346,7 +363,10 @@ export default function ServiceAgentsPanel({ onClose }) {
           {publishResult.runner === 'worker' ? (
             <div className="v3-service-agents-published-hint">
               在你自己的机器上运行 worker 才会执行：
-              <code>service-run-worker -agents {publishResult.slug} -cmd &apos;…&apos;</code>
+              <code>
+                service-run-worker -agents {publishResult.slug}
+                {publishResult.hasCommand ? '' : ` -cmd '…'`}
+              </code>
             </div>
           ) : null}
           <button type="button" onClick={() => setPublishResult(null)}>知道了</button>

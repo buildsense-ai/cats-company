@@ -58,6 +58,25 @@ export CATS_SERVICE_INSTANCE_TOKEN=<平台给的 token>
 | `CATSCO_AGENT` / `{slug}` | 应用 slug |
 | `CATSCO_SERVICE_TOKEN` | 平台签的服务 token（如果被调 agent 要回调平台 API，用它做身份） |
 
+### 多个 agent 共用一个 worker
+
+**命令可以按应用分别指定**（推荐）：发布时在界面里给该应用填「本机执行命令」，
+存在 `definition.runner.command` 里，平台在 claim 时随 run 下发，worker 按应用分派：
+
+```json
+{"runner": {"type": "worker", "command": "claude -p {input_file}"}}
+```
+
+于是同一个 worker 能同时服务多个 agent：
+
+| 应用 | runner.command |
+|---|---|
+| `my-claude` | `claude -p {input_file}` |
+| `my-codex` | `codex exec --input {input_file}` |
+
+只有应用没声明 `runner.command` 时才回落到启动参数 `-cmd`；两者都没有则该 run 直接失败
+（`no_command`），不会静默乱跑。
+
 ### 命令的返回值
 
 - **退出码 0** → 成功。stdout 作为结果：

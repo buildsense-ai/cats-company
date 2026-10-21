@@ -228,7 +228,7 @@ describe('ServiceAgentsPanel', () => {
     const form = container.querySelector('.v3-service-agents-publish');
     expect(form).toBeTruthy();
 
-    const [nameInput, slugInput] = form.querySelectorAll('input');
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       setter.call(nameInput, '我的助手');
@@ -260,6 +260,44 @@ describe('ServiceAgentsPanel', () => {
     expect(banner?.textContent).toContain('service-run-worker -agents my-agent');
   });
 
+  it('可以给每个应用单独指定本机执行命令（多个 agent 共用一个 worker）', async () => {
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'claude-helper', version: 1, visibility: 'private' });
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="发布应用"]').click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    const [nameInput, slugInput, commandInput] = form.querySelectorAll('input:not([type])');
+    const setValue = (node, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(node, value);
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    await act(async () => {
+      setValue(nameInput, 'Claude 助手');
+      setValue(slugInput, 'claude-helper');
+      setValue(commandInput, 'claude -p {input_file}');
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const payload = mocks.publishServiceAgent.mock.calls[0][0];
+    expect(payload.definition.runner).toMatchObject({
+      type: 'worker',
+      command: 'claude -p {input_file}',
+    });
+    // 命令随应用下发，worker 不再需要 -cmd
+    const banner = container.querySelector('.v3-service-agents-published');
+    expect(banner.textContent).toContain('service-run-worker -agents claude-helper');
+    expect(banner.textContent).not.toContain('-cmd');
+  });
+
   it('发布表单会校验调用名，非法时不发请求', async () => {
     await renderPanel();
     await act(async () => {
@@ -267,7 +305,7 @@ describe('ServiceAgentsPanel', () => {
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
-    const [nameInput, slugInput] = form.querySelectorAll('input');
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
     const setValue = (node, value) => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       setter.call(node, value);

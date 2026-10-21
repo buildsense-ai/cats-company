@@ -1253,6 +1253,12 @@
   color-scheme: dark;
 }
 
+.v3-service-agents-field-hint {
+  font-size: 10px;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+
 .v3-service-agents-field input:focus-visible {
   outline: 2px solid rgba(59, 130, 246, 0.55);
   outline-offset: 1px;

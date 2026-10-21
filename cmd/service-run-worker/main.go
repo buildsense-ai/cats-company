@@ -62,6 +62,8 @@ type claimRun struct {
 	ThresholdSeconds int             `json:"threshold_seconds"`
 	Input            json.RawMessage `json:"input"`
 	ServiceToken     string          `json:"service_token"`
+	// Definition 是应用定义；里面 runner.command 可以按应用指定不同的本机命令。
+	Definition json.RawMessage `json:"definition"`
 }
 
 type claimResponse struct {
@@ -172,6 +174,11 @@ func (w *worker) executeRun(ctx context.Context, run claimRun) {
 		log.Printf("run=%s 续租失败（可能已被回收），跳过", run.RunID)
 		return
 	}
+	if strings.TrimSpace(w.commandFor(run)) == "" {
+		w.failRun(context.Background(), run.RunID,
+			"no_command: 该应用没有声明 runner.command，worker 也没有配置 -cmd", false)
+		return
+	}
 	hbCtx, stopHB := context.WithCancel(runCtx)
 	defer stopHB()
 	go func() {
@@ -279,7 +286,7 @@ func (w *worker) execCommand(ctx context.Context, run claimRun) (string, string,
 		return "", "", -1, err
 	}
 
-	command := expandCommand(w.cfg.command, run, inputPath)
+	command := expandCommand(w.commandFor(run), run, inputPath)
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
@@ -320,6 +327,27 @@ func expandCommand(template string, run claimRun, inputPath string) string {
 		"{input_file}", inputPath,
 	)
 	return replacer.Replace(template)
+}
+
+// commandFor 选本次 run 的执行命令：
+//  1. 应用定义里的 runner.command（发布时按应用填写 → 一个 worker 可服务多个 agent）
+//  2. 兜底用 worker 启动参数 -cmd
+//
+// 两者都没有 → 返回空串，executeRun 以配置错误失败（不静默乱跑）。
+func (w *worker) commandFor(run claimRun) string {
+	if len(run.Definition) > 0 {
+		var parsed struct {
+			Runner struct {
+				Command string `json:"command"`
+			} `json:"runner"`
+		}
+		if err := json.Unmarshal(run.Definition, &parsed); err == nil {
+			if command := strings.TrimSpace(parsed.Runner.Command); command != "" {
+				return command
+			}
+		}
+	}
+	return w.cfg.command
 }
 
 func (w *worker) claim(ctx context.Context) ([]claimRun, error) {

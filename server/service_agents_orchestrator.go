@@ -53,15 +53,17 @@ type ServiceClaimResult struct {
 }
 
 type ServiceClaimRun struct {
-	RunID            string                  `json:"run_id"`
-	SessionID        string                  `json:"session_id"`
-	AgentSlug        string                  `json:"agent_slug"`
-	PackageHash      string                  `json:"package_hash,omitempty"`
-	DefinitionRev    int64                   `json:"definition_rev"`
-	ThresholdSeconds int                     `json:"threshold_seconds"`
-	Input            json.RawMessage         `json:"input"`
-	ServiceToken     string                  `json:"service_token"`
-	Checkpoint       *ServiceClaimCheckpoint `json:"checkpoint,omitempty"`
+	RunID            string          `json:"run_id"`
+	SessionID        string          `json:"session_id"`
+	AgentSlug        string          `json:"agent_slug"`
+	PackageHash      string          `json:"package_hash,omitempty"`
+	DefinitionRev    int64           `json:"definition_rev"`
+	ThresholdSeconds int             `json:"threshold_seconds"`
+	Input            json.RawMessage `json:"input"`
+	ServiceToken     string          `json:"service_token"`
+	// Definition 是会话钉定的应用定义（worker 用来取 runner.command 等执行参数）。
+	Definition json.RawMessage         `json:"definition,omitempty"`
+	Checkpoint *ServiceClaimCheckpoint `json:"checkpoint,omitempty"`
 }
 
 type ServiceClaimCheckpoint struct {
@@ -266,6 +268,7 @@ func (o *ServiceRunOrchestrator) buildClaimEntry(ctx context.Context, run store.
 		ThresholdSeconds: threshold,
 		Input:            run.Input,
 		ServiceToken:     token,
+		Definition:       definition,
 	}
 	if revision, snapshot, err := o.store.LatestServiceCheckpoint(ctx, run.SessionID); err == nil && revision > 0 && len(snapshot) > 0 {
 		entry.Checkpoint = &ServiceClaimCheckpoint{Revision: revision, Snapshot: snapshot}
