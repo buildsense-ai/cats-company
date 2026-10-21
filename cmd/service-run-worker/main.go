@@ -39,10 +39,17 @@ import (
 const (
 	resultContractVersion = "catsco.service-run-result.v1"
 	defaultBaseURL        = "https://app.catsco.cn"
+	// defaultAPIPrefix 是平台面向外部 worker 的公网前缀。
+	//
+	// 不能用 /internal：那是 Compose 网络内的服务间通道（路径结构也不同），
+	// 生产 nginx 对 /internal 直接 return 404。
+	// 改这里要同步 server.ServiceWorkerAPIPrefix。
+	defaultAPIPrefix = "/api/service-worker"
 )
 
 type config struct {
 	baseURL    string
+	apiPrefix  string
 	token      string
 	instanceID string
 	command    string
@@ -95,6 +102,7 @@ func main() {
 func parseConfig(args []string) (config, error) {
 	fs := flag.NewFlagSet("service-run-worker", flag.ContinueOnError)
 	base := fs.String("base", envOr("CATSCO_BASE_URL", defaultBaseURL), "平台地址（https://app.catsco.cn）")
+	apiPrefix := fs.String("api-prefix", envOr("CATSCO_WORKER_API_PREFIX", defaultAPIPrefix), "worker API 前缀（一般不用改；前面有反向代理时才需要）")
 	token := fs.String("token", os.Getenv("CATS_SERVICE_INSTANCE_TOKEN"), "实例 token（默认读 CATS_SERVICE_INSTANCE_TOKEN）")
 	instance := fs.String("instance", envOr("CATSCO_WORKER_INSTANCE_ID", defaultInstanceID()), "实例 id（≤64 字符）")
 	command := fs.String("cmd", os.Getenv("CATSCO_WORKER_CMD"), "执行命令模板；可用占位符 {slug} {run_id} {session_id} {input_file}，输入 JSON 同时写到 stdin")
@@ -108,6 +116,7 @@ func parseConfig(args []string) (config, error) {
 	}
 	cfg := config{
 		baseURL:    strings.TrimRight(strings.TrimSpace(*base), "/"),
+		apiPrefix:  normalizeAPIPrefix(*apiPrefix),
 		token:      strings.TrimSpace(*token),
 		instanceID: strings.TrimSpace(*instance),
 		command:    strings.TrimSpace(*command),
@@ -133,7 +142,7 @@ func parseConfig(args []string) (config, error) {
 }
 
 func (w *worker) run(ctx context.Context) error {
-	log.Printf("worker 启动 instance=%s base=%s", w.cfg.instanceID, w.cfg.baseURL)
+	log.Printf("worker 启动 instance=%s base=%s prefix=%s", w.cfg.instanceID, w.cfg.baseURL, w.cfg.apiPrefix)
 	w.sendInstanceHeartbeat(ctx, 0)
 
 	hbCtx, stopHB := context.WithCancel(ctx)
@@ -359,7 +368,7 @@ func (w *worker) claim(ctx context.Context) ([]claimRun, error) {
 	if len(w.cfg.agents) > 0 {
 		payload["agent_slugs"] = w.cfg.agents
 	}
-	if err := w.client.post(ctx, "/internal/service-runs/claim", payload, &resp); err != nil {
+	if err := w.client.post(ctx, w.cfg.apiPrefix+"/claim", payload, &resp); err != nil {
 		return nil, err
 	}
 	if len(w.cfg.agents) == 0 {
@@ -392,7 +401,7 @@ func (w *worker) renewLease(ctx context.Context, runID string) bool {
 		Renewed bool `json:"renewed"`
 	}
 	payload := map[string]any{"instance_id": w.cfg.instanceID}
-	if err := w.client.post(ctx, "/internal/service-runs/"+runID+"/heartbeat", payload, &resp); err != nil {
+	if err := w.client.post(ctx, w.runPath(runID, "heartbeat"), payload, &resp); err != nil {
 		log.Printf("run=%s 续租请求失败：%v", runID, err)
 		return false
 	}
@@ -408,13 +417,13 @@ func (w *worker) completeRun(ctx context.Context, runID string, envelope map[str
 		payload["usage"] = usage
 	}
 	var resp map[string]any
-	return w.client.post(ctx, "/internal/service-runs/"+runID+"/complete", payload, &resp)
+	return w.client.post(ctx, w.runPath(runID, "complete"), payload, &resp)
 }
 
 func (w *worker) failRun(ctx context.Context, runID, message string, retryable bool) {
 	payload := map[string]any{"error_text": message, "retryable": retryable}
 	var resp map[string]any
-	if err := w.client.post(ctx, "/internal/service-runs/"+runID+"/fail", payload, &resp); err != nil {
+	if err := w.client.post(ctx, w.runPath(runID, "fail"), payload, &resp); err != nil {
 		log.Printf("run=%s 失败上报失败：%v", runID, err)
 		return
 	}
@@ -445,7 +454,7 @@ func (w *worker) sendInstanceHeartbeat(ctx context.Context, activeRuns int) {
 		},
 	}
 	var resp map[string]any
-	path := "/internal/service-instances/" + w.cfg.instanceID + "/heartbeat"
+	path := w.cfg.apiPrefix + "/instances/" + w.cfg.instanceID + "/heartbeat"
 	if err := w.client.post(ctx, path, payload, &resp); err != nil {
 		log.Printf("实例心跳失败：%v", err)
 	}
@@ -476,6 +485,23 @@ func splitList(raw string) []string {
 		}
 	}
 	return out
+}
+
+// runPath 拼接某次 run 的操作路径（前缀由 -api-prefix 决定，默认是公网前缀）。
+func (w *worker) runPath(runID, action string) string {
+	return w.cfg.apiPrefix + "/runs/" + runID + "/" + action
+}
+
+// normalizeAPIPrefix 归一化 -api-prefix：保证以 / 开头、不带尾部 /。
+func normalizeAPIPrefix(raw string) string {
+	prefix := strings.TrimSpace(raw)
+	if prefix == "" {
+		return defaultAPIPrefix
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	return strings.TrimRight(prefix, "/")
 }
 
 func defaultInstanceID() string {

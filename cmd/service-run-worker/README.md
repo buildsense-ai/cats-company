@@ -38,6 +38,7 @@ export CATS_SERVICE_INSTANCE_TOKEN=<平台给的 token>
 | 参数 | 说明 |
 |---|---|
 | `-base` | 平台地址，默认 `https://app.catsco.cn` |
+| `-api-prefix` | worker API 前缀，默认 `/api/service-worker`（一般不用改，只有前面又套了一层反向代理时才需要） |
 | `-token` | 实例 token（也可用环境变量） |
 | `-instance` | 实例 id，≤64 字符，默认 `主机名-pid`；**同一实例 id 重启会接管上次的租约** |
 | `-cmd` | 执行命令模板（**可选**，应用自己声明了命令就不用给）；占位符 `{slug}` `{run_id}` `{session_id}` `{input_file}` |

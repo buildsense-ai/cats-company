@@ -22,6 +22,34 @@ func TestExpandCommand(t *testing.T) {
 	}
 }
 
+// worker 必须走公网前缀：/internal 只在 Compose 网络内可达（生产 nginx 直接 404）。
+func TestRunPathUsesConfiguredPrefix(t *testing.T) {
+	w := &worker{cfg: config{apiPrefix: defaultAPIPrefix}}
+	if got := w.runPath("run_1", "complete"); got != "/api/service-worker/runs/run_1/complete" {
+		t.Fatalf("runPath = %q", got)
+	}
+	// 前面有反向代理时可换前缀，结构保持 /runs/{id}/{action}。
+	w.cfg.apiPrefix = "/custom-prefix"
+	if got := w.runPath("run_1", "fail"); got != "/custom-prefix/runs/run_1/fail" {
+		t.Fatalf("runPath = %q", got)
+	}
+}
+
+func TestNormalizeAPIPrefix(t *testing.T) {
+	cases := []struct{ raw, want string }{
+		{"", defaultAPIPrefix},
+		{defaultAPIPrefix, defaultAPIPrefix},
+		{"api/service-worker", "/api/service-worker"},
+		{"/api/service-worker/", "/api/service-worker"},
+		{"  /custom  ", "/custom"},
+	}
+	for _, c := range cases {
+		if got := normalizeAPIPrefix(c.raw); got != c.want {
+			t.Fatalf("normalizeAPIPrefix(%q) = %q, want %q", c.raw, got, c.want)
+		}
+	}
+}
+
 // 命令按应用下发时不要求 -cmd 也能启动（否则"一个 worker 服务多个 agent"根本起不来）。
 func TestParseConfigAllowsCommandPerAgent(t *testing.T) {
 	t.Setenv("CATS_SERVICE_INSTANCE_TOKEN", "tok")
@@ -107,7 +135,7 @@ func TestWorkerClaimsExecutesAndCompletes(t *testing.T) {
 		}
 		return true
 	}
-	mux.HandleFunc("POST /internal/service-runs/claim", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/service-worker/claim", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(w, r) {
 			return
 		}
@@ -136,13 +164,13 @@ func TestWorkerClaimsExecutesAndCompletes(t *testing.T) {
 			}},
 		})
 	})
-	mux.HandleFunc("POST /internal/service-runs/{runID}/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/service-worker/runs/{runID}/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(w, r) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"renewed": true})
 	})
-	mux.HandleFunc("POST /internal/service-runs/{runID}/complete", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/service-worker/runs/{runID}/complete", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(w, r) {
 			return
 		}
@@ -152,7 +180,7 @@ func TestWorkerClaimsExecutesAndCompletes(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"completed": true})
 		close(done)
 	})
-	mux.HandleFunc("POST /internal/service-runs/{runID}/fail", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/service-worker/runs/{runID}/fail", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(w, r) {
 			return
 		}
@@ -166,7 +194,7 @@ func TestWorkerClaimsExecutesAndCompletes(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 		close(done)
 	})
-	mux.HandleFunc("POST /internal/service-instances/{instanceID}/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/service-worker/instances/{instanceID}/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(w, r) {
 			return
 		}
@@ -179,6 +207,7 @@ func TestWorkerClaimsExecutesAndCompletes(t *testing.T) {
 	w := &worker{
 		cfg: config{
 			baseURL:    ts.URL,
+			apiPrefix:  defaultAPIPrefix,
 			token:      token,
 			instanceID: "test-instance",
 			command:    "echo {slug}",

@@ -217,6 +217,44 @@ func TestServiceOrchestratorClaimAuth(t *testing.T) {
 	}
 }
 
+// 用户自己电脑上的 worker 只能走公网前缀：生产 nginx 对 /internal/ 一律 404。
+// 这条测试盯住公网这组路由不被重构时丢掉，同时确认内部专属端点没有被顺带导出。
+func TestServiceOrchestratorPublicWorkerSurface(t *testing.T) {
+	st, _, _ := seedOrchestratorFixture(t)
+	_, base := newOrchestratorServer(t, st)
+
+	exposed := []string{
+		ServiceWorkerAPIPrefix + "/claim",
+		ServiceWorkerAPIPrefix + "/runs/run_x/heartbeat",
+		ServiceWorkerAPIPrefix + "/runs/run_x/complete",
+		ServiceWorkerAPIPrefix + "/runs/run_x/fail",
+		ServiceWorkerAPIPrefix + "/instances/inst-a/heartbeat",
+	}
+	body := `{"limit":1,"instance_id":"inst-a"}`
+	for _, path := range exposed {
+		if status, _ := doInternal(t, "POST", base+path, "", body); status != http.StatusUnauthorized {
+			t.Fatalf("POST %s 无 token = %d, want 401", path, status)
+		}
+		if status, _ := doInternal(t, "POST", base+path, "wrong-token", body); status != http.StatusUnauthorized {
+			t.Fatalf("POST %s 错 token = %d, want 401", path, status)
+		}
+	}
+
+	// 内部专属：包分发、checkpoint、events、await-input 不应在公网前缀下活着。
+	for _, path := range []string{
+		ServiceWorkerAPIPrefix + "/runs/run_x/checkpoint",
+		ServiceWorkerAPIPrefix + "/runs/run_x/events",
+		ServiceWorkerAPIPrefix + "/runs/run_x/await-input",
+		ServiceWorkerAPIPrefix + "/service-agents/demo/publish",
+		ServiceWorkerAPIPrefix + "/service-agent-packages/deadbeef",
+	} {
+		status, _ := doInternal(t, "POST", base+path, "inst-token-1", body)
+		if status != http.StatusNotFound && status != http.StatusMethodNotAllowed {
+			t.Fatalf("POST %s = %d，内部端点不应暴露到公网前缀", path, status)
+		}
+	}
+}
+
 func TestServiceOrchestratorClaimLifecycle(t *testing.T) {
 	st, sessionID, runID := seedOrchestratorFixture(t)
 	_, base := newOrchestratorServer(t, st)

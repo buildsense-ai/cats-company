@@ -47,6 +47,15 @@ const (
 	serviceInstanceHeartbeatLimit = 64 << 10
 )
 
+// ServiceWorkerAPIPrefix 是用户自建 worker 的公网入口前缀。
+//
+// /internal/ 只在 Compose 网络内可达（生产 nginx 对该前缀直接 return 404），所以
+// 跑在用户自己电脑上的 service-run-worker 需要一个公网前缀；nginx 已经反向代理
+// /api/，因此这里新增路由无需改 nginx。鉴权与 /internal 完全一致（实例 token）。
+//
+// 改动这里要同步 cmd/service-run-worker 的 defaultAPIPrefix。
+const ServiceWorkerAPIPrefix = "/api/service-worker"
+
 // ServiceClaimResult / ServiceClaimRun 是 claim 的下发契约（实例据此执行 run）。
 type ServiceClaimResult struct {
 	Runs []ServiceClaimRun `json:"runs"`
@@ -111,6 +120,16 @@ func (o *ServiceRunOrchestrator) RegisterRoutes(mux *http.ServeMux) {
 	// 云端包分发（设计 A §2）：发布（写新版本行）与按内容 hash 拉取。
 	mux.HandleFunc("POST /internal/service-agents/{slug}/publish", o.withInstanceToken(o.handlePublishServiceAgentPackage))
 	mux.HandleFunc("GET /internal/service-agent-packages/{packageHash}", o.withInstanceToken(o.handleGetServiceAgentPackage))
+
+	// 公网 worker 面（ServiceWorkerAPIPrefix）：用户自己电脑上跑的 service-run-worker
+	// 必须走公网，而 nginx 对 /internal/ 一律 404（内部调用只留 Compose 网络）。
+	// 这里只导出 worker 实际需要的那 5 条，鉴权与 /internal 完全相同（实例 token），
+	// 包分发、checkpoint、events 等仍只在内部网络可用。
+	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/claim", o.withInstanceToken(o.handleClaim))
+	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/runs/{runID}/heartbeat", o.withInstanceToken(o.handleRenewLease))
+	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/runs/{runID}/complete", o.withInstanceToken(o.handleComplete))
+	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/runs/{runID}/fail", o.withInstanceToken(o.handleFailRun))
+	mux.HandleFunc("POST "+ServiceWorkerAPIPrefix+"/instances/{instanceID}/heartbeat", o.withInstanceToken(o.handleInstanceHeartbeat))
 }
 
 // StartReaper 周期回收过期租约（orphaned 供其他实例接管，设计 §4.8-1）。
