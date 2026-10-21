@@ -364,7 +364,13 @@ func main() {
 	accountAdminHandler.SetCloudWorkerRenewer(cloudWorkerHandler.RenewForOwner)
 	accountAdminHandler.SetCloudWorkerCounter(cloudWorkerHandler.PlatformLifecycleCount)
 	go func() {
-		ticker := time.NewTicker(time.Hour)
+		// The sweep owns trial suspension, paid conversion and grace-period
+		// destruction. A one-minute cadence keeps a paid trial worker down for
+		// at most a minute after the payment is fulfilled. Overlap is safe:
+		// SweepExpiredWorkers takes opMu via TryLock (concurrent ticks are
+		// skipped, never queued) and every provider action is claimed in the
+		// database first, so a faster tick cannot double-order.
+		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		cloudWorkerHandler.SweepExpiredWorkers(time.Now().UTC())
 		for range ticker.C {

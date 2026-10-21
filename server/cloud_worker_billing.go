@@ -169,15 +169,50 @@ func (h *CloudWorkerHandler) renewTrial(item types.CloudWorkerLifecycle) (handle
 	return true, err
 }
 
+// trialNotice renders the lifecycle hint shown next to a trial cloud worker.
+// The sweep runs once a minute, so a fulfilled payment is normally resolved
+// inside that window; the copy states that expectation instead of leaving the
+// user on an open-ended "processing" message. Close to expiry it turns into a
+// countdown so the pause never arrives unannounced.
 func trialNotice(item types.CloudWorkerLifecycle, now time.Time) string {
 	if item.BillingMode != types.CloudWorkerOnDemand {
 		return ""
 	}
 	if item.ConversionPending {
-		return "付费开通处理中，正在确认云员工转换结果。"
+		return "已收到付费，正在转为包月并启动云员工，通常 1 分钟内完成。"
 	}
 	if now.Before(item.PackageExpiresAt) {
-		return "试用至 " + item.PackageExpiresAt.UTC().Format("2006-01-02 15:04 UTC") + "，到期后暂停；付费可继续使用原云员工。"
+		expires := item.PackageExpiresAt.UTC().Format("2006-01-02 15:04 UTC")
+		if remaining := item.PackageExpiresAt.Sub(now); remaining <= trialNoticeCountdownWindow {
+			return "试用剩余 " + trialNoticeRemaining(remaining) + "（至 " + expires + "），到期后云员工将自动暂停；付费可继续使用原云员工。"
+		}
+		return "试用至 " + expires + "，到期后暂停；付费可继续使用原云员工。"
 	}
-	return strings.Join([]string{"试用已到期，请在套餐页付费继续使用。数据预计保留至", item.DeleteAfter.UTC().Format("2006-01-02 15:04 UTC"), "，之后将释放实例并删除数据。"}, " ")
+	return strings.Join([]string{
+		"试用已到期：云员工已暂停，付费可立即恢复。数据保留至",
+		item.DeleteAfter.UTC().Format("2006-01-02 15:04 UTC"),
+		"，之后将释放实例并删除数据。",
+	}, " ")
+}
+
+// trialNoticeCountdownWindow is how long before expiry the hint switches from
+// a plain date to a countdown. Three days gives a user time to renew on a
+// weekday instead of discovering the pause on the weekend.
+const trialNoticeCountdownWindow = 72 * time.Hour
+
+// trialNoticeRemaining renders a coarse countdown: hours below two days, whole
+// days above. Sub-hour remainders stay explicit so a near-expiry worker never
+// reads as "0 天".
+func trialNoticeRemaining(d time.Duration) string {
+	if d <= 0 {
+		return "不足 1 小时"
+	}
+	if d < 48*time.Hour {
+		hours := int(d / time.Hour)
+		if hours < 1 {
+			return "不足 1 小时"
+		}
+		return fmt.Sprintf("%d 小时", hours)
+	}
+	return fmt.Sprintf("%d 天", int(d/(24*time.Hour)))
 }
