@@ -158,6 +158,10 @@ func (a *Adapter) CreateSchema() error {
 		createServiceRunReceiptsTable,
 		createServiceRunReceiptsPendingIndex,
 		createServiceRunLedgerTable,
+		// 000047：已存在的 service_run_ledger 不会被 CREATE TABLE IF NOT EXISTS
+		// 补列，必须显式 ALTER，否则下面的部分索引引用 billing_state 会让整个
+		// schema 初始化 fatal（2026-10-21 生产部署因此崩溃回滚）。
+		migrateServiceRunLedgerAddBillingState,
 		createServiceRunLedgerIndexes,
 		createServiceAgentSubscriptionsTable,
 		seedServiceAgentsHello,
@@ -640,6 +644,14 @@ CREATE TABLE IF NOT EXISTS service_run_ledger (
     finished_at       TIMESTAMPTZ NOT NULL,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
+
+// 结算状态（000047）：free / settled_platform / pending_credit。
+const migrateServiceRunLedgerAddBillingState = `
+ALTER TABLE service_run_ledger
+    ADD COLUMN IF NOT EXISTS billing_state VARCHAR(24) NOT NULL DEFAULT 'free';
+
+CREATE INDEX IF NOT EXISTS idx_service_run_ledger_pending
+    ON service_run_ledger (payer_uid) WHERE billing_state = 'pending_credit';`
 
 const createServiceRunLedgerIndexes = `
 CREATE INDEX IF NOT EXISTS idx_service_run_ledger_payer

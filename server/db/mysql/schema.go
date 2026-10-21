@@ -150,6 +150,8 @@ func (a *Adapter) CreateSchema() error {
 		migrateServiceRunReceiptsPendingIndex,
 		migrateServiceRunsCreatedAtIndex,
 		createServiceRunLedgerTable,
+		// 000047：已存在的表不会被 CREATE TABLE IF NOT EXISTS 补列。
+		migrateServiceRunLedgerAddBillingState,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -672,6 +674,14 @@ CREATE TABLE IF NOT EXISTS service_run_ledger (
     KEY idx_service_run_ledger_payee (payee_uid, finished_at),
     KEY idx_service_run_ledger_agent (agent_id, finished_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+// 结算状态（000047）：free / settled_platform / pending_credit。
+// 历史库的 service_run_ledger 建表时还没有这一列，CREATE TABLE IF NOT EXISTS
+// 不会补列，必须显式 ALTER；重复列/索引错误由 isIgnorableMigrationError 吞掉。
+const migrateServiceRunLedgerAddBillingState = `
+ALTER TABLE service_run_ledger ADD COLUMN billing_state VARCHAR(24) NOT NULL DEFAULT 'free';
+CREATE INDEX idx_service_run_ledger_pending ON service_run_ledger (payer_uid);
 `
 
 // 应用目录订阅清单（PG 000034 镜像；设计 §3.3-9："模式二：默认开放 + 个人清单"）。
