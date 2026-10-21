@@ -263,8 +263,9 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if !store.ServiceAgentVisibleTo(agent, callerUID) {
 		return serviceToolError("agent_not_found"), nil, nil
 	}
-	// 上架状态实时校验：tool 名可能已被客户端缓存，但应用被发布者收回后必须立即失效
-	// （GetServiceAgentBySlug 只看 state=active 的条目）。
+	// 上架状态实时校验：这条兜底覆盖「list_changed 尚未送达客户端」的窗口期
+	// （正常路径下应用被收回后工具会立即从 tools/list 移除，旧名字调用由 MCP 层
+	// 返回 unknown tool）。
 	if _, _, _, _, err := h.store.GetServiceAgentBySlug(ctx, agent.Slug); err != nil {
 		if errors.Is(err, store.ErrServiceAgentNotFound) {
 			return serviceToolError("agent_not_found: 该应用已被发布者收回"), nil, nil

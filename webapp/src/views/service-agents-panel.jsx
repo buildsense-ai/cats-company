@@ -487,7 +487,7 @@ export default function ServiceAgentsPanel({ onClose }) {
             <div className="v3-service-agents-notice-hint">
               {notice.alreadyGone
                 ? '该应用此前已不在目录中。'
-                : '别人的工具列表里会立即消失，再调用会提示“已被发布者收回”。'}
+                : '别人的工具列表里会立即消失，旧名字再调用会失败（unknown tool）。'}
               重新发布同一调用名即可恢复分享。
             </div>
           </div>
