@@ -22,6 +22,34 @@ func TestExpandCommand(t *testing.T) {
 	}
 }
 
+// 命令按应用下发时不要求 -cmd 也能启动（否则"一个 worker 服务多个 agent"根本起不来）。
+func TestParseConfigAllowsCommandPerAgent(t *testing.T) {
+	t.Setenv("CATS_SERVICE_INSTANCE_TOKEN", "tok")
+	t.Setenv("CATSCO_WORKER_CMD", "")
+	t.Setenv("CATSCO_WORKER_AGENTS", "")
+
+	cfg, err := parseConfig([]string{"-agents", "a,b"})
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.command != "" {
+		t.Fatalf("command = %q, want empty", cfg.command)
+	}
+	if len(cfg.agents) != 2 || cfg.agents[0] != "a" || cfg.agents[1] != "b" {
+		t.Fatalf("agents = %v", cfg.agents)
+	}
+
+	// 没有任何命令来源时仍可启动，缺失在 run 级别报 no_command。
+	if _, err := parseConfig(nil); err != nil {
+		t.Fatalf("parseConfig without cmd/agents: %v", err)
+	}
+	// token 仍然是硬性要求。
+	t.Setenv("CATS_SERVICE_INSTANCE_TOKEN", "")
+	if _, err := parseConfig(nil); err == nil {
+		t.Fatal("expected error for missing token")
+	}
+}
+
 func TestBuildResult(t *testing.T) {
 	run := claimRun{RunID: "run_1", SessionID: "sess_1", AgentSlug: "x"}
 

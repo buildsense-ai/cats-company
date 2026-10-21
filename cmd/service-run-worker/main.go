@@ -120,8 +120,11 @@ func parseConfig(args []string) (config, error) {
 	if cfg.token == "" {
 		return cfg, errors.New("缺少实例 token：-token 或 CATS_SERVICE_INSTANCE_TOKEN")
 	}
-	if cfg.command == "" {
-		return cfg, errors.New("缺少执行命令：-cmd 或 CATSCO_WORKER_CMD（例：-cmd 'my-agent --stdin'）")
+	// -cmd 不是必填：命令可以按应用下发（definition.runner.command），
+	// 一个 worker 就能同时服务多个 agent。只有"既没有 -cmd 也没限定 -agents"
+	// 这种最容易全线失败启动才提醒一句（run 级别仍有 no_command 兜底）。
+	if cfg.command == "" && len(cfg.agents) == 0 {
+		log.Printf("提示：没有 -cmd，也没有 -agents；将认领所有应用的 run，只有声明了 runner.command 的应用才会成功")
 	}
 	if len(cfg.instanceID) == 0 || len(cfg.instanceID) > 64 {
 		return cfg, errors.New("instance id 必须 1~64 字符")

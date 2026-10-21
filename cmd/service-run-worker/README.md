@@ -40,7 +40,7 @@ export CATS_SERVICE_INSTANCE_TOKEN=<平台给的 token>
 | `-base` | 平台地址，默认 `https://app.catsco.cn` |
 | `-token` | 实例 token（也可用环境变量） |
 | `-instance` | 实例 id，≤64 字符，默认 `主机名-pid`；**同一实例 id 重启会接管上次的租约** |
-| `-cmd` | 执行命令模板；占位符 `{slug}` `{run_id}` `{session_id}` `{input_file}` |
+| `-cmd` | 执行命令模板（**可选**，应用自己声明了命令就不用给）；占位符 `{slug}` `{run_id}` `{session_id}` `{input_file}` |
 | `-agents` | **只认领这些 slug**（逗号分隔）；空 = 认领所有应用的 run（多租户不推荐） |
 | `-timeout` | 单次 run 超时，默认 10m |
 | `-poll` | 无任务轮询间隔，默认 2s |
@@ -75,7 +75,11 @@ export CATS_SERVICE_INSTANCE_TOKEN=<平台给的 token>
 | `my-codex` | `codex exec --input {input_file}` |
 
 只有应用没声明 `runner.command` 时才回落到启动参数 `-cmd`；两者都没有则该 run 直接失败
-（`no_command`），不会静默乱跑。
+（`no_command`），不会静默乱跑。所以命令全在应用侧声明时，启动**不需要** `-cmd`：
+
+```bash
+./service-run-worker -agents my-claude,my-codex
+```
 
 ### 命令的返回值
 
