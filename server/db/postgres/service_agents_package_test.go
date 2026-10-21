@@ -60,6 +60,8 @@ func TestServiceAgentPackagePublishRoundtrip(t *testing.T) {
 	if err := db.CreateSchema(); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
+	// 启动建表不再自带 hello 种子。
+	seedHelloAgent(t, db)
 	ctx := context.Background()
 	id := agentID(t, db, "hello")
 

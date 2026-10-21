@@ -57,8 +57,6 @@ func (a *Adapter) CreateSchema() error {
 		createServiceInstancesTable,
 		createServiceRunReceiptsTable,
 		createServiceAgentSubscriptionsTable,
-		seedServiceAgentsHello,
-		seedServiceAgentVersionsHello,
 	}
 	for _, q := range tables {
 		if _, err := a.db.Exec(q); err != nil {
@@ -698,15 +696,6 @@ CREATE TABLE IF NOT EXISTS service_agent_subscriptions (
     PRIMARY KEY (uid, agent_id),
     FOREIGN KEY (agent_id) REFERENCES service_agents(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-`
-
-const seedServiceAgentsHello = `
-INSERT IGNORE INTO service_agents (slug, name) VALUES ('hello', 'Hello 试点应用');
-`
-
-const seedServiceAgentVersionsHello = `
-INSERT IGNORE INTO service_agent_versions (agent_id, version, definition_json, assets_hash)
-SELECT id, 1, '{"async_threshold_seconds": 60, "models": ["gpt-6.1-sol"]}', '' FROM service_agents WHERE slug = 'hello';
 `
 
 const migrateArtifactRuntimeRunsAddDeliveryClaimedAt = `

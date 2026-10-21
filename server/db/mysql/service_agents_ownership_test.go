@@ -37,6 +37,7 @@ func TestMySQLServiceAgentOwnershipSchemaConstants(t *testing.T) {
 // Claim 语义：占位 → 同 owner 幂等 → 他人被拒 → 平台内部 slug 保留。
 func TestMySQLServiceAgentOwnershipClaim(t *testing.T) {
 	db := mysqlTestAdapter(t)
+	seedHelloFixture(t, db)
 	ctx := context.Background()
 
 	slug := strings.ReplaceAll(strings.ToLower(t.Name()), "_", "-")

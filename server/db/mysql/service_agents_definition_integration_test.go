@@ -8,6 +8,7 @@ import (
 
 func TestMySQLServiceAgentDefinitionHello(t *testing.T) {
 	db := mysqlTestAdapter(t)
+	seedHelloFixture(t, db)
 	ctx := context.Background()
 	id, _, _, _, err := db.GetServiceAgentBySlug(ctx, "hello")
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 
 func TestMySQLServiceListAgentsIncludesHello(t *testing.T) {
 	db := mysqlTestAdapter(t)
+	seedHelloFixture(t, db)
 	agents, err := db.ListServiceAgents(context.Background())
 	if err != nil {
 		t.Fatalf("list agents: %v", err)

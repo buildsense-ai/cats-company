@@ -51,6 +51,8 @@ func TestServiceAgentOwnershipClaim(t *testing.T) {
 	if err := db.CreateSchema(); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
+	// 启动建表不再自带 hello 种子，internal slug 的占位由测试自己造。
+	seedHelloAgent(t, db)
 	adapter := db
 	ctx := context.Background()
 

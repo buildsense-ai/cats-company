@@ -165,7 +165,6 @@ func (a *Adapter) CreateSchema() error {
 		migrateServiceRunLedgerAddBillingState,
 		createServiceRunLedgerIndexes,
 		createServiceAgentSubscriptionsTable,
-		seedServiceAgentsHello,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,
@@ -672,13 +671,6 @@ CREATE TABLE IF NOT EXISTS service_agent_subscriptions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (uid, agent_id)
 );`
-
-const seedServiceAgentsHello = `
-INSERT INTO service_agents (slug, name) VALUES ('hello', 'Hello 试点应用')
-ON CONFLICT (slug) DO NOTHING;
-INSERT INTO service_agent_versions (agent_id, version, definition_json, assets_hash)
-SELECT id, 1, '{"async_threshold_seconds": 60, "models": ["gpt-6.1-sol"]}', '' FROM service_agents WHERE slug = 'hello'
-ON CONFLICT DO NOTHING;`
 
 const createArtifactRuntimeEventSequencesTable = `
 CREATE TABLE IF NOT EXISTS artifact_runtime_event_sequences (

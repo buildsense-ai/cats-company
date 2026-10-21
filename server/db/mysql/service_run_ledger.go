@@ -93,13 +93,13 @@ func (a *Adapter) RecordServiceRunLedger(ctx context.Context, entry store.Servic
 
 // SumPendingCallerChargeMicros 汇总该调用方「待扣」金额（PG 同语义镜像）。
 func (a *Adapter) SumPendingCallerChargeMicros(ctx context.Context, payerUID int64) (int64, error) {
-var total int64
-err := a.db.QueryRowContext(ctx, `
+	var total int64
+	err := a.db.QueryRowContext(ctx, `
 SELECT COALESCE(SUM(gross_micros - fee_micros), 0)
 FROM service_run_ledger
 WHERE payer_uid = ? AND billing_state = 'pending_credit'`, payerUID).Scan(&total)
-if err != nil {
-return 0, fmt.Errorf("sum pending caller charge: %w", err)
-}
-return total, nil
+	if err != nil {
+		return 0, fmt.Errorf("sum pending caller charge: %w", err)
+	}
+	return total, nil
 }

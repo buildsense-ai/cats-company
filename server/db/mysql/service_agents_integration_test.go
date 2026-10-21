@@ -52,6 +52,30 @@ func seedMySQLServiceAgent(t *testing.T, db *Adapter) int64 {
 	return agentID
 }
 
+// seedHelloFixture 造出 hello 试点数据。
+// 启动建表不再自带种子（000027 的种子只存在于 PG 迁移历史），
+// 依赖 hello 语义的测试必须自己插入。
+func seedHelloFixture(t *testing.T, db *Adapter) int64 {
+	t.Helper()
+	if _, err := db.db.Exec(`INSERT IGNORE INTO service_agents (slug, name) VALUES ('hello', 'Hello 试点应用')`); err != nil {
+		t.Fatalf("seed hello agent: %v", err)
+	}
+	if _, err := db.db.Exec(`INSERT IGNORE INTO service_agent_versions (agent_id, version, definition_json, assets_hash)
+SELECT id, 1, '{"async_threshold_seconds": 60, "models": ["gpt-6.1-sol"]}', '' FROM service_agents WHERE slug = 'hello'`); err != nil {
+		t.Fatalf("seed hello version: %v", err)
+	}
+	var id int64
+	if err := db.db.QueryRow(`SELECT id FROM service_agents WHERE slug = 'hello'`).Scan(&id); err != nil {
+		t.Fatalf("lookup hello agent: %v", err)
+	}
+	t.Cleanup(func() {
+		db.db.Exec(`DELETE FROM service_sessions WHERE agent_id = ?`, id)
+		db.db.Exec(`DELETE FROM service_agent_versions WHERE agent_id = ?`, id)
+		db.db.Exec(`DELETE FROM service_agents WHERE id = ?`, id)
+	})
+	return id
+}
+
 func forceMySQLLeaseExpired(t *testing.T, db *Adapter, runID string) {
 	t.Helper()
 	if _, err := db.db.Exec(`UPDATE service_runs SET lease_expires_at = DATE_SUB(NOW(6), INTERVAL 1 MINUTE) WHERE run_id = ?`, runID); err != nil {
