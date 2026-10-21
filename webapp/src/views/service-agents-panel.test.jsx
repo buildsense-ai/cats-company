@@ -206,8 +206,16 @@ describe('ServiceAgentsPanel', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it('展示归属徽标与工具计数', async () => {
-    mocks.getServiceAgentsCatalog.mockResolvedValue({
+  it('没有 Agent 时配置范围降级为静态说明，不渲染只有一个选项的下拉', async () => {
+    mocks.getMyBots.mockResolvedValue({ bots: [] });
+    await renderPanel();
+    expect(container.querySelector('#v3-service-agents-scope-select')).toBeNull();
+    const staticScope = container.querySelector('.v3-service-agents-scope-control.is-static');
+    expect(staticScope).toBeTruthy();
+    expect(staticScope.textContent).toContain('账号（所有 Agent 共用）');
+  });
+
+  it('展示归属徽标与工具计数', async () => {    mocks.getServiceAgentsCatalog.mockResolvedValue({
       agents: [
         { slug: 'mine-app', name: '我的应用', version: 1, hidden: false, mine: true, visibility: 'private' },
       ],

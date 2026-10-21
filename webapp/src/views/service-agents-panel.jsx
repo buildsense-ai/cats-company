@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Plus, RefreshCw, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Plus, RefreshCw, Sparkles, X } from 'lucide-react';
 import { api } from '../api';
 
 // Agent 工具（CatsCo 定制 agent 的工具集管理；设计 §3.3-9"模式二：默认开放 + 个人清单"）。
@@ -145,19 +145,34 @@ export default function ServiceAgentsPanel({ onClose }) {
         </div>
       </div>
       <div className="v3-service-agents-scope">
-        <label htmlFor="v3-service-agents-scope-select">配置范围</label>
-        <select
-          id="v3-service-agents-scope-select"
-          value={scopeBotUid}
-          onChange={(event) => setScopeBotUid(event.target.value)}
-        >
-          <option value="">账号（所有 Agent 共用）</option>
-          {bots.map((bot) => (
-            <option key={bot.uid} value={String(bot.uid)}>
-              {bot.name || bot.display_name || bot.username || bot.uid}
-            </option>
-          ))}
-        </select>
+        <label className="v3-service-agents-scope-label" htmlFor="v3-service-agents-scope-select">
+          配置范围
+        </label>
+        {bots.length > 0 ? (
+          <div className="v3-service-agents-scope-control">
+            <select
+              id="v3-service-agents-scope-select"
+              value={scopeBotUid}
+              onChange={(event) => setScopeBotUid(event.target.value)}
+            >
+              <option value="">账号（所有 Agent 共用）</option>
+              {bots.map((bot) => (
+                <option key={bot.uid} value={String(bot.uid)}>
+                  {bot.name || bot.display_name || bot.username || bot.uid}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} aria-hidden="true" className="v3-service-agents-scope-chevron" />
+          </div>
+        ) : (
+          // 没有任何 Agent 时下拉只有一个选项，纯属噪音：降级成静态说明。
+          <div
+            className="v3-service-agents-scope-control is-static"
+            title="创建 Agent 之后可以给单个 Agent 单独裁剪工具清单"
+          >
+            <span className="v3-service-agents-scope-value">账号（所有 Agent 共用）</span>
+          </div>
+        )}
       </div>
       <p className="v3-service-agents-hint">
         {scopeBotUid
