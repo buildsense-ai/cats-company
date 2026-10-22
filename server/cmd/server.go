@@ -947,7 +947,13 @@ func main() {
 	// orchestration (both PG and MySQL adapters do).
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
-		serviceAgentsMCPHandler.SetBalanceChecker(server.NewServiceBalanceCheckerFromEnv())
+		balanceChecker := server.NewServiceBalanceCheckerFromEnv()
+		// 待扣金额（外部 runner 已跑但还没结算的部分）也要算进已用额度，
+		// 否则没结算前调用方可以绕过预算反复调。
+		if pendingReader, ok := db.(server.ServicePendingChargeReader); ok {
+			balanceChecker.SetPendingChargeReader(pendingReader)
+		}
+		serviceAgentsMCPHandler.SetBalanceChecker(balanceChecker)
 		// bot 身份（设计 P1b）：tools/call 可携带 bot_uid，校验 owner==caller 与
 		// bot 定义的 serviceAgents 清单，并把 caller_bot_uid 落进会话。
 		if botIdentity, ok := db.(server.ServiceAgentBotIdentity); ok {
@@ -999,8 +1005,13 @@ func main() {
 		receiptDeliverer := server.NewServiceRunReceiptDeliverer(serviceAgentStore, hub)
 		serviceOrchestrator.SetReceiptKicker(receiptDeliverer)
 		go receiptDeliverer.Start(5 * time.Second)
-		// run 级账本（设计 §4.5）：谁调用谁付费、按量给。补账扫描，只记账不动钱。
+		// run 级账本（设计 §4.5）：谁调用谁付费、按量给。补账扫描 + 结算闭环。
 		ledgerWriter := server.NewServiceRunLedgerWriterFromEnv(serviceAgentStore)
+		// 有 relay admin 配置时，把 pending_credit（http / mcp / worker runner）
+		// 真扣到调用方在 relay 的当月用量上；没配置就只记账不动钱。
+		if charger := server.NewRelayAdminClientFromEnv(); charger != nil {
+			ledgerWriter.SetCharger(charger)
+		}
 		go ledgerWriter.Start(30 * time.Second)
 	} else {
 		log.Printf("service agents MCP endpoint disabled: store does not implement ServiceAgentStore")

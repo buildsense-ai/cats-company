@@ -91,11 +91,63 @@ func (a *Adapter) RecordServiceRunLedger(ctx context.Context, entry store.Servic
 	return affected > 0, nil
 }
 
+// ListPendingCreditLedger 列出还没结算的「待扣」账本行（PG 同语义镜像）。
+func (a *Adapter) ListPendingCreditLedger(ctx context.Context, limit int) ([]store.ServiceRunLedgerCharge, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT run_id, payer_uid, gross_micros, currency, finished_at
+		FROM service_run_ledger
+		WHERE billing_state = 'pending_credit'
+		  AND payer_uid > 0
+		  AND gross_micros > 0
+		  AND finished_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+		ORDER BY finished_at
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending credit ledger: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.ServiceRunLedgerCharge
+	for rows.Next() {
+		var item store.ServiceRunLedgerCharge
+		if err := rows.Scan(&item.RunID, &item.PayerUID, &item.GrossMicros, &item.Currency, &item.FinishedAt); err != nil {
+			return nil, fmt.Errorf("scan pending credit ledger: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending credit ledger: %w", err)
+	}
+	return out, nil
+}
+
+// MarkServiceRunLedgerState 改写一行的结算状态（只从 pending_credit 迁走）。
+func (a *Adapter) MarkServiceRunLedgerState(ctx context.Context, runID string, state string) (bool, error) {
+	if runID == "" || state == "" {
+		return false, fmt.Errorf("mark service run ledger state: run_id and state are required")
+	}
+	result, err := a.db.ExecContext(ctx, `
+		UPDATE service_run_ledger SET billing_state = ?
+		WHERE run_id = ? AND billing_state = 'pending_credit'`, state, runID)
+	if err != nil {
+		return false, fmt.Errorf("mark service run ledger state: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("mark service run ledger state: %w", err)
+	}
+	return affected > 0, nil
+}
+
 // SumPendingCallerChargeMicros 汇总该调用方「待扣」金额（PG 同语义镜像）。
+// 口径是 gross：调用方应付全额。
 func (a *Adapter) SumPendingCallerChargeMicros(ctx context.Context, payerUID int64) (int64, error) {
 	var total int64
 	err := a.db.QueryRowContext(ctx, `
-SELECT COALESCE(SUM(gross_micros - fee_micros), 0)
+SELECT COALESCE(SUM(gross_micros), 0)
 FROM service_run_ledger
 WHERE payer_uid = ? AND billing_state = 'pending_credit'`, payerUID).Scan(&total)
 	if err != nil {

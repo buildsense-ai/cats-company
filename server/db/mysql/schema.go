@@ -153,6 +153,7 @@ func (a *Adapter) CreateSchema() error {
 		// 000047：已存在的表不会被 CREATE TABLE IF NOT EXISTS 补列。
 		migrateServiceRunLedgerAddBillingState,
 		migrateServiceRunLedgerBillingStateIndex,
+		migrateServiceRunLedgerSettleIndex,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -703,6 +704,10 @@ ALTER TABLE service_run_ledger ADD COLUMN billing_state VARCHAR(24) NOT NULL DEF
 
 const migrateServiceRunLedgerBillingStateIndex = `
 CREATE INDEX idx_service_run_ledger_pending ON service_run_ledger (payer_uid);`
+
+// 结算器按 finished_at 扫待扣行（MySQL 无部分索引，用 billing_state 前缀走覆盖）。
+const migrateServiceRunLedgerSettleIndex = `
+CREATE INDEX idx_service_run_ledger_settle ON service_run_ledger (billing_state, finished_at);`
 
 // 应用目录订阅清单（PG 000034 镜像；设计 §3.3-9："模式二：默认开放 + 个人清单"）。
 const createServiceAgentSubscriptionsTable = `

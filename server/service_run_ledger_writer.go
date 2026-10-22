@@ -32,6 +32,7 @@ type ServiceRunLedgerStore interface {
 type ServiceRunLedgerWriter struct {
 	store    ServiceRunLedgerStore
 	feeBps   int
+	charger  ServiceCreditCharger
 	stopCh   chan struct{}
 	stopOnce sync.Once
 }
@@ -99,6 +100,12 @@ func (w *ServiceRunLedgerWriter) SweepOnce(ctx context.Context) (int, error) {
 		if inserted {
 			recorded++
 		}
+	}
+	// 新写入的 pending_credit 行会在同一轮里被后面扫到并结算，缩短「跑了但没扣」的窗口。
+	if settled, err := w.SettlePendingCredit(ctx); err != nil {
+		log.Printf("service credit settlement: %v", err)
+	} else if settled > 0 {
+		log.Printf("service credit settlement: charged %d run(s)", settled)
 	}
 	return recorded, nil
 }

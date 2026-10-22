@@ -664,7 +664,8 @@ CREATE TABLE IF NOT EXISTS service_run_ledger (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 
-// 结算状态（000047）：free / settled_platform / pending_credit。
+// 结算状态（000047）：free / settled_platform / pending_credit / charged / charge_failed。
+// charged 与 charge_failed 只是 billing_state 的新取值，不需要加列。
 const migrateServiceRunLedgerAddBillingState = `
 ALTER TABLE service_run_ledger
     ADD COLUMN IF NOT EXISTS billing_state VARCHAR(24) NOT NULL DEFAULT 'free';
@@ -680,7 +681,10 @@ CREATE INDEX IF NOT EXISTS idx_service_run_ledger_payee
 CREATE INDEX IF NOT EXISTS idx_service_run_ledger_agent
     ON service_run_ledger (agent_id, finished_at DESC);
 CREATE INDEX IF NOT EXISTS idx_service_run_ledger_pending
-    ON service_run_ledger (payer_uid) WHERE billing_state = 'pending_credit';`
+    ON service_run_ledger (payer_uid) WHERE billing_state = 'pending_credit';
+-- 结算器按 finished_at 扫待扣行（代扣扫描，不回看 payer）。
+CREATE INDEX IF NOT EXISTS idx_service_run_ledger_settle
+    ON service_run_ledger (finished_at) WHERE billing_state = 'pending_credit';`
 
 const createServiceAgentSubscriptionsTable = `
 CREATE TABLE IF NOT EXISTS service_agent_subscriptions (

@@ -155,10 +155,45 @@ func (f *fakeLedgerStore) SumPendingCallerChargeMicros(_ context.Context, payerU
 	var total int64
 	for _, entry := range f.entries {
 		if entry.PayerUID == payerUID && entry.BillingState == store.ServiceBillingPendingCredit {
-			total += entry.GrossMicros - entry.FeeMicros
+			total += entry.GrossMicros
 		}
 	}
 	return total, nil
+}
+
+// ListPendingCreditLedger 模拟 SQL：只返回 window 内、payer/gross 有效的待扣行。
+func (f *fakeLedgerStore) ListPendingCreditLedger(_ context.Context, limit int) ([]store.ServiceRunLedgerCharge, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]store.ServiceRunLedgerCharge, 0, len(f.entries))
+	for _, entry := range f.entries {
+		if entry.BillingState != store.ServiceBillingPendingCredit || entry.PayerUID <= 0 || entry.GrossMicros <= 0 {
+			continue
+		}
+		out = append(out, store.ServiceRunLedgerCharge{
+			RunID:       entry.RunID,
+			PayerUID:    entry.PayerUID,
+			GrossMicros: entry.GrossMicros,
+			Currency:    entry.Currency,
+			FinishedAt:  entry.FinishedAt,
+		})
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeLedgerStore) MarkServiceRunLedgerState(_ context.Context, runID string, state string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	entry, ok := f.entries[runID]
+	if !ok || entry.BillingState != store.ServiceBillingPendingCredit {
+		return false, nil
+	}
+	entry.BillingState = state
+	f.entries[runID] = entry
+	return true, nil
 }
 
 func ledgerTestRun(runID string, definition string) store.ServiceRunBillable {
@@ -258,56 +293,56 @@ func TestServiceRunLedgerWriterInternalOwner(t *testing.T) {
 
 // 平台自带执行（codex）的金额已由 relay 在模型调用时实时扣除 → settled_platform。
 func TestServiceRunLedgerWriterSettledForPlatformRunner(t *testing.T) {
-run := ledgerTestRun("run_codex", `{"pricing":{"unit":"token","per_1k_tokens":0.02}}`)
-run.RunnerType = "codex"
-st := newFakeLedgerStore(run)
-writer := NewServiceRunLedgerWriterFromEnv(st)
+	run := ledgerTestRun("run_codex", `{"pricing":{"unit":"token","per_1k_tokens":0.02}}`)
+	run.RunnerType = "codex"
+	st := newFakeLedgerStore(run)
+	writer := NewServiceRunLedgerWriterFromEnv(st)
 
-if _, err := writer.SweepOnce(context.Background()); err != nil {
-t.Fatalf("sweep: %v", err)
-}
-if got := st.entries["run_codex"].BillingState; got != store.ServiceBillingSettledPlatform {
-t.Fatalf("billing_state = %q, want settled_platform", got)
-}
+	if _, err := writer.SweepOnce(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := st.entries["run_codex"].BillingState; got != store.ServiceBillingSettledPlatform {
+		t.Fatalf("billing_state = %q, want settled_platform", got)
+	}
 }
 
 // 预检并入「待扣」：外部 agent 的金额把调用方额度提前打到上限 → 拒单。
 func TestServiceBalancePrecheckIncludesPendingCharge(t *testing.T) {
-ledger := newFakeLedgerStore(ledgerTestRun("run_pending", `{"pricing":{"unit":"run","per_run":0.6}}`))
-writer := NewServiceRunLedgerWriterFromEnv(ledger)
-if _, err := writer.SweepOnce(context.Background()); err != nil {
-t.Fatalf("sweep: %v", err)
-}
-// 待扣 = 0.6 元 = 600000 微元
-pending, err := ledger.SumPendingCallerChargeMicros(context.Background(), 442)
-if err != nil || pending != 600000 {
-t.Fatalf("pending = %d err=%v, want 600000", pending, err)
-}
+	ledger := newFakeLedgerStore(ledgerTestRun("run_pending", `{"pricing":{"unit":"run","per_run":0.6}}`))
+	writer := NewServiceRunLedgerWriterFromEnv(ledger)
+	if _, err := writer.SweepOnce(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	// 待扣 = 0.6 元 = 600000 微元
+	pending, err := ledger.SumPendingCallerChargeMicros(context.Background(), 442)
+	if err != nil || pending != 600000 {
+		t.Fatalf("pending = %d err=%v, want 600000", pending, err)
+	}
 
-checker := &ServiceBalanceChecker{pending: ledger}
-user := &commercialRelayUsageUser{UID: 442, Configured: true}
-user.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: 1.0, CurrentUsage: 0.5}
-// relay 侧剩余 0.5，但加上待扣 0.6 → 已超额
-if !balanceExhaustedWithPending(checker, context.Background(), 442, user) {
-t.Fatal("pending charge should push usage over max_limit")
-}
-// 预算充足时不误判
-user.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: 5.0, CurrentUsage: 0.5}
-if balanceExhaustedWithPending(checker, context.Background(), 442, user) {
-t.Fatal("ample budget should not be exhausted")
-}
+	checker := &ServiceBalanceChecker{pending: ledger}
+	user := &commercialRelayUsageUser{UID: 442, Configured: true}
+	user.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: 1.0, CurrentUsage: 0.5}
+	// relay 侧剩余 0.5，但加上待扣 0.6 → 已超额
+	if !balanceExhaustedWithPending(checker, context.Background(), 442, user) {
+		t.Fatal("pending charge should push usage over max_limit")
+	}
+	// 预算充足时不误判
+	user.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: 5.0, CurrentUsage: 0.5}
+	if balanceExhaustedWithPending(checker, context.Background(), 442, user) {
+		t.Fatal("ample budget should not be exhausted")
+	}
 }
 
 // balanceExhaustedWithPending 是预检里「额度是否耗尽」的直出断言入口（与 Check 同口径）。
 func balanceExhaustedWithPending(c *ServiceBalanceChecker, ctx context.Context, uid int64, user *commercialRelayUsageUser) bool {
-pendingCNY := 0.0
-if c != nil && c.pending != nil {
-if micros, err := c.pending.SumPendingCallerChargeMicros(ctx, uid); err == nil {
-pendingCNY = float64(micros) / 1_000_000.0
-}
-}
-exhausted := func(budget commercialRelayBudget) bool {
-return budget.MaxLimit > 0 && budget.CurrentUsage+pendingCNY >= budget.MaxLimit
-}
-return exhausted(user.Limits.MonthlyBudget)
+	pendingCNY := 0.0
+	if c != nil && c.pending != nil {
+		if micros, err := c.pending.SumPendingCallerChargeMicros(ctx, uid); err == nil {
+			pendingCNY = float64(micros) / 1_000_000.0
+		}
+	}
+	exhausted := func(budget commercialRelayBudget) bool {
+		return budget.MaxLimit > 0 && budget.CurrentUsage+pendingCNY >= budget.MaxLimit
+	}
+	return exhausted(user.Limits.MonthlyBudget)
 }
