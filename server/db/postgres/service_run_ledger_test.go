@@ -135,3 +135,53 @@ func TestServiceRunLedgerListAndRecord(t *testing.T) {
 	}
 	_ = time.Now
 }
+
+// 预检口径：pending_credit（待重试）+ charge_failed（人工追缴）都算欠款；
+// charged / self_call 不能重复计入。
+func TestServiceRunLedgerPendingChargeSum(t *testing.T) {
+	db := pgTestDB(t)
+	if err := db.CreateSchema(); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	ctx := context.Background()
+	const payer int64 = 9077
+	t.Cleanup(func() {
+		_, _ = db.db.ExecContext(context.Background(), `DELETE FROM service_run_ledger WHERE payer_uid = $1`, payer)
+	})
+
+	cases := []struct {
+		runID string
+		state string
+		gross int64
+	}{
+		{"run_sum_pg_pending", store.ServiceBillingPendingCredit, 30000},
+		{"run_sum_pg_failed", store.ServiceBillingChargeFailed, 20000},
+		{"run_sum_pg_charged", store.ServiceBillingCharged, 50000},
+		{"run_sum_pg_self", store.ServiceBillingSelfCall, 70000},
+	}
+	for _, c := range cases {
+		entry := store.ServiceRunLedgerEntry{
+			ServiceRunBillable: store.ServiceRunBillable{
+				RunID: c.runID, SessionID: "sess_" + c.runID, AgentID: 1, AgentSlug: "ledger-sum",
+				OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 441, CallerUID: payer,
+				RunnerType: "worker", Status: "completed", FinishedAt: time.Now(),
+			},
+			Currency: "CNY", GrossMicros: c.gross,
+			PayerUID: payer, PayeeUID: 441, BillingState: store.ServiceBillingPendingCredit,
+		}
+		if _, err := db.RecordServiceRunLedger(ctx, entry); err != nil {
+			t.Fatalf("record %s: %v", c.runID, err)
+		}
+		if _, err := db.db.ExecContext(ctx, `UPDATE service_run_ledger SET billing_state = $1 WHERE run_id = $2`, c.state, c.runID); err != nil {
+			t.Fatalf("set state %s: %v", c.runID, err)
+		}
+	}
+
+	total, err := db.SumPendingCallerChargeMicros(ctx, payer)
+	if err != nil {
+		t.Fatalf("sum pending: %v", err)
+	}
+	if total != 50000 {
+		t.Fatalf("pending sum = %d, want 50000 (pending 30000 + charge_failed 20000)", total)
+	}
+}

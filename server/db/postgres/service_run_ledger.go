@@ -151,14 +151,17 @@ func (a *Adapter) MarkServiceRunLedgerState(ctx context.Context, runID string, s
 	return affected > 0, nil
 }
 
-// SumPendingCallerChargeMicros 汇总该调用方「待扣」金额（外部执行后端自报用量）。
+// SumPendingCallerChargeMicros 汇总该调用方「还没收上来」的钱（预检并入已用额度）。
 // 口径是 gross：调用方应付全额，fee 是平台从 gross 里抽给发布方的部分。
+// 计入两种状态：pending_credit（已记账、结算器还没扣成功）与 charge_failed
+// （relay 明确拒绝，重试无意义但账还在，需要人工追缴）。后者若不并入，
+// 扣不着的调用就等于免费绕过预算。
 func (a *Adapter) SumPendingCallerChargeMicros(ctx context.Context, payerUID int64) (int64, error) {
 	var total int64
 	err := a.db.QueryRowContext(ctx, `
 SELECT COALESCE(SUM(gross_micros), 0)
 FROM service_run_ledger
-WHERE payer_uid = $1 AND billing_state = 'pending_credit'`, payerUID).Scan(&total)
+WHERE payer_uid = $1 AND billing_state IN ('pending_credit', 'charge_failed')`, payerUID).Scan(&total)
 	if err != nil {
 		return 0, fmt.Errorf("sum pending caller charge: %w", err)
 	}

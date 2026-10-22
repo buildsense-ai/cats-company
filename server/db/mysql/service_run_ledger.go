@@ -142,14 +142,15 @@ func (a *Adapter) MarkServiceRunLedgerState(ctx context.Context, runID string, s
 	return affected > 0, nil
 }
 
-// SumPendingCallerChargeMicros 汇总该调用方「待扣」金额（PG 同语义镜像）。
-// 口径是 gross：调用方应付全额。
+// SumPendingCallerChargeMicros 汇总该调用方「还没收上来」的钱（PG 同语义镜像）。
+// 口径是 gross：调用方应付全额。pending_credit（待重试）+ charge_failed（已人工对账）
+// 都算欠款，否则 relay 拒收的调用就白用了。
 func (a *Adapter) SumPendingCallerChargeMicros(ctx context.Context, payerUID int64) (int64, error) {
 	var total int64
 	err := a.db.QueryRowContext(ctx, `
 SELECT COALESCE(SUM(gross_micros), 0)
 FROM service_run_ledger
-WHERE payer_uid = ? AND billing_state = 'pending_credit'`, payerUID).Scan(&total)
+WHERE payer_uid = ? AND billing_state IN ('pending_credit', 'charge_failed')`, payerUID).Scan(&total)
 	if err != nil {
 		return 0, fmt.Errorf("sum pending caller charge: %w", err)
 	}

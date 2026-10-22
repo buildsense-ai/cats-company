@@ -39,7 +39,8 @@ type ServiceRunLedgerEntry struct {
 	// PayerUID = 调用者（谁调用谁给钱）；PayeeUID = agent owner（internal → 0 = 平台自营）。
 	PayerUID int64
 	PayeeUID int64
-	// BillingState 结算状态：free / settled_platform / pending_credit（见常量）。
+	// BillingState 结算状态：free / settled_platform / pending_credit / charged /
+	// charge_failed / self_call（见常量）。
 	BillingState string
 }
 
@@ -55,7 +56,12 @@ const (
 	// ServiceBillingCharged：结算器已把钱记到调用方在 relay 的当月用量上。
 	ServiceBillingCharged = "charged"
 	// ServiceBillingChargeFailed：relay 明确拒绝（4xx，重试无意义），需人工对账。
+	// 钱没收到，所以预检时仍算调用方「已用额度」（否则扣不到就等于免费用）。
 	ServiceBillingChargeFailed = "charge_failed"
+	// ServiceBillingSelfCall：调用方就是 agent owner（自己调自己，含「自己的 bot 调
+	// 自己发布的 agent」）。payer 与 payee 是同一个账号，代扣只是把同一笔钱从自己的
+	// 额度里扣走再等 owner 出款（出款通道尚未实现）→ 白扣一次，所以只记账、不扣费。
+	ServiceBillingSelfCall = "self_call"
 )
 
 // ServiceRunLedgerCharge 是一条待结算的账本行（pending_credit → 调 relay 代扣）。

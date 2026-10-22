@@ -124,25 +124,30 @@ func (w *ServiceRunLedgerWriter) buildEntry(run store.ServiceRunBillable) store.
 		// 谁调用谁给钱；收款方是 agent owner（internal agent → 0 = 平台自营）。
 		PayerUID:     run.CallerUID,
 		PayeeUID:     run.OwnerUID,
-		BillingState: resolveBillingState(run.RunnerType, charge.Gross),
+		BillingState: resolveBillingState(run, charge.Gross),
 	}
 }
 
 // resolveBillingState 判定这次 run 的结算归属（设计 §4.5：按会话请求实时结算）。
 //   - 免费（未定价）→ free
-//   - 平台自带执行（codex）→ 调用方额度已在 relay 模型调用时实时扣除
-//   - 外部执行后端（http/mcp）→ 对端自报用量，金额计入调用方「待扣」，预检时算作已用
-func resolveBillingState(runnerType string, grossMicros int64) string {
+//   - 平台自带执行（codex）→ 调用方额度已在 relay 模型调用时实时扣除（这是真实模型成本，
+//     自己不自己调都得付，所以不参与下面的 self_call 豁免）
+//   - 外部执行后端（http/mcp/worker）→ 金额计入调用方「待扣」，由结算器调 relay 代扣；
+//     但若调用方就是 owner（自己调自己）→ self_call：同账号左右口袋，不代扣
+func resolveBillingState(run store.ServiceRunBillable, grossMicros int64) string {
 	if grossMicros <= 0 {
 		return store.ServiceBillingFree
 	}
-	switch runnerType {
-	case "http", "mcp":
-		// 外部执行后端自报用量，平台没有扣费通道 → 记「待扣」。
-		return store.ServiceBillingPendingCredit
-	case "worker":
-		// 用户自己的 worker（cmd/service-run-worker）认领执行：平台只做编排，
-		// 调用方额度是否被扣取决于该 worker 有没有走 relay，平台侧无法确认 → 同样记「待扣」。
+	switch run.RunnerType {
+	case "http", "mcp", "worker":
+		// 自己调自己：payer 与 payee 是同一个账号，代扣只是把钱从自己的额度里扣走，
+		// 而 owner 出款通道还没实现 → 净损失一次，所以只记账不扣费。
+		// internal agent 不算（payee=平台，钱真的要从调用方收到平台）。
+		if run.OwnerKind != store.ServiceAgentOwnerInternal && run.OwnerUID > 0 && run.CallerUID == run.OwnerUID {
+			return store.ServiceBillingSelfCall
+		}
+		// 外部执行后端自报用量 / 用户自己的 worker 认领执行：平台侧原本扣不到，
+		// 一律记「待扣」，由结算器调 relay 代扣。
 		return store.ServiceBillingPendingCredit
 	default:
 		return store.ServiceBillingSettledPlatform

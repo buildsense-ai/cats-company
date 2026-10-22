@@ -154,7 +154,11 @@ func (f *fakeLedgerStore) SumPendingCallerChargeMicros(_ context.Context, payerU
 	defer f.mu.Unlock()
 	var total int64
 	for _, entry := range f.entries {
-		if entry.PayerUID == payerUID && entry.BillingState == store.ServiceBillingPendingCredit {
+		if entry.PayerUID != payerUID {
+			continue
+		}
+		// 与 SQL 同口径：待重试 + 人工追缴都算欠款；charged/free/self_call 不算。
+		if entry.BillingState == store.ServiceBillingPendingCredit || entry.BillingState == store.ServiceBillingChargeFailed {
 			total += entry.GrossMicros
 		}
 	}
@@ -345,4 +349,96 @@ func balanceExhaustedWithPending(c *ServiceBalanceChecker, ctx context.Context, 
 		return budget.MaxLimit > 0 && budget.CurrentUsage+pendingCNY >= budget.MaxLimit
 	}
 	return exhausted(user.Limits.MonthlyBudget)
+}
+
+// 自己调自己（含自己的 bot 调自己发布的 agent）：账照记（用量/定价留痕），但一分不扣。
+func TestServiceRunLedgerWriterSelfCallRecordedButNotCharged(t *testing.T) {
+	run := ledgerTestRun("run_self", `{"pricing":{"unit":"run","per_run":0.05}}`)
+	run.CallerUID = run.OwnerUID // 同一个账号
+	st := newFakeLedgerStore(run)
+	writer := NewServiceRunLedgerWriterFromEnv(st)
+	charger := &fakeCreditCharger{}
+	writer.SetCharger(charger)
+
+	if _, err := writer.SweepOnce(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	entry := st.entries["run_self"]
+	if entry.BillingState != store.ServiceBillingSelfCall {
+		t.Fatalf("billing_state = %q, want self_call", entry.BillingState)
+	}
+	// 金额与归属照样入账，只是不动钱
+	if entry.GrossMicros != 50000 || entry.PayerUID != 441 || entry.PayeeUID != 441 {
+		t.Fatalf("self-call entry = %+v", entry)
+	}
+	if calls := charger.snapshot(); len(calls) != 0 {
+		t.Fatalf("self call must not charge, got %+v", calls)
+	}
+	// 不欠钱 → 预检不能把它算成已用额度
+	if pending, err := st.SumPendingCallerChargeMicros(context.Background(), 441); err != nil || pending != 0 {
+		t.Fatalf("pending = %d err=%v, want 0", pending, err)
+	}
+	// 再扫一轮也不会补扣
+	if _, err := writer.SweepOnce(context.Background()); err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if calls := charger.snapshot(); len(calls) != 0 {
+		t.Fatalf("second sweep charged a self call: %+v", calls)
+	}
+}
+
+// 平台自带执行（codex）是真实模型成本（已由 relay 在模型调用时扣），自己调自己也得付。
+func TestServiceRunLedgerWriterCodexSelfCallStaysSettled(t *testing.T) {
+	run := ledgerTestRun("run_self_codex", `{"pricing":{"unit":"token","per_1k_tokens":0.02}}`)
+	run.CallerUID = run.OwnerUID
+	run.RunnerType = "codex"
+	st := newFakeLedgerStore(run)
+	writer := NewServiceRunLedgerWriterFromEnv(st)
+
+	if _, err := writer.SweepOnce(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := st.entries["run_self_codex"].BillingState; got != store.ServiceBillingSettledPlatform {
+		t.Fatalf("billing_state = %q, want settled_platform", got)
+	}
+}
+
+// relay 明确拒收（charge_failed）的钱没收到，但账还在 → 必须算欠款，否则就等于免费用。
+func TestServiceBalancePrecheckCountsFailedCharge(t *testing.T) {
+	st := newFakeLedgerStore()
+	st.entries["run_failed"] = store.ServiceRunLedgerEntry{
+		ServiceRunBillable: store.ServiceRunBillable{RunID: "run_failed"},
+		PayerUID:           442,
+		GrossMicros:        400000,
+		BillingState:       store.ServiceBillingChargeFailed,
+	}
+	pending, err := st.SumPendingCallerChargeMicros(context.Background(), 442)
+	if err != nil || pending != 400000 {
+		t.Fatalf("pending = %d err=%v, want 400000", pending, err)
+	}
+
+	checker := &ServiceBalanceChecker{pending: st}
+	user := &commercialRelayUsageUser{UID: 442, Configured: true}
+	user.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: 1.0, CurrentUsage: 0.7}
+	if !balanceExhaustedWithPending(checker, context.Background(), 442, user) {
+		t.Fatal("charge_failed debt should push usage over max_limit")
+	}
+}
+
+// charged / self_call 不能再被当成欠款重复计入（否则会多算一层额度）。
+func TestServicePendingChargeExcludesSettledStates(t *testing.T) {
+	st := newFakeLedgerStore()
+	for i, state := range []string{store.ServiceBillingCharged, store.ServiceBillingSelfCall, store.ServiceBillingFree, store.ServiceBillingSettledPlatform} {
+		runID := "run_settled_" + string(rune('a'+i))
+		st.entries[runID] = store.ServiceRunLedgerEntry{
+			ServiceRunBillable: store.ServiceRunBillable{RunID: runID},
+			PayerUID:           442,
+			GrossMicros:        100000,
+			BillingState:       state,
+		}
+	}
+	pending, err := st.SumPendingCallerChargeMicros(context.Background(), 442)
+	if err != nil || pending != 0 {
+		t.Fatalf("pending = %d err=%v, want 0 for settled states", pending, err)
+	}
 }

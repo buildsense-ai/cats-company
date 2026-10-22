@@ -23,8 +23,9 @@ type ServiceBalanceChecker struct {
 	pending ServicePendingChargeReader
 }
 
-// ServicePendingChargeReader 提供「调用方待扣金额」(微元)：外部执行后端自报用量、
-// 平台侧尚无扣费通道的部分，预检时并入已用额度，避免绕过预算无限调用。
+// ServicePendingChargeReader 提供「调用方欠款」(微元)：平台已经记账、但还没真正从
+// relay 收到的钱 —— pending_credit（结算器待重试）+ charge_failed（relay 明确拒收，
+// 需要人工追缴）。预检时并入已用额度，避免「扣不到就等于免费用」绕过预算。
 type ServicePendingChargeReader interface {
 	SumPendingCallerChargeMicros(ctx context.Context, payerUID int64) (int64, error)
 }
