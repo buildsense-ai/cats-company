@@ -49,7 +49,28 @@ const (
 	ServiceBillingFree = "free"
 	// ServiceBillingSettledPlatform：调用方额度已由 relay 在模型调用时实时扣除。
 	ServiceBillingSettledPlatform = "settled_platform"
-	// ServiceBillingPendingCredit：外部执行后端自报用量，平台侧尚无扣费通道；
-	// 金额计入调用方「待扣」累计，预检时一并算作已用额度。
+	// ServiceBillingPendingCredit：外部执行后端自报用量，尚未扣费；
+	// 金额计入调用方「待扣」累计，预检时一并算作已用额度。补扣扫描会尝试
+	// 通过 relay 代扣接口把这一行结掉（成功后置 charged）。
 	ServiceBillingPendingCredit = "pending_credit"
+	// ServiceBillingCharged：平台已通过 relay 代扣接口向调用方扣款成功
+	// （request_id=run_id，接口幂等；重复补扣只会得到 duplicate）。
+	ServiceBillingCharged = "charged"
+	// ServiceBillingChargeFailed：relay 明确拒绝（4xx），重试不会变好，
+	// 停止自动补扣并留待人工处理；金额仍计入调用方「欠费」。
+	ServiceBillingChargeFailed = "charge_failed"
+	// ServiceBillingSelfCall：调用方就是 agent owner（自己调自己），
+	// 钱从左手到右手，平台不做实际扣费。
+	ServiceBillingSelfCall = "self_call"
 )
+
+// ServiceRunLedgerCharge 是一条待补扣的账本行（补扣扫描读它）。
+type ServiceRunLedgerCharge struct {
+	RunID       string
+	PayerUID    int64
+	PayeeUID    int64
+	GrossMicros int64
+	FeeMicros   int64
+	Currency    string
+	FinishedAt  time.Time
+}

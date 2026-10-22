@@ -99,13 +99,69 @@ func nullJSON(raw json.RawMessage) interface{} {
 
 var _ = sql.ErrNoRows
 
-// SumPendingCallerChargeMicros 汇总该调用方「待扣」金额（外部执行后端自报用量）。
+// ListPendingServiceRunLedgerCharges 列出待补扣的账本行（billing_state=pending_credit）。
+// 与补账扫描同口径回看 48h：只补最近的钱，避免把历史欠账一次性推给 relay。
+func (a *Adapter) ListPendingServiceRunLedgerCharges(ctx context.Context, limit int) ([]store.ServiceRunLedgerCharge, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT run_id, payer_uid, payee_uid, gross_micros, fee_micros, currency, finished_at
+		FROM service_run_ledger
+		WHERE billing_state = 'pending_credit'
+		  AND payer_uid > 0
+		  AND gross_micros > 0
+		  AND finished_at >= now() - interval '48 hours'
+		ORDER BY finished_at
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending ledger charges: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.ServiceRunLedgerCharge
+	for rows.Next() {
+		var item store.ServiceRunLedgerCharge
+		if err := rows.Scan(&item.RunID, &item.PayerUID, &item.PayeeUID,
+			&item.GrossMicros, &item.FeeMicros, &item.Currency, &item.FinishedAt); err != nil {
+			return nil, fmt.Errorf("scan pending ledger charge: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending ledger charges: %w", err)
+	}
+	return out, nil
+}
+
+// UpdateServiceRunLedgerBillingState 结算状态迁移（from_state 条件更新，幂等）。
+// run 不存在或已不在 from_state → false，不报错。
+func (a *Adapter) UpdateServiceRunLedgerBillingState(ctx context.Context, runID, fromState, toState string) (bool, error) {
+	if fromState == "" || toState == "" {
+		return false, fmt.Errorf("update service run ledger billing state: from/to state required")
+	}
+	result, err := a.db.ExecContext(ctx, `
+		UPDATE service_run_ledger
+		SET billing_state = $3
+		WHERE run_id = $1 AND billing_state = $2`, runID, fromState, toState)
+	if err != nil {
+		return false, fmt.Errorf("update service run ledger billing state: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("update service run ledger billing state: %w", err)
+	}
+	return affected > 0, nil
+}
+
+// SumPendingCallerChargeMicros 汇总该调用方尚未收回的金额（待扣 + 扣费失败）。
+// 口径是 gross（调用方应付全额），预检时并入已用额度。
 func (a *Adapter) SumPendingCallerChargeMicros(ctx context.Context, payerUID int64) (int64, error) {
 	var total int64
 	err := a.db.QueryRowContext(ctx, `
-SELECT COALESCE(SUM(gross_micros - fee_micros), 0)
+SELECT COALESCE(SUM(gross_micros), 0)
 FROM service_run_ledger
-WHERE payer_uid = $1 AND billing_state = 'pending_credit'`, payerUID).Scan(&total)
+WHERE payer_uid = $1 AND billing_state IN ('pending_credit', 'charge_failed')`, payerUID).Scan(&total)
 	if err != nil {
 		return 0, fmt.Errorf("sum pending caller charge: %w", err)
 	}

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -154,11 +155,89 @@ func (f *fakeLedgerStore) SumPendingCallerChargeMicros(_ context.Context, payerU
 	defer f.mu.Unlock()
 	var total int64
 	for _, entry := range f.entries {
-		if entry.PayerUID == payerUID && entry.BillingState == store.ServiceBillingPendingCredit {
-			total += entry.GrossMicros - entry.FeeMicros
+		if entry.PayerUID != payerUID {
+			continue
+		}
+		if entry.BillingState == store.ServiceBillingPendingCredit || entry.BillingState == store.ServiceBillingChargeFailed {
+			total += entry.GrossMicros
 		}
 	}
 	return total, nil
+}
+
+// ListPendingServiceRunLedgerCharges 与 SQL 同语义：只返回 pending_credit 且金额>0 的行。
+func (f *fakeLedgerStore) ListPendingServiceRunLedgerCharges(_ context.Context, limit int) ([]store.ServiceRunLedgerCharge, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]store.ServiceRunLedgerCharge, 0)
+	for _, entry := range f.entries {
+		if entry.BillingState != store.ServiceBillingPendingCredit || entry.PayerUID <= 0 || entry.GrossMicros <= 0 {
+			continue
+		}
+		out = append(out, store.ServiceRunLedgerCharge{
+			RunID:       entry.RunID,
+			PayerUID:    entry.PayerUID,
+			PayeeUID:    entry.PayeeUID,
+			GrossMicros: entry.GrossMicros,
+			FeeMicros:   entry.FeeMicros,
+			Currency:    entry.Currency,
+			FinishedAt:  entry.FinishedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RunID < out[j].RunID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeLedgerStore) UpdateServiceRunLedgerBillingState(_ context.Context, runID, fromState, toState string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	entry, ok := f.entries[runID]
+	if !ok || entry.BillingState != fromState {
+		return false, nil
+	}
+	entry.BillingState = toState
+	f.entries[runID] = entry
+	return true, nil
+}
+
+// fakeCharger 记录补扣调用；err / duplicate 控制返回。
+type fakeCharger struct {
+	mu        sync.Mutex
+	calls     []fakeChargeCall
+	err       error
+	duplicate bool
+}
+
+type fakeChargeCall struct {
+	UID       int64
+	RequestID string
+	AmountCNY float64
+	Note      string
+}
+
+func (f *fakeCharger) ChargeUser(_ context.Context, uid int64, requestID string, amountCNY float64, note string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fakeChargeCall{UID: uid, RequestID: requestID, AmountCNY: amountCNY, Note: note})
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.duplicate, nil
+}
+
+func (f *fakeCharger) setErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+func (f *fakeCharger) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
 }
 
 func ledgerTestRun(runID string, definition string) store.ServiceRunBillable {
@@ -258,56 +337,236 @@ func TestServiceRunLedgerWriterInternalOwner(t *testing.T) {
 
 // 平台自带执行（codex）的金额已由 relay 在模型调用时实时扣除 → settled_platform。
 func TestServiceRunLedgerWriterSettledForPlatformRunner(t *testing.T) {
-run := ledgerTestRun("run_codex", `{"pricing":{"unit":"token","per_1k_tokens":0.02}}`)
-run.RunnerType = "codex"
-st := newFakeLedgerStore(run)
-writer := NewServiceRunLedgerWriterFromEnv(st)
+	run := ledgerTestRun("run_codex", `{"pricing":{"unit":"token","per_1k_tokens":0.02}}`)
+	run.RunnerType = "codex"
+	st := newFakeLedgerStore(run)
+	writer := NewServiceRunLedgerWriterFromEnv(st)
 
-if _, err := writer.SweepOnce(context.Background()); err != nil {
-t.Fatalf("sweep: %v", err)
-}
-if got := st.entries["run_codex"].BillingState; got != store.ServiceBillingSettledPlatform {
-t.Fatalf("billing_state = %q, want settled_platform", got)
-}
+	if _, err := writer.SweepOnce(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := st.entries["run_codex"].BillingState; got != store.ServiceBillingSettledPlatform {
+		t.Fatalf("billing_state = %q, want settled_platform", got)
+	}
 }
 
 // 预检并入「待扣」：外部 agent 的金额把调用方额度提前打到上限 → 拒单。
 func TestServiceBalancePrecheckIncludesPendingCharge(t *testing.T) {
-ledger := newFakeLedgerStore(ledgerTestRun("run_pending", `{"pricing":{"unit":"run","per_run":0.6}}`))
-writer := NewServiceRunLedgerWriterFromEnv(ledger)
-if _, err := writer.SweepOnce(context.Background()); err != nil {
-t.Fatalf("sweep: %v", err)
-}
-// 待扣 = 0.6 元 = 600000 微元
-pending, err := ledger.SumPendingCallerChargeMicros(context.Background(), 442)
-if err != nil || pending != 600000 {
-t.Fatalf("pending = %d err=%v, want 600000", pending, err)
-}
+	ledger := newFakeLedgerStore(ledgerTestRun("run_pending", `{"pricing":{"unit":"run","per_run":0.6}}`))
+	writer := NewServiceRunLedgerWriterFromEnv(ledger)
+	if _, err := writer.SweepOnce(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	// 待扣 = 0.6 元 = 600000 微元
+	pending, err := ledger.SumPendingCallerChargeMicros(context.Background(), 442)
+	if err != nil || pending != 600000 {
+		t.Fatalf("pending = %d err=%v, want 600000", pending, err)
+	}
 
-checker := &ServiceBalanceChecker{pending: ledger}
-user := &commercialRelayUsageUser{UID: 442, Configured: true}
-user.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: 1.0, CurrentUsage: 0.5}
-// relay 侧剩余 0.5，但加上待扣 0.6 → 已超额
-if !balanceExhaustedWithPending(checker, context.Background(), 442, user) {
-t.Fatal("pending charge should push usage over max_limit")
-}
-// 预算充足时不误判
-user.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: 5.0, CurrentUsage: 0.5}
-if balanceExhaustedWithPending(checker, context.Background(), 442, user) {
-t.Fatal("ample budget should not be exhausted")
-}
+	checker := &ServiceBalanceChecker{pending: ledger}
+	user := &commercialRelayUsageUser{UID: 442, Configured: true}
+	user.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: 1.0, CurrentUsage: 0.5}
+	// relay 侧剩余 0.5，但加上待扣 0.6 → 已超额
+	if !balanceExhaustedWithPending(checker, context.Background(), 442, user) {
+		t.Fatal("pending charge should push usage over max_limit")
+	}
+	// 预算充足时不误判
+	user.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: 5.0, CurrentUsage: 0.5}
+	if balanceExhaustedWithPending(checker, context.Background(), 442, user) {
+		t.Fatal("ample budget should not be exhausted")
+	}
 }
 
 // balanceExhaustedWithPending 是预检里「额度是否耗尽」的直出断言入口（与 Check 同口径）。
 func balanceExhaustedWithPending(c *ServiceBalanceChecker, ctx context.Context, uid int64, user *commercialRelayUsageUser) bool {
-pendingCNY := 0.0
-if c != nil && c.pending != nil {
-if micros, err := c.pending.SumPendingCallerChargeMicros(ctx, uid); err == nil {
-pendingCNY = float64(micros) / 1_000_000.0
+	pendingCNY := 0.0
+	if c != nil && c.pending != nil {
+		if micros, err := c.pending.SumPendingCallerChargeMicros(ctx, uid); err == nil {
+			pendingCNY = float64(micros) / 1_000_000.0
+		}
+	}
+	exhausted := func(budget commercialRelayBudget) bool {
+		return budget.MaxLimit > 0 && budget.CurrentUsage+pendingCNY >= budget.MaxLimit
+	}
+	return exhausted(user.Limits.MonthlyBudget)
 }
+
+// ---- 扣费闭环：pending_credit → relay 代扣 → charged ----
+
+// 补扣成功：请求金额=应付（gross，元）、request_id=run_id、payer=调用方；
+// 结清后 billing_state=charged，待扣归零，下一轮不再重复扣。
+func TestServiceRunLedgerWriterChargesPendingCredit(t *testing.T) {
+	st := newFakeLedgerStore(ledgerTestRun("run_charge", `{"pricing":{"unit":"token","per_1k_tokens":0.02}}`))
+	writer := NewServiceRunLedgerWriterFromEnv(st)
+	charger := &fakeCharger{}
+	writer.EnableCharges(charger)
+	ctx := context.Background()
+
+	if _, err := writer.SweepOnce(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := st.entries["run_charge"].BillingState; got != store.ServiceBillingCharged {
+		t.Fatalf("billing_state = %q, want charged", got)
+	}
+	if charger.callCount() != 1 {
+		t.Fatalf("charge calls = %d, want 1", charger.callCount())
+	}
+	call := charger.calls[0]
+	if call.UID != 442 || call.RequestID != "run_charge" {
+		t.Fatalf("charge call = %+v, want uid=442 request_id=run_charge", call)
+	}
+	// 0.02 元/1K token × 1500 token = 0.03 元
+	if diff := call.AmountCNY - 0.03; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("amount = %f, want 0.03", call.AmountCNY)
+	}
+	if !strings.Contains(call.Note, "run_charge") {
+		t.Fatalf("note = %q, want run id", call.Note)
+	}
+
+	pending, err := st.SumPendingCallerChargeMicros(ctx, 442)
+	if err != nil || pending != 0 {
+		t.Fatalf("pending after charge = %d err=%v, want 0", pending, err)
+	}
+
+	// 下一轮：已 charged 不再补扣
+	charged, err := writer.ChargeSweepOnce(ctx)
+	if err != nil || charged != 0 {
+		t.Fatalf("second charge sweep = %d err=%v, want 0", charged, err)
+	}
+	if charger.callCount() != 1 {
+		t.Fatalf("charge calls after second sweep = %d, want 1 (idempotent)", charger.callCount())
+	}
 }
-exhausted := func(budget commercialRelayBudget) bool {
-return budget.MaxLimit > 0 && budget.CurrentUsage+pendingCNY >= budget.MaxLimit
+
+// relay 暂不可用（5xx）：保留 pending_credit 等下一轮重试；恢复后补扣成功。
+func TestServiceRunLedgerWriterChargeRetriesOnTransientError(t *testing.T) {
+	st := newFakeLedgerStore(ledgerTestRun("run_retry", `{"pricing":{"unit":"run","per_run":0.1}}`))
+	writer := NewServiceRunLedgerWriterFromEnv(st)
+	charger := &fakeCharger{err: relayAdminError{status: 503, message: "relay down"}}
+	writer.EnableCharges(charger)
+	ctx := context.Background()
+
+	if _, err := writer.SweepOnce(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := st.entries["run_retry"].BillingState; got != store.ServiceBillingPendingCredit {
+		t.Fatalf("billing_state = %q, want pending_credit after transient failure", got)
+	}
+	if charger.callCount() != 1 {
+		t.Fatalf("charge calls = %d, want 1", charger.callCount())
+	}
+
+	charger.setErr(nil)
+	charged, err := writer.ChargeSweepOnce(ctx)
+	if err != nil || charged != 1 {
+		t.Fatalf("retry sweep = %d err=%v, want 1", charged, err)
+	}
+	if got := st.entries["run_retry"].BillingState; got != store.ServiceBillingCharged {
+		t.Fatalf("billing_state = %q, want charged after retry", got)
+	}
+	if charger.callCount() != 2 {
+		t.Fatalf("charge calls = %d, want 2", charger.callCount())
+	}
 }
-return exhausted(user.Limits.MonthlyBudget)
+
+// relay 明确拒绝（4xx，如调用方没有 relay 账号）：置 charge_failed 不再重试，
+// 但欠费仍计入预检的待扣金额（避免白嫖）。
+func TestServiceRunLedgerWriterChargePermanentErrorMarksFailed(t *testing.T) {
+	st := newFakeLedgerStore(ledgerTestRun("run_reject", `{"pricing":{"unit":"run","per_run":0.2}}`))
+	writer := NewServiceRunLedgerWriterFromEnv(st)
+	charger := &fakeCharger{err: relayAdminError{status: 404, message: "relay key not found"}}
+	writer.EnableCharges(charger)
+	ctx := context.Background()
+
+	if _, err := writer.SweepOnce(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := st.entries["run_reject"].BillingState; got != store.ServiceBillingChargeFailed {
+		t.Fatalf("billing_state = %q, want charge_failed", got)
+	}
+	// 下一轮不再调 relay
+	if _, err := writer.ChargeSweepOnce(ctx); err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if charger.callCount() != 1 {
+		t.Fatalf("charge calls = %d, want 1 (permanent failure not retried)", charger.callCount())
+	}
+	pending, err := st.SumPendingCallerChargeMicros(ctx, 442)
+	if err != nil || pending != 200000 {
+		t.Fatalf("pending = %d err=%v, want 200000 (charge_failed still owed)", pending, err)
+	}
+}
+
+// relay 已有同 request_id 记录（平台上次扣费成功但没写回状态）→ 视同成功，置 charged。
+func TestServiceRunLedgerWriterChargeDuplicateTreatedAsCharged(t *testing.T) {
+	st := newFakeLedgerStore(ledgerTestRun("run_dup", `{"pricing":{"unit":"run","per_run":0.1}}`))
+	writer := NewServiceRunLedgerWriterFromEnv(st)
+	writer.EnableCharges(&fakeCharger{duplicate: true})
+	ctx := context.Background()
+
+	if _, err := writer.SweepOnce(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := st.entries["run_dup"].BillingState; got != store.ServiceBillingCharged {
+		t.Fatalf("billing_state = %q, want charged (duplicate = already paid)", got)
+	}
+}
+
+// 自己调自己：payer == payee，不产生实际扣费 → self_call，且不调 relay。
+func TestServiceRunLedgerWriterSelfCallNotCharged(t *testing.T) {
+	run := ledgerTestRun("run_self", `{"pricing":{"unit":"run","per_run":0.5}}`)
+	run.CallerUID = run.OwnerUID
+	st := newFakeLedgerStore(run)
+	writer := NewServiceRunLedgerWriterFromEnv(st)
+	charger := &fakeCharger{}
+	writer.EnableCharges(charger)
+	ctx := context.Background()
+
+	if _, err := writer.SweepOnce(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := st.entries["run_self"].BillingState; got != store.ServiceBillingSelfCall {
+		t.Fatalf("billing_state = %q, want self_call", got)
+	}
+	if charger.callCount() != 0 {
+		t.Fatalf("charge calls = %d, want 0 for self call", charger.callCount())
+	}
+}
+
+// 未注入扣费通道（本地/测试）：只记账不扣费，行保持 pending_credit。
+func TestServiceRunLedgerWriterWithoutChargeChannel(t *testing.T) {
+	st := newFakeLedgerStore(ledgerTestRun("run_noc", `{"pricing":{"unit":"run","per_run":0.1}}`))
+	writer := NewServiceRunLedgerWriterFromEnv(st)
+	ctx := context.Background()
+
+	if _, err := writer.SweepOnce(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := st.entries["run_noc"].BillingState; got != store.ServiceBillingPendingCredit {
+		t.Fatalf("billing_state = %q, want pending_credit without charge channel", got)
+	}
+}
+
+// ChargeUser 参数校验：uid/request_id/金额任一非法都直接拒绝（不调 HTTP）。
+func TestRelayAdminClientChargeUserValidatesInput(t *testing.T) {
+	client := &RelayAdminClient{baseURL: "http://127.0.0.1:1", token: "t"}
+	ctx := context.Background()
+	cases := []struct {
+		name      string
+		uid       int64
+		requestID string
+		amount    float64
+	}{
+		{name: "no uid", uid: 0, requestID: "run_1", amount: 0.01},
+		{name: "no request id", uid: 1, requestID: " ", amount: 0.01},
+		{name: "zero amount", uid: 1, requestID: "run_1", amount: 0},
+		{name: "negative amount", uid: 1, requestID: "run_1", amount: -0.01},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := client.ChargeUser(ctx, tc.uid, tc.requestID, tc.amount, ""); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
 }

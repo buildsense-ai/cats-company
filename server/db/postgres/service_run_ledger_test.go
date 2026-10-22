@@ -135,3 +135,71 @@ func TestServiceRunLedgerListAndRecord(t *testing.T) {
 	}
 	_ = time.Now
 }
+
+// 补扣闭环的 DB 语义：pending 行可列、状态迁移幂等、欠费口径 = gross（含 charge_failed）。
+func TestServiceRunLedgerPendingCharges(t *testing.T) {
+	db := pgTestDB(t)
+	if err := db.CreateSchema(); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	ctx := context.Background()
+
+	mkEntry := func(runID string, gross int64) store.ServiceRunLedgerEntry {
+		return store.ServiceRunLedgerEntry{
+			ServiceRunBillable: store.ServiceRunBillable{
+				RunID: runID, SessionID: "sess_charge", AgentID: 1, AgentSlug: "hello",
+				OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 441,
+				CallerUID: 442, RunnerType: "mcp", Status: "completed",
+				FinishedAt: time.Now(),
+			},
+			Currency: "CNY", GrossMicros: gross, NetMicros: gross,
+			PayerUID: 442, PayeeUID: 441, BillingState: store.ServiceBillingPendingCredit,
+		}
+	}
+	for _, entry := range []store.ServiceRunLedgerEntry{mkEntry("run_charge_1", 30000), mkEntry("run_charge_2", 20000)} {
+		if inserted, err := db.RecordServiceRunLedger(ctx, entry); err != nil || !inserted {
+			t.Fatalf("record %s: inserted=%v err=%v", entry.RunID, inserted, err)
+		}
+	}
+
+	rows, err := db.ListPendingServiceRunLedgerCharges(ctx, 10)
+	if err != nil {
+		t.Fatalf("list pending charges: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("pending charges = %+v, want 2", rows)
+	}
+	for _, row := range rows {
+		if row.PayerUID != 442 || row.PayeeUID != 441 || row.Currency != "CNY" || row.GrossMicros <= 0 {
+			t.Fatalf("pending charge row = %+v", row)
+		}
+	}
+	if sum, err := db.SumPendingCallerChargeMicros(ctx, 442); err != nil || sum != 50000 {
+		t.Fatalf("pending sum = %d err=%v, want 50000", sum, err)
+	}
+
+	// pending → charged：只在 from_state 匹配时生效（幂等）。
+	if ok, err := db.UpdateServiceRunLedgerBillingState(ctx, "run_charge_1", store.ServiceBillingPendingCredit, store.ServiceBillingCharged); err != nil || !ok {
+		t.Fatalf("mark charged: ok=%v err=%v", ok, err)
+	}
+	if ok, err := db.UpdateServiceRunLedgerBillingState(ctx, "run_charge_1", store.ServiceBillingPendingCredit, store.ServiceBillingCharged); err != nil || ok {
+		t.Fatalf("mark charged replay: ok=%v err=%v, want false/nil", ok, err)
+	}
+	if rows, err = db.ListPendingServiceRunLedgerCharges(ctx, 10); err != nil || len(rows) != 1 || rows[0].RunID != "run_charge_2" {
+		t.Fatalf("pending after charged = %+v err=%v, want run_charge_2 only", rows, err)
+	}
+	if sum, err := db.SumPendingCallerChargeMicros(ctx, 442); err != nil || sum != 20000 {
+		t.Fatalf("pending sum after charged = %d err=%v, want 20000", sum, err)
+	}
+
+	// pending → charge_failed：不再列出补扣，但仍算欠费。
+	if ok, err := db.UpdateServiceRunLedgerBillingState(ctx, "run_charge_2", store.ServiceBillingPendingCredit, store.ServiceBillingChargeFailed); err != nil || !ok {
+		t.Fatalf("mark charge_failed: ok=%v err=%v", ok, err)
+	}
+	if rows, err = db.ListPendingServiceRunLedgerCharges(ctx, 10); err != nil || len(rows) != 0 {
+		t.Fatalf("pending after failed = %+v err=%v, want empty", rows, err)
+	}
+	if sum, err := db.SumPendingCallerChargeMicros(ctx, 442); err != nil || sum != 20000 {
+		t.Fatalf("pending sum after failed = %d err=%v, want 20000 (still owed)", sum, err)
+	}
+}

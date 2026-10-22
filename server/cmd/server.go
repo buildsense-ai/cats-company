@@ -947,7 +947,13 @@ func main() {
 	// orchestration (both PG and MySQL adapters do).
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
-		serviceAgentsMCPHandler.SetBalanceChecker(server.NewServiceBalanceCheckerFromEnv())
+		balanceChecker := server.NewServiceBalanceCheckerFromEnv()
+		// 预检并入「待扣」：账本里尚未收回的金额（pending_credit / charge_failed）
+		// 也算作已用额度，避免外部 runner 用量绕过预算。
+		if pendingReader, ok := serviceAgentStore.(server.ServicePendingChargeReader); ok {
+			balanceChecker.SetPendingChargeReader(pendingReader)
+		}
+		serviceAgentsMCPHandler.SetBalanceChecker(balanceChecker)
 		// bot 身份（设计 P1b）：tools/call 可携带 bot_uid，校验 owner==caller 与
 		// bot 定义的 serviceAgents 清单，并把 caller_bot_uid 落进会话。
 		if botIdentity, ok := db.(server.ServiceAgentBotIdentity); ok {
@@ -999,8 +1005,12 @@ func main() {
 		receiptDeliverer := server.NewServiceRunReceiptDeliverer(serviceAgentStore, hub)
 		serviceOrchestrator.SetReceiptKicker(receiptDeliverer)
 		go receiptDeliverer.Start(5 * time.Second)
-		// run 级账本（设计 §4.5）：谁调用谁付费、按量给。补账扫描，只记账不动钱。
+		// run 级账本（设计 §4.5）：谁调用谁付费、按量给。补账扫描 + relay 代扣闭环
+		// （pending_credit → charged；request_id=run_id 幂等）。
 		ledgerWriter := server.NewServiceRunLedgerWriterFromEnv(serviceAgentStore)
+		if relayAdminClient != nil {
+			ledgerWriter.EnableCharges(relayAdminClient)
+		}
 		go ledgerWriter.Start(30 * time.Second)
 	} else {
 		log.Printf("service agents MCP endpoint disabled: store does not implement ServiceAgentStore")
