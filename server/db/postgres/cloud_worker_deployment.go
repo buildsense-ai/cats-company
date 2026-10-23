@@ -23,6 +23,19 @@ ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_action VARC
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_action_started_at TIMESTAMPTZ;
 `
 
+// activateCloudWorkerPackedSharedProfile widens the two profile CHECK
+// constraints so operators can hand out the shared-container backend next to
+// the dedicated ECS ones. The original constraints are dropped by name and
+// re-added with the same name, so this stays idempotent across restarts.
+const activateCloudWorkerPackedSharedProfile = `
+ALTER TABLE cloud_worker_credits DROP CONSTRAINT IF EXISTS cloud_worker_credits_deployment_profile_check;
+ALTER TABLE cloud_worker_credits ADD CONSTRAINT cloud_worker_credits_deployment_profile_check
+    CHECK (deployment_profile IN ('private_nat','public_ip','packed_shared'));
+ALTER TABLE commercial_invite_codes DROP CONSTRAINT IF EXISTS commercial_invite_codes_cloud_worker_profile_check;
+ALTER TABLE commercial_invite_codes ADD CONSTRAINT commercial_invite_codes_cloud_worker_profile_check
+    CHECK (cloud_worker_profile IN ('private_nat','public_ip','packed_shared'));
+`
+
 func (a *Adapter) CloudWorkerProfileCreditSummary(uid int64, profile string) (total, available int, err error) {
 	return a.CloudWorkerConfiguredCreditSummary(uid, profile, "")
 }

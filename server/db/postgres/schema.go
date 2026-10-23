@@ -77,6 +77,10 @@ func (a *Adapter) CreateSchema() error {
 		createCloudWorkerLifecyclesTable,
 		createCloudWorkerBindingsTable,
 		migrateCloudWorkerDeploymentProfiles,
+		// Shared-container workers are issued from the same invite/credit
+		// paths as dedicated ones, so the profile CHECK constraints must
+		// accept packed_shared.
+		activateCloudWorkerPackedSharedProfile,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
 		migrateCommercialRefundColumns,
