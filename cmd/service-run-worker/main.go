@@ -454,14 +454,25 @@ func (w *worker) instanceHeartbeatLoop(ctx context.Context) {
 }
 
 func (w *worker) sendInstanceHeartbeat(ctx context.Context, activeRuns int) {
+	// agents/serve_all 让平台知道「这台机器能接哪些应用」：调用方点工具时平台先看有没有
+	// 在线 worker 能接单，没有就直接说清楚（worker_offline），不必让人干等同步窗口。
+	metrics := map[string]any{
+		"worker": "service-run-worker",
+		"os":     runtime.GOOS,
+		"arch":   runtime.GOARCH,
+		"pid":    os.Getpid(),
+	}
+	if len(w.cfg.agents) > 0 {
+		metrics["agents"] = w.cfg.agents
+		metrics["serve_all"] = false
+	} else {
+		// 没限定 -agents = 所有应用都接；但应用仍需声明 runner.command 才会成功。
+		metrics["agents"] = []string{}
+		metrics["serve_all"] = true
+	}
 	payload := map[string]any{
 		"active_runs": activeRuns,
-		"metrics": map[string]any{
-			"worker": "service-run-worker",
-			"os":     runtime.GOOS,
-			"arch":   runtime.GOARCH,
-			"pid":    os.Getpid(),
-		},
+		"metrics":     metrics,
 	}
 	var resp map[string]any
 	path := w.cfg.apiPrefix + "/instances/" + w.cfg.instanceID + "/heartbeat"

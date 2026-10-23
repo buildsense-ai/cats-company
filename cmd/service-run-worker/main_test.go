@@ -169,6 +169,45 @@ func TestEnsureTokenFailsLoudly(t *testing.T) {
 	}
 }
 
+// 实例心跳必须上报「本机服务哪些应用」：平台靠它判断调用时有没有在线 worker 能接单，
+// 没开 worker 时立刻回 worker_offline，而不是让用户白等同步窗口。
+func TestInstanceHeartbeatReportsServedAgents(t *testing.T) {
+	var body map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/instances/w1/heartbeat") {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	t.Cleanup(ts.Close)
+
+	w := &worker{cfg: config{apiPrefix: defaultAPIPrefix, instanceID: "w1", agents: []string{"a", "b"}},
+		client: newHTTPClient(ts.URL, "cwk_x")}
+	w.sendInstanceHeartbeat(context.Background(), 2)
+
+	metrics, _ := body["metrics"].(map[string]any)
+	if metrics == nil {
+		t.Fatalf("heartbeat body = %v", body)
+	}
+	agents, _ := metrics["agents"].([]any)
+	if len(agents) != 2 || agents[0] != "a" || agents[1] != "b" {
+		t.Fatalf("metrics.agents = %v", metrics["agents"])
+	}
+	if metrics["serve_all"] != false {
+		t.Fatalf("metrics.serve_all = %v, want false when -agents is set", metrics["serve_all"])
+	}
+
+	// 没限定 -agents：声明「所有应用都接」，否则平台会误判成没有 worker 服务该应用。
+	body = nil
+	w.cfg.agents = nil
+	w.sendInstanceHeartbeat(context.Background(), 0)
+	metrics, _ = body["metrics"].(map[string]any)
+	if metrics["serve_all"] != true {
+		t.Fatalf("metrics.serve_all = %v, want true without -agents", metrics["serve_all"])
+	}
+}
+
 func TestBuildResult(t *testing.T) {
 	run := claimRun{RunID: "run_1", SessionID: "sess_1", AgentSlug: "x"}
 

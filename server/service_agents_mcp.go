@@ -293,6 +293,18 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	} else if hidden {
 		return serviceToolError("agent_not_subscribed: 该应用已从你的清单中移除（可在应用目录重新添加后再调用）"), nil, nil
 	}
+	// 本机 worker 型应用：先确认有在线实例能接单，否则用户要白等一个完整同步窗口
+	// 才知道「自己电脑上的 worker 根本没开」。查不到监控数据时放行（fail-open）。
+	if h.isWorkerRunner(ctx, agent) {
+		if err := h.checkWorkerOnline(ctx, agent.Slug); err != nil {
+			var offline *ServiceWorkerOfflineError
+			if errors.As(err, &offline) {
+				return serviceToolError(fmt.Sprintf(
+					"worker_offline: %s。在这台应用的 worker 机器上启动它（命令见「Agent 工具」面板的发布结果），或把执行位置改成 MCP 服务/HTTP 服务。",
+					offline.Error())), nil, nil
+			}
+		}
+	}
 	input, err := json.Marshal(args.Input)
 	if err != nil || len(input) == 0 || string(input) == "null" {
 		input = json.RawMessage(`{}`)
