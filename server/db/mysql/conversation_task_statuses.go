@@ -66,13 +66,17 @@ type conversationTaskStatusExecer interface {
 	Exec(string, ...interface{}) (sql.Result, error)
 }
 
+// Match provenance and revision in the same row so a ledger aggregate fallback
+// cannot be mistaken for a write by an older binary during reconciliation.
 func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer, placeholders string, args ...interface{}) error {
 	_, err := execer.Exec(fmt.Sprintf(`INSERT INTO conversation_task_status_sources
 		(topic_id, source_uid, run_id, state, summary, error, expires_at, event_updated_at, updated_at)
 		SELECT aggregate.topic_id, aggregate.source_uid, aggregate.run_id, aggregate.state,
 		 aggregate.summary, aggregate.error, aggregate.expires_at, aggregate.updated_at, CURRENT_TIMESTAMP(6)
 		FROM conversation_task_statuses AS aggregate WHERE aggregate.topic_id IN (%s)
-		AND aggregate.source_uid IS NOT NULL AND NOT EXISTS (
+		AND aggregate.source_uid IS NOT NULL
+		AND (aggregate.ledger_updated_at IS NULL OR aggregate.ledger_updated_at <> aggregate.updated_at)
+		AND NOT EXISTS (
 		 SELECT 1 FROM conversation_task_status_sources AS source
 		 WHERE source.topic_id = aggregate.topic_id AND source.source_uid = aggregate.source_uid AND (
 		 (source.state IN ('running','waiting') AND (source.expires_at IS NULL OR source.expires_at > CURRENT_TIMESTAMP(6))

@@ -160,6 +160,11 @@ func (l Ledger) Upsert(input *types.ConversationTaskStatus) (*types.Conversation
 			if err != nil {
 				return nil, err
 			}
+			// A no-op receipt still returns the persisted topic revision, not
+			// the earlier update time of the run selected by the aggregate.
+			if err := tx.QueryRow(l.query(`SELECT updated_at FROM conversation_task_statuses WHERE topic_id = ?`), s.TopicID).Scan(&aggregate.UpdatedAt); err != nil {
+				return nil, err
+			}
 			if err := tx.Commit(); err != nil {
 				return nil, err
 			}
@@ -219,9 +224,14 @@ func (l Ledger) write(tx *sql.Tx, s *types.ConversationTaskStatus, now time.Time
 	if err != nil {
 		return nil, err
 	}
-	q = `UPDATE conversation_task_statuses SET run_id = ?, state = ?, summary = ?, error = ?, source_uid = NULLIF(?, 0), expires_at = ?, updated_at = ? WHERE topic_id = ?`
+	// Force the PG provenance stamp to change; its trigger replaces this
+	// sentinel with the final post-lock revision. MySQL assignments evaluate
+	// left to right, so it can copy the final revision directly.
+	q = `UPDATE conversation_task_statuses SET run_id = ?, state = ?, summary = ?, error = ?, source_uid = NULLIF(?, 0), expires_at = ?, updated_at = ?,
+		ledger_updated_at = COALESCE(ledger_updated_at, TIMESTAMPTZ 'epoch') + interval '1 microsecond' WHERE topic_id = ?`
 	if !l.Postgres {
-		q = strings.Replace(q, "updated_at = ?", "updated_at = GREATEST(?, updated_at + INTERVAL 1 MICROSECOND)", 1)
+		q = `UPDATE conversation_task_statuses SET run_id = ?, state = ?, summary = ?, error = ?, source_uid = NULLIF(?, 0), expires_at = ?,
+		updated_at = GREATEST(?, updated_at + INTERVAL 1 MICROSECOND), ledger_updated_at = updated_at WHERE topic_id = ?`
 	}
 	if _, err := tx.Exec(l.query(q),
 		aggregate.RunID, aggregate.State, aggregate.Summary, aggregate.Error, aggregate.SourceUID, aggregate.ExpiresAt, now, s.TopicID); err != nil {

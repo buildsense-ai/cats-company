@@ -42,7 +42,16 @@ first and publisher event time as the next ordering key. Source projections use
 the same active-first rule. The aggregate has its own server revision timestamp,
 so switching back to an earlier-started active run does not look like an older
 update to legacy clients. PostgreSQL's aggregate update trigger uses wall-clock
-time after the topic lock, rather than transaction-start time.
+time after the topic lock, rather than transaction-start time. Identical terminal
+retries return the persisted aggregate revision without advancing its timestamp
+or adding another outbox event.
+
+The internal `ledger_updated_at` stamp records which aggregate revision was
+produced by the ledger. It is written atomically with `updated_at`; older writers
+leave the stamp unchanged. Reconciliation imports only unmarked or mismatched
+revisions. This distinguishes a genuine legacy write from a ledger aggregate
+falling back to an earlier run after another run expires, and prevents the
+aggregate's server clock from replacing a run's publisher event time.
 
 ## Delivery guarantees
 
@@ -95,7 +104,8 @@ nonmembers and humans in channel-managed groups cannot fetch it.
 ## Migration and recovery
 
 PostgreSQL migration `000052_conversation_task_runs` and startup schema creation
-add the run/outbox tables and backfill the source records currently available.
+add the run/outbox tables, the internal aggregate provenance stamp, and backfill
+the source records currently available.
 The migration also adds the publisher event clock when upgrading directly from
 older numbered migrations. Re-running schema creation does not replace existing
 runs. Rollback drops only the new run/outbox data and restores the previous topic

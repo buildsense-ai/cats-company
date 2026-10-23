@@ -122,6 +122,110 @@ func Run(t *testing.T, db *sql.DB, adapter Adapter, postgres bool) {
 		}
 	})
 
+	t.Run("ledger aggregate fallback preserves publisher clock", func(t *testing.T) {
+		for _, path := range []string{"summary", "source", "write"} {
+			t.Run(path, func(t *testing.T) {
+				topic, a, c := fixture(t)
+				var now time.Time
+				clock := `SELECT CURRENT_TIMESTAMP(6)`
+				if postgres {
+					clock = `SELECT clock_timestamp()`
+				}
+				if err := db.QueryRow(clock).Scan(&now); err != nil {
+					t.Fatal(err)
+				}
+				base := now.UTC().Add(-3 * time.Minute).Truncate(time.Microsecond)
+				expiry := now.Add(time.Hour)
+				for i, run := range []string{"a", "b"} {
+					if _, err := adapter.UpsertConversationTaskStatus(&types.ConversationTaskStatus{TopicID: topic, SourceUID: a, RunID: run, State: "running", EventUpdatedAt: base.Add(time.Duration(i) * time.Minute), ExpiresAt: &expiry}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Expire B consistently in all projections without a wall-clock wait.
+				// A subsequent write by another source falls back to A in the topic
+				// aggregate, while this source's projection still points to B.
+				for _, table := range []string{"conversation_task_runs", "conversation_task_status_sources", "conversation_task_statuses"} {
+					if _, err := db.Exec(query(`UPDATE `+table+` SET expires_at = ? WHERE topic_id = ? AND run_id = 'b'`), now.Add(-time.Minute), topic); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if result, err := adapter.UpsertConversationTaskStatus(&types.ConversationTaskStatus{TopicID: topic, SourceUID: c, RunID: "c", State: "completed", EventUpdatedAt: base.Add(2 * time.Minute)}); err != nil || result.RunID != "a" {
+					t.Fatalf("fallback=%+v err=%v", result, err)
+				}
+				switch path {
+				case "summary":
+					if _, err := adapter.GetConversationTaskStatuses([]string{topic}); err != nil {
+						t.Fatal(err)
+					}
+				case "source":
+					if _, err := adapter.GetConversationTaskStatusForSource(topic, a); err != nil {
+						t.Fatal(err)
+					}
+				case "write":
+					upsert(t, topic, c, "c", "completed")
+				}
+				runs, err := adapter.ListConversationTaskRuns(topic, 0, 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, run := range runs {
+					if run.RunID == "a" && !run.EventUpdatedAt.Equal(base) {
+						t.Errorf("publisher clock changed from %v to %v", base, run.EventUpdatedAt)
+					}
+				}
+				if _, err := adapter.UpsertConversationTaskStatus(&types.ConversationTaskStatus{TopicID: topic, SourceUID: a, RunID: "a", State: "completed", EventUpdatedAt: base.Add(150 * time.Second)}); err != nil {
+					t.Fatalf("valid delayed terminal rejected: %v", err)
+				}
+				runs, err = adapter.ListConversationTaskRuns(topic, 0, 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, run := range runs {
+					if run.RunID == "a" && run.State != "completed" {
+						t.Fatalf("A remained active: %+v", run)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("identical terminal retry returns persisted aggregate revision", func(t *testing.T) {
+		topic, a, b := fixture(t)
+		upsert(t, topic, a, "a", "running")
+		bRunning := upsert(t, topic, b, "b", "running")
+		first := upsert(t, topic, b, "b", "completed")
+		if first.RunID != "a" || !first.UpdatedAt.After(bRunning.UpdatedAt) {
+			t.Fatalf("first completion=%+v, B running=%+v", first, bRunning)
+		}
+		beforeCount := count(t, "conversation_task_status_outbox", topic)
+		retry := upsert(t, topic, b, "b", "completed")
+		if retry.RunID != "a" || !retry.UpdatedAt.Equal(first.UpdatedAt) {
+			t.Errorf("aggregate revision regressed: first=%v retry=%v", first.UpdatedAt, retry.UpdatedAt)
+		}
+		var persisted time.Time
+		if err := db.QueryRow(query(`SELECT updated_at FROM conversation_task_statuses WHERE topic_id = ?`), topic).Scan(&persisted); err != nil {
+			t.Fatal(err)
+		}
+		if !persisted.Equal(first.UpdatedAt) {
+			t.Fatal("no-op retry advanced stored aggregate revision")
+		}
+		if count(t, "conversation_task_status_outbox", topic) != beforeCount {
+			t.Fatal("no-op retry enqueued a duplicate event")
+		}
+	})
+
+	t.Run("legacy writes remain importable after ledger projections", func(t *testing.T) {
+		topic, a, _ := fixture(t)
+		upsert(t, topic, a, "legacy", "running")
+		if _, err := db.Exec(query(`UPDATE conversation_task_statuses SET state = 'failed', summary = 'legacy failure', expires_at = NULL WHERE topic_id = ?`), topic); err != nil {
+			t.Fatal(err)
+		}
+		source, err := adapter.GetConversationTaskStatusForSource(topic, a)
+		if err != nil || source == nil || source.State != "failed" || source.Summary != "legacy failure" {
+			t.Fatalf("genuine legacy write was skipped: %+v %v", source, err)
+		}
+	})
+
 	t.Run("pagination is stable and scoped to topic", func(t *testing.T) {
 		topic, a, _ := fixture(t)
 		for i := 0; i < 5; i++ {

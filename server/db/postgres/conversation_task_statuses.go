@@ -70,11 +70,15 @@ type conversationTaskStatusExecer interface {
 	Exec(string, ...interface{}) (sql.Result, error)
 }
 
+// Ledger writes stamp the resulting aggregate revision atomically in the same
+// row. Only an unmarked revision can originate from an older writer; comparing
+// aggregate/source contents is insufficient when another source caused fallback.
 func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer, placeholders string, args ...interface{}) error {
 	_, err := execer.Exec(fmt.Sprintf(`INSERT INTO conversation_task_status_sources
 		(topic_id, source_uid, run_id, state, summary, error, expires_at, event_updated_at, updated_at)
 		SELECT topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at, CURRENT_TIMESTAMP
-		FROM conversation_task_statuses WHERE topic_id IN (%s) AND source_uid IS NOT NULL FOR UPDATE
+		FROM conversation_task_statuses WHERE topic_id IN (%s) AND source_uid IS NOT NULL
+		AND (ledger_updated_at IS NULL OR ledger_updated_at <> updated_at) FOR UPDATE
 		ON CONFLICT (topic_id, source_uid) DO UPDATE SET
 		run_id = EXCLUDED.run_id, state = EXCLUDED.state, summary = EXCLUDED.summary, error = EXCLUDED.error,
 		expires_at = EXCLUDED.expires_at, event_updated_at = EXCLUDED.event_updated_at, updated_at = CURRENT_TIMESTAMP

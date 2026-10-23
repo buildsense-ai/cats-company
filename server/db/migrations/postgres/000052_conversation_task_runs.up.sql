@@ -44,10 +44,15 @@ SELECT topic_id, source_uid, COALESCE(run_id, ''), state, summary, error, expire
 FROM conversation_task_status_sources
 ON CONFLICT (topic_id, source_uid, run_id) DO NOTHING;
 
+ALTER TABLE conversation_task_statuses
+ADD COLUMN IF NOT EXISTS ledger_updated_at TIMESTAMPTZ;
 CREATE OR REPLACE FUNCTION set_conversation_task_aggregate_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = GREATEST(clock_timestamp(), OLD.updated_at + interval '1 microsecond', NEW.updated_at);
+    IF NEW.ledger_updated_at IS DISTINCT FROM OLD.ledger_updated_at THEN
+        NEW.ledger_updated_at = NEW.updated_at;
+    END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

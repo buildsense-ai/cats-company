@@ -1988,8 +1988,6 @@ CREATE OR REPLACE TRIGGER trg_bot_skill_mutations_updated_at BEFORE UPDATE ON bo
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_feedback_reports_updated_at BEFORE UPDATE ON feedback_reports
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE OR REPLACE TRIGGER trg_conversation_task_statuses_updated_at BEFORE UPDATE ON conversation_task_statuses
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_conversation_task_status_sources_updated_at BEFORE UPDATE ON conversation_task_status_sources
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_artifact_runtime_states_updated_at BEFORE UPDATE ON artifact_runtime_states
