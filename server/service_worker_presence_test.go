@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +124,26 @@ func TestCheckWorkerOnline(t *testing.T) {
 }
 
 type noPresenceStore struct{ store.ServiceAgentStore }
+
+// 面板已经不再展示任何启动命令/密钥（桌面端内嵌 worker 自己接单），
+// 所以离线提示必须指向「在要跑这个应用的那台电脑上登录小八」，
+// 不能再让用户去面板找命令——他会找不到。
+func TestServiceWorkerOfflineToolErrorPointsAtDesktopLogin(t *testing.T) {
+	for _, noWorkers := range []bool{true, false} {
+		msg := serviceWorkerOfflineToolError(&ServiceWorkerOfflineError{Slug: "my-agent", NoWorkers: noWorkers})
+		if !strings.HasPrefix(msg, "worker_offline: ") {
+			t.Fatalf("message must keep the worker_offline prefix, got %q", msg)
+		}
+		if !strings.Contains(msg, "小八") || !strings.Contains(msg, "登录") {
+			t.Fatalf("message should tell the user to log in on that computer, got %q", msg)
+		}
+		for _, stale := range []string{"命令见", "面板的发布结果", "service-run-worker", "cwk_", "token"} {
+			if strings.Contains(msg, stale) {
+				t.Fatalf("message still references %q (panel no longer shows it): %q", stale, msg)
+			}
+		}
+	}
+}
 
 func TestIsWorkerRunner(t *testing.T) {
 	ctx := context.Background()

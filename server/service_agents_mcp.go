@@ -299,9 +299,7 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 		if err := h.checkWorkerOnline(ctx, agent.Slug); err != nil {
 			var offline *ServiceWorkerOfflineError
 			if errors.As(err, &offline) {
-				return serviceToolError(fmt.Sprintf(
-					"worker_offline: %s。在这台应用的 worker 机器上启动它（命令见「Agent 工具」面板的发布结果），或把执行位置改成 MCP 服务/HTTP 服务。",
-					offline.Error())), nil, nil
+				return serviceToolError(serviceWorkerOfflineToolError(offline)), nil, nil
 			}
 		}
 	}

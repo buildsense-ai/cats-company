@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -64,6 +65,17 @@ func (e *ServiceWorkerOfflineError) Error() string {
 		return "你的电脑上没有 worker 在接单"
 	}
 	return "在线 worker 没有在服务这个应用"
+}
+
+// serviceWorkerOfflineToolError 是告诉调用方该怎么救的那句话（MCP tool error 文本）。
+//
+// 桌面端已把 worker 内嵌进去，用户能做的最简单一步就是「在那台机器上登录小八」；
+// 千万不要再写「命令见面板」——面板已经不展示任何启动命令，用户会找不到。
+func serviceWorkerOfflineToolError(offline *ServiceWorkerOfflineError) string {
+	return fmt.Sprintf(
+		"worker_offline: %s。在要跑这个应用的那台电脑上打开小八并登录，它就会自动接单；也可以把执行位置改成 MCP 服务/HTTP 服务。",
+		offline.Error(),
+	)
 }
 
 // workerPresence 汇总在线实例的服务范围。
