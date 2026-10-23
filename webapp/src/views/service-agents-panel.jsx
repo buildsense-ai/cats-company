@@ -5,13 +5,9 @@ import { api } from '../api';
 // Agent 工具（CatsCo 定制 agent 的工具集管理；设计 §3.3-9"模式二：默认开放 + 个人清单"）。
 // 添加/删除跟账号、跨设备生效：删除后从你的 Agent 工具集（tools/list）隐去、调用也被拒绝；
 // 重新添加即恢复。变更即时同步在线 MCP 会话（服务端 list_changed）。
-
-// 凭据时间只用于「最近使用」提示，解析失败就不显示。
-const formatCredentialTime = (value) => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString();
-};
+//
+// 这里刻意不出现任何「密钥 / token / 命令」：本机接单由桌面端自己完成，
+// 用户只需要登录那台电脑。凭证对普通用户是不可理解的负担，不该出现在界面上。
 
 export default function ServiceAgentsPanel({ onClose }) {
   const [agents, setAgents] = useState([]);
@@ -31,12 +27,6 @@ export default function ServiceAgentsPanel({ onClose }) {
   const [unpublishTarget, setUnpublishTarget] = useState('');
   const [unpublishing, setUnpublishing] = useState(() => new Set());
   const [notice, setNotice] = useState(null);
-  // 本机 worker 凭据（per-user）：只能领自己名下应用的 run，明文只显示一次。
-  const [credentials, setCredentials] = useState([]);
-  const [issued, setIssued] = useState(null);
-  const [credentialBusy, setCredentialBusy] = useState(false);
-  // 发布横幅里「生成密钥并填入」的一次性进行中状态。
-  const [bannerTokenBusy, setBannerTokenBusy] = useState(false);
   const [form, setForm] = useState({
     name: '',
     slug: '',
@@ -55,15 +45,11 @@ export default function ServiceAgentsPanel({ onClose }) {
     setLoading(true);
     setError('');
     try {
-      const [catalogData, botsData, credentialData] = await Promise.all([
+      const [catalogData, botsData] = await Promise.all([
         api.getServiceAgentsCatalog(),
         typeof api.getMyBots === 'function' ? api.getMyBots().catch(() => null) : Promise.resolve(null),
-        typeof api.listServiceWorkerCredentials === 'function'
-          ? api.listServiceWorkerCredentials().catch(() => null)
-          : Promise.resolve(null),
       ]);
       setAgents(Array.isArray(catalogData?.agents) ? catalogData.agents : []);
-      setCredentials(Array.isArray(credentialData?.credentials) ? credentialData.credentials : []);
       const rawBots = botsData?.bots ?? botsData?.agents ?? botsData;
       setBots(Array.isArray(rawBots) ? rawBots : []);
     } catch (err) {
@@ -212,25 +198,11 @@ export default function ServiceAgentsPanel({ onClose }) {
     setPublishError('');
     try {
       const result = await api.publishServiceAgent({ slug, name, visibility: form.visibility, definition });
-      // 第一次发布「我的电脑」应用时顺手把连接密钥生成好：用户只需复制下面那一行命令，
-      // 不用先去理解/寻找「凭据」。已有密钥的老用户不自动再生成（免得堆一堆），
-      // 而是由横幅里的按钮一键生成并自动填进命令。
-      let workerToken = '';
-      if (form.runner === 'worker' && credentials.length === 0
-        && typeof api.createServiceWorkerCredential === 'function') {
-        try {
-          const credential = await api.createServiceWorkerCredential('发布时自动生成');
-          workerToken = credential?.token || '';
-        } catch {
-          // 自动生成失败不影响发布；用户仍可在横幅里点「生成密钥并填入」。
-        }
-      }
       setPublishResult({
         slug: result?.slug || slug,
         visibility: result?.visibility || form.visibility,
         runner: form.runner,
         hasCommand: form.runner === 'worker' && Boolean(form.command.trim()),
-        token: workerToken,
       });
       setShowPublish(false);
       setForm({ name: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '', priceUnit: 'token' });
@@ -240,34 +212,7 @@ export default function ServiceAgentsPanel({ onClose }) {
     } finally {
       setPublishing(false);
     }
-  }, [form, credentials, load]);
-
-  // 发布横幅里的一键补密钥：老用户已有旧密钥但看不到明文，光给占位等于没给命令。
-  // 点一下就生成一把新的并直接填进那行命令，同时同步到「高级」里的密钥列表。
-  const fillBannerToken = useCallback(async () => {
-    if (bannerTokenBusy || typeof api.createServiceWorkerCredential !== 'function') return;
-    setBannerTokenBusy(true);
-    setError('');
-    try {
-      const credential = await api.createServiceWorkerCredential('发布时生成');
-      const token = credential?.token || '';
-      if (!token) throw new Error('empty token');
-      setPublishResult((prev) => (prev ? { ...prev, token } : prev));
-      setCredentials((prev) => [
-        {
-          id: credential?.id,
-          prefix: credential?.prefix || '',
-          label: credential?.label || '',
-          created_at: credential?.created_at || '',
-        },
-        ...prev.filter((item) => item.id !== credential?.id),
-      ]);
-    } catch (err) {
-      setError(err?.message || '生成密钥失败，请稍后重试。');
-    } finally {
-      setBannerTokenBusy(false);
-    }
-  }, [bannerTokenBusy]);
+  }, [form, load]);
 
   // 收回分享：下架后目录与别人的 tools/list 立即不可见，已缓存工具名的客户端再调用
   // 会拿到 "该应用已被发布者收回"。重新发布同一调用名即可恢复。
@@ -301,70 +246,15 @@ export default function ServiceAgentsPanel({ onClose }) {
     }
   }, [unpublishing]);
 
-  // 本机 worker 凭据：生成 → 一次性明文；撤销即时生效（下次 claim 就 401）。
-  const createCredential = useCallback(async () => {
-    if (credentialBusy) return;
-    setCredentialBusy(true);
-    setError('');
+  // 复制工具名：用户接下来要跟 bot 说「用 catsco_xxx 帮我…」，名字比描述有用。
+  const copyText = useCallback(async (text) => {
     try {
-      const result = await api.createServiceWorkerCredential('本机 worker');
-      setIssued({
-        token: result?.token || '',
-        prefix: result?.prefix || '',
-        id: result?.id,
-        createdAt: result?.created_at || '',
-      });
-      setCredentials((prev) => [
-        {
-          id: result?.id,
-          prefix: result?.prefix || '',
-          label: result?.label || '',
-          created_at: result?.created_at || '',
-        },
-        ...prev.filter((item) => item.id !== result?.id),
-      ]);
-    } catch (err) {
-      setError(err?.message || '生成凭据失败，请稍后重试。');
-    } finally {
-      setCredentialBusy(false);
-    }
-  }, [credentialBusy]);
-
-  const revokeCredential = useCallback(async (credential) => {
-    const id = credential?.id;
-    if (!id || credentialBusy) return;
-    setCredentialBusy(true);
-    setError('');
-    try {
-      await api.revokeServiceWorkerCredential(id);
-      setCredentials((prev) => prev.filter((item) => item.id !== id));
-      setIssued((prev) => (prev?.id === id ? null : prev));
-    } catch (err) {
-      setError(err?.message || '撤销凭据失败，请稍后重试。');
-    } finally {
-      setCredentialBusy(false);
-    }
-  }, [credentialBusy]);
-
-  const copyCredential = useCallback(async (token) => {
-    try {
-      await navigator.clipboard.writeText(token);
+      await navigator.clipboard.writeText(text);
       setError('');
     } catch {
-      setError('复制失败，请手动选中上面的凭据复制。');
+      setError('复制失败，请手动选中复制。');
     }
   }, []);
-
-  // 发布成功后的「一行命令」：有密钥就直接给可粘贴的完整命令，
-  // 老用户已有密钥时留占位（明文只在生成时显示一次）。
-  const workerCommand = publishResult
-    ? [
-      'service-run-worker',
-      `-agents ${publishResult.slug}`,
-      `-token ${publishResult.token || '<你的连接密钥>'}`,
-      publishResult.hasCommand ? '' : `-cmd '你的命令 {input_file}'`,
-    ].filter(Boolean).join(' ')
-    : '';
 
   return (
     <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
@@ -433,138 +323,143 @@ export default function ServiceAgentsPanel({ onClose }) {
               你的 bot 里就这样叫它：catsco_{form.slug || 'my-agent'}
             </span>
           </label>
-          <div className="v3-service-agents-field">
-            <span>可见性</span>
-            <div className="v3-service-agents-choices">
-              <label>
-                <input
-                  type="radio"
-                  name="visibility"
-                  checked={form.visibility === 'private'}
-                  onChange={() => updateForm({ visibility: 'private' })}
-                />
-                仅自己
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="visibility"
-                  checked={form.visibility === 'public'}
-                  onChange={() => updateForm({ visibility: 'public' })}
-                />
-                公开（别人也能调用）
-              </label>
+          <details className="v3-service-agents-advanced">
+            <summary className="v3-service-agents-advanced-head">
+              更多设置（默认：公开 · 在我的电脑上跑 · 免费分享）
+            </summary>
+            <div className="v3-service-agents-field">
+              <span>可见性</span>
+              <div className="v3-service-agents-choices">
+                <label>
+                  <input
+                    type="radio"
+                    name="visibility"
+                    checked={form.visibility === 'private'}
+                    onChange={() => updateForm({ visibility: 'private' })}
+                  />
+                  仅自己
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="visibility"
+                    checked={form.visibility === 'public'}
+                    onChange={() => updateForm({ visibility: 'public' })}
+                  />
+                  公开（别人也能调用）
+                </label>
+              </div>
             </div>
-          </div>
-          <div className="v3-service-agents-field">
-            <span>执行位置</span>
-            <div className="v3-service-agents-choices">
-              <label>
-                <input
-                  type="radio"
-                  name="runner"
-                  checked={form.runner === 'worker'}
-                  onChange={() => updateForm({ runner: 'worker' })}
-                />
-                我的电脑（推荐）
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="runner"
-                  checked={form.runner === 'http'}
-                  onChange={() => updateForm({ runner: 'http' })}
-                />
-                HTTP 服务
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="runner"
-                  checked={form.runner === 'mcp'}
-                  onChange={() => updateForm({ runner: 'mcp' })}
-                />
-                MCP 服务
-              </label>
+            <div className="v3-service-agents-field">
+              <span>执行位置</span>
+              <div className="v3-service-agents-choices">
+                <label>
+                  <input
+                    type="radio"
+                    name="runner"
+                    checked={form.runner === 'worker'}
+                    onChange={() => updateForm({ runner: 'worker' })}
+                  />
+                  我的电脑（推荐）
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="runner"
+                    checked={form.runner === 'http'}
+                    onChange={() => updateForm({ runner: 'http' })}
+                  />
+                  HTTP 服务
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="runner"
+                    checked={form.runner === 'mcp'}
+                    onChange={() => updateForm({ runner: 'mcp' })}
+                  />
+                  MCP 服务
+                </label>
+              </div>
             </div>
-          </div>
-          {form.runner === 'http' || form.runner === 'mcp' ? (
-            <label className="v3-service-agents-field">
-              <span>{form.runner === 'mcp' ? 'MCP 服务地址' : '服务地址'}</span>
-              <input
-                value={form.url}
-                onChange={(event) => updateForm({ url: event.target.value })}
-                placeholder={form.runner === 'mcp' ? 'https://your-host/mcp' : 'https://your-host/run'}
-                spellCheck={false}
-              />
-              {form.runner === 'mcp' ? (
+            {form.runner === 'http' || form.runner === 'mcp' ? (
+              <label className="v3-service-agents-field">
+                <span>{form.runner === 'mcp' ? 'MCP 服务地址' : '服务地址'}</span>
+                <input
+                  value={form.url}
+                  onChange={(event) => updateForm({ url: event.target.value })}
+                  placeholder={form.runner === 'mcp' ? 'https://your-host/mcp' : 'https://your-host/run'}
+                  spellCheck={false}
+                />
+                {form.runner === 'mcp' ? (
+                  <span className="v3-service-agents-field-hint">
+                    平台会当 MCP 客户端连它并调用工具，不需要你自己的 worker
+                  </span>
+                ) : null}
+              </label>
+            ) : (
+              <label className="v3-service-agents-field">
+                <span>本机执行命令（这个应用用哪个 agent 跑）</span>
+                <input
+                  value={form.command}
+                  onChange={(event) => updateForm({ command: event.target.value })}
+                  placeholder="claude -p {input_file}"
+                  spellCheck={false}
+                />
                 <span className="v3-service-agents-field-hint">
-                  平台会当 MCP 客户端连它并调用工具，不需要你自己的 worker
+                  每个应用各填各的；{'{input_file}'} 会替换成这次调用的输入文件。留空则调用时会报错。
                 </span>
-              ) : null}
-            </label>
-          ) : (
-            <label className="v3-service-agents-field">
-              <span>本机执行命令（这个应用用哪个 agent 跑）</span>
-              <input
-                value={form.command}
-                onChange={(event) => updateForm({ command: event.target.value })}
-                placeholder="claude -p {input_file}"
-                spellCheck={false}
-              />
+              </label>
+            )}
+            {form.runner === 'mcp' ? (
+              <label className="v3-service-agents-field">
+                <span>工具名（留空=对端只有一个工具时自动选）</span>
+                <input
+                  value={form.tool}
+                  onChange={(event) => updateForm({ tool: event.target.value })}
+                  placeholder="run"
+                  spellCheck={false}
+                />
+              </label>
+            ) : null}
+            <div className="v3-service-agents-field">
+              <span>计费方式（留空=免费分享）</span>
+              <div className="v3-service-agents-choices">
+                <label>
+                  <input
+                    type="radio"
+                    name="priceUnit"
+                    checked={form.priceUnit === 'token'}
+                    onChange={() => updateForm({ priceUnit: 'token' })}
+                  />
+                  按用量（每千 tokens）
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="priceUnit"
+                    checked={form.priceUnit === 'second'}
+                    onChange={() => updateForm({ priceUnit: 'second' })}
+                  />
+                  按运行时长（每秒）
+                </label>
+              </div>
               <span className="v3-service-agents-field-hint">
-                留空也行：不填就用启动 worker 时的 -cmd；多个 agent 各填各的即可
+                {form.priceUnit === 'second'
+                  ? '按实际跑了多少秒算，平台自己就能测，不依赖 agent 上报。'
+                  : '要你的 agent 上报 token 用量才计费（多数 CLI 不上报，那就按运行时长更靠谱）。'}
               </span>
-            </label>
-          )}
-          {form.runner === 'mcp' ? (
+            </div>
             <label className="v3-service-agents-field">
-              <span>工具名（留空=对端只有一个工具时自动选）</span>
+              <span>{form.priceUnit === 'second' ? '每秒多少钱（元）' : '每千 tokens 多少钱（元）'}</span>
               <input
-                value={form.tool}
-                onChange={(event) => updateForm({ tool: event.target.value })}
-                placeholder="run"
-                spellCheck={false}
+                value={form.price}
+                onChange={(event) => updateForm({ price: event.target.value })}
+                placeholder={form.priceUnit === 'second' ? '0.01' : '2'}
+                inputMode="decimal"
               />
             </label>
-          ) : null}
-          <div className="v3-service-agents-field">
-            <span>计费方式（留空=免费分享）</span>
-            <div className="v3-service-agents-choices">
-              <label>
-                <input
-                  type="radio"
-                  name="priceUnit"
-                  checked={form.priceUnit === 'token'}
-                  onChange={() => updateForm({ priceUnit: 'token' })}
-                />
-                按用量（每千 tokens）
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="priceUnit"
-                  checked={form.priceUnit === 'second'}
-                  onChange={() => updateForm({ priceUnit: 'second' })}
-                />
-                按运行时长（每秒）
-              </label>
-            </div>
-            <span className="v3-service-agents-field-hint">
-              {form.priceUnit === 'second'
-                ? '按实际跑了多少秒算，平台自己就能测，不依赖 agent 上报。'
-                : '要你的 agent 上报 token 用量才计费（多数 CLI 不上报，那就按运行时长更靠谱）。'}
-            </span>
-          </div>
-          <label className="v3-service-agents-field">
-            <span>{form.priceUnit === 'second' ? '每秒多少钱（元）' : '每千 tokens 多少钱（元）'}</span>
-            <input
-              value={form.price}
-              onChange={(event) => updateForm({ price: event.target.value })}
-              placeholder={form.priceUnit === 'second' ? '0.01' : '2'}
-              inputMode="decimal"
-            />
-          </label>
+          </details>
           {publishError ? <div className="v3-service-agents-error" role="alert">{publishError}</div> : null}
           <div className="v3-service-agents-publish-actions">
             <button type="submit" className="is-primary" disabled={publishing}>
@@ -591,20 +486,14 @@ export default function ServiceAgentsPanel({ onClose }) {
           </div>
           {publishResult.runner === 'worker' ? (
             <div className="v3-service-agents-published-hint">
-              <div>让你这台电脑接单：复制下面这行，在你电脑上执行一次就行。</div>
-              <code title={workerCommand}>{workerCommand}</code>
-              <div className="v3-service-agents-published-actions">
-                <button type="button" onClick={() => copyCredential(workerCommand)}>复制命令</button>
-                {publishResult.token ? null : (
-                  <button type="button" onClick={fillBannerToken} disabled={bannerTokenBusy}>
-                    {bannerTokenBusy ? '生成中…' : '生成密钥并填入'}
-                  </button>
-                )}
+              <div>
+                在<strong>要跑这个应用的那台电脑</strong>上打开小八并登录，它就会自动接单——
+                不用装别的东西、不用复制任何命令。换一台机器就在那台机器上登录小八。
               </div>
-              {publishResult.token ? null : (
+              {publishResult.hasCommand ? null : (
                 <div>
-                  你之前已经有一把连接密钥（明文只显示过一次），所以命令里先留了占位。
-                  点「生成密钥并填入」会新建一把并自动替换，旧的作废需要用哪台设备就在哪台设备上撤销。
+                  还差一步：在「更多设置」里填一条本机执行命令（比如 <code>claude -p {'{input_file}'}</code>），
+                  不填的话调用时会报「该应用没有声明本机执行命令」。
                 </div>
               )}
             </div>
@@ -612,7 +501,10 @@ export default function ServiceAgentsPanel({ onClose }) {
           <div className="v3-service-agents-published-hint">
             之后直接跟 bot 说「用 catsco_{publishResult.slug} 帮我…」就能用。
           </div>
-          <button type="button" onClick={() => setPublishResult(null)}>知道了</button>
+          <div className="v3-service-agents-published-actions">
+            <button type="button" onClick={() => copyText(`catsco_${publishResult.slug}`)}>复制工具名</button>
+            <button type="button" onClick={() => setPublishResult(null)}>知道了</button>
+          </div>
         </div>
       ) : null}
       {notice ? (
@@ -631,52 +523,6 @@ export default function ServiceAgentsPanel({ onClose }) {
           <button type="button" onClick={() => setNotice(null)}>知道了</button>
         </div>
       ) : null}
-      <details className="v3-service-worker-credentials">
-        <summary className="v3-service-worker-credentials-head">
-          <span>高级：不装桌面端时手动给一台机器授权</span>
-        </summary>
-        <p className="v3-service-worker-credentials-empty">
-          桌面端会自动完成这一步，不用管这里。只有在服务器 / 无桌面环境上跑 worker 时，
-          才需要生成一把「连接密钥」贴进命令里；它<strong>只能替你的应用接单</strong>，随时可撤销。
-        </p>
-        <div className="v3-service-worker-credentials-head">
-          <span>连接密钥</span>
-          <button type="button" onClick={createCredential} disabled={credentialBusy}>
-            {credentialBusy ? '处理中…' : '生成'}
-          </button>
-        </div>
-        {issued ? (
-          <div className="v3-service-worker-credentials-issued" role="status">
-            <div className="v3-service-worker-credentials-issued-title">
-              已生成，<strong>只显示这一次</strong>，请立即复制：
-            </div>
-            <code title={issued.token}>{issued.token}</code>
-            <div className="v3-service-worker-credentials-issued-actions">
-              <button type="button" onClick={() => copyCredential(issued.token)}>复制</button>
-              <button type="button" onClick={() => setIssued(null)}>我已保存</button>
-            </div>
-          </div>
-        ) : null}
-        {credentials.length === 0 ? (
-          <p className="v3-service-worker-credentials-empty">
-            还没有连接密钥。点「生成」拿一把，粘到那台机器的 worker 命令里就行。
-          </p>
-        ) : (
-          <ul className="v3-service-worker-credentials-list">
-            {credentials.map((credential) => (
-              <li key={credential.id}>
-                <code title={credential.prefix}>{credential.prefix}…</code>
-                <span className="v3-service-worker-credentials-meta">
-                  {credential.last_used_at ? `最近使用 ${formatCredentialTime(credential.last_used_at)}` : '尚未使用'}
-                </span>
-                <button type="button" onClick={() => revokeCredential(credential)} disabled={credentialBusy}>
-                  撤销
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </details>
       <div className="v3-service-agents-scope">
         <label className="v3-service-agents-scope-label" htmlFor="v3-service-agents-scope-select">
           配置范围
