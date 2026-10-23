@@ -280,6 +280,76 @@ describe('ServiceAgentsPanel', () => {
     expect(banner?.textContent).toContain(`-token cwk_${'a'.repeat(64)}`);
   });
 
+  // 按调用次数收费与真实开销无关（一次可能只是打招呼，也可能跑十分钟），
+  // 所以只允许按实际用量计价：token 或运行时长。
+  it('定价只按实际用量算，不按调用次数', async () => {
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'priced', version: 1, visibility: 'public' });
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="发布应用"]').click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    const setValue = (node, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(node, value);
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await act(async () => {
+      setValue(nameInput, 'Priced');
+      setValue(slugInput, 'priced');
+      await Promise.resolve();
+    });
+
+    // 默认按 token 用量
+    const priceInput = [...form.querySelectorAll('input:not([type])')]
+      .find((node) => node.getAttribute('inputmode') === 'decimal');
+    await act(async () => {
+      setValue(priceInput, '2');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    let payload = mocks.publishServiceAgent.mock.calls.at(-1)[0];
+    expect(payload.definition.pricing).toEqual({ unit: 'token', per_1k_tokens: 2, currency: 'CNY' });
+    expect(payload.definition.pricing.per_run).toBeUndefined();
+
+    // 切到按运行时长
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'priced2', version: 1, visibility: 'public' });
+    await act(async () => {
+      container.querySelector('button[aria-label="发布应用"]').click();
+      await Promise.resolve();
+    });
+    const form2 = container.querySelector('.v3-service-agents-publish');
+    const seconds = [...form2.querySelectorAll('input[type="radio"]')]
+      .find((node) => node.nextSibling?.textContent?.includes('按运行时长')
+        || node.parentElement?.textContent?.includes('按运行时长'));
+    await act(async () => {
+      seconds.click();
+      await Promise.resolve();
+    });
+    const [name2, slug2] = form2.querySelectorAll('input:not([type])');
+    const price2 = [...form2.querySelectorAll('input:not([type])')]
+      .find((node) => node.getAttribute('inputmode') === 'decimal');
+    await act(async () => {
+      setValue(name2, 'Priced Two');
+      setValue(slug2, 'priced-2');
+      setValue(price2, '0.01');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      form2.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    payload = mocks.publishServiceAgent.mock.calls.at(-1)[0];
+    expect(payload.definition.pricing).toEqual({ unit: 'second', per_second: 0.01, currency: 'CNY' });
+  });
+
   it('可以给每个应用单独指定本机执行命令（多个 agent 共用一个 worker）', async () => {
     mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'claude-helper', version: 1, visibility: 'private' });
     await renderPanel();

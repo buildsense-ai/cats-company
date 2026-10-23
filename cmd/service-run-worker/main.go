@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -51,6 +52,7 @@ type config struct {
 	baseURL    string
 	apiPrefix  string
 	token      string
+	userToken  string
 	instanceID string
 	command    string
 	agents     []string
@@ -93,6 +95,8 @@ func main() {
 	defer stop()
 
 	w := &worker{cfg: cfg, client: newHTTPClient(cfg.baseURL, cfg.token)}
+	w.client.userToken = cfg.userToken
+	w.client.apiPrefix = cfg.apiPrefix
 	if err := w.run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("worker: %v", err)
 	}
@@ -103,7 +107,8 @@ func parseConfig(args []string) (config, error) {
 	fs := flag.NewFlagSet("service-run-worker", flag.ContinueOnError)
 	base := fs.String("base", envOr("CATSCO_BASE_URL", defaultBaseURL), "平台地址（https://app.catsco.cn）")
 	apiPrefix := fs.String("api-prefix", envOr("CATSCO_WORKER_API_PREFIX", defaultAPIPrefix), "worker API 前缀（一般不用改；前面有反向代理时才需要）")
-	token := fs.String("token", envOr("CATS_WORKER_TOKEN", os.Getenv("CATS_SERVICE_INSTANCE_TOKEN")), "worker 凭据（cwk_...，在网页「Agent 工具 → 本机 worker 凭据」生成）")
+	token := fs.String("token", envOr("CATS_WORKER_TOKEN", os.Getenv("CATS_SERVICE_INSTANCE_TOKEN")), "worker 连接密钥（cwk_...）；不填时可给 -user-token 自动换券")
+	userToken := fs.String("user-token", os.Getenv("CATS_USER_TOKEN"), "账号登录 token；用它换一张短期 worker 券（桌面端自动传入，用户不用手抄密钥）")
 	instance := fs.String("instance", envOr("CATSCO_WORKER_INSTANCE_ID", defaultInstanceID()), "实例 id（≤64 字符）")
 	command := fs.String("cmd", os.Getenv("CATSCO_WORKER_CMD"), "执行命令模板；可用占位符 {slug} {run_id} {session_id} {input_file}，输入 JSON 同时写到 stdin")
 	agents := fs.String("agents", os.Getenv("CATSCO_WORKER_AGENTS"), "只认领这些 slug（逗号分隔）；空=认领所有应用（多租户下不推荐）")
@@ -118,6 +123,7 @@ func parseConfig(args []string) (config, error) {
 		baseURL:    strings.TrimRight(strings.TrimSpace(*base), "/"),
 		apiPrefix:  normalizeAPIPrefix(*apiPrefix),
 		token:      strings.TrimSpace(*token),
+		userToken:  strings.TrimSpace(*userToken),
 		instanceID: strings.TrimSpace(*instance),
 		command:    strings.TrimSpace(*command),
 		agents:     splitList(*agents),
@@ -126,12 +132,12 @@ func parseConfig(args []string) (config, error) {
 		heartbeat:  *heartbeat,
 		once:       *once,
 	}
-	if cfg.token == "" {
-		return cfg, errors.New("缺少 worker 凭据：-token、CATS_WORKER_TOKEN 或 CATS_SERVICE_INSTANCE_TOKEN")
+	if cfg.token == "" && cfg.userToken == "" {
+		return cfg, errors.New("缺少身份：-token/CATS_WORKER_TOKEN（连接密钥），或 -user-token/CATS_USER_TOKEN（账号登录态，自动换券）")
 	}
-	// 公网 worker 面只认 per-user 凭据（cwk_...）；旧的全实例 token 会在服务端 401。
-	if !strings.HasPrefix(cfg.token, "cwk_") {
-		log.Printf("提示：凭据不是 cwk_ 前缀，公网 /api/service-worker 只接受网页生成的 worker 凭据（Agent 工具 → 本机 worker 凭据）")
+	// 公网 worker 面只认 per-user 凭据或短期 worker 券；旧的全实例 token 会在服务端 401。
+	if cfg.token != "" && !strings.HasPrefix(cfg.token, "cwk_") {
+		log.Printf("提示：凭据不是 cwk_ 前缀，公网 /api/service-worker 只接受网页生成的连接密钥或自动换取的 worker 券")
 	}
 	// -cmd 不是必填：命令可以按应用下发（definition.runner.command），
 	// 一个 worker 就能同时服务多个 agent。只有"既没有 -cmd 也没限定 -agents"
@@ -521,10 +527,19 @@ func defaultInstanceID() string {
 }
 
 // httpClient 是极简 JSON 客户端（含重试友好的超时设置）。
+//
+// 身份来源有两种，都可选：
+//   - token：网页生成的长期连接密钥（cwk_...），适合服务器/无头部署；
+//   - userToken：账号登录态，用来换一张短期 worker 券（桌面端在进程内传入）。
+//     券到期前会自动续，用户全程不用看见任何密钥。
 type httpClient struct {
-	base  string
-	token string
-	hc    *http.Client
+	base      string
+	token     string
+	hc        *http.Client
+	userToken string    // 账号登录态，只用于换券
+	apiPrefix string    // 换券接口所在前缀
+	refreshAt time.Time // 券到期前的时间点
+	mu        sync.Mutex
 }
 
 func newHTTPClient(base, token string) *httpClient {
@@ -535,7 +550,65 @@ func newHTTPClient(base, token string) *httpClient {
 	}
 }
 
+type workerSessionResponse struct {
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// ensureToken 在没有可用 token（或券快过期）时用账号登录态换一张。
+func (c *httpClient) ensureToken(ctx context.Context) error {
+	if c.userToken == "" {
+		return nil // 用长期密钥，不需要换
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.token != "" && !c.refreshAt.IsZero() && time.Now().Before(c.refreshAt) {
+		return nil
+	}
+	body, _ := json.Marshal(map[string]any{})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+c.apiPrefix+"/session", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.userToken)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("worker session: %s %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	var out workerSessionResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return err
+	}
+	if strings.TrimSpace(out.Token) == "" {
+		return errors.New("worker session: 平台没有返回券")
+	}
+	c.token = out.Token
+	// 在到期的一半时间点续券：既不会太频繁，也不会卡在边界上。
+	c.refreshAt = time.Now().Add(6 * time.Hour)
+	if expires, err := time.Parse(time.RFC3339, out.ExpiresAt); err == nil {
+		if half := time.Until(expires) / 2; half > 0 {
+			c.refreshAt = time.Now().Add(half)
+		}
+	}
+	return nil
+}
+
+func (c *httpClient) currentToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token
+}
+
 func (c *httpClient) post(ctx context.Context, path string, payload any, out any) error {
+	if err := c.ensureToken(ctx); err != nil {
+		return err
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -545,7 +618,7 @@ func (c *httpClient) post(ctx context.Context, path string, payload any, out any
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+c.currentToken())
 
 	resp, err := c.hc.Do(req)
 	if err != nil {

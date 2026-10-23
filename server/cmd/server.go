@@ -998,6 +998,10 @@ func main() {
 			mux.HandleFunc("POST /api/service-worker/credentials", jwtAuthWithDB(credentialHandler.HandleCreate))
 			mux.HandleFunc("DELETE /api/service-worker/credentials/{id}", jwtAuthWithDB(credentialHandler.HandleRevoke))
 		}
+		// 账号登录态 → 短期 worker 券：桌面端拉起 worker 时在进程内交给它，
+		// 用户不需要看见/复制任何密钥（券只能接单，换不出账号权限）。
+		workerSessionHandler := server.NewServiceWorkerSessionHandlerFromEnv()
+		mux.HandleFunc("POST /api/service-worker/session", jwtAuthWithDB(workerSessionHandler.HandleCreate))
 		go serviceOrchestrator.StartReaper(15 * time.Second)
 		// Lifecycle write-back delivery (design §3.3-2/§4.8-2): receipts persisted
 		// in the same transaction as terminal run transitions are pushed to the

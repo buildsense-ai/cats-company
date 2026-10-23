@@ -53,6 +53,7 @@ func TestNormalizeAPIPrefix(t *testing.T) {
 // 命令按应用下发时不要求 -cmd 也能启动（否则"一个 worker 服务多个 agent"根本起不来）。
 func TestParseConfigAllowsCommandPerAgent(t *testing.T) {
 	t.Setenv("CATS_SERVICE_INSTANCE_TOKEN", "tok")
+	t.Setenv("CATS_USER_TOKEN", "")
 	t.Setenv("CATSCO_WORKER_CMD", "")
 	t.Setenv("CATSCO_WORKER_AGENTS", "")
 
@@ -71,10 +72,100 @@ func TestParseConfigAllowsCommandPerAgent(t *testing.T) {
 	if _, err := parseConfig(nil); err != nil {
 		t.Fatalf("parseConfig without cmd/agents: %v", err)
 	}
-	// token 仍然是硬性要求。
+	// 身份仍然是硬性要求（连接密钥或账号登录态二选一）。
 	t.Setenv("CATS_SERVICE_INSTANCE_TOKEN", "")
 	if _, err := parseConfig(nil); err == nil {
 		t.Fatal("expected error for missing token")
+	}
+}
+
+// 只给账号登录态也能启动：worker 会自己去换短期券，用户不用抄密钥。
+func TestParseConfigAllowsUserToken(t *testing.T) {
+	t.Setenv("CATS_WORKER_TOKEN", "")
+	t.Setenv("CATS_SERVICE_INSTANCE_TOKEN", "")
+	t.Setenv("CATS_USER_TOKEN", "")
+
+	cfg, err := parseConfig([]string{"-user-token", "user-jwt", "-agents", "a"})
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.token != "" || cfg.userToken != "user-jwt" {
+		t.Fatalf("tokens = %q/%q", cfg.token, cfg.userToken)
+	}
+}
+
+// ensureToken 用账号登录态换券，并在到期前续；换完就带上券去打业务接口。
+func TestEnsureTokenExchangesUserToken(t *testing.T) {
+	var mu sync.Mutex
+	exchanges := 0
+	var seenAuth []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seenAuth = append(seenAuth, r.Header.Get("Authorization"))
+		mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/session"):
+			exchanges++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"token":      "ticket-1",
+				"expires_at": time.Now().Add(12 * time.Hour).UTC().Format(time.RFC3339),
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		}
+	}))
+	t.Cleanup(ts.Close)
+
+	c := newHTTPClient(ts.URL, "")
+	c.userToken = "user-jwt"
+	c.apiPrefix = defaultAPIPrefix
+
+	var out map[string]any
+	if err := c.post(context.Background(), c.apiPrefix+"/claim", map[string]any{"limit": 1}, &out); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if exchanges != 1 {
+		t.Fatalf("exchanges = %d, want 1", exchanges)
+	}
+	if got := c.currentToken(); got != "ticket-1" {
+		t.Fatalf("token = %q, want ticket-1", got)
+	}
+	// 第二次请求复用券，不再换。
+	if err := c.post(context.Background(), c.apiPrefix+"/claim", map[string]any{"limit": 1}, &out); err != nil {
+		t.Fatalf("second post: %v", err)
+	}
+	if exchanges != 1 {
+		t.Fatalf("exchanges = %d after reuse, want 1", exchanges)
+	}
+	// 换券用账号态，业务请求用券。
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seenAuth) < 3 {
+		t.Fatalf("requests = %d, want >=3", len(seenAuth))
+	}
+	if seenAuth[0] != "Bearer user-jwt" {
+		t.Fatalf("exchange auth = %q", seenAuth[0])
+	}
+	if seenAuth[1] != "Bearer ticket-1" || seenAuth[2] != "Bearer ticket-1" {
+		t.Fatalf("business auth = %q/%q", seenAuth[1], seenAuth[2])
+	}
+}
+
+// 换券失败要显式报错，不能拿空 token 去静默重试。
+func TestEnsureTokenFailsLoudly(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	t.Cleanup(ts.Close)
+
+	c := newHTTPClient(ts.URL, "")
+	c.userToken = "expired-jwt"
+	c.apiPrefix = defaultAPIPrefix
+	if err := c.post(context.Background(), c.apiPrefix+"/claim", nil, nil); err == nil {
+		t.Fatal("expected exchange failure")
+	}
+	if got := c.currentToken(); got != "" {
+		t.Fatalf("token = %q, want empty on failure", got)
 	}
 }
 

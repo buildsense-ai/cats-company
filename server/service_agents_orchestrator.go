@@ -209,25 +209,43 @@ func (o *ServiceRunOrchestrator) withInstanceToken(next http.HandlerFunc) http.H
 	}
 }
 
-// withUserWorkerToken 校验 per-user worker 凭据（cwk_...）：解析出 uid 放进 context。
-// 公网 worker 面只走这条；未配置凭据存储时 fail closed（401）。
+// withUserWorkerToken 校验 worker 身份，解析出 uid 放进 context。公网 worker 面只走这条。
+//
+// 接受两种券，都只能操作自己名下应用的 run：
+//   - `cwk_...`：网页生成的长期连接密钥（适合服务器/无头部署），库里只存 sha256；
+//   - worker 券（`POST /api/service-worker/session` 用账号登录态换的短期 JWT）：
+//     桌面端在进程内交给 worker，用户既不用看见也不用复制任何密钥。
+//
+// 全局实例 token 不再对外发放；普通用户 JWT 也不能直接当 worker 券用（类型校验会拒）。
 func (o *ServiceRunOrchestrator) withUserWorkerToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if o.workerTokens == nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
 		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		// 只有 cwk_ 前缀的凭据走这里；全局实例 token 不再对外发放。
-		if !strings.HasPrefix(token, store.ServiceWorkerTokenPrefix) {
+		if token == "" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		sum := sha256.Sum256([]byte(token))
-		uid, err := o.workerTokens.ResolveServiceWorkerToken(r.Context(), hex.EncodeToString(sum[:]))
-		if err != nil || uid == 0 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
+		var uid int64
+		if strings.HasPrefix(token, store.ServiceWorkerTokenPrefix) {
+			// 长期密钥：未配置凭据存储时 fail closed（401）。
+			if o.workerTokens == nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			sum := sha256.Sum256([]byte(token))
+			resolved, err := o.workerTokens.ResolveServiceWorkerToken(r.Context(), hex.EncodeToString(sum[:]))
+			if err != nil || resolved == 0 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			uid = resolved
+		} else {
+			// 短期 worker 券（账号登录态换来的，仅限本面使用）。
+			resolved, err := ParseServiceWorkerSession(token)
+			if err != nil || resolved == 0 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			uid = resolved
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), serviceWorkerUIDKey{}, uid)))
 	}

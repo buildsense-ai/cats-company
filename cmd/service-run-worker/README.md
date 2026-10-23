@@ -6,11 +6,27 @@
 - 调用时平台创建 run → **本 worker 认领并在这台机器上执行** → 结果回填给调用方
 - 不需要公网端口、不需要反向代理；worker 主动出网轮询
 
-## 1. 前置：拿到你自己的 worker 凭据
+## 1. 前置：拿到身份（两种方式，二选一）
 
-在网页「Agent 工具」面板 →「本机 worker 凭据」→ 生成，复制 `cwk_...`（**只显示一次**）。
+**A. 桌面端自动（推荐，用户什么都不用做）**
 
-> 凭据是**按账号**的：只能认领你自己名下应用的 run，拿不到别人的。
+桌面客户端在拉起 worker 时会把自己的账号登录态通过 `CATS_USER_TOKEN`（或 `-user-token`）传进来，
+worker 启动时用它调 `POST /api/service-worker/session` 换一张**短期 worker 券**（默认 12h，
+到期前自动续）。这张券：
+
+- 只能用于 `/api/service-worker/*`（认领/续租/回填自己名下应用的 run）；
+- 不能当账号 token 用（普通接口的类型校验会拒它）；
+- 不落盘、不出现在命令行历史里。
+
+```bash
+CATS_USER_TOKEN=<桌面端自动注入> ./service-run-worker -base https://app.catsco.cn
+```
+
+**B. 手动连接密钥（服务器 / 无桌面环境）**
+
+网页「Agent 工具」→ 高级 →「连接密钥」→ 生成，复制 `cwk_...`（**只显示一次**）。
+
+> 密钥是**按账号**的：只能认领你自己名下应用的 run，拿不到别人的。
 > 撤销后立即失效（下一次 claim 就 401）。多台机器可以各生成一个。
 
 ## 2. 编译
@@ -36,7 +52,8 @@ export CATS_WORKER_TOKEN=cwk_...
 |---|---|
 | `-base` | 平台地址，默认 `https://app.catsco.cn` |
 | `-api-prefix` | worker API 前缀，默认 `/api/service-worker`（一般不用改，只有前面又套了一层反向代理时才需要） |
-| `-token` | worker 凭据（`cwk_...`；也可用 `CATS_WORKER_TOKEN` / 旧的 `CATS_SERVICE_INSTANCE_TOKEN`） |
+| `-token` | 连接密钥（`cwk_...`；也可用 `CATS_WORKER_TOKEN` / 旧的 `CATS_SERVICE_INSTANCE_TOKEN`） |
+| `-user-token` | 账号登录态（`CATS_USER_TOKEN`）；给了它就不需要连接密钥，worker 自动换券并续期 |
 | `-instance` | 实例 id，≤64 字符，默认 `主机名-pid`；**同一实例 id 重启会接管上次的租约** |
 | `-cmd` | 执行命令模板（**可选**，应用自己声明了命令就不用给）；占位符 `{slug}` `{run_id}` `{session_id}` `{input_file}` |
 | `-agents` | **只认领这些 slug**（逗号分隔）；空 = 认领所有应用的 run（多租户不推荐） |

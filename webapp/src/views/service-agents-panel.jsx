@@ -46,6 +46,7 @@ export default function ServiceAgentsPanel({ onClose }) {
     tool: '',
     command: '',
     price: '',
+    priceUnit: 'token',
   });
 
   const load = useCallback(async () => {
@@ -199,8 +200,11 @@ export default function ServiceAgentsPanel({ onClose }) {
     }
     const price = Number(form.price);
     if (form.price && Number.isFinite(price) && price > 0) {
-      // 按次计价：用户只关心「调一次多少钱」，比按千 tokens 直观。
-      definition.pricing = { unit: 'run', per_run: price, currency: 'CNY' };
+      // 不按调用次数收费：次数和实际开销无关（一次可能只是打个招呼，也可能跑十分钟）。
+      // 只允许「按实际用量」计价：token 用量，或平台可观测的运行时长。
+      definition.pricing = form.priceUnit === 'second'
+        ? { unit: 'second', per_second: price, currency: 'CNY' }
+        : { unit: 'token', per_1k_tokens: price, currency: 'CNY' };
     }
     setPublishing(true);
     setPublishError('');
@@ -226,7 +230,7 @@ export default function ServiceAgentsPanel({ onClose }) {
         token: workerToken,
       });
       setShowPublish(false);
-      setForm({ name: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '' });
+      setForm({ name: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '', priceUnit: 'token' });
       await load();
     } catch (err) {
       setPublishError(err?.message || '发布失败，请稍后重试。');
@@ -494,12 +498,40 @@ export default function ServiceAgentsPanel({ onClose }) {
               />
             </label>
           ) : null}
+          <div className="v3-service-agents-field">
+            <span>计费方式（留空=免费分享）</span>
+            <div className="v3-service-agents-choices">
+              <label>
+                <input
+                  type="radio"
+                  name="priceUnit"
+                  checked={form.priceUnit === 'token'}
+                  onChange={() => updateForm({ priceUnit: 'token' })}
+                />
+                按用量（每千 tokens）
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="priceUnit"
+                  checked={form.priceUnit === 'second'}
+                  onChange={() => updateForm({ priceUnit: 'second' })}
+                />
+                按运行时长（每秒）
+              </label>
+            </div>
+            <span className="v3-service-agents-field-hint">
+              {form.priceUnit === 'second'
+                ? '按实际跑了多少秒算，平台自己就能测，不依赖 agent 上报。'
+                : '要你的 agent 上报 token 用量才计费（多数 CLI 不上报，那就按运行时长更靠谱）。'}
+            </span>
+          </div>
           <label className="v3-service-agents-field">
-            <span>每次调用多少钱（元，留空=免费）</span>
+            <span>{form.priceUnit === 'second' ? '每秒多少钱（元）' : '每千 tokens 多少钱（元）'}</span>
             <input
               value={form.price}
               onChange={(event) => updateForm({ price: event.target.value })}
-              placeholder="0.1"
+              placeholder={form.priceUnit === 'second' ? '0.01' : '2'}
               inputMode="decimal"
             />
           </label>
@@ -556,9 +588,16 @@ export default function ServiceAgentsPanel({ onClose }) {
           <button type="button" onClick={() => setNotice(null)}>知道了</button>
         </div>
       ) : null}
-      <div className="v3-service-worker-credentials">
+      <details className="v3-service-worker-credentials">
+        <summary className="v3-service-worker-credentials-head">
+          <span>高级：不装桌面端时手动给一台机器授权</span>
+        </summary>
+        <p className="v3-service-worker-credentials-empty">
+          桌面端会自动完成这一步，不用管这里。只有在服务器 / 无桌面环境上跑 worker 时，
+          才需要生成一把「连接密钥」贴进命令里；它<strong>只能替你的应用接单</strong>，随时可撤销。
+        </p>
         <div className="v3-service-worker-credentials-head">
-          <span>让我的电脑接单</span>
+          <span>连接密钥</span>
           <button type="button" onClick={createCredential} disabled={credentialBusy}>
             {credentialBusy ? '处理中…' : '生成'}
           </button>
@@ -577,8 +616,7 @@ export default function ServiceAgentsPanel({ onClose }) {
         ) : null}
         {credentials.length === 0 ? (
           <p className="v3-service-worker-credentials-empty">
-            还没有「连接密钥」。点「生成」拿一把，粘到你自己电脑上的 worker 命令里就行；
-            它<strong>只能替你的应用接单</strong>，随时可撤销。
+            还没有连接密钥。点「生成」拿一把，粘到那台机器的 worker 命令里就行。
           </p>
         ) : (
           <ul className="v3-service-worker-credentials-list">
@@ -595,7 +633,7 @@ export default function ServiceAgentsPanel({ onClose }) {
             ))}
           </ul>
         )}
-      </div>
+      </details>
       <div className="v3-service-agents-scope">
         <label className="v3-service-agents-scope-label" htmlFor="v3-service-agents-scope-select">
           配置范围
