@@ -3,7 +3,12 @@ run-name: Deploy production ${{ github.event.workflow_run.head_sha }}
 
 on:
   workflow_run:
-    workflows: ["CI", "Deploy Docker Test"]
+    # Only CI triggers production. The test deployment starts from the same
+    # push but finishes first, so triggering from both made two production
+    # runs: the early one saw CI still running and skipped the rollout, which
+    # looked like a successful deploy while production stayed on the old
+    # revision. The release gate now waits for the test deployment instead.
+    workflows: ["CI"]
     branches: ["main"]
     types:
       - completed
@@ -37,7 +42,23 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
+          # CI and the test deployment are dispatched together but finish
+          # minutes apart. Wait for the slower one instead of concluding
+          # "not ready" on the first glance and skipping the rollout.
+          RELEASE_GATE_TIMEOUT_SECONDS: "1800"
+          RELEASE_GATE_POLL_SECONDS: "20"
         run: python3 deploy/check-prod-release.py
+      - name: Report skipped production deployment
+        if: ${{ steps.gate.outputs.ready != 'true' }}
+        run: |
+          echo "::warning::Production deployment skipped for ${{ steps.gate.outputs.revision }}; the release gate did not approve this revision (see the gate log above)."
+          {
+            echo "### Production deployment skipped"
+            echo ""
+            echo "Revision: \`${{ steps.gate.outputs.revision }}\`"
+            echo ""
+            echo "Nothing was rolled back. A newer revision will deploy on its own run; rerun this workflow to retry the same revision."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   deploy-prod:
     needs: release-gate
@@ -74,7 +95,15 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
+          # The release was already approved once; this recheck guards the
+          # queue boundary, so it must not hold production for another wait.
+          RELEASE_GATE_TIMEOUT_SECONDS: "60"
+          RELEASE_GATE_POLL_SECONDS: "10"
         run: python3 deploy/check-prod-release.py
+      - name: Report rollout superseded in the production queue
+        if: ${{ steps.gate.outputs.ready != 'true' }}
+        run: |
+          echo "::warning::Rollout for ${{ steps.gate.outputs.revision }} was superseded while waiting for the production queue; nothing was deployed."
 
       - name: Checkout tested revision
         if: steps.gate.outputs.ready == 'true'

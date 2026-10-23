@@ -16,7 +16,11 @@ SPEC.loader.exec_module(GATE)
 class DeployProdWorkflowTest(unittest.TestCase):
     def test_prod_requires_both_upstream_workflows_before_using_deployment_secrets(self):
         workflow = (ROOT / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8")
-        self.assertIn('workflows: ["CI", "Deploy Docker Test"]', workflow)
+        # Only CI triggers production; the test deployment is waited for by the
+        # gate. Triggering from both produced a racing extra run that skipped
+        # the rollout while looking successful.
+        self.assertIn('workflows: ["CI"]', workflow)
+        self.assertNotIn("Deploy Docker Test", workflow.split("jobs:", 1)[0])
         self.assertIn('branches: ["main"]', workflow)
         self.assertIn('actions: read', workflow)
         self.assertIn('github.event.workflow_run.head_repository.full_name == github.repository', workflow)
@@ -38,6 +42,18 @@ class DeployProdWorkflowTest(unittest.TestCase):
         for name in ("Checkout tested revision", "Prepare SSH key", "Upload prod stack files", "Deploy prod stack"):
             step = workflow.split(f"- name: {name}\n", 1)[1].split("\n      - name:", 1)[0]
             self.assertIn("if: steps.gate.outputs.ready == 'true'", step)
+
+    def test_release_gate_waits_for_the_slower_workflow(self):
+        # A skipped rollout used to leave the workflow green with production on
+        # an older revision, so the gate must wait and any skip must be loud.
+        workflow = (ROOT / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8")
+        self.assertIn("RELEASE_GATE_TIMEOUT_SECONDS: \"1800\"", workflow)
+        self.assertIn("RELEASE_GATE_POLL_SECONDS: \"20\"", workflow)
+        # The post-queue recheck must stay short; the approval already happened.
+        self.assertIn("RELEASE_GATE_TIMEOUT_SECONDS: \"60\"", workflow)
+        self.assertIn("if: ${{ steps.gate.outputs.ready != 'true' }}", workflow)
+        self.assertIn("::warning::Production deployment skipped", workflow)
+        self.assertIn("GITHUB_STEP_SUMMARY", workflow)
 
     def test_prod_gate_reads_the_protocol_enablement_variable(self):
         # A protocol that is declared but not switched on must not freeze every
@@ -269,6 +285,115 @@ class ProdReleaseGateTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "API unavailable"):
                     GATE.main()
             self.assertFalse(output.exists())
+
+    def detail(self, trigger, runs, main_revision=None):
+        return GATE.release_decision_detail(trigger, self.repository, main_revision or self.revision, runs)
+
+    def test_a_still_running_workflow_waits_instead_of_skipping_the_release(self):
+        # Regression: the test deployment finishes first, saw CI in progress,
+        # and the rollout was skipped while the workflow reported success.
+        trigger = self.run_record(10)
+        running = self.run_record(20, status="in_progress", conclusion=None)
+        state, reason = self.detail(trigger, {"ci.yml": [trigger], "deploy-test.yml": [running]})
+        self.assertEqual(state, GATE.WAITING)
+        self.assertIn("deploy-test.yml is still running", reason)
+        self.assertFalse(self.decision(trigger, {"ci.yml": [trigger], "deploy-test.yml": [running]}))
+
+        running.update(status="completed", conclusion="success")
+        state, _ = self.detail(trigger, {"ci.yml": [trigger], "deploy-test.yml": [running]})
+        self.assertEqual(state, GATE.READY)
+
+    def test_queued_or_missing_workflow_is_waited_for_not_approved(self):
+        trigger = self.run_record(10)
+        queued = self.run_record(20, status="queued", conclusion=None)
+        state, _ = self.detail(trigger, {"ci.yml": [trigger], "deploy-test.yml": [queued]})
+        self.assertEqual(state, GATE.WAITING)
+        state, reason = self.detail(trigger, {"ci.yml": [trigger]})
+        self.assertEqual(state, GATE.WAITING)
+        self.assertIn("not been dispatched", reason)
+
+    def test_concluded_failure_blocks_instead_of_waiting(self):
+        trigger = self.run_record(10)
+        failed = self.run_record(20, conclusion="failure")
+        state, reason = self.detail(trigger, {"ci.yml": [trigger], "deploy-test.yml": [failed]})
+        self.assertEqual(state, GATE.BLOCKED)
+        self.assertIn("did not succeed (failure)", reason)
+
+    def gate_main(self, directory, trigger, **env):
+        import json
+        event, output = Path(directory) / "event.json", Path(directory) / "output"
+        event.write_text(json.dumps({"workflow_run": trigger}), encoding="utf-8")
+        environment = {"GITHUB_EVENT_PATH": str(event), "GITHUB_OUTPUT": str(output),
+                       "GITHUB_REPOSITORY": self.repository, **env}
+        return environment, output
+
+    def test_gate_polls_until_the_slower_workflow_completes(self):
+        trigger = self.run_record(10)
+        running = self.run_record(20, status="in_progress", conclusion=None)
+        done = self.run_record(20)
+        calls = {"n": 0}
+
+        def fake_runs(workflow, revision):
+            calls["n"] += 1
+            if workflow == "ci.yml":
+                return [trigger]
+            # The first full pass finds the test deployment still running; the
+            # second pass (after the poll) finds it completed.
+            return [running if calls["n"] <= 2 else done]
+
+        with tempfile.TemporaryDirectory() as directory:
+            environment, output = self.gate_main(
+                directory, trigger,
+                RELEASE_GATE_TIMEOUT_SECONDS="120", RELEASE_GATE_POLL_SECONDS="1")
+            with patch.dict(os.environ, environment), \
+                 patch.object(GATE, "workflow_runs", side_effect=fake_runs), \
+                 patch.object(GATE, "github_get", return_value={"object": {"sha": self.revision}}), \
+                 patch.object(GATE, "already_deployed", return_value=False), \
+                 patch.object(GATE.time, "sleep") as sleep:
+                GATE.main()
+            self.assertIn("ready=true", output.read_text(encoding="utf-8"))
+            sleep.assert_called_once()
+
+    def test_gate_never_approves_after_the_timeout_expires(self):
+        trigger = self.run_record(10)
+        running = self.run_record(20, status="in_progress", conclusion=None)
+
+        def fake_runs(workflow, revision):
+            return [trigger] if workflow == "ci.yml" else [running]
+
+        with tempfile.TemporaryDirectory() as directory:
+            environment, output = self.gate_main(
+                directory, trigger,
+                RELEASE_GATE_TIMEOUT_SECONDS="0", RELEASE_GATE_POLL_SECONDS="1")
+            with patch.dict(os.environ, environment), \
+                 patch.object(GATE, "workflow_runs", side_effect=fake_runs), \
+                 patch.object(GATE, "github_get", return_value={"object": {"sha": self.revision}}), \
+                 patch.object(GATE, "already_deployed", return_value=False), \
+                 patch.object(GATE.time, "sleep") as sleep:
+                GATE.main()
+            self.assertIn("ready=false", output.read_text(encoding="utf-8"))
+            sleep.assert_not_called()
+
+    def test_gate_stops_waiting_when_main_moves_on(self):
+        # A newer push during the wait must never let the old revision deploy.
+        trigger = self.run_record(10)
+        running = self.run_record(20, status="in_progress", conclusion=None)
+
+        def fake_runs(workflow, revision):
+            return [trigger] if workflow == "ci.yml" else [running]
+
+        with tempfile.TemporaryDirectory() as directory:
+            environment, output = self.gate_main(
+                directory, trigger,
+                RELEASE_GATE_TIMEOUT_SECONDS="120", RELEASE_GATE_POLL_SECONDS="1")
+            with patch.dict(os.environ, environment), \
+                 patch.object(GATE, "workflow_runs", side_effect=fake_runs), \
+                 patch.object(GATE, "github_get", return_value={"object": {"sha": "b" * 40}}), \
+                 patch.object(GATE, "already_deployed", return_value=False), \
+                 patch.object(GATE.time, "sleep") as sleep:
+                GATE.main()
+            self.assertIn("ready=false", output.read_text(encoding="utf-8"))
+            sleep.assert_not_called()
 
 
 if __name__ == "__main__":
