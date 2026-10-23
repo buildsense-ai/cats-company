@@ -280,6 +280,65 @@ describe('ServiceAgentsPanel', () => {
     expect(banner?.textContent).toContain(`-token cwk_${'a'.repeat(64)}`);
   });
 
+  // 已有旧密钥（明文只显示过一次）时，命令里只能给占位；必须能一键生成并自动填入，
+  // 否则用户拿到一行跑不起来的命令。
+  it('已有旧密钥时，横幅可一键生成新密钥并填入命令', async () => {
+    mocks.listServiceWorkerCredentials.mockResolvedValue({
+      credentials: [{ id: 9, prefix: 'cwk_old00000', label: '旧机器', created_at: '2026-10-01T00:00:00Z' }],
+      prefix: 'cwk_',
+    });
+    mocks.createServiceWorkerCredential.mockResolvedValueOnce({
+      id: 12,
+      token: `cwk_${'b'.repeat(64)}`,
+      prefix: 'cwk_bbbbbbbb',
+      label: '发布时生成',
+      shown_once: true,
+    });
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'legacy', version: 1, visibility: 'public' });
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="发布应用"]').click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    const setValue = (node, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(node, value);
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await act(async () => {
+      setValue(nameInput, 'Legacy');
+      setValue(slugInput, 'legacy');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 有旧密钥时不自动新建，命令里是占位 + 提供补密钥按钮
+    expect(mocks.createServiceWorkerCredential).not.toHaveBeenCalled();
+    let banner = container.querySelector('.v3-service-agents-published');
+    expect(banner.textContent).toContain('<你的连接密钥>');
+    const fill = [...banner.querySelectorAll('button')]
+      .find((node) => node.textContent.includes('生成密钥并填入'));
+    expect(fill).toBeTruthy();
+
+    await act(async () => {
+      fill.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.createServiceWorkerCredential).toHaveBeenCalledTimes(1);
+    banner = container.querySelector('.v3-service-agents-published');
+    expect(banner.textContent).toContain(`-token cwk_${'b'.repeat(64)}`);
+    expect(banner.textContent).not.toContain('<你的连接密钥>');
+    // 新密钥同时进入「高级」列表，便于以后撤销
+    expect(container.querySelector('.v3-service-worker-credentials-list')?.textContent).toContain('cwk_bbbbbbbb');
+  });
+
   // 按调用次数收费与真实开销无关（一次可能只是打招呼，也可能跑十分钟），
   // 所以只允许按实际用量计价：token 或运行时长。
   it('定价只按实际用量算，不按调用次数', async () => {

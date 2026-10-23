@@ -1333,6 +1333,14 @@
   color: var(--cc-muted, #6b7280);
 }
 
+/* 横幅里的按钮行：复制命令 / 生成密钥并填入，两个操作并排且不抢标题宽度。 */
+.v3-service-agents-published-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
 .v3-service-agents-published button {
   align-self: flex-start;
   height: 24px;

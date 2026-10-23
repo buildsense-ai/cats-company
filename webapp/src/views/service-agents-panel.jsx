@@ -35,6 +35,8 @@ export default function ServiceAgentsPanel({ onClose }) {
   const [credentials, setCredentials] = useState([]);
   const [issued, setIssued] = useState(null);
   const [credentialBusy, setCredentialBusy] = useState(false);
+  // 发布横幅里「生成密钥并填入」的一次性进行中状态。
+  const [bannerTokenBusy, setBannerTokenBusy] = useState(false);
   const [form, setForm] = useState({
     name: '',
     slug: '',
@@ -211,7 +213,8 @@ export default function ServiceAgentsPanel({ onClose }) {
     try {
       const result = await api.publishServiceAgent({ slug, name, visibility: form.visibility, definition });
       // 第一次发布「我的电脑」应用时顺手把连接密钥生成好：用户只需复制下面那一行命令，
-      // 不用先去理解/寻找「凭据」。
+      // 不用先去理解/寻找「凭据」。已有密钥的老用户不自动再生成（免得堆一堆），
+      // 而是由横幅里的按钮一键生成并自动填进命令。
       let workerToken = '';
       if (form.runner === 'worker' && credentials.length === 0
         && typeof api.createServiceWorkerCredential === 'function') {
@@ -219,7 +222,7 @@ export default function ServiceAgentsPanel({ onClose }) {
           const credential = await api.createServiceWorkerCredential('发布时自动生成');
           workerToken = credential?.token || '';
         } catch {
-          // 自动生成失败不影响发布；用户仍可在下面「让我的电脑接单」里手动生成。
+          // 自动生成失败不影响发布；用户仍可在横幅里点「生成密钥并填入」。
         }
       }
       setPublishResult({
@@ -238,6 +241,33 @@ export default function ServiceAgentsPanel({ onClose }) {
       setPublishing(false);
     }
   }, [form, credentials, load]);
+
+  // 发布横幅里的一键补密钥：老用户已有旧密钥但看不到明文，光给占位等于没给命令。
+  // 点一下就生成一把新的并直接填进那行命令，同时同步到「高级」里的密钥列表。
+  const fillBannerToken = useCallback(async () => {
+    if (bannerTokenBusy || typeof api.createServiceWorkerCredential !== 'function') return;
+    setBannerTokenBusy(true);
+    setError('');
+    try {
+      const credential = await api.createServiceWorkerCredential('发布时生成');
+      const token = credential?.token || '';
+      if (!token) throw new Error('empty token');
+      setPublishResult((prev) => (prev ? { ...prev, token } : prev));
+      setCredentials((prev) => [
+        {
+          id: credential?.id,
+          prefix: credential?.prefix || '',
+          label: credential?.label || '',
+          created_at: credential?.created_at || '',
+        },
+        ...prev.filter((item) => item.id !== credential?.id),
+      ]);
+    } catch (err) {
+      setError(err?.message || '生成密钥失败，请稍后重试。');
+    } finally {
+      setBannerTokenBusy(false);
+    }
+  }, [bannerTokenBusy]);
 
   // 收回分享：下架后目录与别人的 tools/list 立即不可见，已缓存工具名的客户端再调用
   // 会拿到 "该应用已被发布者收回"。重新发布同一调用名即可恢复。
@@ -563,7 +593,20 @@ export default function ServiceAgentsPanel({ onClose }) {
             <div className="v3-service-agents-published-hint">
               <div>让你这台电脑接单：复制下面这行，在你电脑上执行一次就行。</div>
               <code title={workerCommand}>{workerCommand}</code>
-              <button type="button" onClick={() => copyCredential(workerCommand)}>复制命令</button>
+              <div className="v3-service-agents-published-actions">
+                <button type="button" onClick={() => copyCredential(workerCommand)}>复制命令</button>
+                {publishResult.token ? null : (
+                  <button type="button" onClick={fillBannerToken} disabled={bannerTokenBusy}>
+                    {bannerTokenBusy ? '生成中…' : '生成密钥并填入'}
+                  </button>
+                )}
+              </div>
+              {publishResult.token ? null : (
+                <div>
+                  你之前已经有一把连接密钥（明文只显示过一次），所以命令里先留了占位。
+                  点「生成密钥并填入」会新建一把并自动替换，旧的作废需要用哪台设备就在哪台设备上撤销。
+                </div>
+              )}
             </div>
           ) : null}
           <div className="v3-service-agents-published-hint">
