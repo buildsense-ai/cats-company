@@ -184,8 +184,11 @@ describe('ServiceAgentsPanel', () => {
     expect(placeholder).toBeTruthy();
     expect(placeholder.textContent).toContain('还没有可用的 Agent 工具');
     expect(placeholder.textContent).toContain('catsco_');
-    const refresh = placeholder.querySelector('button');
-    expect(refresh.textContent).toContain('刷新目录');
+    // 空目录时除了刷新，还要直接给一个「发布我的 agent」入口。
+    const placeholderButtons = [...placeholder.querySelectorAll('button')];
+    expect(placeholderButtons.some((node) => node.textContent.includes('发布我的 agent'))).toBe(true);
+    const refresh = placeholderButtons.find((node) => node.textContent.includes('刷新目录'));
+    expect(refresh).toBeTruthy();
     await act(async () => {
       refresh.click();
       await Promise.resolve();
@@ -266,12 +269,15 @@ describe('ServiceAgentsPanel', () => {
 
     expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
     const payload = mocks.publishServiceAgent.mock.calls[0][0];
-    expect(payload).toMatchObject({ slug: 'my-agent', name: '我的助手', visibility: 'private' });
+    expect(payload).toMatchObject({ slug: 'my-agent', name: '我的助手', visibility: 'public' });
     expect(payload.definition).toMatchObject({ name: '我的助手', runner: { type: 'worker' } });
 
     const banner = container.querySelector('.v3-service-agents-published');
     expect(banner?.textContent).toContain('catsco_my-agent');
     expect(banner?.textContent).toContain('service-run-worker -agents my-agent');
+    // 首次发布自动带上连接密钥：用户只需复制一行，不用自己找凭据。
+    expect(mocks.createServiceWorkerCredential).toHaveBeenCalledTimes(1);
+    expect(banner?.textContent).toContain(`-token cwk_${'a'.repeat(64)}`);
   });
 
   it('可以给每个应用单独指定本机执行命令（多个 agent 共用一个 worker）', async () => {

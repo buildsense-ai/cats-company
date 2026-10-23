@@ -39,7 +39,8 @@ export default function ServiceAgentsPanel({ onClose }) {
     name: '',
     slug: '',
     slugTouched: false,
-    visibility: 'private',
+    // 默认公开：上架就是为了分享给别人调，选「仅自己」要显式选。
+    visibility: 'public',
     runner: 'worker',
     url: '',
     tool: '',
@@ -198,27 +199,41 @@ export default function ServiceAgentsPanel({ onClose }) {
     }
     const price = Number(form.price);
     if (form.price && Number.isFinite(price) && price > 0) {
-      definition.pricing = { unit: 'token', per_1k_tokens: price, currency: 'CNY' };
+      // 按次计价：用户只关心「调一次多少钱」，比按千 tokens 直观。
+      definition.pricing = { unit: 'run', per_run: price, currency: 'CNY' };
     }
     setPublishing(true);
     setPublishError('');
     try {
       const result = await api.publishServiceAgent({ slug, name, visibility: form.visibility, definition });
+      // 第一次发布「我的电脑」应用时顺手把连接密钥生成好：用户只需复制下面那一行命令，
+      // 不用先去理解/寻找「凭据」。
+      let workerToken = '';
+      if (form.runner === 'worker' && credentials.length === 0
+        && typeof api.createServiceWorkerCredential === 'function') {
+        try {
+          const credential = await api.createServiceWorkerCredential('发布时自动生成');
+          workerToken = credential?.token || '';
+        } catch {
+          // 自动生成失败不影响发布；用户仍可在下面「让我的电脑接单」里手动生成。
+        }
+      }
       setPublishResult({
         slug: result?.slug || slug,
         visibility: result?.visibility || form.visibility,
         runner: form.runner,
         hasCommand: form.runner === 'worker' && Boolean(form.command.trim()),
+        token: workerToken,
       });
       setShowPublish(false);
-      setForm({ name: '', slug: '', slugTouched: false, visibility: 'private', runner: 'worker', url: '', tool: '', command: '', price: '' });
+      setForm({ name: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '' });
       await load();
     } catch (err) {
       setPublishError(err?.message || '发布失败，请稍后重试。');
     } finally {
       setPublishing(false);
     }
-  }, [form, load]);
+  }, [form, credentials, load]);
 
   // 收回分享：下架后目录与别人的 tools/list 立即不可见，已缓存工具名的客户端再调用
   // 会拿到 "该应用已被发布者收回"。重新发布同一调用名即可恢复。
@@ -306,6 +321,17 @@ export default function ServiceAgentsPanel({ onClose }) {
     }
   }, []);
 
+  // 发布成功后的「一行命令」：有密钥就直接给可粘贴的完整命令，
+  // 老用户已有密钥时留占位（明文只在生成时显示一次）。
+  const workerCommand = publishResult
+    ? [
+      'service-run-worker',
+      `-agents ${publishResult.slug}`,
+      `-token ${publishResult.token || '<你的连接密钥>'}`,
+      publishResult.hasCommand ? '' : `-cmd '你的命令 {input_file}'`,
+    ].filter(Boolean).join(' ')
+    : '';
+
   return (
     <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
         <span className="v3-service-agents-title">
@@ -369,6 +395,9 @@ export default function ServiceAgentsPanel({ onClose }) {
               placeholder="my-agent"
               spellCheck={false}
             />
+            <span className="v3-service-agents-field-hint">
+              你的 bot 里就这样叫它：catsco_{form.slug || 'my-agent'}
+            </span>
           </label>
           <div className="v3-service-agents-field">
             <span>可见性</span>
@@ -403,7 +432,7 @@ export default function ServiceAgentsPanel({ onClose }) {
                   checked={form.runner === 'worker'}
                   onChange={() => updateForm({ runner: 'worker' })}
                 />
-                我的电脑（worker）
+                我的电脑（推荐）
               </label>
               <label>
                 <input
@@ -450,7 +479,7 @@ export default function ServiceAgentsPanel({ onClose }) {
                 spellCheck={false}
               />
               <span className="v3-service-agents-field-hint">
-                留空 = 用 worker 的 -cmd；多个 agent 各填各的即可，一个 worker 能同时服务它们
+                留空也行：不填就用启动 worker 时的 -cmd；多个 agent 各填各的即可
               </span>
             </label>
           )}
@@ -466,11 +495,11 @@ export default function ServiceAgentsPanel({ onClose }) {
             </label>
           ) : null}
           <label className="v3-service-agents-field">
-            <span>定价（元 / 千 tokens，留空=免费）</span>
+            <span>每次调用多少钱（元，留空=免费）</span>
             <input
               value={form.price}
               onChange={(event) => updateForm({ price: event.target.value })}
-              placeholder="2"
+              placeholder="0.1"
               inputMode="decimal"
             />
           </label>
@@ -500,13 +529,14 @@ export default function ServiceAgentsPanel({ onClose }) {
           </div>
           {publishResult.runner === 'worker' ? (
             <div className="v3-service-agents-published-hint">
-              在你自己的机器上运行 worker 才会执行：
-              <code>
-                service-run-worker -agents {publishResult.slug}
-                {publishResult.hasCommand ? '' : ` -cmd '…'`}
-              </code>
+              <div>让你这台电脑接单：复制下面这行，在你电脑上执行一次就行。</div>
+              <code title={workerCommand}>{workerCommand}</code>
+              <button type="button" onClick={() => copyCredential(workerCommand)}>复制命令</button>
             </div>
           ) : null}
+          <div className="v3-service-agents-published-hint">
+            之后直接跟 bot 说「用 catsco_{publishResult.slug} 帮我…」就能用。
+          </div>
           <button type="button" onClick={() => setPublishResult(null)}>知道了</button>
         </div>
       ) : null}
@@ -528,7 +558,7 @@ export default function ServiceAgentsPanel({ onClose }) {
       ) : null}
       <div className="v3-service-worker-credentials">
         <div className="v3-service-worker-credentials-head">
-          <span>本机 worker 凭据</span>
+          <span>让我的电脑接单</span>
           <button type="button" onClick={createCredential} disabled={credentialBusy}>
             {credentialBusy ? '处理中…' : '生成'}
           </button>
@@ -547,8 +577,8 @@ export default function ServiceAgentsPanel({ onClose }) {
         ) : null}
         {credentials.length === 0 ? (
           <p className="v3-service-worker-credentials-empty">
-            还没有凭据。生成后填到自己机器的 worker 里，它
-            <strong>只能认领你自己应用</strong>的 run，撤销即刻失效。
+            还没有「连接密钥」。点「生成」拿一把，粘到你自己电脑上的 worker 命令里就行；
+            它<strong>只能替你的应用接单</strong>，随时可撤销。
           </p>
         ) : (
           <ul className="v3-service-worker-credentials-list">
@@ -630,9 +660,17 @@ export default function ServiceAgentsPanel({ onClose }) {
           </span>
           <p className="v3-service-agents-placeholder-title">还没有可用的 Agent 工具</p>
           <p className="v3-service-agents-placeholder-text">
-            上架后的定制 Agent 会以 <code>catsco_&lt;slug&gt;</code> 的形式出现在这里；
-            当前目录里还没有对你可见的应用。
+            点右上角 ＋ 把你电脑上的 agent 上架，它就会以 <code>catsco_&lt;名字&gt;</code>
+            出现，你的 bot 直接就能调用。
           </p>
+          <button
+            type="button"
+            className="v3-service-agents-placeholder-action"
+            onClick={() => { setShowPublish(true); setPublishError(''); }}
+          >
+            <Plus size={14} />
+            发布我的 agent
+          </button>
           <button type="button" className="v3-service-agents-placeholder-action" onClick={load} disabled={loading}>
             <RefreshCw size={14} />
             刷新目录
