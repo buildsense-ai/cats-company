@@ -129,36 +129,6 @@ export function createGatewayApplicationViewerURL(value, { origin = globalThis.l
   } catch { return ''; }
 }
 
-// Claim a tab while the click is still the active gesture, and hand back a
-// handle to navigate once the destination is known. Opening the tab after the
-// launch request answers would be treated as a popup, so the placeholder is
-// claimed first and filled in later. `noopener` returns null, so the opener is
-// severed by hand instead.
-export function openBlankTab() {
-  const browserWindow = globalThis.window;
-  if (typeof browserWindow?.open !== 'function') return null;
-  let tab = null;
-  try { tab = browserWindow.open('', '_blank'); } catch { return null; }
-  if (!tab) return null;
-  try { tab.opener = null; } catch { /* Already severed or not reachable. */ }
-  return tab;
-}
-
-// Navigate a claimed tab, or open a fresh one when the claim was blocked. The
-// application's own address is used when no launch code could be obtained, so
-// the action still lands somewhere useful.
-export function openTabAt(url, tab = null) {
-  const value = String(url || '').trim();
-  if (!value) return false;
-  if (tab) {
-    try { tab.location.replace(value); return true; } catch { /* Fall through. */ }
-  }
-  const browserWindow = globalThis.window;
-  if (typeof browserWindow?.open !== 'function') return false;
-  browserWindow.open(value, '_blank', 'noopener,noreferrer');
-  return true;
-}
-
 // The stateless share address: the gateway's own public URL for the application.
 //
 // Opening it needs no platform identity at all — the gateway serves every

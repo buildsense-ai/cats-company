@@ -10441,15 +10441,9 @@ describe('MessagesView composer draft isolation', () => {
       });
       api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
       api.listArtifactApps.mockResolvedValue({ apps: [gatewayApp] });
-      api.requestArtifactLaunch.mockResolvedValue({
-        launch_url: 'https://artifact.catsco.cc/_launch/code-9?next=/mario-test/',
-      });
-
       const opened = [];
       const openSpy = vi.spyOn(window, 'open').mockImplementation((url) => {
-        // The blank claim comes first, while the click is still the active
-        // gesture; the destination is filled in once the launch answers.
-        if (String(url)) opened.push(String(url));
+        opened.push(String(url));
         return null;
       });
 
@@ -10470,12 +10464,12 @@ describe('MessagesView composer draft isolation', () => {
       }
 
       expect(opened).toHaveLength(1);
-      // The tab redeems a launch, which lands it on the application's own address
-      // with the visitor's identity already established.
-      expect(opened[0]).toBe('https://artifact.catsco.cc/_launch/code-9?next=/mario-test/');
+      // The tab opens the application's own address, which is the address to show
+      // and to share. Identity comes from the platform's domain cookie, so no
+      // launch code is spent and the conversation never appears in the URL.
+      expect(opened[0]).toBe('https://artifact.catsco.cc/mario-test/');
       expect(opened[0]).not.toContain('artifact-viewer');
-      // The launch names this conversation, so the tab it opens is not a stranger.
-      expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'mario-test', topic_id: 'p2p_1_440' });
+      expect(opened[0]).not.toContain('_launch');
       // The sidebar must not be opened as a side effect of the handoff.
       expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
     });

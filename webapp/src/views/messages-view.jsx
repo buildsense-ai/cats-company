@@ -76,8 +76,6 @@ import {
   createArtifactPreviewChatCoordinator,
   createArtifactPreviewLeaseStore,
   createArtifactViewerURL,
-  openBlankTab,
-  openTabAt,
   sameArtifactPreviewIdentity,
 } from '../artifact-preview-coordinator';
 import {
@@ -2425,28 +2423,17 @@ export default function MessagesView({
     const agentUid = Number(artifact?.agent_uid || artifact?.agentUid || 0);
     const appId = String(artifact?.id || artifact?.artifact_id || '').trim();
     if (agentUid <= 0 || !appId) return;
-    // A new tab opens the application's own address rather than the hosted
-    // viewer: the viewer URL carries this conversation and the owner, which is
-    // both a poor thing to hand to anyone and a poor thing to leave in the
-    // address bar. The tab is claimed while the click is still the active
-    // gesture, and the launch fills it in with an address that already carries
-    // the visitor's identity.
+    // A new tab opens the application's own address: that is the address to show,
+    // to bookmark, and to hand to anyone else. Identity arrives on its own, since
+    // the platform signs a domain cookie the browser also sends to the gateway
+    // host, so no one-shot launch code is needed on this path.
     if (newPage) {
-      const claimedTab = openBlankTab();
-      let destination = String(artifact?.url || '').trim();
-      try {
-        const launch = await api.requestArtifactLaunch({ app: appId, ...(topic ? { topic_id: topic } : {}) });
-        if (launch?.launch_url) destination = launch.launch_url;
-        // The tab is standalone, so it has no parent to annotate into and the
-        // capability would only linger.
-        const binding = normalizeArtifactOpenBinding(launch?.open_binding);
-        if (binding) void api.revokeArtifactOpenBinding(binding.open_ref).catch(() => {});
-      } catch {
-        // Keep the application's own address; it opens as a guest.
+      const destination = String(artifact?.url || '').trim();
+      if (!destination) {
+        feedback.notify({ tone: 'warning', message: '这个应用暂时没有可打开的地址。' });
+        return;
       }
-      if (!openTabAt(destination, claimedTab)) {
-        feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
-      }
+      window.open(destination, '_blank', 'noopener,noreferrer');
       return;
     }
     setPendingArtifactRefresh(null);

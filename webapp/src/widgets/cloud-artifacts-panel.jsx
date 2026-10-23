@@ -26,7 +26,7 @@ import {
 import { api, resolveMediaURL } from '../api';
 import { getAuthRevision, getToken } from '../auth-session';
 import { normalizeArtifactOpenBinding, artifactOpenBindingUsable } from '../gateway-annotations';
-import { gatewayApplicationShareURL, openBlankTab, openTabAt } from '../artifact-preview-coordinator';
+import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import { useFeedback } from '../components/feedback-system';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import { previewFileDescriptor } from './chat-message';
@@ -221,6 +221,11 @@ export default function CloudArtifactsPanel({
   const gatewayBindingControllerRef = useRef(null);
   const gatewayOpenRef = useRef(null);
   const gatewayOpenSequenceRef = useRef(0);
+  // Bumped on every (re)open, and used as the frame's React key. Re-assigning the
+  // same `src` leaves the existing document in place, so a republished application
+  // would keep showing what it served the first time; remounting fetches it anew.
+  const gatewayReloadKeyRef = useRef(0);
+  const [gatewayRefreshing, setGatewayRefreshing] = useState(false);
   const retireGatewayOpen = useCallback(() => {
     ++gatewayOpenSequenceRef.current;
     gatewayBindingControllerRef.current?.abort();
@@ -354,14 +359,17 @@ export default function CloudArtifactsPanel({
   // set its session cookie during the open, so the application recognises the
   // visitor and knows which conversation they came from. If that request fails
   // for any reason we still open the plain URL, so the action never dead-ends.
-  const openGatewayApp = useCallback(async (app, target = 'panel') => {
+  const openGatewayApp = useCallback(async (app, target = 'panel', { keepOnLaunchFailure = false } = {}) => {
     if (!app?.id || !app?.url) return;
-    // A new tab opens the application's own address, not the hosted viewer: the
-    // viewer URL carries this conversation and the owner, so it is a poor thing
-    // to hand to anyone and a worse thing to leave in the address bar. Claiming
-    // the tab now keeps the click as the active gesture, and the launch below
-    // fills it in with an address that already carries the visitor's identity.
-    const claimedTab = target === 'window' ? openBlankTab() : null;
+    // A new tab opens the application's own address. That is the address to show,
+    // to bookmark, and to hand to anyone else. Identity arrives on its own: the
+    // platform signs a domain cookie the browser also sends to the gateway host,
+    // so the gateway recognises the visitor without a one-shot launch code — which
+    // is also why this path never has to touch the launch endpoint at all.
+    if (target === 'window') {
+      window.open(app.url, '_blank', 'noopener,noreferrer');
+      return;
+    }
     const launchSequence = ++gatewayLaunchSequenceRef.current;
     // Panel opens own one capability per instance.
     const requestID = ++gatewayOpenSequenceRef.current;
@@ -371,6 +379,7 @@ export default function CloudArtifactsPanel({
     let viewerURL = app.url;
     let visitor = true;
     let artifact = null;
+    let launchFailed = false;
     try {
       const launch = await api.requestArtifactLaunch({ app: app.id, ...(topicId ? { topic_id: topicId } : {}) });
       if (launch?.launch_url) { viewerURL = launch.launch_url; visitor = false; }
@@ -384,6 +393,15 @@ export default function CloudArtifactsPanel({
       }
     } catch {
       // Keep the plain URL; the application will render as a guest.
+      launchFailed = true;
+    }
+    // A refresh must not trade a working session for a guest view. Entering an
+    // application accepts the guest fallback so the action never dead-ends, but
+    // re-entering one that is already open would revoke its live binding and drop
+    // the visitor to a guest over a single flaky launch. Leave it as it was and let
+    // the caller report the failure instead.
+    if (launchFailed && keepOnLaunchFailure) {
+      throw new Error('artifact_refresh_launch_failed');
     }
     if (target === 'panel') {
       // Compatibility with applications also published to the platform registry.
@@ -406,22 +424,12 @@ export default function CloudArtifactsPanel({
       if (openBinding) void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
       return;
     }
-    if (target === 'window') {
-      // The launch address ends on the application's own URL with the visitor's
-      // identity already established, which is what a new tab should show. The
-      // binding itself is of no use here — a standalone tab has no parent to
-      // annotate into — so release it rather than leave a capability alive.
-      if (openBinding) void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
-      if (!openTabAt(viewerURL, claimedTab)) {
-        feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
-      }
-      return;
-    }
     retireGatewayOpen();
     gatewayOpenRef.current = openBinding;
     const bindingController = new AbortController();
     gatewayBindingControllerRef.current = bindingController;
     onGatewayFrameChange?.(null);
+    gatewayReloadKeyRef.current += 1;
     setGatewayPreview({
       ...app,
       viewerURL,
@@ -436,6 +444,35 @@ export default function CloudArtifactsPanel({
         ? '点击标注将创建新任务，评论会作为新任务的第一条消息。'
         : '会话绑定不可用，标注已禁用，请在原会话重新打开应用'));
   }, [agentUid, onGatewayFrameChange, onStartAnnotation, topicId, retireGatewayOpen]);
+
+  // The refresh action in the toolbar. While an application is open, "refresh"
+  // has to mean "show me what the application serves now" — re-reading the
+  // catalogue leaves the frame untouched, so a republished application would keep
+  // displaying the document it loaded first. Reopening remounts the frame (via its
+  // key) and re-mints the launch binding, which is what a fresh entry into the
+  // application does too. When no application is open, it refreshes the list.
+  const handleRefresh = useCallback(async () => {
+    const open = gatewayPreview;
+    if (tab === 'gateway' && open) {
+      if (gatewayRefreshing) return;
+      setGatewayRefreshing(true);
+      setError('');
+      try {
+        // Only the application is reloaded. Re-reading the catalogue here would use
+        // the `tab` captured at click time, so switching tabs mid-refresh would let a
+        // stale response overwrite the panel the user is actually looking at.
+        await openGatewayApp({ id: open.id, title: open.title, url: open.url }, 'panel', {
+          keepOnLaunchFailure: true,
+        });
+      } catch {
+        setError('应用刷新失败，请稍后重试（当前内容保持不变）');
+      } finally {
+        setGatewayRefreshing(false);
+      }
+      return;
+    }
+    await loadContent();
+  }, [gatewayPreview, gatewayRefreshing, loadContent, openGatewayApp, tab]);
 
   useEffect(() => () => {
     retireGatewayOpen();
@@ -1021,8 +1058,14 @@ export default function CloudArtifactsPanel({
                 <Pencil size={18} aria-hidden="true" />
               </button>
             )}
-            <button type="button" onClick={() => loadContent()} disabled={loading} aria-label="刷新当前栏目" title="刷新">
-              <RefreshCw size={18} className={loading ? 'is-spinning' : ''} />
+            <button
+              type="button"
+              onClick={() => handleRefresh()}
+              disabled={loading || gatewayRefreshing}
+              aria-label="刷新当前栏目"
+              title={tab === 'gateway' && gatewayPreview ? '重新加载应用' : '刷新'}
+            >
+              <RefreshCw size={18} className={loading || gatewayRefreshing ? 'is-spinning' : ''} />
             </button>
             <button type="button" onClick={onClose} aria-label="关闭云文件" title="关闭">
               <X size={18} />
@@ -1182,6 +1225,7 @@ export default function CloudArtifactsPanel({
               )}
               <iframe
                 className="cloud-artifacts-gateway-frame"
+                key={gatewayReloadKeyRef.current}
                 src={gatewayPreview.viewerURL || gatewayPreview.url}
                 title={gatewayPreview.title || gatewayPreview.id}
                 onLoad={(event) => onGatewayFrameChange?.({
