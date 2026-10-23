@@ -22,6 +22,7 @@ func (a *Adapter) CreateSchema() error {
 		createArtifactAppMetadataTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
+		createConversationTaskRunsTable,
 		createAgentArtifactTagsTable,
 		createImageUpscaleTasksTable,
 		createArtifactRuntimeStatesTable,
@@ -186,6 +187,8 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialIndexes,
 		createChannelAgentIndexes,
 		createUpdatedAtTriggers,
+		createConversationTaskAggregateClock,
+		backfillConversationTaskRuns,
 		createSchemaMigrationsTable,
 		createSchemaMigrationsBaseline,
 	}

@@ -76,7 +76,9 @@ type Hub struct {
 	// scans durable rows. It complements the per-disconnect time.AfterFunc so
 	// a crashed/restarted process or transient DB error cannot permanently
 	// skip recovery.
-	taskReaperInterval time.Duration
+	taskReaperInterval   time.Duration
+	taskStatusDeliveryMu sync.Mutex
+	taskStatusDelivery   chan struct{}
 	// botConnectionEpochs is incremented every time a bot registers a new
 	// connection. Disconnected-task recovery timers snapshot the current epoch
 	// and skip recovery when a newer connection generation appeared, so an old
@@ -194,6 +196,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		agentPush:           newAgentPushTurnCoordinator(),
 		taskGrace:           90 * time.Second,
 		taskReaperInterval:  30 * time.Second,
+		taskStatusDelivery:  make(chan struct{}, 1),
 		botConnectionEpochs: make(map[int64]uint64),
 	}
 	hub.publicationWorkspaceEntries = publicationWorkspaceEntriesEnabled()
@@ -212,6 +215,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	// or a transient DB error; the reaper re-scans durable rows so a missed
 	// timer still converges to stale (review 2026-08-05).
 	go hub.runConversationTaskReaper()
+	go hub.runConversationTaskStatusDelivery()
 	go hub.runArtifactRuntimeRunReaper()
 	// Bounds how long a session fork may stay pending. A runtime that predates
 	// session forks ignores the control frame silently, so the create path's
@@ -2120,6 +2124,8 @@ func (h *Hub) handleSub(client *Client, msg *MsgClientSub) {
 func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 	uid := client.uid
 	switch msg.What {
+	case "task_statuses":
+		h.handleTaskStatusHistory(client, msg)
 	case "online":
 		// Return online status of friends and owned bots.
 		onlineList, err := BuildOnlineStatusList(h.db, h, uid)

@@ -34,6 +34,8 @@ type ServerMessage struct {
 	SessionFork        *types.SessionForkControl     `json:"session_fork,omitempty"`
 	Ctrl               *MsgServerCtrl                `json:"ctrl,omitempty"`
 	Data               *MsgServerData                `json:"data,omitempty"`
+	TaskStatusSource   *types.ConversationTaskStatus `json:"task_status_source,omitempty"`
+	TaskStatusEventID  int64                         `json:"task_status_event_id,omitempty"`
 	TaskStatus         *types.ConversationTaskStatus `json:"task_status,omitempty"`
 	Pres               *MsgServerPres                `json:"pres,omitempty"`
 	Meta               *MsgServerMeta                `json:"meta,omitempty"`
@@ -119,10 +121,11 @@ type MsgClientPub struct {
 }
 
 type MsgClientGet struct {
-	ID    string `json:"id,omitempty"`
-	Topic string `json:"topic"`
-	What  string `json:"what,omitempty"`
-	SeqID int    `json:"seq,omitempty"` // For history requests: fetch messages after this seq
+	ID       string `json:"id,omitempty"`
+	Topic    string `json:"topic"`
+	What     string `json:"what,omitempty"`
+	SeqID    int    `json:"seq,omitempty"`       // For history requests: fetch messages after this seq
+	BeforeID int64  `json:"before_id,omitempty"` // Stable run cursor for get.what=task_statuses.
 }
 
 type MsgClientSet struct {

@@ -677,7 +677,10 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 	topicID := fmt.Sprintf("grp_%d", groupID)
 	expiry := time.Now().UTC().Add(time.Hour)
 	eventAt := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Microsecond)
-	receivedAfter := time.Now().UTC()
+	var receivedAfter time.Time
+	if err := db.db.QueryRow(`SELECT clock_timestamp()`).Scan(&receivedAfter); err != nil {
+		t.Fatalf("read database receipt clock: %v", err)
+	}
 	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
 		TopicID: topicID, RunID: "run-clock", State: "running", SourceUID: firstBotID,
 		ExpiresAt: &expiry, EventUpdatedAt: eventAt,
@@ -818,13 +821,14 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 	upsert(firstBotID, "run-current", "running")
 	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
 		TopicID: topicID, RunID: "run-superseded", State: "completed", SourceUID: firstBotID,
-	}); !errors.Is(err, store.ErrConversationTaskRunSuperseded) {
-		t.Fatalf("late terminal error = %v, want %v", err, store.ErrConversationTaskRunSuperseded)
+	}); err != nil {
+		t.Fatalf("late terminal should update its own run: %v", err)
 	}
 	source, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
 	if err != nil || source == nil || source.RunID != "run-current" || source.State != "running" {
 		t.Fatalf("late terminal replaced active run: status=%+v err=%v", source, err)
 	}
+	upsert(firstBotID, "run-current", "completed")
 
 	upsert(firstBotID, "run-transition-race", "running")
 	startTransitionRace := make(chan struct{})

@@ -48,7 +48,7 @@ func (h *MessageHandler) handleTaskStatus(uid int64, topicID string, payload *no
 		h.hub.observeGroupAgentTaskStatus(sourceStatus)
 		h.hub.observeAgentPushTaskStatus(sourceStatus)
 		h.hub.observeArtifactTaskStatus(uid, topicID, payload, sourceStatus)
-		h.hub.fanoutConversationTaskStatus(uid, status, nil)
+		h.hub.publishCommittedTaskStatus(uid, status, nil)
 	}
 	return status, nil
 }
@@ -74,7 +74,7 @@ func (h *Hub) handleTaskStatusPub(client *Client, msg *MsgClientPub, topicID str
 	h.observeGroupAgentTaskStatus(sourceStatus)
 	h.observeAgentPushTaskStatus(sourceStatus)
 	h.observeArtifactTaskStatus(client.uid, topicID, payload, sourceStatus)
-	h.fanoutConversationTaskStatus(client.uid, status, client)
+	h.publishCommittedTaskStatus(client.uid, status, client)
 }
 
 func persistConversationTaskStatus(db store.Store, uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, *types.ConversationTaskStatus, error) {
@@ -93,8 +93,10 @@ func persistConversationTaskStatus(db store.Store, uid int64, topicID string, pa
 	}
 	aggregate, err := statusStore.UpsertConversationTaskStatus(status)
 	if err != nil {
+		log.Printf("task status rejected: topic=%s source=%d run=%q state=%s: %v", topicID, uid, status.RunID, status.State, err)
 		return nil, nil, err
 	}
+	log.Printf("task status committed: topic=%s source=%d run=%q state=%s event_at=%s", topicID, uid, status.RunID, status.State, status.EventUpdatedAt.Format(time.RFC3339Nano))
 	return aggregate, status, nil
 }
 
@@ -371,8 +373,8 @@ func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.T
 			continue
 		}
 		h.observeAgentPushTaskStatus(recoveredTaskSourceStatus(candidate, time.Now().UTC()))
-		h.observeGroupAgentTaskStatus(recovered)
-		h.fanoutConversationTaskStatus(sourceUID, recovered, nil)
+		h.observeGroupAgentTaskStatus(recoveredTaskSourceStatus(candidate, time.Now().UTC()))
+		h.publishCommittedTaskStatus(sourceUID, recovered, nil)
 		log.Printf("task status recovery: marked stale uid=%d topic=%s run=%s", sourceUID, candidate.TopicID, candidate.RunID)
 	}
 }
@@ -383,7 +385,7 @@ func recoveredTaskSourceStatus(candidate *types.ConversationTaskStatus, recovere
 	}
 	recovered := *candidate
 	recovered.State = "stale"
-	recovered.Summary = "机器人连接中断，任务已自动中止，可重新发送"
+	recovered.Summary = "机器人连接中断，执行结果待确认"
 	recovered.Error = "bot disconnected before terminal task status"
 	recovered.ExpiresAt = nil
 	recovered.UpdatedAt = recoveredAt
@@ -469,8 +471,8 @@ func (h *Hub) recoverStaleDisconnectedBotTasks(cutoff time.Time) {
 			continue
 		}
 		h.observeAgentPushTaskStatus(recoveredTaskSourceStatus(candidate, time.Now().UTC()))
-		h.observeGroupAgentTaskStatus(recovered)
-		h.fanoutConversationTaskStatus(candidate.SourceUID, recovered, nil)
+		h.observeGroupAgentTaskStatus(recoveredTaskSourceStatus(candidate, time.Now().UTC()))
+		h.publishCommittedTaskStatus(candidate.SourceUID, recovered, nil)
 		log.Printf("task status reaper: marked stale uid=%d topic=%s run=%s", candidate.SourceUID, candidate.TopicID, candidate.RunID)
 	}
 }

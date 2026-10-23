@@ -56,7 +56,10 @@ func TestMySQLConversationTaskStatusContract(t *testing.T) {
 	}
 	expiry := time.Now().UTC().Add(time.Hour)
 	eventAt := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Microsecond)
-	receivedAfter := time.Now().UTC()
+	var receivedAfter time.Time
+	if err := db.db.QueryRow(`SELECT CURRENT_TIMESTAMP(6)`).Scan(&receivedAfter); err != nil {
+		t.Fatalf("read database receipt clock: %v", err)
+	}
 	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
 		TopicID: topicID, RunID: "run-clock", State: "running", SourceUID: sourceUID,
 		ExpiresAt: &expiry, EventUpdatedAt: eventAt,
@@ -136,13 +139,14 @@ func TestMySQLConversationTaskStatusContract(t *testing.T) {
 	upsert("run-current", "running")
 	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
 		TopicID: topicID, RunID: "run-superseded", State: "completed", SourceUID: sourceUID,
-	}); !errors.Is(err, store.ErrConversationTaskRunSuperseded) {
-		t.Fatalf("late terminal error = %v, want %v", err, store.ErrConversationTaskRunSuperseded)
+	}); err != nil {
+		t.Fatalf("late terminal should update its own run: %v", err)
 	}
 	source, err := db.GetConversationTaskStatusForSource(topicID, sourceUID)
 	if err != nil || source == nil || source.RunID != "run-current" || source.State != "running" {
 		t.Fatalf("late terminal replaced active run: status=%+v err=%v", source, err)
 	}
+	upsert("run-current", "completed")
 
 	upsert("run-transition-race", "running")
 	startTransitionRace := make(chan struct{})
