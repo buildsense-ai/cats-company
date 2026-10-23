@@ -45,3 +45,4 @@ BEGIN
     UPDATE topics SET history_revision = history_revision + 1 WHERE id = OLD.topic_id;
 END$$
 DELIMITER ;
+ALTER TABLE session_forks ADD COLUMN source_turn_count BIGINT NOT NULL DEFAULT 0;

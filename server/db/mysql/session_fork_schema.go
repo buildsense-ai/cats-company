@@ -57,6 +57,11 @@ BEGIN
     DECLARE current_state VARCHAR(16);
     UPDATE topics SET history_revision = history_revision + 1 WHERE id = OLD.topic_id;
 END`,
+	// Existing installations gain the bound by ALTER; the duplicate-column error
+	// is tolerated above. The value records how many complete turns the copied
+	// range holds, which is the only anchor the runtime can match on, because a
+	// live session never records cloud message IDs.
+	`ALTER TABLE session_forks ADD COLUMN source_turn_count BIGINT NOT NULL DEFAULT 0;`,
 }
 
 func (a *Adapter) ensureSessionForkSchema() error {

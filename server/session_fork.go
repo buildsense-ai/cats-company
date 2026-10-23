@@ -63,10 +63,17 @@ func (h *ConversationHandler) HandleFork(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, 400, map[string]string{"error": "invalid_request"})
 		return
 	}
+	// A negative anchor is meaningless and would read as "no bound" after
+	// normalisation, so reject it instead of copying the whole conversation.
+	if req.UntilMessageID < 0 {
+		writeJSON(w, 400, map[string]string{"error": "invalid_request"})
+		return
+	}
 	// Lookup precedes online/source checks: a lost successful response stays successful.
 	existing, err := db.GetSessionFork(r.Context(), uid, req.RequestID, "")
 	if err == nil {
-		if existing.SourceTopicID != req.SourceTopicID || existing.Name != req.Name {
+		if existing.SourceTopicID != req.SourceTopicID || existing.Name != req.Name ||
+			(req.UntilMessageID > 0 && existing.SourceLastSeq != req.UntilMessageID) {
 			writeSessionFork(w, nil, store.ErrSessionForkConflict)
 			return
 		}

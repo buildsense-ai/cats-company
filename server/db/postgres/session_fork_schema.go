@@ -39,4 +39,5 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS session_fork_message_guard ON messages;
 CREATE TRIGGER session_fork_message_guard BEFORE INSERT OR UPDATE OR DELETE ON messages
 FOR EACH ROW EXECUTE FUNCTION session_fork_message_guard();
+ALTER TABLE session_forks ADD COLUMN IF NOT EXISTS source_turn_count BIGINT NOT NULL DEFAULT 0;
 `

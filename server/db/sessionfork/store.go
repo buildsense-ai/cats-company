@@ -37,12 +37,12 @@ func (s SQLStore) query(q string) string {
 	return b.String()
 }
 
-const forkColumns = `actor_user_id, request_id, source_topic_id, target_topic_id, agent_uid, body_id, request_name, source_revision, target_revision, source_last_seq, message_id_map, state, error, created_at`
+const forkColumns = `actor_user_id, request_id, source_topic_id, target_topic_id, agent_uid, body_id, request_name, source_revision, target_revision, source_last_seq, message_id_map, state, error, created_at, source_turn_count`
 
 func scanFork(row interface{ Scan(...interface{}) error }) (*types.SessionFork, error) {
 	f := &types.SessionFork{}
 	var mapping []byte
-	err := row.Scan(&f.ActorUserID, &f.RequestID, &f.SourceTopicID, &f.TargetTopicID, &f.AgentUID, &f.BodyID, &f.Name, &f.SourceRevision, &f.TargetRevision, &f.SourceLastSeq, &mapping, &f.State, &f.Error, &f.CreatedAt)
+	err := row.Scan(&f.ActorUserID, &f.RequestID, &f.SourceTopicID, &f.TargetTopicID, &f.AgentUID, &f.BodyID, &f.Name, &f.SourceRevision, &f.TargetRevision, &f.SourceLastSeq, &mapping, &f.State, &f.Error, &f.CreatedAt, &f.SourceTurnCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrSessionForkNotFound
 	}
@@ -53,6 +53,36 @@ func scanFork(row interface{ Scan(...interface{}) error }) (*types.SessionFork, 
 		return nil, err
 	}
 	return f, nil
+}
+
+// countCompleteTurns returns how many user turns in the range reached an
+// assistant reply before the next user message.
+//
+// A trailing user message with no answer yet is not counted: the runtime has the
+// same trailing turn in its transcript and would otherwise cut one turn further
+// than intended. A runtime must apply this identical rule, so the two sides
+// cannot silently disagree about where the copy ends.
+func countCompleteTurns(messages []message) int64 {
+	var turns int64
+	answered := false
+	open := false
+	for _, m := range messages {
+		switch m.role.String {
+		case "user":
+			if open && answered {
+				turns++
+			}
+			open, answered = true, false
+		case "assistant":
+			if open {
+				answered = true
+			}
+		}
+	}
+	if open && answered {
+		turns++
+	}
+	return turns
 }
 
 func (s SQLStore) GetSessionFork(ctx context.Context, uid int64, request, topic string) (*types.SessionFork, error) {
@@ -99,7 +129,10 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	}
 	existing, err := scanFork(tx.QueryRowContext(ctx, s.query("SELECT "+forkColumns+" FROM session_forks WHERE actor_user_id = ? AND request_id = ? FOR UPDATE"), req.ActorUserID, req.RequestID))
 	if err == nil {
-		if existing.SourceTopicID != req.SourceTopicID || existing.Name != req.Name {
+		// The copy boundary is part of the request identity: reusing a request ID
+		// with a different anchor would silently return a copy of another range.
+		if existing.SourceTopicID != req.SourceTopicID || existing.Name != req.Name ||
+			(req.UntilMessageID > 0 && existing.SourceLastSeq != req.UntilMessageID) {
 			return nil, store.ErrSessionForkConflict
 		}
 		return existing, tx.Commit()
@@ -119,9 +152,22 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if err = s.validateSource(ctx, tx, req.ActorUserID, req.AgentUID, req.SourceTopicID, req.BodyID); err != nil {
 		return nil, err
 	}
-	messages, err := s.readMessages(ctx, tx, req.SourceTopicID)
+	messages, err := s.readMessages(ctx, tx, req.SourceTopicID, req.UntilMessageID)
 	if err != nil {
 		return nil, err
+	}
+	// An anchor that is not in this conversation would copy nothing. Fail loudly
+	// instead of producing an empty copy the client cannot explain.
+	if req.UntilMessageID > 0 && (len(messages) == 0 || messages[len(messages)-1].id != req.UntilMessageID) {
+		return nil, store.ErrSessionForkSource
+	}
+	// The anchor must be the message that closes a turn. Otherwise the copied
+	// range ends mid-turn: the runtime, which cuts at a turn boundary, would keep
+	// less than the server copied, and the copy's visible history and its model
+	// context would disagree. Requiring the last row to close a turn is the
+	// cheapest way to state that on both sides.
+	if req.UntilMessageID > 0 && countCompleteTurns(messages) <= countCompleteTurns(messages[:len(messages)-1]) {
+		return nil, store.ErrSessionForkSource
 	}
 	for _, m := range messages {
 		if m.from != req.ActorUserID && m.from != req.AgentUID {
@@ -146,6 +192,9 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 		return nil, err
 	}
 	f := &types.SessionFork{ActorUserID: req.ActorUserID, AgentUID: req.AgentUID, RequestID: req.RequestID, SourceTopicID: req.SourceTopicID, TargetTopicID: target, Name: req.Name, BodyID: req.BodyID, SourceRevision: revision, State: "pending", CreatedAt: time.Now().UTC(), MessageIDMap: map[string]int64{}}
+	// The runtime cannot match cloud message IDs, so the copied range is
+	// described to it as a count of complete turns.
+	f.SourceTurnCount = countCompleteTurns(messages)
 	// Copy raw stored payloads, never run the message-ingestion/fanout service.
 	// client_msg_id belongs to ingress deduplication and must not be inherited.
 	for _, m := range messages {
@@ -182,7 +231,7 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if err = tx.QueryRowContext(ctx, s.query("SELECT history_revision FROM topics WHERE id = ?"), target).Scan(&f.TargetRevision); err != nil {
 		return nil, err
 	}
-	_, err = tx.ExecContext(ctx, s.query("INSERT INTO session_forks ("+forkColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), f.ActorUserID, f.RequestID, f.SourceTopicID, f.TargetTopicID, f.AgentUID, f.BodyID, f.Name, f.SourceRevision, f.TargetRevision, f.SourceLastSeq, string(mapping), f.State, "", f.CreatedAt)
+	_, err = tx.ExecContext(ctx, s.query("INSERT INTO session_forks ("+forkColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), f.ActorUserID, f.RequestID, f.SourceTopicID, f.TargetTopicID, f.AgentUID, f.BodyID, f.Name, f.SourceRevision, f.TargetRevision, f.SourceLastSeq, string(mapping), f.State, "", f.CreatedAt, f.SourceTurnCount)
 	if err != nil {
 		return nil, err
 	}
@@ -349,8 +398,15 @@ type message struct {
 	created                      time.Time
 }
 
-func (s SQLStore) readMessages(ctx context.Context, tx *sql.Tx, topic string) ([]message, error) {
-	rows, err := tx.QueryContext(ctx, s.query("SELECT id,from_uid,content,msg_type,content_blocks,mode,role,metadata,reply_to,created_at FROM messages WHERE topic_id = ? ORDER BY id"), topic)
+// readMessages returns the conversation history up to and including untilID.
+// untilID <= 0 means the whole conversation, which is the original behaviour.
+func (s SQLStore) readMessages(ctx context.Context, tx *sql.Tx, topic string, untilID int64) ([]message, error) {
+	query, args := "SELECT id,from_uid,content,msg_type,content_blocks,mode,role,metadata,reply_to,created_at FROM messages WHERE topic_id = ? ORDER BY id", []interface{}{topic}
+	if untilID > 0 {
+		query = "SELECT id,from_uid,content,msg_type,content_blocks,mode,role,metadata,reply_to,created_at FROM messages WHERE topic_id = ? AND id <= ? ORDER BY id"
+		args = append(args, untilID)
+	}
+	rows, err := tx.QueryContext(ctx, s.query(query), args...)
 	if err != nil {
 		return nil, err
 	}
