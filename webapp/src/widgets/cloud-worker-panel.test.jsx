@@ -115,6 +115,19 @@ describe('CloudWorkerPanel', () => {
     expect(container.textContent).toContain(label);
   });
 
+  test('labels a packed worker as shared-machine beta', async () => {
+    await renderPanel({ workers: [worker({ backend: 'packed' })] });
+    const badge = container.querySelector('.cc-cloud-worker-backend');
+    expect(badge).not.toBeNull();
+    expect(badge.textContent).toContain('共享机');
+  });
+
+  test('does not label a dedicated ECS worker', async () => {
+    await renderPanel({ workers: [worker()] });
+    expect(container.querySelector('.cc-cloud-worker-backend')).toBeNull();
+    expect(container.textContent).not.toContain('共享机');
+  });
+
   test('updates connection status when the roster refreshes', async () => {
     await renderPanel({ workers: [worker({ runtime_status: 'not_connected' })] });
     expect(container.textContent).toContain('未连接，等待上线');

@@ -10035,6 +10035,11 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-cloud-worker-name { flex: 1; min-width: 0; }
 .cc-cloud-worker-name strong { display: block; font-size: 14px; color: var(--v3-text-name); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-cloud-worker-name small { font-size: 12px; color: var(--v3-text-muted); }
+.cc-cloud-worker-backend {
+  margin-left: 6px; padding: 1px 6px; border-radius: 999px;
+  font-size: 10px; font-weight: 600; vertical-align: 1px;
+  background: color-mix(in srgb, #8b5cf6 14%, transparent); color: #7c3aed;
+}
 .cc-cloud-worker-status { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
 .cc-cloud-worker-status.ok { background: color-mix(in srgb, #22c55e 12%, transparent); color: #16a34a; }
 .cc-cloud-worker-status.info { background: color-mix(in srgb, var(--v3-primary) 12%, transparent); color: var(--v3-primary); }

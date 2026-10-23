@@ -697,6 +697,36 @@ func TestParseCloudWorkerStatusTSV(t *testing.T) {
 	}
 }
 
+func TestParseCloudWorkerStatusTSVBackendColumn(t *testing.T) {
+	// 第 8 列是后端标记：打包行 packed，ECS 行留空。
+	out := "worker-packed-a\trunning\t-\t-\t1.6.3\t10.81.251.9\t\tpacked\n" +
+		"worker-ecs-b\trunning\timg-1\tv1.2.3\t1.2.4\t192.168.2.16\t\n" +
+		"worker-legacy-c\trunning\timg-2\tv1\t1.0.0\n"
+	infos := parseCloudWorkerStatusTSV(out)
+	if got := infos["packed-a"]; got.Backend != "packed" {
+		t.Fatalf("packed-a backend = %q, want packed (%+v)", got.Backend, got)
+	}
+	if got := infos["ecs-b"]; got.Backend != "" {
+		t.Fatalf("ecs-b backend = %q, want empty", got.Backend)
+	}
+	// 旧版 5 列输出（没有 IP/后端列）必须继续被接受。
+	if got := infos["legacy-c"]; got.Backend != "" || got.AppVersion != "1.0.0" {
+		t.Fatalf("legacy-c = %+v", got)
+	}
+}
+
+func TestCloudWorkerHandleListExposesBackend(t *testing.T) {
+	// 平台用这个字段在 UI 上标注「共享机·内测」，ECS 行必须保持为空。
+	infos := parseCloudWorkerStatusTSV("worker-bot-a\trunning\t-\t-\t1.6.3\t10.81.251.9\t\tpacked\n")
+	summary := cloudWorkerSummary{TenantName: "bot-bot-a"}
+	if info, ok := infos["bot-a"]; ok {
+		summary.Backend = info.Backend
+	}
+	if summary.Backend != "packed" {
+		t.Fatalf("backend = %q, want packed", summary.Backend)
+	}
+}
+
 func TestCloudWorkerHandleListFillsCloudStatus(t *testing.T) {
 	cfg := workerScriptCfg(t, "7=5", map[string]string{"status": writeWorkerOpScript(t, "status-tsv")})
 	h, ts := newCloudWorkerTestHandlerCfg(cfg)

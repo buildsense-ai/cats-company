@@ -389,7 +389,14 @@ export default function CloudWorkerPanel({
                     </div>
                     <div className="cc-cloud-worker-name">
                       <strong>{worker.display_name}</strong>
-                      <small>@{worker.username} · uid {id}</small>
+                      <small>
+                        @{worker.username} · uid {id}
+                        {worker.backend === 'packed' && (
+                          <span className="cc-cloud-worker-backend" title="运行在共享集群容器里（内测），不是独享 ECS 实例">
+                            共享机 · 内测
+                          </span>
+                        )}
+                      </small>
                     </div>
                     <span className={`cc-cloud-worker-status ${meta.tone}`}>
                       {meta.label}

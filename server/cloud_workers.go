@@ -399,6 +399,9 @@ type cloudWorkerSummary struct {
 	AppVersion      string `json:"app_version"`
 	LatestRelease   string `json:"latest_release,omitempty"`
 	UpdateAvailable bool   `json:"update_available,omitempty"`
+	// Backend is "packed" for the shared-container fleet and empty for a
+	// dedicated ECS instance, so clients can label the two distinctly.
+	Backend string `json:"backend,omitempty"`
 	OperationID     string `json:"operation_id,omitempty"`
 	OperationAction string `json:"operation_action,omitempty"`
 	OperationStatus string `json:"operation_status,omitempty"`
@@ -566,6 +569,7 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 			workers[i].CloudImageID = info.ImageID
 			workers[i].CloudVersion = info.Version
 			workers[i].AppVersion = info.AppVersion
+			workers[i].Backend = info.Backend
 		}
 	}
 	// The release catalog is independently cached and never blocks this request.
@@ -608,6 +612,10 @@ type cloudInstanceInfo struct {
 	AppVersion string
 	PrivateIP  string
 	PublicIP   string
+	// Backend distinguishes the shared-container fleet ("packed") from a
+	// dedicated ECS instance (empty). It comes from the status script's
+	// optional eighth column, so older scripts keep working unchanged.
+	Backend string
 }
 
 // parseCloudWorkerStatusTSV parses status-worker.sh output lines of the form
@@ -639,6 +647,9 @@ func parseCloudWorkerStatusTSV(out string) map[string]cloudInstanceInfo {
 		}
 		if len(parts) >= 7 {
 			info.PublicIP = strings.TrimSpace(parts[6])
+		}
+		if len(parts) >= 8 {
+			info.Backend = strings.ToLower(strings.TrimSpace(parts[7]))
 		}
 		infos[strings.TrimPrefix(name, "worker-")] = info
 	}
