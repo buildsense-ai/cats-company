@@ -40,6 +40,11 @@ var cloudWorkerProfileEnvKeys = []string{
 	"CTYUN_WORKER_BILLING_MODE", "CTYUN_WORKER_CYCLE_COUNT",
 	"CTYUN_JUMP_IP", "CTYUN_JUMP_PORT", "CTYUN_JUMP_USER", "CTYUN_JUMP_KEY",
 	"CATSCO_WORKER_HTTP_BASE_URL", "CATSCO_WORKER_SERVER_URL",
+	// Backend selector consumed by the control-plane provision adapter:
+	// "packed" creates in the shared container cluster, "ecs" forces the
+	// dedicated instance script even for an account that is on the shared
+	// allowlist. Empty keeps the legacy behaviour (whitelist decides).
+	"CATSCO_WORKER_BACKEND",
 }
 
 type cloudWorkerProfileOption struct {
@@ -62,6 +67,14 @@ func (h *CloudWorkerHandler) deploymentForProfile(profile string) (types.CloudWo
 		value.Env[key] = os.Getenv(key)
 	}
 	value.Env["CTYUN_WORKER_EXT_IP"] = "0"
+	// Dedicated ECS is the default backend; the shared-container profile
+	// overrides it so both fleets can be handed out from the same console
+	// without touching the account-level allowlist.
+	value.Env["CATSCO_WORKER_BACKEND"] = "ecs"
+	if profile == types.CloudWorkerPackedShared {
+		value.Env["CATSCO_WORKER_BACKEND"] = "packed"
+		return value, nil
+	}
 	if profile == types.CloudWorkerPrivateNAT {
 		return value, nil
 	}
@@ -142,6 +155,9 @@ func deploymentEnvironment(base []string, deployment types.CloudWorkerDeployment
 	if deployment.Profile == types.CloudWorkerPublicIP {
 		result["CTYUN_WORKER_EXT_IP"] = "1"
 		result["CTYUN_JUMP_IP"] = ""
+	} else if deployment.Profile == types.CloudWorkerPackedShared {
+		result["CTYUN_WORKER_EXT_IP"] = "0"
+		result["CATSCO_WORKER_BACKEND"] = "packed"
 	} else if deployment.Profile != types.CloudWorkerPrivateNAT {
 		return nil, fmt.Errorf("invalid persisted deployment profile")
 	}
@@ -243,11 +259,16 @@ func (h *CloudWorkerHandler) collectDeploymentStatus() (map[string]cloudInstance
 
 func (h *CloudWorkerHandler) deploymentProfileOptions() []cloudWorkerProfileOption {
 	var options []cloudWorkerProfileOption
-	for _, profile := range []string{types.CloudWorkerPrivateNAT, types.CloudWorkerPublicIP} {
+	for _, profile := range []string{types.CloudWorkerPrivateNAT, types.CloudWorkerPublicIP, types.CloudWorkerPackedShared} {
 		value, err := h.deploymentForProfile(profile)
 		option := cloudWorkerProfileOption{ID: profile, Label: "华南 2 · 无公网 IP", NetworkMode: "private", Available: err == nil && h.provisionScript != "", RegionID: value.Env["CTYUN_WORKER_REGION_ID"], ProjectID: value.Env["CTYUN_WORKER_PROJECT_ID"]}
 		if profile == types.CloudWorkerPublicIP {
 			option.Label, option.NetworkMode = "佛山 7 · 公网 IP", "public"
+		}
+		if profile == types.CloudWorkerPackedShared {
+			// Same private network, but provisioned as a container in the
+			// shared cluster rather than a dedicated instance.
+			option.Label, option.NetworkMode = "共享机 · 内测（集群容器）", "shared"
 		}
 		if err != nil {
 			option.Reason = err.Error()

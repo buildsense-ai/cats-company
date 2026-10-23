@@ -6,8 +6,13 @@ import "time"
 const (
 	CloudWorkerPrivateNAT = "private_nat"
 	CloudWorkerPublicIP   = "public_ip"
-	CloudWorkerMonthly    = "month"
-	CloudWorkerOnDemand   = "ondemand"
+	// CloudWorkerPackedShared runs the worker inside the shared container
+	// cluster instead of a dedicated ECS instance. Operators can hand it out
+	// through the same invite/credit paths as the dedicated profiles, so both
+	// backends coexist on one fleet.
+	CloudWorkerPackedShared = "packed_shared"
+	CloudWorkerMonthly      = "month"
+	CloudWorkerOnDemand     = "ondemand"
 )
 
 func NormalizeCloudWorkerBilling(mode string) (string, bool) {
@@ -30,7 +35,10 @@ func NormalizeCloudWorkerProfile(profile string) (string, bool) {
 	if profile == "" || profile == CloudWorkerPrivateNAT {
 		return CloudWorkerPrivateNAT, true
 	}
-	return profile, profile == CloudWorkerPublicIP
+	if profile == CloudWorkerPublicIP || profile == CloudWorkerPackedShared {
+		return profile, true
+	}
+	return profile, false
 }
 
 // CloudWorkerDeployment is an internal, non-secret snapshot. It is deliberately

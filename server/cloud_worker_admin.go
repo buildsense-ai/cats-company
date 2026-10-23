@@ -235,6 +235,16 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 			if deployment.Profile == types.CloudWorkerPublicIP {
 				item.SSHJumpHost, item.SSHJumpAlias, item.SSHJumpKey, item.SSHHostJumpKey = "", "", "", ""
 			}
+			if deployment.Profile == types.CloudWorkerPackedShared {
+				// A shared container has no dedicated instance, region or
+				// per-tenant SSH key. Reporting the ECS fields would make
+				// operators chase a machine that does not exist.
+				item.Provider = "packed"
+				item.RegionID, item.ProjectID, item.AZName = "", "", ""
+				item.InstanceID, item.InstanceName = "", ""
+				item.SSHKeyPath, item.SSHExecutionHost = "", ""
+				item.SSHJumpHost, item.SSHJumpAlias, item.SSHJumpKey, item.SSHHostJumpKey = "", "", "", ""
+			}
 		}
 		overview.StatusCounts[providerStatus]++
 		if item.LifecycleState != "" {
