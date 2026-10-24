@@ -218,19 +218,26 @@ func (w *publicationCaptureTransport) capture(parent context.Context, actor int6
 }
 
 func (w *publicationCaptureTransport) recheck(p *publicationCapturePending) (*Client, error) {
+	return w.h.recheckPublicationRuntime(p, DeviceCapabilitySkillHubPublicationCapture)
+}
+
+// Shared socket/route fence; callers retain their own durable authority checks.
+// publicationRuntimeBinding may consult current Bot authority: invoke this from
+// a service goroutine, never from the WebSocket result callback.
+func (h *Hub) recheckPublicationRuntime(p *publicationCapturePending, capability DeviceGrantOperation) (*Client, error) {
 	b := p.binding
-	s, route, role, code := w.h.publicationRuntimeBinding(b.ActorUID, b.BotUID, b.Source.DeviceID)
+	s, route, role, code := h.publicationRuntimeBinding(b.ActorUID, b.BotUID, b.Source.DeviceID)
 	s.LocalSkillID, s.WorkspaceGeneration = b.Source.LocalSkillID, b.Source.WorkspaceGeneration
 	if code != "" || s != b.Source || !route.matches(p.route) || role != p.role || !time.Now().Before(p.deadline) {
 		return nil, store.ErrSkillHubPublicationStale
 	}
-	device, ok := w.h.userDevices.activeDevice(b.ActorUID, b.Source.DeviceID)
+	device, ok := h.userDevices.activeDevice(b.ActorUID, b.Source.DeviceID)
 	if !ok {
 		return nil, store.ErrSkillHubPublicationStale
 	}
 	for _, cap := range device.Capabilities {
-		if cap == DeviceCapabilitySkillHubPublicationCapture {
-			client := w.h.getClientByConnectionID(route.ConnectionID)
+		if cap == capability {
+			client := h.getClientByConnectionID(route.ConnectionID)
 			if client != nil {
 				return client, nil
 			}

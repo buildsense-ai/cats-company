@@ -322,7 +322,23 @@ connection generation. Neither a legacy body nor DeviceID-as-BodyID fallback is
 allowed. A desktop works only when already bound to that Bot through its Bot
 socket, not a generic owner device. No selection invokes Bot switch or rebinding.
 
-The runtime must explicitly advertise `skillhub.publication.sourceProbe.v1`.
+Runtime publication capabilities are operation-specific:
+
+| Capability | Operation |
+| --- | --- |
+| `skillhub.publication.sourceProbe.v1` | Read-only original source admission probe. |
+| `skillhub.publication.capture.v1` | Retain/replay the original immutable candidate capture. |
+| `skillhub.publication.upload.v1` | Upload that capture under separate upload authority. |
+| `skillhub.publication.verifyRepairSource.v1` | Service-only live original-source check for a confirmed repair application, including later repair rounds; never capture replay or derived-copy verification. |
+
+The repair-source lane additionally requires the default-off CatsCo
+`CATSCO_SKILLHUB_PUBLICATION_REPAIR_SOURCE_ENABLED` switch and Runtime's
+probe/capture/repair-source switches. It adds no requirement to ordinary
+probe/capture/upload callers. Its exact protocol, checks and remaining
+continuation scope are described in
+[Confirmed description application](skillhub-publication-description-application.md#dedicated-live-runtime-source-adapter).
+
+The runtime must explicitly advertise `skillhub.publication.sourceProbe.v1` for admission.
 Legacy share capability is not enough. CatsCo sends a fresh server-random probe ID
 with the same three source selectors and a maximum 30-second expiry. The probe is
 read-only: the XiaoBa adapter must verify the scoped local reference and workspace

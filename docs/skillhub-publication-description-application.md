@@ -114,7 +114,7 @@ This step never clears `waiting_confirmation`, changes an immutable repair-round
 result, resets/spends the three-round budget, or retries an uncertain paid model
 call. Cloud now implements durable private-copy retention and private recovery;
 the CatsCo peer client implements both contracts. Production registration,
-live Runtime source-verification wiring, model-call
+controlled use of the default-off Runtime source-verification adapter, model-call
 idempotency/reconciliation, controlled continuation and the two publication
 entry points still need separate implementation. Chinese presentation text and
 author-managed images remain later work.
@@ -177,3 +177,88 @@ port. They cover exact bindings, client recreation, default-off configuration,
 cookie/redirect isolation, partial/changed/encoded responses, timeout/cancel,
 authority/source changes at each checkpoint and snapshot isolation. These are
 not a live Cloud/CatsCo/Runtime or paid-model repair E2E.
+
+## Dedicated live Runtime source adapter
+
+The internal `Hub.publicationDescriptionSourceVerifier(actor)` now implements
+the existing application and copy `VerifySource` ports. Bind `actor` from the
+trusted authenticated service invocation; never infer it from an application
+hash, browser/model input or upload query. This adapter has no public HTTP route,
+browser/model tool, worker or continuation executor. Its existence does not
+enable repair, editing, publication or paid model calls.
+
+All four CatsCo switches must be explicitly enabled:
+
+- `CATSCO_SKILLHUB_PUBLICATION_WORKSPACE_ENTRIES_ENABLED`
+- `CATSCO_SKILLHUB_PUBLICATION_READS_ENABLED`
+- `CATSCO_SKILLHUB_PUBLICATION_CAPTURE_ENABLED`
+- `CATSCO_SKILLHUB_PUBLICATION_REPAIR_SOURCE_ENABLED` (new, default off)
+
+The full Runtime must advertise `skillhub.publication.verifyRepairSource.v1`
+and enable its probe, capture and repair-source switches. Connector/WikiAgent
+clients cannot supply proof. No production switch is enabled by this change.
+
+The service checks the complete current application/confirmation/result and
+immutable original entry, then the current human/Bot/Owner, enabled body,
+installation, device, local route, connection generation and capability. It
+reads the existing durable capture and requires the exact original receipt in
+the confirmed application. A newer connection generation on
+the same body/installation is allowed before dispatch; changing the route during
+the operation fails closed. The original entry and capture are never rewritten.
+
+This lane is not round-1-only. It proves that the **original live source** still
+matches that original receipt in every round. Repair produces independent
+private candidates; it does not overwrite the live source. The current draft's
+`Evidence.CandidateHash` may therefore differ from the original receipt's
+`Query.SourceSnapshotHash` in rounds 2 and 3. Requiring equality would wrongly
+reject a valid later-round application. Current-authority application Get binds
+the exact confirmed draft/round/evidence; it does not replace the original
+capture or turn candidate hashes into authority.
+
+Success here is only original-source freshness, never proof of the current
+repair candidate's bytes or its ancestry. That separate private-candidate chain,
+per-round report/retention verification and controlled continuation remain
+follow-up work before enabling the full repair loop. The current deterministic
+Cloud description-derivation endpoint is still bound to its retained original
+candidate, so this change does not claim round-2/3 Cloud derivation works. No
+new per-round capture, source overwrite, automatic continuation or budget reset
+is introduced. Changing the original source still fails in every round.
+
+The reserved request uses `pubrepairsource_` and sends exactly `entry_id`,
+`bot_uid`, `local_skill_id`, `workspace_generation` and `expected_capture`.
+Both device envelope fields equal the original Runtime device/installation ID.
+The nested expected receipt has exactly six scalars: `schemaVersion`, `entryId`,
+`candidateRevision`, `requestHash`, `sourceSnapshotHash`, `requestBytes`.
+Only those same six values plus boolean `sourceVerified: true` are accepted.
+No source bytes, paths, credentials, grants or repair text cross this channel.
+
+XiaoBa calls `readRepairCandidate`, checking the retained capture and live source
+under its workspace fence on every call. Ordinary capture replay is insufficient:
+it may return frozen evidence after source changes. This lane never recaptures a
+missing record. CatsCo then rechecks the current application/entry, full retained
+capture, socket, route and capability before returning success. Proof remains
+point-in-time; later state transitions must check again.
+
+There are eight bounded service slots, one in-flight check per application and
+a 25-second outer deadline. Sending is nonblocking; queue pressure returns busy
+without disconnecting the Bot. The WebSocket result callback only compares
+registered-client facts and bounded scalar evidence, then queues one result.
+Database reads run in the waiting service goroutine. Wrong sockets cannot consume
+the result; duplicates and late results cannot replace it. Only correctly bound
+`publication.runtime_unavailable` / `publication.runtime_timeout` error envelopes
+are retryable busy responses; source/security/malformed failures remain closed.
+Upstream error messages are never forwarded.
+
+Verification includes coordinator-port composition, changed authority/capture,
+wrong socket, duplicate/late result, cancellation including the last fence,
+backpressure, database blocking, caller snapshot isolation and legal reconnect.
+Store-valid round-2/3 applications cover prepared/completed checks, forged capture
+replies and caller evidence that is not retained by the authoritative application.
+`node scripts/test-publication-repair-source-paired.mjs` additionally requires
+XiaoBa merge `062c7cf1b11fa49fdc44466c1cbfe80b041d11c4` and runs real Runtime
+handler/storage checks for normal/malformed metadata, restart, changed/removed
+source, disabled capability, owner switch, transient Bot switch, missing capture
+and mismatched receipt, plus rounds 2/3 with unchanged or changed original source.
+All three suites and thirteen subcases must pass. The runner fails on any skip
+or missing case and is a required CI dependency. These are real cross-repository handler contracts with
+synthetic CatsCo authority/store and socket; not deployed or paid-model E2E.

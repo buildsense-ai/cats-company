@@ -331,6 +331,14 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 }
 
 func (h *Hub) handleThinToolRPCResult(client *Client, msg *MsgThinToolRPC) {
+	if strings.HasPrefix(strings.TrimSpace(msg.RequestID), publicationRepairSourceRequestPrefix) {
+		if h == nil || h.publicationRepairSource == nil {
+			publicationDeliveryAck(client, msg.ID, http.StatusServiceUnavailable)
+		} else {
+			h.publicationRepairSource.acceptResult(client, msg)
+		}
+		return
+	}
 	if strings.HasPrefix(strings.TrimSpace(msg.RequestID), publicationUploadRequestPrefix) {
 		if h == nil || h.publicationUpload == nil {
 			publicationDeliveryAck(client, msg.ID, http.StatusServiceUnavailable)

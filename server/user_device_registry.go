@@ -31,29 +31,30 @@ var userDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}
 type DeviceGrantOperation string
 
 const (
-	DeviceGrantReadFile                         DeviceGrantOperation = "read_file"
-	DeviceGrantResolveDir                       DeviceGrantOperation = "resolve_common_directory"
-	DeviceGrantWriteFile                        DeviceGrantOperation = "write_file"
-	DeviceGrantEditFile                         DeviceGrantOperation = "edit_file"
-	DeviceGrantSendFile                         DeviceGrantOperation = "send_file"
-	DeviceGrantExecuteShell                     DeviceGrantOperation = "execute_shell"
-	DeviceGrantGlob                             DeviceGrantOperation = "glob"
-	DeviceGrantGrep                             DeviceGrantOperation = "grep"
-	DeviceGrantBrowserControl                   DeviceGrantOperation = "browser_control"
-	DeviceGrantDesktopControl                   DeviceGrantOperation = "desktop_control"
-	DeviceGrantSkillHubWorkspaceGet             DeviceGrantOperation = "skillhub.localWorkspace.get"
-	DeviceGrantSkillHubWorkspaceApplyDefinition DeviceGrantOperation = "skillhub.localWorkspace.applyDefinition"
-	DeviceCapabilitySkillHubWorkspacePagination DeviceGrantOperation = "skillhub.localWorkspace.pagination.v1"
-	DeviceGrantSkillHubWorkspaceSync            DeviceGrantOperation = "skillhub.localWorkspace.syncToAgent"
-	DeviceGrantSkillHubSkillShare               DeviceGrantOperation = "skillhub.localSkill.share"
-	DeviceCapabilitySkillHubPublicationProbe    DeviceGrantOperation = "skillhub.publication.sourceProbe.v1"
-	DeviceCapabilitySkillHubPublicationCapture  DeviceGrantOperation = "skillhub.publication.capture.v1"
-	DeviceCapabilitySkillHubPublicationUpload   DeviceGrantOperation = "skillhub.publication.upload.v1"
-	DeviceGrantSkillHubSkillFinalize            DeviceGrantOperation = "skillhub.localSkill.finalize"
-	DeviceGrantSkillHubSkillDelete              DeviceGrantOperation = "skillhub.localSkill.delete"
-	DeviceGrantSkillHubBotSwitch                DeviceGrantOperation = "skillhub.localBot.switch"
-	DeviceGrantKnowledgeDocumentList            DeviceGrantOperation = "knowledge.document.list"
-	DeviceGrantKnowledgeDocumentRead            DeviceGrantOperation = "knowledge.document.read"
+	DeviceGrantReadFile                             DeviceGrantOperation = "read_file"
+	DeviceGrantResolveDir                           DeviceGrantOperation = "resolve_common_directory"
+	DeviceGrantWriteFile                            DeviceGrantOperation = "write_file"
+	DeviceGrantEditFile                             DeviceGrantOperation = "edit_file"
+	DeviceGrantSendFile                             DeviceGrantOperation = "send_file"
+	DeviceGrantExecuteShell                         DeviceGrantOperation = "execute_shell"
+	DeviceGrantGlob                                 DeviceGrantOperation = "glob"
+	DeviceGrantGrep                                 DeviceGrantOperation = "grep"
+	DeviceGrantBrowserControl                       DeviceGrantOperation = "browser_control"
+	DeviceGrantDesktopControl                       DeviceGrantOperation = "desktop_control"
+	DeviceGrantSkillHubWorkspaceGet                 DeviceGrantOperation = "skillhub.localWorkspace.get"
+	DeviceGrantSkillHubWorkspaceApplyDefinition     DeviceGrantOperation = "skillhub.localWorkspace.applyDefinition"
+	DeviceCapabilitySkillHubWorkspacePagination     DeviceGrantOperation = "skillhub.localWorkspace.pagination.v1"
+	DeviceGrantSkillHubWorkspaceSync                DeviceGrantOperation = "skillhub.localWorkspace.syncToAgent"
+	DeviceGrantSkillHubSkillShare                   DeviceGrantOperation = "skillhub.localSkill.share"
+	DeviceCapabilitySkillHubPublicationProbe        DeviceGrantOperation = "skillhub.publication.sourceProbe.v1"
+	DeviceCapabilitySkillHubPublicationCapture      DeviceGrantOperation = "skillhub.publication.capture.v1"
+	DeviceCapabilitySkillHubPublicationRepairSource DeviceGrantOperation = "skillhub.publication.verifyRepairSource.v1"
+	DeviceCapabilitySkillHubPublicationUpload       DeviceGrantOperation = "skillhub.publication.upload.v1"
+	DeviceGrantSkillHubSkillFinalize                DeviceGrantOperation = "skillhub.localSkill.finalize"
+	DeviceGrantSkillHubSkillDelete                  DeviceGrantOperation = "skillhub.localSkill.delete"
+	DeviceGrantSkillHubBotSwitch                    DeviceGrantOperation = "skillhub.localBot.switch"
+	DeviceGrantKnowledgeDocumentList                DeviceGrantOperation = "knowledge.document.list"
+	DeviceGrantKnowledgeDocumentRead                DeviceGrantOperation = "knowledge.document.read"
 )
 
 type UserDevice struct {
@@ -1008,6 +1009,7 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 		DeviceCapabilitySkillHubWorkspacePagination,
 		DeviceCapabilitySkillHubPublicationProbe,
 		DeviceCapabilitySkillHubPublicationCapture,
+		DeviceCapabilitySkillHubPublicationRepairSource,
 		DeviceCapabilitySkillHubPublicationUpload,
 		DeviceGrantSkillHubWorkspaceSync,
 		DeviceGrantSkillHubSkillShare,
