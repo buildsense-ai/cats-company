@@ -111,6 +111,15 @@ type serviceCatalogEntry struct {
 	// Definition：完整 definition 原文，只给 owner 本人（编辑时回填 runner/pricing）。
 	// 发布是全量覆盖，别人拿不到也用不上这里面的本机命令。
 	Definition json.RawMessage `json:"definition,omitempty"`
+	// SelfIntro：应用跑完后「建议」的自我描述，只给 owner 本人。
+	// 它不是当前生效的描述（生效的看 description）—— 等人在面板确认。
+	SelfIntro *serviceCatalogSelfIntro `json:"self_intro,omitempty"`
+}
+
+// serviceCatalogSelfIntro 是待确认的自述建议。
+type serviceCatalogSelfIntro struct {
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 }
 
 // ensureAllowed 内测门：非白名单账号管理 API 一律 403（静默功能不存在）。
@@ -168,6 +177,15 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 		if mine && strings.TrimSpace(agent.DefinitionJSON) != "" {
 			entry.Definition = json.RawMessage(agent.DefinitionJSON)
 		}
+		// 自述建议只给 owner：这是「它建议你怎么介绍自己」，别人看到只会困惑。
+		if mine {
+			if suggestion := strings.TrimSpace(agent.SelfIntroDescription); suggestion != "" {
+				entry.SelfIntro = &serviceCatalogSelfIntro{Description: suggestion}
+				if schema := strings.TrimSpace(agent.SelfIntroInputSchema); schema != "" {
+					entry.SelfIntro.InputSchema = json.RawMessage(schema)
+				}
+			}
+		}
 		entries = append(entries, entry)
 	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"agents": entries})
@@ -211,4 +229,50 @@ func (h *ServiceAgentCatalogHandler) setHidden(w http.ResponseWriter, r *http.Re
 		h.notifier.NotifySubscriptionChanged(uid)
 	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"slug": slug, "hidden": hidden})
+}
+
+// HandleDismissSelfIntro DELETE /api/service-agents/{slug}/self-intro
+//
+// 丢掉待确认的自述建议（主人不想采纳）。幂等：没有建议时也返回 200。
+//
+// 为什么只有「丢弃」没有「采纳」：采纳 = 把这段文字变成对外描述，那是一次**发布**
+// ——必须由人带着完整 definition 走 POST /api/service-agents/publish（面板是预填
+// 编辑表单，人再点发布）。不开单独的「采纳」写入路径，就不会有第二条改动线上文案的路。
+func (h *ServiceAgentCatalogHandler) HandleDismissSelfIntro(w http.ResponseWriter, r *http.Request) {
+	uid, ok := h.ensureAllowed(w, r)
+	if !ok {
+		return
+	}
+	slug := strings.TrimSpace(r.PathValue("slug"))
+	if slug == "" {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "slug_required"})
+		return
+	}
+	selfIntro, ok := h.store.(ServiceAgentSelfIntroStore)
+	if !ok {
+		writeServiceJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "self_intro_unavailable"})
+		return
+	}
+	// 只有 owner 本人能动：别人的建议与你无关。
+	agents, err := h.store.ListServiceAgents(r.Context())
+	if err != nil {
+		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "catalog_unavailable"})
+		return
+	}
+	for _, agent := range agents {
+		if agent.Slug != slug {
+			continue
+		}
+		if agent.OwnerUID == 0 || agent.OwnerUID != uid {
+			writeServiceJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+			return
+		}
+		if err := selfIntro.ClearServiceAgentSelfIntro(r.Context(), slug); err != nil {
+			writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "update_failed"})
+			return
+		}
+		writeServiceJSON(w, http.StatusOK, map[string]any{"slug": slug, "dismissed": true})
+		return
+	}
+	writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "agent_not_found"})
 }

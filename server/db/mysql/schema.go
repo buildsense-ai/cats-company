@@ -82,6 +82,8 @@ func (a *Adapter) CreateSchema() error {
 		migrateArtifactRuntimeEventsV2DataNotNull,
 		migrateArtifactRuntimeEventsV2RunIndex,
 		migrateServiceInstancesAddOwnerUID,
+		migrateServiceAgentsAddSelfIntroDescription,
+		migrateServiceAgentsAddSelfIntroInputSchema,
 		migrateBotConfigAddAPIKey,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
@@ -628,6 +630,16 @@ CREATE TABLE IF NOT EXISTS service_instances (
 // 已存在的表不会被 CREATE TABLE IF NOT EXISTS 补列（重复列错误由 isIgnorableMigrationError 吞掉）。
 const migrateServiceInstancesAddOwnerUID = `
 ALTER TABLE service_instances ADD COLUMN owner_uid BIGINT NOT NULL DEFAULT 0;
+`
+
+// 自述（self_intro）：应用跑完后「建议」的自我描述，等人确认才写进 definition。
+// MySQL 一条 ALTER 只能加一列，重复列错误会被 isIgnorableMigrationError 吞掉。
+const migrateServiceAgentsAddSelfIntroDescription = `
+ALTER TABLE service_agents ADD COLUMN self_intro_description TEXT NOT NULL;
+`
+
+const migrateServiceAgentsAddSelfIntroInputSchema = `
+ALTER TABLE service_agents ADD COLUMN self_intro_input_schema TEXT NOT NULL;
 `
 
 // 用户自己的 worker 凭据（PG 镜像；只存 sha256，明文仅创建时返回）。

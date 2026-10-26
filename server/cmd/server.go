@@ -974,6 +974,9 @@ func main() {
 		mux.HandleFunc("GET /api/service-agents/catalog", jwtAuthWithDB(catalogHandler.HandleCatalog))
 		mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleAdd))
 		mux.HandleFunc("DELETE /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleRemove))
+		// 自述建议：只有「丢弃」这一个动作。采纳 = 面板预填编辑表单 + 人点发布，
+		// 不开第二条改动线上文案的写入路径。
+		mux.HandleFunc("DELETE /api/service-agents/{slug}/self-intro", jwtAuthWithDB(catalogHandler.HandleDismissSelfIntro))
 		// 用户自助上架（设计 §4.3 P2）：JWT + 同一套内测白名单；首次发布占位 owner，
 		// 之后仅本人可继续发版；平台内部 slug 不可抢占。
 		publishHandler := server.NewServiceAgentPublishHandlerFromEnv(serviceAgentStore)

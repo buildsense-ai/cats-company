@@ -136,6 +136,13 @@ type ServiceAgentDescriptor struct {
 	// 只用于目录给 owner 本人回填「编辑」表单：发布是全量覆盖，缺字段会把
 	// 执行方式/价格抹掉，所以编辑必须带着原 definition 合并。
 	DefinitionJSON string
+	// SelfIntroDescription / SelfIntroInputSchema 是应用跑完后「建议」的自我描述，
+	// 等人确认后才写进 definition。空串 = 没有待确认的建议。
+	//
+	// 为什么不直接改 definition：写这段的是模型。它可以提建议，但不能替人
+	// 决定对外文案（那句话决定了别人会不会调用它）。
+	SelfIntroDescription string
+	SelfIntroInputSchema string
 }
 
 // Service agent 归属与可见性常量（设计 §4.3）。
@@ -242,4 +249,6 @@ type ServiceAgentStore interface {
 	// ownerUID 由鉴权层解析（0=平台内部 worker），用于按账号判断「你这边有没有 worker」——
 	// 不能信 payload，否则任何人可以谎称自己的 worker 服务别人的应用。
 	RecordServiceInstanceHeartbeat(ctx context.Context, instanceID string, ownerUID int64, activeRuns int, metrics json.RawMessage) error
+	// 自述建议（self_intro）的读写是**可选能力**（见 server.ServiceAgentSelfIntroStore）：
+	// 它只影响面板上的一条提示，不该逼所有实现与测试替身跟着实现。
 }

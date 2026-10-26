@@ -33,6 +33,8 @@ export default function ServiceAgentsPanel({ onClose }) {
   // 收回分享：二次确认（避免误点）+ 逐行进行中状态 + 成功通知。
   const [unpublishTarget, setUnpublishTarget] = useState('');
   const [unpublishing, setUnpublishing] = useState(() => new Set());
+  // 自述建议：应用自己建议的对外描述，等人确认。丢弃是逐行进行中。
+  const [dismissingIntro, setDismissingIntro] = useState(() => new Set());
   const [notice, setNotice] = useState(null);
   const [form, setForm] = useState({
     name: '',
@@ -231,7 +233,7 @@ export default function ServiceAgentsPanel({ onClose }) {
 
   // 打开编辑：把已发布的 definition 回填进表单。
   // 目录只对 owner 本人返回 definition（别人的执行命令拿不到也用不上）。
-  const startEdit = useCallback((agent) => {
+  const startEdit = useCallback((agent, options = {}) => {
     const definition = agent?.definition && typeof agent.definition === 'object' ? agent.definition : {};
     const runner = definition.runner && typeof definition.runner === 'object' ? definition.runner : {};
     const pricing = definition.pricing && typeof definition.pricing === 'object' ? definition.pricing : {};
@@ -239,6 +241,8 @@ export default function ServiceAgentsPanel({ onClose }) {
     const locked = runner.type === 'http' || runner.type === 'mcp' ? runner : null;
     const priceUnit = pricing.unit === 'second' ? 'second' : 'token';
     const priceValue = priceUnit === 'second' ? pricing.per_second : pricing.per_1k_tokens;
+    // 「采纳自述」不走独立写入路径：把建议填进表单，由人确认后照常发布。
+    const suggested = options.useSelfIntro ? (agent?.self_intro?.description || '') : '';
     setEditingSlug(agent.slug);
     setEditingDefinition(definition);
     setLockedRunner(locked);
@@ -246,7 +250,7 @@ export default function ServiceAgentsPanel({ onClose }) {
     setPublishResult(null);
     setForm({
       name: agent.name || agent.slug,
-      description: agent.description || '',
+      description: suggested || agent.description || '',
       slug: agent.slug,
       slugTouched: true,
       visibility: agent.visibility === 'private' ? 'private' : 'public',
@@ -255,6 +259,28 @@ export default function ServiceAgentsPanel({ onClose }) {
       priceUnit,
     });
     setShowPublish(true);
+  }, []);
+
+  // 丢弃应用建议的自述（不想采纳）。
+  const dismissSelfIntro = useCallback(async (agent) => {
+    const slug = agent?.slug;
+    if (!slug) return;
+    setDismissingIntro((prev) => new Set(prev).add(slug));
+    setError('');
+    try {
+      await api.dismissServiceAgentSelfIntro(slug);
+      setAgents((prev) => prev.map((item) => (
+        item.slug === slug ? { ...item, self_intro: undefined } : item
+      )));
+    } catch (err) {
+      setError(err?.message || '忽略失败，请稍后重试。');
+    } finally {
+      setDismissingIntro((prev) => {
+        const next = new Set(prev);
+        next.delete(slug);
+        return next;
+      });
+    }
   }, []);
 
   const resetPublishForm = useCallback(() => {
@@ -639,6 +665,7 @@ export default function ServiceAgentsPanel({ onClose }) {
           {agents.map((agent) => {
             const busy = pending.has(agent.slug)
               || unpublishing.has(agent.slug)
+              || dismissingIntro.has(agent.slug)
               || (scopeBotUid && scopeLoading);
             const accountHidden = Boolean(agent.hidden);
             const selected = scopeBotUid
@@ -670,6 +697,37 @@ export default function ServiceAgentsPanel({ onClose }) {
                   ) : agent.mine ? (
                     <div className="v3-service-agent-warn">
                       没写「能做什么」：别的 Agent 只能靠名字猜，基本不会用它
+                    </div>
+                  ) : null}
+                  {agent.mine && agent.self_intro?.description ? (
+                    // 应用自己建议的对外描述。写这段的是模型，所以只建议 ——
+                    // 点「用它」会把内容填进编辑表单，人再确认发布。
+                    <div className="v3-service-agent-intro">
+                      <div className="v3-service-agent-intro-label">这个应用建议这样介绍自己</div>
+                      <div className="v3-service-agent-intro-text" title={agent.self_intro.description}>
+                        {agent.self_intro.description}
+                      </div>
+                      <div className="v3-service-agent-intro-actions">
+                        <button
+                          type="button"
+                          className="v3-service-agent-intro-accept"
+                          disabled={dismissingIntro.has(agent.slug)}
+                          onClick={() => startEdit(agent, { useSelfIntro: true })}
+                          aria-label={`用${agent.name || agent.slug}的自述`}
+                          title="把这段填进编辑表单，你确认后才会生效"
+                        >
+                          用它
+                        </button>
+                        <button
+                          type="button"
+                          className="v3-service-agent-intro-dismiss"
+                          disabled={dismissingIntro.has(agent.slug)}
+                          onClick={() => dismissSelfIntro(agent)}
+                          aria-label={`忽略${agent.name || agent.slug}的自述`}
+                        >
+                          {dismissingIntro.has(agent.slug) ? '忽略中…' : '忽略'}
+                        </button>
+                      </div>
                     </div>
                   ) : null}
                   {scopeBotUid && accountHidden ? (

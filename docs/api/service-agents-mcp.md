@@ -165,6 +165,48 @@ relay 据此将用量归因到**调用方**额度（见 relay `service_tokens.py
 而且**发布是全量覆盖**，编辑时必须带着原 definition 合并 —— 只改描述却丢掉 `runner`，
 应用下次被调用就会 `no_command` 起不来。
 
+## 自述（`self_intro`）：应用可以建议自己的描述，但不能替人决定
+
+写工具描述的是谁？最理想是**应用自己** —— 只有它知道「用户在什么情况下真该找我」。
+但直接给 agent 一个「发布」工具是危险的：`definition.runner.command` 是任意命令，
+`visibility: public` 是对全平台放出，slug 写错还能覆盖别的应用。
+
+所以是**建议制**：
+
+```jsonc
+// 应用（agent）在 run 结果里这样写，平台就会把这段记下来等人确认
+{
+  "output": {
+    "text": "本次任务结果…",
+    "self_intro": {
+      "description": "读我（发布者）这台电脑的当前时间。用户问「几点」时用；时区换算不要用。",
+      "input_schema": { "type": "object", "properties": {} }
+    }
+  }
+}
+```
+
+平台行为：
+
+| 时机 | 行为 |
+|---|---|
+| run 收尾（`complete`） | 从结果里取 `output.self_intro`（或顶层 `self_intro`），落 `service_agents.self_intro_*` |
+| 目录接口 | `self_intro` **只回给 owner 本人**，且明显标为「建议」（不是已生效的描述） |
+| 面板 | 行内显示「这个应用建议这样介绍自己」+ **用它 / 忽略** |
+| 「用它」 | 只把文字**填进编辑表单**，人确认后照常 `POST /api/service-agents/publish` |
+| 「忽略」 | `DELETE /api/service-agents/{slug}/self-intro`（幂等） |
+| 任何一版发布 | 旧建议自动清掉（它就是针对上一版说的，已经过时了） |
+
+边界（这些都是硬约束，不是约定）：
+
+- **只认 `description` / `input_schema`**。`runner` / `pricing` / `visibility` / `slug`
+  即使写在 `self_intro` 里也一个字都进不来 —— 结构体根本不认。
+- **建议不生效**：它不进 `tools/list`，别人看不到，只有 owner 在面板上能看到。
+- **采纳必须由人完成**：不开「采纳」写入接口，也就没有第二条改动线上文案的路。
+- **失败不影响任务**：自述落库失败只记日志，run 该 completed 还是 completed。
+- `input_schema` 写错只丢 schema、保留描述（描述才是主体；作者侧写错要报错，
+  因为那是人主动提交的，这里是模型顺手给的）。
+
 ## 外部执行后端（`runner.type=http` / `mcp`）
 
 设计 §4.4 / P3-a。用户在 agent definition 里声明 runner，run 由**用户自己的服务**执行，平台只负责转发、签名与结果回填。

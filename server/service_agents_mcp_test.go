@@ -489,6 +489,35 @@ func (f *fakeServiceAgentStore) RecordServiceInstanceHeartbeat(_ context.Context
 	return nil
 }
 
+// 自述建议（可选能力）：写入/清除都要改动 agents 切片里的对应行，
+// 这样目录与丢弃接口的测试才能看到真实效果。
+func (f *fakeServiceAgentStore) SetServiceAgentSelfIntro(_ context.Context, slug, description, inputSchema string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.agents {
+		if f.agents[i].Slug == slug {
+			f.agents[i].SelfIntroDescription = description
+			f.agents[i].SelfIntroInputSchema = inputSchema
+			return nil
+		}
+	}
+	return store.ErrServiceAgentNotFound
+}
+
+func (f *fakeServiceAgentStore) ClearServiceAgentSelfIntro(_ context.Context, slug string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.agents {
+		if f.agents[i].Slug == slug {
+			f.agents[i].SelfIntroDescription = ""
+			f.agents[i].SelfIntroInputSchema = ""
+			return nil
+		}
+	}
+	// 幂等：不存在也算清掉了。
+	return nil
+}
+
 // fakeInstanceHeartbeat 是 RecordServiceInstanceHeartbeat 的落库快照（测试断言用）。
 type fakeInstanceHeartbeat struct {
 	OwnerUID   int64

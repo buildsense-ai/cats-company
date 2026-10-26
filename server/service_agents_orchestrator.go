@@ -496,6 +496,9 @@ func (o *ServiceRunOrchestrator) handleComplete(w http.ResponseWriter, r *http.R
 		return
 	}
 	if completed {
+		// 自述建议：应用可以在结果里建议自己的对外描述（等人确认才生效）。
+		// 放在收尾之后、且失败只记日志 —— 调用方等的是任务结果，不是这段文案。
+		o.recordSelfIntro(r.Context(), runID, req.Result)
 		// 生命周期回注：终态已落（含回执）→ 唤醒投递（在线即推）。
 		o.kickReceiptDelivery()
 	}

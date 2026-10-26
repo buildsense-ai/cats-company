@@ -503,6 +503,11 @@ export const api = {
   // 收回分享（下架）：只有发布者本人能调用；下架后目录与 tools/list 立即不可见，
   // 已缓存工具名的客户端再调用会拿到 agent_not_found。重新发布会恢复上架。
   unpublishServiceAgent: (slug) => request('DELETE', `/api/service-agents/${encodeURIComponent(slug)}`),
+  // 丢弃「自述建议」（应用自己建议的对外描述）。采纳不走上行：那是发布，
+  // 面板把建议预填进编辑表单，由人确认后走 publish。
+  dismissServiceAgentSelfIntro: (slug) => (
+    request('DELETE', `/api/service-agents/${encodeURIComponent(slug)}/self-intro`)
+  ),
   // 本机 worker 凭据（per-user）：凭据只能认领自己名下应用的 run，明文只在创建时返回一次。
   listServiceWorkerCredentials: () => request('GET', '/api/service-worker/credentials'),
   createServiceWorkerCredential: (label) => request('POST', '/api/service-worker/credentials', { label }),

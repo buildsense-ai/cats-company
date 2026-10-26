@@ -1557,6 +1557,72 @@
   color: #b45309;
 }
 
+/* 自述建议（应用自己建议的对外描述）：等人确认才生效，所以视觉上要跟
+   「当前描述」区分开 —— 否则用户会以为它已经生效了。 */
+.v3-service-agent-intro {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px dashed rgba(59, 130, 246, 0.35);
+}
+
+.v3-service-agent-intro-label {
+  font-size: 10px;
+  color: #1d4ed8;
+  margin-bottom: 2px;
+}
+
+.v3-service-agent-intro-text {
+  font-size: 11px;
+  line-height: 1.45;
+  color: inherit;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.v3-service-agent-intro-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.v3-service-agent-intro-accept,
+.v3-service-agent-intro-dismiss {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  cursor: pointer;
+  background: transparent;
+}
+
+.v3-service-agent-intro-accept {
+  border: 1px solid rgba(37, 99, 235, 0.45);
+  color: #1d4ed8;
+}
+
+.v3-service-agent-intro-accept:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.v3-service-agent-intro-dismiss {
+  border: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
+  color: var(--cc-muted, #6b7280);
+}
+
+.v3-service-agent-intro-dismiss:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.v3-service-agent-intro-accept:disabled,
+.v3-service-agent-intro-dismiss:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .v3-service-agent-edit {
   flex: 0 0 auto;
   display: inline-flex;

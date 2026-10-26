@@ -181,6 +181,7 @@ func newCatalogServer(t *testing.T, st *fakeServiceAgentStore, uid int64, whitel
 	mux.HandleFunc("GET /api/service-agents/catalog", wrap(handler.HandleCatalog))
 	mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", wrap(handler.HandleAdd))
 	mux.HandleFunc("DELETE /api/service-agents/{slug}/subscription", wrap(handler.HandleRemove))
+	mux.HandleFunc("DELETE /api/service-agents/{slug}/self-intro", wrap(handler.HandleDismissSelfIntro))
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return handler, ts.URL

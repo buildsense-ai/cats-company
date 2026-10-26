@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -260,6 +261,13 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		}
 		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "publish_unavailable"})
 		return
+	}
+	// 发布即清掉待确认的自述建议：它就是针对上一版说的，新版发出去已经过时。
+	// 失败只记日志（与自述本身的容错口径一致：不能让一次成功发布回滚）。
+	if selfIntro, ok := h.store.(ServiceAgentSelfIntroStore); ok {
+		if err := selfIntro.ClearServiceAgentSelfIntro(ctx, slug); err != nil {
+			log.Printf("service agent publish: clear self intro slug=%s: %v", slug, err)
+		}
 	}
 
 	writeServiceJSON(w, http.StatusOK, map[string]any{

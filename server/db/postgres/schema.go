@@ -171,6 +171,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceSessionCheckpointsTable,
 		createServiceInstancesTable,
 		migrateServiceInstancesAddOwnerUID,
+		migrateServiceAgentsAddSelfIntro,
 		createServiceWorkerTokensTable,
 		createServiceRunsCreatedAtIndex,
 		createServiceRunReceiptsTable,
@@ -628,6 +629,14 @@ CREATE TABLE IF NOT EXISTS service_instances (
 const migrateServiceInstancesAddOwnerUID = `
 ALTER TABLE service_instances
 ADD COLUMN IF NOT EXISTS owner_uid BIGINT NOT NULL DEFAULT 0;`
+
+// 自述（self_intro）：应用在跑完之后「建议」的自我描述，等人确认才写进 definition。
+// 单独存一列而不是直接改良 definition —— 因为写描述的是模型，不是人：
+// 它能建议，但不能替人决定对外文案。
+const migrateServiceAgentsAddSelfIntro = `
+ALTER TABLE service_agents
+    ADD COLUMN IF NOT EXISTS self_intro_description TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS self_intro_input_schema TEXT NOT NULL DEFAULT '';`
 
 // 用户自己的 worker 凭据（per-user）：worker 用它只能认领「自己拥有的应用」的 run，
 // 不再依赖全局实例 token（拿到就能领别人的 run）。库里只存 sha256，明文仅创建时返回。

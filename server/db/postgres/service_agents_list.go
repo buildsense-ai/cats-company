@@ -17,7 +17,9 @@ func (a *Adapter) ListServiceAgents(ctx context.Context) ([]store.ServiceAgentDe
 		       a.owner_kind, a.owner_uid, a.visibility,
 		       COALESCE(v.definition_json->>'description', ''),
 		       COALESCE(v.definition_json->>'input_schema', ''),
-		       COALESCE(v.definition_json::text, '{}')
+		       COALESCE(v.definition_json::text, '{}'),
+		       COALESCE(a.self_intro_description, ''),
+		       COALESCE(a.self_intro_input_schema, '')
 		FROM service_agents a
 		JOIN service_agent_versions v ON v.agent_id = a.id
 		WHERE a.state = 'active'
@@ -31,7 +33,7 @@ func (a *Adapter) ListServiceAgents(ctx context.Context) ([]store.ServiceAgentDe
 		var d store.ServiceAgentDescriptor
 		if err := rows.Scan(&d.ID, &d.Slug, &d.Name, &d.Version, &d.AsyncThresholdSeconds,
 			&d.OwnerKind, &d.OwnerUID, &d.Visibility, &d.Description, &d.InputSchema,
-			&d.DefinitionJSON); err != nil {
+			&d.DefinitionJSON, &d.SelfIntroDescription, &d.SelfIntroInputSchema); err != nil {
 			return nil, fmt.Errorf("scan service agent: %w", err)
 		}
 		agents = append(agents, d)

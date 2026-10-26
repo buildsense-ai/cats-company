@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   removeServiceAgentSubscription: vi.fn(),
   publishServiceAgent: vi.fn(),
   unpublishServiceAgent: vi.fn(),
+  dismissServiceAgentSelfIntro: vi.fn(),
   listServiceWorkerCredentials: vi.fn(),
   createServiceWorkerCredential: vi.fn(),
   revokeServiceWorkerCredential: vi.fn(),
@@ -390,6 +391,74 @@ describe('ServiceAgentsPanel', () => {
     expect(container.querySelector('button[aria-label="编辑别人的"]')).toBeNull();
     expect(container.querySelector('.v3-service-agent-warn')).toBeNull();
     expect(container.querySelector('.v3-service-agent-desc')?.textContent).toContain('别人写的');
+  });
+
+  // 自述建议：应用自己建议的对外描述。写这段的是模型，所以只能建议 ——
+  // 「用它」必须把内容填进编辑表单（人再确认发布），绝不能直接生效。
+  it('自述建议：用它只预填表单，不直接发布', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{
+        slug: 'my-clock',
+        name: '我的时钟',
+        version: 1,
+        hidden: false,
+        mine: true,
+        visibility: 'private',
+        definition: { name: '我的时钟', runner: { type: 'worker', command: 'node clock.js' } },
+        self_intro: { description: '读我电脑的当前时间；问「现在几点」时用。' },
+      }],
+    });
+    await renderPanel();
+
+    // 建议单独一块，且明确写着「建议」
+    const intro = container.querySelector('.v3-service-agent-intro');
+    expect(intro?.textContent).toContain('这个应用建议这样介绍自己');
+    expect(intro?.textContent).toContain('读我电脑的当前时间');
+
+    await act(async () => {
+      container.querySelector('button[aria-label="用我的时钟的自述"]').click();
+      await Promise.resolve();
+    });
+    // 关键：没有直接发请求，只是打开编辑表单
+    expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
+    const form = container.querySelector('.v3-service-agents-publish');
+    expect(form.querySelector('textarea').value).toBe('读我电脑的当前时间；问「现在几点」时用。');
+    // 执行方式照旧回填（自述不能把命令弄丢）
+    const commandInput = [...form.querySelectorAll('input')]
+      .find((node) => node.placeholder === 'claude -p {input_file}');
+    expect(commandInput.value).toBe('node clock.js');
+  });
+
+  it('自述建议：忽略会调用丢弃接口并从行里消失', async () => {
+    mocks.dismissServiceAgentSelfIntro.mockResolvedValue({ slug: 'my-clock', dismissed: true });
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{
+        slug: 'my-clock', name: '我的时钟', version: 1, hidden: false, mine: true,
+        self_intro: { description: '读时间。' },
+      }],
+    });
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="忽略我的时钟的自述"]').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.dismissServiceAgentSelfIntro).toHaveBeenCalledWith('my-clock');
+    expect(container.querySelector('.v3-service-agent-intro')).toBeNull();
+  });
+
+  it('自述建议只给自己的应用看，别人的应用不显示', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{
+        slug: 'peer', name: '别人的', version: 1, hidden: false, mine: false,
+        description: '别人写的。',
+        // 即使后端误传了，前端也不该显示别人的建议
+        self_intro: { description: '不该出现' },
+      }],
+    });
+    await renderPanel();
+    expect(container.querySelector('.v3-service-agent-intro')).toBeNull();
+    expect(container.textContent).not.toContain('不该出现');
   });
 
   it('发布后不给命令也不给密钥，只提示在桌面端登录即可', async () => {
