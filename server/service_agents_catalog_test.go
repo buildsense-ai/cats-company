@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/openchat/openchat/server/store"
 )
 
 // ---- 应用目录订阅清单（设计 §3.3-9"模式二：默认开放 + 个人清单"）----
@@ -197,6 +199,62 @@ func doCatalog(t *testing.T, method, url string) (int, []byte) {
 	defer resp.Body.Close()
 	payload, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, payload
+}
+
+// 目录是「编辑已有应用」的唯一数据来源：
+//   - description 对所有人可见（它就是调用方 Agent 看到的文字，看起来空就是没人会用）；
+//   - definition 只回给 owner 本人（编辑要带着 runner/pricing 合并，发布是全量覆盖）。
+func TestServiceAgentCatalogExposesDescriptionAndOwnDefinition(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.agents = []store.ServiceAgentDescriptor{
+		{
+			ID: 11, Slug: "my-clock", Name: "我的时钟", Version: 2,
+			AsyncThresholdSeconds: 30,
+			OwnerKind:             store.ServiceAgentOwnerUser,
+			OwnerUID:              441,
+			Visibility:            store.ServiceAgentVisibilityPublic,
+			Description:           "读我电脑的当前时间。",
+			DefinitionJSON:        `{"runner":{"type":"worker","command":"node clock.js"},"pricing":{"unit":"token","per_1k_tokens":0.02}}`,
+		},
+		{
+			ID: 12, Slug: "other-agent", Name: "别人的应用", Version: 1,
+			AsyncThresholdSeconds: 60,
+			OwnerKind:             store.ServiceAgentOwnerUser,
+			OwnerUID:              999,
+			Visibility:            store.ServiceAgentVisibilityPublic,
+			Description:           "别人写的描述。",
+			DefinitionJSON:        `{"runner":{"type":"worker","command":"secret.sh"}}`,
+		},
+	}
+	_, base := newCatalogServer(t, st, 441)
+	status, payload := doCatalog(t, "GET", base+"/api/service-agents/catalog")
+	if status != http.StatusOK {
+		t.Fatalf("catalog status = %d body=%s", status, payload)
+	}
+	var catalog struct {
+		Agents []serviceCatalogEntry `json:"agents"`
+	}
+	if err := json.Unmarshal(payload, &catalog); err != nil {
+		t.Fatalf("decode: %v %s", err, payload)
+	}
+	bySlug := map[string]serviceCatalogEntry{}
+	for _, entry := range catalog.Agents {
+		bySlug[entry.Slug] = entry
+	}
+	mine := bySlug["my-clock"]
+	if mine.Description != "读我电脑的当前时间。" {
+		t.Fatalf("description = %q", mine.Description)
+	}
+	if len(mine.Definition) == 0 || !strings.Contains(string(mine.Definition), "node clock.js") {
+		t.Fatalf("owner must get own definition back for editing: %s", mine.Definition)
+	}
+	other := bySlug["other-agent"]
+	if other.Description != "别人写的描述。" {
+		t.Fatalf("description should be public metadata: %q", other.Description)
+	}
+	if len(other.Definition) != 0 {
+		t.Fatalf("must not leak other owner's runner config: %s", other.Definition)
+	}
 }
 
 func TestServiceAgentCatalogAPI(t *testing.T) {

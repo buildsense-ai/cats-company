@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -104,6 +105,12 @@ type serviceCatalogEntry struct {
 	OwnerKind  string `json:"owner_kind,omitempty"`
 	Mine       bool   `json:"mine"`
 	Visibility string `json:"visibility,omitempty"`
+	// Description：调用方 Agent 看到的工具描述（作者写的原文）。
+	// 空 = 作者没写，别人（另一个 Agent）只能靠名字猜，基本等于用不起来。
+	Description string `json:"description,omitempty"`
+	// Definition：完整 definition 原文，只给 owner 本人（编辑时回填 runner/pricing）。
+	// 发布是全量覆盖，别人拿不到也用不上这里面的本机命令。
+	Definition json.RawMessage `json:"definition,omitempty"`
 }
 
 // ensureAllowed 内测门：非白名单账号管理 API 一律 403（静默功能不存在）。
@@ -146,16 +153,22 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 			continue
 		}
 		_, blocked := hidden[agent.ID]
-		entries = append(entries, serviceCatalogEntry{
+		mine := agent.OwnerUID != 0 && agent.OwnerUID == uid
+		entry := serviceCatalogEntry{
 			Slug:                  agent.Slug,
 			Name:                  agent.Name,
 			Version:               agent.Version,
 			AsyncThresholdSeconds: agent.AsyncThresholdSeconds,
 			Hidden:                blocked,
 			OwnerKind:             agent.OwnerKind,
-			Mine:                  agent.OwnerUID != 0 && agent.OwnerUID == uid,
+			Mine:                  mine,
 			Visibility:            agent.Visibility,
-		})
+			Description:           agent.Description,
+		}
+		if mine && strings.TrimSpace(agent.DefinitionJSON) != "" {
+			entry.Definition = json.RawMessage(agent.DefinitionJSON)
+		}
+		entries = append(entries, entry)
 	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"agents": entries})
 }

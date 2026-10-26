@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ChevronDown, Plus, RefreshCw, Sparkles, Undo2, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Pencil, Plus, RefreshCw, Sparkles, Undo2, X } from 'lucide-react';
 import { api } from '../api';
 
 // Agent 工具（CatsCo 定制 agent 的工具集管理；设计 §3.3-9"模式二：默认开放 + 个人清单"）。
@@ -23,6 +23,10 @@ export default function ServiceAgentsPanel({ onClose }) {
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState('');
   const [publishResult, setPublishResult] = useState(null);
+  // 编辑已有应用：发布是全量覆盖，所以必须带着原 definition 合并，
+  // 否则只改描述会把执行方式/价格抹掉（应用当场跑不起来）。
+  const [editingSlug, setEditingSlug] = useState('');
+  const [editingDefinition, setEditingDefinition] = useState(null);
   // 收回分享：二次确认（避免误点）+ 逐行进行中状态 + 成功通知。
   const [unpublishTarget, setUnpublishTarget] = useState('');
   const [unpublishing, setUnpublishing] = useState(() => new Set());
@@ -179,8 +183,11 @@ export default function ServiceAgentsPanel({ onClose }) {
       setPublishError('调用名只能用小写字母/数字/中划线，2~64 位');
       return;
     }
-    const definition = { name };
+    const definition = editingDefinition && typeof editingDefinition === 'object'
+      ? { ...editingDefinition } : {};
+    definition.name = name;
     if (description) definition.description = description;
+    else delete definition.description;
     if (form.runner === 'http') {
       const url = form.url.trim();
       if (!/^https?:\/\//.test(url)) { setPublishError('选 HTTP 执行时要填 http(s):// 地址'); return; }
@@ -203,6 +210,8 @@ export default function ServiceAgentsPanel({ onClose }) {
       definition.pricing = form.priceUnit === 'second'
         ? { unit: 'second', per_second: price, currency: 'CNY' }
         : { unit: 'token', per_1k_tokens: price, currency: 'CNY' };
+    } else {
+      delete definition.pricing;
     }
     setPublishing(true);
     setPublishError('');
@@ -215,6 +224,8 @@ export default function ServiceAgentsPanel({ onClose }) {
         hasCommand: form.runner === 'worker' && Boolean(form.command.trim()),
       });
       setShowPublish(false);
+      setEditingSlug('');
+      setEditingDefinition(null);
       setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '', priceUnit: 'token' });
       await load();
     } catch (err) {
@@ -222,7 +233,43 @@ export default function ServiceAgentsPanel({ onClose }) {
     } finally {
       setPublishing(false);
     }
-  }, [form, load]);
+  }, [editingDefinition, form, load]);
+
+  // 打开编辑：把已发布的 definition 回填进表单。
+  // 目录只对 owner 本人返回 definition（别人的本机命令拿不到也用不上）。
+  const startEdit = useCallback((agent) => {
+    const definition = agent?.definition && typeof agent.definition === 'object' ? agent.definition : {};
+    const runner = definition.runner && typeof definition.runner === 'object' ? definition.runner : {};
+    const pricing = definition.pricing && typeof definition.pricing === 'object' ? definition.pricing : {};
+    const runnerType = runner.type === 'http' || runner.type === 'mcp' ? runner.type : 'worker';
+    const priceUnit = pricing.unit === 'second' ? 'second' : 'token';
+    const priceValue = priceUnit === 'second' ? pricing.per_second : pricing.per_1k_tokens;
+    setEditingSlug(agent.slug);
+    setEditingDefinition(definition);
+    setPublishError('');
+    setPublishResult(null);
+    setForm({
+      name: agent.name || agent.slug,
+      description: agent.description || '',
+      slug: agent.slug,
+      slugTouched: true,
+      visibility: agent.visibility === 'private' ? 'private' : 'public',
+      runner: runnerType,
+      url: runner.url || '',
+      tool: runner.tool || '',
+      command: runner.command || '',
+      price: typeof priceValue === 'number' && priceValue > 0 ? String(priceValue) : '',
+      priceUnit,
+    });
+    setShowPublish(true);
+  }, []);
+
+  const resetPublishForm = useCallback(() => {
+    setEditingSlug('');
+    setEditingDefinition(null);
+    setPublishError('');
+    setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '', priceUnit: 'token' });
+  }, []);
 
   // 收回分享：下架后目录与别人的 tools/list 立即不可见，已缓存工具名的客户端再调用
   // 会拿到 "该应用已被发布者收回"。重新发布同一调用名即可恢复。
@@ -280,8 +327,11 @@ export default function ServiceAgentsPanel({ onClose }) {
           <button
             type="button"
             onClick={() => {
-              setShowPublish((prev) => !prev);
+              const next = !showPublish;
+              setShowPublish(next);
               setPublishError('');
+              if (next && !editingSlug) setPublishResult(null);
+              if (!next) resetPublishForm();
             }}
             aria-label="发布应用"
             title="发布应用（把自己的 agent 上架成工具）"
@@ -311,7 +361,7 @@ export default function ServiceAgentsPanel({ onClose }) {
             if (!publishing) submitPublish();
           }}
         >
-          <div className="v3-service-agents-publish-title">发布应用</div>
+          <div className="v3-service-agents-publish-title">{editingSlug ? '编辑应用' : '发布应用'}</div>
           <label className="v3-service-agents-field">
             <span>名称</span>
             <input
@@ -341,9 +391,12 @@ export default function ServiceAgentsPanel({ onClose }) {
               onChange={(event) => updateForm({ slug: event.target.value })}
               placeholder="my-agent"
               spellCheck={false}
+              readOnly={Boolean(editingSlug)}
             />
             <span className="v3-service-agents-field-hint">
-              你的 bot 里就这样叫它：catsco_{form.slug || 'my-agent'}
+              {editingSlug
+                ? '调用名是分享出去的名字，编辑时不能改（改了就是另一个应用）。'
+                : `你的 bot 里就这样叫它：catsco_${form.slug || 'my-agent'}`}
             </span>
           </label>
           <details className="v3-service-agents-advanced">
@@ -654,11 +707,34 @@ export default function ServiceAgentsPanel({ onClose }) {
                     ) : null}
                   </div>
                   <div className="v3-service-agent-slug">catsco_{agent.slug}</div>
+                  {agent.description ? (
+                    // 这段就是调用方 Agent 看到的文字：写清楚才有人会用。
+                    <div className="v3-service-agent-desc" title={agent.description}>
+                      {agent.description}
+                    </div>
+                  ) : agent.mine ? (
+                    <div className="v3-service-agent-warn">
+                      没写「能做什么」：别的 Agent 只能靠名字猜，基本不会用它
+                    </div>
+                  ) : null}
                   {scopeBotUid && accountHidden ? (
                     <div className="v3-service-agent-note">账号清单中已移除</div>
                   ) : null}
                 </div>
                 <div className="v3-service-agent-actions">
+                  {agent.mine ? (
+                    <button
+                      type="button"
+                      className="v3-service-agent-edit"
+                      disabled={busy}
+                      onClick={() => startEdit(agent)}
+                      aria-label={`编辑${agent.name || agent.slug}`}
+                      title="编辑描述/执行方式后重新发布"
+                    >
+                      <Pencil size={15} />
+                      <span>编辑</span>
+                    </button>
+                  ) : null}
                   {agent.mine ? (
                     unpublishTarget === agent.slug ? (
                       <>

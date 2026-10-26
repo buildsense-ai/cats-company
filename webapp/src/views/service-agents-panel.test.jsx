@@ -301,6 +301,97 @@ describe('ServiceAgentsPanel', () => {
 
   // 「密钥 / 命令」这类东西用户完全看不懂，也就无法判断对错，因此从面板里彻底拿掉；
   // 老用户即使后台还有旧密钥，界面也不该再甩给他一条要粘贴的命令。
+  // 编辑已有应用：发布是全量覆盖，所以必须带原 definition 合并 ——
+  // 只改描述不能把执行命令 / 价格抹掉，否则应用当场跑不起来（run 报 no_command）。
+  it('编辑已有应用：回填表单，保存时保留原执行方式与价格', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [
+        {
+          slug: 'my-clock',
+          name: '我的时钟',
+          version: 2,
+          hidden: false,
+          mine: true,
+          visibility: 'private',
+          description: '读我电脑的当前时间。',
+          definition: {
+            name: '我的时钟',
+            description: '读我电脑的当前时间。',
+            runner: { type: 'worker', command: 'node clock.js' },
+            pricing: { unit: 'second', per_second: 0.001, currency: 'CNY' },
+          },
+        },
+      ],
+    });
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'my-clock', version: 3, visibility: 'private' });
+    await renderPanel();
+
+    // 行里能看见描述（这段就是调用方 Agent 看到的字）
+    expect(container.querySelector('.v3-service-agent-desc')?.textContent).toContain('读我电脑的当前时间');
+
+    await act(async () => {
+      container.querySelector('button[aria-label="编辑我的时钟"]').click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    expect(form?.textContent).toContain('编辑应用');
+    const nameInput = form.querySelector('input:not([type])');
+    const slugInput = form.querySelectorAll('input:not([type])')[1];
+    expect(nameInput.value).toBe('我的时钟');
+    expect(slugInput.value).toBe('my-clock');
+    // 调用名是分享出去的名字，编辑时不能改（改了就是另一个应用）
+    expect(slugInput.readOnly).toBe(true);
+    expect(form.querySelector('textarea').value).toBe('读我电脑的当前时间。');
+
+    const setValue = async (node, value) => {
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(node, value);
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+    // 定位「本机执行命令」：占位符与命令输入框都带 {input_file} 提示
+    const commandInput = [...form.querySelectorAll('input')]
+      .find((node) => node.placeholder === 'claude -p {input_file}');
+    expect(commandInput.value).toBe('node clock.js');
+    await fillDescription(form, '读我电脑的当前时间；问“现在几点”时用。');
+    await setValue(commandInput, 'node clock2.js');
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
+    const payload = mocks.publishServiceAgent.mock.calls[0][0];
+    expect(payload.slug).toBe('my-clock');
+    expect(payload.visibility).toBe('private');
+    expect(payload.definition.description).toBe('读我电脑的当前时间；问“现在几点”时用。');
+    // 关键：执行方式保留、命令按编辑后的值、价格没被抹掉
+    expect(payload.definition.runner).toEqual({ type: 'worker', command: 'node clock2.js' });
+    expect(payload.definition.pricing).toEqual({ unit: 'second', per_second: 0.001, currency: 'CNY' });
+  });
+
+  it('自己的应用没写描述时提示「别人基本不会用它」', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{ slug: 'my-clock', name: '我的时钟', version: 1, hidden: false, mine: true }],
+    });
+    await renderPanel();
+    expect(container.querySelector('.v3-service-agent-warn')?.textContent).toContain('没写「能做什么」');
+  });
+
+  it('别人的应用既不给编辑按钮，也不回传 definition', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{ slug: 'peer', name: '别人的', version: 1, hidden: false, mine: false, description: '别人写的' }],
+    });
+    await renderPanel();
+    expect(container.querySelector('button[aria-label="编辑别人的"]')).toBeNull();
+    expect(container.querySelector('.v3-service-agent-warn')).toBeNull();
+    expect(container.querySelector('.v3-service-agent-desc')?.textContent).toContain('别人写的');
+  });
+
   it('发布后不给命令也不给密钥，只提示在桌面端登录即可', async () => {
     mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'legacy', version: 1, visibility: 'public' });
     await renderPanel();

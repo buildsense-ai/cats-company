@@ -129,6 +129,10 @@ type ServiceAgentDescriptor struct {
 	// （空串 = 作者未声明，平台退回通用参数写法）。
 	Description string
 	InputSchema string
+	// DefinitionJSON 是当前版本 definition 的原文（含 runner/pricing 等）。
+	// 只用于目录给 owner 本人回填「编辑」表单：发布是全量覆盖，缺字段会把
+	// 执行方式/价格抹掉，所以编辑必须带着原 definition 合并。
+	DefinitionJSON string
 }
 
 // Service agent 归属与可见性常量（设计 §4.3）。

@@ -123,7 +123,16 @@ relay 据此将用量归因到**调用方**额度（见 relay `service_tokens.py
 
 目录接口 `GET /api/service-agents/catalog` 的条目新增 `mine` / `owner_kind` /
 `visibility` 三个字段，便于前端区分「平台应用」与「我上架的」。
+条目另外带两个字段（编辑已有应用用）：
 
+| 字段 | 给谁 | 说明 |
+|---|---|---|
+| `description` | 所有人 | 调用方 Agent 看到的工具描述（作者原文）。空 = 作者没写，别人只能靠名字猜 |
+| `definition` | **仅 owner 本人** | 当前版本 definition 原文（含 `runner` / `pricing`） |
+
+`definition` 只回给本人，原因有两个：里面可能是别人电脑上的执行命令（拿不到也用不上）；
+而且**发布是全量覆盖**，编辑时必须带着原 definition 合并 —— 只改描述却丢掉 `runner`，
+应用下次被调用就会 `no_command` 起不来。
 ## 外部执行后端（`runner.type=http`）
 
 设计 §4.4 / P3-a。用户在 agent definition 里声明 runner，run 由**用户自己的服务**执行，平台只负责转发、签名与结果回填：
