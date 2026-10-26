@@ -27,6 +27,9 @@ export default function ServiceAgentsPanel({ onClose }) {
   // 否则只改描述会把执行方式/价格抹掉（应用当场跑不起来）。
   const [editingSlug, setEditingSlug] = useState('');
   const [editingDefinition, setEditingDefinition] = useState(null);
+  // 旧应用可能还是「平台直连 http/mcp」。面板不再提供这种接入方式，
+  // 但编辑时绝不能把它改写成 worker —— 那会让应用当场跑不起来。
+  const [lockedRunner, setLockedRunner] = useState(null);
   // 收回分享：二次确认（避免误点）+ 逐行进行中状态 + 成功通知。
   const [unpublishTarget, setUnpublishTarget] = useState('');
   const [unpublishing, setUnpublishing] = useState(() => new Set());
@@ -40,9 +43,6 @@ export default function ServiceAgentsPanel({ onClose }) {
     slugTouched: false,
     // 默认公开：上架就是为了分享给别人调，选「仅自己」要显式选。
     visibility: 'public',
-    runner: 'worker',
-    url: '',
-    tool: '',
     command: '',
     price: '',
     priceUnit: 'token',
@@ -188,16 +188,9 @@ export default function ServiceAgentsPanel({ onClose }) {
     definition.name = name;
     if (description) definition.description = description;
     else delete definition.description;
-    if (form.runner === 'http') {
-      const url = form.url.trim();
-      if (!/^https?:\/\//.test(url)) { setPublishError('选 HTTP 执行时要填 http(s):// 地址'); return; }
-      definition.runner = { type: 'http', url, timeout_seconds: 60 };
-    } else if (form.runner === 'mcp') {
-      const url = form.url.trim();
-      if (!/^https?:\/\//.test(url)) { setPublishError('选 MCP 服务时要填 http(s):// 地址'); return; }
-      definition.runner = { type: 'mcp', url, timeout_seconds: 60 };
-      const tool = form.tool.trim();
-      if (tool) definition.runner.tool = tool;
+    if (lockedRunner) {
+      // 旧应用的直连配置原样保留（面板改不了，也不该默默改成 worker）。
+      definition.runner = lockedRunner;
     } else {
       definition.runner = { type: 'worker' };
       const command = form.command.trim();
@@ -220,32 +213,35 @@ export default function ServiceAgentsPanel({ onClose }) {
       setPublishResult({
         slug: result?.slug || slug,
         visibility: result?.visibility || form.visibility,
-        runner: form.runner,
-        hasCommand: form.runner === 'worker' && Boolean(form.command.trim()),
+        runner: lockedRunner ? lockedRunner.type : 'worker',
+        hasCommand: !lockedRunner && Boolean(form.command.trim()),
       });
       setShowPublish(false);
       setEditingSlug('');
       setEditingDefinition(null);
-      setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '', priceUnit: 'token' });
+      setLockedRunner(null);
+      setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', command: '', price: '', priceUnit: 'token' });
       await load();
     } catch (err) {
       setPublishError(err?.message || '发布失败，请稍后重试。');
     } finally {
       setPublishing(false);
     }
-  }, [editingDefinition, form, load]);
+  }, [editingDefinition, form, load, lockedRunner]);
 
   // 打开编辑：把已发布的 definition 回填进表单。
-  // 目录只对 owner 本人返回 definition（别人的本机命令拿不到也用不上）。
+  // 目录只对 owner 本人返回 definition（别人的执行命令拿不到也用不上）。
   const startEdit = useCallback((agent) => {
     const definition = agent?.definition && typeof agent.definition === 'object' ? agent.definition : {};
     const runner = definition.runner && typeof definition.runner === 'object' ? definition.runner : {};
     const pricing = definition.pricing && typeof definition.pricing === 'object' ? definition.pricing : {};
-    const runnerType = runner.type === 'http' || runner.type === 'mcp' ? runner.type : 'worker';
+    // 直连型（http/mcp）不再出现在面板上：只锁住原配置，防止保存时被改成 worker。
+    const locked = runner.type === 'http' || runner.type === 'mcp' ? runner : null;
     const priceUnit = pricing.unit === 'second' ? 'second' : 'token';
     const priceValue = priceUnit === 'second' ? pricing.per_second : pricing.per_1k_tokens;
     setEditingSlug(agent.slug);
     setEditingDefinition(definition);
+    setLockedRunner(locked);
     setPublishError('');
     setPublishResult(null);
     setForm({
@@ -254,10 +250,7 @@ export default function ServiceAgentsPanel({ onClose }) {
       slug: agent.slug,
       slugTouched: true,
       visibility: agent.visibility === 'private' ? 'private' : 'public',
-      runner: runnerType,
-      url: runner.url || '',
-      tool: runner.tool || '',
-      command: runner.command || '',
+      command: locked ? '' : (runner.command || ''),
       price: typeof priceValue === 'number' && priceValue > 0 ? String(priceValue) : '',
       priceUnit,
     });
@@ -267,8 +260,9 @@ export default function ServiceAgentsPanel({ onClose }) {
   const resetPublishForm = useCallback(() => {
     setEditingSlug('');
     setEditingDefinition(null);
+    setLockedRunner(null);
     setPublishError('');
-    setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '', priceUnit: 'token' });
+    setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', command: '', price: '', priceUnit: 'token' });
   }, []);
 
   // 收回分享：下架后目录与别人的 tools/list 立即不可见，已缓存工具名的客户端再调用
@@ -401,9 +395,8 @@ export default function ServiceAgentsPanel({ onClose }) {
           </label>
           <details className="v3-service-agents-advanced">
             <summary className="v3-service-agents-advanced-head">
-              更多设置（默认：公开 · 在我的电脑上跑 · 免费分享）
-            </summary>
-            <div className="v3-service-agents-field">
+              更多设置（默认：公开 · 在我的环境跑 · 免费分享）
+            </summary>            <div className="v3-service-agents-field">
               <span>可见性</span>
               <div className="v3-service-agents-choices">
                 <label>
@@ -427,55 +420,28 @@ export default function ServiceAgentsPanel({ onClose }) {
               </div>
             </div>
             <div className="v3-service-agents-field">
-              <span>执行位置</span>
-              <div className="v3-service-agents-choices">
-                <label>
-                  <input
-                    type="radio"
-                    name="runner"
-                    checked={form.runner === 'worker'}
-                    onChange={() => updateForm({ runner: 'worker' })}
-                  />
-                  我的电脑（推荐）
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="runner"
-                    checked={form.runner === 'http'}
-                    onChange={() => updateForm({ runner: 'http' })}
-                  />
-                  HTTP 服务
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="runner"
-                    checked={form.runner === 'mcp'}
-                    onChange={() => updateForm({ runner: 'mcp' })}
-                  />
-                  MCP 服务
-                </label>
-              </div>
+              {/* 只留一种接入方式：你的环境主动连平台领任务（pull）。
+                  以前还有「平台直连 HTTP / MCP 服务」，但它要求公网可达的地址，
+                  个人用户基本没有 —— 等于把最需要暴露的选项摆在最容易点的地方。
+                  后端仍保留 http/mcp（内部/API 直调），旧应用编辑时原样保留。 */}
+              <span>接入方式</span>
+              {lockedRunner ? (
+                <div className="v3-service-agents-locked" role="status">
+                  这个应用用的是「平台直连
+                  {lockedRunner.type === 'mcp' ? ' MCP ' : ' HTTP '}
+                  服务」（{lockedRunner.url}）。这种接入方式需要公网可达地址，面板已不再提供；
+                  本次保存只改名称/说明/价格，连接方式保持原样。
+                </div>
+              ) : (
+                <div className="v3-service-agents-field-hint">
+                  你的环境主动连平台领任务 —— <strong>电脑、云服务器都行</strong>，
+                  不需要公网 IP，也不用开任何入站端口。真正要跑这个应用的那台机器上启动小八并登录即可。
+                </div>
+              )}
             </div>
-            {form.runner === 'http' || form.runner === 'mcp' ? (
+            {lockedRunner ? null : (
               <label className="v3-service-agents-field">
-                <span>{form.runner === 'mcp' ? 'MCP 服务地址' : '服务地址'}</span>
-                <input
-                  value={form.url}
-                  onChange={(event) => updateForm({ url: event.target.value })}
-                  placeholder={form.runner === 'mcp' ? 'https://your-host/mcp' : 'https://your-host/run'}
-                  spellCheck={false}
-                />
-                {form.runner === 'mcp' ? (
-                  <span className="v3-service-agents-field-hint">
-                    平台会当 MCP 客户端连它并调用工具，不需要你自己的 worker
-                  </span>
-                ) : null}
-              </label>
-            ) : (
-              <label className="v3-service-agents-field">
-                <span>本机执行命令（这个应用用哪个 agent 跑）</span>
+                <span>执行命令（这个应用用哪个 agent 跑）</span>
                 <input
                   value={form.command}
                   onChange={(event) => updateForm({ command: event.target.value })}
@@ -487,17 +453,6 @@ export default function ServiceAgentsPanel({ onClose }) {
                 </span>
               </label>
             )}
-            {form.runner === 'mcp' ? (
-              <label className="v3-service-agents-field">
-                <span>工具名（留空=对端只有一个工具时自动选）</span>
-                <input
-                  value={form.tool}
-                  onChange={(event) => updateForm({ tool: event.target.value })}
-                  placeholder="run"
-                  spellCheck={false}
-                />
-              </label>
-            ) : null}
             <div className="v3-service-agents-field">
               <span>计费方式（留空=免费分享）</span>
               <div className="v3-service-agents-choices">
@@ -563,13 +518,13 @@ export default function ServiceAgentsPanel({ onClose }) {
           {publishResult.runner === 'worker' ? (
             <div className="v3-service-agents-published-hint">
               <div>
-                在<strong>要跑这个应用的那台电脑</strong>上打开小八并登录，它就会自动接单——
-                不用装别的东西、不用复制任何命令。换一台机器就在那台机器上登录小八。
+                在<strong>要跑这个应用的那台机器</strong>上（电脑或云服务器）启动小八并登录，它就会自动接单——
+                不用装别的东西、不用复制任何命令、也不用公网 IP。换一台机器就在那台机器上登录小八。
               </div>
               {publishResult.hasCommand ? null : (
                 <div>
-                  还差一步：在「更多设置」里填一条本机执行命令（比如 <code>claude -p {'{input_file}'}</code>），
-                  不填的话调用时会报「该应用没有声明本机执行命令」。
+                  还差一步：在「更多设置」里填一条执行命令（比如 <code>claude -p {'{input_file}'}</code>），
+                  不填的话调用时会报 <code>no_command</code>。
                 </div>
               )}
             </div>

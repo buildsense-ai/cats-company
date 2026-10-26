@@ -1280,6 +1280,17 @@
   opacity: 0.75;
 }
 
+/* 旧应用用的是平台直连（http/mcp）：面板不再提供这种接入方式，只提示「保持原样」。 */
+.v3-service-agents-locked {
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(180, 83, 9, 0.10);
+  border: 1px solid rgba(180, 83, 9, 0.28);
+  color: #b45309;
+}
+
 /* 发布表单里的「更多设置」：默认收起，普通用户只需要填名称。 */
 .v3-service-agents-advanced {
   display: flex;

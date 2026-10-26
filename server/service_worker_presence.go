@@ -62,18 +62,22 @@ type ServiceWorkerOfflineError struct {
 
 func (e *ServiceWorkerOfflineError) Error() string {
 	if e.NoWorkers {
-		return "你的电脑上没有 worker 在接单"
+		return "你这边没有 worker 在接单"
 	}
 	return "在线 worker 没有在服务这个应用"
 }
 
-// serviceWorkerOfflineToolError 是告诉调用方该怎么救的那句话（MCP tool error 文本）。
+// serviceWorkerOfflineToolError 是告诉调用方该怎么救的那句话（MCP tool 错误文本）。
 //
 // 桌面端已把 worker 内嵌进去，用户能做的最简单一步就是「在那台机器上登录小八」；
 // 千万不要再写「命令见面板」——面板已经不展示任何启动命令，用户会找不到。
+// 也不要说「改成平台直连 MCP/HTTP」——那个选项已经从面板上撤掉了（要公网可达地址，
+// 且平台反向连你时对端得自己兜鉴权，普通用户用不上）。
+//
+// 也不能写「你的电脑」：同一个 agent 完全可能跑在用户自己的云服务器上（云员工）。
 func serviceWorkerOfflineToolError(offline *ServiceWorkerOfflineError) string {
 	return fmt.Sprintf(
-		"worker_offline: %s。在要跑这个应用的那台电脑上打开小八并登录，它就会自动接单；也可以把执行位置改成 MCP 服务/HTTP 服务。",
+		"worker_offline: %s。在要跑这个应用的那台机器上（电脑或云服务器）启动小八并登录，它就会主动接单——不需要公网 IP，也不用开任何端口。",
 		offline.Error(),
 	)
 }

@@ -126,8 +126,10 @@ func TestCheckWorkerOnline(t *testing.T) {
 type noPresenceStore struct{ store.ServiceAgentStore }
 
 // 面板已经不再展示任何启动命令/密钥（桌面端内嵌 worker 自己接单），
-// 所以离线提示必须指向「在要跑这个应用的那台电脑上登录小八」，
+// 所以离线提示必须指向「在要跑这个应用的那台机器上登录小八」，
 // 不能再让用户去面板找命令——他会找不到。
+//
+// 也不要再指向「改成平台直连 MCP/HTTP」：那个选项已经从面板撤掉了。
 func TestServiceWorkerOfflineToolErrorPointsAtDesktopLogin(t *testing.T) {
 	for _, noWorkers := range []bool{true, false} {
 		msg := serviceWorkerOfflineToolError(&ServiceWorkerOfflineError{Slug: "my-agent", NoWorkers: noWorkers})
@@ -135,11 +137,16 @@ func TestServiceWorkerOfflineToolErrorPointsAtDesktopLogin(t *testing.T) {
 			t.Fatalf("message must keep the worker_offline prefix, got %q", msg)
 		}
 		if !strings.Contains(msg, "小八") || !strings.Contains(msg, "登录") {
-			t.Fatalf("message should tell the user to log in on that computer, got %q", msg)
+			t.Fatalf("message should tell the user to log in on that machine, got %q", msg)
 		}
-		for _, stale := range []string{"命令见", "面板的发布结果", "service-run-worker", "cwk_", "token"} {
+		// 云员工/云服务器用户也在用同一个应用，不能只写「电脑」。
+		if !strings.Contains(msg, "云服务器") {
+			t.Fatalf("message should not assume the worker runs on a personal computer, got %q", msg)
+		}
+		for _, stale := range []string{"命令见", "面板的发布结果", "service-run-worker", "cwk_", "token",
+			"MCP/HTTP", "执行位置"} {
 			if strings.Contains(msg, stale) {
-				t.Fatalf("message still references %q (panel no longer shows it): %q", stale, msg)
+				t.Fatalf("message still references %q (panel no longer offers it): %q", stale, msg)
 			}
 		}
 	}

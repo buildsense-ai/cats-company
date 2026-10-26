@@ -543,46 +543,60 @@ describe('ServiceAgentsPanel', () => {
     expect(banner.textContent).toContain('catsco_claude-helper');
   });
 
-  it('发布 MCP 服务：runner.type=mcp 带地址与工具名', async () => {
-    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'peer-mcp', version: 1, visibility: 'public' });
+  // 面板只提供「我的环境主动接入」一种方式：平台直连 http/mcp 要求公网可达地址，
+  // 普通用户基本没有 —— 摆出来只会让人以为必须开公网、还得自己兜鉴权。
+  it('发布表单不再提供平台直连（HTTP/MCP）选项', async () => {
     await renderPanel();
     await act(async () => {
       container.querySelector('button[aria-label="发布应用"]').click();
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
-    const setValue = (node, value) => {
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-      setter.call(node, value);
-      node.dispatchEvent(new Event('input', { bubbles: true }));
-    };
-    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    const runnerRadios = [...form.querySelectorAll('input[type="radio"]')]
+      .filter((node) => node.name === 'runner');
+    expect(runnerRadios).toHaveLength(0);
+    expect(form.textContent).not.toContain('HTTP 服务');
+    expect(form.textContent).not.toContain('MCP 服务');
+    // 但要讲清「电脑、云服务器都行」，因为没有公网也能用
+    expect(form.textContent).toContain('云服务器');
+    expect(form.textContent).toContain('不需要公网 IP');
+  });
+
+  // 旧应用可能还是直连型。面板不再提供这种接入方式，但保存时绝不能把它改成
+  // worker —— 命令一下子没了，应用下次被调用就 no_command 跑不起来。
+  it('编辑旧应用的直连配置时原样保留 runner', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [
+        {
+          slug: 'peer-mcp',
+          name: '对端 MCP',
+          version: 1,
+          hidden: false,
+          mine: true,
+          visibility: 'public',
+          description: '对端 MCP 服务。',
+          definition: {
+            name: '对端 MCP',
+            description: '对端 MCP 服务。',
+            runner: { type: 'mcp', url: 'https://peer.example/mcp', tool: 'do-work', timeout_seconds: 60 },
+          },
+        },
+      ],
+    });
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'peer-mcp', version: 2, visibility: 'public' });
+    await renderPanel();
+
     await act(async () => {
-      setValue(nameInput, '对端 MCP');
-      setValue(slugInput, 'peer-mcp');
+      container.querySelector('button[aria-label="编辑对端 MCP"]').click();
       await Promise.resolve();
     });
-    await fillDescription(form);
+    const form = container.querySelector('.v3-service-agents-publish');
+    // 明确告诉用户这条链路面板改不了、也不会被改
+    expect(form.querySelector('.v3-service-agents-locked')?.textContent).toContain('连接方式保持原样');
+    // 直连型没有「执行命令」可填
+    expect(form.querySelector('input[placeholder="claude -p {input_file}"]')).toBeNull();
 
-    // 切到「MCP 服务」
-    const mcpRadio = [...form.querySelectorAll('input[type="radio"]')]
-      .find((node) => node.closest('label')?.textContent.includes('MCP 服务'));
-    expect(mcpRadio).toBeTruthy();
-    await act(async () => {
-      mcpRadio.click();
-      await Promise.resolve();
-    });
-
-    const urlInput = form.querySelector('input[placeholder="https://your-host/mcp"]');
-    const toolInput = form.querySelector('input[placeholder="run"]');
-    expect(urlInput).toBeTruthy();
-    expect(toolInput).toBeTruthy();
-    await act(async () => {
-      setValue(urlInput, 'https://peer.example/mcp');
-      setValue(toolInput, 'do-work');
-      await Promise.resolve();
-    });
-
+    await fillDescription(form, '对端 MCP 服务，问 wiki 用。');
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -590,14 +604,13 @@ describe('ServiceAgentsPanel', () => {
     });
 
     const payload = mocks.publishServiceAgent.mock.calls[0][0];
-    expect(payload.definition.runner).toMatchObject({
+    expect(payload.definition.description).toBe('对端 MCP 服务，问 wiki 用。');
+    expect(payload.definition.runner).toEqual({
       type: 'mcp',
       url: 'https://peer.example/mcp',
       tool: 'do-work',
+      timeout_seconds: 60,
     });
-    // MCP 应用不需要本机 worker，布局里不应出现 worker 启动命令
-    const banner = container.querySelector('.v3-service-agents-published');
-    expect(banner?.textContent).not.toContain('service-run-worker');
   });
 
   it('发布表单会校验调用名，非法时不发请求', async () => {
