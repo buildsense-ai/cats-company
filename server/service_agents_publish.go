@@ -85,6 +85,18 @@ type serviceAgentPublishRequest struct {
 	Force        bool   `json:"force,omitempty"`
 }
 
+// serviceAgentDefinitionDescription 取 definition 里的工具描述。
+// 作者（往往是 Agent 自己）在自己的定义/包里写，平台只做透传。
+func serviceAgentDefinitionDescription(definition json.RawMessage) string {
+	var view struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(definition, &view); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(view.Description)
+}
+
 // HandlePublish POST /api/service-agents/publish
 func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *http.Request) {
 	uid := UIDFromContext(r.Context())
@@ -155,6 +167,24 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 	}
 	if len(bundle) == 0 {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "bundle_required"})
+		return
+	}
+	// 公开应用必须写描述：调用方是另一个 Agent，它看不到包内容、也没有主 Agent 的上下文，
+	// description 是它判断「这个工具做什么、什么情况下该用」的唯一依据。
+	// 没有描述 = 分享出去也没人会用（线上真实症状：bot 反复说「看不到调用入口」）。
+	// 放在包校验之后：结构错误（缺包/坏 base64）先报，不然用户会被描述报错带偏。
+	description := serviceAgentDefinitionDescription(req.Definition)
+	if len([]rune(description)) > maxServiceAgentDescriptionRunes {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "invalid_description", "detail": fmt.Sprintf("description 不超过 %d 字", maxServiceAgentDescriptionRunes),
+		})
+		return
+	}
+	if visibility == store.ServiceAgentVisibilityPublic && description == "" {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
+			"error":  "description_required",
+			"detail": "公开应用必须写 description：说明它做什么、什么情况下该用（调用方 Agent 只能看到这段文字）",
+		})
 		return
 	}
 

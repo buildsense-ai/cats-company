@@ -20,10 +20,10 @@
 
 | 参数 | 说明 |
 | --- | --- |
-| `input` | 任意 JSON，透传给应用 |
+| `input` | 应用入参，透传；**形状由应用作者的 `input_schema` 声明**（见「工具契约」） |
 | `session_id` | 可选；续聊会话 id（不传 = 新会话） |
 | `client_token` | 幂等键（作用域：同会话内；重发返回同一 run） |
-| `bot_uid` | 预留（当前须为 0；bot 身份为阶段 2） |
+| `bot_uid` | 可选；以 bot 身份调用时带 bot 的 uid（校验 bot 归属：owner 必须是调用者；若该 bot 定义里显式设了 `serviceAgents`，被调 agent 必须在其中 → 否则 `agent_not_enabled_for_bot`）。不影响 `tools/list`（工具清单跟账号） |
 
 ## 调用语义
 
@@ -228,3 +228,66 @@ X-Catsco-Signature: sha256=<hex(hmac_sha256(SECRET, body))>
 但这笔账不能白算 —— 预检（`ServiceBalanceChecker`）会把这部分「待扣」加到
 relay 的 `current_usage` 上再比 `max_limit`，所以**碰额度上限一样会被拒单**，
 不会出现"免费无限调外部 agent"。
+
+## 工具契约：description / input_schema（作者自己写）
+
+调用方是**另一个 Agent**，它看不到包内容、也没有主 Agent 的上下文 —— 它能看见的只有
+`tools/list` 里的 `description` 和 `inputSchema`。所以这两段文字就是分享出去的**全部契约**，
+由作者（往往就是 Agent 自己在写自己的 `agent.json`）填写，平台只做透传与上限校验。
+
+```jsonc
+// agent.json
+{
+  "schema": "catsco.service-agent.v1",
+  "slug": "zh-polish",
+  "name": "中文润色",
+
+  // 做什么 / 什么时候用 / 什么时候不要用。公开应用必填（≤1200 字）。
+  "description": "把中文技术文档润色成对外可发布的英文稿，保留代码块与专有名词。
+                  用户要发英文稿、英文邮件时使用；纯翻译或写作建议不要用。",
+
+  // 描述工具的 input 字段（不是整个参数对象）。缺省 = 通用写法（不声明 required）。
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "text":     {"type": "string", "description": "要处理的正文"},
+      "audience": {"type": "string", "enum": ["老板", "全员"], "description": "给谁看"}
+    },
+    "required": ["text"]
+  }
+}
+```
+
+平台派生后在 `tools/list` 里是这样：
+
+```jsonc
+{
+  "name": "catsco_zh-polish",
+  "description": "把中文技术文档润色成对外可发布的英文稿…",   // 作者原文，逐字透出
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "input":       { /* ← 作者写的 input_schema 原样嵌在这里 */ },
+      "session_id":  {"type": "string"},
+      "client_token":{"type": "string"},
+      "bot_uid":     {"type": "integer"}
+    },
+    "required": ["input"]
+  }
+}
+```
+
+规则：
+
+- **description 逐字透出**，平台不加「CatsCo 定制应用 / slug= / 版本 v」之类实现细节 ——
+  对模型是噪音，还容易让它以为要在这里操作版本。
+- **没写 description**：工具描述退回「作者未说明这个应用能做什么…建议只在用户明确点名时调用」，
+  公开上架则直接 400 `description_required`（写了也没人会用，不如不发）。
+- **input_schema 校验**：必须是 JSON 对象、顶层 `type` 若出现只能为 `"object"`、≤8 KiB；
+  不合法 → 发布失败（静默丢弃等于让工具变哑巴，宁可当场报错）。空/缺失走通用写法。
+- 平台字段（`session_id` / `client_token` / `bot_uid`）始终可用，与作者的 `input` 平级。
+
+> 自发布闭环：Agent 只需在自己的 `agent.json` 里写好这两段，然后调
+> `POST /internal/service-agents/{slug}/publish`（实例令牌）即可，平台自动派生并持久化 ——
+> 不需要另做「发布工具」。
+

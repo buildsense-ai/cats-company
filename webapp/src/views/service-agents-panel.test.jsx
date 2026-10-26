@@ -75,6 +75,20 @@ describe('ServiceAgentsPanel', () => {
     });
   };
 
+  /**
+   * 发布表单里的「能做什么」。公开应用必填：调用方是另一个 Agent，
+   * 它只看到这段文字，没描述等于不知道能不能用。
+   */
+  const fillDescription = async (form, value = '把中文技术文档润色成对外英文稿，保留代码块。input.text 是正文。') => {
+    const textarea = form.querySelector('textarea');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(textarea, value);
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+  };
+
   it('loads the catalog and renders agent rows with subscription state', async () => {
     await renderPanel();
     const rows = container.querySelectorAll('.v3-service-agent-row');
@@ -260,6 +274,7 @@ describe('ServiceAgentsPanel', () => {
       slugInput.dispatchEvent(new Event('input', { bubbles: true }));
       await Promise.resolve();
     });
+    await fillDescription(form);
 
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -305,6 +320,7 @@ describe('ServiceAgentsPanel', () => {
       setValue(slugInput, 'legacy');
       await Promise.resolve();
     });
+    await fillDescription(form);
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -345,6 +361,7 @@ describe('ServiceAgentsPanel', () => {
       setValue(slugInput, 'priced');
       await Promise.resolve();
     });
+    await fillDescription(form);
 
     // 默认按 token 用量
     const priceInput = [...form.querySelectorAll('input:not([type])')]
@@ -385,6 +402,7 @@ describe('ServiceAgentsPanel', () => {
       setValue(price2, '0.01');
       await Promise.resolve();
     });
+    await fillDescription(form2);
     await act(async () => {
       form2.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -414,6 +432,7 @@ describe('ServiceAgentsPanel', () => {
       setValue(commandInput, 'claude -p {input_file}');
       await Promise.resolve();
     });
+    await fillDescription(form);
 
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -452,6 +471,7 @@ describe('ServiceAgentsPanel', () => {
       setValue(slugInput, 'peer-mcp');
       await Promise.resolve();
     });
+    await fillDescription(form);
 
     // 切到「MCP 服务」
     const mcpRadio = [...form.querySelectorAll('input[type="radio"]')]
@@ -507,12 +527,59 @@ describe('ServiceAgentsPanel', () => {
       setValue(slugInput, 'BAD SLUG!');
       await Promise.resolve();
     });
+    await fillDescription(form);
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
     expect(container.querySelector('.v3-service-agents-publish [role="alert"]')?.textContent).toContain('调用名');
+  });
+
+  // 公开分享却不写描述 = 分享出去也没人会用：调用方是另一个 Agent，
+  // 它看不到包内容、也没有你的对话上下文，只能靠这段文字判断要不要调。
+  it('公开应用不写「能做什么」就不发请求；私有应用允许留空', async () => {
+    mocks.publishServiceAgent.mockResolvedValue({ slug: 'no-desc', version: 1, visibility: 'public' });
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="发布应用"]').click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    const setValue = (node, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(node, value);
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await act(async () => {
+      setValue(nameInput, 'No Desc');
+      setValue(slugInput, 'no-desc');
+      await Promise.resolve();
+    });
+
+    // 默认公开 + 空描述 → 拦下，不发请求
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
+    expect(form.querySelector('[role="alert"]')?.textContent).toContain('能做什么');
+
+    // 同样的内容，选了「仅自己」→ 允许发布
+    const privateRadio = [...form.querySelectorAll('input[type="radio"]')]
+      .find((node) => node.parentElement?.textContent?.includes('仅自己'));
+    await act(async () => {
+      privateRadio.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
+    expect(mocks.publishServiceAgent.mock.calls[0][0].definition.description).toBeUndefined();
   });
 
   it('展示归属徽标与工具计数', async () => {    mocks.getServiceAgentsCatalog.mockResolvedValue({

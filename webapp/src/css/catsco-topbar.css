@@ -1253,6 +1253,27 @@
   color-scheme: dark;
 }
 
+/* 描述是多行文本：调用方 Agent 靠它判断要不要用，给足够空间写清楚。 */
+.v3-service-agents-field textarea {
+  min-height: 72px;
+  padding: 8px 10px;
+  border: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--v3-text-name, var(--cc-text, inherit));
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  color-scheme: dark;
+}
+
+.v3-service-agents-field textarea:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.55);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
 .v3-service-agents-field-hint {
   font-size: 10px;
   line-height: 1.5;

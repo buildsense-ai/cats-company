@@ -59,6 +59,11 @@ func (o *ServiceRunOrchestrator) handlePublishServiceAgentPackage(w http.Respons
 		return
 	}
 	log.Printf("service package published slug=%s version=%d hash=%s", slug, version, packageHash)
+	if definition.Description == "" {
+		// 不阻断（私有应用可以没有描述），但要留痕：没有 description 的工具，
+		// 调用方模型只能靠名字猜，基本等于「分享出去也没人会用」。
+		log.Printf("service package published WITHOUT description slug=%s — 调用方只能看到兜底描述，建议在 agent.json 补 description", slug)
+	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{
 		"slug":            slug,
 		"name":            definition.Name,

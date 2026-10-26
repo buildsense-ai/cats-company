@@ -29,6 +29,9 @@ export default function ServiceAgentsPanel({ onClose }) {
   const [notice, setNotice] = useState(null);
   const [form, setForm] = useState({
     name: '',
+    // 工具描述：调用你的是另一个 Agent，它看不到包内容也没有你的对话上下文，
+    // 只能靠这段文字判断「要不要用、怎么传参」。公开应用必须写。
+    description: '',
     slug: '',
     slugTouched: false,
     // 默认公开：上架就是为了分享给别人调，选「仅自己」要显式选。
@@ -165,12 +168,19 @@ export default function ServiceAgentsPanel({ onClose }) {
   const submitPublish = useCallback(async () => {
     const name = form.name.trim();
     const slug = form.slug.trim();
+    const description = form.description.trim();
     if (!name) { setPublishError('请填写应用名称'); return; }
+    if (form.visibility === 'public' && !description) {
+      // 公开分享却不写描述：别人（另一个 Agent）只看到名字，等于不知道能不能用。
+      setPublishError('公开应用必须写「能做什么」：调用你的是另一个 Agent，它只能靠这段文字判断要不要用');
+      return;
+    }
     if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(slug)) {
       setPublishError('调用名只能用小写字母/数字/中划线，2~64 位');
       return;
     }
     const definition = { name };
+    if (description) definition.description = description;
     if (form.runner === 'http') {
       const url = form.url.trim();
       if (!/^https?:\/\//.test(url)) { setPublishError('选 HTTP 执行时要填 http(s):// 地址'); return; }
@@ -205,7 +215,7 @@ export default function ServiceAgentsPanel({ onClose }) {
         hasCommand: form.runner === 'worker' && Boolean(form.command.trim()),
       });
       setShowPublish(false);
-      setForm({ name: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '', priceUnit: 'token' });
+      setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '', priceUnit: 'token' });
       await load();
     } catch (err) {
       setPublishError(err?.message || '发布失败，请稍后重试。');
@@ -310,6 +320,19 @@ export default function ServiceAgentsPanel({ onClose }) {
               placeholder="我的助手"
               autoFocus
             />
+          </label>
+          <label className="v3-service-agents-field">
+            <span>能做什么（公开应用必填）</span>
+            <textarea
+              value={form.description}
+              onChange={(event) => updateForm({ description: event.target.value })}
+              placeholder="例：把中文技术文档润色成对外可发布的英文稿，保留代码块与专有名词。适合发布前的文稿；不处理图片。input.text 是要处理的正文。"
+              rows={4}
+            />
+            <span className="v3-service-agents-field-hint">
+              调用你的是另一个 Agent，它看不到你的内容、也没有你的对话上下文，
+              只能靠这段文字判断要不要用。写清：做什么 / 什么情况下该用 / 不该用 / 参数怎么填。
+            </span>
           </label>
           <label className="v3-service-agents-field">
             <span>调用名（工具名 catsco_&lt;调用名&gt;）</span>

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -21,6 +22,79 @@ func validBundleFixture() ServiceAgentBundle {
 			{Path: "skills/company-style.md", Content: "# 文风\n正式。\n"},
 			{Path: "knowledge/glossary.md", Content: "| 术语 |\n| --- |\n"},
 		},
+	}
+}
+
+// 作者（往往是 Agent 自己）在 agent.json 里声明「做什么」和「入参长什么样」，
+// 平台派生时必须原样带出来——这是调用方模型唯一能看见的契约。
+func TestServiceAgentBundleDerivesAuthorContract(t *testing.T) {
+	bundle := validBundleFixture()
+	bundle.Files[0].Content = `{
+  "schema": "catsco.service-agent.v1",
+  "slug": "weekly-report",
+  "name": "周报助手",
+  "description": "把一周的零散记录整理成对外周报，含进展、风险、下周计划。当用户明确要周报时使用；闲聊或单纯问日期时不要用。",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "notes": {"type": "string", "description": "本周记录原文"},
+      "audience": {"type": "string", "enum": ["老板", "全员"], "description": "给谁看"}
+    },
+    "required": ["notes"]
+  },
+  "prompt": {"system": "system-prompt.md"},
+  "behavior": {"async_threshold_seconds": 60},
+  "models": ["claude-sonnet-5-5"]
+}`
+	definition, err := ValidateServiceAgentBundle(bundle, "weekly-report")
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if !strings.Contains(definition.Description, "整理成对外周报") {
+		t.Fatalf("description = %q", definition.Description)
+	}
+	if len(definition.InputSchema) == 0 {
+		t.Fatal("input_schema should survive derivation")
+	}
+	// 紧凑化后仍是合法 JSON，且保留了作者写的 required
+	var schema struct {
+		Required   []string       `json:"required"`
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(definition.InputSchema, &schema); err != nil {
+		t.Fatalf("input_schema not valid json: %v", err)
+	}
+	if len(schema.Required) != 1 || schema.Required[0] != "notes" {
+		t.Fatalf("required = %v", schema.Required)
+	}
+	if _, ok := schema.Properties["audience"]; !ok {
+		t.Fatalf("properties = %v", schema.Properties)
+	}
+}
+
+// 作者没写就留空（面板会退回通用写法），但写错了必须拒绝——静默丢弃等于让工具变哑巴。
+func TestServiceAgentBundleRejectsBadInputSchema(t *testing.T) {
+	cases := []struct {
+		name   string
+		schema string
+	}{
+		{name: "not an object", schema: `"just a string"`},
+		{name: "wrong top-level type", schema: `{"type":"string"}`},
+		{name: "empty object", schema: `{}`},
+	}
+	for _, tc := range cases {
+		bundle := validBundleFixture()
+		bundle.Files[0].Content = `{
+  "schema": "catsco.service-agent.v1",
+  "slug": "weekly-report",
+  "prompt": {"system": "system-prompt.md"},
+  "behavior": {"async_threshold_seconds": 60},
+  "models": ["claude-sonnet-5-5"],
+  "input_schema": ` + tc.schema + `
+}`
+		if _, err := ValidateServiceAgentBundle(bundle, "weekly-report"); err == nil {
+			t.Fatalf("%s: expected error", tc.name)
+		}
 	}
 }
 

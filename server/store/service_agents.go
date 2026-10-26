@@ -124,6 +124,11 @@ type ServiceAgentDescriptor struct {
 	OwnerKind  string
 	OwnerUID   int64
 	Visibility string
+	// 工具契约（调用方 Agent 判断「何时用、怎么传参」的唯一依据）。
+	// Description 来自作者 manifest，原样下发；InputSchema 是 input 字段的 JSON Schema 文本
+	// （空串 = 作者未声明，平台退回通用参数写法）。
+	Description string
+	InputSchema string
 }
 
 // Service agent 归属与可见性常量（设计 §4.3）。

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -248,11 +249,85 @@ type serviceInvokeToolArgs struct {
 func (h *ServiceAgentsMCPHandler) addAgentTool(srv *mcp.Server, agent store.ServiceAgentDescriptor, callerUID int64) {
 	tool := &mcp.Tool{
 		Name:        "catsco_" + agent.Slug,
-		Description: fmt.Sprintf("%s（CatsCo 定制应用，slug=%s，版本 v%d）", agent.Name, agent.Slug, agent.Version),
+		Description: serviceAgentToolDescription(agent),
+	}
+	// 作者声明了入参 schema：用组合 schema 覆盖通用写法。
+	// 否则 input 只能是「任意 JSON」，调用方模型等于没被告知该怎么传参。
+	if schema, ok := composeServiceAgentToolSchema(agent.InputSchema); ok {
+		tool.InputSchema = schema
+		srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var args serviceInvokeToolArgs
+			if raw := req.Params.Arguments; len(raw) > 0 && string(raw) != "null" {
+				if err := json.Unmarshal(raw, &args); err != nil {
+					// 参数不合 schema：作为工具错误返回，让模型看到原因后自行修正重试。
+					return serviceToolError("invalid_arguments: " + err.Error()), nil
+				}
+			}
+			result, structured, err := h.invoke(ctx, agent, callerUID, args)
+			if err != nil {
+				return result, err
+			}
+			// Server.AddTool 是低层 API，不会自动填 structuredContent，必须自己带。
+			if result != nil && structured != nil && result.StructuredContent == nil {
+				result.StructuredContent = structured
+			}
+			return result, nil
+		})
+		return
 	}
 	mcp.AddTool(srv, tool, func(ctx context.Context, _ *mcp.CallToolRequest, args serviceInvokeToolArgs) (*mcp.CallToolResult, any, error) {
 		return h.invoke(ctx, agent, callerUID, args)
 	})
+}
+
+// serviceAgentToolDescription 生成调用方模型看到的工具描述。
+//
+// 描述只放「模型做决定需要的信息」：这个应用干什么、什么时候该用/不该用。
+// slug/版本是平台实现细节，对模型是噪音，不放进描述（之前写成
+// "名字（CatsCo 定制应用，slug=…，版本 v…）"，等于什么都没说）。
+func serviceAgentToolDescription(agent store.ServiceAgentDescriptor) string {
+	if description := strings.TrimSpace(agent.Description); description != "" {
+		return description
+	}
+	// 没写描述：明说信息不足，别让模型凭名字瞎猜（也提示调用方先把需求原文传进去）。
+	return fmt.Sprintf(
+		"%s（作者未说明这个应用能做什么；建议只在用户明确点名 catsco_%s 时调用，并把需求原文放入 input）",
+		agent.Name, agent.Slug,
+	)
+}
+
+// composeServiceAgentToolSchema 把作者给的 input schema 包进完整的工具参数 schema。
+//
+// 作者的 schema 描述的是 input 字段（业务入参）；session_id/client_token/bot_uid 是
+// 平台协议字段，由平台补全，不占用作者的 schema。
+func composeServiceAgentToolSchema(raw string) (map[string]any, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, false
+	}
+	var authorSchema map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &authorSchema); err != nil || len(authorSchema) == 0 {
+		return nil, false
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"input": authorSchema,
+			"session_id": map[string]any{
+				"type":        "string",
+				"description": "续聊会话 id（同一任务的追问才带）；不传=新会话",
+			},
+			"client_token": map[string]any{
+				"type":        "string",
+				"description": "幂等键（同会话同 token 重发返回同一 run）",
+			},
+			"bot_uid": map[string]any{
+				"type":        "integer",
+				"description": "调用方 bot 身份（可选）；传了就按该 bot 归属校验并写入会话",
+			},
+		},
+		"required": []string{"input"},
+	}, true
 }
 
 func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.ServiceAgentDescriptor, callerUID int64, args serviceInvokeToolArgs) (*mcp.CallToolResult, any, error) {

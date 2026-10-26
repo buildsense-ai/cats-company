@@ -72,6 +72,8 @@ func TestServiceAgentPublishValidatesInput(t *testing.T) {
 		{name: "bad visibility", body: map[string]any{"slug": "ok-slug", "visibility": "secret", "bundle_base64": bundleB64("x")}, status: 400, errKey: "invalid_visibility"},
 		{name: "missing bundle", body: map[string]any{"slug": "ok-slug"}, status: 400, errKey: "bundle_required"},
 		{name: "bad base64", body: map[string]any{"slug": "ok-slug", "bundle_base64": "!!!notb64"}, status: 400, errKey: "invalid_bundle"},
+		// 公开分享但不写描述：调用方 Agent 只看到名字，等于不知道能不能用。
+		{name: "public without description", body: map[string]any{"slug": "ok-slug", "bundle_base64": bundleB64("x")}, status: 400, errKey: "description_required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,7 +97,10 @@ func TestServiceAgentPublishOwnershipAndIdempotency(t *testing.T) {
 	payload := bundleB64("package-v1")
 	status, out := postPublish(t, ts.URL, map[string]any{
 		"slug": "my-helper", "name": "我的助手", "bundle_base64": payload,
-		"definition": map[string]any{"async_threshold_seconds": 30},
+		"definition": map[string]any{
+			"async_threshold_seconds": 30,
+			"description":             "把中文技术文档润色成对外英文稿，保留代码块。",
+		},
 	})
 	if status != http.StatusOK {
 		t.Fatalf("publish status = %d (%v)", status, out)
@@ -111,6 +116,7 @@ func TestServiceAgentPublishOwnershipAndIdempotency(t *testing.T) {
 	// 同内容重发：版本不变（内容寻址幂等）。
 	status, again := postPublish(t, ts.URL, map[string]any{
 		"slug": "my-helper", "name": "我的助手", "bundle_base64": payload,
+		"definition": map[string]any{"description": "把中文技术文档润色成对外英文稿，保留代码块。"},
 	})
 	if status != http.StatusOK {
 		t.Fatalf("republish status = %d (%v)", status, again)
@@ -122,6 +128,7 @@ func TestServiceAgentPublishOwnershipAndIdempotency(t *testing.T) {
 	// 新内容 → 版本递增。
 	status, next := postPublish(t, ts.URL, map[string]any{
 		"slug": "my-helper", "bundle_base64": bundleB64("package-v2"),
+		"definition": map[string]any{"description": "把中文技术文档润色成对外英文稿，保留代码块。"},
 	})
 	if status != http.StatusOK {
 		t.Fatalf("new content status = %d (%v)", status, next)
@@ -134,6 +141,7 @@ func TestServiceAgentPublishOwnershipAndIdempotency(t *testing.T) {
 	otherTS := newPublishTestServer(t, st, 442, true)
 	status, conflict := postPublish(t, otherTS.URL, map[string]any{
 		"slug": "my-helper", "bundle_base64": bundleB64("hijack"),
+		"definition": map[string]any{"description": "抢注测试"},
 	})
 	if status != http.StatusConflict || conflict["error"] != "slug_taken" {
 		t.Fatalf("hijack = %d %v, want 409 slug_taken", status, conflict)
@@ -142,6 +150,7 @@ func TestServiceAgentPublishOwnershipAndIdempotency(t *testing.T) {
 	// 平台内部 slug（hello）不可抢占。
 	status, reserved := postPublish(t, ts.URL, map[string]any{
 		"slug": "hello", "bundle_base64": bundleB64("fake"),
+		"definition": map[string]any{"description": "抢注内部 slug 测试"},
 	})
 	if status != http.StatusConflict || reserved["error"] != "slug_reserved" {
 		t.Fatalf("reserved = %d %v, want 409 slug_reserved", status, reserved)

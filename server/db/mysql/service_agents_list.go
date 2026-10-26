@@ -11,11 +11,14 @@ import (
 func (a *Adapter) ListServiceAgents(ctx context.Context) ([]store.ServiceAgentDescriptor, error) {
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT ranked.id, ranked.slug, ranked.name, ranked.version, ranked.threshold_seconds,
-		       ranked.owner_kind, ranked.owner_uid, ranked.visibility
+		       ranked.owner_kind, ranked.owner_uid, ranked.visibility,
+		       ranked.description, ranked.input_schema
 		FROM (
 			SELECT a.id, a.slug, a.name, v.version,
 			       COALESCE(CAST(v.definition_json->>'$.async_threshold_seconds' AS UNSIGNED), 60) AS threshold_seconds,
 			       a.owner_kind, a.owner_uid, a.visibility,
+			       COALESCE(v.definition_json->>'$.description', '') AS description,
+			       COALESCE(v.definition_json->>'$.input_schema', '') AS input_schema,
 			       ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY v.version DESC) AS rn
 			FROM service_agents a
 			JOIN service_agent_versions v ON v.agent_id = a.id
@@ -31,7 +34,7 @@ func (a *Adapter) ListServiceAgents(ctx context.Context) ([]store.ServiceAgentDe
 	for rows.Next() {
 		var d store.ServiceAgentDescriptor
 		if err := rows.Scan(&d.ID, &d.Slug, &d.Name, &d.Version, &d.AsyncThresholdSeconds,
-			&d.OwnerKind, &d.OwnerUID, &d.Visibility); err != nil {
+			&d.OwnerKind, &d.OwnerUID, &d.Visibility, &d.Description, &d.InputSchema); err != nil {
 			return nil, fmt.Errorf("scan service agent: %w", err)
 		}
 		agents = append(agents, d)

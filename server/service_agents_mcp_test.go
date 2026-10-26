@@ -689,6 +689,125 @@ func TestServiceAgentsMCPListAndSyncCall(t *testing.T) {
 	}
 }
 
+// 工具契约：调用方是另一个 Agent，它看不到包内容、也没有主 Agent 的上下文，
+// 只能靠 description + input schema 判断「要不要用、怎么传参」。
+// 这两样由作者（往往是 Agent 自己）在自己的 agent.json 里写，平台必须原样透出；
+// slug/版本这类实现细节对模型是噪音，不该出现在描述里。
+func TestServiceAgentsMCPToolContractFromAuthor(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.autoCompleteAfter = 5 * time.Millisecond
+	st.agents = []store.ServiceAgentDescriptor{{
+		ID: 7, Slug: "zh-polish", Name: "中文润色", Version: 3,
+		AsyncThresholdSeconds: 60,
+		OwnerKind:             store.ServiceAgentOwnerUser,
+		OwnerUID:              441,
+		Visibility:            store.ServiceAgentVisibilityPrivate,
+		Description:           "把中文技术文档润色成对外可发布的英文稿，保留代码块与专有名词。",
+		InputSchema:           `{"type":"object","properties":{"text":{"type":"string","description":"要处理的正文"}},"required":["text"]}`,
+	}}
+	handler := NewServiceAgentsMCPHandler(st)
+	ts := httptest.NewServer(mcpAuthStub(441, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+	ctx := context.Background()
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	var tool *mcp.Tool
+	for _, candidate := range tools.Tools {
+		if candidate.Name == "catsco_zh-polish" {
+			tool = candidate
+		}
+	}
+	if tool == nil {
+		t.Fatalf("catsco_zh-polish missing: %+v", tools.Tools)
+	}
+	const wantDescription = "把中文技术文档润色成对外可发布的英文稿，保留代码块与专有名词。"
+	if tool.Description != wantDescription {
+		t.Fatalf("description must be the author's text verbatim, got %q", tool.Description)
+	}
+	for _, leak := range []string{"slug=", "版本 v", "CatsCo 定制应用"} {
+		if strings.Contains(tool.Description, leak) {
+			t.Fatalf("description must not leak implementation details (%q): %q", leak, tool.Description)
+		}
+	}
+
+	schema, ok := tool.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("input schema = %T, want object", tool.InputSchema)
+	}
+	props, _ := schema["properties"].(map[string]any)
+	input, _ := props["input"].(map[string]any)
+	if input == nil {
+		t.Fatalf("input property missing: %+v", schema)
+	}
+	authorProps, _ := input["properties"].(map[string]any)
+	if _, ok := authorProps["text"]; !ok {
+		t.Fatalf("author property lost: %+v", input)
+	}
+	if _, ok := props["session_id"]; !ok {
+		t.Fatalf("platform fields must stay available: %+v", props)
+	}
+	required, _ := schema["required"].([]any)
+	if len(required) != 1 || required[0] != "input" {
+		t.Fatalf("input should be required, got %+v", schema["required"])
+	}
+
+	// 按作者声明的形状调用：参数透传到平台，结果照常回填 structuredContent
+	// （Server.AddTool 是低层 API，不会自动填，必须由 handler 自己带）。
+	call, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "catsco_zh-polish",
+		Arguments: map[string]any{"input": map[string]any{"text": "这是一段正文"}},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if call.IsError {
+		t.Fatalf("unexpected tool error: %+v", call.Content)
+	}
+	if call.StructuredContent == nil {
+		t.Fatal("structuredContent must survive the low-level handler path")
+	}
+}
+
+// 没写描述的应用：明说「作者未说明」，别让调用方模型凭名字瞎猜。
+func TestServiceAgentsMCPToolDescriptionFallback(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.agents = []store.ServiceAgentDescriptor{{
+		ID: 9, Slug: "mystery", Name: "神秘应用", Version: 1,
+		AsyncThresholdSeconds: 60,
+		OwnerKind:             store.ServiceAgentOwnerUser,
+		OwnerUID:              441,
+		Visibility:            store.ServiceAgentVisibilityPrivate,
+	}}
+	handler := NewServiceAgentsMCPHandler(st)
+	ts := httptest.NewServer(mcpAuthStub(441, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "catsco_mystery" {
+			continue
+		}
+		if !strings.Contains(tool.Description, "作者未说明") {
+			t.Fatalf("fallback description should admit the gap, got %q", tool.Description)
+		}
+		// 没有作者 schema → 退回通用参数写法（不伪造 required）
+		schema, _ := tool.InputSchema.(map[string]any)
+		if _, hasRequired := schema["required"]; hasRequired {
+			t.Fatalf("generic schema should not require input: %+v", schema)
+		}
+		return
+	}
+	t.Fatalf("catsco_mystery missing: %+v", tools.Tools)
+}
+
 func TestServiceAgentsMCPAsyncHandleAndStatus(t *testing.T) {
 	st := newFakeServiceAgentStore()
 	st.autoCompleteAfter = 300 * time.Millisecond
