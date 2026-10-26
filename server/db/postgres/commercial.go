@@ -61,6 +61,7 @@ func scanCommercialPlan(scanner interface {
 		&plan.CreatedAt,
 		&plan.UpdatedAt,
 		&plan.CloudWorkerBillingMode,
+		&plan.CloudWorkerDeploymentProfile,
 	); err != nil {
 		return nil, err
 	}
@@ -143,7 +144,7 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 	}
 	rows, err := a.db.Query(`
 		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-		       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode
+		       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile
 		FROM commercial_plans
 		` + where + `
 		ORDER BY sort_order ASC, id ASC`)
@@ -185,6 +186,10 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	if !valid || (billing == types.CloudWorkerOnDemand && normalizeCommercialSaleState(plan.SaleState) != "hidden") {
 		return 0, fmt.Errorf("trial billing is only allowed for hidden internal plans")
 	}
+	deploymentProfile, validProfile := types.NormalizeCloudWorkerProfile(plan.CloudWorkerDeploymentProfile)
+	if !validProfile {
+		return 0, fmt.Errorf("invalid cloud worker deployment profile")
+	}
 	budgets, err := encodeModelBudgets(plan.ModelBudgets)
 	if err != nil {
 		return 0, fmt.Errorf("encode model budgets: %w", err)
@@ -208,9 +213,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	err = a.db.QueryRow(`
 		INSERT INTO commercial_plans(
 			slug, name, description, price_fen, currency, sale_state, purchase_limit,
-			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, auto_update_models
+			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, cloud_worker_deployment_profile, auto_update_models
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -226,6 +231,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 			state = EXCLUDED.state,
 			sort_order = EXCLUDED.sort_order,
 			cloud_worker_billing_mode = EXCLUDED.cloud_worker_billing_mode,
+			cloud_worker_deployment_profile = EXCLUDED.cloud_worker_deployment_profile,
 			auto_update_models = EXCLUDED.auto_update_models
 		WHERE commercial_plans.archived_at IS NULL
 		RETURNING id`,
@@ -244,6 +250,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		plan.State,
 		sortOrder,
 		billing,
+		deploymentProfile,
 		plan.AutoUpdateModels,
 	).Scan(&id)
 	if err != nil {
@@ -355,6 +362,13 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 	profile, valid := types.NormalizeCloudWorkerProfile(invite.CloudWorkerProfile)
 	if !valid {
 		return 0, fmt.Errorf("invalid cloud worker profile")
+	}
+	if strings.TrimSpace(invite.CloudWorkerProfile) == "" {
+		// An invite without an explicit profile inherits the plan's, so a code
+		// minted for a shared-fleet plan hands out shared-fleet credits.
+		if err := a.db.QueryRow(`SELECT cloud_worker_deployment_profile FROM commercial_plans WHERE id=$1`, invite.PlanID).Scan(&profile); err != nil {
+			return 0, err
+		}
 	}
 	billing := invite.CloudWorkerBillingMode
 	if billing == "" {

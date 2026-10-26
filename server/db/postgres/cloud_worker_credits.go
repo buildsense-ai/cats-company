@@ -531,16 +531,42 @@ func (a *Adapter) MarkCloudWorkerLifecycleAwaitingRecycle(id int64, note string)
 }
 
 // grantCloudWorkerCredit is called inside the payment fulfillment transaction.
-func grantCloudWorkerCredit(tx *sql.Tx, uid int64, sourceRef string, expiresAt time.Time) error {
+// profile is the fleet the purchased plan targets; it travels with the credit so
+// the later provisioning call places the worker on the right backend.
+func grantCloudWorkerCredit(tx *sql.Tx, uid int64, sourceRef string, expiresAt time.Time, profile string) error {
 	if uid <= 0 || strings.TrimSpace(sourceRef) == "" {
 		return fmt.Errorf("invalid cloud worker credit grant")
 	}
+	profile, valid := types.NormalizeCloudWorkerProfile(profile)
+	if !valid {
+		return fmt.Errorf("invalid cloud worker deployment profile")
+	}
 	_, err := tx.Exec(`
-		INSERT INTO cloud_worker_credits(uid, source_ref, expires_at)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (source_ref) DO NOTHING`, uid, strings.TrimSpace(sourceRef), expiresAt)
+		INSERT INTO cloud_worker_credits(uid, source_ref, expires_at, deployment_profile)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (source_ref) DO NOTHING`, uid, strings.TrimSpace(sourceRef), expiresAt, profile)
 	if err != nil {
 		return fmt.Errorf("grant cloud worker credit: %w", err)
 	}
 	return nil
+}
+
+// planCloudWorkerDeploymentProfile resolves which fleet a plan's provisioning
+// credit should buy. Plans that predate the column, or a plan row that vanished
+// inside the transaction, fall back to the dedicated default rather than
+// silently moving a paying customer onto the shared fleet.
+func planCloudWorkerDeploymentProfile(tx *sql.Tx, planID int64) (string, error) {
+	var raw string
+	err := tx.QueryRow(`SELECT cloud_worker_deployment_profile FROM commercial_plans WHERE id = $1`, planID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return types.CloudWorkerPrivateNAT, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read plan deployment profile: %w", err)
+	}
+	profile, ok := types.NormalizeCloudWorkerProfile(raw)
+	if !ok {
+		return types.CloudWorkerPrivateNAT, nil
+	}
+	return profile, nil
 }

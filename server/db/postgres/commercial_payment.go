@@ -12,7 +12,7 @@ import (
 )
 
 const commercialPlanColumns = `id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode`
+  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile`
 
 func (a *Adapter) GetCommercialPlan(id int64) (*types.CommercialPlan, error) {
 	if id <= 0 {
@@ -578,7 +578,11 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 			return nil, false, err
 		}
 		if !survives {
-			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt); err != nil {
+			profile, err := planCloudWorkerDeploymentProfile(tx, order.PlanID)
+			if err != nil {
+				return nil, false, err
+			}
+			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt, profile); err != nil {
 				return nil, false, err
 			}
 		}
