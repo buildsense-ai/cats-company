@@ -74,6 +74,9 @@ func TestServiceAgentPublishValidatesInput(t *testing.T) {
 		{name: "bad base64", body: map[string]any{"slug": "ok-slug", "bundle_base64": "!!!notb64"}, status: 400, errKey: "invalid_bundle"},
 		// 公开分享但不写描述：调用方 Agent 只看到名字，等于不知道能不能用。
 		{name: "public without description", body: map[string]any{"slug": "ok-slug", "bundle_base64": bundleB64("x")}, status: 400, errKey: "description_required"},
+		// 入参 schema 与包通道同一套规则：写错了要当场报，不能落库成「input 是 string」。
+		{name: "input schema not object", body: map[string]any{"slug": "ok-slug", "bundle_base64": bundleB64("x"), "definition": map[string]any{"input_schema": "just a string"}}, status: 400, errKey: "invalid_input_schema"},
+		{name: "input schema wrong top type", body: map[string]any{"slug": "ok-slug", "bundle_base64": bundleB64("x"), "definition": map[string]any{"input_schema": map[string]any{"type": "string"}}}, status: 400, errKey: "invalid_input_schema"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,6 +88,47 @@ func TestServiceAgentPublishValidatesInput(t *testing.T) {
 				t.Fatalf("error = %v, want %s", got, tc.errKey)
 			}
 		})
+	}
+}
+
+// definition 里的 input_schema 与包通道（agent.json）共用同一套校验与紧凑化；
+// 其它字段必须原样保留（不能因为规范化把 pricing/runner 吃掉）。
+func TestServiceAgentDefinitionNormalizesInputSchema(t *testing.T) {
+	raw := json.RawMessage(`{
+  "description": "润色英文稿",
+  "async_threshold_seconds": 30,
+  "runner": {"type": "worker"},
+  "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+}`)
+	out, err := normalizeServiceAgentDefinition(raw)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	var view struct {
+		Description           string          `json:"description"`
+		AsyncThresholdSeconds int             `json:"async_threshold_seconds"`
+		Runner                map[string]any  `json:"runner"`
+		InputSchema           json.RawMessage `json:"input_schema"`
+	}
+	if err := json.Unmarshal(out, &view); err != nil {
+		t.Fatalf("normalized not valid json: %v", err)
+	}
+	if view.Description != "润色英文稿" || view.AsyncThresholdSeconds != 30 || view.Runner["type"] != "worker" {
+		t.Fatalf("other fields lost: %s", out)
+	}
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(view.InputSchema, &schema); err != nil {
+		t.Fatalf("input_schema not valid json: %v", err)
+	}
+	if len(schema.Required) != 1 || schema.Required[0] != "text" {
+		t.Fatalf("required = %v", schema.Required)
+	}
+
+	// 没声明 schema：不改动 definition（返回 nil 表示「保持原样」）。
+	if out, err := normalizeServiceAgentDefinition(json.RawMessage(`{"description":"x"}`)); err != nil || out != nil {
+		t.Fatalf("no schema: out=%s err=%v", out, err)
 	}
 }
 

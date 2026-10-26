@@ -285,6 +285,8 @@ relay 的 `current_usage` 上再比 `max_limit`，所以**碰额度上限一样�
   公开上架则直接 400 `description_required`（写了也没人会用，不如不发）。
 - **input_schema 校验**：必须是 JSON 对象、顶层 `type` 若出现只能为 `"object"`、≤8 KiB；
   不合法 → 发布失败（静默丢弃等于让工具变哑巴，宁可当场报错）。空/缺失走通用写法。
+  **两条通道同一套规则**：包通道读 `agent.json`，用户上架通道读 `definition.input_schema`
+  （400 `invalid_input_schema`）。"
 - 平台字段（`session_id` / `client_token` / `bot_uid`）始终可用，与作者的 `input` 平级。
 
 > 自发布闭环：Agent 只需在自己的 `agent.json` 里写好这两段，然后调
