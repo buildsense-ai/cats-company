@@ -370,6 +370,11 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 			return 0, err
 		}
 	}
+	// Re-validate after inheritance: the inherited value must not reach the
+	// invite row unnormalized.
+	if profile, valid = types.NormalizeCloudWorkerProfile(profile); !valid {
+		return 0, fmt.Errorf("invalid cloud worker profile")
+	}
 	billing := invite.CloudWorkerBillingMode
 	if billing == "" {
 		if err := a.db.QueryRow(`SELECT cloud_worker_billing_mode FROM commercial_plans WHERE id=$1`, invite.PlanID).Scan(&billing); err != nil {
