@@ -634,12 +634,15 @@ ALTER TABLE service_instances ADD COLUMN owner_uid BIGINT NOT NULL DEFAULT 0;
 
 // 自述（self_intro）：应用跑完后「建议」的自我描述，等人确认才写进 definition。
 // MySQL 一条 ALTER 只能加一列，重复列错误会被 isIgnorableMigrationError 吞掉。
+// 自述建议（000062）：MySQL 的 TEXT 不能带字面量 DEFAULT，而 NOT NULL 又会让
+// 那些没写这两列的 INSERT（ClaimServiceAgentOwnership 等）在 strict 模式报 1364，
+// 所以用可空列；读取侧已经 COALESCE(..., ”)，Go 侧拿到的仍是空字符串。
 const migrateServiceAgentsAddSelfIntroDescription = `
-ALTER TABLE service_agents ADD COLUMN self_intro_description TEXT NOT NULL;
+ALTER TABLE service_agents ADD COLUMN self_intro_description TEXT NULL;
 `
 
 const migrateServiceAgentsAddSelfIntroInputSchema = `
-ALTER TABLE service_agents ADD COLUMN self_intro_input_schema TEXT NOT NULL;
+ALTER TABLE service_agents ADD COLUMN self_intro_input_schema TEXT NULL;
 `
 
 // 用户自己的 worker 凭据（PG 镜像；只存 sha256，明文仅创建时返回）。

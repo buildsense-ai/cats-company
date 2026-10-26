@@ -53,26 +53,23 @@ func TestServiceAgentsEndToEnd(t *testing.T) {
 		t.Fatalf("open scoped pg: %v", err)
 	}
 	t.Cleanup(func() { _ = scoped.Close() })
-	migration, err := os.ReadFile("db/migrations/postgres/000027_service_agents.up.sql")
-	if err != nil {
-		t.Fatalf("read service agents migration: %v", err)
-	}
-	if _, err := scoped.Exec(string(migration)); err != nil {
-		t.Fatalf("apply service agents migration: %v", err)
-	}
-	receiptsMigration, err := os.ReadFile("db/migrations/postgres/000033_service_run_receipts.up.sql")
-	if err != nil {
-		t.Fatalf("read service run receipts migration: %v", err)
-	}
-	if _, err := scoped.Exec(string(receiptsMigration)); err != nil {
-		t.Fatalf("apply service run receipts migration: %v", err)
-	}
-	subscriptionsMigration, err := os.ReadFile("db/migrations/postgres/000034_service_agent_subscriptions.up.sql")
-	if err != nil {
-		t.Fatalf("read service agent subscriptions migration: %v", err)
-	}
-	if _, err := scoped.Exec(string(subscriptionsMigration)); err != nil {
-		t.Fatalf("apply service agent subscriptions migration: %v", err)
+	// 这个 e2e 每次都在全新 schema 上跑，清单必须覆盖它要读的每一列。
+	// 漏一个迁移不是「少一列」，而是 ListServiceAgents 整条查询失败——
+	// owner_kind（000045）和 self_intro_*（000062）都踩过这个坑。
+	for _, name := range []string{
+		"000027_service_agents.up.sql",
+		"000033_service_run_receipts.up.sql",
+		"000034_service_agent_subscriptions.up.sql",
+		"000045_service_agents_ownership.up.sql",
+		"000062_service_agents_self_intro.up.sql",
+	} {
+		statement, err := os.ReadFile("db/migrations/postgres/" + name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if _, err := scoped.Exec(string(statement)); err != nil {
+			t.Fatalf("apply migration %s: %v", name, err)
+		}
 	}
 	adapter := &postgres.Adapter{}
 	if err := adapter.Open(scopedDSN); err != nil {

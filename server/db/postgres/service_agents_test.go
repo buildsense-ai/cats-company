@@ -18,6 +18,8 @@ func seedHelloAgent(t *testing.T, db *Adapter) {
 	execRetireV4MigrationFile(t, db, "000034_service_agent_subscriptions.up.sql")
 	// 归属与可见性（000045）。
 	execRetireV4MigrationFile(t, db, "000045_service_agents_ownership.up.sql")
+	// 自述建议（000062）：ListServiceAgents 会读这两列，缺列整条查询就失败。
+	execRetireV4MigrationFile(t, db, "000062_service_agents_self_intro.up.sql")
 }
 
 func agentID(t *testing.T, st *Adapter, slug string) int64 {
