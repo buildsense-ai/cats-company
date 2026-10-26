@@ -42,6 +42,9 @@ type ServiceRun struct {
 	Attempts       int
 	CheckpointRef  string
 	LeaseEpoch     int64 // fencing 单调租约纪元（设计 §4.8-1）
+	// ErrorText 是终态失败原因（机器可读的短码，如 no_command / not_picked_up）。
+	// 必须带给调用方：否则它只看到 "failed"，既无法转告用户也不知道该不该重试。
+	ErrorText string
 }
 
 type ServiceRunEventRecord struct {
@@ -236,5 +239,7 @@ type ServiceAgentStore interface {
 	SetServiceAgentSubscriptionHidden(ctx context.Context, uid, agentID int64, hidden bool) error
 	// RecordServiceInstanceHeartbeat 落库实例心跳（监控数据源；设计 §7.1"实例在线数"）。
 	// UPSERT 语义：每实例一行最新值；last_seen_at 刷新（在线判定=now-last_seen < 阈值）。
-	RecordServiceInstanceHeartbeat(ctx context.Context, instanceID string, activeRuns int, metrics json.RawMessage) error
+	// ownerUID 由鉴权层解析（0=平台内部 worker），用于按账号判断「你这边有没有 worker」——
+	// 不能信 payload，否则任何人可以谎称自己的 worker 服务别人的应用。
+	RecordServiceInstanceHeartbeat(ctx context.Context, instanceID string, ownerUID int64, activeRuns int, metrics json.RawMessage) error
 }

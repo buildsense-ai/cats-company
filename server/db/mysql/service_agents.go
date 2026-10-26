@@ -16,7 +16,7 @@ import (
 
 var _ store.ServiceAgentStore = (*Adapter)(nil)
 
-const mysqlServiceRunColumns = `run_id, session_id, state, client_token, input_json, instance_id, lease_epoch, lease_expires_at, attempts, result_json, checkpoint_ref`
+const mysqlServiceRunColumns = `run_id, session_id, state, client_token, input_json, instance_id, lease_epoch, lease_expires_at, attempts, result_json, checkpoint_ref, COALESCE(error_text, '')`
 
 type mysqlServiceRunScanner interface {
 	Scan(dest ...interface{}) error
@@ -29,7 +29,7 @@ func scanMySQLServiceRun(scanner mysqlServiceRunScanner) (store.ServiceRun, erro
 	var clientToken sql.NullString
 	if err := scanner.Scan(
 		&run.RunID, &run.SessionID, &run.State, &clientToken, &input, &run.InstanceID,
-		&run.LeaseEpoch, &leaseExpires, &run.Attempts, &result, &run.CheckpointRef,
+		&run.LeaseEpoch, &leaseExpires, &run.Attempts, &result, &run.CheckpointRef, &run.ErrorText,
 	); err != nil {
 		return store.ServiceRun{}, err
 	}

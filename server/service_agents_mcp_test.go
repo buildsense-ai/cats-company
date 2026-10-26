@@ -479,18 +479,19 @@ func (f *fakeServiceAgentStore) ReapExpiredServiceRuns(context.Context) (int, er
 }
 
 // RecordServiceInstanceHeartbeat 记录实例心跳（监控落库断言用）。
-func (f *fakeServiceAgentStore) RecordServiceInstanceHeartbeat(_ context.Context, instanceID string, activeRuns int, metrics json.RawMessage) error {
+func (f *fakeServiceAgentStore) RecordServiceInstanceHeartbeat(_ context.Context, instanceID string, ownerUID int64, activeRuns int, metrics json.RawMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.instanceHeartbeats == nil {
 		f.instanceHeartbeats = map[string]fakeInstanceHeartbeat{}
 	}
-	f.instanceHeartbeats[instanceID] = fakeInstanceHeartbeat{ActiveRuns: activeRuns, Metrics: append(json.RawMessage(nil), metrics...)}
+	f.instanceHeartbeats[instanceID] = fakeInstanceHeartbeat{OwnerUID: ownerUID, ActiveRuns: activeRuns, Metrics: append(json.RawMessage(nil), metrics...)}
 	return nil
 }
 
 // fakeInstanceHeartbeat 是 RecordServiceInstanceHeartbeat 的落库快照（测试断言用）。
 type fakeInstanceHeartbeat struct {
+	OwnerUID   int64
 	ActiveRuns int
 	Metrics    json.RawMessage
 }
@@ -806,6 +807,66 @@ func TestServiceAgentsMCPToolDescriptionFallback(t *testing.T) {
 		return
 	}
 	t.Fatalf("catsco_mystery missing: %+v", tools.Tools)
+}
+
+// 失败必须带回可读原因。只回 "run terminated" 时，调用方 Agent 既不知道是谁的问题，
+// 也不知道该不该重试，只能原样复述「失败了」，用户拿不到任何可行动信息。
+func TestServiceRunTerminalEnvelopeExplainsFailure(t *testing.T) {
+	cases := []struct {
+		name      string
+		state     string
+		errText   string
+		wantSub   []string
+		rejectSub []string
+	}{
+		{
+			name: "没人认领", state: "failed", errText: "not_picked_up",
+			wantSub: []string{"not_picked_up", "发布者", "与调用参数无关", "重试不会变好", "小八"},
+			// 不能让调用方以为是自己参数的问题
+			rejectSub: []string{"invalid_arguments"},
+		},
+		{
+			name: "没声明命令", state: "failed", errText: "no_command",
+			wantSub: []string{"no_command", "执行命令", "发布者"},
+		},
+		{
+			// 未知短码至少把原始原因透出来，不吞掉
+			name: "未知原因原样透出", state: "failed", errText: "boom",
+			wantSub: []string{"boom"},
+		},
+		{
+			// 连原因都没有（老数据）才回退到笼统说法
+			name: "无原因", state: "failed",
+			wantSub: []string{"run terminated"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			terminal, env := serviceRunTerminalEnvelope(store.ServiceRun{
+				RunID: "run_1", SessionID: "sess_1", State: c.state, ErrorText: c.errText,
+			})
+			if !terminal {
+				t.Fatal("failed/cancelled must be terminal")
+			}
+			if env.Status != ServiceRunState(c.state) {
+				t.Fatalf("status = %q", env.Status)
+			}
+			for _, want := range c.wantSub {
+				if !strings.Contains(env.Error, want) {
+					t.Fatalf("error %q missing %q", env.Error, want)
+				}
+			}
+			for _, reject := range c.rejectSub {
+				if strings.Contains(env.Error, reject) {
+					t.Fatalf("error %q must not contain %q", env.Error, reject)
+				}
+			}
+			// 文本摘要也要带上原因（调用方模型常只读 content）
+			if text := serviceRunToolResult(env).Content[0].(*mcp.TextContent).Text; !strings.Contains(text, c.wantSub[0]) {
+				t.Fatalf("text summary %q missing error", text)
+			}
+		})
+	}
 }
 
 func TestServiceAgentsMCPAsyncHandleAndStatus(t *testing.T) {

@@ -170,6 +170,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceRunEventsTable,
 		createServiceSessionCheckpointsTable,
 		createServiceInstancesTable,
+		migrateServiceInstancesAddOwnerUID,
 		createServiceWorkerTokensTable,
 		createServiceRunsCreatedAtIndex,
 		createServiceRunReceiptsTable,
@@ -609,14 +610,24 @@ CREATE TABLE IF NOT EXISTS service_session_checkpoints (
 );`
 
 // 实例心跳注册（000032 编号迁移镜像；设计 §7.1“实例在线数”数据源）。
+// owner_uid：这条 worker 属于哪个账号（心跳鉴权解出；0=平台内部 worker）。
+// 没有它就无法按账号预检「你这边有没有 worker」——claim 是 per-user 的，
+// 别人的 worker 对本应用毫无意义。
 const createServiceInstancesTable = `
 CREATE TABLE IF NOT EXISTS service_instances (
     instance_id VARCHAR(64) PRIMARY KEY,
+    owner_uid BIGINT NOT NULL DEFAULT 0,
     active_runs INT NOT NULL DEFAULT 0,
     metrics_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );`
+
+// 已存在的 service_instances 不会被 CREATE TABLE IF NOT EXISTS 补列，必须显式 ALTER。
+// 历史行默认 0（平台内部），它们的 worker 下次心跳就会写入真实 owner。
+const migrateServiceInstancesAddOwnerUID = `
+ALTER TABLE service_instances
+ADD COLUMN IF NOT EXISTS owner_uid BIGINT NOT NULL DEFAULT 0;`
 
 // 用户自己的 worker 凭据（per-user）：worker 用它只能认领「自己拥有的应用」的 run，
 // 不再依赖全局实例 token（拿到就能领别人的 run）。库里只存 sha256，明文仅创建时返回。

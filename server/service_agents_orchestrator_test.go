@@ -260,6 +260,37 @@ func doInternal(t *testing.T, method, url, token, body string) (int, []byte) {
 	return resp.StatusCode, payload
 }
 
+// 公网 worker 心跳必须把**鉴权解出的账号**落进 owner_uid。
+//
+// 离线预检按 owner 过滤（claim 是 per-user 的），owner 落错等于预检失效：
+// 别人的 worker 会被当成「你的」，run 停在 submitted 永远没人领。
+// 所以这条盯两件事：uid 正确落库、payload 里伪造 owner 一律无视。
+func TestServiceOrchestratorWorkerHeartbeatRecordsOwner(t *testing.T) {
+	st, _, _ := seedOrchestratorFixture(t)
+	_, base := newOrchestratorServer(t, st)
+
+	workerToken, _, err := MintServiceWorkerSession(441, time.Hour)
+	if err != nil {
+		t.Fatalf("mint worker session: %v", err)
+	}
+
+	// payload 里塞一个假的 owner_uid：必须被忽略（owner 只能来自凭证）。
+	body := `{"owner_uid":999,"active_runs":2,"metrics":{"serve_all":true}}`
+	status, payload := doInternal(t, "POST", base+ServiceWorkerAPIPrefix+"/instances/inst-u441/heartbeat", workerToken, body)
+	if status != http.StatusOK {
+		t.Fatalf("worker heartbeat status=%d body=%s", status, payload)
+	}
+	st.mu.Lock()
+	recorded := st.instanceHeartbeats["inst-u441"]
+	st.mu.Unlock()
+	if recorded.OwnerUID != 441 {
+		t.Fatalf("owner = %d, want 441（必须来自凭证，不能来自 payload）", recorded.OwnerUID)
+	}
+	if recorded.ActiveRuns != 2 {
+		t.Fatalf("active_runs = %d, want 2", recorded.ActiveRuns)
+	}
+}
+
 // ---- 测试 ----
 
 func TestServiceOrchestratorClaimAuth(t *testing.T) {
@@ -421,6 +452,10 @@ func TestServiceOrchestratorClaimLifecycle(t *testing.T) {
 	}
 	if recorded.ActiveRuns != 1 || !strings.Contains(string(recorded.Metrics), `"cpu":0.5`) {
 		t.Fatalf("persisted heartbeat = %+v", recorded)
+	}
+	// 实例 token 是平台内部身份：owner 必须落 0，否则内部 worker 会被当成某个用户的。
+	if recorded.OwnerUID != 0 {
+		t.Fatalf("internal instance heartbeat owner = %d, want 0", recorded.OwnerUID)
 	}
 	// 坏体 → 400（不再静默回执）
 	if status, _ := doInternal(t, "POST", base+"/internal/service-instances/inst-a/heartbeat", "inst-token-1", `{oops`); status != http.StatusBadRequest {

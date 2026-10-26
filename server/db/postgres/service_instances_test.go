@@ -60,7 +60,7 @@ func TestServiceInstanceHeartbeatRegistry(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-1", 2, json.RawMessage(`{"tokens_total":10}`)); err != nil {
+	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-1", 0, 2, json.RawMessage(`{"tokens_total":10}`)); err != nil {
 		t.Fatalf("first heartbeat: %v", err)
 	}
 	var firstSeen, lastSeen time.Time
@@ -77,7 +77,7 @@ func TestServiceInstanceHeartbeatRegistry(t *testing.T) {
 	}
 
 	time.Sleep(10 * time.Millisecond)
-	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-1", 0, json.RawMessage(`{}`)); err != nil {
+	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-1", 0, 0, json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("second heartbeat: %v", err)
 	}
 	var secondLastSeen time.Time
@@ -101,7 +101,7 @@ func TestServiceInstanceHeartbeatRegistry(t *testing.T) {
 	}
 
 	// 负值防御 + 空 metrics 兜底
-	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-2", -5, nil); err != nil {
+	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-2", 0, -5, nil); err != nil {
 		t.Fatalf("negative heartbeat: %v", err)
 	}
 	if err := db.db.QueryRowContext(ctx, `
@@ -110,5 +110,42 @@ func TestServiceInstanceHeartbeatRegistry(t *testing.T) {
 	}
 	if activeRuns != 0 {
 		t.Fatalf("negative active_runs must clamp to 0, got %d", activeRuns)
+	}
+
+	// owner_uid 必须真的落库并能读回来：预检靠它区分「你自己的 worker」和「别人的」。
+	// 落不进去等于预检永远看到 0，用户应用一律被判成「平台内部」而误报离线。
+	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-3", 441, 1, json.RawMessage(`{"serve_all":true}`)); err != nil {
+		t.Fatalf("owner heartbeat: %v", err)
+	}
+	var ownerUID int64
+	if err := db.db.QueryRowContext(ctx, `
+		SELECT owner_uid FROM service_instances WHERE instance_id = $1`, "catsco-agents-3").Scan(&ownerUID); err != nil {
+		t.Fatalf("select owner_uid: %v", err)
+	}
+	if ownerUID != 441 {
+		t.Fatalf("owner_uid = %d, want 441", ownerUID)
+	}
+	// 同一实例再次心跳会改写 owner（凭据换了人就不该继续算旧账号的 worker）。
+	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-3", 442, 0, json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("owner heartbeat update: %v", err)
+	}
+	if err := db.db.QueryRowContext(ctx, `
+		SELECT owner_uid FROM service_instances WHERE instance_id = $1`, "catsco-agents-3").Scan(&ownerUID); err != nil {
+		t.Fatalf("select owner_uid after update: %v", err)
+	}
+	if ownerUID != 442 {
+		t.Fatalf("owner_uid after update = %d, want 442", ownerUID)
+	}
+	// ListOnlineServiceInstances 必须把 owner 带出来，否则上层过滤不到。
+	online, err := db.ListOnlineServiceInstances(ctx, time.Minute)
+	if err != nil {
+		t.Fatalf("list online: %v", err)
+	}
+	seen := map[string]int64{}
+	for _, instance := range online {
+		seen[instance.InstanceID] = instance.OwnerUID
+	}
+	if seen["catsco-agents-3"] != 442 {
+		t.Fatalf("online presence for catsco-agents-3 = %d, want 442", seen["catsco-agents-3"])
 	}
 }

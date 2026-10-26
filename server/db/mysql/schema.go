@@ -81,6 +81,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateArtifactRuntimeEventsV2DataBackfill,
 		migrateArtifactRuntimeEventsV2DataNotNull,
 		migrateArtifactRuntimeEventsV2RunIndex,
+		migrateServiceInstancesAddOwnerUID,
 		migrateBotConfigAddAPIKey,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
@@ -611,15 +612,22 @@ CREATE TABLE IF NOT EXISTS service_session_checkpoints (
 `
 
 // 实例心跳注册（PG 000032 镜像；设计 §7.1“实例在线数”数据源）。
+// owner_uid：这条 worker 属于哪个账号（心跳鉴权解出；0=平台内部 worker）。
 const createServiceInstancesTable = `
 CREATE TABLE IF NOT EXISTS service_instances (
     instance_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    owner_uid BIGINT NOT NULL DEFAULT 0,
     active_runs INT NOT NULL DEFAULT 0,
     metrics_json JSON NOT NULL,
     first_seen_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     last_seen_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (instance_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+// 已存在的表不会被 CREATE TABLE IF NOT EXISTS 补列（重复列错误由 isIgnorableMigrationError 吞掉）。
+const migrateServiceInstancesAddOwnerUID = `
+ALTER TABLE service_instances ADD COLUMN owner_uid BIGINT NOT NULL DEFAULT 0;
 `
 
 // 用户自己的 worker 凭据（PG 镜像；只存 sha256，明文仅创建时返回）。

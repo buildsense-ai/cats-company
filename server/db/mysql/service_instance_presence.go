@@ -15,7 +15,7 @@ func (a *Adapter) ListOnlineServiceInstances(ctx context.Context, window time.Du
 		window = 90 * time.Second
 	}
 	rows, err := a.db.QueryContext(ctx, `
-		SELECT instance_id, metrics_json
+		SELECT instance_id, owner_uid, metrics_json
 		FROM service_instances
 		WHERE last_seen_at >= DATE_SUB(NOW(6), INTERVAL ? SECOND)`, int(window.Seconds()))
 	if err != nil {
@@ -27,7 +27,7 @@ func (a *Adapter) ListOnlineServiceInstances(ctx context.Context, window time.Du
 	for rows.Next() {
 		var item store.ServiceInstancePresence
 		var metrics []byte
-		if err := rows.Scan(&item.InstanceID, &metrics); err != nil {
+		if err := rows.Scan(&item.InstanceID, &item.OwnerUID, &metrics); err != nil {
 			return nil, fmt.Errorf("scan online service instance: %w", err)
 		}
 		item.Metrics = json.RawMessage(metrics)

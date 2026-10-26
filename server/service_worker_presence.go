@@ -62,12 +62,15 @@ type ServiceWorkerOfflineError struct {
 
 func (e *ServiceWorkerOfflineError) Error() string {
 	if e.NoWorkers {
-		return "你这边没有 worker 在接单"
+		return "发布者这边没有任何 worker 在线"
 	}
-	return "在线 worker 没有在服务这个应用"
+	return "发布者这边虽然有人在线，但没有一个在服务这个应用"
 }
 
 // serviceWorkerOfflineToolError 是告诉调用方该怎么救的那句话（MCP tool 错误文本）。
+//
+// 原则：**说清是谁的问题、该去哪儿动手**。调用方是另一个 Agent，它看不到用户机器，
+// 所以必须指出「这是发布者那一侧的事，不是你的参数错了」，否则它会反复重试或改参数。
 //
 // 桌面端已把 worker 内嵌进去，用户能做的最简单一步就是「在那台机器上登录小八」；
 // 千万不要再写「命令见面板」——面板已经不展示任何启动命令，用户会找不到。
@@ -77,7 +80,8 @@ func (e *ServiceWorkerOfflineError) Error() string {
 // 也不能写「你的电脑」：同一个 agent 完全可能跑在用户自己的云服务器上（云员工）。
 func serviceWorkerOfflineToolError(offline *ServiceWorkerOfflineError) string {
 	return fmt.Sprintf(
-		"worker_offline: %s。在要跑这个应用的那台机器上（电脑或云服务器）启动小八并登录，它就会主动接单——不需要公网 IP，也不用开任何端口。",
+		"worker_offline: %s。这是发布者那一侧的执行环境没就绪，与调用参数无关——重试或改成别的参数都不会变好，请把这条原因原样转告用户："+
+			"在要跑这个应用的那台机器上（电脑或云服务器）启动小八并登录，它就会主动接单（不需要公网 IP，也不用开任何端口）。",
 		offline.Error(),
 	)
 }
@@ -142,20 +146,43 @@ func (h *ServiceAgentsMCPHandler) isWorkerRunner(ctx context.Context, agent stor
 
 // checkWorkerOnline 在创建 run 之前确认有在线 worker 能接该应用。
 //
+// 只算「发布者自己的」worker：claim 跑的是 per-user 凭据（只能领自己名下应用的 run），
+// 别人的 worker 就算在线也接不到这一单。不过滤的后果很具体——平台上任意一个人开着
+// 小八，其它人的应用都会被判成「在线」，于是 run 停在 submitted 永远没人领，
+// 调用方也等不到 worker_offline（2026-10-26 生产实测）。
+//
 // 明确 fail-open 的两种情况：存储没实现这个能力、或查询出错 —— 宁可让用户在同步窗口里
 // 等一下，也不能因为监控数据抖动把正常调用挡掉。
-func (h *ServiceAgentsMCPHandler) checkWorkerOnline(ctx context.Context, slug string) error {
-	store, ok := h.store.(serviceWorkerPresenceStore)
+func (h *ServiceAgentsMCPHandler) checkWorkerOnline(ctx context.Context, agent store.ServiceAgentDescriptor) error {
+	presenceStore, ok := h.store.(serviceWorkerPresenceStore)
 	if !ok {
 		return nil
 	}
-	instances, err := store.ListOnlineServiceInstances(ctx, serviceWorkerOnlineWindow)
+	instances, err := presenceStore.ListOnlineServiceInstances(ctx, serviceWorkerOnlineWindow)
 	if err != nil {
 		return nil
 	}
-	presence := workerPresence(instances)
-	if presence.Serves(slug) {
+	presence := workerPresence(instancesForOwner(instances, agent.OwnerUID))
+	if presence.Serves(agent.Slug) {
 		return nil
 	}
-	return &ServiceWorkerOfflineError{Slug: slug, NoWorkers: presence.Online == 0}
+	return &ServiceWorkerOfflineError{Slug: agent.Slug, NoWorkers: presence.Online == 0}
+}
+
+// instancesForOwner 只保留该 owner 名下的 worker（0=平台内部）。
+//
+// 升级兼容：owner_uid 是后加的列，历史行动是 0，会被当成平台内部 worker。
+// 这个方向的误判是安全的（用户的 worker 下次心跳就会带回真实 owner），
+// 反过来把「别人的 worker」当成「你的」会让离线预检彻底失效。
+func instancesForOwner(instances []store.ServiceInstancePresence, ownerUID int64) []store.ServiceInstancePresence {
+	if ownerUID < 0 {
+		ownerUID = 0
+	}
+	filtered := make([]store.ServiceInstancePresence, 0, len(instances))
+	for _, instance := range instances {
+		if instance.OwnerUID == ownerUID {
+			filtered = append(filtered, instance)
+		}
+	}
+	return filtered
 }

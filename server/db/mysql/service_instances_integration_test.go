@@ -13,7 +13,7 @@ func TestMySQLServiceInstanceHeartbeatRegistry(t *testing.T) {
 	db := mysqlTestAdapter(t)
 	ctx := context.Background()
 
-	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-1", 3, json.RawMessage(`{"tokens_total":7}`)); err != nil {
+	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-1", 0, 3, json.RawMessage(`{"tokens_total":7}`)); err != nil {
 		t.Fatalf("first heartbeat: %v", err)
 	}
 	var activeRuns int
@@ -30,7 +30,7 @@ func TestMySQLServiceInstanceHeartbeatRegistry(t *testing.T) {
 	}
 
 	time.Sleep(10 * time.Millisecond)
-	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-1", 1, json.RawMessage(`{}`)); err != nil {
+	if err := db.RecordServiceInstanceHeartbeat(ctx, "catsco-agents-1", 0, 1, json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("second heartbeat: %v", err)
 	}
 	var secondLastSeen time.Time

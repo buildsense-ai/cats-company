@@ -583,7 +583,9 @@ func (o *ServiceRunOrchestrator) handleInstanceHeartbeat(w http.ResponseWriter, 
 	if err != nil || len(metrics) == 0 {
 		metrics = json.RawMessage(`{}`)
 	}
-	if err := o.store.RecordServiceInstanceHeartbeat(r.Context(), instanceID, req.ActiveRuns, metrics); err != nil {
+	// owner 来自鉴权层（cwk_ / worker 券解出的 uid，实例 token 为 0），**不信 payload**：
+	// 否则任何人都能宣称自己的 worker 服务别人的应用，让对方的离线预检形同虚设。
+	if err := o.store.RecordServiceInstanceHeartbeat(r.Context(), instanceID, serviceWorkerUID(r.Context()), req.ActiveRuns, metrics); err != nil {
 		log.Printf("service instance heartbeat persist instance=%s: %v", instanceID, err)
 	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"ok": true})

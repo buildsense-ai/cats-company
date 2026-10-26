@@ -13,9 +13,14 @@ import (
 
 // 在线 worker 预检：用户没开 worker 时要立刻说清楚，而不是让人白等同步窗口。
 
-func presenceInstance(id string, metrics map[string]any) store.ServiceInstancePresence {
+// presenceInstance 造一条在线实例快照（owner 必填：预检按账号过滤）。
+func presenceInstance(id string, ownerUID int64, metrics map[string]any) store.ServiceInstancePresence {
 	raw, _ := json.Marshal(metrics)
-	return store.ServiceInstancePresence{InstanceID: id, Metrics: raw}
+	return store.ServiceInstancePresence{InstanceID: id, OwnerUID: ownerUID, Metrics: raw}
+}
+
+func agentOwnedBy(slug string, ownerUID int64) store.ServiceAgentDescriptor {
+	return store.ServiceAgentDescriptor{ID: 1, Slug: slug, Version: 1, OwnerUID: ownerUID}
 }
 
 func TestWorkerPresenceServes(t *testing.T) {
@@ -27,17 +32,17 @@ func TestWorkerPresenceServes(t *testing.T) {
 	}{
 		{"无实例", nil, "a", false},
 		{"实例声明该 slug", []store.ServiceInstancePresence{
-			presenceInstance("w1", map[string]any{"agents": []string{"a", "b"}}),
+			presenceInstance("w1", 7, map[string]any{"agents": []string{"a", "b"}}),
 		}, "a", true},
 		{"实例只服务别的 slug", []store.ServiceInstancePresence{
-			presenceInstance("w1", map[string]any{"agents": []string{"c"}}),
+			presenceInstance("w1", 7, map[string]any{"agents": []string{"c"}}),
 		}, "a", false},
 		{"serve_all 兜住一切", []store.ServiceInstancePresence{
-			presenceInstance("w1", map[string]any{"serve_all": true}),
+			presenceInstance("w1", 7, map[string]any{"serve_all": true}),
 		}, "anything", true},
 		{"多实例取并集", []store.ServiceInstancePresence{
-			presenceInstance("w1", map[string]any{"agents": []string{"c"}}),
-			presenceInstance("w2", map[string]any{"agents": []string{"a"}}),
+			presenceInstance("w1", 7, map[string]any{"agents": []string{"c"}}),
+			presenceInstance("w2", 7, map[string]any{"agents": []string{"a"}}),
 		}, "a", true},
 		{"metrics 非法当没有服务范围", []store.ServiceInstancePresence{
 			{InstanceID: "w1", Metrics: json.RawMessage(`not-json`)},
@@ -45,13 +50,13 @@ func TestWorkerPresenceServes(t *testing.T) {
 		// 升级兼容：旧版 worker 心跳只有 os/arch/pid，范围未知 → 放行，
 		// 否则升级平台会把还在干活的旧 worker 全判成离线。
 		{"旧版 worker 心跳（无 agents 字段）", []store.ServiceInstancePresence{
-			presenceInstance("w1", map[string]any{"worker": "service-run-worker", "os": "linux", "pid": 7}),
+			presenceInstance("w1", 7, map[string]any{"worker": "service-run-worker", "os": "linux", "pid": 7}),
 		}, "anything", true},
 		{"空 metrics 也算未知→放行", []store.ServiceInstancePresence{
 			{InstanceID: "w1"},
 		}, "a", true},
 		{"新版声明只服务别的应用时才拦", []store.ServiceInstancePresence{
-			presenceInstance("w1", map[string]any{"agents": []string{"c"}, "serve_all": false}),
+			presenceInstance("w1", 7, map[string]any{"agents": []string{"c"}, "serve_all": false}),
 		}, "a", false},
 	}
 	for _, c := range cases {
@@ -81,10 +86,11 @@ func (f *fakePresenceStore) ListOnlineServiceInstances(context.Context, time.Dur
 
 func TestCheckWorkerOnline(t *testing.T) {
 	ctx := context.Background()
+	agent := agentOwnedBy("my-agent", 441)
 
-	// 一个 worker 都没在线：明确报「本机没 worker」。
+	// 一个 worker 都没在线：明确报「没 worker」。
 	h := &ServiceAgentsMCPHandler{store: &fakePresenceStore{}}
-	err := h.checkWorkerOnline(ctx, "my-agent")
+	err := h.checkWorkerOnline(ctx, agent)
 	var offline *ServiceWorkerOfflineError
 	if !errors.As(err, &offline) {
 		t.Fatalf("err = %v, want ServiceWorkerOfflineError", err)
@@ -95,31 +101,80 @@ func TestCheckWorkerOnline(t *testing.T) {
 
 	// 有 worker 但不服务这个应用。
 	h = &ServiceAgentsMCPHandler{store: &fakePresenceStore{instances: []store.ServiceInstancePresence{
-		presenceInstance("w1", map[string]any{"agents": []string{"other"}}),
+		presenceInstance("w1", 441, map[string]any{"agents": []string{"other"}}),
 	}}}
-	err = h.checkWorkerOnline(ctx, "my-agent")
+	err = h.checkWorkerOnline(ctx, agent)
 	if !errors.As(err, &offline) || offline.NoWorkers {
 		t.Fatalf("err = %v, want offline-but-workers-exist", err)
 	}
 
 	// 服务这个应用：放行。
 	h = &ServiceAgentsMCPHandler{store: &fakePresenceStore{instances: []store.ServiceInstancePresence{
-		presenceInstance("w1", map[string]any{"agents": []string{"my-agent"}}),
+		presenceInstance("w1", 441, map[string]any{"agents": []string{"my-agent"}}),
 	}}}
-	if err := h.checkWorkerOnline(ctx, "my-agent"); err != nil {
+	if err := h.checkWorkerOnline(ctx, agent); err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
 
 	// 存储报错 -> fail open（宁可等，不可误拦）。
 	h = &ServiceAgentsMCPHandler{store: &fakePresenceStore{err: errors.New("db down")}}
-	if err := h.checkWorkerOnline(ctx, "my-agent"); err != nil {
+	if err := h.checkWorkerOnline(ctx, agent); err != nil {
 		t.Fatalf("err = %v, want fail-open nil", err)
 	}
 
 	// 存储没实现该能力 -> 跳过预检（老替身仍可用）。
 	h = &ServiceAgentsMCPHandler{store: (*noPresenceStore)(nil)}
-	if err := h.checkWorkerOnline(ctx, "my-agent"); err != nil {
+	if err := h.checkWorkerOnline(ctx, agent); err != nil {
 		t.Fatalf("err = %v, want nil without capability", err)
+	}
+}
+
+// 预检必须按账号过滤：claim 用的是 per-user 凭据，别人的 worker 接不到这一单。
+//
+// 不过滤的真实后果（2026-10-26 生产）：平台上任何一个人开着 worker，别人的应用
+// 就被判成「在线」→ run 停在 submitted 永远没人领，调用方也等不到 worker_offline。
+func TestCheckWorkerOnlineIgnoresOtherOwners(t *testing.T) {
+	ctx := context.Background()
+
+	// uid 441 的应用；在线的是 uid 442 的 worker（声明 serve_all）。
+	h := &ServiceAgentsMCPHandler{store: &fakePresenceStore{instances: []store.ServiceInstancePresence{
+		presenceInstance("other-worker", 442, map[string]any{"serve_all": true}),
+	}}}
+	err := h.checkWorkerOnline(ctx, agentOwnedBy("my-agent", 441))
+	var offline *ServiceWorkerOfflineError
+	if !errors.As(err, &offline) {
+		t.Fatalf("err = %v, want offline for foreign worker", err)
+	}
+	// 别人的 worker 不能算「你这边有 worker」——要说清是「没有任何 worker 在线」，
+	// 而不是「有 worker 但不服务这个应用」（后者会让用户去改 -agents，白折腾）。
+	if !offline.NoWorkers {
+		t.Fatal("foreign worker must not count as the caller's own worker")
+	}
+
+	// 同一个 uid 的 worker 在线就放行。
+	h = &ServiceAgentsMCPHandler{store: &fakePresenceStore{instances: []store.ServiceInstancePresence{
+		presenceInstance("other-worker", 442, map[string]any{"serve_all": true}),
+		presenceInstance("my-worker", 441, map[string]any{"serve_all": true}),
+	}}}
+	if err := h.checkWorkerOnline(ctx, agentOwnedBy("my-agent", 441)); err != nil {
+		t.Fatalf("err = %v, want nil with own worker online", err)
+	}
+
+	// 平台内部应用（owner=0）只看内部 worker：用户自己的 worker 不算它的执行环境。
+	h = &ServiceAgentsMCPHandler{store: &fakePresenceStore{instances: []store.ServiceInstancePresence{
+		presenceInstance("user-worker", 441, map[string]any{"serve_all": true}),
+	}}}
+	err = h.checkWorkerOnline(ctx, agentOwnedBy("internal-agent", 0))
+	if !errors.As(err, &offline) || !offline.NoWorkers {
+		t.Fatalf("err = %v, want offline for internal agent", err)
+	}
+
+	// 历史行 owner_uid=0（加列前的旧数据）按内部 worker 算，域名内的应用照旧能用。
+	h = &ServiceAgentsMCPHandler{store: &fakePresenceStore{instances: []store.ServiceInstancePresence{
+		{InstanceID: "legacy", Metrics: json.RawMessage(`{"serve_all":true}`)},
+	}}}
+	if err := h.checkWorkerOnline(ctx, agentOwnedBy("internal-agent", 0)); err != nil {
+		t.Fatalf("err = %v, want nil for legacy internal worker", err)
 	}
 }
 

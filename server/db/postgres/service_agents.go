@@ -16,7 +16,7 @@ import (
 
 var _ store.ServiceAgentStore = (*Adapter)(nil)
 
-const postgresServiceRunColumns = `run_id, session_id, state, client_token, input_json, instance_id, lease_epoch, lease_expires_at, attempts, result_json, checkpoint_ref`
+const postgresServiceRunColumns = `run_id, session_id, state, client_token, input_json, instance_id, lease_epoch, lease_expires_at, attempts, result_json, checkpoint_ref, COALESCE(error_text, '')`
 
 type postgresServiceRunScanner interface {
 	Scan(dest ...interface{}) error
@@ -29,7 +29,7 @@ func scanPostgresServiceRun(scanner postgresServiceRunScanner) (store.ServiceRun
 	var clientToken sql.NullString
 	if err := scanner.Scan(
 		&run.RunID, &run.SessionID, &run.State, &clientToken, &input, &run.InstanceID,
-		&run.LeaseEpoch, &leaseExpires, &run.Attempts, &result, &run.CheckpointRef,
+		&run.LeaseEpoch, &leaseExpires, &run.Attempts, &result, &run.CheckpointRef, &run.ErrorText,
 	); err != nil {
 		return store.ServiceRun{}, err
 	}
@@ -632,6 +632,7 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// ① 租约过期的 running：尝试接管，次数耗尽转终态失败。
 	rows, err := tx.QueryContext(ctx, `
 		UPDATE service_runs SET
 			state = CASE WHEN attempts >= 3 THEN 'failed' ELSE 'orphaned' END,
@@ -670,8 +671,48 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 			return 0, err
 		}
 	}
+
+	// ② 从来没人认领的 submitted：没人会再管它，必须转终态。
+	//
+	// 之前只收 running，于是「创建了 run 但没有任何 worker 来领」会永久停在
+	// submitted（既不是 orphaned 也没有回执）——调用方轮询一辈子都等不到结论。
+	// 现在调用前的预检已经按账号过滤，正常路径不会走到这里；这条是兜底：
+	// worker 在预检之后掉线、或租约窗口内的竞态。
+	//
+	// 宽限取 2 分钟：worker 每 2s 认领一次、外部 runner 也在这个量级内被转发，
+	// 2 分钟还没人领就是真没人了。等到 10 分钟只会让调用方多轮询 8 分钟才拿到
+	// 一句「失败了」，而成败结论本身早就确定了。
+	stale, err := tx.QueryContext(ctx, `
+		UPDATE service_runs SET
+			state = 'failed',
+			error_text = 'not_picked_up'
+		WHERE state = 'submitted' AND created_at < now() - interval '2 minutes'
+		RETURNING run_id, session_id`)
+	if err != nil {
+		return 0, fmt.Errorf("reap unclaimed service runs: %w", err)
+	}
+	var unclaimed []reapedRun
+	for stale.Next() {
+		var r reapedRun
+		if err := stale.Scan(&r.runID, &r.sessionID); err != nil {
+			stale.Close()
+			return 0, fmt.Errorf("scan unclaimed service run: %w", err)
+		}
+		unclaimed = append(unclaimed, r)
+	}
+	if err := stale.Err(); err != nil {
+		stale.Close()
+		return 0, fmt.Errorf("iterate unclaimed service runs: %w", err)
+	}
+	stale.Close()
+	for _, r := range unclaimed {
+		if err := insertServiceRunReceiptTx(ctx, tx, r.runID, r.sessionID, "failed", "", "not_picked_up"); err != nil {
+			return 0, err
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit reap service runs: %w", err)
 	}
-	return len(reaped), nil
+	return len(reaped) + len(unclaimed), nil
 }

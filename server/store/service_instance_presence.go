@@ -7,5 +7,11 @@ import "encoding/json"
 // 判断「有没有在线实例能接这个应用」，避免用户对着没开服务的机器白等同步窗口。
 type ServiceInstancePresence struct {
 	InstanceID string
-	Metrics    json.RawMessage
+	// OwnerUID 是这条 worker 属于哪个账号（心跳鉴权从 cwk_/worker 券解出，不信 payload）。
+	// 0 = 平台内部 worker（instance token，没有账号身份）。
+	//
+	// 没有它就无法按账号判断「你这边有没有 worker」：claim 用的是 per-user 凭据，
+	// 别人的 worker 对本应用毫无意义，不过滤就会把「谁来都领不到」的 run 当成在线。
+	OwnerUID int64
+	Metrics  json.RawMessage
 }

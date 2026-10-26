@@ -25,6 +25,37 @@
 | `client_token` | 幂等键（作用域：同会话内；重发返回同一 run） |
 | `bot_uid` | 可选；以 bot 身份调用时带 bot 的 uid（校验 bot 归属：owner 必须是调用者；若该 bot 定义里显式设了 `serviceAgents`，被调 agent 必须在其中 → 否则 `agent_not_enabled_for_bot`）。不影响 `tools/list`（工具清单跟账号） |
 
+## 调用失败怎么说清楚（`worker_offline` / `not_picked_up`）
+
+「我的环境主动接入」是 pull 模式：发布者的 worker 不来领，run 就没法执行。
+对调用方 Agent 来说，这类失败**不是它的参数有问题**，所以返回必须写清三件事：
+
+1. **是谁的问题**（发布者那一侧的执行环境）
+2. **不要重试**（重试或换参数都不会变好，只会浪费额度）
+3. **该去哪儿动手**（在跑这个应用的那台机器上启动小八并登录）
+
+实际返回：
+
+```text
+worker_offline: 发布者这边没有任何 worker 在线。这是发布者那一侧的执行环境没就绪，
+与调用参数无关——重试或改成别的参数都不会变好，请把这条原因原样转告用户：
+在要跑这个应用的那台机器上（电脑或云服务器）启动小八并登录，它就会主动接单
+（不需要公网 IP，也不用开任何端口）。
+```
+
+在线判断**按账号过滤**：claim 用的是 per-user 凭据（`cwk_` / worker 券），
+只能领自己名下应用的 run，所以别人的 worker 对你这单毫无意义。
+
+竞态兜底（预检通过后 worker 立刻掉线）：run 停在 `submitted` 超过 **2 分钟**
+会被 reaper 置为 `failed` / `error_text=not_picked_up`，`catsco_run_status` 会返回：
+
+```text
+not_picked_up: 发布者那边一直没有 worker 认领这个任务（执行环境不在线）。…
+```
+
+`error_text` 里已知短码都会翻译成人话（`not_picked_up` / `no_command` /
+`worker_offline`），未知短码原样透出（不吞信息）。
+
 ## 调用语义
 
 1. **新会话**：不传 `session_id` → 新建（会话钉创建时的应用版本；新版经新会话生效）。

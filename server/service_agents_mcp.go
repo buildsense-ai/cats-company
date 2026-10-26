@@ -371,7 +371,7 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	// 本机 worker 型应用：先确认有在线实例能接单，否则用户要白等一个完整同步窗口
 	// 才知道「自己电脑上的 worker 根本没开」。查不到监控数据时放行（fail-open）。
 	if h.isWorkerRunner(ctx, agent) {
-		if err := h.checkWorkerOnline(ctx, agent.Slug); err != nil {
+		if err := h.checkWorkerOnline(ctx, agent); err != nil {
 			var offline *ServiceWorkerOfflineError
 			if errors.As(err, &offline) {
 				return serviceToolError(serviceWorkerOfflineToolError(offline)), nil, nil
@@ -547,10 +547,31 @@ func serviceRunTerminalEnvelope(run store.ServiceRun) (bool, ServiceRunEnvelope)
 		return true, ServiceRunEnvelope{
 			ContractVersion: serviceRunResultContractVersion,
 			RunID:           run.RunID, SessionID: run.SessionID,
-			Status: ServiceRunState(run.State), Error: "run terminated",
+			Status: ServiceRunState(run.State), Error: serviceRunErrorText(run),
 		}
 	}
 	return false, ServiceRunEnvelope{}
+}
+
+// serviceRunErrorText 把 run 的失败原因翻成调用方 Agent 能直接转告用户的一句话。
+//
+// 只回 "run terminated" 是不够的：调用方既不知道这是谁的问题，也不知道该不该重试，
+// 只能原样复述「失败了」，用户拿不到任何可行动信息。
+func serviceRunErrorText(run store.ServiceRun) string {
+	code := strings.TrimSpace(run.ErrorText)
+	switch code {
+	case "not_picked_up":
+		// 预检通过后 worker 掉线，或根本没起来：责任在发布者那一侧，重试无用。
+		return "not_picked_up: 发布者那边一直没有 worker 认领这个任务（执行环境不在线）。这是发布者那一侧的问题，与调用参数无关——重试不会变好，请把这条原因转告用户：在跑这个应用的那台机器上（电脑或云服务器）启动小八并登录。"
+	case "no_command":
+		return "no_command: 这个应用没有声明执行命令（runner.command）。请转告发布者：在「Agent 工具」里编辑该应用，补一条执行命令。"
+	case "worker_offline":
+		return "worker_offline: 发布者那边没有在线的 worker。请转告发布者在跑这个应用的那台机器上启动小八并登录。"
+	}
+	if code != "" {
+		return code + ": run terminated"
+	}
+	return "run terminated"
 }
 
 type serviceRunStatusArgs struct {
