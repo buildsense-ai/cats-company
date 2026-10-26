@@ -383,6 +383,26 @@ describe('ServiceAgentsPanel', () => {
     expect(container.querySelector('.v3-service-agent-warn')?.textContent).toContain('没写「能做什么」');
   });
 
+  // 平台不会替应用编描述：唯一来源是应用自己在 run 结果里带 self_intro。
+  // 所以要告诉人「该怎么让它自己写」，而不是让人凭空想一段。
+  it('没写描述时告诉人怎么让应用自己写自述', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{ slug: 'my-clock', name: '我的时钟', version: 1, hidden: false, mine: true }],
+    });
+    await renderPanel();
+    const hint = container.querySelector('.v3-service-agent-warn-hint');
+    expect(hint?.textContent).toContain('self_intro');
+    expect(hint?.textContent).toContain('提示词');
+  });
+
+  it('写了描述就不再提「让它自己写」', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{ slug: 'my-clock', name: '我的时钟', version: 1, hidden: false, mine: true, description: '读时间' }],
+    });
+    await renderPanel();
+    expect(container.querySelector('.v3-service-agent-warn-hint')).toBeNull();
+  });
+
   it('别人的应用既不给编辑按钮，也不回传 definition', async () => {
     mocks.getServiceAgentsCatalog.mockResolvedValue({
       agents: [{ slug: 'peer', name: '别人的', version: 1, hidden: false, mine: false, description: '别人写的' }],

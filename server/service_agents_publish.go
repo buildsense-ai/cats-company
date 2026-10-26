@@ -228,15 +228,6 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		})
 		return
 	}
-	// 入参 schema 与包通道同一套校验规则（对象 / 顶层 type / 8 KiB），非法直接拒。
-	if normalized, err := normalizeServiceAgentDefinition(req.Definition); err != nil {
-		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "invalid_input_schema", "detail": "definition.input_schema: " + err.Error(),
-		})
-		return
-	} else if len(normalized) > 0 {
-		req.Definition = normalized
-	}
 
 	ctx := r.Context()
 	if err := h.store.ClaimServiceAgentOwnership(ctx, slug, name, store.ServiceAgentOwnerUser, uid, visibility); err != nil {

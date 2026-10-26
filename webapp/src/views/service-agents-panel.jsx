@@ -697,6 +697,12 @@ export default function ServiceAgentsPanel({ onClose }) {
                   ) : agent.mine ? (
                     <div className="v3-service-agent-warn">
                       没写「能做什么」：别的 Agent 只能靠名字猜，基本不会用它
+                      {/* 平台不会替应用生成描述；唯一的来源是应用自己在 run 结果里带 self_intro。
+                          所以这里告诉人「该怎么让应用学会」—— 而不是让人凭空编一段。 */}
+                      <div className="v3-service-agent-warn-hint">
+                        可以让它自己写：在你的 agent 提示词里加一句「跑完后在结果里带上
+                        self_intro」，它下次跑完就会在这里给出建议。
+                      </div>
                     </div>
                   ) : null}
                   {agent.mine && agent.self_intro?.description ? (
