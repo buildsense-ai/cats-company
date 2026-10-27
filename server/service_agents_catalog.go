@@ -1,8 +1,8 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"os"
 	"strconv"
@@ -28,6 +28,8 @@ type ServiceAgentCatalogHandler struct {
 	store       store.ServiceAgentStore
 	notifier    serviceSubscriptionNotifier
 	allowedUIDs []int64
+	// friends 用于「好友」级应用的判定；未注入时好友级应用对谁都不可见（fail-closed）。
+	friends ServiceAgentFriendResolver
 }
 
 // serviceSubscriptionNotifier 清单变更后的在线 MCP 会话同步器（MCP handler 实现）。
@@ -86,6 +88,11 @@ func (h *ServiceAgentCatalogHandler) allows(uid int64) bool {
 // SetSubscriptionNotifier 注入在线会话同步器（未注入=仅数据面生效，在线会话等客户端重查）。
 func (h *ServiceAgentCatalogHandler) SetSubscriptionNotifier(n serviceSubscriptionNotifier) {
 	h.notifier = n
+}
+
+// SetFriendship 注入好友判定（「好友」级应用需要它；未注入时该级一律不可见）。
+func (h *ServiceAgentCatalogHandler) SetFriendship(resolver ServiceAgentFriendResolver) {
+	h.friends = resolver
 }
 
 // HandleAccess 汇报本账号是否可进入应用目录（内测门；不解释原因）。
@@ -159,10 +166,11 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 	for _, id := range hiddenIDs {
 		hidden[id] = struct{}{}
 	}
+	access := newServiceAgentAccess(uid, h.friends)
 	entries := make([]serviceCatalogEntry, 0, len(agents))
 	for _, agent := range agents {
-		// 可见性（设计 L2）：private 只进 owner 自己的目录。
-		if !store.ServiceAgentVisibleTo(agent, uid) {
+		// 可见性：公开人人可见；好友仅发布者/该 bot 的好友；自用仅本人。
+		if !access.Allows(agent) {
 			continue
 		}
 		_, blocked := hidden[agent.ID]
@@ -215,16 +223,21 @@ func (h *ServiceAgentCatalogHandler) setHidden(w http.ResponseWriter, r *http.Re
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "slug_required"})
 		return
 	}
-	agentID, _, _, _, err := h.store.GetServiceAgentBySlug(r.Context(), slug)
+	// 先按可见性找一次，再改清单。
+	//
+	// 为什么要顺带做可见性判定：清单行本身无害（它只是「我不想看」），但它会泄露
+	// 「这个 slug 存在」—— 对自用级应用来说，能被探测到存在就已经超出了分享范围。
+	// 看不见的应用一律 404，跟不存在走同一条路。
+	agent, found, err := h.findVisibleAgent(r.Context(), uid, slug)
 	if err != nil {
-		if errors.Is(err, store.ErrServiceAgentNotFound) {
-			writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "agent_not_found"})
-			return
-		}
 		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "update_failed"})
 		return
 	}
-	if err := h.store.SetServiceAgentSubscriptionHidden(r.Context(), uid, agentID, hidden); err != nil {
+	if !found {
+		writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "agent_not_found"})
+		return
+	}
+	if err := h.store.SetServiceAgentSubscriptionHidden(r.Context(), uid, agent.ID, hidden); err != nil {
 		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "update_failed"})
 		return
 	}
@@ -279,4 +292,30 @@ func (h *ServiceAgentCatalogHandler) HandleDismissSelfIntro(w http.ResponseWrite
 		return
 	}
 	writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "agent_not_found"})
+}
+
+// findVisibleAgent 按 slug 找一个「对当前账号可见」的应用。
+//
+// 用 ListServiceAgents 而不是 GetServiceAgentBySlug：后者只回 id/名字/版本，
+// 没有归属和可见性，判不了「该不该让你动它」。目录本身很小（用户上架的应用），
+// 而这是点击级操作，一次全量扫描换来「一条规则管到底」很划算。
+//
+// 存储故障与「没有这个应用」分开返回：把 DB 抖动伪装成 404，会让用户
+// 以为自己把应用删了。
+func (h *ServiceAgentCatalogHandler) findVisibleAgent(ctx context.Context, uid int64, slug string) (store.ServiceAgentDescriptor, bool, error) {
+	agents, err := h.store.ListServiceAgents(ctx)
+	if err != nil {
+		return store.ServiceAgentDescriptor{}, false, err
+	}
+	access := newServiceAgentAccess(uid, h.friends)
+	for _, agent := range agents {
+		if agent.Slug != slug {
+			continue
+		}
+		if !access.Allows(agent) {
+			return store.ServiceAgentDescriptor{}, false, nil
+		}
+		return agent, true, nil
+	}
+	return store.ServiceAgentDescriptor{}, false, nil
 }

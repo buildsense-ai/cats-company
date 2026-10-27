@@ -213,9 +213,11 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 	if visibility == "" {
 		visibility = store.ServiceAgentVisibilityPublic
 	}
-	if visibility != store.ServiceAgentVisibilityPublic && visibility != store.ServiceAgentVisibilityPrivate {
+	if visibility != store.ServiceAgentVisibilityPublic &&
+		visibility != store.ServiceAgentVisibilityFriends &&
+		visibility != store.ServiceAgentVisibilityPrivate {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "invalid_visibility", "detail": "visibility 只能是 public / private",
+			"error": "invalid_visibility", "detail": "visibility 只能是 public / friends / private",
 		})
 		return
 	}
@@ -273,10 +275,10 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		})
 		return
 	}
-	if visibility == store.ServiceAgentVisibilityPublic && description == "" {
+	if visibility != store.ServiceAgentVisibilityPrivate && description == "" {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
 			"error":  "description_required",
-			"detail": "公开应用必须写 description：说明它做什么、什么情况下该用（调用方 Agent 只能看到这段文字）",
+			"detail": "公开/好友应用必须写 description：说明它做什么、什么情况下该用（调用方 Agent 只能看到这段文字）",
 		})
 		return
 	}

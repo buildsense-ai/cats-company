@@ -1935,3 +1935,41 @@
   background: rgba(148, 163, 184, 0.2);
   color: var(--cc-muted, #6b7280);
 }
+
+/* 「好友可见」要和「公开」明显不同：公开是默认，好友是一个刻意的选择。 */
+.v3-service-agent-badge.is-friends {
+  background: rgba(16, 185, 129, 0.16);
+  color: #047857;
+}
+
+.v3-service-agents-search {
+  flex: 0 0 auto;
+  padding: 0 14px 8px;
+}
+
+.v3-service-agents-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--cc-border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--cc-surface, #fff);
+  color: inherit;
+  font-size: 13px;
+}
+
+.v3-service-agents-search input:focus {
+  outline: 2px solid rgba(59, 130, 246, 0.35);
+  outline-offset: 1px;
+}
+
+.v3-service-agents-inline-action {
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #2563eb;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+}

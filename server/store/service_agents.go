@@ -146,12 +146,19 @@ type ServiceAgentDescriptor struct {
 }
 
 // Service agent 归属与可见性常量（设计 §4.3）。
+//
+// 可见性是三级分享：公开 / 好友 / 自用。判定不在 store 层做 ——
+// 好友那一级要按**访问者**求值，实现在调用面（server/service_agents_access.go）。
 const (
 	ServiceAgentOwnerInternal = "internal"
 	ServiceAgentOwnerUser     = "user"
 
-	ServiceAgentVisibilityPublic  = "public"  // 目录可见，任何人可加/可调
-	ServiceAgentVisibilityPrivate = "private" // 仅 owner 自己可见可调（不出现在别人的目录）
+	// ServiceAgentVisibilityPublic 任何人可找到、可加到清单、可调用。
+	ServiceAgentVisibilityPublic = "public"
+	// ServiceAgentVisibilityFriends 仅「发布者的好友」或「这个 bot 的好友」可见可调。
+	ServiceAgentVisibilityFriends = "friends"
+	// ServiceAgentVisibilityPrivate 仅发布者本人可见可调（不出现在别人的目录）。
+	ServiceAgentVisibilityPrivate = "private"
 )
 
 var (
@@ -160,15 +167,6 @@ var (
 	// ErrServiceAgentInternalReserved 表示用户试图抢占平台内部 agent 的 slug。
 	ErrServiceAgentInternalReserved = errors.New("service agent slug reserved for internal publishing")
 )
-
-// ServiceAgentVisibleTo 判断 agent 是否对调用者可见（目录过滤 + 调用准入共用）。
-// public 对所有人可见；其余（private）仅对 owner 本人可见。
-func ServiceAgentVisibleTo(agent ServiceAgentDescriptor, callerUID int64) bool {
-	if agent.Visibility == "" || agent.Visibility == ServiceAgentVisibilityPublic {
-		return true
-	}
-	return agent.OwnerUID != 0 && agent.OwnerUID == callerUID
-}
 
 // ServiceAgentStore 是服务调用面的编排存储（PG 主实现 + MySQL 镜像）。
 // 同会话保串行的核心：CreateServiceRunIdempotent 在单事务内锁 session 行，

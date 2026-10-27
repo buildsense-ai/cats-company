@@ -808,6 +808,101 @@ describe('ServiceAgentsPanel', () => {
     expect(container.querySelector('.v3-service-agent-badge.is-private')?.textContent).toBe('私有');
   });
 
+  // 三级分享：好友既不是公开也不是私有，界面上必须一眼看得出来。
+  it('好友可见的应用有独立徽标', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{ slug: 'friend-app', name: '好友应用', version: 1, hidden: false, mine: true, visibility: 'friends' }],
+    });
+    await renderPanel();
+    expect(container.querySelector('.v3-service-agent-badge.is-friends')?.textContent).toBe('好友可见');
+    expect(container.querySelector('.v3-service-agent-badge.is-private')).toBeNull();
+  });
+
+  // 「公开就能找到」的前提是能搜。应用多了以后靠眼睛在一屏里找 catsco_xxx 不现实。
+  it('目录可以按名称/调用名/描述搜索，搜不到时给清空入口', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [
+        {
+          slug: 'doc-polish', name: '文稿润色', version: 1, hidden: false, mine: false,
+          description: '把中文技术文档润色成英文稿，保留代码块',
+        },
+        {
+          slug: 'clock', name: '时钟', version: 1, hidden: false, mine: false,
+          description: '读本机时间',
+        },
+      ],
+    });
+    await renderPanel();
+    expect(container.querySelectorAll('.v3-service-agent-row').length).toBe(2);
+
+    const search = container.querySelector('.v3-service-agents-search input');
+    expect(search, '有应用时才显示搜索框').toBeTruthy();
+    const setValue = async (value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      await act(async () => {
+        setter.call(search, value);
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+
+    // 描述命中也要能搜到 —— 用户记得的往往是「它能干什么」，而不是它叫什么。
+    await setValue('英文稿');
+    expect(container.querySelectorAll('.v3-service-agent-row').length).toBe(1);
+    expect(container.querySelector('.v3-service-agent-slug')?.textContent).toBe('catsco_doc-polish');
+
+    await setValue('不存在的东西');
+    expect(container.querySelectorAll('.v3-service-agent-row').length).toBe(0);
+    const empty = container.querySelector('.v3-service-agents-empty');
+    expect(empty?.textContent).toContain('没找到匹配');
+
+    await act(async () => {
+      container.querySelector('.v3-service-agents-inline-action').click();
+      await Promise.resolve();
+    });
+    expect(container.querySelectorAll('.v3-service-agent-row').length).toBe(2);
+  });
+
+  it('发布可以选「仅好友」，提交的 visibility 是 friends', async () => {
+    mocks.publishServiceAgent.mockResolvedValue({ slug: 'friends-app', version: 1, visibility: 'friends' });
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="发布应用"]').click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await chooseBot(form);
+    const setValue = async (node, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      await act(async () => {
+        setter.call(node, value);
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+    await setValue(nameInput, 'Friends App');
+    await setValue(slugInput, 'friends-app');
+    await fillDescription(form);
+
+    const friendsRadio = [...form.querySelectorAll('input[type="radio"]')]
+      .find((node) => node.parentElement?.textContent?.includes('仅好友'));
+    expect(friendsRadio, '应该有「仅好友」选项').toBeTruthy();
+    await act(async () => {
+      friendsRadio.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
+    expect(mocks.publishServiceAgent.mock.calls[0][0].visibility).toBe('friends');
+    expect(container.querySelector('.v3-service-agents-published')?.textContent).toContain('仅好友可用');
+  });
+
   it('收回分享：二次确认后下架、从列表移除并给出可恢复的提示', async () => {
     mocks.getServiceAgentsCatalog.mockResolvedValueOnce({
       agents: [

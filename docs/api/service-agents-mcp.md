@@ -143,7 +143,7 @@ relay 据此将用量归因到**调用方**额度（见 relay `service_tokens.py
 {
   "slug": "my-helper",            // ^[a-z0-9][a-z0-9-]{1,63}$
   "name": "我的助手",              // 可选，默认=slug，≤64 字
-  "visibility": "public",          // public（默认）| private（仅自己可见可调）
+  "visibility": "public",          // public（默认）| friends | private，见下
   "definition": { "async_threshold_seconds": 30 },   // 可选，平台派生字段
   "bundle_base64": "…",            // 必填，agent 包原文（≤20 MiB，可用 CATSCO_SERVICE_AGENT_MAX_BUNDLE_BYTES 调整）
   "force": false
@@ -152,10 +152,25 @@ relay 据此将用量归因到**调用方**额度（见 relay `service_tokens.py
 
 响应：`{ "slug", "version", "package_hash", "visibility", "owner_uid" }`。
 
-可见性语义：`public` 进所有人目录并可被调用；`private` 只进 owner 自己的
-`tools/list` 与目录，别人即使知道 slug 也拿不到工具、硬调返回 `agent_not_found`。
+可见性是**三级分享**：
 
-目录接口 `GET /api/service-agents/catalog` 的条目新增 `mine` / `owner_kind` /
+| 级别 | 谁能看到 / 能调用 | 描述必填？ |
+|---|---|---|
+| `public` 公开 | 所有人（目录里能找到） | ✅ |
+| `friends` 好友 | 发布者的好友，**或** 这个 bot 的好友（任一成立即可） | ✅ |
+| `private` 自用 | 只有发布者本人 | ❌ |
+
+自己的应用三级都可见（`private` 也不例外）：先判「是不是我的」，再判级别。
+看不见的应用不会出现在目录与 `tools/list`，即使知道 slug 硬调也是 `agent_not_found`。
+
+`friends` 判定取**任一**，是因为「好友」在这个产品里同时存在于人和 bot 之间：
+一个是「我认识作者」，一个是「我一直在用这个 bot」，两者都该算分享对象。
+worker / http 型应用没有 bot，就只看发布者这层。
+
+> 好友关系查询失败时按「不是好友」处理（fail-closed）：宁可少显示一个应用，
+> 也不能把不该给的人放进来。
+
+目录接口 `GET /api/service-agents/catalog` 的条目带 `mine` / `owner_kind` /
 `visibility` 三个字段，便于前端区分「平台应用」与「我上架的」。
 条目另外带两个字段（编辑已有应用用）：
 
@@ -394,7 +409,6 @@ bot 侧按它算自己的会话身份：
 | 看见回复但判断不出是不是给我 | `bot_reply_ambiguous`（约 20s 后，不干等满 5 分钟） |
 | 看见的是**别人那单**的回复 | 忽略（不算歧义，继续等自己的） |
 | bot 不存在 | `bot_not_found` |
-| 不在白名单账号名下 | `bot_not_shared` |
 
 **如实失败，不编造**：bot 没回就是没回，调用方拿到的是一句能看懂的原因，
 而不是一个假装完成了的空答案。
@@ -463,8 +477,12 @@ definition**，而不是用 MCP 会话建立时快照进工具闭包的那份。
 
 ### 已知限制
 
-- **只对白名单账号名下的 bot 开放**（`CATSCO_SERVICE_CATALOG_UID_WHITELIST`）：
-  这个功能会让 bot 变成「别人能调的服务」，一上线就全平台可见风险太大
+- **内测白名单仍在**（`CATSCO_SERVICE_CATALOG_UID_WHITELIST`）：它现在只管「谁能进面板 /
+  谁能上架」，不再管「谁能调」。分享范围由上面的三级可见性决定 ——
+  以后把白名单清空，使用侧立即对所有账号生效，不需要再改代码。
+- **好友关系变化不推 `list_changed`**：新加到一个好友不会让他已连接的 MCP 会话
+  当场出现你的工具（他在会话里重新 `tools/list` 或重连即可）。工具可见性是建会话时
+  求值的，好友关系是可变的，两者不硬绑。
 - 没有递归保护：A 调 B、B 又调 C 这种链，目前靠配置自觉（后续可加深度上限）
 - 只认 `msg_type=text`：bot 回的 `tool_use` / `tool_result` 卡片不算结果
 - 「有几单在同一 topic 上等」是**进程内**计数：多实例部署时，另一个实例上的

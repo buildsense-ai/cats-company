@@ -77,7 +77,6 @@ type botRunnerStore interface {
 	// 才能让 bot 知道这次调用该归到哪个会话（普通 SaveMessage 存不了 metadata）。
 	SaveMessageWithMetadata(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string, metadata map[string]interface{}) (int64, bool, error)
 	GetMessagesSince(topicID string, sinceID int64, limit int) ([]*types.Message, error)
-	GetBotOwner(botUID int64) (int64, error)
 }
 
 // botRunnerHub 是推送与在线判定能力（Hub 实现）。
@@ -101,8 +100,6 @@ type ServiceBotRunner struct {
 	poll           time.Duration
 	settle         time.Duration
 	ambiguityGrace time.Duration
-	// ownerWhitelist 非空时，只有这些账号名下的 bot 可以被当作工具调用。
-	ownerWhitelist map[int64]bool
 	// inFlight 记录每个 topic 上正在等回复的 run 数。
 	// topic 是「两个人之间的私聊」，同一个账号并发调同一个 bot 时会共用它，
 	// 所以「有几单在等」决定了「bot 的一条没标 reply_to 的回复能不能归给我」。
@@ -184,24 +181,6 @@ func (r *ServiceBotRunner) competingOnTopic(topic string) int {
 		return n
 	}
 	return 0
-}
-
-// SetOwnerWhitelist 限制可被当作工具调用的 bot 归属（空=不限制）。
-func (r *ServiceBotRunner) SetOwnerWhitelist(uids []int64) {
-	if r == nil {
-		return
-	}
-	if len(uids) == 0 {
-		r.ownerWhitelist = nil
-		return
-	}
-	set := make(map[int64]bool, len(uids))
-	for _, uid := range uids {
-		if uid > 0 {
-			set[uid] = true
-		}
-	}
-	r.ownerWhitelist = set
 }
 
 // ParseBotRunnerBotUID 判断是不是 bot runner，是则返回目标 bot。
@@ -361,16 +340,10 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		return
 	}
 
-	// 授权：v1 只允许「自己名下的 bot」或白名单账号名下的 bot。
-	owner, err := r.store.GetBotOwner(req.BotUID)
-	if err != nil {
-		r.fail(req, "bot_not_found: 目标 bot 不存在或已删除")
-		return
-	}
-	if owner != req.CallerUID && len(r.ownerWhitelist) > 0 && !r.ownerWhitelist[owner] {
-		r.fail(req, "bot_not_shared: 这个 bot 尚未开放给其他账号调用")
-		return
-	}
+	// 授权不在这一层做：「这个应用对谁开放」已经在 MCP invoke 的可见性准入里判过了
+	// （公开 / 好友 / 自用，见 server/service_agents_access.go）。这里曾经另有一套
+	// 「bot 的 owner 必须在白名单内」的规则，跟应用自己的 visibility 打架 ——
+	// 结果是应用标了 public，别人调用依旧报 bot_not_shared。一套规则只能有一处。
 	if !r.hub.BotRuntimeOnline(req.BotUID) {
 		// 不干等：bot 没有在线运行时，消息发出去也没人接。
 		r.fail(req, "bot_offline: 目标 bot 当前不在线，等它上线后再试")

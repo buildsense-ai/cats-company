@@ -12,6 +12,9 @@ import { api } from '../api';
 export default function ServiceAgentsPanel({ onClose }) {
   const [agents, setAgents] = useState([]);
   const [bots, setBots] = useState([]);
+  // 目录搜索：只在前端过滤（不新增接口）。应用多了之后，靠眼睛在一屏里找
+  // catsco_xxx 不现实 —— 而“能找到”正是公开分享的意义。
+  const [query, setQuery] = useState('');
   const [scopeBotUid, setScopeBotUid] = useState('');
   const [botDefinition, setBotDefinition] = useState(null);
   const [scopeLoading, setScopeLoading] = useState(false);
@@ -181,9 +184,10 @@ export default function ServiceAgentsPanel({ onClose }) {
     const slug = form.slug.trim();
     const description = form.description.trim();
     if (!name) { setPublishError('请填写应用名称'); return; }
-    if (form.visibility === 'public' && !description) {
-      // 公开分享却不写描述：别人（另一个 Agent）只看到名字，等于不知道能不能用。
-      setPublishError('公开应用必须写「能做什么」：调用你的是另一个 Agent，它只能靠这段文字判断要不要用');
+    // 公开和好友都是“分享给别的 Agent”，没描述别人就只能靠名字猜。
+    // 自用不强制：没人会用它，写不写是自己的事。
+    if (form.visibility !== 'private' && !description) {
+      setPublishError('分享出去的应用必须写「能做什么」：调用你的是另一个 Agent，它只能靠这段文字判断要不要用');
       return;
     }
     if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(slug)) {
@@ -268,7 +272,7 @@ export default function ServiceAgentsPanel({ onClose }) {
       description: suggested || agent.description || '',
       slug: agent.slug,
       slugTouched: true,
-      visibility: agent.visibility === 'private' ? 'private' : 'public',
+        visibility: agent.visibility === 'friends' || agent.visibility === 'private' ? agent.visibility : 'public',
       price: typeof priceValue === 'number' && priceValue > 0 ? String(priceValue) : '',
       priceUnit,
       botUid: shareBot ? String(runner.bot_uid) : '',
@@ -347,6 +351,14 @@ export default function ServiceAgentsPanel({ onClose }) {
       setError('复制失败，请手动选中复制。');
     }
   }, []);
+
+  // 目录检索：名称 / 调用名 / 描述任一命中就算。描述也要搜 ——
+  // 「能找到」靠的往往就是那句「把中文文档润色成英文稿」，而不是应用叫什么。
+  const keyword = query.trim().toLowerCase();
+  const filteredAgents = keyword
+    ? agents.filter((agent) => [agent.slug, agent.name, agent.description]
+      .some((field) => typeof field === 'string' && field.toLowerCase().includes(keyword)))
+    : agents;
 
   return (
     <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
@@ -471,8 +483,26 @@ export default function ServiceAgentsPanel({ onClose }) {
             <summary className="v3-service-agents-advanced-head">
               更多设置（默认：公开 · 在我的环境跑 · 免费分享）
             </summary>            <div className="v3-service-agents-field">
-              <span>可见性</span>
+              <span>谁能用</span>
               <div className="v3-service-agents-choices">
+                <label>
+                  <input
+                    type="radio"
+                    name="visibility"
+                    checked={form.visibility === 'public'}
+                    onChange={() => updateForm({ visibility: 'public' })}
+                  />
+                  公开（谁都能找到并调用）
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="visibility"
+                    checked={form.visibility === 'friends'}
+                    onChange={() => updateForm({ visibility: 'friends' })}
+                  />
+                  仅好友（我的朋友，或这个 bot 的好友）
+                </label>
                 <label>
                   <input
                     type="radio"
@@ -481,15 +511,6 @@ export default function ServiceAgentsPanel({ onClose }) {
                     onChange={() => updateForm({ visibility: 'private' })}
                   />
                   仅自己
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="visibility"
-                    checked={form.visibility === 'public'}
-                    onChange={() => updateForm({ visibility: 'public' })}
-                  />
-                  公开（别人也能调用）
                 </label>
               </div>
             </div>
@@ -582,7 +603,11 @@ export default function ServiceAgentsPanel({ onClose }) {
         <div className="v3-service-agents-published" role="status">
           <div>
             已发布 <code>catsco_{publishResult.slug}</code>
-            {publishResult.visibility === 'public' ? ' · 公开，别人也能调用' : ' · 仅自己可用'}
+            {publishResult.visibility === 'public'
+              ? ' · 公开，谁都能找到并调用'
+              : publishResult.visibility === 'friends'
+                ? ' · 仅好友可用'
+                : ' · 仅自己可用'}
           </div>
           {publishResult.runner === 'worker' ? (
             <div className="v3-service-agents-published-hint">
@@ -665,6 +690,17 @@ export default function ServiceAgentsPanel({ onClose }) {
           : 'CatsCo 定制 Agent（以工具形式接入）。添加的会出现在你的账号工具集中；删除的将被移除，调用也会被拒绝。'}
       </p>
       {scopeBotUid && scopeLoading ? <div className="v3-service-agents-empty">读取该 Agent 的工具清单…</div> : null}
+      {!loading && agents.length > 0 ? (
+        <div className="v3-service-agents-search">
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜应用名称、调用名或能做什么"
+            aria-label="搜索 Agent 工具"
+          />
+        </div>
+      ) : null}
       {error && (
         <div className="v3-service-agents-error" role="alert">
           <AlertTriangle size={14} aria-hidden="true" />
@@ -709,9 +745,16 @@ export default function ServiceAgentsPanel({ onClose }) {
             刷新目录
           </button>
         </div>
+      ) : filteredAgents.length === 0 ? (
+        <div className="v3-service-agents-empty" role="status">
+          没找到匹配「{query.trim()}」的应用。
+          <button type="button" className="v3-service-agents-inline-action" onClick={() => setQuery('')}>
+            清空搜索
+          </button>
+        </div>
       ) : (
         <ul className="v3-service-agents-list">
-          {agents.map((agent) => {
+          {filteredAgents.map((agent) => {
             const busy = pending.has(agent.slug)
               || unpublishing.has(agent.slug)
               || dismissingIntro.has(agent.slug)
@@ -733,6 +776,9 @@ export default function ServiceAgentsPanel({ onClose }) {
                     {agent.name || agent.slug}
                     <span className="v3-service-agent-version">v{agent.version}</span>
                     {agent.mine ? <span className="v3-service-agent-badge">我的</span> : null}
+                    {agent.visibility === 'friends' ? (
+                      <span className="v3-service-agent-badge is-friends">好友可见</span>
+                    ) : null}
                     {agent.visibility === 'private' ? (
                       <span className="v3-service-agent-badge is-private">私有</span>
                     ) : null}

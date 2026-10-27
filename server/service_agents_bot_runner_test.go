@@ -13,12 +13,14 @@ import (
 )
 
 // bot-as-tool：把一次 run 交给另一个 bot 执行。测试覆盖
-// 「解析 / 提示词提取 / 离线快速失败 / 正常收尾 / 超时 / 白名单」。
+// 「解析 / 提示词提取 / 离线快速失败 / 正常收尾 / 超时 / 跨账号投递」。
 
 type fakeBotStore struct {
 	mu sync.Mutex
 
-	owner      int64
+	owner int64
+	// ownerReads 记录 GetBotOwner 被调次数：派活本身不该再鉴权一次。
+	ownerReads int
 	ownerErr   error
 	started    bool
 	startErr   error
@@ -232,10 +234,18 @@ func (f *fakeBotStore) GetMessagesSince(topicID string, sinceID int64, limit int
 func (f *fakeBotStore) GetBotOwner(botUID int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ownerReads++
 	if f.ownerErr != nil {
 		return 0, f.ownerErr
 	}
 	return f.owner, nil
+}
+
+// ownerCalls 返回 GetBotOwner 被调用的次数（钉住「派活不再重复鉴权」）。
+func (f *fakeBotStore) ownerCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ownerReads
 }
 
 func (f *fakeBotStore) pushBotReply(topic string, botUID int64, text string) {
@@ -511,39 +521,41 @@ func TestBotRunnerDeliverFailureFailsRun(t *testing.T) {
 	}
 }
 
-// 白名单：非白名单账号名下的 bot 不能被别人当工具调用。
-func TestBotRunnerOwnerWhitelist(t *testing.T) {
+// 跨账号调用：别人名下的 bot 也能被派活 —— 授权是「这个应用对谁可见」，
+// 而那个判断在 MCP invoke 里已经做过了（公开 / 好友 / 自用）。
+//
+// 这条以前是反过来的：runner 里另有一套「bot 的 owner 必须在白名单内」的规则，
+// 结果是应用标了 public，别人调用依旧报 bot_not_shared。一套规则只能有一处，
+// 否则两边迟早打架 —— 这个用例钉住「只有一处」。
+func TestBotRunnerDeliversToOtherOwnersBot(t *testing.T) {
 	db := newFakeBotStore()
-	db.owner = 999 // bot 属于 999，不在白名单
+	db.owner = 999 // bot 属于别人
 	hub := &fakeBotHub{online: true}
 	runner := newTestBotRunner(db, hub)
-	runner.SetOwnerWhitelist([]int64{38, 2})
 
 	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
 		store.ServiceRun{RunID: "run_6", SessionID: "sess_6", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
 
-	if !waitFor(t, func() bool { return db.failedCount() > 0 }, 2*time.Second) {
-		t.Fatal("应该拒绝")
-	}
-	if !strings.HasPrefix(db.errorText("run_6"), "bot_not_shared") {
-		t.Fatalf("errorText = %q, want bot_not_shared", db.errorText("run_6"))
+	if !waitFor(t, func() bool { return len(hub.delivered) > 0 }, 2*time.Second) {
+		t.Fatalf("跨账号调用应该照常投递；failed=%v", db.errorTexts())
 	}
 }
 
-// 自己的 bot 不受白名单限制（自己的东西自己用）。
-func TestBotRunnerOwnBotAlwaysAllowed(t *testing.T) {
+// 派活不应该为了鉴权再读一次「bot 属于谁」：那是调用面的事，
+// 这里多做一次只会多一次 DB 往返，还会给「两套规则」留缝。
+func TestBotRunnerDoesNotRecheckOwnership(t *testing.T) {
 	db := newFakeBotStore()
-	db.owner = 999
 	hub := &fakeBotHub{online: true}
 	runner := newTestBotRunner(db, hub)
-	runner.SetOwnerWhitelist([]int64{38})
-	runner.timeout = 100 * time.Millisecond
 
 	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
-		store.ServiceRun{RunID: "run_7", SessionID: "sess_7", Input: json.RawMessage(`{"text":"hi"}`)}, 999)
+		store.ServiceRun{RunID: "run_7", SessionID: "sess_7", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
 
 	if !waitFor(t, func() bool { return len(hub.delivered) > 0 }, 2*time.Second) {
-		t.Fatalf("自己的 bot 应该允许投递；failed=%v", db.failed)
+		t.Fatalf("应该已经投递；failed=%v", db.errorTexts())
+	}
+	if calls := db.ownerCalls(); calls != 0 {
+		t.Fatalf("GetBotOwner 被调了 %d 次，授权应在调用面完成", calls)
 	}
 }
 

@@ -968,9 +968,6 @@ func main() {
 		// 需要消息读写 + 推送，所以传完整 store（不是 ServiceAgentStore 子集）；
 		// 缺能力时构造结果为 nil，该能力自动关闭（老部署/测试替身不受影响）。
 		if botRunner := server.NewServiceBotRunner(db, hub); botRunner != nil {
-			// 先只对白名单账号名下的 bot 开放：这个功能会让 bot 变成「别人能调的服务」，
-			// 一上线就全平台可见风险太大。
-			botRunner.SetOwnerWhitelist(server.ServiceCatalogAllowedUIDs())
 			serviceAgentsMCPHandler.SetBotRunner(botRunner)
 		}
 		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
@@ -979,6 +976,10 @@ func main() {
 		// 内测门（2026-10-16）：仅白名单 uid（CATSCO_SERVICE_CATALOG_UID_WHITELIST）可用。
 		catalogHandler := server.NewServiceAgentCatalogHandlerFromEnv(serviceAgentStore)
 		catalogHandler.SetSubscriptionNotifier(serviceAgentsMCPHandler)
+		// 三级分享（公开 / 好友 / 自用）：「好友」级要按访问者求值，所以两个面都要这一个能力。
+		// 缺失时好友级应用退化为不可见，公开与自用不受影响。
+		catalogHandler.SetFriendship(db)
+		serviceAgentsMCPHandler.SetFriendship(db)
 		mux.HandleFunc("GET /api/service-agents/catalog/access", jwtAuthWithDB(catalogHandler.HandleAccess))
 		mux.HandleFunc("GET /api/service-agents/catalog", jwtAuthWithDB(catalogHandler.HandleCatalog))
 		mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleAdd))

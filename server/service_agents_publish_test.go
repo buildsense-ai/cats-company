@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,6 +75,10 @@ func TestServiceAgentPublishValidatesInput(t *testing.T) {
 		{name: "bad base64", body: map[string]any{"slug": "ok-slug", "bundle_base64": "!!!notb64"}, status: 400, errKey: "invalid_bundle"},
 		// 公开分享但不写描述：调用方 Agent 只看到名字，等于不知道能不能用。
 		{name: "public without description", body: map[string]any{"slug": "ok-slug", "bundle_base64": bundleB64("x")}, status: 400, errKey: "description_required"},
+		// 好友级同理：能被别人看到，就得说得清自己是干什么的。
+		{name: "friends without description", body: map[string]any{"slug": "ok-slug", "visibility": "friends", "bundle_base64": bundleB64("x")}, status: 400, errKey: "description_required"},
+		// 自用不强制：没人会用它，写不写是自己的事。但它得有包，所以仍然不合法。
+		{name: "private keeps description optional", body: map[string]any{"slug": "ok-slug", "visibility": "private", "bundle_base64": "!!!notb64"}, status: 400, errKey: "invalid_bundle"},
 		// 入参 schema 与包通道同一套规则：写错了要当场报，不能落库成「input 是 string」。
 		{name: "input schema not object", body: map[string]any{"slug": "ok-slug", "bundle_base64": bundleB64("x"), "definition": map[string]any{"input_schema": "just a string"}}, status: 400, errKey: "invalid_input_schema"},
 		{name: "input schema wrong top type", body: map[string]any{"slug": "ok-slug", "bundle_base64": bundleB64("x"), "definition": map[string]any{"input_schema": map[string]any{"type": "string"}}}, status: 400, errKey: "invalid_input_schema"},
@@ -201,6 +206,36 @@ func TestServiceAgentPublishOwnershipAndIdempotency(t *testing.T) {
 	}
 }
 
+// 三级分享的发布侧：friends 是合法取值，且会被存下来（否则面板选了也不生效）。
+func TestServiceAgentPublishAcceptsFriendsVisibility(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	ts := newPublishTestServer(t, st, 441, true)
+
+	status, out := postPublish(t, ts.URL, map[string]any{
+		"slug": "friends-only", "name": "好友专属", "visibility": "friends",
+		"bundle_base64": bundleB64("friends-pkg"),
+		"definition":    map[string]any{"description": "只分享给好友用的工具"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("publish status = %d (%v)", status, out)
+	}
+	if got := out["visibility"]; got != "friends" {
+		t.Fatalf("visibility = %v, want friends", got)
+	}
+
+	st.mu.Lock()
+	var saved string
+	for _, agent := range st.agents {
+		if agent.Slug == "friends-only" {
+			saved = agent.Visibility
+		}
+	}
+	st.mu.Unlock()
+	if saved != "friends" {
+		t.Fatalf("落库 visibility = %q, want friends", saved)
+	}
+}
+
 // private agent 只对 owner 可见：别人目录里没有，工具面也没有，硬调返回 agent_not_found。
 func TestServiceAgentVisibilityScope(t *testing.T) {
 	st := newFakeServiceAgentStore()
@@ -291,6 +326,127 @@ func TestServiceAgentVisibilityScope(t *testing.T) {
 	if res != nil && res.IsError {
 		t.Fatalf("owner should be allowed: %s", mcpToolErrorText(res))
 	}
+}
+
+// 「好友」级：发布者的好友、以及这个 bot 的好友都能看到并调用；陌生人看不到、
+// 硬调被拒、连订阅（探测存在性）都拿不到。
+func TestServiceAgentFriendsVisibilityScope(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.autoCompleteAfter = 5 * time.Millisecond
+	const (
+		owner         = int64(441)
+		friendOfOwner = int64(442)
+		friendOfBot   = int64(443)
+		stranger      = int64(444)
+		botUID        = int64(982)
+	)
+	t.Setenv("CATSCO_SERVICE_CATALOG_UID_WHITELIST", "441,442,443,444")
+
+	// 好友级应用：背后是 bot 982。
+	st.agents = append(st.agents, store.ServiceAgentDescriptor{
+		ID: 501, Slug: "friends-app", Name: "好友应用", Version: 1, AsyncThresholdSeconds: 60,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: owner,
+		Visibility:     store.ServiceAgentVisibilityFriends,
+		DefinitionJSON: `{"description":"只有好友能用","runner":{"type":"bot","bot_uid":982},"input_schema":{"type":"object"}}`,
+	})
+
+	// 两个账号各有一条好友边：一个连着发布者，一个连着这个 bot。
+	listSlugs := func(url string) map[string]bool {
+		resp, err := http.Get(url + "/api/service-agents/catalog")
+		if err != nil {
+			t.Fatalf("get catalog: %v", err)
+		}
+		defer resp.Body.Close()
+		var payload struct {
+			Agents []map[string]any `json:"agents"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode catalog: %v", err)
+		}
+		out := map[string]bool{}
+		for _, agent := range payload.Agents {
+			out[fmt.Sprint(agent["slug"])] = true
+		}
+		return out
+	}
+
+	// 发布者本人
+	if !listSlugs(catalogForUID(t, st, owner, &stubFriendship{}))["friends-app"] {
+		t.Fatal("发布者应该看得到自己的应用")
+	}
+	// 发布者的好友
+	if !listSlugs(catalogForUID(t, st, friendOfOwner, &stubFriendship{friends: map[int64]bool{owner: true}}))["friends-app"] {
+		t.Fatal("发布者的好友应该看得到")
+	}
+	// 这个 bot 的好友（不认识发布者也算）
+	if !listSlugs(catalogForUID(t, st, friendOfBot, &stubFriendship{friends: map[int64]bool{botUID: true}}))["friends-app"] {
+		t.Fatal("这个 bot 的好友应该看得到")
+	}
+	// 陌生人
+	strangerCatalog := catalogForUID(t, st, stranger, &stubFriendship{})
+	if listSlugs(strangerCatalog)["friends-app"] {
+		t.Fatal("好友级应用不该出现在陌生人的目录里")
+	}
+	// 陌生人连「探测存在」都不该成功：订阅返回 404，与不存在走同一条路。
+	req, err := http.NewRequest(http.MethodPut, strangerCatalog+"/api/service-agents/friends-app/subscription", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("陌生人订阅看不见的应用 = %d, want 404", resp.StatusCode)
+	}
+
+	// 工具面：好友看得到工具，陌生人没有；陌生人硬调被拒。
+	handlerFor := func(isFriend bool) *ServiceAgentsMCPHandler {
+		h := NewServiceAgentsMCPHandler(st)
+		if isFriend {
+			h.SetFriendship(&stubFriendship{friends: map[int64]bool{owner: true}})
+		} else {
+			h.SetFriendship(&stubFriendship{})
+		}
+		return h
+	}
+	friendMCP := httptest.NewServer(mcpAuthStub(friendOfOwner, handlerFor(true)))
+	t.Cleanup(friendMCP.Close)
+	if names := testToolNames(t, newMCPSession(t, friendMCP.URL)); !containsName(names, "catsco_friends-app") {
+		t.Fatalf("好友的工具面应该含这个应用: %v", names)
+	}
+
+	strangerHandler := handlerFor(false)
+	strangerMCP := httptest.NewServer(mcpAuthStub(stranger, strangerHandler))
+	t.Cleanup(strangerMCP.Close)
+	if names := testToolNames(t, newMCPSession(t, strangerMCP.URL)); containsName(names, "catsco_friends-app") {
+		t.Fatalf("陌生人的工具面不该含这个应用: %v", names)
+	}
+	agent := st.agents[len(st.agents)-1]
+	res, _, err := strangerHandler.invoke(context.Background(), agent, stranger, serviceInvokeToolArgs{})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if res == nil || !res.IsError || !strings.Contains(mcpToolErrorText(res), "agent_not_found") {
+		t.Fatalf("陌生人硬调好友级应用应被拒: %+v", res)
+	}
+}
+
+// catalogForUID 造一个只带目录读接口的测试服务端（每个 uid 一个）。
+func catalogForUID(t *testing.T, st *fakeServiceAgentStore, uid int64, friendship ServiceAgentFriendResolver) string {
+	t.Helper()
+	handler := NewServiceAgentCatalogHandlerFromEnv(st)
+	handler.SetFriendship(friendship)
+	mux := http.NewServeMux()
+	wrap := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) { mcpAuthStub(uid, next).ServeHTTP(w, r) }
+	}
+	mux.HandleFunc("GET /api/service-agents/catalog", wrap(handler.HandleCatalog))
+	mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", wrap(handler.HandleAdd))
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts.URL
 }
 
 // 收回分享（下架）：只有发布者本人能操作；下架后目录/tools/list 来源立即不含它，
