@@ -401,7 +401,7 @@ type cloudWorkerSummary struct {
 	UpdateAvailable bool   `json:"update_available,omitempty"`
 	// Backend is "packed" for the shared-container fleet and empty for a
 	// dedicated ECS instance, so clients can label the two distinctly.
-	Backend string `json:"backend,omitempty"`
+	Backend         string `json:"backend,omitempty"`
 	OperationID     string `json:"operation_id,omitempty"`
 	OperationAction string `json:"operation_action,omitempty"`
 	OperationStatus string `json:"operation_status,omitempty"`
@@ -1156,11 +1156,17 @@ func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorke
 		return item
 	}
 	expiresAt := result.ExpiresAt
+	graceDays := cloudWorkerExpiryGraceDays
+	if lifecycle.RetentionDays > 0 {
+		// Keep the window the purchased package scheduled; a renewal must not
+		// silently stretch a 7-day package's retention to the legacy 15 days.
+		graceDays = lifecycle.RetentionDays
+	}
 	var extendErr error
 	if extender, ok := h.credits.(CloudWorkerLifecycleExtender); ok {
-		extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, cloudWorkerExpiryGraceDays)
+		extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, graceDays)
 	} else {
-		extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, cloudWorkerExpiryGraceDays)
+		extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, graceDays)
 	}
 	if extendErr != nil {
 		item.Message = "已续订；平台记录同步失败：" + extendErr.Error()
@@ -1383,6 +1389,9 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	reservation := fmt.Sprintf("create-%d-%d", uid, time.Now().UnixNano())
 	reservedCredit := false
 	var creditExpiresAt *time.Time
+	// retentionDays comes from the purchased plan's credit (7-day package → 3
+	// days, longer → 7 days); 0 keeps the fleet-wide default.
+	retentionDays := 0
 	profile := types.CloudWorkerPrivateNAT
 	billing := types.CloudWorkerMonthly
 	requestedProfile, _ := r.Context().Value(cloudWorkerProfileContextKey{}).(string)
@@ -1397,6 +1406,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		if reserved {
 			profile, billing = selected.Profile, selected.BillingMode
 			creditExpiresAt = selected.ExpiresAt
+			retentionDays = selected.RetentionDays
 		}
 	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 		selected, reserved, reserveErr := profiled.ReserveCloudWorkerProfileCredit(uid, reservation, requestedProfile)
@@ -1642,7 +1652,13 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if reservedCredit {
-		if err := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, cloudWorkerExpiryGraceDays); err != nil {
+		// Use the purchased package's retention window; only credits that predate
+		// the column fall back to the fleet default.
+		graceDays := retentionDays
+		if graceDays <= 0 {
+			graceDays = cloudWorkerExpiryGraceDays
+		}
+		if err := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, graceDays); err != nil {
 			log.Printf("[cloud-worker] commit credit for uid %d failed: %v", uid, err)
 			// A refund can revoke a reserved credit while the provider operation is
 			// still running. In that specific case the instance must not survive a

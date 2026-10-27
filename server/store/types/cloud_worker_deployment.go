@@ -25,6 +25,10 @@ func NormalizeCloudWorkerBilling(mode string) (string, bool) {
 type CloudWorkerCreditSelection struct {
 	Profile     string
 	BillingMode string
+	// RetentionDays is how long the worker's data survives package expiry; it
+	// travels with the credit so the create path schedules the same window the
+	// purchased package promised.
+	RetentionDays int
 	// ExpiresAt carries the paid window of the reserved credit so the create
 	// path can prepay the provider for every month the credit covers. It is
 	// nil for perpetual manual grants.
@@ -39,6 +43,31 @@ func NormalizeCloudWorkerProfile(profile string) (string, bool) {
 		return profile, true
 	}
 	return profile, false
+}
+
+// CloudWorkerRetentionDays resolves how long a worker's data survives package
+// expiry before the sweeper destroys it.
+//
+// Product rule (2026-10-27): a 7-day package keeps its data for 3 days, a
+// 30-day package for 7 days — the same shape as the ECS monthly instance's
+// retention window. An explicit plan value always wins so an operator can
+// override a single package; 0 means "derive from the package length".
+func CloudWorkerRetentionDays(configured, durationDays int) int {
+	if configured > 0 {
+		if configured > 90 {
+			return 90
+		}
+		return configured
+	}
+	if durationDays <= 0 {
+		// Unknown package length: keep the legacy 15-day window rather than
+		// shortening a customer's recovery period by accident.
+		return 15
+	}
+	if durationDays <= 7 {
+		return 3
+	}
+	return 7
 }
 
 // CloudWorkerDeployment is an internal, non-secret snapshot. It is deliberately

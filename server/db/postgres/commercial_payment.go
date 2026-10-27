@@ -12,7 +12,7 @@ import (
 )
 
 const commercialPlanColumns = `id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile`
+  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days`
 
 func (a *Adapter) GetCommercialPlan(id int64) (*types.CommercialPlan, error) {
 	if id <= 0 {
@@ -565,6 +565,11 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		return nil, false, err
 	}
 	if order.PlanSlug == commercialPersonalPlanSlug || order.PlanSlug == commercialProPlanSlug {
+		// Retention follows the purchased package (7d → 3 days, longer → 7).
+		retention, err := planCloudWorkerRetentionDays(tx, order.PlanID, order.PlanDurationDays)
+		if err != nil {
+			return nil, false, err
+		}
 		// A renewal must not mint a second provisioning credit while the buyer
 		// still owns something it can extend or spend: an existing instance (any
 		// lifecycle that has not been destroyed yet keeps the single machine the
@@ -582,14 +587,14 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 			if err != nil {
 				return nil, false, err
 			}
-			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt, profile); err != nil {
+			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt, profile, retention); err != nil {
 				return nil, false, err
 			}
 		}
 		// If the user already has a cloud worker, a renewal/upgrade extends the
 		// retention window atomically with the paid entitlement. The worker is
 		// not deleted at the old expiry while a new monthly package is active.
-		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, order.UID, expiresAt); err != nil {
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, order.UID, expiresAt, retention); err != nil {
 			return nil, false, err
 		}
 	}

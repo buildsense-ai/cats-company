@@ -93,6 +93,8 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 	// Which fleet a plan buys is an internal capacity decision; the public
 	// catalog only advertises quotas and prices.
 	copy.CloudWorkerDeploymentProfile = ""
+	// Retention windows are an internal capacity/cost decision.
+	copy.CloudWorkerRetentionDays = 0
 	return &copy
 }
 
@@ -1303,6 +1305,8 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			// Pointer so an absent field keeps the plan's current fleet
 			// instead of decoding to "" and landing on private_nat.
 			CloudWorkerDeploymentProfile *string `json:"cloud_worker_deployment_profile"`
+			// 0 keeps the derived window (7d→3, longer→7); a positive value pins it.
+			CloudWorkerRetentionDays int `json:"cloud_worker_retention_days"`
 			// Pointer so an absent field keeps the plan's current setting
 			// instead of decoding to false and silently pinning the plan.
 			AutoUpdateModels *bool `json:"auto_update_models"`
@@ -1378,6 +1382,10 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		if req.CloudWorkerRetentionDays < 0 || req.CloudWorkerRetentionDays > 90 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "cloud worker retention days must be within 0-90"})
+			return
+		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
 			Slug:                   req.Slug,
 			Name:                   req.Name,
@@ -1395,6 +1403,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			CloudWorkerBillingMode: req.CloudWorkerBillingMode,
 			// Fleet assignment follows the same absent-means-keep rule.
 			CloudWorkerDeploymentProfile: deploymentProfile,
+			CloudWorkerRetentionDays:     req.CloudWorkerRetentionDays,
 			DurationDays:                 req.DurationDays,
 			State:                        req.State,
 			SortOrder:                    req.SortOrder,

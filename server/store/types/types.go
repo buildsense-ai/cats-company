@@ -66,16 +66,19 @@ type CommercialPlan struct {
 	// minted by this plan buys: private_nat/public_ip spin up a dedicated ECS
 	// instance, packed_shared places the worker inside the shared container
 	// cluster. Empty falls back to the column default (private_nat).
-	CloudWorkerDeploymentProfile string  `json:"cloud_worker_deployment_profile,omitempty"`
-	ID                           int64   `json:"id"`
-	Slug                         string  `json:"slug"`
-	Name                         string  `json:"name"`
-	Description                  string  `json:"description,omitempty"`
-	PriceFen                     int64   `json:"price_fen"`
-	Currency                     string  `json:"currency"`
-	SaleState                    string  `json:"sale_state"`
-	PurchaseLimit                int     `json:"purchase_limit"`
-	MonthlyBudget                float64 `json:"monthly_budget_cny,omitempty"`
+	CloudWorkerDeploymentProfile string `json:"cloud_worker_deployment_profile,omitempty"`
+	// CloudWorkerRetentionDays overrides how long a worker's data survives
+	// package expiry (0 = derive from DurationDays: ≤7d→3, longer→7).
+	CloudWorkerRetentionDays int     `json:"cloud_worker_retention_days,omitempty"`
+	ID                       int64   `json:"id"`
+	Slug                     string  `json:"slug"`
+	Name                     string  `json:"name"`
+	Description              string  `json:"description,omitempty"`
+	PriceFen                 int64   `json:"price_fen"`
+	Currency                 string  `json:"currency"`
+	SaleState                string  `json:"sale_state"`
+	PurchaseLimit            int     `json:"purchase_limit"`
+	MonthlyBudget            float64 `json:"monthly_budget_cny,omitempty"`
 	// RealCostCNY is the real upstream cost budget behind this plan's points.
 	// Quota conversion uses points / real_cost_cny when set; 0 keeps the
 	// built-in official anchor (or the relay default for custom plans).
@@ -378,7 +381,10 @@ type CloudWorkerLifecycle struct {
 	TenantName        string
 	PackageExpiresAt  time.Time
 	DeleteAfter       time.Time
-	State             string
+	// RetentionDays is the window this row was created with; a renewal must
+	// reuse it instead of falling back to the global default.
+	RetentionDays int
+	State         string
 }
 
 // Cloud worker renewal outcome statuses reported by RenewForOwner.

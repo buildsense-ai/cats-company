@@ -18,9 +18,10 @@ func TestReserveCloudWorkerConfiguredCreditCarriesCreditExpiry(t *testing.T) {
 		value     interface{}
 		wantNil   bool
 		expiresAt time.Time
+		retention int
 	}{
-		{name: "bounded package credit", value: expiresAt, expiresAt: expiresAt},
-		{name: "perpetual manual grant", value: nil, wantNil: true},
+		{name: "bounded package credit", value: expiresAt, expiresAt: expiresAt, retention: 3},
+		{name: "perpetual manual grant", value: nil, wantNil: true, retention: 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -34,10 +35,10 @@ func TestReserveCloudWorkerConfiguredCreditCarriesCreditExpiry(t *testing.T) {
 			mock.ExpectExec(`UPDATE cloud_worker_credits c\s+SET state = CASE`).
 				WithArgs(int64(38)).
 				WillReturnResult(sqlmock.NewResult(0, 0))
-			mock.ExpectQuery(`SELECT id, deployment_profile, billing_mode, expires_at FROM cloud_worker_credits`).
+			mock.ExpectQuery(`SELECT id, deployment_profile, billing_mode, expires_at, retention_days FROM cloud_worker_credits`).
 				WithArgs(int64(38), "", "").
-				WillReturnRows(sqlmock.NewRows([]string{"id", "deployment_profile", "billing_mode", "expires_at"}).
-					AddRow(int64(7), "private_nat", "month", tc.value))
+				WillReturnRows(sqlmock.NewRows([]string{"id", "deployment_profile", "billing_mode", "expires_at", "retention_days"}).
+					AddRow(int64(7), "private_nat", "month", tc.value, tc.retention))
 			mock.ExpectExec(`UPDATE cloud_worker_credits\s+SET state = 'reserved', reservation_ref = \$2`).
 				WithArgs(int64(7), "create-38-1").
 				WillReturnResult(sqlmock.NewResult(0, 1))
@@ -56,6 +57,9 @@ func TestReserveCloudWorkerConfiguredCreditCarriesCreditExpiry(t *testing.T) {
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatalf("unmet database expectations: %v", err)
+			}
+			if selection.RetentionDays != tc.retention {
+				t.Fatalf("retention=%d want %d", selection.RetentionDays, tc.retention)
 			}
 		})
 	}

@@ -19,6 +19,14 @@ ALTER TABLE commercial_invite_codes ADD COLUMN IF NOT EXISTS cloud_worker_billin
 ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS cloud_worker_billing_mode VARCHAR(16) NOT NULL DEFAULT 'month' CHECK (cloud_worker_billing_mode IN ('month','ondemand'));
 ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS cloud_worker_deployment_profile VARCHAR(24) NOT NULL DEFAULT 'private_nat'
     CHECK (cloud_worker_deployment_profile IN ('private_nat','public_ip','packed_shared'));
+-- How long a worker's data survives package expiry, per purchased plan.
+-- 0 = derive from duration_days (≤ 7d → 3 days, longer → 7 days).
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS cloud_worker_retention_days INT NOT NULL DEFAULT 0
+    CHECK (cloud_worker_retention_days BETWEEN 0 AND 90);
+ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS retention_days INT NOT NULL DEFAULT 0
+    CHECK (retention_days BETWEEN 0 AND 90);
+ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS retention_days INT NOT NULL DEFAULT 0
+    CHECK (retention_days BETWEEN 0 AND 90);
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_mode VARCHAR(16) NOT NULL DEFAULT 'month' CHECK (billing_mode IN ('month','ondemand'));
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS conversion_pending BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_action VARCHAR(24) NOT NULL DEFAULT '';

@@ -245,7 +245,7 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		// the replacement package is active (and resume from grace on a reopen).
 		// GREATEST semantics never shorten a longer remaining window.
 		if expiresAt != nil {
-			if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, adjustment.UID, *expiresAt); err != nil {
+			if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, adjustment.UID, *expiresAt, plan.CloudWorkerRetentionDays); err != nil {
 				return nil, err
 			}
 		}
@@ -353,7 +353,7 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		if err := createOperatorPlanGrants(tx, adjustment.UID, plan, operationID, strings.TrimSpace(adjustment.Note), currentExpiry, &newExpiry); err != nil {
 			return nil, err
 		}
-		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, adjustment.UID, newExpiry); err != nil {
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, adjustment.UID, newExpiry, plan.CloudWorkerRetentionDays); err != nil {
 			return nil, err
 		}
 		if adjustment.ResetCycle {

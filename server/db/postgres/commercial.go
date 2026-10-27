@@ -62,6 +62,7 @@ func scanCommercialPlan(scanner interface {
 		&plan.UpdatedAt,
 		&plan.CloudWorkerBillingMode,
 		&plan.CloudWorkerDeploymentProfile,
+		&plan.CloudWorkerRetentionDays,
 	); err != nil {
 		return nil, err
 	}
@@ -144,7 +145,7 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 	}
 	rows, err := a.db.Query(`
 		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-		       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile
+		       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days
 		FROM commercial_plans
 		` + where + `
 		ORDER BY sort_order ASC, id ASC`)
@@ -190,6 +191,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	if !validProfile {
 		return 0, fmt.Errorf("invalid cloud worker deployment profile")
 	}
+	if plan.CloudWorkerRetentionDays < 0 || plan.CloudWorkerRetentionDays > 90 {
+		return 0, fmt.Errorf("invalid cloud worker retention window")
+	}
 	budgets, err := encodeModelBudgets(plan.ModelBudgets)
 	if err != nil {
 		return 0, fmt.Errorf("encode model budgets: %w", err)
@@ -213,9 +217,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	err = a.db.QueryRow(`
 		INSERT INTO commercial_plans(
 			slug, name, description, price_fen, currency, sale_state, purchase_limit,
-			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, cloud_worker_deployment_profile, auto_update_models
+			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, auto_update_models
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -232,6 +236,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 			sort_order = EXCLUDED.sort_order,
 			cloud_worker_billing_mode = EXCLUDED.cloud_worker_billing_mode,
 			cloud_worker_deployment_profile = EXCLUDED.cloud_worker_deployment_profile,
+			cloud_worker_retention_days = EXCLUDED.cloud_worker_retention_days,
 			auto_update_models = EXCLUDED.auto_update_models
 		WHERE commercial_plans.archived_at IS NULL
 		RETURNING id`,
@@ -251,6 +256,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		sortOrder,
 		billing,
 		deploymentProfile,
+		plan.CloudWorkerRetentionDays,
 		plan.AutoUpdateModels,
 	).Scan(&id)
 	if err != nil {
@@ -543,6 +549,8 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	if redeemedCount >= maxRedemptions {
 		return nil, fmt.Errorf("invite code has no remaining redemptions")
 	}
+	// Retention follows the invite's plan length (7d → 3 days, longer → 7).
+	retentionDays := types.CloudWorkerRetentionDays(0, durationDays)
 	var duplicate int
 	if err := tx.QueryRow(`
 		SELECT COUNT(*)
@@ -597,9 +605,9 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	}
 	for ordinal := 1; ordinal <= cloudWorkerCredits; ordinal++ {
 		if _, err := tx.Exec(`
-			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode)
-			VALUES ($1, $2, $3, $4, $5, $6)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile, cloudWorkerBilling); err != nil {
+			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode, retention_days)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile, cloudWorkerBilling, retentionDays); err != nil {
 			return nil, fmt.Errorf("create invite cloud worker credit: %w", err)
 		}
 	}
@@ -607,7 +615,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		// A redemption reopens or extends the paid window; keep existing cloud
 		// workers on the same retention schedule instead of letting them expire
 		// against the replaced package. GREATEST keeps a longer paid window.
-		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, *entitlementExpires); err != nil {
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, *entitlementExpires, retentionDays); err != nil {
 			return nil, err
 		}
 	}
