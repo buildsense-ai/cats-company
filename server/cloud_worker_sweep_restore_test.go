@@ -2,6 +2,9 @@ package server
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -146,6 +149,44 @@ func TestSweepExpiredWorkersKeepsRowActiveWhenExpireHookFails(t *testing.T) {
 
 	if got := stub.rows[1].State; got != "active" {
 		t.Fatalf("lifecycle state=%q want active when expire hook fails", got)
+	}
+}
+
+// The deployment hook keeps its own suspend deadline (suspended.json) that a
+// fallback reaper reads. If the sweep does not forward the plan's retention
+// window, that deadline falls back to a fixed default and the two sides disagree
+// about when the instance should disappear.
+func TestSweepExpiredWorkersForwardsRetentionToExpireHook(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "expire-args.txt")
+	expire := filepath.Join(dir, "expire-record.sh")
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture: covered on unix runners")
+	}
+	if err := os.WriteFile(expire, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+argsFile+"\"\n"), 0o755); err != nil {
+		t.Fatalf("write expire fixture: %v", err)
+	}
+	h, _ := newLifecycleSweepHandlerWithExpire(t, expire)
+	stub := &lifecycleSweepStub{credit: 1, rows: map[int64]CloudWorkerLifecycle{
+		1: {ID: 1, WorkerUID: 10, OwnerUID: 7, TenantName: "bot-bot-a", State: "active",
+			PackageExpiresAt: time.Now().Add(-time.Hour), DeleteAfter: time.Now().Add(6 * 24 * time.Hour),
+			RetentionDays: 7, BillingMode: "month"},
+	}, due: []int64{1}}
+	h.credits = stub
+
+	h.SweepExpiredWorkers(time.Now().UTC())
+
+	if got := stub.rows[1].State; got != "delete_pending" {
+		t.Fatalf("lifecycle state=%q want delete_pending after expire hook", got)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("expire hook did not run: %v", err)
+	}
+	gotArgs := strings.Fields(string(raw))
+	want := []string{"--name", "bot-bot-a", "--grace-days", "7"}
+	if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
+		t.Fatalf("expire hook args=%v want %v (retention must reach the deployment hook)", gotArgs, want)
 	}
 }
 

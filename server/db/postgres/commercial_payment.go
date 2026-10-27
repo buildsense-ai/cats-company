@@ -14,6 +14,13 @@ import (
 const commercialPlanColumns = `id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
   monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days`
 
+// commercialRefundMinRetentionDays bounds the retention window after a refund
+// for lifecycles that predate the per-plan retention column. A refund is a
+// termination by agreement, not a request to erase data on the spot, so the
+// worker is always parked for at least the shortest published window instead of
+// being destroyed in the next sweep tick.
+const commercialRefundMinRetentionDays = 3
+
 func (a *Adapter) GetCommercialPlan(id int64) (*types.CommercialPlan, error) {
 	if id <= 0 {
 		return nil, fmt.Errorf("invalid commercial plan id")
@@ -800,19 +807,24 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 		return nil, false, fmt.Errorf("check remaining paid time after refund: %w", err)
 	}
 	rollbackUntil := refundedAt
-	graceDays := 0
 	if remainingPaid.Valid {
 		rollbackUntil = remainingPaid.Time
-		graceDays = 15
 	}
+	// The retention window is the plan's own (7-day package → 3 days, 30-day →
+	// 7 days), not a fixed 15. A refund that lands the worker past its paid
+	// window used to set delete_after = refundedAt, so the sweeper destroyed
+	// and purged the instance within a couple of minutes of the refund — no
+	// window at all for a mistaken refund or a support follow-up. Rows created
+	// before the column existed carry 0, so fall back to the shortest published
+	// window instead of zero.
 	if _, err := tx.Exec(`
 		UPDATE cloud_worker_lifecycles
 		SET package_expires_at = $2::timestamptz,
-		    delete_after = $2::timestamptz + ($3::int * INTERVAL '1 day'),
+		    delete_after = $2::timestamptz + (GREATEST(NULLIF(retention_days, 0), $3::int) * INTERVAL '1 day'),
 		    conversion_pending = false,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE owner_uid = $1 AND state IN ('active','delete_pending','delete_failed')`,
-		order.UID, rollbackUntil, graceDays); err != nil {
+		order.UID, rollbackUntil, commercialRefundMinRetentionDays); err != nil {
 		return nil, false, fmt.Errorf("roll back cloud worker lifecycles after refund: %w", err)
 	}
 	refunded, err := scanCommercialOrder(tx.QueryRow(`
