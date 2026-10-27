@@ -262,9 +262,10 @@ func (s *countingCreditStub) ClaimCloudWorkerLifecycleDeletion(int64) (bool, err
 }
 func (s *countingCreditStub) MarkCloudWorkerLifecycleDeleted(int64, string) error { return nil }
 
-// A redemption that carries three credits must auto provision exactly one
-// instance and leave two credits available for the user to spend later.
-func TestRedeemWithMultipleCreditsProvisionsOneWorker(t *testing.T) {
+// Each unspent credit is a creation right, so a redemption carrying three
+// credits provisions three bots for the same account. That is how one account
+// ends up owning several shared workers.
+func TestRedeemWithMultipleCreditsProvisionsOneWorkerPerCredit(t *testing.T) {
 	cfg := workerScriptCfg(t, "", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
 	if cfg.ProvisionScript == "" {
 		t.Skip("no script interpreter")
@@ -275,19 +276,19 @@ func TestRedeemWithMultipleCreditsProvisionsOneWorker(t *testing.T) {
 
 	h.AutoProvisionForOwner(42)
 
-	if len(ts.tenantNames) != 1 {
-		t.Fatalf("tenantNames=%v want exactly one provisioned worker", ts.tenantNames)
+	if len(ts.tenantNames) != 3 {
+		t.Fatalf("tenantNames=%v want one worker per credit (3)", ts.tenantNames)
 	}
-	if credits.available != 2 {
-		t.Fatalf("available credits=%d want 2 left for manual creation", credits.available)
+	if credits.available != 0 {
+		t.Fatalf("available credits=%d want 0 after spending every credit", credits.available)
 	}
 	if credits.reserved != 0 {
 		t.Fatalf("reserved credits=%d want 0 after provisioning settles", credits.reserved)
 	}
 }
 
-// A second provisioning attempt for an account that already owns a worker is
-// a renewal, not a creation: the hook must not spend another credit.
+// Credits, not "another run", fund workers: once they are spent a later hook
+// (a renewal, an upgrade, a repeated redemption callback) creates nothing.
 func TestAutoProvisionAfterRedeemKeepsExistingWorker(t *testing.T) {
 	cfg := workerScriptCfg(t, "", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
 	if cfg.ProvisionScript == "" {
@@ -298,17 +299,17 @@ func TestAutoProvisionAfterRedeemKeepsExistingWorker(t *testing.T) {
 	h.credits = credits
 
 	h.AutoProvisionForOwner(42)
-	if len(ts.tenantNames) != 1 {
-		t.Fatalf("first run tenantNames=%v want one worker", ts.tenantNames)
+	if len(ts.tenantNames) != 3 {
+		t.Fatalf("first run tenantNames=%v want three workers (one per credit)", ts.tenantNames)
 	}
-	// Simulate the now-owned instance being visible to the ownership check.
+	// Simulate the owned instances being visible to the ownership check.
 	ts.ownerBots = []map[string]interface{}{{"id": int64(2001), "tenant_name": "bot-bot-existing"}}
 	h.AutoProvisionForOwner(42)
 
-	if len(ts.tenantNames) != 1 {
-		t.Fatalf("second run tenantNames=%v want the existing worker only", ts.tenantNames)
+	if len(ts.tenantNames) != 3 {
+		t.Fatalf("second run tenantNames=%v want the already provisioned workers only", ts.tenantNames)
 	}
-	if credits.available != 2 {
-		t.Fatalf("available credits=%d want 2 (no extra spend on renewal)", credits.available)
+	if credits.available != 0 {
+		t.Fatalf("available credits=%d want 0 (a renewal must not mint or spend credits)", credits.available)
 	}
 }
