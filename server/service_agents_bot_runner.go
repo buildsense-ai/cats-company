@@ -67,6 +67,12 @@ type botRunnerStore interface {
 	StartServiceRun(ctx context.Context, runID, instanceID string, leaseSeconds int) (bool, error)
 	CompleteServiceRun(ctx context.Context, runID, resultID string, result json.RawMessage, usage json.RawMessage) (bool, error)
 	FailServiceRun(ctx context.Context, runID, errorText string, retryable bool) error
+	// CreateTopic 幂等建私聊 topic（ON CONFLICT DO NOTHING）。
+	//
+	// 必需：`messages.topic_id` 有外键指向 `topics`，而投递是直接 INSERT 消息。
+	// 调用方和这个 bot 从来没聊过天时 topic 不存在 —— 而这正是「别人的 agent
+	// 调我的 bot」的主场景，漏了就是一条 foreign key 报错（实测跨账号首调必炸）。
+	CreateTopic(id, topicType string, ownerID int64) error
 	// SaveMessageWithMetadata 是投递用的落库：要带 catsco_bot_session_id，
 	// 才能让 bot 知道这次调用该归到哪个会话（普通 SaveMessage 存不了 metadata）。
 	SaveMessageWithMetadata(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string, metadata map[string]interface{}) (int64, bool, error)
@@ -275,6 +281,14 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 	r.claimTopic(topic)
 	defer r.releaseTopic(topic)
 
+	// topic 必须先存在：messages.topic_id 有外键，而这里只 INSERT 消息不建会话。
+	// 调用方从没和这个 bot 聊过天时（别人的 agent 第一次调你的 bot）没有这条记录。
+	// owner 记调用方：这是他的私聊窗口，也跟平台其它建 p2p topic 的地方一致。
+	if err := r.store.CreateTopic(topic, "p2p", req.CallerUID); err != nil {
+		r.fail(req, "bot_topic_failed: "+err.Error())
+		return
+	}
+
 	// 水位线 = 我们这条消息的 id：只认它之后 bot 发的消息，
 	// 避免把历史回复（或同一 topic 的并发调用）当成本次结果。
 	//
@@ -333,6 +347,14 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 // 之所以要这么严：topic 是固定的 `p2p_调用方_bot`，同一账号并发调同一个 bot 时
 // 所有 run 共用一条消息流；只按「bot 说的都算」会把别人的结果当自己的一起交出去。
 //
+// `mode=code` 的消息一律跳过：那是 bot 的工具调用/输出展示（skill 文件内容、
+// execute_shell 的 stdout），不是给调用方的答案。实测一次调用的真答复只有 121 字，
+// 而过程展示有 10KB —— 混进来就变成把日志当结果。
+//
+// 一旦收到过**明确归属**的回复，就不再接受第 3 类兜底：那时出现的无标记消息
+// 必然是过程记录或别人的活，收进来只会污染答案。旧客户端不受影响（它从头到尾
+// 都没有明确归属，全部走兜底）。
+//
 // 若第 3 类消息出现过、但因为有别的单在等而无法认领，`botReplyAmbiguousGrace`
 // 之后如实失败：已经看见 bot 回了，就不是「没回」，而是「分不清」，这两件事
 // 对调用方的处置完全不同（前者该升级客户端，后者该重试）。
@@ -348,6 +370,7 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 		settleTill  time.Time
 		size        int
 		sawUnowned  bool
+		sawOwned    bool
 		ambiguousAt time.Time
 	)
 	for {
@@ -366,11 +389,28 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			if msg.FromUID != botUID || msg.MsgType != "text" {
 				continue
 			}
+			// 过程展示（工具调用、stdout、skill 内容）不是答案。
+			if strings.EqualFold(strings.TrimSpace(msg.Mode), "code") {
+				continue
+			}
 			text := strings.TrimSpace(msg.Content)
 			if text == "" {
 				continue
 			}
-			if !botReplyBelongsTo(msg, promptID, sessionID, r.competingOnTopic(topic)) {
+			ownership := botReplyOwnershipOf(msg, promptID, sessionID)
+			switch ownership {
+			case botReplyOwnedExplicit:
+				sawOwned = true
+			case botReplyOwnedFallback:
+				// 已经有过明确归属的回复，或者还有别的单在抢：这条不可能是答案。
+				if sawOwned || r.competingOnTopic(topic) > 0 {
+					sawUnowned = true
+					if ambiguousAt.IsZero() {
+						ambiguousAt = time.Now()
+					}
+					continue
+				}
+			default:
 				sawUnowned = true
 				if ambiguousAt.IsZero() {
 					ambiguousAt = time.Now()
@@ -412,27 +452,55 @@ func (r *ServiceBotRunner) grace() time.Duration {
 	return botReplyAmbiguousGrace
 }
 
-// botReplyBelongsTo 判断一条 bot 的 text 是不是本次调用的结果。
-// competing 是同一 topic 上除自己之外还在等的单数（0 = 我是唯一一个）。
-func botReplyBelongsTo(msg *types.Message, promptID int64, sessionID string, competing int) bool {
+// botReplyOwnership 是一条 bot 消息的归属判定结果。
+//
+// 区分「明确」与「兜底」是关键：明确归属的消息一旦出现过，「兜底」就该关门 ——
+// 否则 bot 的工具过程记录会跟着答案一起被当成结果。
+type botReplyOwnership int
+
+const (
+	// botReplyForeign：明确不是给这次调用的（比如 reply_to 指向别人的 prompt）。
+	botReplyForeign botReplyOwnership = iota
+	// botReplyOwnedExplicit：明确属于（reply_to 指回我的 prompt，或带了本会话 id）。
+	botReplyOwnedExplicit
+	// botReplyOwnedFallback：没有任何归属标记（旧客户端），只能靠「没人跟我抢」兜底。
+	botReplyOwnedFallback
+)
+
+// botReplyOwnershipOf 判断一条 bot 的 text 归属于谁。
+func botReplyOwnershipOf(msg *types.Message, promptID int64, sessionID string) botReplyOwnership {
 	if msg == nil {
-		return false
+		return botReplyForeign
 	}
 	// 1) 明确指回我那条 prompt。
 	if promptID > 0 && msg.ReplyTo == promptID {
-		return true
+		return botReplyOwnedExplicit
 	}
 	// 2) 明确声明了属于哪个 bot 会话。
 	if sessionID != "" && msg.Metadata != nil {
 		if got, ok := msg.Metadata[botSessionMetadataKey].(string); ok && got == sessionID {
-			return true
+			return botReplyOwnedExplicit
 		}
 	}
-	// 3) 旧客户端：既没 reply_to 也没会话标记，只有「没人跟我抢」时才能认。
-	if msg.ReplyTo == 0 && competing == 0 {
-		return true
+	// 3) 指了别人的 prompt：明确不是我的。
+	if msg.ReplyTo != 0 {
+		return botReplyForeign
 	}
-	return false
+	// 4) 什么都没标：可能是旧客户端的答复，也可能是过程记录，交给「没人抢」兜底。
+	return botReplyOwnedFallback
+}
+
+// botReplyBelongsTo 判断一条 bot 的 text 是不是本次调用的结果。
+// competing 是同一 topic 上除自己之外还在等的单数（0 = 我是唯一一个）。
+func botReplyBelongsTo(msg *types.Message, promptID int64, sessionID string, competing int) bool {
+	switch botReplyOwnershipOf(msg, promptID, sessionID) {
+	case botReplyOwnedExplicit:
+		return true
+	case botReplyOwnedFallback:
+		return competing == 0
+	default:
+		return false
+	}
 }
 
 func (r *ServiceBotRunner) fail(req botRunRequest, errorText string) {

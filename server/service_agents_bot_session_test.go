@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +96,134 @@ func TestBotReplyBelongsTo(t *testing.T) {
 	}
 }
 
+// 投递前必须先建 topic。
+//
+// `messages.topic_id` 有外键指向 `topics`，而投递只 INSERT 消息。调用方和这个
+// bot 从来没聊过天时 topic 不存在 —— 而这正是「别人的 agent 调我的 bot」的主
+// 场景。生产实测：跨账号首调直接 bot_send_failed（foreign key 23503）。
+func TestBotRunnerCreatesTopicBeforeSending(t *testing.T) {
+	db := newFakeBotStore()
+	hub := &fakeBotHub{online: true}
+	runner := newTestBotRunner(db, hub)
+
+	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
+		store.ServiceRun{RunID: "run_t1", SessionID: "sess_t", Input: json.RawMessage(`{"text":"第一次打交道"}`)}, 38)
+	if !waitFor(t, func() bool { return len(hub.delivered) > 0 }, 2*time.Second) {
+		t.Fatalf("应该已经投递；failed=%v", db.failed)
+	}
+	db.mu.Lock()
+	topics := append([]string(nil), db.topics...)
+	db.mu.Unlock()
+	if len(topics) != 1 || topics[0] != "p2p_38_982" {
+		t.Fatalf("投递前应建 topic p2p_38_982，实际 %v", topics)
+	}
+
+	// 建 topic 失败要如实失败，不能继续发（否则报了外键错，原因更难懂）。
+	db2 := newFakeBotStore()
+	db2.topicErr = errors.New("boom")
+	runner2 := newTestBotRunner(db2, hub)
+	hub2 := &fakeBotHub{online: true}
+	runner2.hub = hub2
+	runner2.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
+		store.ServiceRun{RunID: "run_t2", SessionID: "sess_t2", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
+	if !waitFor(t, func() bool { return len(db2.failed) > 0 }, 2*time.Second) {
+		t.Fatal("建 topic 失败应如实失败")
+	}
+	db2.mu.Lock()
+	errText := db2.failed["run_t2"]
+	db2.mu.Unlock()
+	if !strings.HasPrefix(errText, "bot_topic_failed") {
+		t.Fatalf("失败原因应为 bot_topic_failed，实际 %q", errText)
+	}
+	if len(hub2.delivered) != 0 {
+		t.Fatalf("topic 都没建成，不该投递: %v", hub2.delivered)
+	}
+}
+
+// 生产实测：一次调用的真答复 121 字（mode=normal，带 reply_to），而它的
+// skill 文件内容、execute_shell stdout 也是 msg_type=text，一共 10KB，
+// 且都没有 reply_to。只按 msg_type 收，答案就变成了一坨日志。
+func TestBotRunnerSkipsToolProcessMessages(t *testing.T) {
+	db := newFakeBotStore()
+	hub := &fakeBotHub{online: true}
+	runner := newTestBotRunner(db, hub)
+
+	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
+		store.ServiceRun{RunID: "run_proc", SessionID: "sess_p", Input: json.RawMessage(`{"text":"查一下"}`)}, 38)
+	if !waitFor(t, func() bool { return len(hub.delivered) > 0 }, 2*time.Second) {
+		t.Fatal("应该已经投递")
+	}
+	db.mu.Lock()
+	promptID := int64(0)
+	for idx := range db.saved {
+		if db.saved[idx].session == "sess_p" {
+			promptID = int64(101 + idx)
+		}
+	}
+	db.mu.Unlock()
+	if promptID == 0 {
+		t.Fatalf("找不到 prompt id: %+v", db.saved)
+	}
+
+	// 真实的时序：先工具过程（无归属），再真答复（带 reply_to）。
+	db.pushBotMessage("p2p_38_982", 982, "skill", 0, "", "code")
+	db.pushBotMessage("p2p_38_982", 982, strings.Repeat("SKILL-BODY ", 500), 0, "", "code")
+	db.pushBotMessage("p2p_38_982", 982, "Command completed\nstatus: succeeded", 0, "", "code")
+	db.pushBotReplyFor("p2p_38_982", 982, "答案是 42", promptID, "sess_p")
+
+	if !waitFor(t, func() bool { return db.completedCount() > 0 }, 3*time.Second) {
+		t.Fatalf("应该完成；failed=%v", db.failed)
+	}
+	var output struct {
+		Text string `json:"text"`
+	}
+	err := json.Unmarshal(db.lastResult(t).Output, &output)
+	if err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if output.Text != "答案是 42" {
+		t.Fatalf("output.text = %.160q，应该只有答案，不能带工具过程", output.Text)
+	}
+}
+
+// 已经有明确归属的回复后，不再收「没人抢就认」的兜底：那时出现的无标记消息
+// 必然是过程记录或别人的活。
+func TestBotRunnerStopsFallbackAfterExplicitReply(t *testing.T) {
+	db := newFakeBotStore()
+	hub := &fakeBotHub{online: true}
+	runner := newTestBotRunner(db, hub)
+	runner.settle = 400 * time.Millisecond
+
+	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
+		store.ServiceRun{RunID: "run_mix", SessionID: "sess_m", Input: json.RawMessage(`{"text":"干活"}`)}, 38)
+	if !waitFor(t, func() bool { return len(hub.delivered) > 0 }, 2*time.Second) {
+		t.Fatal("应该已经投递")
+	}
+	db.mu.Lock()
+	promptID := int64(0)
+	for idx := range db.saved {
+		if db.saved[idx].session == "sess_m" {
+			promptID = int64(101 + idx)
+		}
+	}
+	db.mu.Unlock()
+
+	db.pushBotReplyFor("p2p_38_982", 982, "真正的答案", promptID, "sess_m")
+	// 答案之后又来一条无归属的 normal 消息（比如主人的闲聊回复被顺手写进同一 topic）。
+	db.pushBotMessage("p2p_38_982", 982, "这条不该被收进来", 0, "", "")
+
+	if !waitFor(t, func() bool { return db.completedCount() > 0 }, 3*time.Second) {
+		t.Fatalf("应该完成；failed=%v", db.failed)
+	}
+	var output struct {
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(db.lastResult(t).Output, &output)
+	if output.Text != "真正的答案" {
+		t.Fatalf("output.text = %.120q，不该收答复之后的无归属消息", output.Text)
+	}
+}
+
 // 并发两单、bot 回填了 reply_to：各拿各的，谁也不会把对方的结果交出去。
 func TestBotRunnerConcurrentRunsKeepTheirOwnReplies(t *testing.T) {
 	db := newFakeBotStore()
@@ -131,7 +260,7 @@ func TestBotRunnerConcurrentRunsKeepTheirOwnReplies(t *testing.T) {
 	db.pushBotReplyFor("p2p_38_982", 982, "B 的结果", promptB, "sess_b")
 	db.pushBotReplyFor("p2p_38_982", 982, "A 的结果", promptA, "sess_a")
 
-	if !waitFor(t, func() bool { return len(db.completed) >= 2 }, 3*time.Second) {
+	if !waitFor(t, func() bool { return db.completedCount() >= 2 }, 3*time.Second) {
 		t.Fatalf("两单都应收尾；failed=%v", db.failed)
 	}
 
@@ -175,9 +304,10 @@ func TestBotRunnerAmbiguousLegacyReplyFailsHonestly(t *testing.T) {
 	db.pushBotReply("p2p_38_982", 982, "模糊的回复一")
 	db.pushBotReply("p2p_38_982", 982, "模糊的回复二")
 
-	if !waitFor(t, func() bool { return len(db.failed) >= 1 }, 2*time.Second) {
+	if !waitFor(t, func() bool { return db.failedCount() >= 1 }, 2*time.Second) {
 		t.Fatalf("应该如实失败；completed=%v", db.completed)
 	}
+	// 已经持有 db.mu，这里只能用裸字段（completedCount 会二次加锁 → 死锁）。
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if len(db.completed) != 0 {
@@ -208,10 +338,11 @@ func TestBotRunnerSoleLegacyReplyStillWorks(t *testing.T) {
 	}
 	db.pushBotReply("p2p_38_982", 982, "润色好了")
 
-	if !waitFor(t, func() bool { return len(db.completed) > 0 }, 2*time.Second) {
+	if !waitFor(t, func() bool { return db.completedCount() > 0 }, 2*time.Second) {
 		t.Fatalf("单人时旧客户端也该能收尾；failed=%v", db.failed)
 	}
-	if db.completedE.Status != ServiceRunCompleted {
-		t.Fatalf("status = %v", db.completedE.Status)
+	// 必须走线程安全读：写入在 fake 的 mu 内，不加锁看不到（表现为读到零值）。
+	if status := db.lastResult(t).Status; status != ServiceRunCompleted {
+		t.Fatalf("status = %v", status)
 	}
 }
