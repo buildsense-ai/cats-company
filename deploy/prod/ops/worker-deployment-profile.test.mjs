@@ -71,7 +71,7 @@ const serverSnapshotEnv = {
 test('server-shaped snapshot carrying the backend selector loads for every profile', {skip:process.platform==='win32'}, () => {
   const script = `source "$OPS/worker-deployment-profile.sh"
 worker_profile_load bot-test
-printf '%s|%s|' "$CATSCO_WORKER_BACKEND" "$CTYUN_WORKER_REGION_ID"`;
+printf '%s|%s' "$CATSCO_WORKER_BACKEND" "$CTYUN_WORKER_REGION_ID"`;
   for (const profile of ['private_nat','public_ip','packed_shared']) {
     const result=spawnSync('bash',['-eu','-c',script],{encoding:'utf8',env:{...process.env,OPS:ops,CATSCO_WORKER_DEPLOYMENT_JSON:JSON.stringify({profile,env:serverSnapshotEnv})}});
     assert.equal(result.status,0,`${profile}: ${result.stderr}`);
