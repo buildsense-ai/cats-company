@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -37,8 +38,11 @@ const (
 
 // 允许区间：防止一个手滑的 0 或 86400 把平台变成「永远不超时」或「立刻超时」。
 const (
-	minBotRunnerTimeout        = 10 * time.Second
-	maxBotRunnerTimeout        = 30 * time.Minute
+	minBotRunnerTimeout = 10 * time.Second
+	maxBotRunnerTimeout = 30 * time.Minute
+	// settle 下限不能是 0：settle=0 会让「第一段到手就收尾」，而 bot 会把长回复
+	// 按 4000 字切段 —— 于是答案被默默截断，调用方拿到半句话且完全看不出异常。
+	minBotRunnerSettle         = 500 * time.Millisecond
 	maxBotRunnerSettle         = 30 * time.Second
 	minBotRunnerAmbiguityGrace = 1 * time.Second
 	maxBotRunnerAmbiguityGrace = 5 * time.Minute
@@ -46,7 +50,7 @@ const (
 	maxBotRunnerPoll           = 5 * time.Second
 
 	// botDefinitionReadTimeout 是「热更新多读一次 definition」的上限。
-	// 读不到就用会话快照派活 —— 不能在派活路径上挂一个长 DB 超时。
+	// 读不到就用会话快照派活 —— 它只影响 bot 多快开始干活，不影响调用方拿到句柄。
 	botDefinitionReadTimeout = 2 * time.Second
 )
 
@@ -134,7 +138,8 @@ func botRunnerTuningFor(definition json.RawMessage) botRunnerTuning {
 // —— 否则它们永远不会触发，等于配置没写。
 func (t botRunnerTuning) clamped() botRunnerTuning {
 	t.Timeout = clampDuration(t.Timeout, minBotRunnerTimeout, maxBotRunnerTimeout)
-	t.Settle = clampDuration(t.Settle, 0, min(maxBotRunnerSettle, t.Timeout))
+	// 窗口不能长过整单预算，否则永远不会触发（等于配置没写）。
+	t.Settle = clampDuration(t.Settle, min(minBotRunnerSettle, t.Timeout), min(maxBotRunnerSettle, t.Timeout))
 	t.AmbiguityGrace = clampDuration(t.AmbiguityGrace,
 		min(minBotRunnerAmbiguityGrace, t.Timeout),
 		min(maxBotRunnerAmbiguityGrace, t.Timeout))
@@ -171,6 +176,10 @@ func millisToDuration(millis float64) time.Duration {
 	return time.Duration(millis * float64(time.Millisecond))
 }
 
+// botRunnerEnvSeconds 读一个「秒」的 env。
+//
+// 设了但用不了（拼错、负数、非数字）时**打一行日志**：静默忽略是最坏的 ——
+// 运维以为调了参数，实际跑的还是默认值，而界面上一切正常。
 func botRunnerEnvSeconds(name string) (time.Duration, bool) {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
@@ -178,10 +187,12 @@ func botRunnerEnvSeconds(name string) (time.Duration, bool) {
 	}
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
+		log.Printf("bot runner: ignore %s=%q (not a number)", name, raw)
 		return 0, false
 	}
 	d := secondsToDuration(value)
 	if d <= 0 {
+		log.Printf("bot runner: ignore %s=%q (out of range)", name, raw)
 		return 0, false
 	}
 	return d, true
@@ -194,10 +205,12 @@ func botRunnerEnvMillis(name string) (time.Duration, bool) {
 	}
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
+		log.Printf("bot runner: ignore %s=%q (not a number)", name, raw)
 		return 0, false
 	}
 	d := millisToDuration(value)
 	if d <= 0 {
+		log.Printf("bot runner: ignore %s=%q (out of range)", name, raw)
 		return 0, false
 	}
 	return d, true

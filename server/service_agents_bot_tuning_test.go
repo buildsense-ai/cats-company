@@ -79,6 +79,13 @@ func TestBotRunnerTuningClampsExternalInput(t *testing.T) {
 	if tight.AmbiguityGrace > tight.Timeout {
 		t.Fatalf("ambiguityGrace %v 不能超过 timeout %v", tight.AmbiguityGrace, tight.Timeout)
 	}
+
+	// settle=0 会把长回复在切段处默默截断（bot 按 4000 字切），必须有下限。
+	zeroSettle := botRunnerTuningFor(json.RawMessage(
+		`{"runner":{"type":"bot","bot_uid":1,"settle_seconds":0}}`))
+	if zeroSettle.Settle < minBotRunnerSettle {
+		t.Fatalf("settle=%v 太小，会把分段的回复截断", zeroSettle.Settle)
+	}
 }
 
 // 坏配置不能让功能变成「不可用」：解析不了就按平台默认走。
@@ -156,6 +163,8 @@ type hotReloadBotStore struct {
 	writeMu sync.Mutex
 	def     json.RawMessage
 	err     error
+	// block 非空时，读会等到它被关闭才返回 —— 用来验证派活不等这次读。
+	block chan struct{}
 }
 
 func (h *hotReloadBotStore) set(def string) {
@@ -166,9 +175,86 @@ func (h *hotReloadBotStore) set(def string) {
 
 func (h *hotReloadBotStore) GetServiceAgentDefinition(_ context.Context, _ int64, _ int64) (string, int, json.RawMessage, error) {
 	h.writeMu.Lock()
-	defer h.writeMu.Unlock()
-	if h.err != nil {
-		return "", 0, nil, h.err
+	block := h.block
+	err := h.err
+	def := append(json.RawMessage(nil), h.def...)
+	h.writeMu.Unlock()
+	if block != nil {
+		<-block
 	}
-	return "hot", 0, append(json.RawMessage(nil), h.def...), nil
+	if err != nil {
+		return "", 0, nil, err
+	}
+	return "hot", 0, def, nil
+}
+
+// **零阻塞承诺**：热更新不能把「立刻拿到运行句柄」拖成「最多慢 2 秒」。
+//
+// 所以 MaybeDispatch 里不许有 DB 读；重读必须发生在后台。这个测试让那次读
+// 一直阻塞，然后断言 MaybeDispatch 仍然立刻返回。
+func TestMaybeDispatchNeverBlocksOnDefinitionRead(t *testing.T) {
+	db := newFakeBotStore()
+	hub := &fakeBotHub{online: true, deliverErr: true}
+	block := make(chan struct{})
+	hot := &hotReloadBotStore{fakeBotStore: db, block: block}
+	runner := &ServiceBotRunner{store: hot, hub: hub, inFlight: map[string]int{}}
+
+	agent := botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`)
+	start := time.Now()
+	runner.MaybeDispatch(context.Background(), agent,
+		store.ServiceRun{RunID: "run_noblock", SessionID: "sess_nb", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
+	elapsed := time.Since(start)
+
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("MaybeDispatch 等了 %v —— 它在请求路径上，任何 DB 读都属于回归", elapsed)
+	}
+
+	// 放开读，确认后台还是继续跑完了（不是把任务丢了）。
+	close(block)
+	if !waitFor(t, func() bool { return db.startCalls >= 1 }, 2*time.Second) {
+		t.Fatal("放开读之后后台应继续派活")
+	}
+}
+
+// 改 `bot_uid` 也要生效：用户改了配置却发现不生效，才是真隐患。
+// 但只在「最新配置仍然是 bot runner」时才换 —— 不能跑到一半把 runner 类型改掉。
+func TestBotRunnerHotUpdatesTargetBot(t *testing.T) {
+	db := newFakeBotStore()
+	hub := &fakeBotHub{online: true, deliverErr: true}
+	hot := &hotReloadBotStore{fakeBotStore: db}
+	runner := &ServiceBotRunner{store: hot, hub: hub, inFlight: map[string]int{}}
+
+	agent := botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`)
+
+	// 云端把执行者改成 63。
+	hot.set(`{"runner":{"type":"bot","bot_uid":63}}`)
+	runner.MaybeDispatch(context.Background(), agent,
+		store.ServiceRun{RunID: "run_swap", SessionID: "sess_sw", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
+	if !waitFor(t, func() bool { return db.startCalls >= 1 }, 2*time.Second) {
+		t.Fatal("应该已经开始")
+	}
+	db.mu.Lock()
+	instance := db.startedRun[0]
+	db.mu.Unlock()
+	if instance != "bot:63" {
+		t.Fatalf("执行者应为最新配置的 bot:63，实际 %q", instance)
+	}
+
+	// 最新配置把类型改掉了（不再是 bot runner）：保留会话快照的 bot，
+	// 因为 invoke 已经按 bot 返回了句柄，不能中途改类型。
+	db2 := newFakeBotStore()
+	hot2 := &hotReloadBotStore{fakeBotStore: db2}
+	runner2 := &ServiceBotRunner{store: hot2, hub: &fakeBotHub{online: true, deliverErr: true}, inFlight: map[string]int{}}
+	hot2.set(`{"runner":{"type":"worker"}}`)
+	runner2.MaybeDispatch(context.Background(), agent,
+		store.ServiceRun{RunID: "run_type", SessionID: "sess_ty", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
+	if !waitFor(t, func() bool { return db2.startCalls >= 1 }, 2*time.Second) {
+		t.Fatal("应该已经开始")
+	}
+	db2.mu.Lock()
+	instance2 := db2.startedRun[0]
+	db2.mu.Unlock()
+	if instance2 != "bot:982" {
+		t.Fatalf("runner 类型变了就应保留快照的 bot:982，实际 %q", instance2)
+	}
 }

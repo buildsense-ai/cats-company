@@ -232,15 +232,15 @@ func ParseBotRunnerBotUID(definition json.RawMessage) (int64, bool) {
 // 投递失败直接改 run 状态（fail），不留给「恢复扫描」——这里没有可以重放的副作用：
 // 消息发出去就已经发了，重发会让 bot 收到两遍同一个请求。
 //
-// **热更新**：执行参数（超时/静默窗口/轮询间隔）在这里重新读一次 definition，
-// 而不是用 agent 描述符里的快照。MCP 会话建立时就把 definition 快照进了工具闭包，
-// 用快照意味着「改了应用配置，已连接的调用方要重开 MCP 会话才生效」—— 那不叫
-// 实时更新。多一次按主键的读，换来改配置立刻生效。
+// **这里必须保持零阻塞**。它跑在 MCP `tools/call` 的返回路径上，而这个功能对
+// 主 Agent 的承诺就是「立刻拿到运行句柄」。所以：
+//   - 只做内存里的 JSON 解析（判断是不是 bot runner、目标 bot 是谁）；
+//   - **任何 DB 读一律放进后台 goroutine**（见 execute）。
 //
-// 只把**参数**用新值；`bot_uid` 仍取会话快照：换 bot 是换执行者，不是调参，
-// 让它跟会话版本钉定走（与设计里「会话钉快照」的语义一致），避免一个应用跑到
-// 一半被静默改派到另一个 bot。
+// 早期版本在这里同步读一次最新 definition，意在热更新，代价是给「零阻塞」
+// 偷偷加了最多 2 秒 —— 拿核心承诺去换次要需求，不能接受。
 func (r *ServiceBotRunner) MaybeDispatch(ctx context.Context, agent store.ServiceAgentDescriptor, run store.ServiceRun, callerUID int64) {
+	_ = ctx // 请求级 ctx 不往下传：本函数返回后它就会被取消，而后台还要干活。
 	if r == nil {
 		return
 	}
@@ -254,28 +254,54 @@ func (r *ServiceBotRunner) MaybeDispatch(ctx context.Context, agent store.Servic
 		SessionID: run.SessionID,
 		Slug:      agent.Slug,
 		BotUID:    botUID,
+		AgentID:   agent.ID,
 		CallerUID: callerUID,
 		Input:     run.Input,
-		Tuning:    r.tuningFor(r.freshDefinition(ctx, agent)),
+		// 会话快照：热更新读不到时用它（不能因为一次读失败就不派活）。
+		SnapshotDefinition: definition,
 	}
 	go r.execute(req)
 }
 
-// freshDefinition 尽力取到最新 definition；取不到就用会话快照（不能因为读失败
-// 就不派活 —— 那会让调用方看到一个跟配置无关的失败）。
-func (r *ServiceBotRunner) freshDefinition(ctx context.Context, agent store.ServiceAgentDescriptor) json.RawMessage {
-	snapshot := json.RawMessage(agent.DefinitionJSON)
+// applyFreshConfig 用**最新** definition 覆盖本次 run 的执行配置。
+//
+// 为什么要重读：MCP 会话建立时把 definition 快照进了工具闭包，用快照意味着
+// 「改了应用配置，已连接的调用方要重开 MCP 会话才生效」—— 那不叫实时更新。
+//
+// 热更新范围：
+//   - 执行参数（超时/静默/歧义窗口/轮询）—— 总是跟随最新配置；
+//   - `bot_uid` —— 最新配置**仍然是 bot runner** 时才跟随。
+//
+// 为什么 `bot_uid` 要加条件：`runner.type` 是在 invoke 时就定下的（它决定了
+// 本次返回句柄还是同步等），不能跑到一半把执行者从 bot 变成 worker。
+// 但如果最新配置依旧是 bot、只是换了人，那就应该换 —— 用户改了配置却发现
+// 不生效，才是真正的隐患。
+func (r *ServiceBotRunner) applyFreshConfig(req botRunRequest) botRunRequest {
+	fresh := r.freshDefinition(req.AgentID, req.Slug, req.SnapshotDefinition)
+	if freshBotUID, ok := ParseBotRunnerBotUID(fresh); ok {
+		req.BotUID = freshBotUID
+	}
+	req.Tuning = r.tuningFor(fresh)
+	return req
+}
+
+// freshDefinition 尽力取到最新 definition；取不到就用会话快照。
+//
+// 用 context.Background() 而不是请求 ctx：调用它的时候请求早已返回，
+// 请求 ctx 已经（或即将）被取消，拿它去查库会立刻失败 —— 然后「热更新永远
+// 退化成快照」，而且不报错。这是个容易静默失效的点，所以固定用后台 ctx。
+func (r *ServiceBotRunner) freshDefinition(agentID int64, slug string, snapshot json.RawMessage) json.RawMessage {
 	reader, ok := r.store.(botDefinitionReader)
-	if !ok || agent.ID <= 0 {
+	if !ok || agentID <= 0 {
 		return snapshot
 	}
-	readCtx, cancel := context.WithTimeout(ctx, botDefinitionReadTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), botDefinitionReadTimeout)
 	defer cancel()
 	// definitionRev=0 = 最新版本。
-	_, _, fresh, err := reader.GetServiceAgentDefinition(readCtx, agent.ID, 0)
+	_, _, fresh, err := reader.GetServiceAgentDefinition(ctx, agentID, 0)
 	if err != nil || len(fresh) == 0 {
 		if err != nil {
-			log.Printf("bot runner: read fresh definition agent=%s: %v (fallback to session snapshot)", agent.Slug, err)
+			log.Printf("bot runner: read fresh definition agent=%s: %v (fallback to session snapshot)", slug, err)
 		}
 		return snapshot
 	}
@@ -293,8 +319,12 @@ type botRunRequest struct {
 	SessionID string
 	Slug      string
 	BotUID    int64
+	// AgentID 用于后台重读最新 definition（热更新）。
+	AgentID   int64
 	CallerUID int64
 	Input     json.RawMessage
+	// SnapshotDefinition 是 invoke 时拿到的那份（会话快照），热更新读不到时兜底。
+	SnapshotDefinition json.RawMessage
 	// Tuning 是本次 run 的执行参数（已合并平台默认与 definition 覆盖）。
 	// 每次调用重新解析，所以改应用配置下一次调用就生效。
 	Tuning botRunnerTuning
@@ -308,10 +338,15 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		}
 	}()
 
+	// 热更新放在这里（后台 goroutine）而不是 MaybeDispatch：
+	// 那张「立即返回运行句柄」的承诺不能被一次 DB 读拖慢。
+	// 只影响「bot 多快开始干活」（最多 2s），不影响调用方拿到句柄的时间。
+	req = r.applyFreshConfig(req)
+
 	tuning := req.Tuning
 	if tuning.Timeout <= 0 {
-		// 兜底：调用方没走 MaybeDispatch（或造了零值）时不能变成「立刻超时」。
-		tuning = r.tuningFor(nil)
+		// 兜底：调用方造了零值（或直接调 execute）时不能变成「立刻超时」。
+		tuning = r.tuningFor(req.SnapshotDefinition)
 	}
 
 	// 先在落库层面占住这个 run：抢不到说明已被别的执行方接管 / 已终态。
