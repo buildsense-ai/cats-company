@@ -950,13 +950,13 @@ func (w *discardResponseWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// AutoProvisionForOwner provisions the paid cloud instance for a buyer who has
-// just purchased an official plan (399/799) and does not own a cloud worker
-// yet. It is wired to the commercial payment fulfillment hook via
-// CommercialPaymentHandlerOptions.EnsureCloudWorker and always runs off the
-// payment path. The heavy lifting is delegated to HandleCreate so the
-// automatic and manual flows share validation, credit reservation, rollback
-// and the auto-friend handshake.
+// AutoProvisionForOwner provisions the paid instances owed to a buyer who has
+// just purchased a plan or redeemed an invite. It is wired to the commercial
+// payment fulfillment hook via
+// CommercialPaymentHandlerOptions.EnsureCloudWorker and to invite redemption,
+// and always runs off the payment path. The heavy lifting is delegated to
+// HandleCreate so the automatic and manual flows share validation, credit
+// reservation, rollback and the auto-friend handshake.
 func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -972,27 +972,66 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 		log.Printf("[cloud-worker] auto provisioning skipped uid=%d: provision script not configured", uid)
 		return
 	}
-	workers, err := h.cloudWorkersOfOwner(uid)
+	// One worker per unspent credit: an invite code (or an operator grant) may
+	// carry several credits, which is how a single account ends up owning
+	// several bots. A renewal does not mint a credit (see
+	// cloudWorkerSurvivesRenewal), so a monthly renewal cannot turn into a
+	// second machine.
+	//
+	// The budget is snapshotted once: every successful create consumes exactly
+	// one credit (or one static slot), so decrementing locally is what keeps the
+	// loop from re-reading a roster that may lag behind the create.
+	budget, err := h.autoProvisionBudget(uid)
 	if err != nil {
 		log.Printf("[cloud-worker] auto provisioning check uid=%d failed: %v", uid, err)
 		return
 	}
-	if len(workers) > 0 {
-		// Renewals, upgrades and re-purchases keep the existing instance; only
-		// a first purchase without any worker provisions automatically.
-		return
+	if budget > autoProvisionMaxPerRun {
+		// Bound a single run: a mis-issued batch must never spawn an unbounded
+		// fleet unattended. The rest stays spendable for the next call.
+		log.Printf("[cloud-worker] auto provisioning uid=%d has %d credits, capping this run at %d", uid, budget, autoProvisionMaxPerRun)
+		budget = autoProvisionMaxPerRun
 	}
-	// Match HandleCreate's admission check: either a durable credit from the
-	// purchase or a static rollout quota enables provisioning. The concrete
-	// reservation stays inside HandleCreate.
-	staticTotal := h.quota[uid]
-	if _, available := h.creditInfo(uid); staticTotal <= 0 && available <= 0 {
-		return
+	for created := 0; created < budget; created++ {
+		status, body := h.provisionAutoWorker(uid)
+		switch {
+		case status >= 200 && status < 300:
+			continue
+		case status == http.StatusForbidden:
+			// The credit was spent or expired between the budget check and the
+			// create, so there is nothing left to spend this run.
+			return
+		case status == http.StatusConflict:
+			log.Printf("[cloud-worker] auto provisioning busy uid=%d, leaving the remaining credits for the next run", uid)
+			return
+		default:
+			log.Printf("[cloud-worker] CRITICAL auto provisioning failed uid=%d status=%d body=%s", uid, status, truncateWorkerOutput(body))
+			return
+		}
 	}
+}
+
+// autoProvisionBudget reports how many more workers this owner may create right
+// now: unspent credits plus any leftover legacy static rollout quota.
+func (h *CloudWorkerHandler) autoProvisionBudget(uid int64) (int, error) {
+	workers, err := h.cloudWorkersOfOwner(uid)
+	if err != nil {
+		return 0, err
+	}
+	staticRemaining := h.quota[uid] - len(workers)
+	if staticRemaining < 0 {
+		staticRemaining = 0
+	}
+	_, available := h.creditInfo(uid)
+	return staticRemaining + available, nil
+}
+
+// provisionAutoWorker runs one auto-provisioned create, retrying only while a
+// different operation holds the owner's lock.
+func (h *CloudWorkerHandler) provisionAutoWorker(uid int64) (int, string) {
 	username, err := autoCloudWorkerUsername(uid)
 	if err != nil {
-		log.Printf("[cloud-worker] auto provisioning uid=%d: %v", uid, err)
-		return
+		return http.StatusInternalServerError, err.Error()
 	}
 	payload, err := json.Marshal(BotRegisterRequest{
 		Username:    username,
@@ -1000,22 +1039,20 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 		Role:        "general",
 	})
 	if err != nil {
-		log.Printf("[cloud-worker] auto provisioning uid=%d: encode request: %v", uid, err)
-		return
+		return http.StatusInternalServerError, err.Error()
 	}
 	for attempt := 1; attempt <= autoProvisionMaxAttempts; attempt++ {
 		// The request body is consumed by HandleCreate; rebuild it per attempt.
 		req, err := http.NewRequest(http.MethodPost, "/api/cloud-workers", strings.NewReader(string(payload)))
 		if err != nil {
-			log.Printf("[cloud-worker] auto provisioning uid=%d: build request: %v", uid, err)
-			return
+			return http.StatusInternalServerError, err.Error()
 		}
 		req = req.WithContext(context.WithValue(context.Background(), uidKey, uid))
 		recorder := &discardResponseWriter{}
 		h.HandleCreate(recorder, req)
 		if recorder.status >= 200 && recorder.status < 300 {
 			log.Printf("[cloud-worker] auto provisioning started uid=%d username=%s", uid, username)
-			return
+			return recorder.status, ""
 		}
 		if recorder.status == http.StatusConflict && attempt < autoProvisionMaxAttempts {
 			// An in-flight cloud operation (a manual create/update/reset or a
@@ -1027,13 +1064,17 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 			time.Sleep(autoProvisionRetryDelay(attempt))
 			continue
 		}
-		log.Printf("[cloud-worker] CRITICAL auto provisioning failed uid=%d status=%d body=%s", uid, recorder.status, truncateWorkerOutput(recorder.body.String()))
-		return
+		return recorder.status, recorder.body.String()
 	}
+	return http.StatusConflict, "auto provisioning retries exhausted"
 }
 
-// autoProvisionMaxAttempts bounds the 409 retries of AutoProvisionForOwner.
+// autoProvisionMaxAttempts bounds the 409 retries of one auto-provisioned create.
 const autoProvisionMaxAttempts = 3
+
+// autoProvisionMaxPerRun bounds how many workers one EnsureCloudWorker call may
+// create. Credits stay spendable, so a larger batch is picked up on the next call.
+const autoProvisionMaxPerRun = 5
 
 // autoProvisionRetryDelay is a variable so tests can compress the backoff.
 var autoProvisionRetryDelay = func(attempt int) time.Duration {

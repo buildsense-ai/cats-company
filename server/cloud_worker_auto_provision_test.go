@@ -41,19 +41,61 @@ func TestAutoProvisionForOwnerCreatesWorker(t *testing.T) {
 }
 
 func TestAutoProvisionForOwnerSkipsWhenWorkerExists(t *testing.T) {
-	cfg := workerScriptCfg(t, "42=5", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
+	cfg := workerScriptCfg(t, "42=1", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
 	if cfg.ProvisionScript == "" {
 		t.Skip("no POSIX shell")
 	}
 	h, ts := newCloudWorkerTestHandlerCfg(cfg)
-	// One existing cloud worker (bot with a tenant name) makes the account a
-	// renewal/upgrade case: the hook must not provision a second instance.
+	// Quota 1 means "one machine", so an existing worker leaves no budget: a
+	// renewal/upgrade must not spin up a second instance.
 	ts.ownerBots = []map[string]interface{}{{"id": int64(1001), "tenant_name": "bot-bot-existing"}}
 
 	h.AutoProvisionForOwner(42)
 
 	if len(ts.tenantNames) != 0 {
-		t.Fatalf("tenantNames=%v want none when a worker already exists", ts.tenantNames)
+		t.Fatalf("tenantNames=%v want none when the account already used its only slot", ts.tenantNames)
+	}
+}
+
+// One account may own several bots: an invite (or an operator grant) that
+// carries N credits must provision N workers, not just the first one.
+func TestAutoProvisionForOwnerProvisionsOneWorkerPerCredit(t *testing.T) {
+	cfg := workerScriptCfg(t, "42=3", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
+	if cfg.ProvisionScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+
+	h.AutoProvisionForOwner(42)
+
+	if len(ts.tenantNames) != 3 {
+		t.Fatalf("tenantNames=%v want exactly three provisioned workers", ts.tenantNames)
+	}
+	seen := map[string]bool{}
+	for _, name := range ts.tenantNames {
+		if !strings.HasPrefix(name, "bot-bot-42-") {
+			t.Fatalf("tenant=%q want bot-bot-42-* prefix", name)
+		}
+		if seen[name] {
+			t.Fatalf("tenant name reused: %q", name)
+		}
+		seen[name] = true
+	}
+}
+
+// A mis-issued batch is bounded per run so it cannot spawn an unbounded fleet
+// unattended; the remaining credits stay spendable.
+func TestAutoProvisionForOwnerCapsOneRun(t *testing.T) {
+	cfg := workerScriptCfg(t, "42=20", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
+	if cfg.ProvisionScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+
+	h.AutoProvisionForOwner(42)
+
+	if len(ts.tenantNames) != autoProvisionMaxPerRun {
+		t.Fatalf("tenantNames=%d want the per-run cap %d", len(ts.tenantNames), autoProvisionMaxPerRun)
 	}
 }
 
