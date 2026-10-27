@@ -158,11 +158,13 @@ func (f *fakeBotStore) pushBotReplyFor(topic string, botUID int64, text string, 
 type fakeBotHub struct {
 	online     bool
 	delivered  []string
+	sessions   []string
 	deliverErr bool
 }
 
-func (f *fakeBotHub) DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text string, msgID int64) bool {
+func (f *fakeBotHub) DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text string, msgID int64, botSessionID string) bool {
 	f.delivered = append(f.delivered, topicID+"|"+text)
+	f.sessions = append(f.sessions, botSessionID)
 	return !f.deliverErr
 }
 

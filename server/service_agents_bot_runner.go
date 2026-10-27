@@ -76,7 +76,9 @@ type botRunnerStore interface {
 
 // botRunnerHub 是推送与在线判定能力（Hub 实现）。
 type botRunnerHub interface {
-	DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text string, msgID int64) bool
+	// DeliverServiceBotPrompt 的最后一个参数是 bot 会话 id：bot 收的是 WS 实时消息，
+	// 不轮询消息表，所以会话 id 必须随推送一起到它手上。
+	DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text string, msgID int64, botSessionID string) bool
 	BotRuntimeOnline(botUID int64) bool
 }
 
@@ -294,7 +296,7 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		r.fail(req, "bot_send_failed: 消息未能落库")
 		return
 	}
-	if !r.hub.DeliverServiceBotPrompt(req.CallerUID, req.BotUID, topic, prompt, msgID) {
+	if !r.hub.DeliverServiceBotPrompt(req.CallerUID, req.BotUID, topic, prompt, msgID, req.SessionID) {
 		// 落库成功了但推送失败：bot 那边永远看不到。如实失败，让调用方重试。
 		r.fail(req, "bot_deliver_failed: 消息未能送达目标 bot 的连接，请稍后重试")
 		return

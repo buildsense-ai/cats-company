@@ -26,6 +26,14 @@ func TestBotRunnerCarriesSessionIDToBot(t *testing.T) {
 	if got := db.saved[0].session; got != "sess_a" {
 		t.Fatalf("metadata[%s] = %q, want sess_a", botSessionMetadataKey, got)
 	}
+	// bot 收的是 WS 实时消息，不轮询消息表 —— 会话 id 必须随推送一起到。
+	// 只写进库而漏了推送，bot 就只能按 topic 分会话，上下文照样串。
+	if len(hub.sessions) == 0 {
+		t.Fatal("应该已经推送")
+	}
+	if got := hub.sessions[0]; got != "sess_a" {
+		t.Fatalf("推送时的 bot 会话 id = %q, want sess_a", got)
+	}
 	// 仍然是「有人派活」而不是「主人闲聊」
 	if flag, _ := db.saved[0].metadata["catsco_bot_call"].(bool); !flag {
 		t.Fatalf("catsco_bot_call 应为 true: %+v", db.saved[0].metadata)
