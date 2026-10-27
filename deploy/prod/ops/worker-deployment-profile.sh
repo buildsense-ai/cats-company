@@ -18,15 +18,22 @@ worker_profile_load() {
   export CATSCO_ARTIFACT_GATEWAY_SSH_PORT="${CATSCO_ARTIFACT_GATEWAY_SSH_PORT:-${CTYUN_JUMP_PORT:-22}}"
   export CATSCO_ARTIFACT_GATEWAY_SSH_USER="${CATSCO_ARTIFACT_GATEWAY_SSH_USER:-${CTYUN_JUMP_USER:-root}}"
   export CATSCO_ARTIFACT_GATEWAY_SSH_KEY="${CATSCO_ARTIFACT_GATEWAY_SSH_KEY:-${CTYUN_JUMP_KEY:-/var/lib/catsco-worker/jump_host_ed25519}}"
+  # The key list below is a hard copy of cloudWorkerProfileEnvKeys in
+  # server/cloud_worker_profiles.go (cats-company). Adding a key on one side
+  # only makes every lifecycle call fail with "invalid worker deployment
+  # snapshot", so server/cloud_worker_profiles_test.go cross-checks the two
+  # lists at build time. Keep them in the same order and spelling.
   jq -e '
-    (.profile == "private_nat" or .profile == "public_ip") and (.env | type == "object") and
+    (.profile == "private_nat" or .profile == "public_ip" or .profile == "packed_shared") and
+    (.env | type == "object") and
     (.env | to_entries | all( .key | IN(
       "CTYUN_WORKER_REGION_ID", "CTYUN_WORKER_PROJECT_ID", "CTYUN_IMAGE_PROJECT_ID",
       "CTYUN_WORKER_AZ_NAME", "CTYUN_WORKER_FLAVOR_ID", "CTYUN_WORKER_VPC_ID",
       "CTYUN_WORKER_SUBNET_ID", "CTYUN_WORKER_SECURITY_GROUP_ID", "CTYUN_WORKER_EXT_IP",
       "CTYUN_WORKER_BILLING_MODE", "CTYUN_WORKER_CYCLE_COUNT",
       "CTYUN_JUMP_IP", "CTYUN_JUMP_PORT", "CTYUN_JUMP_USER", "CTYUN_JUMP_KEY",
-      "CATSCO_WORKER_HTTP_BASE_URL", "CATSCO_WORKER_SERVER_URL"))) and
+      "CATSCO_WORKER_HTTP_BASE_URL", "CATSCO_WORKER_SERVER_URL",
+      "CATSCO_WORKER_BACKEND"))) and
     (.env | to_entries | all(.value | type == "string" and (test("[\u0000\r\n]") | not))) and
     (.env.CTYUN_WORKER_REGION_ID | type == "string" and length > 0)
   ' <<<"$raw" >/dev/null || { echo 'error: invalid worker deployment snapshot' >&2; return 2; }

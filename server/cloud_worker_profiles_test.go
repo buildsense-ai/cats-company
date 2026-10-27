@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -174,4 +175,74 @@ func TestCloudWorkerStatusPoolFailureDoesNotDeleteOtherWorkers(t *testing.T) {
 	if infos["bot-private"].Status != "running" || infos["bot-public"].Status != "unavailable" {
 		t.Fatalf("wrong pool results: %+v", infos)
 	}
+}
+
+// TestCloudWorkerDeploymentSnapshotGuardMatchesGoKeys keeps
+// cloudWorkerProfileEnvKeys (this package) and the jq allowlist in
+// deploy/prod/ops/worker-deployment-profile.sh in lockstep.
+//
+// The shell guard is a hard copy, so a key that exists on only one side makes
+// every lifecycle call (provision, deploy, renew, reset, rollback, destroy,
+// billing) fail with "invalid worker deployment snapshot". That is exactly how
+// the 2026-10-27 dedicated-ECS update outage happened: CATSCO_WORKER_BACKEND
+// was introduced so the console could hand out shared-cluster containers and
+// dedicated instances from one fleet, but only the Go list learned the key.
+func TestCloudWorkerDeploymentSnapshotGuardMatchesGoKeys(t *testing.T) {
+	path := filepath.Join("..", "deploy", "prod", "ops", "worker-deployment-profile.sh")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	guard := string(raw)
+
+	shellKeys := deploymentSnapshotShellKeys(t, guard)
+	goKeys := make(map[string]bool, len(cloudWorkerProfileEnvKeys))
+	for _, key := range cloudWorkerProfileEnvKeys {
+		goKeys[key] = true
+		if !shellKeys[key] {
+			t.Errorf("key %q is in cloudWorkerProfileEnvKeys but missing from the shell guard in %s", key, path)
+		}
+	}
+	for key := range shellKeys {
+		if !goKeys[key] {
+			t.Errorf("key %q is in the shell guard in %s but not in cloudWorkerProfileEnvKeys", key, path)
+		}
+	}
+
+	// Every profile the server can emit must survive the guard, otherwise a
+	// worker created from that profile could never be updated, renewed or
+	// reset without an operator hand-editing its deployment snapshot.
+	for _, profile := range []string{
+		types.CloudWorkerPrivateNAT,
+		types.CloudWorkerPublicIP,
+		types.CloudWorkerPackedShared,
+	} {
+		if !strings.Contains(guard, `"`+profile+`"`) {
+			t.Errorf("profile %q is not accepted by the shell guard in %s", profile, path)
+		}
+	}
+}
+
+// deploymentSnapshotShellKeys extracts the jq allowlist keys so the contract
+// test above can compare them with cloudWorkerProfileEnvKeys.
+func deploymentSnapshotShellKeys(t *testing.T, script string) map[string]bool {
+	t.Helper()
+	const anchor = ".env | to_entries | all( .key | IN("
+	start := strings.Index(script, anchor)
+	if start < 0 {
+		t.Fatalf("jq snapshot allowlist not found (looked for %q)", anchor)
+	}
+	rest := script[start+len(anchor):]
+	end := strings.Index(rest, ")))")
+	if end < 0 {
+		t.Fatal("unterminated jq snapshot allowlist")
+	}
+	keys := map[string]bool{}
+	for _, match := range regexp.MustCompile(`"([A-Z][A-Z0-9_]+)"`).FindAllStringSubmatch(rest[:end], -1) {
+		keys[match[1]] = true
+	}
+	if len(keys) == 0 {
+		t.Fatal("jq snapshot allowlist parsed to zero keys")
+	}
+	return keys
 }

@@ -51,3 +51,36 @@ process.stdout.write(JSON.stringify({statusCode:800,returnObj:{results:[{instanc
   assert.equal(parsed['11'].network_mode,'private');assert.equal(parsed['12'].network_mode,'public');assert.equal(parsed['12'].private_ip,'8.8.8.8');
   const failed=run({FAIL_PUBLIC:'1'});assert.notEqual(failed.status,0);assert.equal(fs.readFileSync(routes,'utf8'),before);
 });
+
+// 2026-10-27 regression: the console hands out shared-cluster containers and
+// dedicated instances from one fleet, so every snapshot minted by the server
+// carries CATSCO_WORKER_BACKEND. The jq guard did not learn the key, so every
+// lifecycle call (update/renew/reset/rollback/destroy/billing) died with
+// "invalid worker deployment snapshot" for workers whose snapshot was newer
+// than the release that introduced the selector.
+const serverSnapshotEnv = {
+  CTYUN_WORKER_REGION_ID:'200000004421',CTYUN_WORKER_PROJECT_ID:'enterprise',CTYUN_IMAGE_PROJECT_ID:'enterprise',
+  CTYUN_WORKER_AZ_NAME:'cn-gd-fos7-1a-public-citycloud',CTYUN_WORKER_FLAVOR_ID:'flavor',CTYUN_WORKER_VPC_ID:'vpc',
+  CTYUN_WORKER_SUBNET_ID:'subnet',CTYUN_WORKER_SECURITY_GROUP_ID:'sg',CTYUN_WORKER_EXT_IP:'0',
+  CTYUN_WORKER_BILLING_MODE:'month',CTYUN_WORKER_CYCLE_COUNT:'1',
+  CTYUN_JUMP_IP:'jump',CTYUN_JUMP_PORT:'22',CTYUN_JUMP_USER:'root',CTYUN_JUMP_KEY:'/var/lib/catsco-worker/jump_host_ed25519',
+  CATSCO_WORKER_HTTP_BASE_URL:'https://app.catsco.cn',CATSCO_WORKER_SERVER_URL:'wss://app.catsco.cn/v0/channels',
+  CATSCO_WORKER_BACKEND:'ecs',
+};
+
+test('server-shaped snapshot carrying the backend selector loads for every profile', {skip:process.platform==='win32'}, () => {
+  const script = `source "$OPS/worker-deployment-profile.sh"
+worker_profile_load bot-test
+printf '%s|%s|' "$CATSCO_WORKER_BACKEND" "$CTYUN_WORKER_REGION_ID"`;
+  for (const profile of ['private_nat','public_ip','packed_shared']) {
+    const result=spawnSync('bash',['-eu','-c',script],{encoding:'utf8',env:{...process.env,OPS:ops,CATSCO_WORKER_DEPLOYMENT_JSON:JSON.stringify({profile,env:serverSnapshotEnv})}});
+    assert.equal(result.status,0,`${profile}: ${result.stderr}`);
+    assert.equal(result.stdout.trim(),'ecs|200000004421',profile);
+  }
+});
+
+test('an unlisted key still fails the snapshot guard', {skip:process.platform==='win32'}, () => {
+  const env={...serverSnapshotEnv,CTYUN_AK:'must-never-travel'};
+  const result=spawnSync('bash',['-eu','-c','source "$OPS/worker-deployment-profile.sh"; worker_profile_load bot-test'],{encoding:'utf8',env:{...process.env,OPS:ops,CATSCO_WORKER_DEPLOYMENT_JSON:JSON.stringify({profile:'private_nat',env})}});
+  assert.notEqual(result.status,0);
+});
