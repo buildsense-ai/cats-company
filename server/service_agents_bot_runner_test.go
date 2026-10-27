@@ -142,6 +142,17 @@ func (f *fakeBotStore) errorText(runID string) string {
 	return f.failed[runID]
 }
 
+// errorTexts 返回失败原因的快照（多 run 断言用；不要在持锁时再调用）。
+func (f *fakeBotStore) errorTexts() map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]string, len(f.failed))
+	for runID, text := range f.failed {
+		out[runID] = text
+	}
+	return out
+}
+
 // result 返回某个 run 的结果 envelope（深拷贝，避免与后台写共享底层数组）。
 func (f *fakeBotStore) result(t *testing.T, runID string) ServiceRunEnvelope {
 	t.Helper()

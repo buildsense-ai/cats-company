@@ -325,6 +325,63 @@ func TestBotRunnerAmbiguousLegacyReplyFailsHonestly(t *testing.T) {
 	}
 }
 
+// 归属明确是「别人」的回复不算可疑，只是噪音。
+//
+// 生产上撞到的真实场景：上一单超时（bot_timeout）后 bot 并没有停，它的迟回复带着
+// 上一单的 reply_to 落进同一个 topic；此时正在等的下一单看到「有回复但不是我认领的」，
+// 曾把它算成「分不清」，grace 一过就报 bot_reply_ambiguous —— 明明分得清，却判成
+// 看不清，把一次正常调用打死。这个用例钉住：他单消息必须被安静跳过。
+func TestBotRunnerIgnoresRepliesAddressedToAnotherPrompt(t *testing.T) {
+	db := newFakeBotStore()
+	hub := &fakeBotHub{online: true}
+	runner := newTestBotRunner(db, hub)
+	runner.timeout = 3 * time.Second
+	runner.ambiguityGrace = 40 * time.Millisecond
+
+	agent := botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`)
+	runner.MaybeDispatch(context.Background(), agent,
+		store.ServiceRun{RunID: "run_a", SessionID: "sess_a", Input: json.RawMessage(`{"text":"查 A"}`)}, 38)
+	runner.MaybeDispatch(context.Background(), agent,
+		store.ServiceRun{RunID: "run_b", SessionID: "sess_b", Input: json.RawMessage(`{"text":"查 B"}`)}, 38)
+
+	if !waitFor(t, func() bool { return len(db.saved) >= 2 }, 2*time.Second) {
+		t.Fatalf("两单都应落库: %+v", db.saved)
+	}
+	db.mu.Lock()
+	promptA, promptB := int64(0), int64(0)
+	for idx, saved := range db.saved {
+		if saved.session == "sess_a" {
+			promptA = int64(101 + idx)
+		}
+		if saved.session == "sess_b" {
+			promptB = int64(101 + idx)
+		}
+	}
+	db.mu.Unlock()
+	if promptA == 0 || promptB == 0 {
+		t.Fatalf("找不到两单的 prompt id: %+v", db.saved)
+	}
+
+	// 他单的回复（明确指回 promptB），然后静等超过 grace —— 这一步以前会让 A 直接失败。
+	db.pushBotReplyFor("p2p_38_982", 982, "B 的结果", promptB, "sess_b")
+	time.Sleep(150 * time.Millisecond)
+
+	// A 自己的答复随后才到，必须还能正常收尾。
+	db.pushBotReplyFor("p2p_38_982", 982, "A 的结果", promptA, "sess_a")
+
+	if !waitFor(t, func() bool { return db.completedCount() >= 2 }, 3*time.Second) {
+		t.Fatalf("两单都该完成；failed=%v", db.errorTexts())
+	}
+	if env := db.result(t, "run_a"); !strings.Contains(string(env.Output), "A 的结果") {
+		t.Fatalf("run_a 拿到了 %s，应该只有 A 的结果", env.Output)
+	}
+	for runID, errText := range db.errorTexts() {
+		if strings.HasPrefix(errText, "bot_reply_ambiguous") {
+			t.Fatalf("run %s 被判成「分不清」，实际是「别人的」: %v", runID, errText)
+		}
+	}
+}
+
 // 单人在等时旧客户端照旧能用：不能因为加了严格认领就把老版本全废掉。
 func TestBotRunnerSoleLegacyReplyStillWorks(t *testing.T) {
 	db := newFakeBotStore()

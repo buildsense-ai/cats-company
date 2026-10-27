@@ -518,10 +518,13 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 					continue
 				}
 			default:
-				sawUnowned = true
-				if ambiguousAt.IsZero() {
-					ambiguousAt = time.Now()
-				}
+				// 明确指回**别人**的 prompt：跟本次调用无关，直接跳过。
+				//
+				// 这里以前错算成「分不清」的证据，后果很实际：上一单超时后 bot 还在干活，
+				// 它的迟回复带着上一单的 reply_to 落进这个 topic，正在等的下一单看见
+				// 「有回复但我认领不了」，grace 一过就报 bot_reply_ambiguous 失败 ——
+				// 明明分得清（那条写着别人的 prompt id），却被判成看不清。
+				// 归属明确的他单消息不是证据，是噪音，不该影响本次调用的判断。
 				continue
 			}
 			if size+len(text) > maxBotRunnerReplyBytes {
