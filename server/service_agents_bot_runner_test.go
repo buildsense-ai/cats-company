@@ -26,8 +26,10 @@ type fakeBotStore struct {
 	completed  []string
 	completedR json.RawMessage
 	completedE ServiceRunEnvelope
-	failed     map[string]string
-	startCalls int
+	// completedByRun 按 run_id 留一份 envelope，供「并发时各拿各的」类断言使用。
+	completedByRun map[string]ServiceRunEnvelope
+	failed         map[string]string
+	startCalls     int
 
 	saved    []fakeBotMessage
 	saveErr  error
@@ -37,14 +39,22 @@ type fakeBotStore struct {
 }
 
 type fakeBotMessage struct {
-	topic string
-	from  int64
-	text  string
-	typ   string
+	topic    string
+	from     int64
+	text     string
+	typ      string
+	session  string
+	metadata map[string]interface{}
 }
 
 func newFakeBotStore() *fakeBotStore {
-	return &fakeBotStore{owner: 38, started: true, nextID: 100, failed: map[string]string{}}
+	return &fakeBotStore{
+		owner:          38,
+		started:        true,
+		nextID:         100,
+		failed:         map[string]string{},
+		completedByRun: map[string]ServiceRunEnvelope{},
+	}
 }
 
 func (f *fakeBotStore) StartServiceRun(_ context.Context, runID, instanceID string, leaseSeconds int) (bool, error) {
@@ -61,6 +71,16 @@ func (f *fakeBotStore) CompleteServiceRun(_ context.Context, runID, resultID str
 	f.completed = append(f.completed, runID)
 	f.completedR = result
 	_ = json.Unmarshal(result, &f.completedE)
+	if f.completedByRun == nil {
+		f.completedByRun = map[string]ServiceRunEnvelope{}
+	}
+	// 必须深拷贝：json.RawMessage 反序列化会复用底层数组，
+	// 否则后一个 run 的结果会把前一个 run 记下来的 envelope 一起改掉。
+	snapshot := f.completedE
+	if f.completedE.Output != nil {
+		snapshot.Output = append(json.RawMessage(nil), f.completedE.Output...)
+	}
+	f.completedByRun[runID] = snapshot
 	return true, nil
 }
 
@@ -72,15 +92,25 @@ func (f *fakeBotStore) FailServiceRun(_ context.Context, runID, errorText string
 }
 
 func (f *fakeBotStore) SaveMessage(topicID string, fromUID int64, content, msgType string) (int64, error) {
+	id, _, err := f.SaveMessageWithMetadata(topicID, fromUID, content, nil, "", "", msgType, 0, "", nil)
+	return id, err
+}
+
+func (f *fakeBotStore) SaveMessageWithMetadata(topicID string, fromUID int64, content string, _ []types.ContentBlock,
+	_, _, msgType string, _ int64, _ string, metadata map[string]interface{}) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.saveErr != nil {
-		return 0, f.saveErr
+		return 0, false, f.saveErr
 	}
 	f.nextID++
 	id := f.nextID
-	f.saved = append(f.saved, fakeBotMessage{topic: topicID, from: fromUID, text: content, typ: msgType})
-	return id, nil
+	record := fakeBotMessage{topic: topicID, from: fromUID, text: content, typ: msgType, metadata: metadata}
+	if raw, ok := metadata[botSessionMetadataKey].(string); ok {
+		record.session = raw
+	}
+	f.saved = append(f.saved, record)
+	return id, true, nil
 }
 
 func (f *fakeBotStore) GetMessagesSince(topicID string, sinceID int64, limit int) ([]*types.Message, error) {
@@ -108,12 +138,21 @@ func (f *fakeBotStore) GetBotOwner(botUID int64) (int64, error) {
 }
 
 func (f *fakeBotStore) pushBotReply(topic string, botUID int64, text string) {
+	f.pushBotReplyFor(topic, botUID, text, 0, "")
+}
+
+// pushBotReplyFor 推一条「带归属信息」的回复：新客户端会回填 reply_to（或回传会话 id）。
+func (f *fakeBotStore) pushBotReplyFor(topic string, botUID int64, text string, replyTo int64, sessionID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
-	f.messages = append(f.messages, &types.Message{
-		ID: f.nextID, TopicID: topic, FromUID: botUID, Content: text, MsgType: "text",
-	})
+	msg := &types.Message{
+		ID: f.nextID, TopicID: topic, FromUID: botUID, Content: text, MsgType: "text", ReplyTo: replyTo,
+	}
+	if sessionID != "" {
+		msg.Metadata = map[string]interface{}{botSessionMetadataKey: sessionID}
+	}
+	f.messages = append(f.messages, msg)
 }
 
 type fakeBotHub struct {
@@ -132,11 +171,13 @@ func (f *fakeBotHub) BotRuntimeOnline(botUID int64) bool { return f.online }
 // newTestBotRunner 用短超时/短轮询构造，避免测试真的等 5 分钟。
 func newTestBotRunner(db botRunnerStore, hub botRunnerHub) *ServiceBotRunner {
 	runner := &ServiceBotRunner{
-		store:   db,
-		hub:     hub,
-		timeout: 300 * time.Millisecond,
-		poll:    5 * time.Millisecond,
-		settle:  10 * time.Millisecond,
+		store:          db,
+		hub:            hub,
+		timeout:        300 * time.Millisecond,
+		poll:           5 * time.Millisecond,
+		settle:         10 * time.Millisecond,
+		ambiguityGrace: 60 * time.Millisecond,
+		inFlight:       map[string]int{},
 	}
 	return runner
 }
