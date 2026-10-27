@@ -1011,19 +1011,29 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 	}
 }
 
-// autoProvisionBudget reports how many more workers this owner may create right
-// now: unspent credits plus any leftover legacy static rollout quota.
+// autoProvisionBudget reports how many workers this hook may create right now.
+//
+// Credits are the only instruction to create: one unspent credit buys exactly
+// one worker, so a redemption carrying three credits provisions three bots.
+//
+// The static rollout quota (CATSCO_WORKER_CREATE_QUOTA) is an upper bound, not
+// an instruction. Treating it as a budget would drain the whole allowance on the
+// first purchase — an operator account with `=10` would get nine extra machines
+// the moment it redeemed a single-credit invite. It therefore only applies the
+// legacy "first worker" behaviour: with no credits and no worker yet, provision
+// one.
 func (h *CloudWorkerHandler) autoProvisionBudget(uid int64) (int, error) {
 	workers, err := h.cloudWorkersOfOwner(uid)
 	if err != nil {
 		return 0, err
 	}
-	staticRemaining := h.quota[uid] - len(workers)
-	if staticRemaining < 0 {
-		staticRemaining = 0
+	if _, available := h.creditInfo(uid); available > 0 {
+		return available, nil
 	}
-	_, available := h.creditInfo(uid)
-	return staticRemaining + available, nil
+	if len(workers) == 0 && h.quota[uid] > 0 {
+		return 1, nil
+	}
+	return 0, nil
 }
 
 // provisionAutoWorker runs one auto-provisioned create, retrying only while a

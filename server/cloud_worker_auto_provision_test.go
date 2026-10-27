@@ -60,11 +60,12 @@ func TestAutoProvisionForOwnerSkipsWhenWorkerExists(t *testing.T) {
 // One account may own several bots: an invite (or an operator grant) that
 // carries N credits must provision N workers, not just the first one.
 func TestAutoProvisionForOwnerProvisionsOneWorkerPerCredit(t *testing.T) {
-	cfg := workerScriptCfg(t, "42=3", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
+	cfg := workerScriptCfg(t, "", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
 	if cfg.ProvisionScript == "" {
 		t.Skip("no POSIX shell")
 	}
 	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	h.credits = &countingCreditStub{total: 3, available: 3}
 
 	h.AutoProvisionForOwner(42)
 
@@ -86,7 +87,24 @@ func TestAutoProvisionForOwnerProvisionsOneWorkerPerCredit(t *testing.T) {
 // A mis-issued batch is bounded per run so it cannot spawn an unbounded fleet
 // unattended; the remaining credits stay spendable.
 func TestAutoProvisionForOwnerCapsOneRun(t *testing.T) {
-	cfg := workerScriptCfg(t, "42=20", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
+	cfg := workerScriptCfg(t, "", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
+	if cfg.ProvisionScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	h.credits = &countingCreditStub{total: 20, available: 20}
+
+	h.AutoProvisionForOwner(42)
+
+	if len(ts.tenantNames) != autoProvisionMaxPerRun {
+		t.Fatalf("tenantNames=%d want the per-run cap %d", len(ts.tenantNames), autoProvisionMaxPerRun)
+	}
+}
+
+// The static rollout quota is an upper bound, not an instruction. An operator
+// account with `=10` must not get nine extra machines on a first purchase.
+func TestAutoProvisionForOwnerDoesNotDrainStaticQuota(t *testing.T) {
+	cfg := workerScriptCfg(t, "42=10", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
 	if cfg.ProvisionScript == "" {
 		t.Skip("no POSIX shell")
 	}
@@ -94,8 +112,8 @@ func TestAutoProvisionForOwnerCapsOneRun(t *testing.T) {
 
 	h.AutoProvisionForOwner(42)
 
-	if len(ts.tenantNames) != autoProvisionMaxPerRun {
-		t.Fatalf("tenantNames=%d want the per-run cap %d", len(ts.tenantNames), autoProvisionMaxPerRun)
+	if len(ts.tenantNames) != 1 {
+		t.Fatalf("tenantNames=%v want only the legacy first worker", ts.tenantNames)
 	}
 }
 
