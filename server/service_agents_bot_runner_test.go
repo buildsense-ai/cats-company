@@ -39,6 +39,8 @@ type fakeBotStore struct {
 	// topics 记录 CreateTopic 调用：投递前必须先建 topic（messages 有外键）。
 	topics   []string
 	topicErr error
+	// leases 记录每次 StartServiceRun 的租约秒数（由本次超时推导）。
+	leases []int
 }
 
 type fakeBotMessage struct {
@@ -65,7 +67,30 @@ func (f *fakeBotStore) StartServiceRun(_ context.Context, runID, instanceID stri
 	defer f.mu.Unlock()
 	f.startCalls++
 	f.startedRun = append(f.startedRun, instanceID)
+	// 租约由本次 run 的超时推导（超时 + 60s），所以它同时是「这次用了哪套
+	// 执行参数」的观测口 —— 热更新测试靠它证明配置真的换了。
+	f.leases = append(f.leases, leaseSeconds)
 	return f.started, f.startErr
+}
+
+// lastLease 返回最后一次 StartServiceRun 收到的租约秒数。
+func (f *fakeBotStore) lastLease() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.leases) == 0 {
+		return 0
+	}
+	return f.leases[len(f.leases)-1]
+}
+
+// leaseFor 返回第 i 次 StartServiceRun 的租约秒数（-1 = 最后一次）。
+func (f *fakeBotStore) leaseFor(i int) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i < 0 || i >= len(f.leases) {
+		return 0
+	}
+	return f.leases[i]
 }
 
 func (f *fakeBotStore) CompleteServiceRun(_ context.Context, runID, resultID string, result, usage json.RawMessage) (bool, error) {

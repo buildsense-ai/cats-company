@@ -13,4 +13,9 @@ import (
 var (
 	_ botRunnerStore = (*postgres.Adapter)(nil)
 	_ botRunnerStore = (*mysql.Adapter)(nil)
+
+	// 热更新能力（definition 每次派活重读）。缺了不会崩 —— 会退化成「会话快照」，
+	// 也就是改配置要重开 MCP 会话才生效。这个断言保证主 adapter 不会静默退化。
+	_ botDefinitionReader = (*postgres.Adapter)(nil)
+	_ botDefinitionReader = (*mysql.Adapter)(nil)
 )
