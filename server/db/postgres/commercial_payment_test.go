@@ -741,8 +741,16 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	if refundWorkerConversion {
 		t.Fatal("refunded trial is still scheduled for conversion")
 	}
-	if time.Until(refundWorkerDeleteAfter) > time.Minute || refundWorkerExpiry.After(time.Now().UTC().Add(time.Minute)) {
-		t.Fatalf("refunded worker not scheduled for cleanup: state=%s expiry=%v delete_after=%v", refundWorkerState, refundWorkerExpiry, refundWorkerDeleteAfter)
+	// The paid window is over, so the worker expires now — but it must stay
+	// parked for the retention window instead of being erased in the next
+	// sweep tick (a mistaken refund or a support follow-up needs that room).
+	if refundWorkerExpiry.After(time.Now().UTC().Add(time.Minute)) {
+		t.Fatalf("refunded worker still reports paid time: expiry=%v", refundWorkerExpiry)
+	}
+	wantDeleteAfter := refundWorkerExpiry.Add(commercialRefundMinRetentionDays * 24 * time.Hour)
+	if diff := refundWorkerDeleteAfter.Sub(wantDeleteAfter); diff > time.Minute || diff < -time.Minute {
+		t.Fatalf("refunded worker retention mismatch: delete_after=%v want≈%v (state=%s)",
+			refundWorkerDeleteAfter, wantDeleteAfter, refundWorkerState)
 	}
 	var revokedGrants, reversalEntries int
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE grant_type = 'order' AND source_ref = $1 AND revoked_at IS NOT NULL`, created.OrderNo).Scan(&revokedGrants); err != nil {

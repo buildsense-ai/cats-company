@@ -1838,7 +1838,16 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 			// for the grace window. If it fails, leave the row active so the
 			// next sweep retries instead of silently skipping the pause.
 			if h.expireScript != "" {
-				out, err := h.runScript(h.expireScript, "--name", item.TenantName)
+				// Hand the plan's own retention window to the deployment hook.
+				// The cluster keeps its own suspended.json deadline and a fallback
+				// reaper reads it; if it disagrees with delete_after the reaper
+				// either destroys while the platform still expects data to exist
+				// or leaves the instance around long after the platform removed it.
+				expireArgs := []string{"--name", item.TenantName}
+				if item.RetentionDays > 0 {
+					expireArgs = append(expireArgs, "--grace-days", strconv.Itoa(item.RetentionDays))
+				}
+				out, err := h.runScript(h.expireScript, expireArgs...)
 				if err != nil {
 					failed++
 					log.Printf("[cloud-worker] lifecycle expire-suspend %s failed: %s", item.TenantName, truncateWorkerOutput(destroyErrorDetail(err, out)))
