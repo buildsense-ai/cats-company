@@ -964,6 +964,15 @@ func main() {
 		serviceAgentsMCPHandler.SetExternalRunner(externalRunner)
 		// 进程重启后把「已创建但没转发成功」的外部 run 重新派发（否则永远卡在 submitted）。
 		externalRunner.StartPendingRecovery(time.Minute, 10*time.Second)
+		// bot-as-tool（runner.type=bot）：把 run 交给另一个 bot 执行，天生异步。
+		// 需要消息读写 + 推送，所以传完整 store（不是 ServiceAgentStore 子集）；
+		// 缺能力时构造结果为 nil，该能力自动关闭（老部署/测试替身不受影响）。
+		if botRunner := server.NewServiceBotRunner(db, hub); botRunner != nil {
+			// 先只对白名单账号名下的 bot 开放：这个功能会让 bot 变成「别人能调的服务」，
+			// 一上线就全平台可见风险太大。
+			botRunner.SetOwnerWhitelist(server.ServiceCatalogAllowedUIDs())
+			serviceAgentsMCPHandler.SetBotRunner(botRunner)
+		}
 		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
 		// 应用目录管理 API（设计 §3.3-9 目录与订阅）：网页 cats 的目录/管理界面数据面；
 		// 清单跟账号，变更即时同步在线 MCP 会话（list_changed）。
@@ -980,6 +989,10 @@ func main() {
 		// 用户自助上架（设计 §4.3 P2）：JWT + 同一套内测白名单；首次发布占位 owner，
 		// 之后仅本人可继续发版；平台内部 slug 不可抢占。
 		publishHandler := server.NewServiceAgentPublishHandlerFromEnv(serviceAgentStore)
+		// bot-as-tool：把 bot 分享成工具时，工具标签默认取 bot 自己的自我介绍。
+		if botProfiles, ok := db.(server.ServiceBotProfileReader); ok {
+			publishHandler.SetBotProfiles(botProfiles)
+		}
 		// 下架/上架都会改变目录可见性 → 让在线 MCP 会话立即收到 list_changed。
 		publishHandler.SetCatalogNotifier(serviceAgentsMCPHandler)
 		mux.HandleFunc("POST /api/service-agents/publish", jwtAuthWithDB(publishHandler.HandlePublish))

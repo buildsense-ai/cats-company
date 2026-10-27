@@ -60,6 +60,10 @@ func serviceCatalogAllowedUIDs() []int64 {
 	return allowed
 }
 
+// ServiceCatalogAllowedUIDs 返回内测白名单（逗号分隔的 CATSCO_SERVICE_CATALOG_UID_WHITELIST；
+// 未配置/非法项忽略）。其他需要「先只在白名单内上线」的能力（例如 bot-as-tool）复用它。
+func ServiceCatalogAllowedUIDs() []int64 { return serviceCatalogAllowedUIDs() }
+
 // serviceCatalogUIDAllowed 当前账号是否在 Agent 工具内测白名单内。
 func serviceCatalogUIDAllowed(uid int64) bool {
 	for _, id := range serviceCatalogAllowedUIDs() {

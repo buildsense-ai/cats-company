@@ -27,12 +27,13 @@ import (
 // 清单变更时对在线 MCP 会话做增量同步（AddTool/RemoveTools）→ SDK 自动发
 // notifications/tools/list_changed；客户端亦可随时重查 tools/list（刷新兜底）。
 type ServiceAgentsMCPHandler struct {
-	store    store.ServiceAgentStore
-	bots     ServiceAgentBotIdentity // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
-	external *ServiceExternalRunner  // 外部执行后端（runner.type=http；可选）
-	balance  *ServiceBalanceChecker  // 计费预检（可选；未设置=跳过，调用面单测不受影响）
-	syncWait time.Duration           // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
-	http     *mcp.StreamableHTTPHandler
+	store     store.ServiceAgentStore
+	bots      ServiceAgentBotIdentity // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
+	external  *ServiceExternalRunner  // 外部执行后端（runner.type=http；可选）
+	botRunner *ServiceBotRunner       // bot-as-tool（runner.type=bot；可选）
+	balance   *ServiceBalanceChecker  // 计费预检（可选；未设置=跳过，调用面单测不受影响）
+	syncWait  time.Duration           // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
+	http      *mcp.StreamableHTTPHandler
 
 	// liveMu/liveServers 跟踪每账号的在线 MCP 会话 server（getServer 每新会话调用一次，
 	// 每会话一个独立 *mcp.Server 实例）——清单变更时据此下发 list_changed。
@@ -79,10 +80,16 @@ func (h *ServiceAgentsMCPHandler) SetBotIdentity(identity ServiceAgentBotIdentit
 	h.bots = identity
 }
 
-// SetExternalRunner 注入外部执行后端（设计 §4.4 P3-a）：声明了 runner.type=http 的
-// agent 由平台把 run 转发到用户 endpoint；未注入 = 只支持平台自带执行。
+// SetExternalRunner 注入外部执行后端（设计 §4.4 P3-a）：声明了 runner.type=http 的// agent 由平台把 run 转发到用户 endpoint；未注入 = 只支持平台自带执行。
 func (h *ServiceAgentsMCPHandler) SetExternalRunner(runner *ServiceExternalRunner) {
 	h.external = runner
+}
+
+// SetBotRunner 注入 bot-as-tool 执行后端（runner.type=bot）。
+// 未注入 = 这类 run 不会被投递，调用方会拿到一个永远不会完成的句柄 ——
+// 所以装配层要保证生产环境一定注入了它。
+func (h *ServiceAgentsMCPHandler) SetBotRunner(runner *ServiceBotRunner) {
+	h.botRunner = runner
 }
 
 func (h *ServiceAgentsMCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -405,6 +412,13 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 		// 外部执行后端（runner.type=http）：异步转发到用户 endpoint，结果写成 result 事件；
 		// 平台自带执行（codex）不声张，照旧由 worker claim。
 		h.external.MaybeDispatch(ctx, agent, run, callerUID, botUID)
+		// bot-as-tool（runner.type=bot）：把 input 发给另一个 bot，等它回话后写回结果。
+		h.botRunner.MaybeDispatch(ctx, agent, run, callerUID)
+	}
+	// bot 回合是分钟级的（上下文压缩 + 多轮推理），同步等只会把主 Agent 卡住，
+	// 所以这里直接返回运行句柄：调用方拿 run_id 自己去问 catsco_run_status，或等回执。
+	if _, isBot := ParseBotRunnerBotUID(json.RawMessage(agent.DefinitionJSON)); isBot {
+		return h.serviceRunHandleResult(session.SessionID, run), nil, nil
 	}
 	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds)
 }
@@ -469,6 +483,19 @@ func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent stor
 		return store.ServiceSession{}, errServiceRunNotOwned
 	}
 	return session, nil
+}
+
+// serviceRunHandleResult 立即返回运行句柄（不等终态）。
+// 给「天生慢」的执行后端用：干等只会把调用它的主 Agent 卡住，
+// 而它拿到的句柄足够自己决定是去干别的还是去轮询。
+func (h *ServiceAgentsMCPHandler) serviceRunHandleResult(sessionID string, run store.ServiceRun) *mcp.CallToolResult {
+	envelope := ServiceRunEnvelope{
+		ContractVersion: serviceRunAsyncContractVersion,
+		RunID:           run.RunID,
+		SessionID:       sessionID,
+		Status:          ServiceRunRunning,
+	}
+	return serviceRunToolResult(envelope)
 }
 
 func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string, run store.ServiceRun, thresholdSeconds int) (*mcp.CallToolResult, any, error) {

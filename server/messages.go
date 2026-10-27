@@ -668,6 +668,45 @@ func (h *Hub) DeliverShimoLoginResume(resume ShimoLoginResume) bool {
 	return true
 }
 
+// DeliverServiceBotPrompt 把「另一个 bot 想请你处理这件事」的请求推给目标 bot。
+//
+// 这是 bot-as-tool 的投递半边：平台已经把消息落库（调用方可见、bot 侧有历史），
+// 这里只负责让在线的 bot 立刻收到。返回 false = 本节点上没有它的连接，
+// 调用方据此如实失败（而不是让 run 卡到一个超时）。
+//
+// 只有平台内部的 runner 会调它：权限（是不是自己的 bot / 有没有开放分享）
+// 已经在嵌入之前判过，这里不再重复鉴权。
+func (h *Hub) DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text string, msgID int64) bool {
+	if h == nil || callerUID <= 0 || botUID <= 0 || msgID <= 0 {
+		return false
+	}
+	if strings.TrimSpace(topicID) == "" || strings.TrimSpace(text) == "" {
+		return false
+	}
+	if len(h.getClients(botUID)) == 0 {
+		return false
+	}
+	payload := &normalizedMessagePayload{
+		StoredContent:  text,
+		DisplayContent: text,
+		StoredType:     "text",
+		DisplayType:    "text",
+		Metadata: map[string]interface{}{
+			// 让 bot 侧能分辨「这是另一个 Agent 通过工具调用发来的」，
+			// 从而按「有人派活」而不是「主人闲聊」来处理。
+			"catsco_bot_call":   true,
+			"catsco_caller_uid": callerUID,
+		},
+	}
+	message := h.messageForRecipient(callerUID, botUID, topicID, 0, payload, msgID)
+	if message == nil || message.Data == nil {
+		return false
+	}
+	message.Data.SeqID = int(msgID)
+	h.SendToUser(botUID, message)
+	return true
+}
+
 // shimoResumeAllowed authorizes a trusted Shimo login resume for the topic it
 // names. A one-to-one topic has to be the conversation between exactly that
 // person and that virtual employee. A group topic has to still contain both of

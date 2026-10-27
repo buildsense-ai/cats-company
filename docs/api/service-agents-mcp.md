@@ -291,6 +291,82 @@ X-Catsco-Signature: sha256=<hex(hmac_sha256(SECRET, body))>
 - 进程重启会丢失「已创建但未转发」的 run（需等 reaper 收尾）；后续可加启动扫描补齐
 - 只实现 `http`；`mcp`（对端 MCP server）留待 P3-b
 
+## 把 bot 分享成工具（`runner.type=bot`）
+
+别的东西都能靠 worker / http 接进来，但「另一个 bot」（虚拟员工）本身就是个 Agent ——
+它有自己的人格、技能、上下文和判断力。这一节讲怎么把它**当成工具**给别人用。
+
+```jsonc
+{
+  "slug": "jack-ops",
+  "name": "杰克运维",
+  "visibility": "public",
+  "definition": {
+    // 没写就自动取 bot_config.description（见下）
+    "description": "把服务器/发布相关的排障活派给杰克。",
+    "input_schema": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] },
+    "runner": { "type": "bot", "bot_uid": 982 }
+  }
+}
+```
+
+### 天生异步：调用方立刻拿到句柄
+
+**这一点跟其它 runner 不一样，必须知道。**
+
+bot 的一个回合是**分钟级**的：上下文压缩、多轮模型推理、它自己再去调工具。
+实测一次 90s 压缩 + 20s 推理。而 `tools/call` 的同步等待上限只有 45s —— 硬等只会让
+主 Agent 卡在那儿，用户看到的就是「没反应」。
+
+所以 `runner.type=bot` 的调用**一律立即返回**：
+
+```jsonc
+{ "contract_version": "catsco.service-run-async.v1", "status": "running",
+  "run_id": "run_…", "session_id": "sess_…" }
+```
+
+调用方要结果就 `catsco_run_status(run_id)`，或者等生命周期回执。
+**主 Agent 零阻塞**，可以继续跟用户聊别的。
+
+### 平台做了什么
+
+1. 把 `input.text` 作为一条私聊消息发给目标 bot（落在两人的 p2p topic 里）；
+2. 后台轮询消息表，等 bot 自己回一条 `text`；
+3. 拿到就写 run 结果，`output.text` = 它的回复（多段会被拼起来）。
+
+收尾规则：收到第一段后**再等 2 秒没有新消息**才收尾 —— bot 会把长回复切段，
+收太早会把答案截断。
+
+### 失败怎么算
+
+| 情况 | run 结果 |
+|---|---|
+| bot 不在线（没有活跃 body 租约） | **立刻** `bot_offline`，不干等 |
+| 消息落库了但推不到它的连接 | `bot_deliver_failed` |
+| 等了 5 分钟（默认）没回复 | `bot_timeout` |
+| 已经有部分回复但超时 | 按「说到一半」交付，比丢掉有用 |
+| bot 不存在 | `bot_not_found` |
+| 不在白名单账号名下 | `bot_not_shared` |
+
+**如实失败，不编造**：bot 没回就是没回，调用方拿到的是一句能看懂的原因，
+而不是一个假装完成了的空答案。
+
+### bot 自己的「标签」
+
+`bot_config.description` 就是 bot 在平台的自我介绍。发布 `runner.type=bot` 的应用时
+**没写 `definition.description` 就自动取它** —— 标签本来就该是 bot 自己的话，
+不该让发布者再手抄一遍。
+
+这也是「分享」的关键：别人的 Agent 只能看到这段文字来决定要不要把活派过来。
+没描述 = 分享了也没人知道该找它。
+
+### 已知限制
+
+- **只对白名单账号名下的 bot 开放**（`CATSCO_SERVICE_CATALOG_UID_WHITELIST`）：
+  这个功能会让 bot 变成「别人能调的服务」，一上线就全平台可见风险太大
+- 没有递归保护：A 调 B、B 又调 C 这种链，目前靠配置自觉（后续可加深度上限）
+- 只认 `msg_type=text`：bot 回的 `tool_use` / `tool_result` 卡片不算结果
+
 ## 计费：谁调用谁付费、按量给
 
 设计 §4.5。agent 在 definition 里声明单价；未声明 = 免费（金额记 0，但调用关系与用量照记，便于后续定价回溯重算）。

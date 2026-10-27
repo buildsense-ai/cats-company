@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // 用户自助上架（设计 §4.3 P2）。
@@ -41,6 +42,48 @@ type ServiceAgentPublishHandler struct {
 	allowed   func(int64) bool
 	maxBundle int64
 	notifier  serviceAgentCatalogNotifier
+	// botProfiles：runner.type=bot 时用 bot 自己的描述当工具标签（可选能力）。
+	botProfiles ServiceBotProfileReader
+}
+
+// ServiceBotProfileReader 读 bot 自身资料。bot-as-tool 的「标签」默认取
+// `bot_config.description` —— 那就是 bot 在平台的自我介绍，发布者不用再手写一遍。
+// 可选能力：未注入时退回「作者必须自己写描述」的旧行为。
+type ServiceBotProfileReader interface {
+	GetBotConfig(uid int64) (*types.BotConfig, error)
+}
+
+// SetBotProfiles 注入 bot 资料读取器（线上由主库适配器实现）。
+func (h *ServiceAgentPublishHandler) SetBotProfiles(reader ServiceBotProfileReader) {
+	h.botProfiles = reader
+}
+
+// fillDescriptionFromBot 用 bot 自己的描述补上 definition.description。
+//
+// 失败一律返回 nil（调用方继续走「必须写描述」的校验）：
+// 读不到 bot 不是发布失败的理由，只是拿不到方便的默认值。
+func (h *ServiceAgentPublishHandler) fillDescriptionFromBot(botUID int64, definition json.RawMessage) json.RawMessage {
+	if h.botProfiles == nil || botUID <= 0 {
+		return nil
+	}
+	profile, err := h.botProfiles.GetBotConfig(botUID)
+	if err != nil || profile == nil {
+		return nil
+	}
+	description := strings.TrimSpace(profile.Description)
+	if description == "" {
+		return nil
+	}
+	var view map[string]any
+	if err := json.Unmarshal(definition, &view); err != nil || view == nil {
+		return nil
+	}
+	view["description"] = description
+	filled, err := json.Marshal(view)
+	if err != nil {
+		return nil
+	}
+	return filled
 }
 
 // serviceAgentCatalogNotifier 在目录/可见性变化后同步在线 MCP 会话的工具集（list_changed）。
@@ -214,6 +257,15 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 	// description 是它判断「这个工具做什么、什么情况下该用」的唯一依据。
 	// 没有描述 = 分享出去也没人会用（线上真实症状：bot 反复说「看不到调用入口」）。
 	// 放在包校验之后：结构错误（缺包/坏 base64）先报，不然用户会被描述报错带偏。
+	//
+	// bot-as-tool 例外：把 bot 分享成工具时，标签本来就该是 bot 自己的自我介绍，
+	// 不该让发布者再手抄一遍 —— 没写就自动取 bot_config.description。
+	if botUID, isBot := ParseBotRunnerBotUID(req.Definition); isBot &&
+		serviceAgentDefinitionDescription(req.Definition) == "" {
+		if filled := h.fillDescriptionFromBot(botUID, req.Definition); len(filled) > 0 {
+			req.Definition = filled
+		}
+	}
 	description := serviceAgentDefinitionDescription(req.Definition)
 	if len([]rune(description)) > maxServiceAgentDescriptionRunes {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
