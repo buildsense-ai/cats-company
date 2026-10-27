@@ -143,7 +143,7 @@ relay 据此将用量归因到**调用方**额度（见 relay `service_tokens.py
 {
   "slug": "my-helper",            // ^[a-z0-9][a-z0-9-]{1,63}$
   "name": "我的助手",              // 可选，默认=slug，≤64 字
-  "visibility": "public",          // public（默认）| private（仅自己可见可调）
+  "visibility": "public",          // public（默认）| friends | private
   "definition": { "async_threshold_seconds": 30 },   // 可选，平台派生字段
   "bundle_base64": "…",            // 必填，agent 包原文（≤20 MiB，可用 CATSCO_SERVICE_AGENT_MAX_BUNDLE_BYTES 调整）
   "force": false
@@ -152,8 +152,37 @@ relay 据此将用量归因到**调用方**额度（见 relay `service_tokens.py
 
 响应：`{ "slug", "version", "package_hash", "visibility", "owner_uid" }`。
 
-可见性语义：`public` 进所有人目录并可被调用；`private` 只进 owner 自己的
-`tools/list` 与目录，别人即使知道 slug 也拿不到工具、硬调返回 `agent_not_found`。
+### 三级可见性：公开 / 好友 / 自用
+
+| `visibility` | 谁能在目录里找到、加进清单、调用 | 典型场景 |
+|---|---|---|
+| `public`（默认） | 所有人 | 做成团队/社区都能用的工具 |
+| `friends` | **发布者的好友** | 只给认识的人用，不想放进公共目录 |
+| `private` | 只有发布者本人 | 自用、还没调教好 |
+
+三条规则：
+
+1. **先判「是不是我的」再判级别** —— 自己发布的三个级别都看得到（好友级不需要
+   「自己是自己的好友」这种荒谬条件）。
+2. **好友按访问者求值**：`friends` 的判据是「看的人与**发布者**是不是好友」。
+   所以目录、`tools/list`、调用准入、订阅准入四处共用同一个判定
+   （`store.ServiceAgentVisibleTo`），不会各写一套。
+3. **看不见的应用一律 `agent_not_found`**（订阅接口返回 404）：能区分「不存在」和
+   「存在但我看不到」，等于让人用这个接口探测别人的应用。
+
+别的账号看不到、也调不动 `private` / 非好友的 `friends` 应用：
+即使猜到 slug，硬调也拿 `agent_not_found`。
+
+好友关系查不到时按**不是好友**处理（fail-closed）：这是访问控制，不是个人聚焦设置，
+存储抖动不该变成「把别人的应用暴露出去」。日志会留一行，便于区分「本来就不是好友」
+与「查挂了」。
+
+> 已知限制：好友关系变化**不会**给已在线的 MCP 会话推 `list_changed`。
+> 对方重开 MCP 会话（或重新 `tools/list`）后就看到了。
+
+「分享给别人」（`public` / `friends`）必须写 `definition.description` —— 调用方是另一个
+Agent，它看不到包内容、也没有主 Agent 的上下文，这段文字是它判断「要不要用」的唯一
+依据。没写就 400 `description_required`。「自用」不强制。
 
 目录接口 `GET /api/service-agents/catalog` 的条目新增 `mine` / `owner_kind` /
 `visibility` 三个字段，便于前端区分「平台应用」与「我上架的」。
@@ -394,7 +423,6 @@ bot 侧按它算自己的会话身份：
 | 看见回复但判断不出是不是给我 | `bot_reply_ambiguous`（约 20s 后，不干等满 5 分钟） |
 | 看见的是**别人那单**的回复 | 忽略（不算歧义，继续等自己的） |
 | bot 不存在 | `bot_not_found` |
-| 不在白名单账号名下 | `bot_not_shared` |
 
 **如实失败，不编造**：bot 没回就是没回，调用方拿到的是一句能看懂的原因，
 而不是一个假装完成了的空答案。
@@ -463,8 +491,12 @@ definition**，而不是用 MCP 会话建立时快照进工具闭包的那份。
 
 ### 已知限制
 
-- **只对白名单账号名下的 bot 开放**（`CATSCO_SERVICE_CATALOG_UID_WHITELIST`）：
-  这个功能会让 bot 变成「别人能调的服务」，一上线就全平台可见风险太大
+- **内测白名单仍然管着目录与发布**（`CATSCO_SERVICE_CATALOG_UID_WHITELIST`）：
+  开关在环境变量里，没开之前只有白名单账号能用这套面；开的时候清空即可，
+  使用侧（可见性判定）不需要再改
+- **调用资格只看可见性**：runner 不再单独限制 bot 归属（曾经那套「bot 的 owner
+  必须在白名单里」与可见性打架：应用标了 public，别人调用仍然报 `bot_not_shared`）。
+  两套规则都叫授权却互不同步，所以只留一套
 - 没有递归保护：A 调 B、B 又调 C 这种链，目前靠配置自觉（后续可加深度上限）
 - 只认 `msg_type=text`：bot 回的 `tool_use` / `tool_result` 卡片不算结果
 - 「有几单在同一 topic 上等」是**进程内**计数：多实例部署时，另一个实例上的

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -13,7 +14,7 @@ import (
 )
 
 // bot-as-tool：把一次 run 交给另一个 bot 执行。测试覆盖
-// 「解析 / 提示词提取 / 离线快速失败 / 正常收尾 / 超时 / 白名单」。
+// 「解析 / 提示词提取 / 离线快速失败 / 正常收尾 / 超时 / 跨账号派活」。
 
 type fakeBotStore struct {
 	mu sync.Mutex
@@ -511,39 +512,45 @@ func TestBotRunnerDeliverFailureFailsRun(t *testing.T) {
 	}
 }
 
-// 白名单：非白名单账号名下的 bot 不能被别人当工具调用。
-func TestBotRunnerOwnerWhitelist(t *testing.T) {
+// 跨账号调用：**runner 不做归属授权**。
+//
+// 这里是曾经出过错的地方：runner 以前另有一套「bot 的 owner 必须在白名单里」的规则，
+// 而可见性判断在 MCP invoke 里 —— 应用标了 public，别人调用仍然报 bot_not_shared。
+// 两套规则都叫「授权」，却互不同步。现在 runner 只管执行：绑定能不能被调用
+// 完全由可见性（公开/好友/自用）决定，而那是调用入口的单一职责。
+func TestBotRunnerDispatchesToBotOwnedByAnotherAccount(t *testing.T) {
 	db := newFakeBotStore()
-	db.owner = 999 // bot 属于 999，不在白名单
+	db.owner = 999 // bot 属于 999，调用方是 38
 	hub := &fakeBotHub{online: true}
 	runner := newTestBotRunner(db, hub)
-	runner.SetOwnerWhitelist([]int64{38, 2})
+	runner.timeout = 100 * time.Millisecond
 
 	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
 		store.ServiceRun{RunID: "run_6", SessionID: "sess_6", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
 
-	if !waitFor(t, func() bool { return db.failedCount() > 0 }, 2*time.Second) {
-		t.Fatal("应该拒绝")
+	if !waitFor(t, func() bool { return len(hub.delivered) > 0 }, 2*time.Second) {
+		t.Fatalf("可见性已准入的调用应该派活；failed=%v", db.errorTexts())
 	}
-	if !strings.HasPrefix(db.errorText("run_6"), "bot_not_shared") {
-		t.Fatalf("errorText = %q, want bot_not_shared", db.errorText("run_6"))
+	if got := db.errorText("run_6"); strings.HasPrefix(got, "bot_not_shared") {
+		t.Fatalf("runner 不应该再做归属授权（可见性已决定）：%q", got)
 	}
 }
 
-// 自己的 bot 不受白名单限制（自己的东西自己用）。
-func TestBotRunnerOwnBotAlwaysAllowed(t *testing.T) {
+// 目标 bot 被删：仍然要如实报出来。这是 runner 自己的职责（它得知道找谁）。
+func TestBotRunnerReportsMissingBot(t *testing.T) {
 	db := newFakeBotStore()
-	db.owner = 999
+	db.ownerErr = errors.New("bot not found")
 	hub := &fakeBotHub{online: true}
 	runner := newTestBotRunner(db, hub)
-	runner.SetOwnerWhitelist([]int64{38})
-	runner.timeout = 100 * time.Millisecond
 
 	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
-		store.ServiceRun{RunID: "run_7", SessionID: "sess_7", Input: json.RawMessage(`{"text":"hi"}`)}, 999)
+		store.ServiceRun{RunID: "run_7", SessionID: "sess_7", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
 
-	if !waitFor(t, func() bool { return len(hub.delivered) > 0 }, 2*time.Second) {
-		t.Fatalf("自己的 bot 应该允许投递；failed=%v", db.failed)
+	if !waitFor(t, func() bool { return db.failedCount() > 0 }, 2*time.Second) {
+		t.Fatal("目标 bot 不存在时应该失败")
+	}
+	if !strings.HasPrefix(db.errorText("run_7"), "bot_not_found") {
+		t.Fatalf("errorText = %q, want bot_not_found", db.errorText("run_7"))
 	}
 }
 

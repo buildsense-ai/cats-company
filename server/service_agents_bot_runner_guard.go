@@ -18,4 +18,9 @@ var (
 	// 也就是改配置要重开 MCP 会话才生效。这个断言保证主 adapter 不会静默退化。
 	_ botDefinitionReader = (*postgres.Adapter)(nil)
 	_ botDefinitionReader = (*mysql.Adapter)(nil)
+
+	// 好友判定（friends 级可见性）。缺了同样不崩：好友级应用会对**所有人**不可见，
+	// 表现为「我明明分享给好友了，他看不到」—— 静默失败最难查，所以编译期钉住。
+	_ ServiceAgentFriendReader = (*postgres.Adapter)(nil)
+	_ ServiceAgentFriendReader = (*mysql.Adapter)(nil)
 )

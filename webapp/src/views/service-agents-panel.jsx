@@ -36,6 +36,8 @@ export default function ServiceAgentsPanel({ onClose }) {
   // 自述建议：应用自己建议的对外描述，等人确认。丢弃是逐行进行中。
   const [dismissingIntro, setDismissingIntro] = useState(() => new Set());
   const [notice, setNotice] = useState(null);
+  // 目录搜索：应用一多（同事分享的 + 自己的）就靠名称/描述找。纯前端过滤，不发请求。
+  const [query, setQuery] = useState('');
   const [form, setForm] = useState({
     // 分享哪个 bot：被分享出去的是 bot 本身。
     //
@@ -181,9 +183,10 @@ export default function ServiceAgentsPanel({ onClose }) {
     const slug = form.slug.trim();
     const description = form.description.trim();
     if (!name) { setPublishError('请填写应用名称'); return; }
-    if (form.visibility === 'public' && !description) {
-      // 公开分享却不写描述：别人（另一个 Agent）只看到名字，等于不知道能不能用。
-      setPublishError('公开应用必须写「能做什么」：调用你的是另一个 Agent，它只能靠这段文字判断要不要用');
+    if ((form.visibility === 'public' || form.visibility === 'friends') && !description) {
+      // 分享给别人（公开或好友）却不写描述：别人（另一个 Agent）只看到名字，
+      // 等于不知道能不能用。「仅自己」不强制 —— 写不写都不影响别人。
+      setPublishError('分享给别人的应用必须写「能做什么」：调用你的是另一个 Agent，它只能靠这段文字判断要不要用');
       return;
     }
     if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(slug)) {
@@ -268,7 +271,9 @@ export default function ServiceAgentsPanel({ onClose }) {
       description: suggested || agent.description || '',
       slug: agent.slug,
       slugTouched: true,
-      visibility: agent.visibility === 'private' ? 'private' : 'public',
+      visibility: agent.visibility === 'friends'
+        ? 'friends'
+        : (agent.visibility === 'private' ? 'private' : 'public'),
       price: typeof priceValue === 'number' && priceValue > 0 ? String(priceValue) : '',
       priceUnit,
       botUid: shareBot ? String(runner.bot_uid) : '',
@@ -347,6 +352,14 @@ export default function ServiceAgentsPanel({ onClose }) {
       setError('复制失败，请手动选中复制。');
     }
   }, []);
+
+  // 搜索：名称 / 调用名 / 描述任一命中即保留（描述里往往写着使用场景，最常被拿来搜）。
+  const keyword = query.trim().toLowerCase();
+  const visibleAgents = keyword
+    ? agents.filter((agent) => [agent.name, agent.slug, agent.description]
+      .filter(Boolean)
+      .some((field) => String(field).toLowerCase().includes(keyword)))
+    : agents;
 
   return (
     <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
@@ -486,10 +499,19 @@ export default function ServiceAgentsPanel({ onClose }) {
                   <input
                     type="radio"
                     name="visibility"
+                    checked={form.visibility === 'friends'}
+                    onChange={() => updateForm({ visibility: 'friends' })}
+                  />
+                  好友（只有我的好友能看到、能调）
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="visibility"
                     checked={form.visibility === 'public'}
                     onChange={() => updateForm({ visibility: 'public' })}
                   />
-                  公开（别人也能调用）
+                  公开（谁都能找到、能调）
                 </label>
               </div>
             </div>
@@ -582,7 +604,11 @@ export default function ServiceAgentsPanel({ onClose }) {
         <div className="v3-service-agents-published" role="status">
           <div>
             已发布 <code>catsco_{publishResult.slug}</code>
-            {publishResult.visibility === 'public' ? ' · 公开，别人也能调用' : ' · 仅自己可用'}
+            {publishResult.visibility === 'public'
+              ? ' · 公开，谁都能找到并调用'
+              : publishResult.visibility === 'friends'
+                ? ' · 仅好友可见，他们能在目录里找到并加进清单'
+                : ' · 仅自己可用'}
           </div>
           {publishResult.runner === 'worker' ? (
             <div className="v3-service-agents-published-hint">
@@ -665,6 +691,18 @@ export default function ServiceAgentsPanel({ onClose }) {
           : 'CatsCo 定制 Agent（以工具形式接入）。添加的会出现在你的账号工具集中；删除的将被移除，调用也会被拒绝。'}
       </p>
       {scopeBotUid && scopeLoading ? <div className="v3-service-agents-empty">读取该 Agent 的工具清单…</div> : null}
+      {!loading && agents.length > 1 ? (
+        <div className="v3-service-agents-search">
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索应用（名称或用途）"
+            aria-label="搜索应用"
+            spellCheck={false}
+          />
+        </div>
+      ) : null}
       {error && (
         <div className="v3-service-agents-error" role="alert">
           <AlertTriangle size={14} aria-hidden="true" />
@@ -709,9 +747,23 @@ export default function ServiceAgentsPanel({ onClose }) {
             刷新目录
           </button>
         </div>
+      ) : (visibleAgents.length === 0 ? (
+        <div className="v3-service-agents-placeholder" role="status">
+          <p className="v3-service-agents-placeholder-title">没有匹配的应用</p>
+          <p className="v3-service-agents-placeholder-text">
+            换个关键词试试，或者清空搜索看全部。
+          </p>
+          <button
+            type="button"
+            className="v3-service-agents-placeholder-action"
+            onClick={() => setQuery('')}
+          >
+            清空搜索
+          </button>
+        </div>
       ) : (
         <ul className="v3-service-agents-list">
-          {agents.map((agent) => {
+          {visibleAgents.map((agent) => {
             const busy = pending.has(agent.slug)
               || unpublishing.has(agent.slug)
               || dismissingIntro.has(agent.slug)
@@ -735,6 +787,9 @@ export default function ServiceAgentsPanel({ onClose }) {
                     {agent.mine ? <span className="v3-service-agent-badge">我的</span> : null}
                     {agent.visibility === 'private' ? (
                       <span className="v3-service-agent-badge is-private">私有</span>
+                    ) : null}
+                    {agent.visibility === 'friends' ? (
+                      <span className="v3-service-agent-badge is-friends">好友</span>
                     ) : null}
                   </div>
                   <div className="v3-service-agent-slug">catsco_{agent.slug}</div>
@@ -860,7 +915,7 @@ export default function ServiceAgentsPanel({ onClose }) {
             );
           })}
         </ul>
-      )}
+      ))}
     </aside>
   );
 }

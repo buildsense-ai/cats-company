@@ -947,6 +947,11 @@ func main() {
 	// orchestration (both PG and MySQL adapters do).
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
+		// 三级可见性（公开/好友/自用）里的「好友」需要一个关系源；
+		// 未注入时 friends 级应用只对发布者自己可见（fail-closed，不会变成公开）。
+		if friendReader, ok := db.(server.ServiceAgentFriendReader); ok {
+			serviceAgentsMCPHandler.SetFriendReader(friendReader)
+		}
 		balanceChecker := server.NewServiceBalanceCheckerFromEnv()
 		// 待扣金额（外部 runner 已跑但还没结算的部分）也要算进已用额度，
 		// 否则没结算前调用方可以绕过预算反复调。
@@ -968,9 +973,8 @@ func main() {
 		// 需要消息读写 + 推送，所以传完整 store（不是 ServiceAgentStore 子集）；
 		// 缺能力时构造结果为 nil，该能力自动关闭（老部署/测试替身不受影响）。
 		if botRunner := server.NewServiceBotRunner(db, hub); botRunner != nil {
-			// 先只对白名单账号名下的 bot 开放：这个功能会让 bot 变成「别人能调的服务」，
-			// 一上线就全平台可见风险太大。
-			botRunner.SetOwnerWhitelist(server.ServiceCatalogAllowedUIDs())
+			// 谁能调这个应用由可见性（公开/好友/自用）决定，runner 只管执行 ——
+			// 不再单独限制 bot 归属：两套授权规则会互生矛盾。
 			serviceAgentsMCPHandler.SetBotRunner(botRunner)
 		}
 		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
@@ -979,6 +983,9 @@ func main() {
 		// 内测门（2026-10-16）：仅白名单 uid（CATSCO_SERVICE_CATALOG_UID_WHITELIST）可用。
 		catalogHandler := server.NewServiceAgentCatalogHandlerFromEnv(serviceAgentStore)
 		catalogHandler.SetSubscriptionNotifier(serviceAgentsMCPHandler)
+		if friendReader, ok := db.(server.ServiceAgentFriendReader); ok {
+			catalogHandler.SetFriendReader(friendReader)
+		}
 		mux.HandleFunc("GET /api/service-agents/catalog/access", jwtAuthWithDB(catalogHandler.HandleAccess))
 		mux.HandleFunc("GET /api/service-agents/catalog", jwtAuthWithDB(catalogHandler.HandleCatalog))
 		mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleAdd))

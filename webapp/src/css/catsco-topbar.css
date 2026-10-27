@@ -1142,6 +1142,29 @@
   margin: 12px 14px 0;
 }
 
+/* 目录搜索：应用多了才出现，只有一两个时不占地方。 */
+.v3-service-agents-search {
+  flex: 0 0 auto;
+  margin: 10px 14px 0;
+}
+
+.v3-service-agents-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid var(--cc-border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--cc-surface, #fff);
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.v3-service-agents-search input:focus {
+  outline: 2px solid rgba(59, 130, 246, 0.35);
+  outline-offset: 1px;
+}
+
 .v3-service-agents-scope-label {
   font-size: 11px;
   font-weight: 600;
@@ -1934,4 +1957,11 @@
 .v3-service-agent-badge.is-private {
   background: rgba(148, 163, 184, 0.2);
   color: var(--cc-muted, #6b7280);
+}
+
+/* 好友级：介于「公开（蓝）」和「私有（灰）」之间的存在感 ——
+   它是分享出去的，但只给认识的人，视觉上不该和公开一样醒目。 */
+.v3-service-agent-badge.is-friends {
+  background: rgba(16, 185, 129, 0.16);
+  color: #059669;
 }

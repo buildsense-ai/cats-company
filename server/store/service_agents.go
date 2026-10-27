@@ -150,7 +150,8 @@ const (
 	ServiceAgentOwnerInternal = "internal"
 	ServiceAgentOwnerUser     = "user"
 
-	ServiceAgentVisibilityPublic  = "public"  // 目录可见，任何人可加/可调
+	ServiceAgentVisibilityPublic  = "public" // 目录可见，任何人可加/可调
+	ServiceAgentVisibilityFriends = "friends"
 	ServiceAgentVisibilityPrivate = "private" // 仅 owner 自己可见可调（不出现在别人的目录）
 )
 
@@ -161,13 +162,36 @@ var (
 	ErrServiceAgentInternalReserved = errors.New("service agent slug reserved for internal publishing")
 )
 
-// ServiceAgentVisibleTo 判断 agent 是否对调用者可见（目录过滤 + 调用准入共用）。
-// public 对所有人可见；其余（private）仅对 owner 本人可见。
-func ServiceAgentVisibleTo(agent ServiceAgentDescriptor, callerUID int64) bool {
-	if agent.Visibility == "" || agent.Visibility == ServiceAgentVisibilityPublic {
+// ServiceAgentViewer 是「谁在看」——可见性要按访问者求值。
+//
+// 为什么不是一个裸 uid：friends 级要判断好友关系，而那是请求期的一次查询，
+// 纯函数拿不到。把**结论**（FriendOfOwner）带进来，判定本身仍是纯函数 ——
+// 目录过滤、tools/list、调用准入三处才能共用同一条规则，而不是各写一套
+// （历史上 bot-as-tool 就因为另写了一套「bot 的 owner 必须在白名单里」而互相打架）。
+type ServiceAgentViewer struct {
+	UID int64
+	// FriendOfOwner 表示 UID 与该 agent 的发布者是好友（只有 friends 级需要）。
+	FriendOfOwner bool
+}
+
+// ServiceAgentVisibleTo 判断 agent 是否对该访问者可见（目录过滤 + 调用准入共用）。
+//
+// 先判「是不是我的」，再判级别：自己发布的东西三个级别都该看得到。
+// 空串按 public 处理（老数据没有这个字段）。
+func ServiceAgentVisibleTo(agent ServiceAgentDescriptor, viewer ServiceAgentViewer) bool {
+	if agent.OwnerUID != 0 && agent.OwnerUID == viewer.UID {
 		return true
 	}
-	return agent.OwnerUID != 0 && agent.OwnerUID == callerUID
+	switch agent.Visibility {
+	case "", ServiceAgentVisibilityPublic:
+		return true
+	case ServiceAgentVisibilityFriends:
+		return viewer.FriendOfOwner
+	default:
+		// private，以及任何没见过的取值：一律不给看。
+		// 想加新档位就得改这里 —— 默认放行会让一个手滑的字符串变成公开。
+		return false
+	}
 }
 
 // ServiceAgentStore 是服务调用面的编排存储（PG 主实现 + MySQL 镜像）。

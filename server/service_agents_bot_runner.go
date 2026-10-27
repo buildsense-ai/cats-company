@@ -101,8 +101,7 @@ type ServiceBotRunner struct {
 	poll           time.Duration
 	settle         time.Duration
 	ambiguityGrace time.Duration
-	// ownerWhitelist 非空时，只有这些账号名下的 bot 可以被当作工具调用。
-	ownerWhitelist map[int64]bool
+
 	// inFlight 记录每个 topic 上正在等回复的 run 数。
 	// topic 是「两个人之间的私聊」，同一个账号并发调同一个 bot 时会共用它，
 	// 所以「有几单在等」决定了「bot 的一条没标 reply_to 的回复能不能归给我」。
@@ -184,24 +183,6 @@ func (r *ServiceBotRunner) competingOnTopic(topic string) int {
 		return n
 	}
 	return 0
-}
-
-// SetOwnerWhitelist 限制可被当作工具调用的 bot 归属（空=不限制）。
-func (r *ServiceBotRunner) SetOwnerWhitelist(uids []int64) {
-	if r == nil {
-		return
-	}
-	if len(uids) == 0 {
-		r.ownerWhitelist = nil
-		return
-	}
-	set := make(map[int64]bool, len(uids))
-	for _, uid := range uids {
-		if uid > 0 {
-			set[uid] = true
-		}
-	}
-	r.ownerWhitelist = set
 }
 
 // ParseBotRunnerBotUID 判断是不是 bot runner，是则返回目标 bot。
@@ -361,14 +342,12 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		return
 	}
 
-	// 授权：v1 只允许「自己名下的 bot」或白名单账号名下的 bot。
-	owner, err := r.store.GetBotOwner(req.BotUID)
-	if err != nil {
+	// 只确认目标 bot 还存在。谁能调这个应用由**可见性**决定（MCP invoke 已经做过了）：
+	// 系统里不能有两套不同步的授权规则 —— 曾经这里另有一套「bot 的 owner 必须在白名单里」，
+	// 结果应用标了 public，别人调用仍然报 bot_not_shared；而且两处都要改才能改对。
+	// 现在 runner 只管执行，授权口径只有一个（store.ServiceAgentVisibleTo）。
+	if _, err := r.store.GetBotOwner(req.BotUID); err != nil {
 		r.fail(req, "bot_not_found: 目标 bot 不存在或已删除")
-		return
-	}
-	if owner != req.CallerUID && len(r.ownerWhitelist) > 0 && !r.ownerWhitelist[owner] {
-		r.fail(req, "bot_not_shared: 这个 bot 尚未开放给其他账号调用")
 		return
 	}
 	if !r.hub.BotRuntimeOnline(req.BotUID) {

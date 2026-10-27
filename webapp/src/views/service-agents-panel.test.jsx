@@ -1011,5 +1011,161 @@ describe('ServiceAgentsPanel', () => {
       expect(form.textContent).toContain('你还没有 bot');
     });
   });
+
+  // 三级可见性：公开 / 好友 / 自用。
+  // 「好友」这一级的意义是「分享给认识的人」：他们能在目录里找到并加进清单，
+  // 陌生人看不到、也调不动。
+  describe('三级可见性', () => {
+    const openPublishForm = async () => {
+      await act(async () => {
+        container.querySelector('button[aria-label="发布应用"]').click();
+        await Promise.resolve();
+      });
+      return container.querySelector('.v3-service-agents-publish');
+    };
+
+    it('表单给出三档，选「好友」就按 friends 提交', async () => {
+      await renderPanel();
+      const form = await openPublishForm();
+      const radios = [...form.querySelectorAll('input[type="radio"][name="visibility"]')];
+      expect(radios).toHaveLength(3);
+      const friends = radios.find((node) => node.parentElement?.textContent?.includes('好友'));
+      expect(friends, '应该有「好友」这一档').toBeTruthy();
+
+      const setValue = (node, value) => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(node, value);
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+      await act(async () => {
+        setValue(nameInput, '好友翻译');
+        setValue(slugInput, 'friends-translate');
+        const select = form.querySelector('select');
+        const selectSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        selectSetter.call(select, '63');
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        await Promise.resolve();
+      });
+      await fillDescription(form);
+      await act(async () => {
+        friends.click();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
+      expect(mocks.publishServiceAgent.mock.calls[0][0].visibility).toBe('friends');
+    });
+
+    it('好友级同样必须写描述：调用方是另一个 Agent，看不到就不知道能不能用', async () => {
+      await renderPanel();
+      const form = await openPublishForm();
+      const radios = [...form.querySelectorAll('input[type="radio"][name="visibility"]')];
+      const friends = radios.find((node) => node.parentElement?.textContent?.includes('好友'));
+      const setValue = (node, value) => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(node, value);
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+      await act(async () => {
+        setValue(nameInput, '好友翻译');
+        setValue(slugInput, 'friends-translate');
+        const select = form.querySelector('select');
+        const selectSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        selectSetter.call(select, '63');
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        friends.click();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        await Promise.resolve();
+      });
+      expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
+      expect(form.querySelector('[role="alert"]')?.textContent).toContain('能做什么');
+    });
+
+    it('列表给好友级应用一个「好友」徽标，和「我的」「私有」区分开', async () => {
+      mocks.getServiceAgentsCatalog.mockResolvedValue({
+        agents: [
+          { slug: 'mine-private', name: '自用', version: 1, hidden: false, mine: true, visibility: 'private' },
+          { slug: 'mine-friends', name: '好友可见', version: 1, hidden: false, mine: true, visibility: 'friends' },
+          { slug: 'mine-public', name: '公开', version: 1, hidden: false, mine: true, visibility: 'public' },
+        ],
+      });
+      await renderPanel();
+      const badges = [...container.querySelectorAll('.v3-service-agent-badge')].map((node) => node.textContent);
+      expect(badges).toContain('私有');
+      expect(badges).toContain('好友');
+    });
+  });
+
+  // 应用一多（同事分享的 + 自己的）就需要找。
+  // 关键词匹配名称/调用名/描述：描述里往往写着使用场景，最常被拿来搜。
+  describe('目录搜索', () => {
+    const manyAgents = () => ({
+      agents: [
+        { slug: 'weekly-report', name: '周报助手', version: 1, hidden: false, description: '把一周的提交整理成周报。' },
+        { slug: 'zh-polish', name: '中文润色', version: 1, hidden: false, description: '把中文技术文档润色成英文稿。' },
+        { slug: 'clock', name: '时钟', version: 1, hidden: false, description: '读本机当前时间。' },
+      ],
+    });
+
+    it('按名称、描述过滤，清空后恢复全部', async () => {
+      mocks.getServiceAgentsCatalog.mockResolvedValue(manyAgents());
+      await renderPanel();
+      const search = container.querySelector('input[type="search"]');
+      expect(search, '应该渲染搜索框').toBeTruthy();
+
+      const type = async (value) => {
+        await act(async () => {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(search, value);
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+          await Promise.resolve();
+        });
+      };
+      const slugs = () => [...container.querySelectorAll('.v3-service-agent-slug')].map((node) => node.textContent);
+
+      await type('周报');
+      expect(slugs()).toEqual(['catsco_weekly-report']);
+
+      // 描述命中：搜「英文稿」应命中润色那个（它的名字里没有这个词）
+      await type('英文稿');
+      expect(slugs()).toEqual(['catsco_zh-polish']);
+
+      await type('');
+      expect(slugs()).toHaveLength(3);
+    });
+
+    it('没有匹配时给「清空搜索」，而不是一片空白', async () => {
+      mocks.getServiceAgentsCatalog.mockResolvedValue(manyAgents());
+      await renderPanel();
+      const search = container.querySelector('input[type="search"]');
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(search, '不存在的应用');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        await Promise.resolve();
+      });
+
+      expect(container.querySelectorAll('.v3-service-agent-slug')).toHaveLength(0);
+      const reset = [...container.querySelectorAll('button')]
+        .find((node) => node.textContent.includes('清空搜索'));
+      expect(reset).toBeTruthy();
+
+      await act(async () => {
+        reset.click();
+        await Promise.resolve();
+      });
+      expect(container.querySelectorAll('.v3-service-agent-slug')).toHaveLength(3);
+    });
+  });
 });
 

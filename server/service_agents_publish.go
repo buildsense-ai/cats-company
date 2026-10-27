@@ -213,9 +213,9 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 	if visibility == "" {
 		visibility = store.ServiceAgentVisibilityPublic
 	}
-	if visibility != store.ServiceAgentVisibilityPublic && visibility != store.ServiceAgentVisibilityPrivate {
+	if !serviceAgentVisibilityValid(visibility) {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "invalid_visibility", "detail": "visibility 只能是 public / private",
+			"error": "invalid_visibility", "detail": "visibility 只能是 " + serviceAgentVisibilityAccepted(),
 		})
 		return
 	}
@@ -253,9 +253,10 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 	} else if len(normalized) > 0 {
 		req.Definition = normalized
 	}
-	// 公开应用必须写描述：调用方是另一个 Agent，它看不到包内容、也没有主 Agent 的上下文，
-	// description 是它判断「这个工具做什么、什么情况下该用」的唯一依据。
-	// 没有描述 = 分享出去也没人会用（线上真实症状：bot 反复说「看不到调用入口」）。
+	// 分享给别人（公开 / 好友）就必须写描述：调用方是另一个 Agent，它看不到包内容、
+	// 也没有主 Agent 的上下文，description 是它判断「这个工具做什么、什么情况下该用」
+	// 的唯一依据。没有描述 = 分享出去也没人会用（线上真实症状：bot 反复说「看不到调用入口」）。
+	// 「自用」不强制：只有自己用，写不写不影响别人。
 	// 放在包校验之后：结构错误（缺包/坏 base64）先报，不然用户会被描述报错带偏。
 	//
 	// bot-as-tool 例外：把 bot 分享成工具时，标签本来就该是 bot 自己的自我介绍，
@@ -273,10 +274,10 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		})
 		return
 	}
-	if visibility == store.ServiceAgentVisibilityPublic && description == "" {
+	if serviceAgentVisibilityShared(visibility) && description == "" {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
 			"error":  "description_required",
-			"detail": "公开应用必须写 description：说明它做什么、什么情况下该用（调用方 Agent 只能看到这段文字）",
+			"detail": serviceAgentVisibilityLabel(visibility) + "应用必须写 description：说明它做什么、什么情况下该用（调用方 Agent 只能看到这段文字）",
 		})
 		return
 	}

@@ -28,11 +28,12 @@ import (
 // notifications/tools/list_changed；客户端亦可随时重查 tools/list（刷新兜底）。
 type ServiceAgentsMCPHandler struct {
 	store     store.ServiceAgentStore
-	bots      ServiceAgentBotIdentity // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
-	external  *ServiceExternalRunner  // 外部执行后端（runner.type=http；可选）
-	botRunner *ServiceBotRunner       // bot-as-tool（runner.type=bot；可选）
-	balance   *ServiceBalanceChecker  // 计费预检（可选；未设置=跳过，调用面单测不受影响）
-	syncWait  time.Duration           // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
+	bots      ServiceAgentBotIdentity  // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
+	external  *ServiceExternalRunner   // 外部执行后端（runner.type=http；可选）
+	botRunner *ServiceBotRunner        // bot-as-tool（runner.type=bot；可选）
+	balance   *ServiceBalanceChecker   // 计费预检（可选；未设置=跳过，调用面单测不受影响）
+	friends   serviceAgentFriendReader // 好友判定源（friends 级可见性；可选）
+	syncWait  time.Duration            // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
 	http      *mcp.StreamableHTTPHandler
 
 	// liveMu/liveServers 跟踪每账号的在线 MCP 会话 server（getServer 每新会话调用一次，
@@ -92,6 +93,12 @@ func (h *ServiceAgentsMCPHandler) SetBotRunner(runner *ServiceBotRunner) {
 	h.botRunner = runner
 }
 
+// SetFriendReader 注入好友判定源（friends 级可见性用）。
+// 未注入时 friends 级应用只对发布者自己可见 —— 少接一条线不会变成公开。
+func (h *ServiceAgentsMCPHandler) SetFriendReader(friends serviceAgentFriendReader) {
+	h.friends = friends
+}
+
 func (h *ServiceAgentsMCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 纵深防御：即便中间件配置漂移，无身份也不放行。
 	if UIDFromContext(r.Context()) == 0 {
@@ -113,21 +120,22 @@ func (h *ServiceAgentsMCPHandler) visibleServiceAgents(ctx context.Context, call
 	if err != nil {
 		log.Printf("service mcp list hidden agents uid=%d: %v", callerUID, err)
 		// 只跳过「个人屏蔽」这一层过滤（它只是聚焦设置）；可见性过滤必须照旧执行。
-		return serviceAgentsVisibleOnly(agents, callerUID, nil)
+		return h.serviceAgentsVisibleOnly(agents, callerUID, nil)
 	}
 	hidden := make(map[int64]struct{}, len(hiddenIDs))
 	for _, id := range hiddenIDs {
 		hidden[id] = struct{}{}
 	}
-	return serviceAgentsVisibleOnly(agents, callerUID, hidden)
+	return h.serviceAgentsVisibleOnly(agents, callerUID, hidden)
 }
 
 // serviceAgentsVisibleOnly 按可见性（+ 可选个人屏蔽集）过滤 agent 清单。
-func serviceAgentsVisibleOnly(agents []store.ServiceAgentDescriptor, callerUID int64, hidden map[int64]struct{}) []store.ServiceAgentDescriptor {
+func (h *ServiceAgentsMCPHandler) serviceAgentsVisibleOnly(agents []store.ServiceAgentDescriptor, callerUID int64, hidden map[int64]struct{}) []store.ServiceAgentDescriptor {
+	// 可见性按访问者求值（friends 级需要好友关系）；同一请求内同一发布者最多查一次。
+	resolver := newServiceAgentViewerResolver(h.friends, callerUID)
 	visible := make([]store.ServiceAgentDescriptor, 0, len(agents))
 	for _, agent := range agents {
-		// 可见性（设计 L2）：private 只对 owner 本人可见，不进别人的 tools/list。
-		if !store.ServiceAgentVisibleTo(agent, callerUID) {
+		if !resolver.allows(agent) {
 			continue
 		}
 		if _, blocked := hidden[agent.ID]; blocked {
@@ -341,8 +349,9 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if callerUID == 0 {
 		return serviceToolError("unauthorized"), nil, nil
 	}
-	// 可见性准入：private agent 即便被猜到 slug 也不能调用（tools/list 里也不会出现）。
-	if !store.ServiceAgentVisibleTo(agent, callerUID) {
+	// 可见性准入：不可见的 agent（自用 / 好友级但非好友）即便被猜到 slug 也不能调用
+	// （tools/list 里也不会出现）。
+	if !newServiceAgentViewerResolver(h.friends, callerUID).allows(agent) {
 		return serviceToolError("agent_not_found"), nil, nil
 	}
 	// 上架状态实时校验：这条兜底覆盖「list_changed 尚未送达客户端」的窗口期
