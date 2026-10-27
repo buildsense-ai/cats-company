@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"log"
 	"strings"
 
@@ -25,6 +26,19 @@ import (
 //     存储抖动不该变成「把别人的应用暴露出去」。打一行日志，便于区分
 //     「本来就不是好友」和「查挂了」。
 //
+// serviceAgentAccessReader 取「当前」归属与可见性（按 slug）。
+//
+// 为什么需要它：工具闭包里的 descriptor 是**建立 MCP 会话时**的快照。
+// 发布者把应用从「好友」改成「自用」之后，如果授权继续用快照判定，好友那边的
+// 调用会照旧放行 —— 改了设置却不生效，是访问控制里最不能接受的一种失败。
+//
+// 为什么不做成 ServiceAgentStore 的方法：那要改接口 + 两套实现 + 一堆测试替身；
+// 而它只是「调用准入」这一处需要的能力，加成可选窄接口更合适（缺了退回快照，
+// 行为等于改造前，不会更差）。
+type serviceAgentAccessReader interface {
+	GetServiceAgentAccess(ctx context.Context, slug string) (ownerUID int64, visibility string, err error)
+}
+
 // ServiceAgentFriendReader 是好友判定源（friends 级可见性用）。
 // store.Store（PG/MySQL 适配器）都已实现 AreFriends，装配层直接断言注入即可。
 type ServiceAgentFriendReader interface {

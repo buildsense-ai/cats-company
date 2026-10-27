@@ -23,4 +23,9 @@ var (
 	// 表现为「我明明分享给好友了，他看不到」—— 静默失败最难查，所以编译期钉住。
 	_ ServiceAgentFriendReader = (*postgres.Adapter)(nil)
 	_ ServiceAgentFriendReader = (*mysql.Adapter)(nil)
+
+	// 调用准入读「当前可见性」（而不是工具闭包里的会话快照）。缺了会退化成
+	// 「改成自用后，已在线的调用方还能继续调」—— 用户以为收回了，实际没有。
+	_ serviceAgentAccessReader = (*postgres.Adapter)(nil)
+	_ serviceAgentAccessReader = (*mysql.Adapter)(nil)
 )

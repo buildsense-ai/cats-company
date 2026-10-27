@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 )
@@ -194,5 +197,123 @@ func TestServiceAgentVisibilityHelpers(t *testing.T) {
 
 	if got := serviceAgentVisibilityLabel(store.ServiceAgentVisibilityFriends); got != "好友" {
 		t.Fatalf("label = %q", got)
+	}
+}
+
+// accessAwareStore 在 fake 之上补「当前可见性」能力，模拟真实 adapter。
+//
+// 为什么单独做一个替身而不是给 fake 加方法：现有用例大量依赖「用闭包快照判定」的
+// 旧行为（它们传的 descriptor 未必在 agents 列表里）。让基础 fake 仍然不实现这个
+// 接口，等于同时钉住「没有这个能力时退回快照」的兼容路径。
+type accessAwareStore struct {
+	*fakeServiceAgentStore
+	ownerUID   int64
+	visibility string
+	err        error
+	calls      int
+}
+
+func (s *accessAwareStore) GetServiceAgentAccess(_ context.Context, _ string) (int64, string, error) {
+	s.calls++
+	if s.err != nil {
+		return 0, "", s.err
+	}
+	return s.ownerUID, s.visibility, nil
+}
+
+// 授权必须用**当前**可见性，不能用工具闭包里的会话快照。
+//
+// 真实场景：好友正在用 catsco_x，发布者把应用改成「自用」。如果 invoke 用快照
+// 判定，好友那条已经在线的会话会继续被放行 —— 设置改了、权限没变，用户以为
+// 收回了其实没有。这条用例就是钉这个。
+func TestServiceAgentInvokeUsesCurrentVisibilityNotSnapshot(t *testing.T) {
+	base := newFakeServiceAgentStore()
+	base.autoCompleteAfter = 5 * time.Millisecond
+	base.agents = []store.ServiceAgentDescriptor{{
+		ID: 31, Slug: "shared", Name: "分享的应用", Version: 1,
+		AsyncThresholdSeconds: 60,
+		OwnerKind:             store.ServiceAgentOwnerUser,
+		OwnerUID:              441,
+		Visibility:            store.ServiceAgentVisibilityPrivate, // 已经改成自用
+	}}
+
+	st := &accessAwareStore{
+		fakeServiceAgentStore: base,
+		ownerUID:              441,
+		visibility:            store.ServiceAgentVisibilityPrivate,
+	}
+	handler := NewServiceAgentsMCPHandler(st)
+	handler.SetFriendReader(newFakeFriendGraph([2]int64{441, 442}))
+
+	// 会话快照（工具注册时捕获的那份）仍然写着 friends —— 好友当时能看到。
+	snapshot := store.ServiceAgentDescriptor{
+		ID: 31, Slug: "shared", Name: "分享的应用", Version: 1,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 441,
+		Visibility: store.ServiceAgentVisibilityFriends,
+	}
+
+	res, _, err := handler.invoke(context.Background(), snapshot, 442, serviceInvokeToolArgs{})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if res == nil || !res.IsError || !strings.Contains(mcpToolErrorText(res), "agent_not_found") {
+		t.Fatalf("改成自用后好友必须立刻失去调用权，实际: %s", mcpToolErrorText(res))
+	}
+
+	// 反向：快照写着自用、实际已放开成公开 —— 陌生人应该能调（不能用更严的旧快照卡住）。
+	st.visibility = store.ServiceAgentVisibilityPublic
+	res, _, err = handler.invoke(context.Background(), store.ServiceAgentDescriptor{
+		ID: 31, Slug: "shared", Name: "分享的应用", Version: 1,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 441,
+		Visibility: store.ServiceAgentVisibilityPrivate,
+	}, 900, serviceInvokeToolArgs{})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if res != nil && res.IsError {
+		t.Fatalf("已放开成公开，陌生人应能调: %s", mcpToolErrorText(res))
+	}
+
+	// 归属也用当前值：快照里 owner 是别人，实际是自己的应用 —— 自己当然能调。
+	st.ownerUID = 900
+	st.visibility = store.ServiceAgentVisibilityPrivate
+	res, _, err = handler.invoke(context.Background(), store.ServiceAgentDescriptor{
+		ID: 31, Slug: "shared", Name: "分享的应用", Version: 1,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 441,
+		Visibility: store.ServiceAgentVisibilityPrivate,
+	}, 900, serviceInvokeToolArgs{})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if res != nil && res.IsError {
+		t.Fatalf("按当前归属自己就是发布者，应能调: %s", mcpToolErrorText(res))
+	}
+
+	if st.calls < 3 {
+		t.Fatalf("每次调用都应读一次当前可见性，实际 %d 次", st.calls)
+	}
+}
+
+// 读当前可见性失败 → 不猜，按「服务暂不可用」如实报；不能默默用快照放行。
+func TestServiceAgentInvokeFailsClosedWhenAccessReadFails(t *testing.T) {
+	base := newFakeServiceAgentStore()
+	base.agents = []store.ServiceAgentDescriptor{{
+		ID: 32, Slug: "shared", Name: "分享的应用", Version: 1,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 441,
+		Visibility: store.ServiceAgentVisibilityPublic,
+	}}
+	st := &accessAwareStore{fakeServiceAgentStore: base, err: errors.New("db down")}
+	handler := NewServiceAgentsMCPHandler(st)
+
+	res, _, err := handler.invoke(context.Background(), store.ServiceAgentDescriptor{
+		ID: 32, Slug: "shared", Name: "分享的应用", Version: 1,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 441,
+		Visibility: store.ServiceAgentVisibilityPublic,
+	}, 900, serviceInvokeToolArgs{})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if res == nil || !res.IsError || !strings.Contains(mcpToolErrorText(res), "service_unavailable") {
+		t.Fatalf("读不到当前可见性时应如实报不可用: %s", mcpToolErrorText(res))
 	}
 }

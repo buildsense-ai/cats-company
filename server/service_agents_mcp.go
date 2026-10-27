@@ -351,7 +351,23 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	}
 	// 可见性准入：不可见的 agent（自用 / 好友级但非好友）即便被猜到 slug 也不能调用
 	// （tools/list 里也不会出现）。
-	if !newServiceAgentViewerResolver(h.friends, callerUID).allows(agent) {
+	//
+	// 用**当前**归属与级别判定，不用工具闭包里的会话快照：发布者把应用从「好友」
+	// 改成「自用」之后，已在线的会话必须立刻失去调用权。拿快照判定的话，改设置
+	// 不生效 —— 那是安全上最不能接受的一种「不生效」（用户以为收回了，实际没有）。
+	current := agent
+	if reader, ok := h.store.(serviceAgentAccessReader); ok {
+		owner, visibility, err := reader.GetServiceAgentAccess(ctx, agent.Slug)
+		if err != nil {
+			if errors.Is(err, store.ErrServiceAgentNotFound) {
+				return serviceToolError("agent_not_found: 该应用已被发布者收回"), nil, nil
+			}
+			return serviceToolError("service_unavailable: 应用状态校验失败，请稍后重试"), nil, nil
+		}
+		current.OwnerUID = owner
+		current.Visibility = visibility
+	}
+	if !newServiceAgentViewerResolver(h.friends, callerUID).allows(current) {
 		return serviceToolError("agent_not_found"), nil, nil
 	}
 	// 上架状态实时校验：这条兜底覆盖「list_changed 尚未送达客户端」的窗口期
