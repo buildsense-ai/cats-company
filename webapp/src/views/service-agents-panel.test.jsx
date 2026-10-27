@@ -91,15 +91,17 @@ describe('ServiceAgentsPanel', () => {
   };
 
   /**
-   * 发布表单的「分享什么」：默认是 bot（把 bot 本身分享出去，最常用）。
-   * 老用例验证的是「一条命令」那条路，所以显式切过去。
+   * 发布表单只有一个入口：选一个 bot 分享出去。
+   * 用户原话——「worker 其实一点都没必要啊，我 bot 定制化了或者调教好了就是 worker 啊」，
+   * 所以「一条命令」那条路已经从面板上拿掉了，发布必须先选 bot。
    */
-  const chooseWorkerTarget = async (form) => {
-    const radios = Array.from(form.querySelectorAll('input[type="radio"][name="target"]'));
-    const worker = radios.find((radio) => radio.parentElement.textContent.includes('一条命令'));
-    expect(worker, '表单里应该有「一条命令」选项').toBeTruthy();
+  const chooseBot = async (form, uid = 63) => {
+    const select = form.querySelector('select');
+    expect(select, '表单里应该有 bot 选择器').toBeTruthy();
     await act(async () => {
-      worker.click();
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(select, String(uid));
+      select.dispatchEvent(new Event('change', { bubbles: true }));
       await Promise.resolve();
     });
   };
@@ -275,8 +277,8 @@ describe('ServiceAgentsPanel', () => {
     expect(form).toBeTruthy();
 
     const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
-    // 表单默认「分享我的 bot」；这条用例验证的是「一条命令」那条路。
-    await chooseWorkerTarget(form);
+    // 发布只有一个入口：挑一个 bot 分享出去。
+    await chooseBot(form);
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       setter.call(nameInput, '我的助手');
@@ -302,7 +304,11 @@ describe('ServiceAgentsPanel', () => {
     expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
     const payload = mocks.publishServiceAgent.mock.calls[0][0];
     expect(payload).toMatchObject({ slug: 'my-agent', name: '我的助手', visibility: 'public' });
-    expect(payload.definition).toMatchObject({ name: '我的助手', runner: { type: 'worker' } });
+    // 分享的是 bot 本身：别人调的是它的判断力，不是某台机器上的一条命令。
+    expect(payload.definition).toMatchObject({
+      name: '我的助手',
+      runner: { type: 'bot', bot_uid: 63 },
+    });
 
     const banner = container.querySelector('.v3-service-agents-published');
     expect(banner?.textContent).toContain('catsco_my-agent');
@@ -311,16 +317,15 @@ describe('ServiceAgentsPanel', () => {
     expect(banner?.textContent).not.toContain('service-run-worker');
     expect(banner?.textContent).not.toContain('-token');
     expect(banner?.textContent).not.toContain('cwk_');
-    // 只告诉用户：在要跑这个应用的那台电脑上登录桌面端就行。
-    expect(banner?.textContent).toContain('小八');
-    expect(banner?.textContent).toContain('自动接单');
+    // 只告诉用户：这个 bot 在线的时候才接活。
+    expect(banner?.textContent).toContain('在线');
   });
 
   // 「密钥 / 命令」这类东西用户完全看不懂，也就无法判断对错，因此从面板里彻底拿掉；
   // 老用户即使后台还有旧密钥，界面也不该再甩给他一条要粘贴的命令。
   // 编辑已有应用：发布是全量覆盖，所以必须带原 definition 合并 ——
   // 只改描述不能把执行命令 / 价格抹掉，否则应用当场跑不起来（run 报 no_command）。
-  it('编辑已有应用：回填表单，保存时保留原执行方式与价格', async () => {
+  it('编辑旧应用：不再提供命令输入，保存时执行方式与价格原样保留', async () => {
     mocks.getServiceAgentsCatalog.mockResolvedValue({
       agents: [
         {
@@ -360,20 +365,13 @@ describe('ServiceAgentsPanel', () => {
     expect(slugInput.readOnly).toBe(true);
     expect(form.querySelector('textarea').value).toBe('读我电脑的当前时间。');
 
-    const setValue = async (node, value) => {
-      await act(async () => {
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        setter.call(node, value);
-        node.dispatchEvent(new Event('input', { bubbles: true }));
-        await Promise.resolve();
-      });
-    };
-    // 定位「本机执行命令」：占位符与命令输入框都带 {input_file} 提示
-    const commandInput = [...form.querySelectorAll('input')]
-      .find((node) => node.placeholder === 'claude -p {input_file}');
-    expect(commandInput.value).toBe('node clock.js');
+    // 老应用用的是「在你自己的环境里跑一条固定命令」。这种模式面板已经不再提供
+    // （用户不可能知道自己的命令，调教好的 bot 就是执行方），但老应用不能因此变坏：
+    // 打开时说明一句，保存时执行方式原样带回去。
+    expect(form.textContent).toContain('面板已不再提供这种方式');
+    expect([...form.querySelectorAll('input')]
+      .find((node) => node.placeholder === 'claude -p {input_file}')).toBeUndefined();
     await fillDescription(form, '读我电脑的当前时间；问“现在几点”时用。');
-    await setValue(commandInput, 'node clock2.js');
 
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -386,8 +384,8 @@ describe('ServiceAgentsPanel', () => {
     expect(payload.slug).toBe('my-clock');
     expect(payload.visibility).toBe('private');
     expect(payload.definition.description).toBe('读我电脑的当前时间；问“现在几点”时用。');
-    // 关键：执行方式保留、命令按编辑后的值、价格没被抹掉
-    expect(payload.definition.runner).toEqual({ type: 'worker', command: 'node clock2.js' });
+    // 关键：执行方式保留、价格没被抹掉
+    expect(payload.definition.runner).toEqual({ type: 'worker', command: 'node clock.js' });
     expect(payload.definition.pricing).toEqual({ unit: 'second', per_second: 0.001, currency: 'CNY' });
   });
 
@@ -459,10 +457,10 @@ describe('ServiceAgentsPanel', () => {
     expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
     const form = container.querySelector('.v3-service-agents-publish');
     expect(form.querySelector('textarea').value).toBe('读我电脑的当前时间；问「现在几点」时用。');
-    // 执行方式照旧回填（自述不能把命令弄丢）
-    const commandInput = [...form.querySelectorAll('input')]
-      .find((node) => node.placeholder === 'claude -p {input_file}');
-    expect(commandInput.value).toBe('node clock.js');
+    // 执行方式不能丢：老应用提示「保持原样」，且面板里已经没有任何命令输入框。
+    expect(form.textContent).toContain('面板已不再提供这种方式');
+    expect([...form.querySelectorAll('input')]
+      .find((node) => node.placeholder === 'claude -p {input_file}')).toBeUndefined();
   });
 
   it('自述建议：忽略会调用丢弃接口并从行里消失', async () => {
@@ -510,7 +508,9 @@ describe('ServiceAgentsPanel', () => {
       setter.call(node, value);
       node.dispatchEvent(new Event('input', { bubbles: true }));
     };
-    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');      await chooseWorkerTarget(form);    await act(async () => {
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await chooseBot(form);
+    await act(async () => {
       setValue(nameInput, 'Legacy');
       setValue(slugInput, 'legacy');
       await Promise.resolve();
@@ -550,7 +550,9 @@ describe('ServiceAgentsPanel', () => {
       setter.call(node, value);
       node.dispatchEvent(new Event('input', { bubbles: true }));
     };
-    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');      await chooseWorkerTarget(form);    await act(async () => {
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await chooseBot(form);
+    await act(async () => {
       setValue(nameInput, 'Priced');
       setValue(slugInput, 'priced');
       await Promise.resolve();
@@ -579,7 +581,9 @@ describe('ServiceAgentsPanel', () => {
       container.querySelector('button[aria-label="发布应用"]').click();
       await Promise.resolve();
     });
-    const form2 = container.querySelector('.v3-service-agents-publish');      await chooseWorkerTarget(form2);    const seconds = [...form2.querySelectorAll('input[type="radio"]')]
+    const form2 = container.querySelector('.v3-service-agents-publish');
+      await chooseBot(form2);
+      const seconds = [...form2.querySelectorAll('input[type="radio"]')]
       .find((node) => node.nextSibling?.textContent?.includes('按运行时长')
         || node.parentElement?.textContent?.includes('按运行时长'));
     await act(async () => {
@@ -605,24 +609,26 @@ describe('ServiceAgentsPanel', () => {
     expect(payload.definition.pricing).toEqual({ unit: 'second', per_second: 0.01, currency: 'CNY' });
   });
 
-  it('可以给每个应用单独指定本机执行命令（多个 agent 共用一个 worker）', async () => {
-    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'claude-helper', version: 1, visibility: 'private' });
+  // 「一条命令」这套已经整个从面板拿掉了：用户不可能知道自己该填什么命令，
+  // 而调教好的 bot 本身就是执行方。发布出来的 definition 里不该出现任何命令。
+  it('发布出来的 definition 里没有任何执行命令', async () => {
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'jack-helper', version: 1, visibility: 'private' });
     await renderPanel();
     await act(async () => {
       container.querySelector('button[aria-label="发布应用"]').click();
       await Promise.resolve();
     });
-    const form = container.querySelector('.v3-service-agents-publish');      // 执行命令只在「一条命令」模式下渲染；表单默认是分享 bot。
-      await chooseWorkerTarget(form);    const [nameInput, slugInput, commandInput] = form.querySelectorAll('input:not([type])');
+    const form = container.querySelector('.v3-service-agents-publish');
+    await chooseBot(form);
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
     const setValue = (node, value) => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       setter.call(node, value);
       node.dispatchEvent(new Event('input', { bubbles: true }));
     };
     await act(async () => {
-      setValue(nameInput, 'Claude 助手');
-      setValue(slugInput, 'claude-helper');
-      setValue(commandInput, 'claude -p {input_file}');
+      setValue(nameInput, '杰克助手');
+      setValue(slugInput, 'jack-helper');
       await Promise.resolve();
     });
     await fillDescription(form);
@@ -633,21 +639,20 @@ describe('ServiceAgentsPanel', () => {
       await Promise.resolve();
     });
 
+    expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
     const payload = mocks.publishServiceAgent.mock.calls[0][0];
-    expect(payload.definition.runner).toMatchObject({
-      type: 'worker',
-      command: 'claude -p {input_file}',
-    });
-    // 命令随应用下发，worker 不再需要 -cmd；也不再把启动命令甩给用户
+    expect(payload.definition.runner).toEqual({ type: 'bot', bot_uid: 63 });
+    expect(JSON.stringify(payload.definition)).not.toContain('command');
+    // 也不再把启动命令 / 密钥甩给用户
     const banner = container.querySelector('.v3-service-agents-published');
     expect(banner.textContent).not.toContain('service-run-worker');
     expect(banner.textContent).not.toContain('-cmd');
-    expect(banner.textContent).toContain('catsco_claude-helper');
+    expect(banner.textContent).toContain('catsco_jack-helper');
   });
 
-  // 面板只提供「我的环境主动接入」一种方式：平台直连 http/mcp 要求公网可达地址，
-  // 普通用户基本没有 —— 摆出来只会让人以为必须开公网、还得自己兜鉴权。
-  it('发布表单不再提供平台直连（HTTP/MCP）选项', async () => {
+  // 面板只提供「分享一个 bot」这一种方式：平台直连 http/mcp 要求公网可达地址，
+  // 「一条命令」要求用户自己会写命令 —— 普通用户两样都没有。
+  it('发布表单只提供分享 bot，不再有直连与命令两种接入方式', async () => {
     await renderPanel();
     await act(async () => {
       container.querySelector('button[aria-label="发布应用"]').click();
@@ -655,15 +660,16 @@ describe('ServiceAgentsPanel', () => {
     });
     const form = container.querySelector('.v3-service-agents-publish');
     const runnerRadios = [...form.querySelectorAll('input[type="radio"]')]
-      .filter((node) => node.name === 'runner');
+      .filter((node) => node.name === 'runner' || node.name === 'target');
     expect(runnerRadios).toHaveLength(0);
     expect(form.textContent).not.toContain('HTTP 服务');
     expect(form.textContent).not.toContain('MCP 服务');
-      // 切成「一条命令」时才讲「电脑、云服务器都行」—— 那条路真的在自己机器上跑；
-      // 分享 bot 时讲这个会误导（bot 在哪跑由它自己决定）。
-      await chooseWorkerTarget(form);
-    expect(form.textContent).toContain('云服务器');
-    expect(form.textContent).toContain('不需要公网 IP');
+    expect(form.textContent).not.toContain('一条命令');
+    expect(form.textContent).not.toContain('云服务器');
+    expect(form.textContent).not.toContain('执行命令');
+    // 唯一的入口就是挑 bot
+    expect(form.querySelector('select')).toBeTruthy();
+    expect(form.textContent).toContain('分享哪个 bot');
   });
 
   // 旧应用可能还是直连型。面板不再提供这种接入方式，但保存时绝不能把它改成
@@ -759,7 +765,9 @@ describe('ServiceAgentsPanel', () => {
       setter.call(node, value);
       node.dispatchEvent(new Event('input', { bubbles: true }));
     };
-    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');      await chooseWorkerTarget(form);    await act(async () => {
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await chooseBot(form);
+    await act(async () => {
       setValue(nameInput, 'No Desc');
       setValue(slugInput, 'no-desc');
       await Promise.resolve();
@@ -888,12 +896,13 @@ describe('ServiceAgentsPanel', () => {
         await Promise.resolve();
       });
       const form = container.querySelector('.v3-service-agents-publish');
-      const botTarget = [...form.querySelectorAll('input[type="radio"][name="target"]')]
-        .find((node) => node.parentElement.textContent.includes('我的 bot'));
-      expect(botTarget.checked).toBe(true);
-      // 分享 bot 不需要填命令（那是「一条命令」模式的事）。
-      expect(form.textContent).not.toContain('执行命令');
+      // 没有「分享什么」二选一了：只有一个 bot 选择器。
+      expect(form.querySelectorAll('input[type="radio"][name="target"]')).toHaveLength(0);
+      expect(form.querySelectorAll('input[type="radio"][name="runner"]')).toHaveLength(0);
       expect(form.querySelector('select')).toBeTruthy();
+      // 分享 bot 不需要填命令（「一条命令」模式已经整个拿掉了）。
+      expect(form.textContent).not.toContain('执行命令');
+      expect(form.textContent).not.toContain('一条命令');
     });
 
     it('选了 bot 就带上 runner.type=bot 和 bot_uid', async () => {

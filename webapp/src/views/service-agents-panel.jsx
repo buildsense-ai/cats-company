@@ -37,10 +37,11 @@ export default function ServiceAgentsPanel({ onClose }) {
   const [dismissingIntro, setDismissingIntro] = useState(() => new Set());
   const [notice, setNotice] = useState(null);
   const [form, setForm] = useState({
-    // 分享什么：把 bot（虚拟员工）暴露成工具，还是让环境跑一条命令。
-    // bot 是主路径 —— 它有自己的判断力、能在自己那台机器上干活；
-    // worker 适合确定性的脚本活。
-    target: 'bot',
+    // 分享哪个 bot：被分享出去的是 bot 本身。
+    //
+    // 为什么没有「填一条命令」这个选项：调教好的 bot 就是执行者。
+    // 让用户去写 `claude -p {input_file}` 这种模板，等于把工程细节当产品语言 ——
+    // 而且大部分人根本不知道自己的「命令」是什么。
     botUid: '',
     name: '',
     // 工具描述：调用你的是另一个 Agent，它看不到包内容也没有你的对话上下文，
@@ -50,7 +51,6 @@ export default function ServiceAgentsPanel({ onClose }) {
     slugTouched: false,
     // 默认公开：上架就是为了分享给别人调，选「仅自己」要显式选。
     visibility: 'public',
-    command: '',
     price: '',
     priceUnit: 'token',
   });
@@ -190,7 +190,7 @@ export default function ServiceAgentsPanel({ onClose }) {
       setPublishError('调用名只能用小写字母/数字/中划线，2~64 位');
       return;
     }
-    if (!lockedRunner && form.target === 'bot' && !Number(form.botUid)) {
+    if (!lockedRunner && !Number(form.botUid)) {
       // 没选 bot 就没有执行方，发布了也调不通。
       setPublishError('请选择要分享的 bot');
       return;
@@ -201,17 +201,14 @@ export default function ServiceAgentsPanel({ onClose }) {
     if (description) definition.description = description;
     else delete definition.description;
     if (lockedRunner) {
-      // 旧应用的直连配置原样保留（面板改不了，也不该默默改成 worker）。
+      // 老应用的执行方式面板不再提供（http/mcp/worker）：原样保留。
+      // 默默改成 bot 会让它当场跑不起来 —— 原有的执行方根本没变。
       definition.runner = lockedRunner;
-    } else if (form.target === 'bot') {
+    } else {
       // 分享 bot：执行权交给它自己（它有自己的判断力与所在机器的能力）。
       // 不写 description 时后端会自动用 bot 自己的自我介绍兜底，
       // 但表单这里已经预填了，人看过再发更稳。
       definition.runner = { type: 'bot', bot_uid: Number(form.botUid) };
-    } else {
-      definition.runner = { type: 'worker' };
-      const command = form.command.trim();
-      if (command) definition.runner.command = command;
     }
     const price = Number(form.price);
     if (form.price && Number.isFinite(price) && price > 0) {
@@ -230,14 +227,13 @@ export default function ServiceAgentsPanel({ onClose }) {
       setPublishResult({
         slug: result?.slug || slug,
         visibility: result?.visibility || form.visibility,
-        runner: lockedRunner ? lockedRunner.type : (form.target === 'bot' ? 'bot' : 'worker'),
-        hasCommand: !lockedRunner && form.target !== 'bot' && Boolean(form.command.trim()),
+        runner: lockedRunner ? lockedRunner.type : 'bot',
       });
       setShowPublish(false);
       setEditingSlug('');
       setEditingDefinition(null);
       setLockedRunner(null);
-      setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', command: '', price: '', priceUnit: 'token', target: 'bot', botUid: '' });
+      setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', price: '', priceUnit: 'token', botUid: '' });
       await load();
     } catch (err) {
       setPublishError(err?.message || '发布失败，请稍后重试。');
@@ -252,8 +248,10 @@ export default function ServiceAgentsPanel({ onClose }) {
     const definition = agent?.definition && typeof agent.definition === 'object' ? agent.definition : {};
     const runner = definition.runner && typeof definition.runner === 'object' ? definition.runner : {};
     const pricing = definition.pricing && typeof definition.pricing === 'object' ? definition.pricing : {};
-    // 直连型（http/mcp）不再出现在面板上：只锁住原配置，防止保存时被改成 worker。
-    const locked = runner.type === 'http' || runner.type === 'mcp' ? runner : null;
+    // 老应用的执行方式面板不再提供（http / mcp / worker）：只锁住原配置，
+    // 防止保存时被改成 bot —— 那会让应用当场跑不起来。
+    const locked = runner.type === 'http' || runner.type === 'mcp' || runner.type === 'worker'
+      ? runner : null;
     // bot 型（分享 bot）：回填目标 bot，编辑时也能看到自己在分享哪一个。
     const shareBot = runner.type === 'bot' && Number(runner.bot_uid) > 0;
     const priceUnit = pricing.unit === 'second' ? 'second' : 'token';
@@ -271,10 +269,8 @@ export default function ServiceAgentsPanel({ onClose }) {
       slug: agent.slug,
       slugTouched: true,
       visibility: agent.visibility === 'private' ? 'private' : 'public',
-      command: locked ? '' : (runner.command || ''),
       price: typeof priceValue === 'number' && priceValue > 0 ? String(priceValue) : '',
       priceUnit,
-      target: shareBot ? 'bot' : 'worker',
       botUid: shareBot ? String(runner.bot_uid) : '',
     });
     setShowPublish(true);
@@ -307,7 +303,7 @@ export default function ServiceAgentsPanel({ onClose }) {
     setEditingDefinition(null);
     setLockedRunner(null);
     setPublishError('');
-    setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', command: '', price: '', priceUnit: 'token', target: 'bot', botUid: '' });
+    setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', price: '', priceUnit: 'token', botUid: '' });
   }, []);
 
   // 收回分享：下架后目录与别人的 tools/list 立即不可见，已缓存工具名的客户端再调用
@@ -402,38 +398,8 @@ export default function ServiceAgentsPanel({ onClose }) {
         >
           <div className="v3-service-agents-publish-title">{editingSlug ? '编辑应用' : '发布应用'}</div>
           {lockedRunner ? null : (
-            <div className="v3-service-agents-field">
-              <span>分享什么</span>
-              <div className="v3-service-agents-choices">
-                <label>
-                  <input
-                    type="radio"
-                    name="target"
-                    checked={form.target === 'bot'}
-                    onChange={() => updateForm({ target: 'bot' })}
-                  />
-                  我的 bot（最常用）
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="target"
-                    checked={form.target === 'worker'}
-                    onChange={() => updateForm({ target: 'worker' })}
-                  />
-                  一条命令
-                </label>
-              </div>
-              <span className="v3-service-agents-field-hint">
-                {form.target === 'bot'
-                  ? '别人调的是你这个 bot 本身：它用自己的判断力干活，能在它自己那台机器上读写文件、跑命令。'
-                  : '适合确定性的脚本活：到点跑一条命令，不经过模型判断（更快更便宜，但不会随机应变）。'}
-              </span>
-            </div>
-          )}
-          {!lockedRunner && form.target === 'bot' ? (
             <label className="v3-service-agents-field">
-              <span>选择 bot</span>
+              <span>分享哪个 bot</span>
               <select
                 value={form.botUid}
                 onChange={(event) => {
@@ -459,11 +425,11 @@ export default function ServiceAgentsPanel({ onClose }) {
               </select>
               <span className="v3-service-agents-field-hint">
                 {bots.length === 0
-                  ? '你还没有 bot。先在「我的机器人」里创建一个，或者切换成「一条命令」。'
-                  : '只有这个 bot 在线（开着）时才能接活；它不在线时调用会立刻报「不在线」。'}
+                  ? '你还没有 bot。先在「我的机器人」里创建一个 —— 你调教好的 bot 就是能接活的那个。'
+                  : '别人调的是这个 bot 本身：它用自己的判断力干活。它在线（开着）时才接活，不在线会立刻报「不在线」。'}
               </span>
             </label>
-          ) : null}
+          )}
           <label className="v3-service-agents-field">
             <span>名称</span>
             <input
@@ -528,44 +494,34 @@ export default function ServiceAgentsPanel({ onClose }) {
               </div>
             </div>
             <div className="v3-service-agents-field">
-              {/* 只留「你的环境主动连平台领任务」（pull）。
-                  以前还有「平台直连 HTTP / MCP 服务」，但它要求公网可达的地址，
-                  个人用户基本没有 —— 等于把最需要暴露的选项摆在最容易点的地方。
-                  后端仍保留 http/mcp（内部/API 直调），旧应用编辑时原样保留。 */}
+              {/* 面板只提供「分享 bot」这一种方式。历史上还有 http/mcp（要公网地址）
+                  与 worker（要用户自己写命令模板）—— 两条路都要求用户懂工程细节，
+                  而且调教好的 bot 本来就能干那些活。后端仍保留它们，老应用原样保存。 */}
               <span>怎么接活</span>
               {lockedRunner ? (
                 <div className="v3-service-agents-locked" role="status">
-                  这个应用用的是「平台直连
-                  {lockedRunner.type === 'mcp' ? ' MCP ' : ' HTTP '}
-                  服务」（{lockedRunner.url}）。这种接入方式需要公网可达地址，面板已不再提供；
-                  本次保存只改名称/说明/价格，连接方式保持原样。
+                  {lockedRunner.type === 'worker' ? (
+                    <>
+                      这个应用用的是旧方式：在你自己的环境里跑一条固定命令
+                      （{lockedRunner.command || '未填命令'}）。面板已不再提供这种方式；
+                      本次保存只改名称/说明/价格，执行方式保持原样。
+                    </>
+                  ) : (
+                    <>
+                      这个应用用的是「平台直连
+                      {lockedRunner.type === 'mcp' ? ' MCP ' : ' HTTP '}
+                      服务」（{lockedRunner.url}）。这种接入方式需要公网可达地址，面板已不再提供；
+                      本次保存只改名称/说明/价格，连接方式保持原样。
+                    </>
+                  )}
                 </div>
-              ) : form.target === 'bot' ? (
+              ) : (
                 <div className="v3-service-agents-field-hint">
                   平台会把请求发给你选的那个 bot，由它自己处理。它不在线时调用会立刻失败
                   —— 不需要公网 IP，也不用开端口。
                 </div>
-              ) : (
-                <div className="v3-service-agents-field-hint">
-                  你的环境主动连平台领任务 —— <strong>电脑、云服务器都行</strong>，
-                  不需要公网 IP，也不用开任何入站端口。真正要跑这个应用的那台机器上启动小八并登录即可。
-                </div>
               )}
             </div>
-            {!lockedRunner && form.target === 'worker' ? (
-              <label className="v3-service-agents-field">
-                <span>执行命令（这个应用用哪个 agent 跑）</span>
-                <input
-                  value={form.command}
-                  onChange={(event) => updateForm({ command: event.target.value })}
-                  placeholder="claude -p {input_file}"
-                  spellCheck={false}
-                />
-                <span className="v3-service-agents-field-hint">
-                  每个应用各填各的；{'{input_file}'} 会替换成这次调用的输入文件。留空则调用时会报错。
-                </span>
-              </label>
-            ) : null}
             <div className="v3-service-agents-field">
               <span>计费方式（留空=免费分享）</span>
               <div className="v3-service-agents-choices">
@@ -631,15 +587,9 @@ export default function ServiceAgentsPanel({ onClose }) {
           {publishResult.runner === 'worker' ? (
             <div className="v3-service-agents-published-hint">
               <div>
-                在<strong>要跑这个应用的那台机器</strong>上（电脑或云服务器）启动小八并登录，它就会自动接单——
-                不用装别的东西、不用复制任何命令、也不用公网 IP。换一台机器就在那台机器上登录小八。
+                这个应用还在用旧方式（在你自己的环境里跑固定命令）。面板已不再提供这种方式；
+                想换成分享 bot，重新发布时选一个 bot 即可。
               </div>
-              {publishResult.hasCommand ? null : (
-                <div>
-                  还差一步：在「更多设置」里填一条执行命令（比如 <code>claude -p {'{input_file}'}</code>），
-                  不填的话调用时会报 <code>no_command</code>。
-                </div>
-              )}
             </div>
           ) : null}
           {publishResult.runner === 'bot' ? (
