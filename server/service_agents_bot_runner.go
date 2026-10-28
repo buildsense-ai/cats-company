@@ -486,7 +486,16 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			if msg.ID > sinceID {
 				sinceID = msg.ID
 			}
-			if msg.FromUID != botUID || msg.MsgType != "text" {
+			if msg.FromUID != botUID {
+				continue
+			}
+			// 附件不能默默丢掉。bot 有时把长结果写成文件发出来，正文只剩一句
+			// 「清单.txt 已发送。」—— 只收 text 的话，调用方拿到的是这句话，
+			// 文件本身和它的地址都消失了，而且看不出发生过什么。
+			// 内容确实取不到（那是平台内的文件存储，不是 base64 内联），
+			// 所以至少把「有这么个文件、它叫什么、在哪儿」如实交付。
+			isAttachment := msg.MsgType == "file"
+			if !isAttachment && msg.MsgType != "text" {
 				continue
 			}
 			// 过程展示（工具调用、stdout、skill 内容）不是答案。
@@ -494,6 +503,9 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 				continue
 			}
 			text := strings.TrimSpace(msg.Content)
+			if isAttachment {
+				text = botRunnerAttachmentNote(text)
+			}
 			if text == "" {
 				continue
 			}
@@ -545,6 +557,47 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 		}
 		time.Sleep(tuning.Poll)
 	}
+}
+
+// botReplyAttachmentNote 把一条 file 消息翻成调用方能读懂的附件说明。
+//
+// 为什么需要：bot 有时把长结果写成文件发出来，正文只剩一句「清单.txt 已发送。」。
+// 平台原来只收 msg_type=text，文件被整个丢掉 —— 用户等了几十秒，拿到的是一句
+// 「已发送」，既没有内容也没有线索，而且完全看不出中间发生过什么。
+//
+// 内容确实取不到：文件在平台的文件存储里（相对路径 + 需要鉴权），不是内联字节，
+// 所以这里只能如实交付「有这么个文件、叫什么、多大、在哪儿」。调用方据此可以
+// 告诉用户「对方生成的是文件，请到对话里取」，而不是自己编一段内容。
+//
+// 消息形如：{"type":"file","payload":{"url":"/uploads/files/xxx.txt","name":"n.txt","size":430}}
+// 解析不出来就返回空（宁可退回原来的行为，也不要伪造一个附件）。
+func botRunnerAttachmentNote(content string) string {
+	var parsed struct {
+		Payload struct {
+			URL  string `json:"url"`
+			Name string `json:"name"`
+			Size int64  `json:"size"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &parsed); err != nil {
+		return ""
+	}
+	name := strings.TrimSpace(parsed.Payload.Name)
+	url := strings.TrimSpace(parsed.Payload.URL)
+	if name == "" && url == "" {
+		return ""
+	}
+	if name == "" {
+		name = "未命名文件"
+	}
+	note := "📎 附件：" + name
+	if parsed.Payload.Size > 0 {
+		note += fmt.Sprintf("，%d 字节", parsed.Payload.Size)
+	}
+	if url != "" {
+		note += "，位置 " + url
+	}
+	return note
 }
 
 // botReplyOwnership 是一条 bot 消息的归属判定结果。
