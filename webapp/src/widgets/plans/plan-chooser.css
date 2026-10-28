@@ -1,0 +1,238 @@
+.oc-modal-overlay:has(.relay-access-plan-overlay) { background: transparent; backdrop-filter: none; }
+.oc-modal-overlay:has(.relay-access-plan-overlay) > .relay-access-modal { visibility: hidden; }
+.relay-access-plan-overlay { inset: 0; padding: 0; background: var(--cc-bg); backdrop-filter: none; }
+.relay-access-plan-chooser-note { max-width: 1160px; margin: 20px auto 0; color: var(--cc-muted); font-size: 12px; line-height: 22px; text-align: center; }
+.relay-access-plan-modal {
+  --plans-canvas: #f8f8f8;
+  --plans-card: #ffffff;
+  --cc-panel: var(--plans-card);
+  --v3-panel: var(--cc-panel);
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: var(--plans-canvas);
+  box-shadow: none;
+}
+html[data-theme="dark"] .relay-access-plan-modal { --plans-canvas: #1a1a1a; --plans-card: #252525; }
+html[data-theme="liquid"] .relay-access-plan-modal { --plans-canvas: #161616; --plans-card: #222222; }
+.relay-access-plan-modal-header { position: relative; padding: 26px 64px 12px; border: 0; }
+.relay-access-plan-modal-header > div { flex: 1; text-align: center; }
+.relay-access-plan-modal-header h3 { margin: 0; font-size: 28px; }
+.relay-access-plan-modal-header > button { position: absolute; top: 24px; right: 24px; }
+.relay-access-plan-modal-body { flex: 1; padding: 12px clamp(24px, 4vw, 64px) 40px; background: var(--plans-canvas); }
+.relay-access-plan-list.current-catalog.relay-access-plan-list-chooser { max-width: 1320px; margin: 28px auto 0; column-gap: 20px; }
+.relay-access-plan-audience-tabs { background: var(--cc-control-surface); }
+.relay-access-plan-audience-tabs > button { color: var(--cc-text-secondary); }
+.relay-access-plan-audience-tabs > button.active { background: var(--cc-panel); color: var(--cc-text); }
+.relay-access-plan-audience-tabs > button:hover:not(.active) { background: var(--cc-hover); color: var(--cc-text); }
+.relay-access-plan-audience-tabs > button:active { background: var(--cc-hover); color: var(--cc-text); }
+.relay-access-plan-modal-header > button:hover { background: var(--cc-hover); color: var(--cc-text); }
+.relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights {
+  --plan-surface: var(--cc-panel);
+  --plan-border: var(--cc-border-strong);
+  position: relative;
+  isolation: isolate;
+  min-height: 0;
+  padding: 24px clamp(20px, 2.5vw, 36px);
+  border: 1px solid var(--plan-border);
+  border-radius: 16px;
+  background: var(--plan-surface);
+  color: var(--cc-text);
+  box-shadow: none;
+}
+/* These cards describe a product; only their controls are interactive. */
+.relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights:is(:hover, :active) {
+  background: var(--plan-surface);
+  border-color: var(--plan-border);
+  box-shadow: none;
+  transform: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: var(--cc-text);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 360ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+  .relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights:hover::before {
+    opacity: 0.035;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights .relay-access-plan-action button {
+    transition: background-color 180ms ease;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights::before { transition: none; }
+}
+.relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights .relay-access-plan-kicker {
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-name,
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-price > strong,
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-currency,
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-tagline {
+  color: var(--cc-text);
+}
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights > p {
+  min-height: 0;
+  margin-top: 8px;
+  color: var(--cc-text-secondary);
+  font-size: 13px;
+  line-height: 22px;
+}
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-tagline { font-weight: 500; line-height: 20px; }
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-action { margin-top: 24px; }
+.relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights .relay-access-plan-action button {
+  --plan-button-bg: var(--cc-text);
+  --plan-button-hover: color-mix(in srgb, var(--cc-text) 88%, var(--cc-panel));
+  --plan-button-pressed: color-mix(in srgb, var(--cc-text) 78%, var(--cc-panel));
+  --plan-button-text: var(--cc-panel);
+  --plan-button-border: transparent;
+  min-height: 46px;
+  border-color: var(--plan-button-border);
+  background: var(--plan-button-bg);
+  color: var(--plan-button-text);
+  box-shadow: none;
+}
+.relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights .relay-access-plan-action button:is(:hover, :active):not(:disabled) {
+  background: var(--plan-button-hover);
+  border-color: var(--plan-button-border);
+  color: var(--plan-button-text);
+  box-shadow: none;
+  transform: none;
+  filter: none;
+}
+.relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights .relay-access-plan-action button:active:not(:disabled) { background: var(--plan-button-pressed); }
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-action button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 3px;
+}
+.relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights .relay-access-plan-action button:disabled {
+  background: var(--plan-button-bg);
+  border-color: var(--plan-button-border);
+  color: var(--plan-button-text);
+  box-shadow: none;
+  transform: none;
+  filter: none;
+}
+.relay-access-plan-highlights {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 20px 0 0;
+}
+.relay-access-plan-highlights > div { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 12px; min-width: 0; min-height: 48px; box-sizing: border-box; padding: 10px 0; }
+.relay-access-plan-highlights > div + div { border-top: 1px solid var(--cc-border); }
+.relay-access-plan-highlights dt { display: flex; align-items: center; gap: 6px; color: var(--cc-text-secondary); font-size: 13px; }
+.relay-access-plan-highlights dt svg { color: var(--cc-muted); flex: 0 0 auto; }
+.relay-access-plan-highlights dd { display: flex; align-items: baseline; justify-content: flex-end; gap: 4px; min-width: 0; margin: 0; color: var(--cc-text); font-size: 16px; line-height: 1.4; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.relay-access-plan-highlights > div + div dd { font-size: 14px; }
+.relay-access-plan-highlights dd span { flex-shrink: 0; margin: 0; font-size: 12px; font-weight: 400; color: var(--cc-text-secondary); }
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-features { gap: 14px; }
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-divider { margin: 0 0 14px; }
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-features > li { grid-template-columns: 16px minmax(0, 1fr); gap: 10px; color: var(--cc-text); font-size: 14px; line-height: 24px; }
+.relay-access-plan-features > li > div > span { margin: 0; color: inherit; font: inherit; letter-spacing: normal; }
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-features svg { width: 16px; height: 16px; margin-top: 4px; color: var(--cc-muted); }
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-features > .relay-access-plan-feature-inherited { color: var(--cc-text-secondary); font-size: 13px; font-weight: 500; }
+.relay-access-plan-feature-details { display: grid; gap: 12px; list-style: none; padding: 0; margin: 12px 0 0 -26px; }
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-feature-details > li { grid-template-columns: 16px minmax(0, 1fr); gap: 10px; color: var(--cc-text-secondary); font-size: 14px; line-height: 24px; }
+.relay-access-plan-feature-details > li::before { content: ''; width: 11px; height: 12px; box-sizing: border-box; margin: 3px 0 0 2px; border-left: 1.5px solid var(--cc-muted); border-bottom: 1.5px solid var(--cc-muted); border-bottom-left-radius: 4px; }
+.relay-access-plan-list-chooser .relay-access-plan-row.has-highlights > .relay-access-plan-footnote { min-height: 0; margin: 20px 0 0; padding-top: 14px; border-top: 1px solid var(--cc-border); color: var(--cc-muted); font-size: 11px; line-height: 1.7; }
+.relay-access-enterprise-card {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 32px;
+  max-width: 1320px;
+  margin: 28px auto 0;
+  padding: 36px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 16px;
+  background: var(--plans-card);
+  color: var(--cc-text);
+  box-shadow: none;
+}
+.relay-access-enterprise-intro,
+.relay-access-enterprise-intro:is(:hover, :active) { margin: 0; padding: 0; border-radius: 0; background: transparent; color: var(--cc-text); }
+.relay-access-enterprise-intro { display: grid; grid-template-columns: minmax(0, 1fr) 280px; column-gap: 48px; }
+.relay-access-enterprise-intro > :is(span, h3, p) { grid-column: 1; }
+.relay-access-enterprise-intro > span,
+.relay-access-enterprise-scope > div > span { color: var(--cc-muted); font-size: 12px; font-weight: 500; line-height: 20px; }
+.relay-access-enterprise-intro h3 { margin: 12px 0 0; color: var(--cc-text); font-size: 30px; font-weight: 600; line-height: 1.25; letter-spacing: -0.02em; }
+.relay-access-enterprise-intro > p { max-width: 520px; margin: 12px 0 0; color: var(--cc-text-secondary); font-size: 13px; font-weight: 400; line-height: 22px; }
+.relay-access-enterprise-price { grid-column: 2; grid-row: 1 / span 2; align-self: end; margin-top: 0; color: var(--cc-text); }
+.relay-access-enterprise-price strong { font-size: 46px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.relay-access-enterprise-price > span,
+.relay-access-enterprise-price small { color: var(--cc-text-secondary); font-size: 12px; font-weight: 400; }
+.relay-access-enterprise-intro > a {
+  grid-column: 2;
+  grid-row: 3;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 360px;
+  min-height: 46px;
+  margin-top: 20px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: var(--cc-text);
+  color: var(--plans-card);
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: none;
+}
+.relay-access-enterprise-intro > a:hover { background: color-mix(in srgb, var(--cc-text) 88%, var(--plans-card)); color: var(--plans-card); filter: none; }
+.relay-access-enterprise-intro > a:active { background: color-mix(in srgb, var(--cc-text) 78%, var(--plans-card)); color: var(--plans-card); }
+.relay-access-enterprise-intro > a:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 3px; }
+.relay-access-enterprise-scope { padding: 28px 0 0; border-top: 1px solid var(--cc-border); border-left: 0; }
+.relay-access-enterprise-scope h4 { margin: 12px 0 0; color: var(--cc-text); font-size: 20px; font-weight: 600; line-height: 30px; }
+.relay-access-enterprise-scope ul { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 24px; gap: 14px 40px; }
+.relay-access-enterprise-scope li { gap: 10px; color: var(--cc-text); font-size: 14px; line-height: 24px; }
+.relay-access-enterprise-scope li svg { margin-top: 4px; color: var(--cc-muted); }
+.relay-access-enterprise-custom { margin-top: 28px; padding-top: 20px; border-color: var(--cc-border); }
+.relay-access-enterprise-custom strong { color: var(--cc-text); font-size: 13px; font-weight: 500; line-height: 22px; }
+.relay-access-enterprise-custom p { margin: 8px 0 0; color: var(--cc-text-secondary); font-size: 13px; line-height: 22px; }
+@media (prefers-reduced-motion: no-preference) {
+  .relay-access-enterprise-intro > a { transition: background-color 180ms ease; }
+}
+@media (max-width: 820px) {
+  .relay-access-enterprise-card { grid-template-columns: minmax(0, 1fr); max-width: 480px; gap: 28px; padding: 24px; }
+  .relay-access-enterprise-intro { grid-template-columns: minmax(0, 1fr); }
+  .relay-access-enterprise-intro > :is(.relay-access-enterprise-price, a) { grid-column: 1; grid-row: auto; }
+  .relay-access-enterprise-intro > p,
+  .relay-access-enterprise-intro > a { max-width: none; }
+  .relay-access-enterprise-price { margin-top: 28px; }
+  .relay-access-enterprise-intro > a { margin-top: 28px; }
+  .relay-access-enterprise-scope ul { grid-template-columns: minmax(0, 1fr); }
+  .relay-access-enterprise-scope { padding: 28px 0 0; border-left: 0; border-top: 1px solid var(--cc-border); }
+  .relay-access-enterprise-intro h3 { font-size: 28px; }
+}
+/* Share content-sized tracks across the three cards, including wrapped copy. */
+@media (min-width: 821px) {
+  .relay-access-plan-list.current-catalog.relay-access-plan-list-chooser { row-gap: 0; }
+  .relay-access-plan-list-chooser .relay-access-plan-row.has-highlights {
+    grid-row: span 10;
+    grid-template-rows: subgrid;
+    row-gap: 0;
+  }
+  .relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-features { align-content: start; }
+  .relay-access-plan-list-chooser .relay-access-plan-row.has-highlights > .relay-access-plan-footnote { grid-row: 10; }
+}
+@media (max-width: 820px) {
+  .relay-access-plan-list.current-catalog.relay-access-plan-list-chooser { grid-template-columns: minmax(0, 1fr); max-width: 480px; gap: 20px; }
+  .relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights { padding: 24px; }
+}
+@media (max-width: 650px) {
+  .relay-access-plan-modal-header { padding: 20px 48px 10px; }
+  .relay-access-plan-modal-header h3 { font-size: 22px; }
+  .relay-access-plan-modal-header > button { top: 16px; right: 12px; }
+  .relay-access-plan-modal-body { padding: 12px 20px 32px; }
+}

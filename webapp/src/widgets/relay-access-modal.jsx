@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Cloud, Copy, Cpu, CreditCard, ExternalLink, Gift, History, KeyRound, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
+import { resolvePlanOffers } from './plans/plan-offers';
 import {
   readStorageValue,
   writeStorageValue,
@@ -608,7 +609,7 @@ function CommercialPlanCards({
         const isIncludedPlan = planTier > 0 && activeOfficialPlanTier > planTier;
         const isUpgradePlan = planTier > activeOfficialPlanTier && activeOfficialPlanTier > 0;
         const purchaseBlocked = isIncludedPlan;
-        const pendingOrder = purchaseBlocked ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
+        const pendingOrder = purchaseBlocked || plan.catalogUnavailable ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
         return (
           <article
             className={`relay-access-plan-row${hasCurrentCommercialPlans ? ' official' : ''}${presentation.recommended ? ' recommended' : ''}${presentation.pro ? ' pro' : ''}${presentation.wide ? ' wide' : ''}${presentation.highlights?.length ? ' has-highlights' : ''}`}
@@ -632,10 +633,12 @@ function CommercialPlanCards({
               <button
                 type="button"
                 onClick={() => (pendingOrder ? onOpenOrder(pendingOrder) : onSelectPlan(plan))}
-                disabled={!paymentChannel || Boolean(paymentLoading) || purchaseBlocked}
+                disabled={(!paymentChannel && !plan.catalogUnavailable) || Boolean(paymentLoading) || purchaseBlocked}
               >
                 <CreditCard size={15} />
-                {isActivePlan
+                {plan.catalogUnavailable
+                  ? presentation.actionLabel || `获取 CatsCo ${plan.name}`
+                  : isActivePlan
                   ? '续费'
                   : isIncludedPlan
                     ? '已包含'
@@ -740,7 +743,7 @@ function EnterprisePlanCard() {
   );
 }
 
-export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFreePlan = true, planPresentationOverrides = {}, enterprisePlanContent = null }) {
+export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFreePlan = true, planPresentationOverrides = {}, enterprisePlanContent = null, planChooserNote = '', planOffers = null }) {
   const feedback = useFeedback();
   const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [relayKey, setRelayKey] = useState(null);
@@ -864,9 +867,12 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
     const requestedSlug = String(initialPlanSlug || '').trim();
     const slug = ({ personal: 'catsco-personal', pro: 'catsco-pro' })[requestedSlug] || requestedSlug;
     if (!slug || !Array.isArray(commercialCatalog?.plans) || purchasePlan) return;
-    const plan = commercialCatalog.plans.find((item) => String(item?.slug || '') === slug);
+    const availablePlans = planOffers
+      ? resolvePlanOffers(planOffers, commercialCatalog.plans, commercialCatalog.enabled === true)
+      : commercialCatalog.plans;
+    const plan = availablePlans.find((item) => String(item?.slug || '') === slug);
     if (plan) setPurchasePlan(plan);
-  }, [commercialCatalog?.plans, initialPlanSlug, purchasePlan]);
+  }, [commercialCatalog?.plans, commercialCatalog?.enabled, initialPlanSlug, purchasePlan, planOffers]);
 
   const snippet = useMemo(() => configSnippet(config, plainKey), [config, plainKey]);
   const stateText = relayStateLabel(relayKey, config.self_service_enabled, keyLoading);
@@ -998,11 +1004,10 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   const commercialEnabled = commercial?.enabled === true && commercialSummary;
   const commercialEnforced = commercial?.enforce_enabled === true;
   const catalogPlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
-  const hasCurrentCommercialPlans = catalogPlans.some(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug));
-  // The backend already filters the catalog by UID and sale state. Keep all
-  // returned plans here so gray/internal plans remain visible to their
-  // allowlisted users alongside the official plans.
-  const salePlans = catalogPlans;
+  const hasCurrentCommercialPlans = Boolean(planOffers) || catalogPlans.some(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug));
+  // The default view retains the server-filtered catalogue. The updated offer
+  // view resolves each card against it and prevents checkout for unmatched drafts.
+  const salePlans = planOffers ? resolvePlanOffers(planOffers, catalogPlans, commercialCatalog?.enabled === true) : catalogPlans;
   const allSalePlansAreMonthly = salePlans.length > 0 && salePlans.every(
     plan => Number(plan?.duration_days || 30) === 30,
   );
@@ -1121,6 +1126,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   };
 
   const createCommercialOrder = async (plan, paymentWindow = null) => {
+    if (plan.catalogUnavailable) return;
     if (!paymentChannel) {
       setError('支付通道尚未配置。');
       return;
@@ -1179,7 +1185,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   };
 
   const confirmCommercialPurchase = async () => {
-    if (!purchasePlan || !paymentChannel || purchaseSubmittingRef.current) return;
+    if (!purchasePlan || purchasePlan.catalogUnavailable || !paymentChannel || purchaseSubmittingRef.current) return;
     purchaseSubmittingRef.current = true;
     let paymentWindow = null;
     let popupBlocked = false;
@@ -1607,13 +1613,14 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                     ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期日顺延 ${Number(purchasePlan.duration_days || 30)} 天；处于到期保留期的云托管员工会自动恢复，已释放的实例无法恢复；不会自动扣款。`
                     : purchaseIsUpgrade
                     ? `${formatPriceFen(purchasePlan.price_fen)}，支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 ${Number(purchasePlan.duration_days || 30)} 天，额度按新套餐重置。`
-                    : `${formatPriceFen(purchasePlan.price_fen)}，有效期 ${Number(purchasePlan.duration_days || 30)} 天。套餐到期前不会自动续费。${purchaseIncludesCloudWorker ? '已创建的云托管员工到期后保留 15 天，期间续费即可恢复。' : ''}`}</p>
+                    : `${formatPriceFen(purchasePlan.price_fen)}，每期 ${Number(purchasePlan.duration_days || 30)} 天，不自动续费。${purchaseIncludesCloudWorker ? '已创建的云托管员工到期后保留 15 天，期间续费即可恢复。' : ''}`}</p>
+                  {purchasePlan.catalogUnavailable && <p>此套餐暂未开放购买，开放后可在这里完成支付。</p>}
                 </div>
                 <div className="relay-access-purchase-confirm-actions">
                   <button type="button" className="secondary" onClick={returnFromPurchase} disabled={Boolean(paymentLoading)}>返回</button>
-                  <button type="button" onClick={confirmCommercialPurchase} disabled={Boolean(paymentLoading)}>
+                  <button type="button" onClick={confirmCommercialPurchase} disabled={Boolean(paymentLoading) || purchasePlan.catalogUnavailable}>
                     <CreditCard size={15} />
-                    {paymentLoading === `create:${purchasePlan.id}` ? '正在打开…' : paymentChannel === 'alipay_page' ? '确认并前往支付宝' : '确认购买'}
+                    {purchasePlan.catalogUnavailable ? '暂未开放购买' : paymentLoading === `create:${purchasePlan.id}` ? '正在打开…' : paymentChannel === 'alipay_page' ? '确认并前往支付宝' : '确认购买'}
                   </button>
                 </div>
               </div>
@@ -2109,9 +2116,12 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                   role="tabpanel"
                   aria-labelledby="relay-access-enterprise-plan-tab"
                 >
-                  {enterprisePlanContent || <EnterprisePlanCard />}
+                  {typeof enterprisePlanContent === 'function'
+                    ? enterprisePlanContent({ onSelectPlan: selectCommercialPlan, catalogPlans, catalogEnabled: commercialCatalog?.enabled === true })
+                    : enterprisePlanContent || <EnterprisePlanCard />}
                 </div>
               )}
+              {planChooserNote && <p className="relay-access-plan-chooser-note">{planChooserNote}</p>}
             </div>
           </section>
         </div>

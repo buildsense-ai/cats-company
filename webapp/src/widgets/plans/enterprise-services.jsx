@@ -1,6 +1,6 @@
 import React from 'react';
 import { ArrowUpRight, Check, Layers, Settings2, Users, Workflow, Sparkles, MessageSquare } from 'lucide-react';
-import './plans-enterprise-reference.css';
+import './enterprise-services.css';
 
 const services = [
   [Settings2, '环境准备', '企业使用环境的基础配置、账号与运行检查'],
@@ -15,7 +15,7 @@ export default function EnterpriseReference() {
     <div className="enterprise-reference-offer">
       <span className="enterprise-reference-eyebrow">CATSCO FOR BUSINESS</span>
       <h3 id="enterprise-reference-title">让 AI 员工<br />加入你的团队</h3>
-      <span className="enterprise-reference-plan">Business Start · 企业服务</span>
+      <span className="enterprise-reference-plan">Business Start · 企业落地服务</span>
       <p>帮助一个团队或一个明确业务场景真正开始使用 AI 员工，从环境准备到首个场景上线。</p>
       <div className="enterprise-reference-purchase">
         <div className="enterprise-reference-price"><span>¥</span><strong>4,999</strong><small>/ 月起</small></div>

@@ -24,6 +24,9 @@ vi.mock('../api', () => ({
 
 import RelayAccessModal from './relay-access-modal';
 import { api } from '../api';
+import EnterpriseTeam from './plans/enterprise-team';
+import CatsCoPlansModal from './plans/catsco-plans-modal';
+import { personalPlanOffers, resolvePlanOffers } from './plans/plan-offers';
 
 describe('RelayAccessModal commercial rollout', () => {
   let container;
@@ -141,6 +144,69 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('升级套餐');
     expect(container.querySelector('[role="dialog"][aria-label="升级套餐"]')).not.toBeNull();
   }
+
+  async function renderIntegratedPlans(props = {}) {
+    await act(async () => {
+      root.render(<CatsCoPlansModal onClose={vi.fn()} {...props} />);
+    });
+  }
+
+  it('integrates the approved offers with real account data while blocking mismatched catalogue prices', async () => {
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'alipay_page' }], plans: [
+      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, currency: 'CNY', duration_days: 30 },
+    ] });
+    await renderIntegratedPlans();
+    await openPlanChooser();
+    const prices = [...container.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent);
+    expect(prices).toEqual(['59', '99', '159']);
+    expect(container.textContent).not.toContain('免费版');
+    expect(container.textContent).toContain('Token 数为估算值');
+    await clickButton('获取 CatsCo 个人版');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥99');
+    expect(findButton('暂未开放购买').disabled).toBe(true);
+    await clickButton('暂未开放购买');
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+    expect(window.open).not.toHaveBeenCalled();
+    await clickButton('返回');
+    await clickButton('企业');
+    expect(container.textContent).toContain('Business Start · 企业落地服务');
+    await clickButton('获取 CatsCo 团队版');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥599');
+    expect(findButton('暂未开放购买').disabled).toBe(true);
+    expect(api.getRelayCommercial).toHaveBeenCalled();
+    expect(api.getCommercialOrders).toHaveBeenCalled();
+  });
+
+  it('uses the server plan ID for checkout only when the approved offer matches', async () => {
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans: [
+      { id: 918, slug: 'catsco-personal', name: '个人版', price_fen: 9900, currency: 'CNY', duration_days: 30 },
+    ] });
+    api.createCommercialOrder.mockResolvedValue({ order: null });
+    await renderIntegratedPlans();
+    await openPlanChooser();
+    await clickButton('获取 CatsCo 个人版');
+    await clickButton('确认购买');
+    expect(api.createCommercialOrder).toHaveBeenCalledWith(918, 'test', expect.any(String), expect.objectContaining({ timeoutMs: 40_000 }));
+  });
+
+  it('keeps direct plan links on the approved price without enabling old-price checkout', async () => {
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans: [
+      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30 },
+    ] });
+    await renderIntegratedPlans({ initialPlanSlug: 'personal' });
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥99');
+    expect(findButton('暂未开放购买').disabled).toBe(true);
+  });
+
+  it('requires an enabled server offer with matching currency, duration and a real ID', () => {
+    const offer = personalPlanOffers[1];
+    const serverPlan = { ...offer, id: 918 };
+    for (const changed of [{ currency: 'USD' }, { duration_days: 365 }, { id: -21 }]) {
+      expect(resolvePlanOffers([offer], [{ ...serverPlan, ...changed }])[0].catalogUnavailable).toBe(true);
+    }
+    expect(resolvePlanOffers([offer], [serverPlan], false)[0].catalogUnavailable).toBe(true);
+    expect(resolvePlanOffers([offer], [serverPlan])[0].id).toBe(918);
+  });
 
   async function openDeveloperAccess() {
     const disclosure = container.querySelector('.relay-access-connect-disclosure');
@@ -666,6 +732,27 @@ describe('RelayAccessModal commercial rollout', () => {
       expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain(price);
       await clickButton('返回');
     }
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
+  it('opens the team preview purchase at 599 and returns to the enterprise tab', async () => {
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      channels: [{ id: 'preview', label: '预览' }],
+      plans: [{ id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 9900, duration_days: 30 }],
+    });
+    await renderModal({ enterprisePlanContent: ({ onSelectPlan }) => <EnterpriseTeam onSelectPlan={onSelectPlan} /> });
+    await openPlanChooser();
+    await clickButton('企业');
+    expect(container.querySelector('.enterprise-team').textContent).toContain('最多 10 人');
+    expect(container.querySelector('.enterprise-team').textContent).toContain('最高 30 亿 Token');
+    expect(container.querySelector('.enterprise-team').textContent).toContain('4 核 CPU · 8 GB 内存');
+    await clickButton('获取 CatsCo 团队版');
+    expect(container.querySelector('#relay-access-plan-chooser')).toBeNull();
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥599');
+    await clickButton('返回');
+    expect(container.querySelector('#relay-access-enterprise-plan-tab').getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('.enterprise-team')).not.toBeNull();
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 

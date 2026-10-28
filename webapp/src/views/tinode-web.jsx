@@ -24,7 +24,7 @@ import AgentSettingsMenu from '../widgets/agent-settings-menu';
 import FeedbackModal from '../widgets/feedback-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import { hasRoutableDesktopDevice } from '../widgets/catsco-desktop-shared';
-import RelayAccessModal from '../widgets/relay-access-modal';
+import RelayAccessModal from '../widgets/plans/catsco-plans-modal';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import StandaloneCloudArtifactsPanel from '../widgets/standalone-cloud-artifacts-panel';
 import ArtifactQuickPicker from '../widgets/artifact-quick-picker';
