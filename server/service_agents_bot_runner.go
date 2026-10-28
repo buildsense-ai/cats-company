@@ -615,7 +615,13 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 				sawOwned = true
 			case botReplyOwnedFallback:
 				// 已经有过明确归属的回复，或者还有别的单在抢：这条不可能是答案。
-				if sawOwned || r.competingOnTopic(topic) > 0 {
+				//
+				// 附件例外：老客户端发附件走的是另一条发送路径，天生不带 reply_to
+				// 和会话标记（实测：正文带标记、紧接着的 file/image 消息什么都没有）。
+				// 按「见过明确归属就关门」处理的话，附件会被稳定地当成过程记录丢掉 ——
+				// 那正是「bot 明明发了文件，用户却什么都收不到」的形态。
+				// 所以只保留「有没有别的单在抢」这一个条件：抢的时候仍然不认。
+				if r.competingOnTopic(topic) > 0 || (sawOwned && !isAttachment) {
 					sawUnowned = true
 					if ambiguousAt.IsZero() {
 						ambiguousAt = time.Now()
