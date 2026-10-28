@@ -512,13 +512,25 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if problem := serviceAgentInputProblem(agent.InputSchema, input); problem != "" {
 		return serviceToolError(problem), nil, nil
 	}
-	// bot 型应用：先确认目标 bot 在线，否则一受理就是一次注定失败的 run。
-	// worker 型早就有这层预检，bot 型之前漏了 —— 调用方看到的是「受理成功 → 几秒后
-	// failed」，白等一轮还得再去查原因。
-	if isBotRunner && h.botRunner != nil && !h.botRunner.BotOnline(targetBotUID) {
-		return serviceToolError(
-			"bot_offline: 执行这个应用的小八现在不在线，派过去也没人接单。" +
-				"请让发布者那边（或你自己）把对应的小八启动并登录后再试。这是执行环境的问题，不是调用参数的问题。"), nil, nil
+	// bot 型应用：先确认目标 bot 还在、还在线，否则一受理就是一次注定失败的 run。
+	//
+	// 顺序很重要：先判「在不在」再判「在不在线」。反过来的话，应用指向一个已被
+	// 删除的 bot 时会报「不在线」，用户被引导去「把 bot 启动起来」—— 而正确的
+	// 处置是让发布者重新选一个 bot。错的方向比不说更糟。
+	//
+	// worker 型早就有这层预检，bot 型之前漏了 —— 调用方看到的是「受理成功 →
+	// 几秒后 failed」，白等一轮还得再查原因。
+	if isBotRunner && h.botRunner != nil {
+		if !h.botRunner.BotExists(targetBotUID) {
+			return serviceToolError(
+				"bot_not_found: 这个应用指向的 bot 已经不存在了（可能被删除或换掉了）。" +
+					"这是发布者那一侧的配置问题，重试不会变好 —— 请把这条原因转告用户：让对方在「Agent 工具」里重新选一个 bot。"), nil, nil
+		}
+		if !h.botRunner.BotOnline(targetBotUID) {
+			return serviceToolError(
+				"bot_offline: 执行这个应用的小八现在不在线，派过去也没人接单。" +
+					"请让发布者那边（或你自己）把对应的小八启动并登录后再试。这是执行环境的问题，不是调用参数的问题。"), nil, nil
+		}
 	}
 	session, err := h.resolveSession(ctx, agent, callerUID, botUID, args.SessionID)
 	if err != nil {
@@ -719,7 +731,20 @@ func serviceRunTerminalEnvelope(run store.ServiceRun) (bool, ServiceRunEnvelope)
 // 只能原样复述「失败了」，用户拿不到任何可行动信息。
 func serviceRunErrorText(run store.ServiceRun) string {
 	code := strings.TrimSpace(run.ErrorText)
-	switch code {
+	if code == "" {
+		return "run terminated"
+	}
+	// 按「冒号前的短码」匹配，不是整串相等。
+	//
+	// 执行器写进库的往往已经带了一句说明（生产实测：`no_command: 该应用没有声明本机
+	// 执行命令`、`bot_offline: 目标 bot 当前不在线`）。以前这里用整串相等 switch，
+	// 于是下面这几条**写得最用心的可行动文案**从来没被用上过 —— 用户看到的是原始
+	// 短码，不知道该找谁、要不要重试。
+	head := code
+	if i := strings.Index(code, ":"); i > 0 {
+		head = strings.TrimSpace(code[:i])
+	}
+	switch head {
 	case "not_picked_up":
 		// 预检通过后 worker 掉线，或根本没起来：责任在发布者那一侧，重试无用。
 		return "not_picked_up: 发布者那边一直没有 worker 认领这个任务（执行环境不在线）。这是发布者那一侧的问题，与调用参数无关——重试不会变好，请把这条原因转告用户：在跑这个应用的那台机器上（电脑或云服务器）启动小八并登录。"
@@ -728,16 +753,13 @@ func serviceRunErrorText(run store.ServiceRun) string {
 	case "worker_offline":
 		return "worker_offline: 发布者那边没有在线的 worker。请转告发布者在跑这个应用的那台机器上启动小八并登录。"
 	}
-	if code != "" {
-		// 已经是「code: 一句人话」的形态就不再加尾巴。bot_offline / bot_timeout /
-		// bot_empty_input 这些失败原因自带说明，拼上 ": run terminated" 只会读成
-		// 两句黏在一起的话（"…等它上线后再试: run terminated"）。
-		if strings.Contains(code, ": ") {
-			return code
-		}
-		return code + ": run terminated"
+	// 已经是「code: 一句人话」的形态就不再加尾巴。bot_offline / bot_timeout /
+	// bot_empty_input 这些失败原因自带说明，拼上 ": run terminated" 只会读成
+	// 两句黏在一起的话（"…等它上线后再试: run terminated"）。
+	if strings.Contains(code, ": ") {
+		return code
 	}
-	return "run terminated"
+	return code + ": run terminated"
 }
 
 type serviceRunStatusArgs struct {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -158,6 +159,24 @@ func (r *ServiceBotRunner) tuningFor(definition json.RawMessage) botRunnerTuning
 		t.AmbiguityGrace = r.ambiguityGrace
 	}
 	return t
+}
+
+// BotExists 报告目标 bot 是否还存在（没被删除）。
+//
+// 用来把「应用指向了一个已删除的 bot」和「bot 只是没在线」区分开：两者的处置
+// 完全不同 —— 前者要发布者改配置（重试无用），后者等它上线就好。
+//
+// 只有 ErrNoRows 才判「不存在」；其它错误（连不上库、超时）一律放行 —— 存储抖
+// 一下就把正常调用挡掉，比偶尔晚一步发现 bot 被删更糟。预检是体验优化，不是
+// 拦截点；真删了的话派发那一步还会再报一次 bot_not_found。
+func (r *ServiceBotRunner) BotExists(botUID int64) bool {
+	if r == nil || r.store == nil || botUID == 0 {
+		return true
+	}
+	if _, err := r.store.GetBotOwner(botUID); err != nil {
+		return !errors.Is(err, sql.ErrNoRows)
+	}
+	return true
 }
 
 // BotOnline 报告目标 bot 是否在线（运行时心跳）。
