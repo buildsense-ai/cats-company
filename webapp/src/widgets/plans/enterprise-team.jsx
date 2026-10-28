@@ -5,7 +5,7 @@ import { teamPlanOffer } from './plan-offers';
 
 
 const benefits = [
-  [Server, '独享服务器', '4 核 CPU · 8 GB 内存，团队独立使用'],
+  [Server, '独享服务器', '8 核 CPU · 16 GB 内存，团队独立使用'],
   [Layers, '团队经验与 Skill 共同沉淀', '把工作中积累的经验和 Skill 留给整个团队复用'],
   [BookOpen, '共享知识库', '团队资料集中管理，成员共同查阅与使用'],
   [ShieldCheck, '团队权限管理', '管理成员权限与团队资源的访问范围'],

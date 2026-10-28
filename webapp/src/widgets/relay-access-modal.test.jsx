@@ -746,7 +746,7 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('企业');
     expect(container.querySelector('.enterprise-team').textContent).toContain('最多 10 人');
     expect(container.querySelector('.enterprise-team').textContent).toContain('最高 30 亿 Token');
-    expect(container.querySelector('.enterprise-team').textContent).toContain('4 核 CPU · 8 GB 内存');
+    expect(container.querySelector('.enterprise-team').textContent).toContain('8 核 CPU · 16 GB 内存');
     await clickButton('获取 CatsCo 团队版');
     expect(container.querySelector('#relay-access-plan-chooser')).toBeNull();
     expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥599');
