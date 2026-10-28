@@ -58,7 +58,6 @@ const (
 	maxBotRunnerReplyBytes = 64 << 10
 
 	// botSessionMetadataKey 是「这次调用属于哪个 bot 会话」的键。
-	//
 	// 值就是 run 的 service session id —— 调用方不传 session_id 平台就新建一个，
 	// 传了就回到那个会话。bot 侧按它算自己的会话身份，于是：
 	//
@@ -68,6 +67,20 @@ const (
 	// 没有这个键时 bot 只能按 topic 分会话，而 topic 是「两个人之间的私聊」，
 	// 所有调用挤在一条会话里 —— 上一个任务的判断会漏到下一个任务。
 	botSessionMetadataKey = "catsco_bot_session_id"
+
+	// botTurnDoneMetadataKey 是「这一轮我说完了」的键，由 bot 侧在回合真正结束时
+	// 打在**最后那条回复**的 metadata 上。值是会话 id（与 catsco_bot_session_id 一致），
+	// 也接受 true —— 前者更严，后者是老客户端可能的写法。
+	//
+	// 为什么要这个信号：bot 干活是「先说要做啥 → 真去做 → 再报结果」，中间那步
+	// 实测能超过 14 秒（生产：1619 说完「收到，我先让分镜工具出方案」之后 14.5 秒
+	// 才给出真正的分镜）。平台只能拿「静默多久算说完」去猜，猜错就把前言当答案
+	// 交付了 —— 而调用方从结果上看不出被截断，只会觉得这个 bot 很没用。
+	//
+	// 有了信号就不必猜：看到它就立刻收尾，没看到就退回 settle 兜底（老客户端
+	// 行为不变）。这也让 settle 不必为了极端情况调到十几秒 —— 那会让所有简单
+	// 调用都平白多等。
+	botTurnDoneMetadataKey = "catsco_turn_done"
 
 	// botReplyAmbiguousGrace 是「明明看见 bot 回了，却判断不出是不是给我」时的等待窗口。
 	// 超过它就如实失败，不干等到 5 分钟超时 —— 让调用方尽快知道是客户端版本问题。
@@ -534,12 +547,9 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			if strings.EqualFold(strings.TrimSpace(msg.Mode), "code") {
 				continue
 			}
-			text := strings.TrimSpace(msg.Content)
+			txt := strings.TrimSpace(msg.Content)
 			if isAttachment {
-				text = botRunnerAttachmentNote(text)
-			}
-			if text == "" {
-				continue
+				txt = botRunnerAttachmentNote(txt)
 			}
 			ownership := botReplyOwnershipOf(msg, promptID, sessionID)
 			switch ownership {
@@ -564,11 +574,32 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 				// 归属明确的他单消息不是证据，是噪音，不该影响本次调用的判断。
 				continue
 			}
-			if size+len(text) > maxBotRunnerReplyBytes {
+			// 回合结束信号：bot 明确说「这一轮我说完了」，立刻交付，不等 settle。
+			//
+			// 放在归属判定**之后**：只有这条消息确实归本次调用时才信它。否则同一条
+			// topic 上另一个 run 的回合结束信号会把我们这单提前收尾 —— 收回去的还是
+			// 一句前言，而且看起来一切正常。
+			//
+			// 允许「只有信号、没有正文」：bot 完全可能先把正文发完，再补一条纯信号
+			// （正文那几条已经在 parts 里了）。但如果 parts 还是空的，就别信 ——
+			// 空答案对调用方毫无价值，退回 settle 兜底更安全。
+			if botRunnerTurnDone(msg, sessionID) {
+				if txt != "" && size+len(txt) <= maxBotRunnerReplyBytes {
+					parts = append(parts, txt)
+				}
+				if len(parts) > 0 {
+					return strings.Join(parts, "\n\n"), nil
+				}
 				continue
 			}
-			size += len(text)
-			parts = append(parts, text)
+			if txt == "" {
+				continue
+			}
+			if size+len(txt) > maxBotRunnerReplyBytes {
+				continue
+			}
+			size += len(txt)
+			parts = append(parts, txt)
 			settleTill = time.Now().Add(tuning.Settle)
 		}
 		if len(parts) > 0 && time.Now().After(settleTill) {
@@ -630,6 +661,47 @@ func botRunnerAttachmentNote(content string) string {
 		note += "，位置 " + url
 	}
 	return note
+}
+
+// botRunnerTurnDone 判断这条消息是不是「本回合说完了」的信号。
+//
+// 两种写法都认（向后兼容，也方便 bot 侧先上简单的）：
+//
+//	{"catsco_turn_done": true}                 -> 认，但只在归属不是 foreign 时
+//	{"catsco_turn_done": "<session_id>"}       -> 认，且必须是本会话
+//
+// 第二个写法更严：同一条 topic 上可能并发多个 run，只写 true 的话，一个 bot 的
+// 回合结束信号会顺带把别人在等的那单也收尾。所以只要 bot 侧给了 id，就按 id 比。
+//
+// 传 "false"/空串当没写 —— bot 可能把布尔值序列化成字符串。
+func botRunnerTurnDone(msg *types.Message, sessionID string) bool {
+	if msg == nil || msg.Metadata == nil {
+		return false
+	}
+	raw, ok := msg.Metadata[botTurnDoneMetadataKey]
+	if !ok {
+		return false
+	}
+	switch value := raw.(type) {
+	case bool:
+		if !value {
+			return false
+		}
+		// 只写了 true：没有 id 可比，交给调用处的归属判定来兜。
+		return true
+	case string:
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || strings.EqualFold(trimmed, "false") {
+			return false
+		}
+		if strings.EqualFold(trimmed, "true") {
+			return true
+		}
+		// 给了具体会话 id：必须就是本次调用，否则是别人的回合结束。
+		return sessionID != "" && trimmed == sessionID
+	default:
+		return false
+	}
 }
 
 // botReplyOwnership 是一条 bot 消息的归属判定结果。
