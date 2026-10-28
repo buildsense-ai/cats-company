@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/openchat/openchat/server/store/types"
 	"os"
@@ -57,6 +58,79 @@ func testCloudWorkerDeploymentContract(t *testing.T, db *Adapter) {
 	if err != nil || value == nil || value.Env["CTYUN_WORKER_REGION_ID"] != "foshan-test" {
 		t.Fatalf("deployment roundtrip: %+v %v", value, err)
 	}
+	// 共享机没有机器参数：老版本把账号级的 CTYUN_* 全量写进了部署记录，
+	// 启动迁移要把它们清掉（新写入不再产生，这里是存量清洗 + 幂等性）。
+	t.Run("packed deployment drops machine settings", func(t *testing.T) {
+		pkd := types.CloudWorkerDeployment{
+			Profile: types.CloudWorkerPackedShared,
+			Env: map[string]string{
+				"CATSCO_WORKER_BACKEND":       "packed",
+				"CTYUN_WORKER_EXT_IP":         "0",
+				"CTYUN_WORKER_REGION_ID":      "200000004421",
+				"CTYUN_WORKER_FLAVOR_ID":      "c629620f",
+				"CTYUN_WORKER_VPC_ID":         "vpc-i77kmi3gye",
+				"CTYUN_WORKER_BILLING_MODE":   "ondemand",
+				"CTYUN_WORKER_CYCLE_COUNT":    "3",
+				"CTYUN_JUMP_IP":               "121.11.232.177",
+				"CATSCO_WORKER_HTTP_BASE_URL": "https://app.catsco.cc",
+			},
+		}
+		raw, err := json.Marshal(pkd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.db.Exec(`UPDATE bot_config SET cloud_deployment=$2 WHERE tenant_name=$1`, "bot-public-profile", raw); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.db.Exec(stripPackedSharedMachineSettings); err != nil {
+			t.Fatalf("migration: %v", err)
+		}
+		cleaned, err := db.GetCloudWorkerDeployment("bot-public-profile")
+		if err != nil || cleaned == nil {
+			t.Fatalf("reload: %+v %v", cleaned, err)
+		}
+		if cleaned.Profile != types.CloudWorkerPackedShared {
+			t.Fatalf("profile=%q", cleaned.Profile)
+		}
+		if got := cleaned.Env["CATSCO_WORKER_BACKEND"]; got != "packed" {
+			t.Fatalf("backend=%q: the migration must not strip the packed selector", got)
+		}
+		if got := cleaned.Env["CTYUN_WORKER_EXT_IP"]; got != "0" {
+			t.Fatalf("ext ip=%q: shared containers are still private", got)
+		}
+		if got := cleaned.Env["CATSCO_WORKER_HTTP_BASE_URL"]; got != "https://app.catsco.cc" {
+			t.Fatalf("http base url=%q: non-machine config must survive", got)
+		}
+		for _, key := range []string{
+			"CTYUN_WORKER_REGION_ID", "CTYUN_WORKER_FLAVOR_ID", "CTYUN_WORKER_VPC_ID",
+			"CTYUN_WORKER_BILLING_MODE", "CTYUN_WORKER_CYCLE_COUNT", "CTYUN_JUMP_IP",
+		} {
+			if value, ok := cleaned.Env[key]; ok {
+				t.Fatalf("%s survived the cleanup with %q", key, value)
+			}
+		}
+		// 幂等：再跑一次不能把剩下的键也删掉。
+		if _, err := db.db.Exec(stripPackedSharedMachineSettings); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+		again, err := db.GetCloudWorkerDeployment("bot-public-profile")
+		if err != nil || again == nil || again.Env["CATSCO_WORKER_BACKEND"] != "packed" {
+			t.Fatalf("second run damaged the row: %+v %v", again, err)
+		}
+		// 独享实例的机器参数不受影响。
+		if _, err := db.db.Exec(`UPDATE bot_config SET cloud_deployment=$2 WHERE tenant_name=$1`, "bot-public-profile", raw); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.db.Exec(`UPDATE bot_config SET cloud_deployment=jsonb_set(cloud_deployment,'{profile}','"public_ip"') WHERE tenant_name=$1`, "bot-public-profile"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.db.Exec(stripPackedSharedMachineSettings); err != nil {
+			t.Fatal(err)
+		}
+		if kept, _ := db.GetCloudWorkerDeployment("bot-public-profile"); kept == nil || kept.Env["CTYUN_WORKER_REGION_ID"] == "" {
+			t.Fatalf("dedicated deployment lost its machine settings: %+v", kept)
+		}
+	})
 	all, err := db.ListCloudWorkerDeployments()
 	if err != nil || all["bot-public-profile"].Profile != types.CloudWorkerPublicIP {
 		t.Fatal("deployment inventory missing")

@@ -89,6 +89,9 @@ func (a *Adapter) CreateSchema() error {
 		// paths as dedicated ones, so the profile CHECK constraints must
 		// accept packed_shared.
 		activateCloudWorkerPackedSharedProfile,
+		// Earlier builds copied the ECS machine parameters into shared-container
+		// deployment snapshots; a packed worker has none of them.
+		stripPackedSharedMachineSettings,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
 		migrateCommercialRefundColumns,

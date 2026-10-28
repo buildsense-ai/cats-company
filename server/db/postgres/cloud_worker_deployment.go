@@ -46,6 +46,37 @@ ALTER TABLE commercial_invite_codes ADD CONSTRAINT commercial_invite_codes_cloud
     CHECK (cloud_worker_profile IN ('private_nat','public_ip','packed_shared'));
 `
 
+// stripPackedSharedMachineSettings removes ECS machine parameters that older
+// builds copied into shared-container deployment snapshots.
+//
+// A packed worker is placed by the cluster scheduler: it has no region, flavor,
+// VPC, subnet, security group or jump host. Persisting those values described a
+// machine that does not exist, and every reader had to special-case them back
+// out. New deployments no longer carry them; this cleans the rows written by
+// earlier builds so a stale CTYUN_WORKER_BILLING_MODE cannot be mistaken for a
+// real billing decision.
+//
+// Idempotent: re-running it on an already-clean row is a no-op.
+const stripPackedSharedMachineSettings = `
+UPDATE bot_config
+SET cloud_deployment = jsonb_set(
+        cloud_deployment,
+        '{env}',
+        COALESCE((
+            SELECT jsonb_object_agg(key, value)
+            FROM jsonb_each(COALESCE(cloud_deployment->'env', '{}'::jsonb))
+            WHERE key NOT LIKE 'CTYUN\_%' OR key = 'CTYUN_WORKER_EXT_IP'
+        ), '{}'::jsonb)
+    )
+WHERE cloud_deployment->>'profile' = 'packed_shared'
+  AND cloud_deployment->'env' ?| ARRAY[
+        'CTYUN_WORKER_REGION_ID','CTYUN_WORKER_PROJECT_ID','CTYUN_IMAGE_PROJECT_ID',
+        'CTYUN_WORKER_AZ_NAME','CTYUN_WORKER_FLAVOR_ID','CTYUN_WORKER_VPC_ID',
+        'CTYUN_WORKER_SUBNET_ID','CTYUN_WORKER_SECURITY_GROUP_ID',
+        'CTYUN_WORKER_BILLING_MODE','CTYUN_WORKER_CYCLE_COUNT',
+        'CTYUN_JUMP_IP','CTYUN_JUMP_PORT','CTYUN_JUMP_USER','CTYUN_JUMP_KEY']
+`
+
 func (a *Adapter) CloudWorkerProfileCreditSummary(uid int64, profile string) (total, available int, err error) {
 	return a.CloudWorkerConfiguredCreditSummary(uid, profile, "")
 }
