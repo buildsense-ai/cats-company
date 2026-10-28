@@ -82,6 +82,14 @@ const (
 	// 调用都平白多等。
 	botTurnDoneMetadataKey = "catsco_turn_done"
 
+	// botRunnerProgressSilenceLimit 是「bot 说了还在干」之后最多再等多久。
+	//
+	// bot 用 {"catsco_turn_done": false} 明说「这段是过程话，别当成答案」，平台因此
+	// 不按静默窗口（settle）收尾。但等待要有上限：bot 说完就崩掉的话，调用方会一直
+	// 挂到整单超时（默认 5 分钟）才知道结果。45s 远大于任何单步工具耗时（实测最长
+	// 的一次停顿 14.5s），超过就交付已收到的内容 —— 有东西总比干等到超时好。
+	botRunnerProgressSilenceLimit = 45 * time.Second
+
 	// botReplyAmbiguousGrace 是「明明看见 bot 回了，却判断不出是不是给我」时的等待窗口。
 	// 超过它就如实失败，不干等到 5 分钟超时 —— 让调用方尽快知道是客户端版本问题。
 	botReplyAmbiguousGrace = 20 * time.Second
@@ -128,6 +136,8 @@ type ServiceBotRunner struct {
 	poll           time.Duration
 	settle         time.Duration
 	ambiguityGrace time.Duration
+	// progressSilence 覆盖「bot 说还在干」后的额外等待上限（0=用平台默认）。
+	progressSilence time.Duration
 
 	// inFlight 记录每个 topic 上正在等回复的 run 数。
 	// topic 是「两个人之间的私聊」，同一个账号并发调同一个 bot 时会共用它，
@@ -517,6 +527,9 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 		sawUnowned  bool
 		sawOwned    bool
 		ambiguousAt time.Time
+		// bot 明确说过「我还在干」：此时不许按静默窗口收尾。
+		stillWorking   bool
+		lastProgressAt time.Time
 	)
 	for {
 		msgs, err := r.store.GetMessagesSince(topic, sinceID, botRunnerMessageBatch)
@@ -583,7 +596,8 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			// 允许「只有信号、没有正文」：bot 完全可能先把正文发完，再补一条纯信号
 			// （正文那几条已经在 parts 里了）。但如果 parts 还是空的，就别信 ——
 			// 空答案对调用方毫无价值，退回 settle 兜底更安全。
-			if botRunnerTurnDone(msg, sessionID) {
+			turnState := botRunnerTurnState(msg, sessionID)
+			if turnState == botTurnFinished {
 				if txt != "" && size+len(txt) <= maxBotRunnerReplyBytes {
 					parts = append(parts, txt)
 				}
@@ -601,8 +615,31 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			size += len(txt)
 			parts = append(parts, txt)
 			settleTill = time.Now().Add(tuning.Settle)
+			// 「我还在干」：这一段是过程话，绝不能因为静默窗口到点就当成最终答案交出去。
+			//
+			// 这正是生产事故的形状：bot 说「收到，我先让分镜工具出方案」，然后真的去
+			// 干活，14.5 秒后才给正文；平台 5 秒后收尾，把前言交付了，调用方还以为
+			// 这就是全部结果。有了这个显式表态就不必猜。
+			//
+			// 但不能无限等：bot 说完「还在干」之后崩掉的话，用户会一直挂到整单超时
+			// （默认 5 分钟）才知道结果。所以给一个远大于任何单步工具耗时的封顶
+			// （progressSilenceLimit，45s），超过就交付已收到的内容 —— 有东西总比
+			// 干等到超时好。
+			if turnState == botTurnInProgress {
+				stillWorking = true
+				lastProgressAt = time.Now()
+			}
 		}
-		if len(parts) > 0 && time.Now().After(settleTill) {
+		// 静默窗口到点就收尾 —— 但**只有当 bot 没有明确说「我还在干」时**。
+		//
+		// 这一条是整件事的关键：没有它，「说完了」信号只能让正常收尾更快，救不了
+		// 「前言先说、正文晚十几秒」这种最伤人的情形（平台 5 秒后就把前言交了）。
+		// 封顶之后仍要交付，避免 bot 说完「还在干」就崩掉、用户一直挂到整单超时。
+		readyToSettle := time.Now().After(settleTill)
+		if stillWorking && time.Since(lastProgressAt) < r.progressSilenceLimit() {
+			readyToSettle = false
+		}
+		if len(parts) > 0 && readyToSettle {
 			return strings.Join(parts, "\n\n"), nil
 		}
 		// 看见回复了却认不了：别干等到超时，尽快让调用方知道是「分不清」而非「没回」。
@@ -663,45 +700,83 @@ func botRunnerAttachmentNote(content string) string {
 	return note
 }
 
-// botRunnerTurnDone 判断这条消息是不是「本回合说完了」的信号。
+// botTurnState 是一条 bot 消息对「这一轮说完了没有」的表态。
+type botTurnState int
+
+const (
+	// botTurnUnspecified：老客户端，没这个字段 —— 只能靠 settle 静默窗口猜。
+	botTurnUnspecified botTurnState = iota
+	// botTurnInProgress：明确说「还没完，我还在干」。带这个标记的消息绝不能
+	// 触发按 settle 收尾 —— 那是把「收到，我先去做」当前言的根因。
+	botTurnInProgress
+	// botTurnFinished：明确说「这一轮说完了」，立刻交付。
+	botTurnFinished
+)
+
+// botRunnerTurnState 解析 `catsco_turn_done`。
 //
-// 两种写法都认（向后兼容，也方便 bot 侧先上简单的）：
+// 认这些写法（向后兼容，也方便 bot 侧先上简单的）：
 //
-//	{"catsco_turn_done": true}                 -> 认，但只在归属不是 foreign 时
-//	{"catsco_turn_done": "<session_id>"}       -> 认，且必须是本会话
+//	{"catsco_turn_done": true}               -> finished
+//	{"catsco_turn_done": false}              -> inProgress
+//	{"catsco_turn_done": "<本会话 id>"}       -> finished
+//	{"catsco_turn_done": "progress"}         -> inProgress（"working"/"running" 同）
+//	其它取值 / 别的会话 id / 没有这个键         -> unspecified（不表态）
 //
-// 第二个写法更严：同一条 topic 上可能并发多个 run，只写 true 的话，一个 bot 的
-// 回合结束信号会顺带把别人在等的那单也收尾。所以只要 bot 侧给了 id，就按 id 比。
-//
-// 传 "false"/空串当没写 —— bot 可能把布尔值序列化成字符串。
-func botRunnerTurnDone(msg *types.Message, sessionID string) bool {
+// 为什么需要 inProgress：只有「说完」这一个信号时，平台仍然会在 settle 窗口到点时
+// 把已经收到的那段话交出去。生产实测的正是这个形状 —— bot 先说「收到，我先让分镜
+// 工具出方案」，14.5 秒后才给正文，而平台 5 秒后就把那句前言当答案交付了。
+// 「说完了」只能让正常收尾更快，救不了这次；必须有一个「还没完」的显式表态。
+func botRunnerTurnState(msg *types.Message, sessionID string) botTurnState {
 	if msg == nil || msg.Metadata == nil {
-		return false
+		return botTurnUnspecified
 	}
 	raw, ok := msg.Metadata[botTurnDoneMetadataKey]
 	if !ok {
-		return false
+		return botTurnUnspecified
 	}
 	switch value := raw.(type) {
 	case bool:
-		if !value {
-			return false
+		if value {
+			return botTurnFinished
 		}
-		// 只写了 true：没有 id 可比，交给调用处的归属判定来兜。
-		return true
+		return botTurnInProgress
 	case string:
 		trimmed := strings.TrimSpace(value)
-		if trimmed == "" || strings.EqualFold(trimmed, "false") {
-			return false
+		if trimmed == "" {
+			return botTurnUnspecified
 		}
-		if strings.EqualFold(trimmed, "true") {
-			return true
+		switch {
+		case strings.EqualFold(trimmed, "true"):
+			return botTurnFinished
+		case strings.EqualFold(trimmed, "false"),
+			strings.EqualFold(trimmed, "progress"),
+			strings.EqualFold(trimmed, "working"),
+			strings.EqualFold(trimmed, "running"):
+			return botTurnInProgress
 		}
 		// 给了具体会话 id：必须就是本次调用，否则是别人的回合结束。
-		return sessionID != "" && trimmed == sessionID
+		if sessionID != "" && trimmed == sessionID {
+			return botTurnFinished
+		}
+		return botTurnUnspecified
 	default:
-		return false
+		return botTurnUnspecified
 	}
+}
+
+// botRunnerTurnDone 只要「明确说完了」这一个判断（供现有测试与调用点使用）。
+func botRunnerTurnDone(msg *types.Message, sessionID string) bool {
+	return botRunnerTurnState(msg, sessionID) == botTurnFinished
+}
+
+// progressSilenceLimit 解析「bot 说还在干」之后的额外等待上限。
+// 显式设置优先（测试用它把 45s 压短），否则用平台默认。
+func (r *ServiceBotRunner) progressSilenceLimit() time.Duration {
+	if r != nil && r.progressSilence > 0 {
+		return r.progressSilence
+	}
+	return botRunnerProgressSilenceLimit
 }
 
 // botReplyOwnership 是一条 bot 消息的归属判定结果。
