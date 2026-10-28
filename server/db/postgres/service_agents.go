@@ -77,26 +77,31 @@ func (a *Adapter) GetServiceAgentBySlug(ctx context.Context, slug string) (int64
 	return id, name, version, threshold, nil
 }
 
-// GetServiceAgentAccess 取当前归属与可见性（调用准入用；只查 service_agents 一行）。
+// GetServiceAgentAccess 取当前归属、可见性与 definition（调用准入用）。
 //
 // 为什么要单独一条查询：工具闭包里的 descriptor 是建立 MCP 会话时的快照，
-// 用快照判定可见性会让「改成自用」对已连接的调用方失效。这条查询很轻（slug 唯一索引）。
-func (a *Adapter) GetServiceAgentAccess(ctx context.Context, slug string) (int64, string, error) {
+// 用快照判定可见性会让「改成自用」对已连接的调用方失效。definition 一并返回，
+// 是为了让「分享给好友」按**当前**执行 bot 求值（改派之后该算新 bot 的好友）。
+func (a *Adapter) GetServiceAgentAccess(ctx context.Context, slug string) (int64, string, json.RawMessage, error) {
 	var (
 		ownerUID   int64
 		visibility string
+		definition []byte
 	)
 	err := a.db.QueryRowContext(ctx, `
-		SELECT COALESCE(a.owner_uid, 0), COALESCE(a.visibility, '')
+		SELECT COALESCE(a.owner_uid, 0), COALESCE(a.visibility, ''), COALESCE(v.definition_json::text, '{}')
 		FROM service_agents a
-		WHERE a.slug = $1 AND a.state = 'active'`, slug).Scan(&ownerUID, &visibility)
+		JOIN service_agent_versions v ON v.agent_id = a.id
+		WHERE a.slug = $1 AND a.state = 'active'
+		ORDER BY v.version DESC
+		LIMIT 1`, slug).Scan(&ownerUID, &visibility, &definition)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, "", store.ErrServiceAgentNotFound
+		return 0, "", nil, store.ErrServiceAgentNotFound
 	}
 	if err != nil {
-		return 0, "", fmt.Errorf("get service agent access: %w", err)
+		return 0, "", nil, fmt.Errorf("get service agent access: %w", err)
 	}
-	return ownerUID, visibility, nil
+	return ownerUID, visibility, json.RawMessage(definition), nil
 }
 
 func (a *Adapter) CreateServiceSession(ctx context.Context, agentID, definitionRev, callerUID, callerBotUID int64, assetsHash string) (string, error) {

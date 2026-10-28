@@ -357,7 +357,7 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	// 不生效 —— 那是安全上最不能接受的一种「不生效」（用户以为收回了，实际没有）。
 	current := agent
 	if reader, ok := h.store.(serviceAgentAccessReader); ok {
-		owner, visibility, err := reader.GetServiceAgentAccess(ctx, agent.Slug)
+		owner, visibility, definition, err := reader.GetServiceAgentAccess(ctx, agent.Slug)
 		if err != nil {
 			if errors.Is(err, store.ErrServiceAgentNotFound) {
 				return serviceToolError("agent_not_found: 该应用已被发布者收回"), nil, nil
@@ -366,6 +366,10 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 		}
 		current.OwnerUID = owner
 		current.Visibility = visibility
+		// definition 也要当前值：改派给另一个 bot 之后，该算新 bot 的好友。
+		if len(definition) > 0 {
+			current.DefinitionJSON = string(definition)
+		}
 	}
 	if !newServiceAgentViewerResolver(h.friends, callerUID).allows(current) {
 		return serviceToolError("agent_not_found"), nil, nil

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"strings"
 
@@ -11,7 +12,7 @@ import (
 // 应用的三级可见性：公开 / 好友 / 自用。
 //
 //   - public  谁都能在目录里找到、加进清单、调用；
-//   - friends 只有**发布者的好友**能（按看的人求值，所以每次请求都要知道访问者是谁）；
+//   - friends 只有**好友**能：发布者的好友，或执行 bot 自己的好友（按看的人求值）；
 //   - private 只有发布者自己。
 //
 // 「好友」判定收在这个文件里，因为目录过滤、MCP tools/list、调用准入、订阅准入
@@ -21,22 +22,23 @@ import (
 //
 // 判定原则：
 //   - 只有 friends 级、且访问者不是发布者时才查好友关系（其余档位零查询）；
-//   - 同一发布者在一次请求里最多查一次（一个发布者可能上架多个应用）；
+//   - 发布者是好友就够，不再白查一次 bot（短路；一次请求内仍按 uid 去重）；
 //   - 查不出来按「不是好友」处理（fail-closed）：这是访问控制，不是个人聚焦设置，
 //     存储抖动不该变成「把别人的应用暴露出去」。打一行日志，便于区分
 //     「本来就不是好友」和「查挂了」。
 //
-// serviceAgentAccessReader 取「当前」归属与可见性（按 slug）。
+// serviceAgentAccessReader 取「当前」归属、可见性与 definition（按 slug）。
 //
 // 为什么需要它：工具闭包里的 descriptor 是**建立 MCP 会话时**的快照。
 // 发布者把应用从「好友」改成「自用」之后，如果授权继续用快照判定，好友那边的
 // 调用会照旧放行 —— 改了设置却不生效，是访问控制里最不能接受的一种失败。
+// definition 同样要取当前的：改派给另一个 bot 之后，该算新 bot 的好友。
 //
 // 为什么不做成 ServiceAgentStore 的方法：那要改接口 + 两套实现 + 一堆测试替身；
 // 而它只是「调用准入」这一处需要的能力，加成可选窄接口更合适（缺了退回快照，
 // 行为等于改造前，不会更差）。
 type serviceAgentAccessReader interface {
-	GetServiceAgentAccess(ctx context.Context, slug string) (ownerUID int64, visibility string, err error)
+	GetServiceAgentAccess(ctx context.Context, slug string) (ownerUID int64, visibility string, definitionJSON json.RawMessage, err error)
 }
 
 // ServiceAgentFriendReader 是好友判定源（friends 级可见性用）。
@@ -51,8 +53,9 @@ type serviceAgentFriendReader = ServiceAgentFriendReader
 type serviceAgentViewerResolver struct {
 	friends   serviceAgentFriendReader
 	viewerUID int64
-	// byOwner 缓存「访问者与该发布者是否好友」（请求期，按 owner 去重）。
-	byOwner map[int64]bool
+	// friendCache 缓存「访问者与某 uid 是否好友」（请求期，按对方 uid 去重）。
+	// 键可能是发布者，也可能是执行 bot —— 两者都是普通用户 id。
+	friendCache map[int64]bool
 }
 
 func newServiceAgentViewerResolver(friends serviceAgentFriendReader, viewerUID int64) *serviceAgentViewerResolver {
@@ -62,14 +65,24 @@ func newServiceAgentViewerResolver(friends serviceAgentFriendReader, viewerUID i
 // viewerFor 组出判定该 agent 可见性所需的访问者。
 func (r *serviceAgentViewerResolver) viewerFor(agent store.ServiceAgentDescriptor) store.ServiceAgentViewer {
 	viewer := store.ServiceAgentViewer{UID: r.viewerUID}
-	if r == nil || r.friends == nil {
+	if r == nil || r.friends == nil || r.viewerUID == 0 {
 		return viewer
 	}
-	if agent.Visibility != store.ServiceAgentVisibilityFriends || agent.OwnerUID == 0 ||
-		agent.OwnerUID == r.viewerUID {
+	if agent.Visibility != store.ServiceAgentVisibilityFriends {
 		return viewer
 	}
-	viewer.FriendOfOwner = r.friendOfOwner(agent.OwnerUID)
+	// 发布者是好友就够了。
+	if agent.OwnerUID != 0 && agent.OwnerUID != r.viewerUID {
+		viewer.FriendOfOwner = r.isFriend(agent.OwnerUID)
+		if viewer.FriendOfOwner {
+			return viewer
+		}
+	}
+	// 分享出去的是这个 bot：它自己交好的人也该看得见。
+	// bot_uid 从 definition 取（不新增字段，避免与已上线的发布/热更新链路分叉）。
+	if botUID, ok := ParseBotRunnerBotUID(json.RawMessage(agent.DefinitionJSON)); ok && botUID != r.viewerUID {
+		viewer.FriendOfBot = r.isFriend(botUID)
+	}
 	return viewer
 }
 
@@ -78,19 +91,19 @@ func (r *serviceAgentViewerResolver) allows(agent store.ServiceAgentDescriptor) 
 	return store.ServiceAgentVisibleTo(agent, r.viewerFor(agent))
 }
 
-func (r *serviceAgentViewerResolver) friendOfOwner(ownerUID int64) bool {
-	if r.byOwner == nil {
-		r.byOwner = map[int64]bool{}
+func (r *serviceAgentViewerResolver) isFriend(otherUID int64) bool {
+	if r.friendCache == nil {
+		r.friendCache = map[int64]bool{}
 	}
-	if cached, ok := r.byOwner[ownerUID]; ok {
+	if cached, ok := r.friendCache[otherUID]; ok {
 		return cached
 	}
-	friend, err := r.friends.AreFriends(r.viewerUID, ownerUID)
+	friend, err := r.friends.AreFriends(r.viewerUID, otherUID)
 	if err != nil {
-		log.Printf("service agents: friends check viewer=%d owner=%d: %v (treated as not friend)", r.viewerUID, ownerUID, err)
+		log.Printf("service agents: friends check viewer=%d other=%d: %v (treated as not friend)", r.viewerUID, otherUID, err)
 		friend = false
 	}
-	r.byOwner[ownerUID] = friend
+	r.friendCache[otherUID] = friend
 	return friend
 }
 

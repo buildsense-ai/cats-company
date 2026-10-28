@@ -165,13 +165,19 @@ var (
 // ServiceAgentViewer 是「谁在看」——可见性要按访问者求值。
 //
 // 为什么不是一个裸 uid：friends 级要判断好友关系，而那是请求期的一次查询，
-// 纯函数拿不到。把**结论**（FriendOfOwner）带进来，判定本身仍是纯函数 ——
+// 纯函数拿不到。把**结论**（FriendOfOwner / FriendOfBot）带进来，判定本身仍是纯函数 ——
 // 目录过滤、tools/list、调用准入三处才能共用同一条规则，而不是各写一套
 // （历史上 bot-as-tool 就因为另写了一套「bot 的 owner 必须在白名单里」而互相打架）。
 type ServiceAgentViewer struct {
 	UID int64
-	// FriendOfOwner 表示 UID 与该 agent 的发布者是好友（只有 friends 级需要）。
+	// FriendOfOwner 表示 UID 与该 agent 的发布者是好友。
 	FriendOfOwner bool
+	// FriendOfBot 表示 UID 与这个 agent 的执行 bot 是好友（runner.type=bot 才有）。
+	//
+	// 为什么 bot 的好友也算：分享出去的是「这个 bot 本人」，它交好的人本来就在
+	// 它的联系人里。只认发布者的好友会让一支 bot 自己的社交圈白建 —— 别人是
+	// 冲着这个 bot 来的，不是冲着坐在电脑前那个人。
+	FriendOfBot bool
 }
 
 // ServiceAgentVisibleTo 判断 agent 是否对该访问者可见（目录过滤 + 调用准入共用）。
@@ -186,7 +192,8 @@ func ServiceAgentVisibleTo(agent ServiceAgentDescriptor, viewer ServiceAgentView
 	case "", ServiceAgentVisibilityPublic:
 		return true
 	case ServiceAgentVisibilityFriends:
-		return viewer.FriendOfOwner
+		// 发布者的好友 **或** 执行 bot 的好友，任一成立即可。
+		return viewer.FriendOfOwner || viewer.FriendOfBot
 	default:
 		// private，以及任何没见过的取值：一律不给看。
 		// 想加新档位就得改这里 —— 默认放行会让一个手滑的字符串变成公开。

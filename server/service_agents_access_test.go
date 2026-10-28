@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -56,29 +57,32 @@ func (f *fakeFriendGraph) callCount() int {
 // 以前 bot-as-tool 另有一套「bot 的 owner 必须在白名单里」，于是应用标了 public
 // 别人调用仍然被拒；两套规则都叫授权，却互不同步。
 func TestServiceAgentVisibilityMatrix(t *testing.T) {
-	const owner, friend, stranger = int64(441), int64(442), int64(900)
+	const owner, friend, stranger, botFriend = int64(441), int64(442), int64(900), int64(982)
 
 	cases := []struct {
-		name       string
-		visibility string
-		viewerUID  int64
-		isFriend   bool
-		want       bool
+		name        string
+		visibility  string
+		viewerUID   int64
+		isFriend    bool
+		isBotFriend bool
+		want        bool
 	}{
 		// 公开：谁都能看见
 		{name: "公开-陌生人", visibility: store.ServiceAgentVisibilityPublic, viewerUID: stranger, want: true},
 		{name: "公开-好友", visibility: store.ServiceAgentVisibilityPublic, viewerUID: friend, isFriend: true, want: true},
 		{name: "公开-自己", visibility: store.ServiceAgentVisibilityPublic, viewerUID: owner, want: true},
 
-		// 好友：只有发布者的好友能看见
+		// 好友：发布者的好友 **或** 执行 bot 的好友，任一成立即可
 		{name: "好友-陌生人", visibility: store.ServiceAgentVisibilityFriends, viewerUID: stranger, want: false},
-		{name: "好友-好友", visibility: store.ServiceAgentVisibilityFriends, viewerUID: friend, isFriend: true, want: true},
+		{name: "好友-发布者的好友", visibility: store.ServiceAgentVisibilityFriends, viewerUID: friend, isFriend: true, want: true},
+		{name: "好友-bot 的好友", visibility: store.ServiceAgentVisibilityFriends, viewerUID: botFriend, isBotFriend: true, want: true},
 		// 自己发布的东西三个级别都该看得到；不需要「自己是自己的好友」这种荒谬条件
 		{name: "好友-自己", visibility: store.ServiceAgentVisibilityFriends, viewerUID: owner, want: true},
 
-		// 自用：只有自己
+		// 自用：只有自己。bot 的好友也不行 —— 「自用」就是自用。
 		{name: "自用-陌生人", visibility: store.ServiceAgentVisibilityPrivate, viewerUID: stranger, want: false},
 		{name: "自用-好友也不行", visibility: store.ServiceAgentVisibilityPrivate, viewerUID: friend, isFriend: true, want: false},
+		{name: "自用-bot 的好友也不行", visibility: store.ServiceAgentVisibilityPrivate, viewerUID: botFriend, isBotFriend: true, want: false},
 		{name: "自用-自己", visibility: store.ServiceAgentVisibilityPrivate, viewerUID: owner, want: true},
 
 		// 老数据没有这个字段 → 按公开处理（历史行为，不能因为加了档位把老应用全藏起来）
@@ -94,11 +98,11 @@ func TestServiceAgentVisibilityMatrix(t *testing.T) {
 				ID: 1, Slug: "demo", OwnerUID: owner, Visibility: tc.visibility,
 			}
 			got := store.ServiceAgentVisibleTo(agent, store.ServiceAgentViewer{
-				UID: tc.viewerUID, FriendOfOwner: tc.isFriend,
+				UID: tc.viewerUID, FriendOfOwner: tc.isFriend, FriendOfBot: tc.isBotFriend,
 			})
 			if got != tc.want {
-				t.Fatalf("visibility=%q viewer=%d friend=%v → %v, want %v",
-					tc.visibility, tc.viewerUID, tc.isFriend, got, tc.want)
+				t.Fatalf("visibility=%q viewer=%d friend=%v botFriend=%v → %v, want %v",
+					tc.visibility, tc.viewerUID, tc.isFriend, tc.isBotFriend, got, tc.want)
 			}
 		})
 	}
@@ -200,6 +204,133 @@ func TestServiceAgentVisibilityHelpers(t *testing.T) {
 	}
 }
 
+// 「好友」级也要算上执行 bot 自己的好友。
+//
+// 分享出去的是这个 bot，它交好的人本来就在它联系人里；只认发布者的好友会让
+// bot 自己的社交圈白建 —— 别人是冲着这个 bot 来的，不是冲着发布者。
+func TestServiceAgentViewerResolverCountsBotFriends(t *testing.T) {
+	const owner, viewer, botUID = int64(441), int64(700), int64(982)
+	// 访问者只与 bot 是好友，与发布者无关。
+	graph := newFakeFriendGraph([2]int64{viewer, botUID})
+	resolver := newServiceAgentViewerResolver(graph, viewer)
+
+	agent := store.ServiceAgentDescriptor{
+		ID: 1, Slug: "jack", OwnerUID: owner,
+		Visibility:     store.ServiceAgentVisibilityFriends,
+		DefinitionJSON: `{"runner":{"type":"bot","bot_uid":982}}`,
+	}
+	if !resolver.allows(agent) {
+		t.Fatal("bot 的好友应该看得见好友级应用")
+	}
+	// 发布者不是好友、bot 是好友 → 查两次（两次都是必要的）
+	if got := graph.callCount(); got != 2 {
+		t.Fatalf("应分别查发布者与 bot，实际 %d 次", got)
+	}
+
+	// 自用级：bot 的好友也不行。
+	agent.Visibility = store.ServiceAgentVisibilityPrivate
+	agent.DefinitionJSON = ""
+	if newServiceAgentViewerResolver(graph, viewer).allows(agent) {
+		t.Fatal("自用级不该因为「是 bot 的好友」而放行")
+	}
+}
+
+// 发布者已经是好友时短路：不必再查一次 bot（目录每次刷新都要过一遍全部应用）。
+func TestServiceAgentViewerResolverSkipsBotQueryWhenOwnerIsFriend(t *testing.T) {
+	const owner, viewer = int64(441), int64(442)
+	graph := newFakeFriendGraph([2]int64{owner, viewer})
+	resolver := newServiceAgentViewerResolver(graph, viewer)
+
+	agent := store.ServiceAgentDescriptor{
+		ID: 1, Slug: "shared", OwnerUID: owner,
+		Visibility:     store.ServiceAgentVisibilityFriends,
+		DefinitionJSON: `{"runner":{"type":"bot","bot_uid":982}}`,
+	}
+	if !resolver.allows(agent) {
+		t.Fatal("发布者的好友应该看得见")
+	}
+	if got := graph.callCount(); got != 1 {
+		t.Fatalf("发布者已是好友就该短路，实际查了 %d 次", got)
+	}
+}
+
+// 不是 bot 型应用（worker/http/codex）没有「bot 的好友」这个概念：
+// 只按发布者判定，不应该因为 definition 里没有 bot_uid 就报错或白查。
+func TestServiceAgentViewerResolverIgnoresBotFriendshipForNonBotRunners(t *testing.T) {
+	const owner, viewer = int64(441), int64(700)
+	graph := newFakeFriendGraph([2]int64{viewer, 982})
+	resolver := newServiceAgentViewerResolver(graph, viewer)
+
+	definitions := []string{
+		`{"runner":{"type":"worker","command":"node x.js"}}`,
+		`{"runner":{"type":"http","url":"https://example.com"}}`,
+		``,
+		`not json`,
+		`{"runner":{"type":"bot"}}`, // 缺 bot_uid
+	}
+	for _, definition := range definitions {
+		agent := store.ServiceAgentDescriptor{
+			ID: 1, Slug: "x", OwnerUID: owner,
+			Visibility: store.ServiceAgentVisibilityFriends, DefinitionJSON: definition,
+		}
+		if resolver.allows(agent) {
+			t.Fatalf("definition=%q 不该放行（访问者既不是发布者好友，也没有可用的 bot）", definition)
+		}
+	}
+	// 五个 definition 同一个发布者 → 请求期缓存让它只查一次；
+	// 关键是**没有可用的 bot_uid 时不该再查一次 bot**（否则会变成 2 次）。
+	if got := graph.callCount(); got != 1 {
+		t.Fatalf("只应查一次发布者（缓存）+ 不查 bot，实际 %d 次", got)
+	}
+}
+
+// bot 的好友关系变化同样要立刻生效：改派给另一个 bot 后，该算新 bot 的好友。
+// （这条靠「调用准入读当前 definition」，与可见性本身同一个机制。）
+func TestServiceAgentInvokeCountsCurrentBotFriends(t *testing.T) {
+	const owner, viewer = int64(441), int64(700)
+	base := newFakeServiceAgentStore()
+	base.autoCompleteAfter = 5 * time.Millisecond
+	base.agents = []store.ServiceAgentDescriptor{{
+		ID: 41, Slug: "jack", Name: "杰克", Version: 1,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: owner,
+		Visibility: store.ServiceAgentVisibilityFriends,
+	}}
+	st := &accessAwareStore{
+		fakeServiceAgentStore: base,
+		ownerUID:              owner,
+		visibility:            store.ServiceAgentVisibilityFriends,
+		definitionJSON:        `{"runner":{"type":"bot","bot_uid":982}}`,
+	}
+	handler := NewServiceAgentsMCPHandler(st)
+	// 访问者与 bot 982 是好友，与发布者不是。
+	handler.SetFriendReader(newFakeFriendGraph([2]int64{viewer, 982}))
+
+	// 会话快照里写着「执行者是 bot 110」（改派之前的那份）。
+	snapshot := store.ServiceAgentDescriptor{
+		ID: 41, Slug: "jack", Name: "杰克", Version: 1,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: owner,
+		Visibility:     store.ServiceAgentVisibilityFriends,
+		DefinitionJSON: `{"runner":{"type":"bot","bot_uid":110}}`,
+	}
+	res, _, err := handler.invoke(context.Background(), snapshot, viewer, serviceInvokeToolArgs{})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if res != nil && res.IsError {
+		t.Fatalf("当前执行 bot 的好友应能调: %s", mcpToolErrorText(res))
+	}
+
+	// 反向：改派给一个访问者不是好友的 bot → 立刻失去调用权。
+	st.definitionJSON = `{"runner":{"type":"bot","bot_uid":483}}`
+	res, _, err = handler.invoke(context.Background(), snapshot, viewer, serviceInvokeToolArgs{})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if res == nil || !res.IsError || !strings.Contains(mcpToolErrorText(res), "agent_not_found") {
+		t.Fatalf("改派后该按新 bot 判定，实际: %s", mcpToolErrorText(res))
+	}
+}
+
 // accessAwareStore 在 fake 之上补「当前可见性」能力，模拟真实 adapter。
 //
 // 为什么单独做一个替身而不是给 fake 加方法：现有用例大量依赖「用闭包快照判定」的
@@ -207,18 +338,19 @@ func TestServiceAgentVisibilityHelpers(t *testing.T) {
 // 接口，等于同时钉住「没有这个能力时退回快照」的兼容路径。
 type accessAwareStore struct {
 	*fakeServiceAgentStore
-	ownerUID   int64
-	visibility string
-	err        error
-	calls      int
+	ownerUID       int64
+	visibility     string
+	definitionJSON string
+	err            error
+	calls          int
 }
 
-func (s *accessAwareStore) GetServiceAgentAccess(_ context.Context, _ string) (int64, string, error) {
+func (s *accessAwareStore) GetServiceAgentAccess(_ context.Context, _ string) (int64, string, json.RawMessage, error) {
 	s.calls++
 	if s.err != nil {
-		return 0, "", s.err
+		return 0, "", nil, s.err
 	}
-	return s.ownerUID, s.visibility, nil
+	return s.ownerUID, s.visibility, json.RawMessage(s.definitionJSON), nil
 }
 
 // 授权必须用**当前**可见性，不能用工具闭包里的会话快照。
