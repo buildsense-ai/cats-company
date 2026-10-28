@@ -93,6 +93,12 @@ func (h *ServiceAgentsMCPHandler) SetExternalRunner(runner *ServiceExternalRunne
 // 所以装配层要保证生产环境一定注入了它。
 func (h *ServiceAgentsMCPHandler) SetBotRunner(runner *ServiceBotRunner) {
 	h.botRunner = runner
+	if runner != nil {
+		// 回环判定需要在 run 收尾时摘掉「谁在等谁」那条边（见 releaseRun）。
+		// 用同一个实例，而不是各持一份：两边看的必须是同一张表，否则
+		// 「记了一条边、收尾却摘不到」会让判定永久偏严。
+		runner.loops = h.loops
+	}
 }
 
 // SetFriendReader 注入好友判定源（friends 级可见性用）。
@@ -466,15 +472,16 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 				"agent_self_call: 这个应用就是你自己在执行，不要调用自己。请直接用自己的能力完成" +
 					"用户的要求（该做的判断、该跑的活都在你这边），不要把这个任务转回来"), nil, nil
 		}
-		// 两跳回环：A 刚把任务交给 B，B 现在又把活交回 A。
+		// 回环：这个任务正在被交回委托链上的某一环（两跳、三跳、到顶都算）。
 		//
 		// 这条拦不住就会一直转下去，而且**不会超时**：bot 型应用是异步的，调用方
 		// 几十毫秒就拿到句柄返回，5 分钟超时只兜「对方不吭声」，兜不住「对方很勤快
 		// 地和你互推」。唯一的止损点是额度烧完 —— 那太晚了。
-		if h.loops.wouldLoop(callOrigin, targetBotUID) {
-			return serviceToolError(
-				"agent_call_loop: 对方刚刚把这个任务交给了你，现在你又要交回去，这样两边都做不成。" +
-					"请自己动手完成（该做的判断、该跑的活都在你这边），或者直接告诉用户这件事你办不了。"), nil, nil
+		//
+		// 判定依据是「谁在等谁」的全图，不是单条方向：旧版只记最近一次方向，所以
+		// A→B→C→A 这种三跳以上的环每一条边都新鲜、方向也不重复，全部放行。
+		if chain := h.loops.cycleFor(callOrigin, targetBotUID); len(chain) > 0 {
+			return serviceToolError(serviceAgentCallLoopText(len(chain))), nil, nil
 		}
 	}
 	if h.balance != nil {
@@ -562,7 +569,9 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	// 所以这里直接返回运行句柄：调用方拿 run_id 自己去问 catsco_run_status，或等回执。
 	if isBotRunner {
 		// 记下这次委托方向：被人反向调回来时就是靠它认出来的。
-		h.loops.record(callOrigin, targetBotUID)
+		// 绑定 run id 是为了在 run 收尾时能精确摘掉这条边 —— 否则正常交付过的
+		// 协作会在窗口内一直参与判定，变成误拦。
+		h.loops.record(callOrigin, targetBotUID, run.RunID)
 		return h.serviceRunHandleResult(session.SessionID, run, serviceArgsNote(args.Ignored)), nil, nil
 	}
 	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds, serviceArgsNote(args.Ignored))
@@ -806,6 +815,14 @@ func serviceRunToolResult(env ServiceRunEnvelope, notes ...string) *mcp.CallTool
 		// 返问：把问题直接带进文本摘要，调用方 LLM 无需解析 structuredContent 即可续聊。
 		text += " question=" + serviceAwaitQuestionText(env) + "（补充=以同一 session_id 再次调用）"
 	}
+	// 附件必须进文本摘要，不能只躺在 structuredContent 里。
+	//
+	// 调用方多半只把 content 喂给模型看（structuredContent 是给程序用的），
+	// 所以只放在结构体里 = 模型完全不知道有产物文件，回给用户的就只剩一段文字，
+	// 而文件还在那儿谁也拿不到 —— 那正是「发了文件但用户收不到」的形态。
+	for _, a := range env.Attachments {
+		text += " " + a.note()
+	}
 	for _, note := range notes {
 		if note != "" {
 			text += " " + note
@@ -830,4 +847,28 @@ func serviceToolError(message string) *mcp.CallToolResult {
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: message}},
 	}
+}
+
+// serviceAgentCallLoopText 是对模型的回环说明。
+//
+// 按链长分三种说法，因为模型需要的结论不同：
+//   - 两跳（对方刚交给我，我又交回去）：说清「这是它刚给我的」，模型才知道该自己干；
+//   - 三跳以上：模型往往看不出自己在这条链的哪一段，所以要明说「这件事已经转了几手」，
+//     否则它只会换个应用再试一次 —— 那还是同一个环；
+//   - 超过追溯上限：连具体是哪一环都懒得指出了，直接说「链已经太长了」。
+//
+// 三种都必须给出下一步（自己干 / 告诉用户办不了），只说「检测到循环」等于没说。
+func serviceAgentCallLoopText(chainLength int) string {
+	const tail = "请自己动手完成（该做的判断、该跑的活都在你这边），或者直接告诉用户这件事你办不了。"
+	if chainLength <= 2 {
+		return "agent_call_loop: 对方刚刚把这个任务交给了你，现在你又要交回去，这样两边都做不成。" + tail
+	}
+	if chainLength > serviceAgentCallMaxHops {
+		return fmt.Sprintf(
+			"agent_call_loop: 这件事已经在协作链上转了 %d 手以上，长得已经没有意义了 —— "+
+				"每一手都是一次完整的、分钟级的回合，继续传下去谁也做不完。换个应用重试没有用。", chainLength-1) + tail
+	}
+	return fmt.Sprintf(
+		"agent_call_loop: 这件事已经在这条协作链上转了 %d 手，现在又要交回链上游的某一环 —— "+
+			"继续传下去只会绕圈，谁也做不完。换个应用重试是同一个环，没有用。", chainLength-1) + tail
 }

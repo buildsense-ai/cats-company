@@ -18,7 +18,7 @@ func TestServiceAgentCallLoopGuardBlocksReverseEdge(t *testing.T) {
 	if g.wouldLoop(982, 110) {
 		t.Fatal("还没记录过委托方向，不该判成回环")
 	}
-	g.record(982, 110) // 杰克把活交给小八
+	g.record(982, 110, "run_1") // 杰克把活交给小八
 	if !g.wouldLoop(110, 982) {
 		t.Fatal("小八把活交回杰克应判成回环")
 	}
@@ -28,9 +28,50 @@ func TestServiceAgentCallLoopGuardBlocksReverseEdge(t *testing.T) {
 	}
 }
 
+// 三跳回环：A→B→C→A。旧版只看「最近一次方向」，这种情况每一条边都新鲜、
+// 方向也不重复，全部放行 —— 于是一直转下去。
+func TestServiceAgentCallLoopGuardBlocksThreeHopCycle(t *testing.T) {
+	g := newServiceAgentCallLoopGuard(time.Minute)
+	g.record(982, 110, "run_1") // 杰克 → 小八
+	// 二跳时小八→C 是正常委派，必须放行（C 不在自己的上游链上）。
+	if g.wouldLoop(110, 275) {
+		t.Fatal("小八把活交给第三个 bot 不该被拦")
+	}
+	g.record(110, 275, "run_2") // 小八 → C
+	// 三跳：C 交回杰克 —— 这是环，必须拦。
+	chain := g.cycleFor(275, 982)
+	if len(chain) == 0 {
+		t.Fatal("C 把活交回杰克应判成三跳回环")
+	}
+	if len(chain) != 3 {
+		t.Fatalf("链应该是三个节点（C→小八→杰克），实际 %v", chain)
+	}
+	// 四跳：C 交回小八也是环（小八在链上游）。
+	if !g.wouldLoop(275, 110) {
+		t.Fatal("C 把活交回小八也应该是环")
+	}
+}
+
+// 长链上的无关方向不能被误判：任务在 A→B→C 之间流转，但 D 调其中任何一个都不是环。
+func TestServiceAgentCallLoopGuardAllowsSidewaysDelegation(t *testing.T) {
+	g := newServiceAgentCallLoopGuard(time.Minute)
+	g.record(982, 110, "run_1")
+	g.record(110, 275, "run_2")
+	for _, tc := range []struct{ caller, target int64 }{
+		{275, 43},  // 链尾往下游调一个新人
+		{43, 275},  // 新人反过来调链尾（43 不在链上）
+		{43, 982},  // 新人调链头（43 自己没有上游）
+		{982, 275}, // 链头跳级直接调链尾
+	} {
+		if g.wouldLoop(tc.caller, tc.target) {
+			t.Fatalf("%d→%d 不该判成回环", tc.caller, tc.target)
+		}
+	}
+}
+
 func TestServiceAgentCallLoopGuardIgnoresUnrelatedAndSelf(t *testing.T) {
 	g := newServiceAgentCallLoopGuard(time.Minute)
-	g.record(982, 110)
+	g.record(982, 110, "run_1")
 	for _, tc := range []struct{ caller, target int64 }{
 		{982, 110}, // 同向
 		{110, 275}, // 无关目标
@@ -48,7 +89,7 @@ func TestServiceAgentCallLoopGuardExpires(t *testing.T) {
 	g := newServiceAgentCallLoopGuard(time.Minute)
 	base := time.Now()
 	g.now = func() time.Time { return base }
-	g.record(982, 110)
+	g.record(982, 110, "run_1")
 
 	g.now = func() time.Time { return base.Add(59 * time.Second) }
 	if !g.wouldLoop(110, 982) {
@@ -60,10 +101,53 @@ func TestServiceAgentCallLoopGuardExpires(t *testing.T) {
 	}
 	// 过期边被顺手清掉，表不会无限长。
 	g.mu.Lock()
-	left := len(g.edges)
+	left := 0
+	for _, upstreams := range g.waiting {
+		left += len(upstreams)
+	}
 	g.mu.Unlock()
 	if left != 0 {
 		t.Fatalf("过期边应被清理，还剩 %d 条", left)
+	}
+}
+
+// run 收尾要能摘掉自己那条边：只靠 TTL 的话，一次正常交付过的协作会在窗口内
+// 继续参与判定，B 干完活之后再正当委派一次就会被说成「在绕圈」。
+func TestServiceAgentCallLoopGuardReleasesOnRunEnd(t *testing.T) {
+	g := newServiceAgentCallLoopGuard(time.Minute)
+	g.record(982, 110, "run_1")
+	if !g.wouldLoop(110, 982) {
+		t.Fatal("run 还没结束，反向那一跳应判成回环")
+	}
+	g.releaseRun("run_1")
+	if g.wouldLoop(110, 982) {
+		t.Fatal("run 已收尾，边应该已经摘掉")
+	}
+	// 摘除要幂等（重复收尾、未知 run 都不能崩）。
+	g.releaseRun("run_1")
+	g.releaseRun("")
+	g.releaseRun("run_unknown")
+	// 摘除掉的是边，不是整张表：另一个 run 建立的边必须还在。
+	g.record(982, 110, "run_2")
+	g.record(110, 275, "run_3")
+	g.releaseRun("run_2")
+	if !g.wouldLoop(275, 110) {
+		t.Fatal("只该摘 run_2 那条边，run_3 还在")
+	}
+}
+
+// 链长到顶按回环处理：这种形状本身就是互相踢皮球，再走下去每跳都是一个
+// 分钟级回合，成本远超收益。
+func TestServiceAgentCallLoopGuardStopsAtMaxHops(t *testing.T) {
+	g := newServiceAgentCallLoopGuard(time.Hour)
+	// 造一条 982 → 110 → 275 → 43 → 44 ... 的长链。
+	chain := []int64{982, 110, 275, 43, 44, 45, 46, 47, 48, 49}
+	for i := 0; i+1 < len(chain); i++ {
+		g.record(chain[i], chain[i+1], "run_"+string(rune('a'+i)))
+	}
+	// 链尾往源头交：超过上限，必须拦（而不是一路放行）。
+	if !g.wouldLoop(49, 982) {
+		t.Fatal("超过追溯上限的委托应直接按回环拦下")
 	}
 }
 

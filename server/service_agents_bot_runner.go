@@ -139,6 +139,11 @@ type ServiceBotRunner struct {
 	// progressSilence 覆盖「bot 说还在干」后的额外等待上限（0=用平台默认）。
 	progressSilence time.Duration
 
+	// loops 是委托链回环表。run 收尾时靠它摘掉本次建立的边 —— 边存在的时间
+	// 应当正好等于「下游还在为上游干活」的那段，而不是一个固定窗口。
+	// 可能为 nil（测试或未装配），所有调用都做了空值保护。
+	loops *serviceAgentCallLoopGuard
+
 	// inFlight 记录每个 topic 上正在等回复的 run 数。
 	// topic 是「两个人之间的私聊」，同一个账号并发调同一个 bot 时会共用它，
 	// 所以「有几单在等」决定了「bot 的一条没标 reply_to 的回复能不能归给我」。
@@ -410,6 +415,14 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		log.Printf("bot runner: run=%s already taken or terminal; skip", req.RunID)
 		return
 	}
+	// run 一旦由本文处理，收尾时就要把回环表里那条边摘掉：
+	// 不摘的话，一次正常交付过的协作会在 10 分钟窗口内继续参与判定，
+	// 变成「干完活了，再正当委派一次却被说在绕圈」。
+	defer func() {
+		if r.loops != nil {
+			r.loops.releaseRun(req.RunID)
+		}
+	}()
 
 	// 只确认目标 bot 还存在。谁能调这个应用由**可见性**决定（MCP invoke 已经做过了）：
 	// 系统里不能有两套不同步的授权规则 —— 曾经这里另有一套「bot 的 owner 必须在白名单里」，
@@ -430,7 +443,6 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		r.fail(req, "bot_empty_input: 没有可发送的内容（input 里要有 text）")
 		return
 	}
-
 	topic := botRunnerTopic(req.CallerUID, req.BotUID)
 	// 先占住 topic 再发消息：之后任何「这条回复算谁的」判断都要用到「有几单在等」。
 	r.claimTopic(topic)
@@ -471,7 +483,7 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		return
 	}
 
-	reply, waitErr := r.awaitReply(topic, msgID, req.BotUID, req.SessionID, tuning)
+	reply, attachments, waitErr := r.awaitReply(topic, msgID, req.BotUID, req.SessionID, tuning)
 	if waitErr != nil {
 		r.fail(req, waitErr.Error())
 		return
@@ -483,6 +495,14 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		SessionID:       req.SessionID,
 		Status:          ServiceRunCompleted,
 		Output:          mustJSON(map[string]any{"text": reply}),
+		Attachments:     attachments,
+	}
+	// Files 是给旧调用方看的扁平清单（只放地址）；Attachments 才是完整信息。
+	// 两个都填：XiaoBa 现有版本读 files，新版本可以读 attachments。
+	for _, a := range attachments {
+		if a.URL != "" {
+			envelope.Files = append(envelope.Files, a.URL)
+		}
 	}
 	if _, err := r.store.CompleteServiceRun(context.Background(), req.RunID,
 		"res_"+req.RunID, mustJSON(envelope), nil); err != nil {
@@ -516,7 +536,7 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 //
 // 收到第一段后每出现新内容就把收尾时间往后推 settle，直到静默：bot 会把长回复
 // 按 4000 字切段，收得太早会把答案截断。
-func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64, sessionID string, tuning botRunnerTuning) (string, error) {
+func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64, sessionID string, tuning botRunnerTuning) (string, []ServiceRunAttachment, error) {
 	deadline := time.Now().Add(tuning.Timeout)
 	var (
 		sinceID     = promptID
@@ -530,11 +550,23 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 		// bot 明确说过「我还在干」：此时不许按静默窗口收尾。
 		stillWorking   bool
 		lastProgressAt time.Time
+		// 附件单独收一份结构化数据：文本说明是给人看的，这一份是给调用方程序化
+		// 处理用的（重新发出去 / 渲染成下载卡片），两者不能互相替代。
+		attachments []ServiceRunAttachment
+		seenAttach  = map[string]bool{}
 	)
+	collect := func(a ServiceRunAttachment) {
+		key := a.URL + "\x00" + a.Name
+		if seenAttach[key] {
+			return
+		}
+		seenAttach[key] = true
+		attachments = append(attachments, a)
+	}
 	for {
 		msgs, err := r.store.GetMessagesSince(topic, sinceID, botRunnerMessageBatch)
 		if err != nil {
-			return "", fmt.Errorf("bot_reply_read_failed: %v", err)
+			return "", nil, fmt.Errorf("bot_reply_read_failed: %v", err)
 		}
 		for _, msg := range msgs {
 			if msg == nil || seen[msg.ID] {
@@ -547,12 +579,14 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			if msg.FromUID != botUID {
 				continue
 			}
-			// 附件不能默默丢掉。bot 有时把长结果写成文件发出来，正文只剩一句
-			// 「清单.txt 已发送。」—— 只收 text 的话，调用方拿到的是这句话，
+			// 附件不能默默丢掉。bot 有时把长结果写成文件（或图片）发出来，正文只剩
+			// 一句「清单.txt 已发送。」—— 只收 text 的话，调用方拿到的是这句话，
 			// 文件本身和它的地址都消失了，而且看不出发生过什么。
-			// 内容确实取不到（那是平台内的文件存储，不是 base64 内联），
-			// 所以至少把「有这么个文件、它叫什么、在哪儿」如实交付。
-			isAttachment := msg.MsgType == "file"
+			//
+			// 图片和文件走同一条路：send_file 对 png/jpg 发的是 type=image，payload
+			// 形状一模一样。以前只认 file，于是 bot 生成的图片被整个丢弃 —— 那是最
+			// 常见的一类产物。
+			isAttachment := msg.MsgType == "file" || msg.MsgType == "image"
 			if !isAttachment && msg.MsgType != "text" {
 				continue
 			}
@@ -561,8 +595,19 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 				continue
 			}
 			txt := strings.TrimSpace(msg.Content)
+			var attachment ServiceRunAttachment
 			if isAttachment {
-				txt = botRunnerAttachmentNote(txt)
+				parsed, ok := botRunnerAttachmentOf(msg.Content, msg.MsgType)
+				if ok {
+					attachment = parsed
+					txt = parsed.note()
+				} else {
+					txt = ""
+				}
+				if txt == "" {
+					// payload 解不出来：退回原行为（既不丢证据也不伪造附件）。
+					continue
+				}
 			}
 			ownership := botReplyOwnershipOf(msg, promptID, sessionID)
 			switch ownership {
@@ -601,8 +646,11 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 				if txt != "" && size+len(txt) <= maxBotRunnerReplyBytes {
 					parts = append(parts, txt)
 				}
+				if attachment.URL != "" || attachment.Name != "" {
+					collect(attachment)
+				}
 				if len(parts) > 0 {
-					return strings.Join(parts, "\n\n"), nil
+					return strings.Join(parts, "\n\n"), attachments, nil
 				}
 				continue
 			}
@@ -614,6 +662,9 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			}
 			size += len(txt)
 			parts = append(parts, txt)
+			if attachment.URL != "" || attachment.Name != "" {
+				collect(attachment)
+			}
 			settleTill = time.Now().Add(tuning.Settle)
 			// 「我还在干」：这一段是过程话，绝不能因为静默窗口到点就当成最终答案交出去。
 			//
@@ -640,38 +691,50 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			readyToSettle = false
 		}
 		if len(parts) > 0 && readyToSettle {
-			return strings.Join(parts, "\n\n"), nil
+			return strings.Join(parts, "\n\n"), attachments, nil
 		}
 		// 看见回复了却认不了：别干等到超时，尽快让调用方知道是「分不清」而非「没回」。
 		if len(parts) == 0 && sawUnowned && time.Since(ambiguousAt) > tuning.AmbiguityGrace {
-			return "", fmt.Errorf(
+			return "", nil, fmt.Errorf(
 				"bot_reply_ambiguous: 目标 bot 的回复没有指回本次调用（缺 reply_to），" +
 					"而同一会话上还有别的调用在等，无法判断哪条是这次的。请升级客户端后重试，或改为串行调用")
 		}
 		if time.Now().After(deadline) {
 			if len(parts) > 0 {
 				// 已经有内容：按「说到一半」交付，比丢掉更有用。
-				return strings.Join(parts, "\n\n"), nil
+				return strings.Join(parts, "\n\n"), attachments, nil
 			}
-			return "", fmt.Errorf("bot_timeout: 等了 %s 目标 bot 没有回复", tuning.Timeout)
+			return "", nil, fmt.Errorf("bot_timeout: 等了 %s 目标 bot 没有回复", tuning.Timeout)
 		}
 		time.Sleep(tuning.Poll)
 	}
 }
 
-// botReplyAttachmentNote 把一条 file 消息翻成调用方能读懂的附件说明。
+// botReplyAttachmentNote 把一条 file/image 消息翻成调用方能读懂的附件说明。
 //
 // 为什么需要：bot 有时把长结果写成文件发出来，正文只剩一句「清单.txt 已发送。」。
 // 平台原来只收 msg_type=text，文件被整个丢掉 —— 用户等了几十秒，拿到的是一句
 // 「已发送」，既没有内容也没有线索，而且完全看不出中间发生过什么。
 //
-// 内容确实取不到：文件在平台的文件存储里（相对路径 + 需要鉴权），不是内联字节，
-// 所以这里只能如实交付「有这么个文件、叫什么、多大、在哪儿」。调用方据此可以
-// 告诉用户「对方生成的是文件，请到对话里取」，而不是自己编一段内容。
+// 内容确实取不到（文件在平台的文件存储里），所以这里只能如实交付「有这么个文件、
+// 叫什么、多大、在哪儿」。调用方据此可以告诉用户「对方生成的是文件，请到对话里取」，
+// 而不是自己编一段内容。
 //
 // 消息形如：{"type":"file","payload":{"url":"/uploads/files/xxx.txt","name":"n.txt","size":430}}
-// 解析不出来就返回空（宁可退回原来的行为，也不要伪造一个附件）。
+// 图片走同一条路（send_file 对 png/jpg 发的是 type=image，payload 形状一样）。
 func botRunnerAttachmentNote(content string) string {
+	attachment, ok := botRunnerAttachmentOf(content, "file")
+	if !ok {
+		return ""
+	}
+	return attachment.note()
+}
+
+// botRunnerAttachmentOf 解析 file/image 消息的 payload。
+//
+// msgType 决定 kind：图片不能被当成普通文件展示（客户端会当附件下载，而不是
+// 直接显示）。解析失败时 ok=false —— 宁可退回原来的行为，也不要伪造一个附件。
+func botRunnerAttachmentOf(content string, msgType string) (ServiceRunAttachment, bool) {
 	var parsed struct {
 		Payload struct {
 			URL  string `json:"url"`
@@ -680,24 +743,58 @@ func botRunnerAttachmentNote(content string) string {
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &parsed); err != nil {
-		return ""
+		return ServiceRunAttachment{}, false
 	}
 	name := strings.TrimSpace(parsed.Payload.Name)
 	url := strings.TrimSpace(parsed.Payload.URL)
 	if name == "" && url == "" {
-		return ""
+		return ServiceRunAttachment{}, false
 	}
 	if name == "" {
 		name = "未命名文件"
 	}
-	note := "📎 附件：" + name
-	if parsed.Payload.Size > 0 {
-		note += fmt.Sprintf("，%d 字节", parsed.Payload.Size)
+	kind := "file"
+	if strings.EqualFold(strings.TrimSpace(msgType), "image") {
+		kind = "image"
 	}
-	if url != "" {
-		note += "，位置 " + url
+	return ServiceRunAttachment{
+		Name: name,
+		// 绝对地址：调用方不知道平台域名，相对路径对它是死字符串；
+		// 对用户来说也只有绝对地址才会被渲染成可点的链接。
+		URL:  serviceAgentAbsoluteUploadURL(url),
+		Size: parsed.Payload.Size,
+		Kind: kind,
+	}, true
+}
+
+// note 是人类可读的一行附件说明（也是文本通道里唯一能交付的东西）。
+func (a ServiceRunAttachment) note() string {
+	note := "📎 附件：" + a.Name
+	if a.Size > 0 {
+		note += fmt.Sprintf("，%d 字节", a.Size)
+	}
+	if a.URL != "" {
+		note += "，位置 " + a.URL
 	}
 	return note
+}
+
+// serviceAgentAbsoluteUploadURL 把平台内的相对上传路径补成绝对地址。
+//
+// 只处理以 "/" 开头的站内路径：外链原样保留（外部 runner 可能直接给 CDN 地址），
+// 已经是绝对地址的也不动。
+func serviceAgentAbsoluteUploadURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		return raw
+	}
+	if !strings.HasPrefix(raw, "/") {
+		return raw
+	}
+	return strings.TrimRight(publicBaseURL(nil), "/") + raw
 }
 
 // botTurnState 是一条 bot 消息对「这一轮说完了没有」的表态。

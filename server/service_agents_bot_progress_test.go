@@ -74,7 +74,7 @@ func TestBotRunnerWaitsWhenBotSaysStillWorking(t *testing.T) {
 			map[string]interface{}{botTurnDoneMetadataKey: "sess_1"})
 	}()
 
-	got, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	got, _, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
 	if err != nil {
 		t.Fatalf("awaitReply: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestBotRunnerStillSettlesWithoutProgressSignal(t *testing.T) {
 	}()
 
 	started := time.Now()
-	got, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	got, _, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
 	if err != nil {
 		t.Fatalf("awaitReply: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestBotRunnerProgressSilenceIsBounded(t *testing.T) {
 		map[string]interface{}{botTurnDoneMetadataKey: "progress"})
 
 	started := time.Now()
-	got, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	got, _, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("封顶之后应交付已有内容而不是报错：%v", err)
@@ -168,7 +168,7 @@ func TestBotRunnerIgnoresForeignProgressSignal(t *testing.T) {
 	pushBotTextMeta(st, topic, bot, promptI-50, "别人那单我看一下", "",
 		map[string]interface{}{botTurnDoneMetadataKey: false})
 
-	got, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	got, _, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
 	// 本单没有任何属于自己的内容：如实失败（而不是把别人的过程话交出去）。
 	if err == nil {
 		t.Fatalf("没有任何属于本单的内容时不该当成功，实际交付：%q", got)

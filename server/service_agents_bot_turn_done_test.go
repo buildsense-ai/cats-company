@@ -75,7 +75,7 @@ func TestBotRunnerTurnDoneBeatsSettle(t *testing.T) {
 		map[string]interface{}{botTurnDoneMetadataKey: "sess_1"})
 
 	started := time.Now()
-	got, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	got, _, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("awaitReply: %v", err)
@@ -105,7 +105,7 @@ func TestBotRunnerTurnDoneWithoutContentStillEnds(t *testing.T) {
 	pushBotTextMeta(st, topic, bot, promptI, "", "", map[string]interface{}{botTurnDoneMetadataKey: true})
 
 	started := time.Now()
-	got, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	got, _, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
 	if err != nil {
 		t.Fatalf("awaitReply: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestBotRunnerTurnDoneDoesNotDeliverEmptyAnswer(t *testing.T) {
 	// 只有信号，什么都没有
 	pushBotTextMeta(st, topic, bot, promptI, "", "", map[string]interface{}{botTurnDoneMetadataKey: true})
 
-	_, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	_, _, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
 	if err == nil {
 		t.Fatal("没有任何内容时不该当成功交付，应该按超时如实失败")
 	}
@@ -163,7 +163,7 @@ func TestBotRunnerIgnoresForeignTurnDone(t *testing.T) {
 	pushBotTextMeta(st, topic, bot, promptI-50, "别人那单的正文", "",
 		map[string]interface{}{botTurnDoneMetadataKey: true})
 
-	_, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	_, _, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
 	if err == nil {
 		t.Fatal("别人的回合结束信号不该让本单成功")
 	}
@@ -199,7 +199,7 @@ func TestBotRunnerIgnoresTurnDoneForOtherSession(t *testing.T) {
 			map[string]interface{}{botTurnDoneMetadataKey: "sess_1"})
 	}()
 
-	got, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	got, _, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
 	if err != nil {
 		t.Fatalf("awaitReply: %v", err)
 	}
