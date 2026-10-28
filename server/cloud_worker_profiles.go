@@ -63,6 +63,18 @@ func (h *CloudWorkerHandler) deploymentForProfile(profile string) (types.CloudWo
 	if !valid {
 		return value, fmt.Errorf("unsupported cloud worker profile")
 	}
+	if profile == types.CloudWorkerPackedShared {
+		// A shared container has no region, flavor, VPC, subnet, security group
+		// or jump host — the cluster scheduler owns placement. Copying the
+		// account-level ECS values here would persist a machine description for
+		// an instance that does not exist, and every later reader (admin
+		// overview, deployment export) would have to special-case it back out.
+		value.Env["CATSCO_WORKER_BACKEND"] = "packed"
+		value.Env["CTYUN_WORKER_EXT_IP"] = "0"
+		value.Env["CATSCO_WORKER_HTTP_BASE_URL"] = os.Getenv("CATSCO_WORKER_HTTP_BASE_URL")
+		value.Env["CATSCO_WORKER_SERVER_URL"] = os.Getenv("CATSCO_WORKER_SERVER_URL")
+		return value, nil
+	}
 	for _, key := range cloudWorkerProfileEnvKeys {
 		value.Env[key] = os.Getenv(key)
 	}
@@ -71,10 +83,6 @@ func (h *CloudWorkerHandler) deploymentForProfile(profile string) (types.CloudWo
 	// overrides it so both fleets can be handed out from the same console
 	// without touching the account-level allowlist.
 	value.Env["CATSCO_WORKER_BACKEND"] = "ecs"
-	if profile == types.CloudWorkerPackedShared {
-		value.Env["CATSCO_WORKER_BACKEND"] = "packed"
-		return value, nil
-	}
 	if profile == types.CloudWorkerPrivateNAT {
 		return value, nil
 	}
@@ -123,6 +131,23 @@ func (h *CloudWorkerHandler) deploymentForTenant(tenant string) (types.CloudWork
 		}
 	}
 	return h.deploymentForProfile(types.CloudWorkerPrivateNAT)
+}
+
+// tenantRunsOnPackedShared reports whether a tenant lives inside the shared
+// container cluster. Machine-level concepts (subscription billing, region,
+// instance id, per-tenant SSH key) only exist for dedicated ECS workers, so
+// callers must ask this before touching any of them.
+func (h *CloudWorkerHandler) tenantRunsOnPackedShared(tenant string) bool {
+	if strings.TrimSpace(tenant) == "" {
+		return false
+	}
+	deployment, err := h.deploymentForTenant(tenant)
+	if err != nil {
+		// Unknown deployment is treated as ECS: the dedicated path is the
+		// conservative one (it never silently skips a billing obligation).
+		return false
+	}
+	return deployment.Profile == types.CloudWorkerPackedShared
 }
 
 func deploymentEnvironment(base []string, deployment types.CloudWorkerDeployment) ([]string, error) {
@@ -267,8 +292,10 @@ func (h *CloudWorkerHandler) deploymentProfileOptions() []cloudWorkerProfileOpti
 		}
 		if profile == types.CloudWorkerPackedShared {
 			// Same private network, but provisioned as a container in the
-			// shared cluster rather than a dedicated instance.
+			// shared cluster rather than a dedicated instance. There is no
+			// region/project to report: the cluster scheduler owns placement.
 			option.Label, option.NetworkMode = "共享机 · 内测（集群容器）", "shared"
+			option.RegionID, option.ProjectID = "", ""
 		}
 		if err != nil {
 			option.Reason = err.Error()

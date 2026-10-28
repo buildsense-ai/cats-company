@@ -244,6 +244,11 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 				item.InstanceID, item.InstanceName = "", ""
 				item.SSHKeyPath, item.SSHExecutionHost = "", ""
 				item.SSHJumpHost, item.SSHJumpAlias, item.SSHJumpKey, item.SSHHostJumpKey = "", "", "", ""
+				// Subscription billing (month vs on-demand, trial conversion)
+				// belongs to the ECS fleet. The shared fleet is billed by the
+				// package, so surfacing these would look like a pending task
+				// that can never be completed.
+				item.BillingMode, item.ConversionPending, item.BillingAction = "", false, ""
 			}
 		}
 		overview.StatusCounts[providerStatus]++

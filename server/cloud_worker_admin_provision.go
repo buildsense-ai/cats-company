@@ -106,6 +106,10 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing mode"})
 		return
 	}
+	// Shared containers have no cloud subscription: collapse the machine
+	// billing dimension so a direct provision cannot mint an on-demand credit
+	// that the expiry sweeper would later send into the ECS billing scripts.
+	billing = types.CloudWorkerBillingForProfile(profile, billing)
 	if _, ok := h.credits.(cloudWorkerBillingCredits); !ok && billing != types.CloudWorkerMonthly {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "billing configuration unavailable"})
 		return

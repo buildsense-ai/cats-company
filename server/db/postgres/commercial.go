@@ -184,12 +184,20 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		return 0, fmt.Errorf("commercial plan real cost must be non-negative")
 	}
 	billing, valid := types.NormalizeCloudWorkerBilling(plan.CloudWorkerBillingMode)
-	if !valid || (billing == types.CloudWorkerOnDemand && normalizeCommercialSaleState(plan.SaleState) != "hidden") {
-		return 0, fmt.Errorf("trial billing is only allowed for hidden internal plans")
+	if !valid {
+		return 0, fmt.Errorf("invalid cloud worker billing mode")
 	}
 	deploymentProfile, validProfile := types.NormalizeCloudWorkerProfile(plan.CloudWorkerDeploymentProfile)
 	if !validProfile {
 		return 0, fmt.Errorf("invalid cloud worker deployment profile")
+	}
+	// A shared container has no cloud subscription, so the billing dimension
+	// collapses to month before the trial-only rule is applied. Otherwise a
+	// packed plan saved as ondemand would later send its workers into the ECS
+	// billing path, where the script does not exist.
+	billing = types.CloudWorkerBillingForProfile(deploymentProfile, billing)
+	if billing == types.CloudWorkerOnDemand && normalizeCommercialSaleState(plan.SaleState) != "hidden" {
+		return 0, fmt.Errorf("trial billing is only allowed for hidden internal plans")
 	}
 	if plan.CloudWorkerRetentionDays < 0 || plan.CloudWorkerRetentionDays > 90 {
 		return 0, fmt.Errorf("invalid cloud worker retention window")
@@ -391,6 +399,9 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 	if !valid {
 		return 0, fmt.Errorf("invalid cloud worker billing mode")
 	}
+	// Shared containers have no cloud subscription: the plan decides the
+	// package window, so the machine billing mode collapses to month.
+	billing = types.CloudWorkerBillingForProfile(profile, billing)
 	maxRedemptions := invite.MaxRedemptions
 	if maxRedemptions <= 0 {
 		maxRedemptions = 1

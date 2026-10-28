@@ -1358,14 +1358,27 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			return
 		}
 		modelBudgets := parseCommercialBudgets(req.ModelBudgets)
-		billing, validBilling := types.NormalizeCloudWorkerBilling(req.CloudWorkerBillingMode)
-		if !validBilling || (billing == types.CloudWorkerOnDemand && req.SaleState != "hidden") {
-			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "按量试用仅可用于隐藏的内部套餐"})
-			return
-		}
 		existingPlan := h.commercialPlanForSave(store, req.Slug)
 		if err := h.validateOfficialPaidPlanSave(req.Slug, modelBudgets, existingPlan); err != nil {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		deploymentProfile, err := resolvePlanDeploymentProfile(existingPlan, req.CloudWorkerDeploymentProfile)
+		if err != nil {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		billing, validBilling := types.NormalizeCloudWorkerBilling(req.CloudWorkerBillingMode)
+		if !validBilling {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker billing mode"})
+			return
+		}
+		// A shared container has no cloud subscription to buy: the package window
+		// is the only billing dimension. Collapse the field before the trial-only
+		// rule so packed plans never carry an on-demand flag into the ECS path.
+		billing = types.CloudWorkerBillingForProfile(deploymentProfile, billing)
+		if billing == types.CloudWorkerOnDemand && req.SaleState != "hidden" {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "按量试用仅可用于隐藏的内部套餐"})
 			return
 		}
 		// An absent auto_update_models keeps the plan's current setting; a new
@@ -1377,31 +1390,25 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 		if req.AutoUpdateModels != nil {
 			autoUpdateModels = *req.AutoUpdateModels
 		}
-		deploymentProfile, err := resolvePlanDeploymentProfile(existingPlan, req.CloudWorkerDeploymentProfile)
-		if err != nil {
-			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
 		if req.CloudWorkerRetentionDays < 0 || req.CloudWorkerRetentionDays > 90 {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "cloud worker retention days must be within 0-90"})
 			return
 		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
-			Slug:                   req.Slug,
-			Name:                   req.Name,
-			Description:            req.Description,
-			PriceFen:               req.PriceFen,
-			Currency:               req.Currency,
-			SaleState:              req.SaleState,
-			PurchaseLimit:          req.PurchaseLimit,
-			MonthlyBudget:          req.MonthlyBudget,
-			RealCostCNY:            req.RealCostCNY,
-			ModelBudgets:           modelBudgets,
-			InternalQuotaTokens:    req.InternalQuota,
-			TokenQuota:             req.TokenQuota,
-			TokenQuotaDuration:     req.TokenQuotaDuration,
-			CloudWorkerBillingMode: req.CloudWorkerBillingMode,
-			// Fleet assignment follows the same absent-means-keep rule.
+			Slug:                         req.Slug,
+			Name:                         req.Name,
+			Description:                  req.Description,
+			PriceFen:                     req.PriceFen,
+			Currency:                     req.Currency,
+			SaleState:                    req.SaleState,
+			PurchaseLimit:                req.PurchaseLimit,
+			MonthlyBudget:                req.MonthlyBudget,
+			RealCostCNY:                  req.RealCostCNY,
+			ModelBudgets:                 modelBudgets,
+			InternalQuotaTokens:          req.InternalQuota,
+			TokenQuota:                   req.TokenQuota,
+			TokenQuotaDuration:           req.TokenQuotaDuration,
+			CloudWorkerBillingMode:       billing,
 			CloudWorkerDeploymentProfile: deploymentProfile,
 			CloudWorkerRetentionDays:     req.CloudWorkerRetentionDays,
 			DurationDays:                 req.DurationDays,
@@ -1492,15 +1499,22 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			expiresAt = &parsed
 		}
 		profile, valid := types.NormalizeCloudWorkerProfile(req.CloudWorkerProfile)
-		if req.CloudWorkerBillingMode != "" {
-			if _, ok := types.NormalizeCloudWorkerBilling(req.CloudWorkerBillingMode); !ok {
-				writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker billing mode"})
-				return
-			}
-		}
 		if !valid {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker profile"})
 			return
+		}
+		// Empty means "inherit from the bound plan", so it must stay empty here;
+		// the store re-derives and collapses it once the profile is resolved.
+		billing := strings.TrimSpace(req.CloudWorkerBillingMode)
+		if billing != "" {
+			normalized, ok := types.NormalizeCloudWorkerBilling(billing)
+			if !ok {
+				writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker billing mode"})
+				return
+			}
+			// Shared containers have no cloud subscription; keep the invite free of
+			// a machine-billing dimension that the create path would ignore anyway.
+			billing = types.CloudWorkerBillingForProfile(profile, normalized)
 		}
 		createRequest := &types.CommercialInviteCode{
 			CreateOnly:             req.CreateOnly,
@@ -1508,7 +1522,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			MaxRedemptions:         req.MaxRedemptions,
 			CloudWorkerCredits:     req.CloudWorkerCredits,
 			CloudWorkerProfile:     profile,
-			CloudWorkerBillingMode: req.CloudWorkerBillingMode,
+			CloudWorkerBillingMode: billing,
 			State:                  req.State,
 			ExpiresAt:              expiresAt,
 			Note:                   req.Note,

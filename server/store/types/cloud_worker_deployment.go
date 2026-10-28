@@ -22,6 +22,27 @@ func NormalizeCloudWorkerBilling(mode string) (string, bool) {
 	return mode, mode == CloudWorkerOnDemand
 }
 
+// CloudWorkerBillingForProfile collapses the machine-billing dimension for the
+// shared-container fleet.
+//
+// month/ondemand exists because a dedicated ECS worker buys a cloud
+// subscription: month pre-pays cycles, ondemand runs a trial that converts
+// later. A packed container has no subscription to buy — the cluster already
+// owns the machine and only the package window matters. Carrying "ondemand"
+// there is not merely meaningless, it is harmful: the expiry sweeper routes
+// ondemand lifecycles into the ECS billing scripts, which do not exist on the
+// packed path, so the worker would never expire.
+//
+// Callers should run this after the profile is resolved and before persisting.
+func CloudWorkerBillingForProfile(profile, billing string) string {
+	normalizedProfile, _ := NormalizeCloudWorkerProfile(profile)
+	normalizedBilling, _ := NormalizeCloudWorkerBilling(billing)
+	if normalizedProfile == CloudWorkerPackedShared {
+		return CloudWorkerMonthly
+	}
+	return normalizedBilling
+}
+
 type CloudWorkerCreditSelection struct {
 	Profile     string
 	BillingMode string

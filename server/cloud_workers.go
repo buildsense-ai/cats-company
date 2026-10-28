@@ -1485,7 +1485,11 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	deployment, deploymentErr := h.deploymentForProfile(profile)
-	if deploymentErr == nil {
+	if deploymentErr == nil && deployment.Profile != types.CloudWorkerPackedShared {
+		// Machine-level billing belongs to the dedicated ECS fleet: that script
+		// buys a subscription and pre-pays whole monthly cycles. A packed worker
+		// runs in an already-owned container, so emitting these variables would
+		// only invite someone to read them as a real billing decision.
 		deployment.Env["CTYUN_WORKER_BILLING_MODE"] = billing
 		if billing == types.CloudWorkerMonthly {
 			// Tianyi prepaid instances are sold in whole monthly cycles. Prepay
@@ -1832,7 +1836,15 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 	var rebuildOwners []int64
 	queuedRebuild := map[int64]bool{}
 	for _, item := range items {
-		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") {
+		// The on-demand branch exists to drive ECS subscription billing:
+		// convert a trial into a paid month, or suspend it at trial expiry.
+		// A packed worker has no subscription, and billing-worker.sh lives only
+		// on the ECS script path — routing it here fails every sweep and
+		// `continue`s past the normal expire/archive step, so the worker would
+		// never expire at all. Treat shared containers as plain package
+		// lifecycles and keep billing_mode collapsed to month at the boundaries.
+		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") &&
+			!h.tenantRunsOnPackedShared(item.TenantName) {
 			action := "suspend"
 			if item.ConversionPending {
 				action = "convert"
