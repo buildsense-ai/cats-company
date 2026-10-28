@@ -361,6 +361,35 @@ export default function ServiceAgentsPanel({ onClose }) {
       .some((field) => String(field).toLowerCase().includes(keyword)))
     : agents;
 
+  // 「谁在干」：执行方类型决定别人的期待（要不要等、离线会不会失败、能不能动本机）。
+  const runnerLabelOf = (agent) => {
+    switch (agent?.runner_kind) {
+      case 'bot':
+        return '另一个 bot 在处理';
+      case 'worker':
+        return '在作者自己的电脑上跑';
+      case 'http':
+      case 'mcp':
+        return '平台直连作者的服务';
+      default:
+        return '';
+    }
+  };
+
+  // 「要传什么」：把作者声明的 schema 压成一行，别再让调用方从散文里猜字段名。
+  // 只列字段名 + 必填标记，描述放 title —— 列表里空间宝贵。
+  const inputSummaryOf = (agent) => {
+    const schema = agent?.input_schema;
+    const props = schema && typeof schema === 'object' ? schema.properties : null;
+    if (!props || typeof props !== 'object') return '';
+    const names = Object.keys(props);
+    if (names.length === 0) return '';
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    const shown = names.slice(0, 3).map((name) => (required.includes(name) ? `${name}*` : name));
+    const more = names.length > 3 ? ` 等 ${names.length} 个` : '';
+    return `要传：${shown.join('、')}${more}`;
+  };
+
   return (
     <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
         <span className="v3-service-agents-title">
@@ -778,6 +807,10 @@ export default function ServiceAgentsPanel({ onClose }) {
               : !accountHidden;
             const hidden = !selected;
             const toggle = scopeBotUid ? toggleBotAgent : toggleSubscription;
+            const runnerLabel = runnerLabelOf(agent);
+            const inputSummary = inputSummaryOf(agent);
+            // 自己分享的不写「某某分享」：那是我自己，写上去只是噪音。
+            const showSharer = Boolean(agent.owner_name) && !agent.mine;
             return (
               <li key={agent.slug} className={`v3-service-agent-row${hidden ? ' is-hidden' : ''}`}>
                 <div className="v3-service-agent-info">
@@ -842,6 +875,31 @@ export default function ServiceAgentsPanel({ onClose }) {
                   ) : null}
                   {scopeBotUid && accountHidden ? (
                     <div className="v3-service-agent-note">账号清单中已移除</div>
+                  ) : null}
+                  {/* 「谁分享的 / 要传什么 / 谁在干」——别人判断该不该用，全靠这三行。
+                      只有名字 + 一段描述时，陌生人只能凭感觉；好友看到名字就敢试。
+                      三样都没有（老应用）就整块不渲染，别留一条空行占地方。 */}
+                  {showSharer || runnerLabel || inputSummary ? (
+                    <div className="v3-service-agent-meta">
+                      {showSharer ? (
+                        <span className="v3-service-agent-meta-item" title="分享这个应用的人">
+                          {agent.owner_name} 分享
+                        </span>
+                      ) : null}
+                      {runnerLabel ? (
+                        <span className="v3-service-agent-meta-item" title="谁在执行这个应用">
+                          {runnerLabel}
+                        </span>
+                      ) : null}
+                      {inputSummary ? (
+                        <span
+                          className="v3-service-agent-meta-item is-input"
+                          title="调用时要传的字段（调用方 Agent 也是照这个填）"
+                        >
+                          {inputSummary}
+                        </span>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
                 <div className="v3-service-agent-actions">

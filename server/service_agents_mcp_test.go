@@ -38,7 +38,9 @@ type fakeServiceAgentStore struct {
 	inactive             map[string]bool                     // slug → 已下架（SetServiceAgentState）
 	autoCompleteAfter    time.Duration
 	autoAwaitAfter       time.Duration // 到点把 run 收尾为 awaiting_input（返问同步路径测试用）
-	nextID               int64
+	// usersByID 是发布者显示名的来源（目录「谁分享的」用）。
+	usersByID map[int64]*types.User
+	nextID    int64
 }
 
 // fakePackageVersion 模拟 service_agent_versions 的一行（内容寻址 hash + 版本号）。
@@ -111,6 +113,19 @@ func (f *fakeServiceAgentStore) GetServiceAgentPackage(_ context.Context, packag
 		return nil, store.ErrServicePackageNotFound
 	}
 	return bundle, nil
+}
+
+// GetUsersByIDs 模拟真实 adapter 的批量用户查询（目录「谁分享的」用）。
+func (f *fakeServiceAgentStore) GetUsersByIDs(ids []int64) (map[int64]*types.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[int64]*types.User, len(ids))
+	for _, id := range ids {
+		if user, ok := f.usersByID[id]; ok {
+			out[id] = user
+		}
+	}
+	return out, nil
 }
 
 // ClaimServiceAgentOwnership 内存实现：不存在则建；owner 不同按 internal / 他人占用区分。

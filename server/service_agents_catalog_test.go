@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // ---- 应用目录订阅清单（设计 §3.3-9"模式二：默认开放 + 个人清单"）----
@@ -255,6 +256,106 @@ func TestServiceAgentCatalogExposesDescriptionAndOwnDefinition(t *testing.T) {
 	}
 	if len(other.Definition) != 0 {
 		t.Fatalf("must not leak other owner's runner config: %s", other.Definition)
+	}
+}
+
+// 目录要让「别人看得懂、敢用」：光有名字 + 一段描述不够。
+//
+// 三样东西缺一不可 —— 谁分享的（信任线索）、要传什么（不然不知道怎么调）、
+// 谁在干（bot 在干 / 在某人电脑上跑，决定它能干什么、要不要等）。
+func TestServiceAgentCatalogExplainsWhoAndHow(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	// 发布者显示名由 handler 侧批量取回（store 不依赖 users 表）。
+	st.usersByID = map[int64]*types.User{
+		38: {ID: 38, Username: "boss", DisplayName: "大老板"},
+	}
+	st.agents = []store.ServiceAgentDescriptor{
+		{
+			ID: 21, Slug: "jack-ops", Name: "杰克运维", Version: 3,
+			OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 38,
+			Visibility:  store.ServiceAgentVisibilityPublic,
+			Description: "把排障活派给杰克。",
+			InputSchema: `{"type":"object","properties":{"text":{"type":"string","description":"要对杰克说的话"}},"required":["text"]}`,
+			// 执行方是另一个 bot
+			DefinitionJSON: `{"runner":{"type":"bot","bot_uid":982}}`,
+		},
+		{
+			ID: 22, Slug: "my-clock", Name: "我的时钟", Version: 1,
+			OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 38,
+			Visibility:     store.ServiceAgentVisibilityPublic,
+			Description:    "读我电脑的时间。",
+			DefinitionJSON: `{"runner":{"type":"worker","command":"node clock.js"}}`,
+		},
+		{
+			ID: 23, Slug: "legacy", Name: "老应用", Version: 1,
+			OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 38,
+			Visibility:  store.ServiceAgentVisibilityPublic,
+			Description: "没有 runner 字段。",
+		},
+	}
+	_, base := newCatalogServer(t, st, 441)
+	status, payload := doCatalog(t, "GET", base+"/api/service-agents/catalog")
+	if status != http.StatusOK {
+		t.Fatalf("catalog status = %d body=%s", status, payload)
+	}
+	var catalog struct {
+		Agents []serviceCatalogEntry `json:"agents"`
+	}
+	if err := json.Unmarshal(payload, &catalog); err != nil {
+		t.Fatalf("decode: %v %s", err, payload)
+	}
+	bySlug := map[string]serviceCatalogEntry{}
+	for _, entry := range catalog.Agents {
+		bySlug[entry.Slug] = entry
+	}
+
+	jack := bySlug["jack-ops"]
+	if jack.OwnerName != "大老板" {
+		t.Fatalf("owner_name = %q，别人看不到是谁分享的就没法判断该不该用", jack.OwnerName)
+	}
+	if jack.RunnerKind != "bot" {
+		t.Fatalf("runner_kind = %q, want bot（人要知道这是另一个 bot 在干）", jack.RunnerKind)
+	}
+	if len(jack.InputSchema) == 0 || !strings.Contains(string(jack.InputSchema), "要对杰克说的话") {
+		t.Fatalf("input_schema 要透出给所有人（不然不知道怎么调）: %s", jack.InputSchema)
+	}
+
+	if got := bySlug["my-clock"].RunnerKind; got != "worker" {
+		t.Fatalf("worker 应用 runner_kind = %q", got)
+	}
+	// 老应用没有 runner 字段：空串，不报错、不瞎猜。
+	if got := bySlug["legacy"].RunnerKind; got != "" {
+		t.Fatalf("无 runner 的应用 runner_kind 应为空，实际 %q", got)
+	}
+}
+
+// 发布者名字只是「帮助判断」的附加信息：取不到就留空，绝不能让整个目录失败。
+//
+// 它要跨域读 users 表（service_agents 的查询不该 JOIN users —— 那会把两个域绑死，
+// 也会打挂只 seed 最小 schema 的集成测试），所以失败路径必须是无害降级。
+func TestServiceAgentCatalogSurvivesMissingOwnerNames(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.agents = []store.ServiceAgentDescriptor{{
+		ID: 31, Slug: "orphan", Name: "孤儿应用", Version: 1,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 4242, // users 表里没有这个人
+		Visibility: store.ServiceAgentVisibilityPublic, Description: "作者已注销。",
+	}}
+	_, base := newCatalogServer(t, st, 441)
+	status, payload := doCatalog(t, "GET", base+"/api/service-agents/catalog")
+	if status != http.StatusOK {
+		t.Fatalf("查不到发布者名字不能让目录失败: %d %s", status, payload)
+	}
+	var catalog struct {
+		Agents []serviceCatalogEntry `json:"agents"`
+	}
+	if err := json.Unmarshal(payload, &catalog); err != nil {
+		t.Fatalf("decode: %v %s", err, payload)
+	}
+	if len(catalog.Agents) != 1 {
+		t.Fatalf("应用本身仍要出现: %+v", catalog.Agents)
+	}
+	if catalog.Agents[0].OwnerName != "" {
+		t.Fatalf("取不到名字就该是空串，实际 %q", catalog.Agents[0].OwnerName)
 	}
 }
 

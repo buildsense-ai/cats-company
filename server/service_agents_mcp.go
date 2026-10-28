@@ -389,6 +389,23 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if botErr != nil {
 		return botErr, nil, nil
 	}
+	// 自己调自己：直接拒，不给「想一想」的机会。
+	//
+	// 这不是理论风险。把杰克分享成 catsco_jack-*，描述写着「把一段话交给杰克处理」，
+	// 杰克自己的工具列表里就会看到它 —— 它完全有理由认为「交给杰克」就是调这个工具，
+	// 于是调用自己：一轮几分钟、烧满额度，直到超时。而它从描述上看不出这是它自己。
+	//
+	// 两种调用方身份都要判：
+	//   - bot_uid 显式声明（XiaoBa 的 tool bridge 会带）；
+	//   - callerUID 本身就是那个 bot（bot 用自己凭证调 MCP 时就是这个样子）。
+	// 只判前一种会漏掉「bot 没带 bot_uid」的情形，而那正是最容易踩的一条。
+	if targetBotUID, isBotRunner := ParseBotRunnerBotUID(json.RawMessage(current.DefinitionJSON)); isBotRunner {
+		if (botUID != 0 && botUID == targetBotUID) || callerUID == targetBotUID {
+			return serviceToolError(
+				"agent_self_call: 这个应用就是你自己在执行，不要调用自己。请直接用自己的能力完成" +
+					"用户的要求（该做的判断、该跑的活都在你这边），不要把这个任务转回来"), nil, nil
+		}
+	}
 	if h.balance != nil {
 		if err := h.balance.Check(ctx, callerUID); err != nil {
 			if errors.Is(err, ErrQuotaExhausted) {

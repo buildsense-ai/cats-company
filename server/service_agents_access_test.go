@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // fakeFriendGraph 是可控的好友关系图（无向）。
@@ -329,6 +331,92 @@ func TestServiceAgentInvokeCountsCurrentBotFriends(t *testing.T) {
 	if res == nil || !res.IsError || !strings.Contains(mcpToolErrorText(res), "agent_not_found") {
 		t.Fatalf("改派后该按新 bot 判定，实际: %s", mcpToolErrorText(res))
 	}
+}
+
+// 自己调自己：直接拒，不给「想一想」的机会。
+//
+// 真实风险：把杰克分享成 catsco_jack-*，描述写着「把一段话交给杰克处理」，
+// 杰克自己的工具列表里就会出现它 —— 它完全有理由认为「交给杰克」就是调这个工具，
+// 于是调用自己：一轮几分钟、烧满额度，直到超时，而它从描述上看不出这是它自己。
+func TestServiceAgentRejectsSelfCall(t *testing.T) {
+	const owner, jack = int64(38), int64(982)
+	base := newFakeServiceAgentStore()
+	base.autoCompleteAfter = 5 * time.Millisecond
+	base.agents = []store.ServiceAgentDescriptor{{
+		ID: 51, Slug: "jack", Name: "杰克", Version: 1,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: owner,
+		Visibility: store.ServiceAgentVisibilityPublic,
+	}}
+	st := &accessAwareStore{
+		fakeServiceAgentStore: base,
+		ownerUID:              owner,
+		visibility:            store.ServiceAgentVisibilityPublic,
+		definitionJSON:        `{"runner":{"type":"bot","bot_uid":982}}`,
+	}
+	handler := NewServiceAgentsMCPHandler(st)
+	handler.SetBotIdentity(selfCallBotIdentity{})
+	agent := store.ServiceAgentDescriptor{
+		ID: 51, Slug: "jack", Name: "杰克", Version: 1,
+		OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: owner,
+		Visibility:     store.ServiceAgentVisibilityPublic,
+		DefinitionJSON: `{"runner":{"type":"bot","bot_uid":982}}`,
+	}
+
+	invokeAs := func(callerUID int64, botUID int64) string {
+		t.Helper()
+		res, _, err := handler.invoke(context.Background(), agent, callerUID, serviceInvokeToolArgs{BotUID: botUID})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		if res == nil {
+			t.Fatal("invoke 没有返回结果")
+		}
+		return mcpToolErrorText(res)
+	}
+
+	// ① bot 用自己凭证调用（callerUID 就是目标 bot）—— 最常见的一条。
+	if text := invokeAs(jack, 0); !strings.Contains(text, "agent_self_call") {
+		t.Fatalf("bot 调自己的应用应被拒，实际: %s", text)
+	}
+	// ② 账号调用但显式带了自己的 bot 身份。
+	if text := invokeAs(owner, jack); !strings.Contains(text, "agent_self_call") {
+		t.Fatalf("带 bot_uid 的自调用应被拒，实际: %s", text)
+	}
+	// ③ 主人的账号级调用（不带 bot 身份）不算自调用：那是人在用自己的应用。
+	res, _, err := handler.invoke(context.Background(), agent, owner, serviceInvokeToolArgs{})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if res != nil && res.IsError {
+		t.Fatalf("主人账号级调用应放行: %s", mcpToolErrorText(res))
+	}
+	// ④ 别的 bot 调它不算自调用（那正是「把活派给杰克」的正常用法）。
+	if _, err := textNotSelfCall(t, handler, agent, 110, 110); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
+// textNotSelfCall 断言「另一个 bot 调这个应用」不是自调用。
+func textNotSelfCall(t *testing.T, handler *ServiceAgentsMCPHandler, agent store.ServiceAgentDescriptor, callerUID, botUID int64) (string, error) {
+	t.Helper()
+	res, _, err := handler.invoke(context.Background(), agent, callerUID, serviceInvokeToolArgs{BotUID: botUID})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	text := mcpToolErrorText(res)
+	if strings.Contains(text, "agent_self_call") {
+		return text, fmt.Errorf("别的 bot 调用不该被判成自调用: %s", text)
+	}
+	return text, nil
+}
+
+// selfCallBotIdentity 让 bot 身份校验通过（GetBotOwner 认这些 bot）。
+type selfCallBotIdentity struct{}
+
+func (selfCallBotIdentity) GetBotOwner(botUID int64) (int64, error) { return 38, nil }
+
+func (selfCallBotIdentity) GetBotDefinition(int64) (*types.BotDefinitionRecord, error) {
+	return nil, nil // nil = 未限制工具清单
 }
 
 // accessAwareStore 在 fake 之上补「当前可见性」能力，模拟真实 adapter。

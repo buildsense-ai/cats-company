@@ -1965,3 +1965,26 @@
   background: rgba(16, 185, 129, 0.16);
   color: #059669;
 }
+
+/* 「谁分享的 / 谁在干 / 要传什么」：一行小字，别人据此决定要不要用。
+   信息量比徽标大，所以压低存在感 —— 它是辅助判断，不是主角。 */
+.v3-service-agent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--cc-muted, #6b7280);
+}
+
+.v3-service-agent-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 入参最实用（不知道要填什么就没法调），给它一点点强调。 */
+.v3-service-agent-meta-item.is-input {
+  color: #2563eb;
+}

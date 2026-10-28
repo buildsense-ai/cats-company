@@ -1167,5 +1167,66 @@ describe('ServiceAgentsPanel', () => {
       expect(container.querySelectorAll('.v3-service-agent-slug')).toHaveLength(3);
     });
   });
+
+  // 别人能不能用起来，取决于列表里有没有这三样：谁分享的、谁在干、要传什么。
+  // 只有名字 + 一段散文时，陌生人只能凭感觉猜 —— 猜错就白等一单。
+  describe('让别人看得懂怎么用', () => {
+    it('显示分享者名字、执行方类型和入参字段', async () => {
+      mocks.getServiceAgentsCatalog.mockResolvedValue({
+        agents: [{
+          slug: 'jack-ops',
+          name: '杰克运维',
+          version: 3,
+          hidden: false,
+          mine: false,
+          visibility: 'friends',
+          owner_name: '大老板',
+          runner_kind: 'bot',
+          description: '把排障活派给杰克。',
+          input_schema: {
+            type: 'object',
+            required: ['text'],
+            properties: { text: { type: 'string' }, hint: { type: 'string' } },
+          },
+        }],
+      });
+      await renderPanel();
+
+      const meta = [...container.querySelectorAll('.v3-service-agent-meta-item')]
+        .map((node) => node.textContent);
+      expect(meta.some((text) => text.includes('大老板') && text.includes('分享'))).toBe(true);
+      expect(meta.some((text) => text.includes('另一个 bot 在处理'))).toBe(true);
+      // 必填字段带 *，非必填不带
+      const input = meta.find((text) => text.includes('要传'));
+      expect(input).toContain('text*');
+      expect(input).toContain('hint');
+    });
+
+    it('自己的应用不显示「某某分享」（那是我自己）', async () => {
+      mocks.getServiceAgentsCatalog.mockResolvedValue({
+        agents: [{
+          slug: 'mine', name: '我的应用', version: 1, hidden: false, mine: true,
+          owner_name: '我自己', runner_kind: 'worker', description: '我的。',
+        }],
+      });
+      await renderPanel();
+      const meta = [...container.querySelectorAll('.v3-service-agent-meta-item')]
+        .map((node) => node.textContent);
+      expect(meta.some((text) => text.includes('分享'))).toBe(false);
+      expect(meta.some((text) => text.includes('在作者自己的电脑上跑'))).toBe(true);
+    });
+
+    it('没声明 schema 时不硬编造入参', async () => {
+      mocks.getServiceAgentsCatalog.mockResolvedValue({
+        agents: [{
+          slug: 'plain', name: '老应用', version: 1, hidden: false, description: '只有描述。',
+        }],
+      });
+      await renderPanel();
+      expect(container.querySelector('.v3-service-agent-meta-item.is-input')).toBeNull();
+      // 也没有执行方信息时，整行就不要占地方
+      expect(container.querySelector('.v3-service-agent-meta')).toBeNull();
+    });
+  });
 });
 

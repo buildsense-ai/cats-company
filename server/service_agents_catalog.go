@@ -2,12 +2,14 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // 应用目录管理 API（设计 §3.3-9 目录与订阅；网页 cats 的目录/管理界面数据面）。
@@ -119,6 +121,16 @@ type serviceCatalogEntry struct {
 	// Description：调用方 Agent 看到的工具描述（作者写的原文）。
 	// 空 = 作者没写，别人（另一个 Agent）只能靠名字猜，基本等于用不起来。
 	Description string `json:"description,omitempty"`
+	// OwnerName 是分享者显示名。目录里「谁分享的」是信任的全部线索：
+	// 熟人名字直接决定要不要试，陌生作者也能据此判断是不是自己想找的那一类。
+	OwnerName string `json:"owner_name,omitempty"`
+	// InputSchema 是作者声明的入参 schema（原文）。给所有人看：
+	// 调用方需要知道该传什么字段，光看一段散文是猜不出来的。
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+	// RunnerKind 是执行方类型（bot / worker / http / 空=平台内置）。
+	// 人需要知道「这是另一个 bot 在干」还是「在某人自己电脑上跑」—— 这决定了
+	// 它能干什么、要不要等、离线时会不会失败。
+	RunnerKind string `json:"runner_kind,omitempty"`
 	// Definition：完整 definition 原文，只给 owner 本人（编辑时回填 runner/pricing）。
 	// 发布是全量覆盖，别人拿不到也用不上这里面的本机命令。
 	Definition json.RawMessage `json:"definition,omitempty"`
@@ -131,6 +143,79 @@ type serviceCatalogEntry struct {
 type serviceCatalogSelfIntro struct {
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+}
+
+// serviceAgentRunnerKind 取执行方类型（bot / worker / http / mcp / codex；空=平台内置）。
+//
+// 只从 definition 读，不额外查库：目录一次要列几十个应用，
+// 每个再查一次执行方在线状态会把列表拖慢，而且那个数据随时在变。
+func serviceAgentRunnerKind(definition string) string {
+	trimmed := strings.TrimSpace(definition)
+	if trimmed == "" {
+		return ""
+	}
+	var parsed struct {
+		Runner *struct {
+			Type string `json:"type"`
+		} `json:"runner"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil || parsed.Runner == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(parsed.Runner.Type))
+}
+
+// serviceAgentNameReader 是「批量取用户显示名」的窄能力。
+//
+// 为什么不在 ListServiceAgents 里 JOIN users：那个查询属于 service_agents 域，
+// 让它依赖 users 表会把两个域绑死 —— 已有的集成测试只 seed 最小 schema
+// （service_agents + versions），一个 JOIN 就让它们全挂。这里一次批量取回，
+// 也没有 N+1。
+type serviceAgentNameReader interface {
+	GetUsersByIDs(ids []int64) (map[int64]*types.User, error)
+}
+
+// serviceAgentOwnerNames 批量取发布者显示名（失败/缺能力都返回空表，不影响目录）。
+func serviceAgentOwnerNames(store any, agents []store.ServiceAgentDescriptor) map[int64]string {
+	reader, ok := store.(serviceAgentNameReader)
+	if !ok {
+		return nil
+	}
+	ids := make([]int64, 0, len(agents))
+	seen := make(map[int64]struct{}, len(agents))
+	for _, agent := range agents {
+		if agent.OwnerUID <= 0 {
+			continue
+		}
+		if _, dup := seen[agent.OwnerUID]; dup {
+			continue
+		}
+		seen[agent.OwnerUID] = struct{}{}
+		ids = append(ids, agent.OwnerUID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	users, err := reader.GetUsersByIDs(ids)
+	if err != nil {
+		log.Printf("service catalog owner names: %v", err)
+		return nil
+	}
+	names := make(map[int64]string, len(users))
+	for uid, user := range users {
+		if user == nil {
+			continue
+		}
+		// 显示名优先，没设就用用户名 —— 界面上总要有个能称呼的东西。
+		name := strings.TrimSpace(user.DisplayName)
+		if name == "" {
+			name = strings.TrimSpace(user.Username)
+		}
+		if name != "" {
+			names[uid] = name
+		}
+	}
+	return names
 }
 
 // ensureAllowed 内测门：非白名单账号管理 API 一律 403（静默功能不存在）。
@@ -167,6 +252,8 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 		hidden[id] = struct{}{}
 	}
 	entries := make([]serviceCatalogEntry, 0, len(agents))
+	// 发布者显示名：一次批量取回（不在查询里 JOIN users —— 那会让 store 依赖另一个域）。
+	ownerNames := serviceAgentOwnerNames(h.store, agents)
 	// 可见性按访问者求值（friends 级需要好友关系）：一次请求里同一发布者最多查一次。
 	resolver := newServiceAgentViewerResolver(h.friends, uid)
 	for _, agent := range agents {
@@ -186,6 +273,11 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 			Mine:                  mine,
 			Visibility:            agent.Visibility,
 			Description:           agent.Description,
+			OwnerName:             ownerNames[agent.OwnerUID],
+			RunnerKind:            serviceAgentRunnerKind(agent.DefinitionJSON),
+		}
+		if schema := strings.TrimSpace(agent.InputSchema); schema != "" {
+			entry.InputSchema = json.RawMessage(schema)
 		}
 		if mine && strings.TrimSpace(agent.DefinitionJSON) != "" {
 			entry.Definition = json.RawMessage(agent.DefinitionJSON)
