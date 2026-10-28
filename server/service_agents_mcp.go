@@ -261,6 +261,64 @@ type serviceInvokeToolArgs struct {
 	SessionID   string `json:"session_id,omitempty" jsonschema:"续聊会话 id；不传=新会话"`
 	ClientToken string `json:"client_token,omitempty" jsonschema:"幂等键（同会话同 token 重发返回同一 run）"`
 	BotUID      int64  `json:"bot_uid,omitempty" jsonschema:"调用方 bot 身份（可选）；传了就按该 bot 归属校验并写入会话"`
+
+	// Ignored 记录客户端传了但我们不认识的参数名。
+	//
+	// 标准反序列化会把未知字段默默丢掉 —— 而「session」写成「session」/「sessionId」
+	// 是极易发生的错：受理响应的文本里原来渲染的是 `session=<id>`，请求参数却叫
+	// `session_id`，客户端照着响应里的名字回传就被静默忽略，于是「追问」变成了
+	// 开一个全新会话，上下文全丢，而且没有任何提示。这里只提示、不拒绝。
+	Ignored []string `json:"-"`
+}
+
+// ignoredServiceInvokeArgs 是参数名里允许出现的全部键。
+var ignoredServiceInvokeArgs = map[string]struct{}{
+	"input": {}, "session_id": {}, "client_token": {}, "bot_uid": {},
+}
+
+// UnmarshalJSON 在标准解析之外额外记下未知参数名，供受理响应提示。
+func (a *serviceInvokeToolArgs) UnmarshalJSON(data []byte) error {
+	type plain serviceInvokeToolArgs
+	var parsed plain
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	*a = serviceInvokeToolArgs(parsed)
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return nil // 不是对象：按上面已解析的结果走
+	}
+	for key := range all {
+		if _, ok := ignoredServiceInvokeArgs[key]; !ok {
+			a.Ignored = append(a.Ignored, key)
+		}
+	}
+	sortStrings(a.Ignored)
+	return nil
+}
+
+// serviceArgsNote 把「被忽略的参数」翻成一句给调用方模型看的提示。
+// 按名字给出正确写法：绝大多数情况就是拼错了或照着响应文本回传。
+func serviceArgsNote(ignored []string) string {
+	if len(ignored) == 0 {
+		return ""
+	}
+	hints := make([]string, 0, len(ignored))
+	for _, name := range ignored {
+		// 大小写、下划线、连字符都不敏感：session / sessionId / session-id 要指到同一处。
+		normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.TrimSpace(name)))
+		switch normalized {
+		case "session", "sessionid", "sid":
+			hints = append(hints, name+"（续聊要用 session_id）")
+		case "token", "clienttoken", "idempotencykey":
+			hints = append(hints, name+"（幂等键要用 client_token）")
+		case "bot", "botid", "botuid":
+			hints = append(hints, name+"（调用方 bot 身份要用 bot_uid）")
+		default:
+			hints = append(hints, name)
+		}
+	}
+	return "（注意：这些参数没被识别，已忽略 —— " + strings.Join(hints, "、") + "）"
 }
 
 func (h *ServiceAgentsMCPHandler) addAgentTool(srv *mcp.Server, agent store.ServiceAgentDescriptor, callerUID int64) {
@@ -493,9 +551,9 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if isBotRunner {
 		// 记下这次委托方向：被人反向调回来时就是靠它认出来的。
 		h.loops.record(callOrigin, targetBotUID)
-		return h.serviceRunHandleResult(session.SessionID, run), nil, nil
+		return h.serviceRunHandleResult(session.SessionID, run, serviceArgsNote(args.Ignored)), nil, nil
 	}
-	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds)
+	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds, serviceArgsNote(args.Ignored))
 }
 
 // resolveBotScope 校验可选的 bot 身份，返回要写进会话的 callerBotUID（0=账号级）。
@@ -563,19 +621,19 @@ func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent stor
 // serviceRunHandleResult 立即返回运行句柄（不等终态）。
 // 给「天生慢」的执行后端用：干等只会把调用它的主 Agent 卡住，
 // 而它拿到的句柄足够自己决定是去干别的还是去轮询。
-func (h *ServiceAgentsMCPHandler) serviceRunHandleResult(sessionID string, run store.ServiceRun) *mcp.CallToolResult {
+func (h *ServiceAgentsMCPHandler) serviceRunHandleResult(sessionID string, run store.ServiceRun, notes ...string) *mcp.CallToolResult {
 	envelope := ServiceRunEnvelope{
 		ContractVersion: serviceRunAsyncContractVersion,
 		RunID:           run.RunID,
 		SessionID:       sessionID,
 		Status:          ServiceRunRunning,
 	}
-	return serviceRunToolResult(envelope)
+	return serviceRunToolResult(envelope, notes...)
 }
 
-func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string, run store.ServiceRun, thresholdSeconds int) (*mcp.CallToolResult, any, error) {
+func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string, run store.ServiceRun, thresholdSeconds int, notes ...string) (*mcp.CallToolResult, any, error) {
 	if terminal, env := serviceRunTerminalEnvelope(run); terminal {
-		return serviceRunToolResult(env), env, nil
+		return serviceRunToolResult(env, notes...), env, nil
 	}
 	wait := h.syncWait
 	if wait <= 0 {
@@ -594,13 +652,13 @@ func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string
 				}
 				var env ServiceRunEnvelope
 				if json.Unmarshal(ev.Payload, &env) == nil {
-					return serviceRunToolResult(env), env, nil
+					return serviceRunToolResult(env, notes...), env, nil
 				}
 			}
 		}
 		if current, err := h.store.GetServiceRun(ctx, run.RunID); err == nil {
 			if terminal, env := serviceRunTerminalEnvelope(current); terminal {
-				return serviceRunToolResult(env), env, nil
+				return serviceRunToolResult(env, notes...), env, nil
 			}
 		}
 		if time.Now().After(deadline) {
@@ -621,7 +679,7 @@ func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string
 		SessionID:       sessionID,
 		Status:          ServiceRunRunning,
 	}
-	return serviceRunToolResult(handle), handle, nil
+	return serviceRunToolResult(handle, notes...), handle, nil
 }
 
 func serviceRunTerminalEnvelope(run store.ServiceRun) (bool, ServiceRunEnvelope) {
@@ -715,14 +773,21 @@ func (h *ServiceAgentsMCPHandler) addRunStatusTool(srv *mcp.Server, callerUID in
 	})
 }
 
-func serviceRunToolResult(env ServiceRunEnvelope) *mcp.CallToolResult {
-	text := fmt.Sprintf("run=%s session=%s status=%s", env.RunID, env.SessionID, env.Status)
+func serviceRunToolResult(env ServiceRunEnvelope, notes ...string) *mcp.CallToolResult {
+	// 用 session_id 而不是 session：请求参数就叫 session_id，响应里换个叫法会让
+	// 客户端「照着返回值回传」时被静默忽略（追问变新会话）。
+	text := fmt.Sprintf("run=%s session_id=%s status=%s", env.RunID, env.SessionID, env.Status)
 	if env.Error != "" {
 		text += " error=" + env.Error
 	}
 	if env.Status == ServiceRunAwaitingInput {
 		// 返问：把问题直接带进文本摘要，调用方 LLM 无需解析 structuredContent 即可续聊。
 		text += " question=" + serviceAwaitQuestionText(env) + "（补充=以同一 session_id 再次调用）"
+	}
+	for _, note := range notes {
+		if note != "" {
+			text += " " + note
+		}
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
