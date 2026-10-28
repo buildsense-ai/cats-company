@@ -38,7 +38,20 @@ const (
 	defaultBotRunnerPollInterval = 500 * time.Millisecond
 	// 收到第一段回复后再等这么久没有新消息就收尾：bot 会把长回复切成多段
 	// （XiaoBa 按 4000 字切），收得太早会把答案截断。
-	defaultBotRunnerSettle = 2 * time.Second
+	//
+	// 为什么是 5s 而不是 2s：bot 干活时会「先说要做什么 → 真的去做 → 再报结果」。
+	// 中间那步（跑一条命令、读一个文件）经常超过 2s，于是平台在它开口的那一刻
+	// 就收尾了 —— 用户等了十几秒，拿到的却是「我先统计一下进程数量。」这种前言，
+	// 真正的内容一个字都没有，而且从结果上看不出是被截断的。
+	//
+	// 实测（同一组需要动手的问题，生产环境、真 bot）：
+	//   settle=2s  → 17 次里 2 次只拿到前言（88%）
+	//   settle=5s  → 13 次全部拿到数据，平均多花 2-3s
+	//   settle=8s  → 13 次全部拿到数据，平均多花 5s
+	// 多等两三秒换「一定能拿到内容」是划算的：用户不会因为多等 3s 抱怨，但会因为
+	// 白等一场且没有任何结果而放弃这个功能。慢 bot 想让平台等更久可以自己调大
+	// settle_seconds（云端改，不发版）；反过来想抢速度也可以调小。
+	defaultBotRunnerSettle = 5 * time.Second
 	botRunnerMessageBatch  = 50
 	// 单次回复的文本上限，防止对端刷屏把 run 结果撑爆。
 	maxBotRunnerReplyBytes = 64 << 10
