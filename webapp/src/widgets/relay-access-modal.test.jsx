@@ -26,7 +26,7 @@ import RelayAccessModal from './relay-access-modal';
 import { api } from '../api';
 import EnterpriseTeam from './plans/enterprise-team';
 import CatsCoPlansModal from './plans/catsco-plans-modal';
-import { personalPlanOffers, resolvePlanOffers } from './plans/plan-offers';
+import { personalPlanOffers, resolvePlanOffers, salePlansForOffers, teamPlanOffer } from './plans/plan-offers';
 
 describe('RelayAccessModal commercial rollout', () => {
   let container;
@@ -151,22 +151,22 @@ describe('RelayAccessModal commercial rollout', () => {
     });
   }
 
-  it('integrates the approved offers with real account data while blocking mismatched catalogue prices', async () => {
+  it('keeps the live catalogue purchasable when no draft offer matches', async () => {
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'alipay_page' }], plans: [
       { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, currency: 'CNY', duration_days: 30 },
+      { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, currency: 'CNY', duration_days: 30 },
     ] });
+    api.createCommercialOrder.mockResolvedValue({ order: null });
     await renderIntegratedPlans();
     await openPlanChooser();
     const prices = [...container.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent);
-    expect(prices).toEqual(['59', '99', '159']);
+    expect(prices).toEqual(['399', '799']);
     expect(container.textContent).not.toContain('免费版');
-    expect(container.textContent).toContain('Token 数为估算值');
-    await clickButton('获取 CatsCo 个人版');
-    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥99');
-    expect(findButton('暂未开放购买').disabled).toBe(true);
-    await clickButton('暂未开放购买');
-    expect(api.createCommercialOrder).not.toHaveBeenCalled();
-    expect(window.open).not.toHaveBeenCalled();
+    expect(container.querySelector('.relay-access-plan-highlights')).toBeNull();
+    await clickButton('选择个人版');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥399');
+    await clickButton('确认并前往支付宝');
+    expect(api.createCommercialOrder).toHaveBeenCalledWith(21, 'alipay_page', expect.any(String), expect.any(Object));
     await clickButton('返回');
     await clickButton('企业');
     expect(container.textContent).toContain('Business Start · 企业落地服务');
@@ -189,13 +189,124 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(api.createCommercialOrder).toHaveBeenCalledWith(918, 'test', expect.any(String), expect.objectContaining({ timeoutMs: 40_000 }));
   });
 
-  it('keeps direct plan links on the approved price without enabling old-price checkout', async () => {
+  it('uses the same live-catalogue fallback for direct plan links', async () => {
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans: [
       { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30 },
     ] });
     await renderIntegratedPlans({ initialPlanSlug: 'personal' });
-    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥99');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥399');
+    expect(findButton('确认购买').disabled).toBe(false);
+  });
+
+  it('preserves legacy and allowlisted offers during a partial catalogue rollout', () => {
+    const basic = { ...personalPlanOffers[0], id: 90 };
+    const legacy = { ...personalPlanOffers[1], price_fen: 39900 };
+    const internal = { id: 185, slug: 'internal-test', price_fen: 500 };
+    const plans = salePlansForOffers(personalPlanOffers, [basic, legacy, internal]);
+    expect(plans.map(plan => plan.id)).toEqual([90, 21, 22, 185]);
+    expect(plans[0].catalogUnavailable).toBeUndefined();
+    expect(plans[1]).toMatchObject({ price_fen: 39900, useCatalogPresentation: true });
+    expect(plans[2].catalogUnavailable).toBe(true);
+    expect(plans[3].useCatalogPresentation).toBe(true);
+    expect(salePlansForOffers(personalPlanOffers, [legacy], false)[0].catalogUnavailable).toBe(true);
+  });
+
+  it.each(['catsco-personal', 'catsco-pro'])('keeps existing %s customers on live-price renewal and upgrade paths', async slug => {
+    const plans = [
+      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30 },
+      { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30 },
+    ];
+    const activePlan = plans.find(plan => plan.slug === slug);
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans });
+    api.getRelayCommercial.mockResolvedValue({ enabled: true, summary: { entitlements: [
+      { plan_id: activePlan.id, plan_slug: slug, state: 'active' },
+    ] } });
+    api.createCommercialOrder.mockResolvedValue({ order: null });
+    await renderIntegratedPlans();
+    await openPlanChooser();
+    if (slug === 'catsco-personal') {
+      expect(findButton('升级至专业版').disabled).toBe(false);
+    } else {
+      expect(findButton('已包含').disabled).toBe(true);
+    }
+    await clickButton('续费');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain(`¥${activePlan.price_fen / 100}`);
+    await clickButton('确认购买');
+    expect(api.createCommercialOrder).toHaveBeenCalledWith(activePlan.id, 'test', expect.any(String), expect.any(Object));
+  });
+
+  it('keeps unmatched draft offers blocked when there is no server catalogue', async () => {
+    await renderIntegratedPlans();
+    await openPlanChooser();
+    expect([...container.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent)).toEqual(['59', '99', '159']);
+    await clickButton('获取 CatsCo 个人版');
     expect(findButton('暂未开放购买').disabled).toBe(true);
+    await clickButton('暂未开放购买');
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
+  it.each(['catsco-basic', 'catsco-personal', 'catsco-pro'])('preserves renewal and blocks included lower tiers for %s', async slug => {
+    const plans = personalPlanOffers.map((plan, index) => ({ ...plan, id: 90 + index }));
+    const activePlan = plans.find(plan => plan.slug === slug);
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans });
+    api.getRelayCommercial.mockResolvedValue({ enabled: true, summary: { entitlements: [
+      { plan_id: activePlan.id, plan_slug: slug, state: 'active' },
+    ] } });
+    api.createCommercialOrder.mockResolvedValue({ order: null });
+    await renderIntegratedPlans();
+    await openPlanChooser();
+    const rows = [...container.querySelectorAll('.relay-access-plan-row')];
+    for (let index = 0; index < plans.indexOf(activePlan); index++) {
+      expect(rows[index].querySelector('button').textContent).toContain('已包含');
+      expect(rows[index].querySelector('button').disabled).toBe(true);
+    }
+    expect(rows[plans.indexOf(activePlan)].querySelector('button').textContent).toContain('续费');
+    await clickButton('续费');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('续费后从当前套餐到期日顺延');
+    await clickButton('确认购买');
+    expect(api.createCommercialOrder).toHaveBeenCalledWith(activePlan.id, 'test', expect.any(String), expect.any(Object));
+  });
+
+  it('does not allow a direct basic-plan link to downgrade an active personal account', async () => {
+    const plans = personalPlanOffers.map((plan, index) => ({ ...plan, id: 90 + index }));
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans });
+    api.getRelayCommercial.mockResolvedValue({ enabled: true, summary: { entitlements: [
+      { plan_id: 91, plan_slug: 'catsco-personal', state: 'active' },
+    ] } });
+    await renderIntegratedPlans({ initialPlanSlug: 'catsco-basic' });
+    expect(container.querySelector('.relay-access-purchase-confirm')).toBeNull();
+    expect(container.querySelector('.relay-access-plan-row button').disabled).toBe(true);
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
+  it('uses the provided team price and billing period on the card and in confirmation', async () => {
+    const plan = { ...teamPlanOffer, price_fen: 69900, duration_days: 60 };
+    await renderModal({ planOffers: personalPlanOffers, enterprisePlanContent: ({ onSelectPlan }) => <EnterpriseTeam plan={plan} onSelectPlan={onSelectPlan} /> });
+    await openPlanChooser();
+    await clickButton('企业');
+    expect(container.querySelector('.enterprise-team-price').textContent).toBe('¥699/ 60天');
+    await clickButton('获取 CatsCo 团队版');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥699，每期 60 天');
+  });
+
+  it('moves focus into the chooser, traps Tab, and returns focus on close or purchase', async () => {
+    await renderIntegratedPlans();
+    const opener = findButton('升级套餐');
+    opener.focus();
+    await openPlanChooser();
+    const close = container.querySelector('[aria-label="关闭升级套餐"]');
+    expect(document.activeElement).toBe(close);
+    await act(async () => close.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })));
+    expect(document.activeElement.textContent).toContain('获取 CatsCo 专业版');
+    await act(async () => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true })));
+    expect(document.activeElement).toBe(close);
+    await act(async () => close.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(document.activeElement).toBe(opener);
+    await openPlanChooser();
+    await clickButton('获取 CatsCo 个人版');
+    expect(document.activeElement.textContent).toBe('返回');
+    await clickButton('返回');
+    expect(document.activeElement).toBe(container.querySelector('[aria-label="关闭升级套餐"]'));
   });
 
   it('requires an enabled server offer with matching currency, duration and a real ID', () => {

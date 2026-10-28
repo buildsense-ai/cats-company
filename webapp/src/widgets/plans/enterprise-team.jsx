@@ -17,7 +17,7 @@ export default function EnterpriseTeam({ onSelectPlan, plan = teamPlanOffer }) {
       <span className="enterprise-team-eyebrow">CATSCO TEAM</span>
       <h3 id="enterprise-team-title">团队版</h3>
       <p>适合团队共同使用与管理 AI 员工。</p>
-      <div className="enterprise-team-price"><span>¥</span><strong>599</strong><small>/ 月</small></div>
+      <div className="enterprise-team-price"><span>{plan.currency === 'USD' ? '$' : '¥'}</span><strong>{(Number(plan.price_fen) / 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}</strong><small>{Number(plan.duration_days || 30) === 30 ? '/ 月' : `/ ${plan.duration_days}天`}</small></div>
       <button type="button" onClick={() => onSelectPlan(plan)}>获取 CatsCo 团队版</button>
       <dl className="enterprise-team-allowances">
         <div><dt><Users size={16} aria-hidden="true" />团队成员</dt><dd>最多 10 人</dd></div>

@@ -69,3 +69,23 @@ export function resolvePlanOffers(offers, catalog, enabled = true) {
       : { ...offer, catalogUnavailable: true };
   });
 }
+
+// A staged offer must not hide a product the server still sells. Use the
+// catalogue's presentation too, so old prices never inherit draft quota claims.
+export function salePlansForOffers(offers, catalog, enabled = true) {
+  const resolved = resolvePlanOffers(offers, catalog, enabled);
+  const fromCatalog = plan => ({ ...plan, useCatalogPresentation: true, ...(!enabled ? { catalogUnavailable: true } : {}) });
+  if (catalog.length && !resolved.some(plan => !plan.catalogUnavailable)) {
+    return catalog.map(fromCatalog);
+  }
+  const remaining = new Set(catalog);
+  const plans = resolved.flatMap(plan => {
+    const sameSlug = catalog.filter(item => item.slug === plan.slug);
+    sameSlug.forEach(item => remaining.delete(item));
+    if (!plan.catalogUnavailable) {
+      return [plan, ...sameSlug.filter(item => item.id !== plan.id).map(fromCatalog)];
+    }
+    return sameSlug.length ? sameSlug.map(fromCatalog) : [plan];
+  });
+  return [...plans, ...Array.from(remaining, fromCatalog)];
+}
