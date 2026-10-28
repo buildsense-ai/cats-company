@@ -173,7 +173,7 @@ func TestServiceAgentInvokeRejectsThreeHopLoop(t *testing.T) {
 		return store.ServiceAgentDescriptor{
 			ID: id, Slug: slug, Name: slug, Version: 1,
 			OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: owner,
-			Visibility: store.ServiceAgentVisibilityPublic,
+			Visibility:     store.ServiceAgentVisibilityPublic,
 			DefinitionJSON: `{"runner":{"type":"bot","bot_uid":` + strconv.FormatInt(botUID, 10) + `}}`,
 		}
 	}
