@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +149,72 @@ func TestServiceAgentCallLoopGuardStopsAtMaxHops(t *testing.T) {
 	// 链尾往源头交：超过上限，必须拦（而不是一路放行）。
 	if !g.wouldLoop(49, 982) {
 		t.Fatal("超过追溯上限的委托应直接按回环拦下")
+	}
+}
+
+// 端到端三跳：A 把活交给 B，B 交给 C，C 再交回 A —— 必须拦住，且要说清「转了几手」。
+//
+// 这是「根治」的核心用例：旧版只看最近一次方向，这条链上每条边都新鲜、方向也不
+// 重复，于是 C→A 被当成正常委派放行，任务开始绕第二圈。
+func TestServiceAgentInvokeRejectsThreeHopLoop(t *testing.T) {
+	const owner = int64(38)
+	const jack, xiaoba, third = int64(982), int64(110), int64(275)
+	base := newFakeServiceAgentStore()
+	base.autoCompleteAfter = 5 * time.Millisecond
+	st := &accessAwareStore{
+		fakeServiceAgentStore: base,
+		ownerUID:              owner,
+		visibility:            store.ServiceAgentVisibilityPublic,
+	}
+	handler := NewServiceAgentsMCPHandler(st)
+	handler.SetBotIdentity(selfCallBotIdentity{})
+
+	agentFor := func(id int64, slug string, botUID int64) store.ServiceAgentDescriptor {
+		return store.ServiceAgentDescriptor{
+			ID: id, Slug: slug, Name: slug, Version: 1,
+			OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: owner,
+			Visibility: store.ServiceAgentVisibilityPublic,
+			DefinitionJSON: `{"runner":{"type":"bot","bot_uid":` + strconv.FormatInt(botUID, 10) + `}}`,
+		}
+	}
+	jackAgent := agentFor(61, "jack", jack)
+	xiaobaAgent := agentFor(62, "xiaoba", xiaoba)
+	thirdAgent := agentFor(63, "third", third)
+	base.agents = []store.ServiceAgentDescriptor{jackAgent, xiaobaAgent, thirdAgent}
+
+	invoke := func(agent store.ServiceAgentDescriptor, callerBot int64) string {
+		t.Helper()
+		st.definitionJSON = agent.DefinitionJSON
+		res, _, err := handler.invoke(context.Background(), agent, owner, serviceInvokeToolArgs{BotUID: callerBot})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		return mcpToolErrorText(res)
+	}
+
+	// 第一跳：杰克(982) → 小八(110)。
+	if text := invoke(xiaobaAgent, jack); strings.Contains(text, "agent_call_loop") {
+		t.Fatalf("第一跳不该被拦: %s", text)
+	}
+	// 第二跳：小八(110) → 第三方(275)。往下游走，不是环。
+	if text := invoke(thirdAgent, xiaoba); strings.Contains(text, "agent_call_loop") {
+		t.Fatalf("继续往下游委派不该被拦: %s", text)
+	}
+	// 第三跳：第三方(275) → 杰克(982)。回到链头，是环。
+	text := invoke(jackAgent, third)
+	if !strings.Contains(text, "agent_call_loop") {
+		t.Fatalf("三跳回环必须拦下，实际: %s", text)
+	}
+	// 文案要说清「转了几手」，否则模型只会换个应用再试一次（还是同一个环）。
+	if !strings.Contains(text, "2 手") {
+		t.Fatalf("文案应说明已经转了几手，实际: %s", text)
+	}
+	// 拦住时不能留下 run：建了就是一次真实的、分钟级的空转。
+	st.fakeServiceAgentStore.mu.Lock()
+	runs := len(st.fakeServiceAgentStore.runs)
+	st.fakeServiceAgentStore.mu.Unlock()
+	if runs != 2 {
+		t.Fatalf("回环应在建 run 之前被拦（前两跳共 2 个 run），实际 run 数 = %d", runs)
 	}
 }
 
