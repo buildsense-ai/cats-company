@@ -70,11 +70,21 @@ func TestBotRunnerAttachmentNote(t *testing.T) {
 
 // pushBotFile 推一条 file 类型的 bot 消息（模拟「结果写进文件」这类行为）。
 func pushBotFile(st *fakeBotStore, topic string, botUID int64, replyTo int64, content string) {
+	pushBotAttachment(st, topic, botUID, replyTo, content, "file")
+}
+
+// pushBotImage 推一条 image 类型的 bot 消息。send_file 对 png/jpg 发的是 image，
+// payload 形状和 file 完全一样 —— 内容只有 MsgType 这一个字段不同。
+func pushBotImage(st *fakeBotStore, topic string, botUID int64, replyTo int64, content string) {
+	pushBotAttachment(st, topic, botUID, replyTo, content, "image")
+}
+
+func pushBotAttachment(st *fakeBotStore, topic string, botUID int64, replyTo int64, content, msgType string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.nextID++
 	st.messages = append(st.messages, &types.Message{
-		ID: st.nextID, TopicID: topic, FromUID: botUID, Content: content, MsgType: "file", ReplyTo: replyTo,
+		ID: st.nextID, TopicID: topic, FromUID: botUID, Content: content, MsgType: msgType, ReplyTo: replyTo,
 	})
 }
 
@@ -241,5 +251,81 @@ func TestServiceAgentAbsoluteUploadURL(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("%q 期望 %q，实际 %q", tc.in, tc.want, got)
 		}
+	}
+}
+
+// 附件不能因为「已经见过明确归属的正文」而被关门。
+//
+// 实测的故障形态（生产 2026-10-28，第 2 轮）：中间叙述（带 reply_to + 还在干）
+// → send_file 发出的 image 消息（**不带任何归属标记**）→ 最终一句「已发送」。
+// 按「见过明确归属就只认明确归属」处理，那条 image 被稳定地当成过程记录跳过 ——
+// bot 明明发了文件，调用方什么都收不到，两边都看不出发生过什么。
+//
+// 附件是另一条发送路径，老客户端天生不带 reply_to / 会话标记；它不该被文字那套
+// 归属规则连带拒绝。唯一要保留的约束是「有别的单在抢时不认」。
+func TestBotRunnerKeepsAttachmentAfterOwnedReply(t *testing.T) {
+	const (
+		caller  = int64(38)
+		bot     = int64(982)
+		promptI = int64(100)
+	)
+	st := newFakeBotStore()
+	topic := botRunnerTopic(caller, bot)
+	runner := newTestBotRunner(st, &fakeBotHub{online: true})
+
+	// 1) 中间叙述：明确归属，且声明还没说完。
+	pushBotTextMeta(st, topic, bot, promptI, "我在自己机器上生成图片", "", map[string]any{
+		"catsco_turn_done": false,
+	})
+	// 2) 附件：没有任何归属标记（老客户端的形状）。
+	pushBotImage(st, topic, bot, 0, `{"type":"image","payload":{"url":"/uploads/images/x.png","name":"x.png","size":9}}`)
+	// 3) 最终回复：明确归属 + 说完了。
+	pushBotTextMeta(st, topic, bot, promptI, "已发送 x.png", "", map[string]any{
+		"catsco_turn_done": "sess_1",
+	})
+
+	got, attachments, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	if err != nil {
+		t.Fatalf("awaitReply: %v", err)
+	}
+	if !strings.Contains(got, "已发送 x.png") {
+		t.Fatalf("正文丢了：%s", got)
+	}
+	if len(attachments) != 1 || attachments[0].Name != "x.png" {
+		t.Fatalf("夹在正文之间的无标记附件也要认领，实际：%+v（正文 %q）", attachments, got)
+	}
+	if attachments[0].Kind != "image" {
+		t.Fatalf("图片 kind 应为 image：%+v", attachments[0])
+	}
+}
+
+// 但「有别的单在抢」时必须放弃：宁可少一个附件，也不要把别人那单的文件
+// 塞进本次结果 —— 那会让用户拿到不属于他的东西。
+func TestBotRunnerDropsUnownedAttachmentWhenCompeting(t *testing.T) {
+	const (
+		caller  = int64(38)
+		bot     = int64(982)
+		promptI = int64(100)
+	)
+	st := newFakeBotStore()
+	topic := botRunnerTopic(caller, bot)
+	runner := newTestBotRunner(st, &fakeBotHub{online: true})
+
+	// 模拟同 topic 上还有一单在等。
+	runner.claimTopic(topic)
+	defer runner.releaseTopic(topic)
+	// 本次自己的那一单只剩 invoke 层的那份计数（claimTopic 加过一次，这里再加）。
+	runner.claimTopic(topic)
+	defer runner.releaseTopic(topic)
+
+	pushBotTextMeta(st, topic, bot, promptI, "答案", "", map[string]any{"catsco_turn_done": "sess_1"})
+	pushBotFile(st, topic, bot, 0, `{"type":"file","payload":{"url":"/uploads/files/y.txt","name":"y.txt"}}`)
+
+	_, attachments, err := runner.awaitReply(topic, promptI, bot, "sess_1", runner.tuningFor(nil))
+	if err != nil {
+		t.Fatalf("awaitReply: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("还有别的单在等时不该认领无标记附件，实际：%+v", attachments)
 	}
 }
