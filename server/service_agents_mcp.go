@@ -28,12 +28,13 @@ import (
 // notifications/tools/list_changed；客户端亦可随时重查 tools/list（刷新兜底）。
 type ServiceAgentsMCPHandler struct {
 	store     store.ServiceAgentStore
-	bots      ServiceAgentBotIdentity  // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
-	external  *ServiceExternalRunner   // 外部执行后端（runner.type=http；可选）
-	botRunner *ServiceBotRunner        // bot-as-tool（runner.type=bot；可选）
-	balance   *ServiceBalanceChecker   // 计费预检（可选；未设置=跳过，调用面单测不受影响）
-	friends   serviceAgentFriendReader // 好友判定源（friends 级可见性；可选）
-	syncWait  time.Duration            // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
+	bots      ServiceAgentBotIdentity    // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
+	external  *ServiceExternalRunner     // 外部执行后端（runner.type=http；可选）
+	botRunner *ServiceBotRunner          // bot-as-tool（runner.type=bot；可选）
+	balance   *ServiceBalanceChecker     // 计费预检（可选；未设置=跳过，调用面单测不受影响）
+	friends   serviceAgentFriendReader   // 好友判定源（friends 级可见性；可选）
+	loops     *serviceAgentCallLoopGuard // 两跳回环（A→B→A）判定；进程内
+	syncWait  time.Duration              // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
 	http      *mcp.StreamableHTTPHandler
 
 	// liveMu/liveServers 跟踪每账号的在线 MCP 会话 server（getServer 每新会话调用一次，
@@ -53,6 +54,7 @@ var errServiceRunNotOwned = errors.New("service run not owned by caller")
 func NewServiceAgentsMCPHandler(st store.ServiceAgentStore) *ServiceAgentsMCPHandler {
 	h := &ServiceAgentsMCPHandler{
 		store:       st,
+		loops:       newServiceAgentCallLoopGuard(serviceAgentCallLoopWindow),
 		liveServers: map[int64]map[*mcp.Server]map[string]struct{}{},
 	}
 	h.http = mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
@@ -394,16 +396,27 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	// 这不是理论风险。把杰克分享成 catsco_jack-*，描述写着「把一段话交给杰克处理」，
 	// 杰克自己的工具列表里就会看到它 —— 它完全有理由认为「交给杰克」就是调这个工具，
 	// 于是调用自己：一轮几分钟、烧满额度，直到超时。而它从描述上看不出这是它自己。
-	//
-	// 两种调用方身份都要判：
-	//   - bot_uid 显式声明（XiaoBa 的 tool bridge 会带）；
-	//   - callerUID 本身就是那个 bot（bot 用自己凭证调 MCP 时就是这个样子）。
-	// 只判前一种会漏掉「bot 没带 bot_uid」的情形，而那正是最容易踩的一条。
-	if targetBotUID, isBotRunner := ParseBotRunnerBotUID(json.RawMessage(current.DefinitionJSON)); isBotRunner {
+	callOrigin := serviceAgentCallLoopOrigin(callerUID, botUID)
+	targetBotUID, isBotRunner := ParseBotRunnerBotUID(json.RawMessage(current.DefinitionJSON))
+	if isBotRunner {
+		// 两种调用方身份都要判，缺一条就漏一条：
+		//   - bot_uid 显式声明（XiaoBa 的 tool bridge 会带）；
+		//   - callerUID 本身就是那个 bot（bot 用自己凭证调 MCP 时就是这个样子，
+		//     而那正是最容易踩、也最容易被漏掉的一条）。
 		if (botUID != 0 && botUID == targetBotUID) || callerUID == targetBotUID {
 			return serviceToolError(
 				"agent_self_call: 这个应用就是你自己在执行，不要调用自己。请直接用自己的能力完成" +
 					"用户的要求（该做的判断、该跑的活都在你这边），不要把这个任务转回来"), nil, nil
+		}
+		// 两跳回环：A 刚把任务交给 B，B 现在又把活交回 A。
+		//
+		// 这条拦不住就会一直转下去，而且**不会超时**：bot 型应用是异步的，调用方
+		// 几十毫秒就拿到句柄返回，5 分钟超时只兜「对方不吭声」，兜不住「对方很勤快
+		// 地和你互推」。唯一的止损点是额度烧完 —— 那太晚了。
+		if h.loops.wouldLoop(callOrigin, targetBotUID) {
+			return serviceToolError(
+				"agent_call_loop: 对方刚刚把这个任务交给了你，现在你又要交回去，这样两边都做不成。" +
+					"请自己动手完成（该做的判断、该跑的活都在你这边），或者直接告诉用户这件事你办不了。"), nil, nil
 		}
 	}
 	if h.balance != nil {
@@ -463,7 +476,9 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	}
 	// bot 回合是分钟级的（上下文压缩 + 多轮推理），同步等只会把主 Agent 卡住，
 	// 所以这里直接返回运行句柄：调用方拿 run_id 自己去问 catsco_run_status，或等回执。
-	if _, isBot := ParseBotRunnerBotUID(json.RawMessage(agent.DefinitionJSON)); isBot {
+	if isBotRunner {
+		// 记下这次委托方向：被人反向调回来时就是靠它认出来的。
+		h.loops.record(callOrigin, targetBotUID)
 		return h.serviceRunHandleResult(session.SessionID, run), nil, nil
 	}
 	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds)
