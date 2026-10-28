@@ -366,16 +366,35 @@ func (h *ServiceAgentsMCPHandler) addAgentTool(srv *mcp.Server, agent store.Serv
 // 描述只放「模型做决定需要的信息」：这个应用干什么、什么时候该用/不该用。
 // slug/版本是平台实现细节，对模型是噪音，不放进描述（之前写成
 // "名字（CatsCo 定制应用，slug=…，版本 v…）"，等于什么都没说）。
+//
+// bot 型应用额外补一段文件交付说明：这是**工具契约**的一部分，不是某一单的内容。
+// 调用方模型靠描述决定怎么下单、怎么理解结果 —— 不知道这两件事，就会把对方那句
+// 「报告已生成在 /tmp/x.pdf」当成交付成功转告用户，也不会在下单时提「请用 send_file」。
 func serviceAgentToolDescription(agent store.ServiceAgentDescriptor) string {
-	if description := strings.TrimSpace(agent.Description); description != "" {
-		return description
+	base := strings.TrimSpace(agent.Description)
+	if base == "" {
+		// 没写描述：明说信息不足，别让模型凭名字瞎猜（也提示调用方先把需求原文传进去）。
+		base = fmt.Sprintf(
+			"%s（作者未说明这个应用能做什么；建议只在用户明确点名 catsco_%s 时调用，并把需求原文放入 input）",
+			agent.Name, agent.Slug,
+		)
 	}
-	// 没写描述：明说信息不足，别让模型凭名字瞎猜（也提示调用方先把需求原文传进去）。
-	return fmt.Sprintf(
-		"%s（作者未说明这个应用能做什么；建议只在用户明确点名 catsco_%s 时调用，并把需求原文放入 input）",
-		agent.Name, agent.Slug,
-	)
+	if _, isBotRunner := ParseBotRunnerBotUID(json.RawMessage(agent.DefinitionJSON)); !isBotRunner {
+		return base
+	}
+	return base + "\n\n" + serviceAgentFileDeliveryNote
 }
+
+// serviceAgentFileDeliveryNote 说明这个应用怎么交出文件。
+//
+// 为什么必须说：bot 型应用是**另一个 Agent 在另一台机器上跑**，它有自己的磁盘。
+// 模型很容易把结果写成「文件已生成：/tmp/report.pdf」—— 在它自己的对话里看着合理，
+// 但调用方只能拿到这段文字，文件还留在对方机器上，两边都看不出发生过什么。
+//
+// 两头都要说清：下单时（要文件就明确要求对方发）、收货时（attachments 是产物链接）。
+const serviceAgentFileDeliveryNote = "文件交付：这是另一个 Agent 在它自己的机器上执行，它只能通过 send_file 把文件真正交出来。" +
+	"需要在结果里拿到文件或图片时，请在 input 里明确要求它用 send_file 发送 —— 只让它写路径的话，文件留在那台机器上，你取不到。" +
+	"结果里的 attachments 是可下载的产物绝对地址，请原样转给用户，不要改写或省略。"
 
 // composeServiceAgentToolSchema 把作者给的 input schema 包进完整的工具参数 schema。
 //

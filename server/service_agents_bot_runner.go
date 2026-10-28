@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -489,6 +490,16 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		return
 	}
 
+	// 只在「提到了本机路径、却什么都没发出来」时补一句如实说明。
+	//
+	// 不去读对方的磁盘、不去猜内容 —— 那是另一件事（等于给了一个「把本机任意可读
+	// 文件传出去」的原语）。这里只解决「两边都看不出发生过什么」：调用方据此能
+	// 让 bot 重新用 send_file 发一次，而不是把那句路径当成拿到了文件。
+	if note := botRunnerUndeclaredPathNote(reply, attachments); note != "" {
+		reply = strings.TrimSpace(reply) + "\n\n" + note
+		log.Printf("bot runner: run=%s 答复提到本机路径但没有附件，已附平台提示", req.RunID)
+	}
+
 	envelope := ServiceRunEnvelope{
 		ContractVersion: serviceRunResultContractVersion,
 		RunID:           req.RunID,
@@ -714,6 +725,31 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 		}
 		time.Sleep(tuning.Poll)
 	}
+}
+
+// botRunnerLocalPathPattern 匹配「本机绝对路径 + 扩展名」的形态。
+//
+// 只覆盖确实属于执行环境本地的根，**故意不含 /uploads/** —— 那是平台自己的地址，
+// 调用方本来就取得到，把它算成「没交付的文件」只会制造噪音。
+var botRunnerLocalPathPattern = regexp.MustCompile(
+	`(?:[A-Za-z]:\\[^\s"'”）)】]*|/(?:tmp|var|home|Users|root|opt|srv|mnt|private)/[^\s"'”）)】]*)\.[A-Za-z0-9]{1,8}`)
+
+// botRunnerUndeclaredPathNote 在「答复提到本机路径、却没有任何附件」时补一句如实说明。
+//
+// 这是「提醒失败」时的兜底：平台已经从两头提醒过（派活时说明 + 客户端系统提示），
+// 但模型仍可能只写路径。这时至少要让调用方知道文件没到手 —— 否则它会把那句路径
+// 当成「文件已交付」转告用户，用户去点一个不存在的地址。
+//
+// 有附件时一句话都不加：那时路径只是补充信息，不需要解释。
+func botRunnerUndeclaredPathNote(reply string, attachments []ServiceRunAttachment) string {
+	if len(attachments) > 0 || strings.TrimSpace(reply) == "" {
+		return ""
+	}
+	if !botRunnerLocalPathPattern.MatchString(reply) {
+		return ""
+	}
+	return "（平台提示：上面提到了本机文件路径，但本次没有任何文件随结果返回 —— " +
+		"那个文件在对方机器上，取不到。需要文件本身的话，请让对方用 send_file 发送。）"
 }
 
 // botReplyAttachmentNote 把一条 file/image 消息翻成调用方能读懂的附件说明。
