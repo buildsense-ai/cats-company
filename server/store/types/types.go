@@ -69,16 +69,20 @@ type CommercialPlan struct {
 	CloudWorkerDeploymentProfile string `json:"cloud_worker_deployment_profile,omitempty"`
 	// CloudWorkerRetentionDays overrides how long a worker's data survives
 	// package expiry (0 = derive from DurationDays: ≤7d→3, longer→7).
-	CloudWorkerRetentionDays int     `json:"cloud_worker_retention_days,omitempty"`
-	ID                       int64   `json:"id"`
-	Slug                     string  `json:"slug"`
-	Name                     string  `json:"name"`
-	Description              string  `json:"description,omitempty"`
-	PriceFen                 int64   `json:"price_fen"`
-	Currency                 string  `json:"currency"`
-	SaleState                string  `json:"sale_state"`
-	PurchaseLimit            int     `json:"purchase_limit"`
-	MonthlyBudget            float64 `json:"monthly_budget_cny,omitempty"`
+	CloudWorkerRetentionDays int `json:"cloud_worker_retention_days,omitempty"`
+	// CloudWorkerIncluded says whether this package buys a cloud worker at all.
+	// It replaces the slug allow-list that used to gate fulfilment, so a new
+	// package needs a data change rather than a code change.
+	CloudWorkerIncluded bool    `json:"cloud_worker_included"`
+	ID                  int64   `json:"id"`
+	Slug                string  `json:"slug"`
+	Name                string  `json:"name"`
+	Description         string  `json:"description,omitempty"`
+	PriceFen            int64   `json:"price_fen"`
+	Currency            string  `json:"currency"`
+	SaleState           string  `json:"sale_state"`
+	PurchaseLimit       int     `json:"purchase_limit"`
+	MonthlyBudget       float64 `json:"monthly_budget_cny,omitempty"`
 	// RealCostCNY is the real upstream cost budget behind this plan's points.
 	// Quota conversion uses points / real_cost_cny when set; 0 keeps the
 	// built-in official anchor (or the relay default for custom plans).
@@ -133,6 +137,11 @@ type CommercialOrder struct {
 	LastError         string             `json:"-"`
 	CreatedAt         time.Time          `json:"created_at"`
 	UpdatedAt         time.Time          `json:"updated_at"`
+	// PlanIncludesWorker is filled in by fulfilment from the plan row. It is
+	// deliberately not a column: it is a one-shot signal for the post-commit
+	// hooks (renew/ensure) and must not be read back as a historic fact, since
+	// the plan can be edited after an order is fulfilled.
+	PlanIncludesWorker bool `json:"-"`
 }
 
 // CommercialPaymentConfirmation is the normalized, verified result emitted by

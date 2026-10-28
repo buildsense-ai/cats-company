@@ -8,6 +8,7 @@ import (
 )
 
 const (
+	commercialBasicPlanSlug    = "catsco-basic"
 	commercialPersonalPlanSlug = "catsco-personal"
 	commercialProPlanSlug      = "catsco-pro"
 	commercialFreePlanSlug     = "catsco-free"
@@ -21,15 +22,27 @@ const (
 // validation now happens once, in the server package, before the store is
 // called.
 
+// commercialOfficialPlanTiers orders the entry packages. The number is ordinal,
+// never stored: every comparison reads it through commercialOfficialPlanTier,
+// so inserting a cheaper plan below the current entry point only means adding
+// it here.
+var commercialOfficialPlanTiers = []struct {
+	slug string
+	tier int
+}{
+	{commercialBasicPlanSlug, 1},
+	{commercialPersonalPlanSlug, 2},
+	{commercialProPlanSlug, 3},
+}
+
 func commercialOfficialPlanTier(slug string) int {
-	switch strings.TrimSpace(slug) {
-	case commercialPersonalPlanSlug:
-		return 1
-	case commercialProPlanSlug:
-		return 2
-	default:
-		return 0
+	slug = strings.TrimSpace(slug)
+	for _, entry := range commercialOfficialPlanTiers {
+		if entry.slug == slug {
+			return entry.tier
+		}
 	}
+	return 0
 }
 
 func lockCommercialOfficialPlanTier(tx *sql.Tx, uid int64) error {
@@ -229,11 +242,17 @@ func revokeCommercialFreeBaseline(tx *sql.Tx, uid int64, targetSlug string, now 
 	return nil
 }
 
+// commercialOfficialPlanSlugsBelow lists the lower tiers a purchase supersedes.
+// Derived from the same table as the tier numbers so a new entry package cannot
+// keep handing out a credit that the upgrade was supposed to replace.
 func commercialOfficialPlanSlugsBelow(targetTier int) []string {
-	if targetTier > 1 {
-		return []string{commercialPersonalPlanSlug}
+	var slugs []string
+	for _, entry := range commercialOfficialPlanTiers {
+		if entry.tier < targetTier {
+			slugs = append(slugs, entry.slug)
+		}
 	}
-	return nil
+	return slugs
 }
 
 func revokeCommercialPlanTier(tx *sql.Tx, uid int64, slug, targetSlug string, now time.Time) error {

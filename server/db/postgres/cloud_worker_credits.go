@@ -570,6 +570,26 @@ func grantCloudWorkerCredit(tx *sql.Tx, uid int64, sourceRef string, expiresAt t
 	return nil
 }
 
+// planIncludesCloudWorker reports whether the purchased package buys a cloud
+// worker at all.
+//
+// This used to be a slug allow-list (catsco-personal/catsco-pro) duplicated in
+// the fulfilment transaction and in the payment handler. A new package then
+// silently sold tokens with no machine, and the two copies could disagree. The
+// answer is now a column, so the plan editor decides it.
+func planIncludesCloudWorker(tx *sql.Tx, planID int64) (bool, error) {
+	var included bool
+	err := tx.QueryRow(`SELECT cloud_worker_included FROM commercial_plans WHERE id = $1`, planID).Scan(&included)
+	if err == sql.ErrNoRows {
+		// A plan row that vanished inside the transaction must not mint a machine.
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read plan cloud worker inclusion: %w", err)
+	}
+	return included, nil
+}
+
 // planCloudWorkerDeploymentProfile resolves which fleet a plan's provisioning
 // credit should buy. Plans that predate the column, or a plan row that vanished
 // inside the transaction, fall back to the dedicated default rather than

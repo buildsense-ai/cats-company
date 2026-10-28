@@ -95,6 +95,10 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 	copy.CloudWorkerDeploymentProfile = ""
 	// Retention windows are an internal capacity/cost decision.
 	copy.CloudWorkerRetentionDays = 0
+	// Whether a package mints a machine is a capacity decision too. The public
+	// page advertises what the package contains in its own copy; exposing this
+	// flag would let a buyer cache it and expect a machine after an edit.
+	copy.CloudWorkerIncluded = false
 	return &copy
 }
 
@@ -102,6 +106,24 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 // request omits the field: the plan editor does not round-trip every column, so
 // an absent value must not silently move already-sold plans back onto dedicated
 // instances. An explicit value, including an empty string, is honoured.
+// resolvePlanIncludesWorker keeps a plan's machine-inclusion decision when the
+// admin request omits the field.
+//
+// The plan editor does not round-trip every column, so an absent field must not
+// be read as false: that would strip the machine from a package that is already
+// on sale, and the next buyer would pay for tokens alone. The same reason the
+// fleet assignment is resolved this way.
+func resolvePlanIncludesWorker(existing *types.CommercialPlan, requested *bool) bool {
+	if requested != nil {
+		return *requested
+	}
+	if existing != nil {
+		return existing.CloudWorkerIncluded
+	}
+	// A brand new plan is token-only until an operator says otherwise.
+	return false
+}
+
 func resolvePlanDeploymentProfile(existing *types.CommercialPlan, requested *string) (string, error) {
 	if requested != nil {
 		profile, ok := types.NormalizeCloudWorkerProfile(strings.TrimSpace(*requested))
@@ -1087,8 +1109,10 @@ var commercialCodePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{3,63}$
 // pinned, because "this slug is an official paid plan" is a business fact, not
 // a model fact.
 var commercialOfficialPaidPlanSlugs = map[string]struct{}{
-	"catsco-personal": {},
-	"catsco-pro":      {},
+	"catsco-basic":        {},
+	"catsco-personal":     {},
+	"catsco-pro":          {},
+	"catsco-team-monthly": {},
 }
 
 // IsCommercialOfficialPaidPlanSlug reports whether a slug is one of the plans
@@ -1307,6 +1331,10 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			CloudWorkerDeploymentProfile *string `json:"cloud_worker_deployment_profile"`
 			// 0 keeps the derived window (7d→3, longer→7); a positive value pins it.
 			CloudWorkerRetentionDays int `json:"cloud_worker_retention_days"`
+			// Pointer so an absent field keeps the plan's current setting instead of
+			// decoding to false and silently stripping the machine from a package
+			// that is already on sale.
+			CloudWorkerIncluded *bool `json:"cloud_worker_included"`
 			// Pointer so an absent field keeps the plan's current setting
 			// instead of decoding to false and silently pinning the plan.
 			AutoUpdateModels *bool `json:"auto_update_models"`
@@ -1394,6 +1422,11 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "cloud worker retention days must be within 0-90"})
 			return
 		}
+		// An absent flag keeps the plan's current setting; a new plan defaults to
+		// token-only, matching the column default. Making the operator say it
+		// explicitly is deliberate: accidentally minting machines is expensive,
+		// accidentally not minting them is a support ticket.
+		cloudWorkerIncluded := resolvePlanIncludesWorker(existingPlan, req.CloudWorkerIncluded)
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
 			Slug:                         req.Slug,
 			Name:                         req.Name,
@@ -1411,6 +1444,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			CloudWorkerBillingMode:       billing,
 			CloudWorkerDeploymentProfile: deploymentProfile,
 			CloudWorkerRetentionDays:     req.CloudWorkerRetentionDays,
+			CloudWorkerIncluded:          cloudWorkerIncluded,
 			DurationDays:                 req.DurationDays,
 			State:                        req.State,
 			SortOrder:                    req.SortOrder,

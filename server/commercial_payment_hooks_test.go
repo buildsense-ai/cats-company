@@ -7,16 +7,22 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-// Buying an official paid plan (399/799) must fan out to the cloud worker
-// hooks exactly once per fulfillment: renewal/resubscribe for existing
-// instances and the post-purchase auto provisioning for first purchases.
-// Both stay asynchronous so provider work never blocks the payment callback.
+// A package that includes a machine must fan out to the cloud worker hooks
+// exactly once per fulfillment: renewal for existing instances and the
+// post-purchase auto provisioning for first purchases. Both stay asynchronous
+// so provider work never blocks the payment callback.
+//
+// Which packages include a machine is a plan attribute (cloud_worker_included),
+// not a slug allow-list: the slug check used to live here and in the fulfilment
+// transaction, so a new package silently sold tokens with no machine.
 func TestFulfillCommercialOrderTriggersCloudWorkerHooks(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	store.orders["CC-HOOKS"] = &types.CommercialOrder{
-		OrderNo: "CC-HOOKS", UID: 38, AmountFen: 39900, Currency: "CNY",
+		OrderNo: "CC-HOOKS", UID: 38, AmountFen: 5900, Currency: "CNY",
 		Channel: commercialPaymentChannelAlipayPage, Status: "pending",
-		PlanSlug: "catsco-personal", PlanName: "个人版",
+		PlanSlug: "catsco-basic", PlanName: "基础版",
+		// Filled in by the real fulfilment from the plan row.
+		PlanIncludesWorker: true,
 	}
 	renewCalls := make(chan int64, 1)
 	ensureCalls := make(chan int64, 1)
@@ -26,7 +32,7 @@ func TestFulfillCommercialOrderTriggersCloudWorkerHooks(t *testing.T) {
 	})
 	confirmation := &types.CommercialPaymentConfirmation{
 		Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-HOOKS",
-		AmountFen: 39900, Currency: "CNY",
+		AmountFen: 5900, Currency: "CNY",
 	}
 	fulfilled, changed, err := handler.fulfillCommercialOrder("CC-HOOKS", confirmation)
 	if err != nil || !changed || fulfilled == nil {
@@ -55,7 +61,11 @@ func TestFulfillCommercialOrderSkipsCloudWorkerHooksForOtherPlans(t *testing.T) 
 	store.orders["CC-HOOKS-SKIP"] = &types.CommercialOrder{
 		OrderNo: "CC-HOOKS-SKIP", UID: 38, AmountFen: 10000, Currency: "CNY",
 		Channel: commercialPaymentChannelAlipayPage, Status: "pending",
+		// A token-only package: selling quota must never mint a machine. This is
+		// the path that would otherwise create a worker out of the static
+		// rollout quota for a buyer that holds no provisioning credit.
 		PlanSlug: "catsco-legacy-custom", PlanName: "定制",
+		PlanIncludesWorker: false,
 	}
 	called := make(chan int64, 2)
 	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
@@ -83,9 +93,10 @@ func TestFulfillCommercialOrderSkipsCloudWorkerHooksForOtherPlans(t *testing.T) 
 func TestFulfillCommercialOrderHooksRunOncePerOrder(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	store.orders["CC-HOOKS-ONCE"] = &types.CommercialOrder{
-		OrderNo: "CC-HOOKS-ONCE", UID: 38, AmountFen: 39900, Currency: "CNY",
+		OrderNo: "CC-HOOKS-ONCE", UID: 38, AmountFen: 5900, Currency: "CNY",
 		Channel: commercialPaymentChannelAlipayPage, Status: "pending",
 		PlanSlug: "catsco-personal", PlanName: "个人版",
+		PlanIncludesWorker: true,
 	}
 	ensureCalls := make(chan int64, 4)
 	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
@@ -93,7 +104,7 @@ func TestFulfillCommercialOrderHooksRunOncePerOrder(t *testing.T) {
 	})
 	confirmation := &types.CommercialPaymentConfirmation{
 		Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-ONCE",
-		AmountFen: 39900, Currency: "CNY",
+		AmountFen: 5900, Currency: "CNY",
 	}
 	if _, changed, err := handler.fulfillCommercialOrder("CC-HOOKS-ONCE", confirmation); err != nil || !changed {
 		t.Fatalf("first fulfill: changed=%v err=%v", changed, err)

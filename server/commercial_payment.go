@@ -195,10 +195,11 @@ func (h *CommercialPaymentHandler) fulfillCommercialOrder(orderNo string, confir
 	if err != nil || !changed || fulfilled == nil {
 		return fulfilled, changed, err
 	}
-	if strings.EqualFold(fulfilled.PlanSlug, "catsco-personal") || strings.EqualFold(fulfilled.PlanSlug, "catsco-pro") {
-		// Payment and the database lifecycle extension are already committed.
-		// Provider renewal remains asynchronous so a Tianyi failure never makes
-		// an Alipay callback fail or rolls back the paid entitlement.
+	if fulfilled.PlanIncludesWorker {
+		// The plan buys a cloud worker; fulfilment has already minted or extended
+		// the entitlement and (inside the same transaction) the provisioning
+		// credit. Both hooks are asynchronous so a Tianyi failure never makes an
+		// Alipay callback fail or rolls back the paid entitlement.
 		if h.renewCloudWorkers != nil {
 			go h.renewCloudWorkers(fulfilled.UID)
 		}
