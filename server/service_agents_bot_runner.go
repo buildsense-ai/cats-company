@@ -147,6 +147,20 @@ func (r *ServiceBotRunner) tuningFor(definition json.RawMessage) botRunnerTuning
 	return t
 }
 
+// BotOnline 报告目标 bot 是否在线（运行时心跳）。
+//
+// 给调用面做「建 run 之前」的预检用：bot 不在线时投递必然失败，但那要等 run 建完
+// 才发现 —— 调用方看到的是「受理成功 → 几秒后 failed」，白等一轮还要再查原因。
+//
+// 判不了就放行：hub 未注入、bot 身份缺失时返回 true。预检是体验优化，不能变成
+// 新的拦截点（worker 型应用的 checkWorkerOnline 也是同样的 fail-open 取舍）。
+func (r *ServiceBotRunner) BotOnline(botUID int64) bool {
+	if r == nil || r.hub == nil || botUID == 0 {
+		return true
+	}
+	return r.hub.BotRuntimeOnline(botUID)
+}
+
 // claimTopic 登记「我要在这个 topic 上等一条回复」，返回当前共有几单在等。
 func (r *ServiceBotRunner) claimTopic(topic string) int {
 	r.mu.Lock()

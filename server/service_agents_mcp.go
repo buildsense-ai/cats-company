@@ -448,6 +448,20 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if err != nil || len(input) == 0 || string(input) == "null" {
 		input = json.RawMessage(`{}`)
 	}
+	// 入参体检（在建 run 之前）：input_schema 以前只用来对客户端宣告，服务端从不校验。
+	// 传错字段名的调用因此会「受理成功」，然后 bot 收到一段纯 JSON 噪音或者干等到
+	// bot_empty_input —— 用户白等几十秒、额度照烧，还不知道是自己传错了。
+	if problem := serviceAgentInputProblem(agent.InputSchema, input); problem != "" {
+		return serviceToolError(problem), nil, nil
+	}
+	// bot 型应用：先确认目标 bot 在线，否则一受理就是一次注定失败的 run。
+	// worker 型早就有这层预检，bot 型之前漏了 —— 调用方看到的是「受理成功 → 几秒后
+	// failed」，白等一轮还得再去查原因。
+	if isBotRunner && h.botRunner != nil && !h.botRunner.BotOnline(targetBotUID) {
+		return serviceToolError(
+			"bot_offline: 执行这个应用的小八现在不在线，派过去也没人接单。" +
+				"请让发布者那边（或你自己）把对应的小八启动并登录后再试。这是执行环境的问题，不是调用参数的问题。"), nil, nil
+	}
 	session, err := h.resolveSession(ctx, agent, callerUID, botUID, args.SessionID)
 	if err != nil {
 		if errors.Is(err, errServiceRunNotOwned) || errors.Is(err, store.ErrServiceSessionNotFound) {
@@ -657,6 +671,12 @@ func serviceRunErrorText(run store.ServiceRun) string {
 		return "worker_offline: 发布者那边没有在线的 worker。请转告发布者在跑这个应用的那台机器上启动小八并登录。"
 	}
 	if code != "" {
+		// 已经是「code: 一句人话」的形态就不再加尾巴。bot_offline / bot_timeout /
+		// bot_empty_input 这些失败原因自带说明，拼上 ": run terminated" 只会读成
+		// 两句黏在一起的话（"…等它上线后再试: run terminated"）。
+		if strings.Contains(code, ": ") {
+			return code
+		}
 		return code + ": run terminated"
 	}
 	return "run terminated"
