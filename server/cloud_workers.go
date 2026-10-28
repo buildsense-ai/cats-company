@@ -1162,6 +1162,28 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewRep
 	return report
 }
 
+// cloudWorkerRenewArgs builds the provider renewal invocation for one lifecycle.
+//
+// One renewal event buys exactly one more paid month, so the increment is pinned
+// rather than inherited from a deployment snapshot that may record a multi-month
+// creation purchase.
+//
+// The expiry is forwarded because a packed container has no cloud subscription:
+// the deployment adapter cannot derive a new expiry from a subscription cycle and
+// used to fall back to a hard-coded +30 days, silently handing a 7-day package
+// three extra weeks. The account's paid window is the authoritative value.
+//
+// It is only forwarded when it actually extends the row — a stale entitlement
+// must never pull an already-paid window backwards. When the store cannot report
+// a package expiry (manual perpetual grants) the adapter keeps its own fallback.
+func (h *CloudWorkerHandler) cloudWorkerRenewArgs(uid int64, lifecycle CloudWorkerLifecycle) []string {
+	args := []string{"--name", lifecycle.TenantName, "--cycle-count", "1"}
+	if paidUntil := h.cloudWorkerPaidUntil(uid, nil); !paidUntil.IsZero() && lifecycle.PackageExpiresAt.Before(paidUntil) {
+		args = append(args, "--expires-at", paidUntil.UTC().Format(time.RFC3339))
+	}
+	return args
+}
+
 // renewOneCloudWorker runs the provider renewal for a single lifecycle and
 // reports the outcome; it never creates a replacement instance.
 func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorkerLifecycle) types.CloudWorkerRenewOutcome {
@@ -1178,7 +1200,7 @@ func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorke
 	// One renewal event buys exactly one more paid month. A tenant's
 	// deployment snapshot can record a multi-month creation purchase, so
 	// pin the monthly step explicitly instead of inheriting that count.
-	out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName, "--cycle-count", "1")
+	out, err := h.runScript(h.renewScript, h.cloudWorkerRenewArgs(uid, lifecycle)...)
 	if err != nil {
 		item.Status = types.CloudWorkerRenewFailed
 		item.Message = err.Error()
