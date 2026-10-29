@@ -74,6 +74,11 @@ type CommercialPlan struct {
 	// It replaces the slug allow-list that used to gate fulfilment, so a new
 	// package needs a data change rather than a code change.
 	CloudWorkerIncluded bool    `json:"cloud_worker_included"`
+	// PlanTier is the package's rung on the upgrade ladder (ordinal, never
+	// displayed). 0 means "not on the ladder": free, internal and legacy
+	// packages. The public catalog does expose it — it describes the buyer's own
+	// upgrade path and carries no pricing information.
+	PlanTier int `json:"plan_tier"`
 	ID                  int64   `json:"id"`
 	Slug                string  `json:"slug"`
 	Name                string  `json:"name"`

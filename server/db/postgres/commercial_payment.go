@@ -12,7 +12,7 @@ import (
 )
 
 const commercialPlanColumns = `id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included`
+  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included, plan_tier`
 
 // commercialRefundMinRetentionDays bounds the retention window after a refund
 // for lifecycles that predate the per-plan retention column. A refund is a
@@ -551,7 +551,11 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	// not discard paid time. Upgrades still start immediately at payment time;
 	// an expired plan has no active period and also starts immediately.
 	periodStartsAt := paidAt
-	if commercialOfficialPlanTier(order.PlanSlug) > 0 {
+	orderTier, tierErr := planTierForSlug(tx, order.PlanSlug)
+	if tierErr != nil {
+		return nil, false, tierErr
+	}
+	if orderTier > 0 {
 		if currentExpiry, active, expiryErr := activeCommercialOfficialPlanExpiry(tx, order.UID, order.PlanSlug, paidAt); expiryErr != nil {
 			return nil, false, expiryErr
 		} else if active && currentExpiry.After(periodStartsAt) {

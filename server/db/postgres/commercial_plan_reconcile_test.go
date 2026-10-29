@@ -298,19 +298,38 @@ func TestReconcileSortedNamesAreDeterministic(t *testing.T) {
 // Free is the dangerous one: it is sold to every account, so letting it follow
 // the catalog would hand out the flagship models the moment they became
 // sellable, and its own migration would fight the reconcile over the model set.
+// The ladder membership is data now (`commercial_plans.plan_tier`), not a slug
+// allow-list in Go, so this test asserts the mapping the migration establishes
+// rather than a literal table. It still guards the split between "official paid
+// plan" and "free / legacy", because getting that wrong makes Free track the
+// relay catalog and hand out flagship models to every account.
 func TestReconcileSelectionKeepsFreeAndLegacyOut(t *testing.T) {
-	// The official paid plans always follow the catalog, switch or not.
-	for _, slug := range []string{commercialPersonalPlanSlug, commercialProPlanSlug} {
-		if commercialOfficialPlanTier(slug) == 0 {
-			t.Fatalf("%s must be an official paid plan", slug)
+	// Rungs the migration backfills. If a package line is replaced, these slugs
+	// change and this test must change with them — that is the point: the
+	// mapping is explicit rather than inferred from a name.
+	officialRungs := map[string]int{
+		commercialPersonalPlanSlug: 2,
+		commercialProPlanSlug:      3,
+	}
+	for slug, tier := range officialRungs {
+		if !reconcileCoversPlan(slug, tier, false) {
+			t.Fatalf("%s (tier %d) must follow the catalog even with auto-update off", slug, tier)
 		}
 	}
 	// Free and legacy are excluded by the query's NOT IN, so they must not be
-	// reachable through the official-plan path either.
+	// reachable through the official-plan path either — even if a row somehow
+	// carries a rung.
 	for _, slug := range []string{commercialFreePlanSlug, commercialLegacyPlanSlug} {
-		if commercialOfficialPlanTier(slug) != 0 {
+		if reconcileCoversPlan(slug, 1, true) {
 			t.Fatalf("%s must not be treated as an official paid plan", slug)
 		}
+	}
+	// A plan outside the ladder follows its own switch.
+	if !reconcileCoversPlan("catsco-internal-all-models", 0, true) {
+		t.Fatal("an internal plan with auto-update on must follow the catalog")
+	}
+	if reconcileCoversPlan("catsco-internal-pinned", 0, false) {
+		t.Fatal("an internal plan with auto-update off must keep its pinned model set")
 	}
 }
 
@@ -385,28 +404,30 @@ func TestReconcileGrantSharesSkipNonPositiveBudgets(t *testing.T) {
 func TestReconcileSelectionFollowsThePlanSwitch(t *testing.T) {
 	cases := []struct {
 		slug       string
+		tier       int
 		autoUpdate bool
 		want       bool
 	}{
-		{commercialPersonalPlanSlug, true, true},
-		{commercialProPlanSlug, true, true},
-		// The official plans follow the catalog even if the switch was turned off.
-		{commercialPersonalPlanSlug, false, true},
-		{commercialProPlanSlug, false, true},
-		// An opted-in internal plan follows it too - this is the case that was
-		// silently skipped before, leaving its buyers without grants for models
+		{commercialPersonalPlanSlug, 2, true, true},
+		{commercialProPlanSlug, 3, true, true},
+		// Ladder membership wins over the switch: a package on sale must never
+		// freeze its model set because someone unticked a box by accident.
+		{commercialPersonalPlanSlug, 2, false, true},
+		{commercialProPlanSlug, 3, false, true},
+		// A package off the ladder follows its own switch. This is the case that
+		// was silently skipped before, leaving buyers without grants for models
 		// the plan already advertised.
-		{"catsco-internal-all-models-50k", true, true},
+		{"catsco-internal-all-models-50k", 0, true, true},
 		// An operator who unchecks the switch pins exactly the models they picked.
-		{"catsco-internal-pinned", false, false},
+		{"catsco-internal-pinned", 0, false, false},
 		// Free is sold to every account and keeps its own model set.
-		{commercialFreePlanSlug, true, false},
-		{commercialLegacyPlanSlug, true, false},
+		{commercialFreePlanSlug, 0, true, false},
+		{commercialLegacyPlanSlug, 0, true, false},
 	}
 	for _, tc := range cases {
-		got := reconcileCoversPlan(tc.slug, tc.autoUpdate)
+		got := reconcileCoversPlan(tc.slug, tc.tier, tc.autoUpdate)
 		if got != tc.want {
-			t.Fatalf("reconcileCoversPlan(%q, auto=%v) = %v, want %v", tc.slug, tc.autoUpdate, got, tc.want)
+			t.Fatalf("reconcileCoversPlan(%q, tier=%d, auto=%v) = %v, want %v", tc.slug, tc.tier, tc.autoUpdate, got, tc.want)
 		}
 	}
 }

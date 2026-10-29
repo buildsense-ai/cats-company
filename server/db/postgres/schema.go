@@ -100,6 +100,10 @@ func (a *Adapter) CreateSchema() error {
 		// Per-plan policy for whether the startup reconcile may add newly
 		// onboarded relay models to a plan.
 		migrateCommercialPlansAutoUpdateModels,
+		// The upgrade ladder used to be a slug allow-list in Go. It is a column
+		// now, so a package that replaces an old one joins the ladder by setting
+		// a number instead of by editing the control plane.
+		migrateCommercialPlansAddTier,
 		// The model-set migrations used to run here. Each one re-applied a
 		// literal model list on every startup, so a plan an operator edited was
 		// silently reverted on the next restart, and onboarding a model on the

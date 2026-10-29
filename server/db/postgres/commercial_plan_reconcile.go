@@ -179,19 +179,23 @@ func reconcileFixedPlanGrants(ctx context.Context, tx *sql.Tx) error {
 
 // reconcileCoversPlan reports whether a plan follows the relay catalog.
 //
-// The official paid plans always follow it: their model set is a product
-// decision, so a switch flipped by mistake must not freeze them. Every other
-// plan is decided by its own switch, which is what lets an operator create an
-// internal all-models package (switch on, gets the whole catalog) or a pinned
-// package (switch off, keeps exactly the models they picked) with no code
-// change. Free and legacy are excluded: Free is sold to every account and keeps
-// a deliberately small model set, and legacy grants are historical records.
-func reconcileCoversPlan(slug string, autoUpdateModels bool) bool {
+// `tier` is the plan's rung on the upgrade ladder: an official paid package
+// (tier > 0) always tracks the relay, whatever its auto_update flag says, so a
+// new model reaches it with no control-plane change. Every other plan is decided
+// by its own switch, which is what lets an operator create an internal
+// all-models package (switch on, gets the whole catalog) or a pinned package
+// (switch off, keeps exactly the models they picked) with no code change. Free
+// and legacy are excluded: Free is sold to every account and keeps a
+// deliberately small model set, and legacy grants are historical records.
+//
+// It takes the rung rather than the slug so the caller's query stays the only
+// place that knows how to reach the column.
+func reconcileCoversPlan(slug string, tier int, autoUpdateModels bool) bool {
 	slug = strings.TrimSpace(slug)
 	if slug == "" || slug == commercialFreePlanSlug || slug == commercialLegacyPlanSlug {
 		return false
 	}
-	if commercialOfficialPlanTier(slug) != 0 {
+	if tier > 0 {
 		return true
 	}
 	return autoUpdateModels
@@ -218,7 +222,7 @@ func reconcileSyncsGrantsSeparately(slug string) bool {
 // SQL is how a plan ends up covered by one half and skipped by the other.
 func reconcilePlanSlugs(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT slug, auto_update_models FROM commercial_plans
+		SELECT slug, plan_tier, auto_update_models FROM commercial_plans
 		WHERE archived_at IS NULL
 		ORDER BY id`)
 	if err != nil {
@@ -229,12 +233,13 @@ func reconcilePlanSlugs(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	for rows.Next() {
 		var (
 			slug       string
+			tier       int
 			autoUpdate bool
 		)
-		if err := rows.Scan(&slug, &autoUpdate); err != nil {
+		if err := rows.Scan(&slug, &tier, &autoUpdate); err != nil {
 			return nil, fmt.Errorf("scan plan slug for model reconcile: %w", err)
 		}
-		if reconcileCoversPlan(slug, autoUpdate) {
+		if reconcileCoversPlan(slug, tier, autoUpdate) {
 			slugs = append(slugs, slug)
 		}
 	}

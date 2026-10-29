@@ -99,6 +99,10 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 	// page advertises what the package contains in its own copy; exposing this
 	// flag would let a buyer cache it and expect a machine after an edit.
 	copy.CloudWorkerIncluded = false
+	// PlanTier stays: it describes the buyer's own upgrade path (which card is
+	// "续费", which refuses a downgrade, which shows "升级至"), and it carries no
+	// price or cost information. The webapp used to keep its own slug→rung table,
+	// which meant renaming a package silently dropped all three behaviours.
 	return &copy
 }
 
@@ -1346,6 +1350,9 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			// decoding to false and silently stripping the machine from a package
 			// that is already on sale.
 			CloudWorkerIncluded *bool `json:"cloud_worker_included"`
+			// Rung on the upgrade ladder; 0 (or absent) keeps it off the ladder.
+			// A pointer distinguishes "leave it alone" from "take it off".
+			PlanTier *int `json:"plan_tier"`
 			// Pointer so an absent field keeps the plan's current setting
 			// instead of decoding to false and silently pinning the plan.
 			AutoUpdateModels *bool `json:"auto_update_models"`
@@ -1438,6 +1445,17 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 		// explicitly is deliberate: accidentally minting machines is expensive,
 		// accidentally not minting them is a support ticket.
 		cloudWorkerIncluded := resolvePlanIncludesWorker(existingPlan, req.CloudWorkerIncluded)
+		planTier := 0
+		if existingPlan != nil {
+			planTier = existingPlan.PlanTier
+		}
+		if req.PlanTier != nil {
+			if *req.PlanTier < 0 {
+				writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "plan tier must be non-negative"})
+				return
+			}
+			planTier = *req.PlanTier
+		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
 			Slug:                         req.Slug,
 			Name:                         req.Name,
@@ -1456,6 +1474,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			CloudWorkerDeploymentProfile: deploymentProfile,
 			CloudWorkerRetentionDays:     req.CloudWorkerRetentionDays,
 			CloudWorkerIncluded:          cloudWorkerIncluded,
+			PlanTier:                     planTier,
 			DurationDays:                 req.DurationDays,
 			State:                        req.State,
 			SortOrder:                    req.SortOrder,
