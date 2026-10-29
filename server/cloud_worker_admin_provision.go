@@ -40,6 +40,11 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 		ExpiresAt         string `json:"expires_at"`
 		DeploymentProfile string `json:"deployment_profile"`
 		BillingMode       string `json:"billing_mode"`
+		// Additional opens one more billable instance on an account that
+		// already owns a cloud worker. It is an explicit internal decision
+		// (one account, several bots) and is never implied by a retry: the
+		// console asks the operator to confirm before it sends the flag.
+		Additional bool `json:"additional"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(&input); err != nil {
@@ -61,17 +66,26 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 	// older-control-plane count must not be able to create a duplicate.
 	// Fail closed when the check itself fails: creating a paid instance is not
 	// recoverable by retrying.
-	existing, err := h.cloudWorkersOfOwner(input.UID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "failed to check existing cloud workers"})
-		return
-	}
-	if len(existing) > 0 {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"error": "该账号已有云员工，不会重复创建；如确需追加实例，请先确认业务需求",
-			"code":  "cloud_worker_exists",
-		})
-		return
+	//
+	// additional=true is the single deliberate exception: internal operations
+	// sometimes run several bots on one account, so the console can ask for one
+	// more instance. It still goes through the normal credit reservation and
+	// create path, and the derived username comes from source_ref, so a retry
+	// of the same request collides with the bot it just created instead of
+	// silently buying a second machine.
+	if !input.Additional {
+		existing, err := h.cloudWorkersOfOwner(input.UID)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "failed to check existing cloud workers"})
+			return
+		}
+		if len(existing) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]interface{}{
+				"error": "该账号已有云员工，不会重复创建；如确需追加实例，请用云员工总览里的“再开一台”。",
+				"code":  "cloud_worker_exists",
+			})
+			return
+		}
 	}
 	if h.credits == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker credit store unavailable"})

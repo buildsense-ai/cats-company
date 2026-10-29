@@ -384,12 +384,16 @@ type CloudWorkerLifecycle struct {
 	BillingMode       string
 	ConversionPending bool
 	BillingAction     string
-	ID                int64
-	WorkerUID         int64
-	OwnerUID          int64
-	TenantName        string
-	PackageExpiresAt  time.Time
-	DeleteAfter       time.Time
+	// BillingActionStartedAt is when the in-flight billing action was claimed.
+	// A claim older than the store's stale window may be reconciled or replaced,
+	// so readers must not treat BillingAction alone as "still running".
+	BillingActionStartedAt time.Time
+	ID                     int64
+	WorkerUID              int64
+	OwnerUID               int64
+	TenantName             string
+	PackageExpiresAt       time.Time
+	DeleteAfter            time.Time
 	// RetentionDays is the window this row was created with; a renewal must
 	// reuse it instead of falling back to the global default.
 	RetentionDays int

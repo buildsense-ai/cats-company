@@ -11,6 +11,13 @@ set -Eeuo pipefail
 NAME=""
 CYCLE_COUNT="${CTYUN_WORKER_CYCLE_COUNT:-1}"
 DRY_RUN=0
+# Accepted but unused. The packed router forwards the platform's flags verbatim
+# when it hands a non-container tenant to this adapter, and the platform always
+# sends --expires-at when the paid package window is longer than the lifecycle
+# row. A subscription renewal cannot be aimed at a chosen date — the provider
+# publishes the new expiredTime and that is what callers must persist — so the
+# flag is tolerated instead of failing the renewal on argument parsing.
+EXPIRES_AT_IGNORED=""
 
 usage() {
   sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
@@ -20,11 +27,16 @@ while (($#)); do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
     --cycle-count) CYCLE_COUNT="${2:-}"; shift 2 ;;
+    --expires-at) EXPIRES_AT_IGNORED="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [[ -n "$EXPIRES_AT_IGNORED" ]]; then
+  echo "warning: --expires-at is not used by a subscription renewal; the provider expiry is authoritative" >&2
+fi
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worker-deployment-profile.sh"
 worker_profile_load "$NAME"

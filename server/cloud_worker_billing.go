@@ -26,6 +26,11 @@ type CloudWorkerAdminBillingHandler interface {
 	HandleAdminBilling(http.ResponseWriter, *http.Request)
 }
 
+// cloudWorkerBillingClaimWindow must match the stale-claim window in
+// ClaimCloudWorkerBillingAction: after it, the store lets a new action take
+// over from a crashed one, so readers stop treating the old marker as busy.
+const cloudWorkerBillingClaimWindow = 30 * time.Minute
+
 // Caller holds opMu. The database claim protects against overlapping servers,
 // payment fulfillment and expiry work already read from an older snapshot.
 func (h *CloudWorkerHandler) runBillingAction(item types.CloudWorkerLifecycle, action string, automatic bool) error {
@@ -84,7 +89,12 @@ func (h *CloudWorkerHandler) HandleAdminBilling(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing request"})
 		return
 	}
-	if input.Action != "convert" && input.Action != "suspend" && input.Action != "start" && input.Action != "release" && input.Action != "cancel" {
+	// renew is the operator-driven counterpart of the payment renewal path: it
+	// buys one more provider subscription cycle for exactly one lifecycle and
+	// writes the provider's own expiry back. It deliberately reuses
+	// renewOneCloudWorker so a manual renewal can never drift from what a paid
+	// package renewal does, including the expiry/retention reconciliation.
+	if input.Action != "convert" && input.Action != "suspend" && input.Action != "start" && input.Action != "release" && input.Action != "cancel" && input.Action != "renew" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing action"})
 		return
 	}
@@ -99,6 +109,10 @@ func (h *CloudWorkerHandler) HandleAdminBilling(w http.ResponseWriter, r *http.R
 	}
 	if input.Action == "convert" && item.BillingMode == types.CloudWorkerMonthly {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "monthly"})
+		return
+	}
+	if input.Action == "renew" {
+		h.handleAdminRenew(w, item)
 		return
 	}
 	if input.Action == "convert" {
@@ -143,6 +157,63 @@ func (h *CloudWorkerHandler) HandleAdminBilling(w http.ResponseWriter, r *http.R
 	}
 	h.requestCloudStatusRefresh(true)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "completed", "action": input.Action, "tenant_name": input.Tenant})
+}
+
+// handleAdminRenew extends one paid worker's provider subscription by a single
+// cycle on operator request. Caller holds opMu, which serialises it against
+// every other provider operation in this process; the DB claim is not reused
+// here because it is drawn around the on-demand billing machine only.
+func (h *CloudWorkerHandler) handleAdminRenew(w http.ResponseWriter, item *types.CloudWorkerLifecycle) {
+	switch {
+	case item.BillingMode != types.CloudWorkerMonthly:
+		// A trial buys its month through convert; renewing it here would skip
+		// the conversion claim and leave the lifecycle on the trial billing
+		// path with a paid machine behind it.
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "only monthly instances can be renewed; convert the trial first",
+			"code":  "cloud_worker_renew_requires_monthly",
+		})
+		return
+	case item.State == "delete_running" || item.State == "deleted":
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "instance is being released",
+			"code":  "cloud_worker_renew_unavailable",
+		})
+		return
+	case item.BillingAction != "" && time.Since(item.BillingActionStartedAt) < cloudWorkerBillingClaimWindow:
+		// A conversion or shutdown is mid-flight at the provider; renewing now
+		// would race with it. The window matches the store's stale claim rule, so
+		// a marker left behind by a crashed process cannot block a paid renewal
+		// forever.
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "another billing action is already running for this instance",
+			"code":  "cloud_worker_billing_busy",
+		})
+		return
+	}
+	outcome := h.renewOneCloudWorker(item.OwnerUID, *item)
+	if outcome.Status != types.CloudWorkerRenewApplied {
+		log.Printf("[cloud-worker] admin renew tenant=%s uid=%d failed: %s", item.TenantName, item.OwnerUID, outcome.Message)
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
+			"error":  "provider renewal failed; inspect the lifecycle error before retrying",
+			"code":   "cloud_worker_billing_failed",
+			"detail": outcome.Message,
+		})
+		return
+	}
+	expiresAt := ""
+	if outcome.ExpiresAt != nil {
+		expiresAt = outcome.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	log.Printf("[cloud-worker] admin renew tenant=%s uid=%d completed expires_at=%s %s", item.TenantName, item.OwnerUID, expiresAt, outcome.Message)
+	h.requestCloudStatusRefresh(true)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":      "completed",
+		"action":      "renew",
+		"tenant_name": item.TenantName,
+		"expires_at":  expiresAt,
+		"message":     outcome.Message,
+	})
 }
 
 // renewTrial converts an on-demand trial instance into the paid lifecycle.
