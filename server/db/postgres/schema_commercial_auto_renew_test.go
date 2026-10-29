@@ -156,12 +156,20 @@ func TestPostgresCommercialAutoRenewConfigAndRuns(t *testing.T) {
 		t.Fatalf("a priced plan must be due and a free plan must not: %#v", priced)
 	}
 
-	// Disabling the switch removes the account from the schedule entirely.
+	// Disabling the switch removes the account from the schedule entirely. Other
+	// accounts seeded above stay enabled, so assert on this uid rather than on an
+	// empty list.
 	if _, err := db.SetCommercialAutoRenewConfig(uid, false, ""); err != nil {
 		t.Fatalf("disable auto renew: %v", err)
 	}
-	if disabled, err := db.ListDueCommercialAutoRenew(now, 60*24*time.Hour); err != nil || len(disabled) != 0 {
-		t.Fatalf("disabled accounts must not be due: %#v %v", disabled, err)
+	if disabled, err := db.ListDueCommercialAutoRenew(now, 60*24*time.Hour); err != nil {
+		t.Fatalf("list due auto renew after disabling: %v", err)
+	} else {
+		for _, item := range disabled {
+			if item.UID == uid {
+				t.Fatalf("a disabled account must not be due: %#v", disabled)
+			}
+		}
 	}
 
 	previous := expiresAt

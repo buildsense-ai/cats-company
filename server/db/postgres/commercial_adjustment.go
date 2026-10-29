@@ -325,7 +325,7 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 				SELECT EXISTS(
 					SELECT 1 FROM commercial_entitlements e
 					JOIN commercial_plans p ON p.id = e.plan_id
-					WHERE e.uid = $1 AND e.state = 'active' AND p.price_fen > 0))`,
+					WHERE e.uid = $1 AND e.state = 'active' AND p.price_fen > 0)`,
 				adjustment.UID).Scan(&hadPaid); err != nil {
 				return nil, fmt.Errorf("check expired commercial package: %w", err)
 			}

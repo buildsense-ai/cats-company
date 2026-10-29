@@ -8,7 +8,10 @@ import (
 )
 
 const (
-	commercialBasicPlanSlug    = "catsco-basic"
+	// Slugs that still carry behaviour of their own. The ladder no longer lives
+	// here: `plan_tier` does. These remain because they name specific packages
+	// the code treats specially (the free baseline, the legacy custom row, and
+	// the two retired packages whose test fixtures still populate them).
 	commercialPersonalPlanSlug = "catsco-personal"
 	commercialProPlanSlug      = "catsco-pro"
 	commercialFreePlanSlug     = "catsco-free"
