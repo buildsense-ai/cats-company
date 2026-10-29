@@ -1,10 +1,26 @@
+// Slugs are internal identity, not display copy, so the numbers seen by the
+// buyer (¥59 / ¥99 / ¥159) live in `price_fen` — never in the slug.
+//
+// These four are deliberately *new* slugs. `catsco-personal` and `catsco-pro`
+// already exist in production at ¥399 and ¥799 with 34 live buyers; creating a
+// ¥99 package under the same slug would overwrite those rows
+// (`ON CONFLICT(slug) DO UPDATE`) and silently cut what those buyers paid for.
+// `catsco-team-monthly` is likewise a retired name from the previous package
+// line. Slugs are never shown to users, so renaming costs nothing.
+// `plan_tier` is the rung on the upgrade ladder; 0 means "not on the ladder".
+// The server is the source of truth once the catalogue loads — these values only
+// keep the drafts self-consistent while the catalogue is unavailable.
 export const personalPlanOffers = [
-  { id: -59, slug: 'catsco-basic', name: '基础版', description: '适合提炼资料重点、起草邮件和文案。', price_fen: 5900, currency: 'CNY', sale_state: 'public', duration_days: 30 },
-  { id: 21, slug: 'catsco-personal', name: '个人版', description: '适合每天整理文件、汇总数据和处理待办。', price_fen: 9900, currency: 'CNY', sale_state: 'public', duration_days: 30 },
-  { id: 22, slug: 'catsco-pro', name: '专业版', description: '适合多项工作并行、持续推进复杂项目。', price_fen: 15900, currency: 'CNY', sale_state: 'public', duration_days: 30 },
+  { id: -59, slug: 'catsco-basic', name: '基础版', description: '适合提炼资料重点、起草邮件和文案。', price_fen: 5900, currency: 'CNY', sale_state: 'public', duration_days: 30, plan_tier: 1 },
+  { id: -99, slug: 'catsco-standard', name: '个人版', description: '适合每天整理文件、汇总数据和待办。', price_fen: 9900, currency: 'CNY', sale_state: 'public', duration_days: 30, plan_tier: 2 },
+  { id: -159, slug: 'catsco-advanced', name: '专业版', description: '适合多项工作并行、持续推进项目。', price_fen: 15900, currency: 'CNY', sale_state: 'public', duration_days: 30, plan_tier: 3 },
 ];
 
 const cloudNote = '云端 AI 员工随套餐有效；到期后保留 15 天，期间续费可恢复。';
+// Presentation is keyed by slug, which is fine: it is copy, and losing it means
+// a card falls back to the catalogue's own text. Behaviour (which card is a
+// renewal, which refuses a downgrade) must never be keyed by slug — the server
+// sends `plan_tier` for that.
 export const planPresentationOverrides = {
   'catsco-basic': {
     kicker: 'CATSCO BASIC', tagline: '轻量日常协作', actionLabel: '获取 CatsCo 基础版',
@@ -21,7 +37,7 @@ export const planPresentationOverrides = {
       '任务进度与执行过程查看',
     ],
   },
-  'catsco-personal': {
+  'catsco-standard': {
     kicker: 'CATSCO PERSONAL', tagline: '日常工作自动化', actionLabel: '获取 CatsCo 个人版',
     highlights: [
       { kind: 'capacity', label: 'Token 额度', value: '约 10 亿', unit: 'Token' },
@@ -37,7 +53,7 @@ export const planPresentationOverrides = {
     ],
     note: cloudNote,
   },
-  'catsco-pro': {
+  'catsco-advanced': {
     kicker: 'CATSCO PRO', tagline: '高频多任务协作', actionLabel: '获取 CatsCo 专业版', pro: true,
     highlights: [
       { kind: 'capacity', label: 'Token 额度', value: '约 20 亿', unit: 'Token' },
@@ -55,7 +71,7 @@ export const planPresentationOverrides = {
   },
 };
 
-export const teamPlanOffer = { id: -599, slug: 'catsco-team-monthly', name: '团队版', price_fen: 59900, currency: 'CNY', duration_days: 30 };
+export const teamPlanOffer = { id: -599, slug: 'catsco-team', name: '团队版', price_fen: 59900, currency: 'CNY', duration_days: 30, plan_tier: 4 };
 export const tokenEstimateNote = 'Token 数为估算值，实际可用量随所选模型、输入输出比例、缓存命中情况及模型价格变化。';
 
 // Only exact catalogue matches can enter checkout. Display drafts never replace server prices.

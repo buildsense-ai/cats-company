@@ -86,6 +86,15 @@ const COMMERCIAL_PLAN_PRESENTATION = {
     usageLabel: '团队用量',
     wide: true,
   },
+  // Current team slug. Kept next to the retired `catsco-team-monthly` entry so a
+  // catalogue row that still carries the old name keeps rendering.
+  'catsco-team': {
+    kicker: '多人协作',
+    tagline: '多人共享与并行协作',
+    audience: '多人使用 · 重度协作',
+    usageLabel: '团队用量',
+    wide: true,
+  },
 };
 
 const FREE_PLAN_PRESENTATION = {
@@ -100,27 +109,48 @@ const FREE_PLAN_PRESENTATION = {
   ],
 };
 
-const CURRENT_COMMERCIAL_PLAN_SLUGS = new Set(['catsco-basic', 'catsco-personal', 'catsco-pro']);
-const COMMERCIAL_PLAN_TIERS = {
-  'catsco-basic': 1,
-  'catsco-personal': 2,
-  'catsco-pro': 3,
-};
-
-function commercialPlanTier(slug) {
-  return COMMERCIAL_PLAN_TIERS[slug] || 0;
+// Which card is a renewal, which refuses a downgrade ("已包含") and which offers
+// an upgrade ("升级至") is decided by the package's rung on the upgrade ladder.
+//
+// That rung used to be a slug→number table right here. It meant renaming or
+// replacing a package silently dropped all three behaviours, a new package could
+// never join the ladder, and — the reason this moved — two packages sharing a
+// slug at different prices (a retired ¥399 package and a new ¥99 one) both
+// reported the same rung, so a ¥399 holder could renew on the ¥99 card.
+//
+// The server now sends `plan_tier` with every catalogue plan: an ordinal, 0 for
+// "not on the ladder" (free / internal / legacy). Presentation stays keyed by
+// slug — that is copy, and losing it only falls back to the catalogue's text.
+function commercialPlanTier(plan) {
+  if (!plan) return 0;
+  const fromCatalog = Number(plan.plan_tier);
+  if (Number.isFinite(fromCatalog) && fromCatalog > 0) return fromCatalog;
+  // A catalogue built before `plan_tier` existed cannot describe the ladder, so
+  // a plan in that catalogue gets no upgrade behaviour rather than a guessed one.
+  // Guessing is what produced the ¥399-renewed-as-¥99 bug.
+  return 0;
 }
 
 function entitlementMatchesPlan(entitlement, plan) {
   if (!entitlement || !plan) return false;
-  if (entitlement.plan_slug && entitlement.plan_slug === plan.slug) return true;
-  return Number(entitlement.plan_id || 0) > 0 && Number(entitlement.plan_id) === Number(plan.id);
+  // The numeric id is the only thing that uniquely identifies a package: a slug
+  // can be reused by a successor at a different price, and matching on it once
+  // let a ¥399 holder be treated as a ¥99 holder. Only fall back to the slug
+  // when either side has no id (older payloads, local draft offers).
+  const entitlementPlanID = Number(entitlement.plan_id || 0);
+  const planID = Number(plan.id || 0);
+  if (entitlementPlanID > 0 && planID > 0) return entitlementPlanID === planID;
+  return Boolean(entitlement.plan_slug && entitlement.plan_slug === plan.slug);
 }
 
+// The rung of what the buyer currently holds. A plan the catalogue no longer
+// lists (a retired package still held by its buyers) reports 0, which simply
+// means "no upgrade rules apply" — the same answer the old slug table gave for
+// an unknown slug.
 function activeCommercialPlanTier(entitlements, plans) {
   return entitlements.reduce((highest, entitlement) => {
     const matchedPlan = plans.find(plan => entitlementMatchesPlan(entitlement, plan));
-    return Math.max(highest, commercialPlanTier(entitlement.plan_slug || matchedPlan?.slug));
+    return Math.max(highest, commercialPlanTier(matchedPlan));
   }, 0);
 }
 
@@ -603,7 +633,7 @@ function CommercialPlanCards({
       )}
       {salePlans.map((plan) => {
         const presentation = (!plan.useCatalogPresentation && presentationOverrides[plan.slug]) || commercialPlanPresentation(plan);
-        const planTier = commercialPlanTier(plan.slug);
+        const planTier = commercialPlanTier(plan);
         const isActivePlan = planTier > 0
           ? activeOfficialPlanTier === planTier
           : activePackages.some(item => entitlementMatchesPlan(item, plan));
@@ -867,16 +897,29 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   // Public pricing links can carry a plan slug through the authenticated
   // workspace. Selecting it here keeps the user on the real payment flow
   // without exposing credentials or creating an order from the public site.
+  //
+  // The marketing site's short names are mapped to the slug of whichever
+  // package currently occupies that rung, rather than to a fixed slug: the
+  // points that held `personal` / `pro` were retired at ¥399 / ¥799 and replaced
+  // by a new line, so a hard-coded mapping would send a reader of the old
+  // pricing page to a package that is no longer sold.
   useEffect(() => {
     const requestedSlug = String(initialPlanSlug || '').trim();
-    const slug = ({ personal: 'catsco-personal', pro: 'catsco-pro' })[requestedSlug] || requestedSlug;
-    if (!slug || !Array.isArray(commercialCatalog?.plans) || purchasePlan) return;
+    if (!requestedSlug || !Array.isArray(commercialCatalog?.plans) || purchasePlan) return;
     const availablePlans = planOffers
       ? salePlansForOffers(planOffers, commercialCatalog.plans, commercialCatalog.enabled === true)
       : commercialCatalog.plans;
+    const legacyAliasRung = { personal: 2, pro: 3 }[requestedSlug] || 0;
+    const slug = legacyAliasRung
+      ? availablePlans.find((item) => commercialPlanTier(item) === legacyAliasRung)?.slug
+      : requestedSlug;
+    if (!slug) {
+      setPlanChooserOpen(true);
+      return;
+    }
     const plan = availablePlans.find((item) => String(item?.slug || '') === slug);
     const activeTier = activeCommercialPlanTier(activeEntitlements(commercial?.summary), availablePlans);
-    if (plan && commercialPlanTier(plan.slug) > 0 && commercialPlanTier(plan.slug) < activeTier) {
+    if (plan && commercialPlanTier(plan) > 0 && commercialPlanTier(plan) < activeTier) {
       setPlanChooserOpen(true);
       return;
     }
@@ -1013,7 +1056,17 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   const commercialEnabled = commercial?.enabled === true && commercialSummary;
   const commercialEnforced = commercial?.enforce_enabled === true;
   const catalogPlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
-  const hasCurrentCommercialPlans = Boolean(planOffers) || catalogPlans.some(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug));
+  // "Is this a real catalogue?" used to be answered by asking whether any plan
+  // carried one of three hard-coded slugs. A retired package line made that
+  // answer permanently "no", which switched the whole panel back to the legacy
+  // layout and hid the new packages.
+  //
+  // A plan on the ladder (`plan_tier > 0`) is exactly a current commercial
+  // package: grey/internal test plans stay off it, so they keep the plain
+  // "purchase" wording instead of the official plan layout. Local drafts are
+  // deliberately *not* enough on their own: they never went on sale, so they
+  // must keep the plain wording until the catalogue lists them.
+  const hasCurrentCommercialPlans = catalogPlans.some(plan => commercialPlanTier(plan) > 0);
   const salePlans = planOffers ? salePlansForOffers(planOffers, catalogPlans, commercialCatalog?.enabled === true) : catalogPlans;
   const allSalePlansAreMonthly = salePlans.length > 0 && salePlans.every(
     plan => Number(plan?.duration_days || 30) === 30,
@@ -1050,15 +1103,21 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   });
   const visibleOrders = showAllOrders ? filteredOrders : filteredOrders.slice(0, 8);
   const purchaseIsUpgrade = Boolean(
-    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan.slug) > activeOfficialPlanTier,
+    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan) > activeOfficialPlanTier,
   );
   const purchaseIsRenewal = Boolean(
-    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan.slug) === activeOfficialPlanTier,
+    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan) === activeOfficialPlanTier,
   );
-  const purchaseIsIncluded = Boolean(purchasePlan && commercialPlanTier(purchasePlan.slug) > 0
-    && commercialPlanTier(purchasePlan.slug) < activeOfficialPlanTier);
+  const purchaseIsIncluded = Boolean(purchasePlan && commercialPlanTier(purchasePlan) > 0
+    && commercialPlanTier(purchasePlan) < activeOfficialPlanTier);
+  // The checkout summary used to promise a cloud worker for any of three
+  // hard-coded slugs. The server decides that per plan (`cloud_worker_included`)
+  // and strips it from the public catalogue, so the buyer-facing copy cannot
+  // read it. Keep the promise only for a plan on the ladder: a package that
+  // bought a server before always sat on a rung, and inventing a claim for a
+  // package that does not mint one over-promises in the other direction.
   const purchaseIncludesCloudWorker = Boolean(
-    purchasePlan && CURRENT_COMMERCIAL_PLAN_SLUGS.has(purchasePlan.slug),
+    purchasePlan && commercialPlanTier(purchasePlan) > 0,
   );
 
   useEffect(() => {
@@ -1135,7 +1194,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   };
 
   const createCommercialOrder = async (plan, paymentWindow = null) => {
-    if (plan.catalogUnavailable || (commercialPlanTier(plan.slug) > 0 && commercialPlanTier(plan.slug) < activeOfficialPlanTier)) return;
+    if (plan.catalogUnavailable || (commercialPlanTier(plan) > 0 && commercialPlanTier(plan) < activeOfficialPlanTier)) return;
     if (!paymentChannel) {
       setError('支付通道尚未配置。');
       return;

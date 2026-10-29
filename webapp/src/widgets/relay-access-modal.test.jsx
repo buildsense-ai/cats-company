@@ -107,14 +107,17 @@ describe('RelayAccessModal commercial rollout', () => {
   }
 
   it('preselects the authenticated plan carried from the public pricing page', async () => {
+    // `personal` is a legacy link alias; it now resolves by rung (2), not by
+    // slug, so the ¥99 package answers it even though its slug changed.
     const plan = {
-      id: 21,
-      slug: 'catsco-personal',
+      id: 921,
+      slug: 'catsco-standard',
       name: 'CatsCo 个人版',
-      price_fen: 39900,
+      price_fen: 9900,
       currency: 'CNY',
       sale_state: 'public',
       duration_days: 30,
+      plan_tier: 2,
     };
     api.getCommercialCatalog.mockResolvedValue({
       enabled: true,
@@ -153,20 +156,25 @@ describe('RelayAccessModal commercial rollout', () => {
 
   it('keeps the live catalogue purchasable when no draft offer matches', async () => {
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'alipay_page' }], plans: [
-      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, currency: 'CNY', duration_days: 30 },
-      { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, currency: 'CNY', duration_days: 30 },
+      { id: 891, slug: 'catsco-standard', name: '个人版', price_fen: 9900, currency: 'CNY', duration_days: 30, plan_tier: 2 },
+      { id: 892, slug: 'catsco-advanced', name: '专业版', price_fen: 15900, currency: 'CNY', duration_days: 30, plan_tier: 3 },
     ] });
     api.createCommercialOrder.mockResolvedValue({ order: null });
     await renderIntegratedPlans();
     await openPlanChooser();
     const prices = [...container.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent);
-    expect(prices).toEqual(['399', '799']);
+    // The ¥59 draft has no catalogue row, so it stays visible as an unbuyable
+    // card; the two live packages keep their catalogue ids and prices.
+    expect(prices).toEqual(['59', '99', '159']);
     expect(container.textContent).not.toContain('免费版');
-    expect(container.querySelector('.relay-access-plan-highlights')).toBeNull();
-    await clickButton('选择个人版');
-    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥399');
+    // Presentation copy is keyed by slug, so a listed plan keeps its card copy
+    // even when no draft offer matched. What must never leak is the internal
+    // quota budget, which is stripped from the public catalogue server-side.
+    expect(container.textContent).not.toContain('model_budgets');
+    await clickButton('获取 CatsCo 个人版');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥99');
     await clickButton('确认并前往支付宝');
-    expect(api.createCommercialOrder).toHaveBeenCalledWith(21, 'alipay_page', expect.any(String), expect.any(Object));
+    expect(api.createCommercialOrder).toHaveBeenCalledWith(891, 'alipay_page', expect.any(String), expect.any(Object));
     await clickButton('返回');
     await clickButton('企业');
     expect(container.textContent).toContain('Business Start · 企业落地服务');
@@ -179,7 +187,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
   it('uses the server plan ID for checkout only when the approved offer matches', async () => {
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans: [
-      { id: 918, slug: 'catsco-personal', name: '个人版', price_fen: 9900, currency: 'CNY', duration_days: 30 },
+      { id: 918, slug: 'catsco-standard', name: '个人版', price_fen: 9900, currency: 'CNY', duration_days: 30, plan_tier: 2 },
     ] });
     api.createCommercialOrder.mockResolvedValue({ order: null });
     await renderIntegratedPlans();
@@ -191,31 +199,32 @@ describe('RelayAccessModal commercial rollout', () => {
 
   it('uses the same live-catalogue fallback for direct plan links', async () => {
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans: [
-      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30 },
+      { id: 918, slug: 'catsco-standard', name: '个人版', price_fen: 9900, duration_days: 30, plan_tier: 2 },
     ] });
     await renderIntegratedPlans({ initialPlanSlug: 'personal' });
-    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥399');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥99');
     expect(findButton('确认购买').disabled).toBe(false);
   });
 
   it('preserves legacy and allowlisted offers during a partial catalogue rollout', () => {
-    const basic = { ...personalPlanOffers[0], id: 90 };
-    const legacy = { ...personalPlanOffers[1], price_fen: 39900 };
+    // The catalogue has listed the ¥59 package (same slug and price, new id) but
+    // still sells the retired ¥399 line; the ¥99/¥159 drafts are not live yet.
+    const listed = { ...personalPlanOffers[0], id: 90 };
+    const retired = { id: 21, slug: 'catsco-personal', name: '老个人版', price_fen: 39900, duration_days: 30 };
     const internal = { id: 185, slug: 'internal-test', price_fen: 500 };
-    const plans = salePlansForOffers(personalPlanOffers, [basic, legacy, internal]);
-    expect(plans.map(plan => plan.id)).toEqual([90, 21, 22, 185]);
+    const plans = salePlansForOffers(personalPlanOffers, [listed, retired, internal]);
+    // Drafts that never went live stay visible but unbuyable, and nothing the
+    // catalogue still sells is allowed to disappear behind them.
+    expect(plans.map(plan => plan.id)).toEqual([90, -99, -159, 21, 185]);
     expect(plans[0].catalogUnavailable).toBeUndefined();
-    expect(plans[1]).toMatchObject({ price_fen: 39900, useCatalogPresentation: true });
-    expect(plans[2].catalogUnavailable).toBe(true);
-    expect(plans[3].useCatalogPresentation).toBe(true);
-    expect(salePlansForOffers(personalPlanOffers, [legacy], false)[0].catalogUnavailable).toBe(true);
+    expect(plans[1].catalogUnavailable).toBe(true);
+    expect(plans[3]).toMatchObject({ price_fen: 39900, useCatalogPresentation: true });
+    expect(plans[4].useCatalogPresentation).toBe(true);
+    expect(salePlansForOffers(personalPlanOffers, [retired], false)[0].catalogUnavailable).toBe(true);
   });
 
-  it.each(['catsco-personal', 'catsco-pro'])('keeps existing %s customers on live-price renewal and upgrade paths', async slug => {
-    const plans = [
-      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30 },
-      { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30 },
-    ];
+  it.each(['catsco-basic', 'catsco-standard'])('keeps %s customers on live-price renewal and upgrade paths', async slug => {
+    const plans = personalPlanOffers.map((plan, index) => ({ ...plan, id: 90 + index }));
     const activePlan = plans.find(plan => plan.slug === slug);
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans });
     api.getRelayCommercial.mockResolvedValue({ enabled: true, summary: { entitlements: [
@@ -224,11 +233,14 @@ describe('RelayAccessModal commercial rollout', () => {
     api.createCommercialOrder.mockResolvedValue({ order: null });
     await renderIntegratedPlans();
     await openPlanChooser();
-    if (slug === 'catsco-personal') {
-      expect(findButton('升级至专业版').disabled).toBe(false);
-    } else {
-      expect(findButton('已包含').disabled).toBe(true);
+    const rows = [...container.querySelectorAll('.relay-access-plan-row')];
+    for (let index = 0; index < plans.indexOf(activePlan); index++) {
+      expect(rows[index].querySelector('button').textContent).toContain('已包含');
+      expect(rows[index].querySelector('button').disabled).toBe(true);
     }
+    expect(rows[plans.indexOf(activePlan)].querySelector('button').textContent).toContain('续费');
+    expect(rows[plans.indexOf(activePlan)].querySelector('button').disabled).toBe(false);
+    expect(rows[plans.length - 1].querySelector('button').textContent).toContain('升级至专业版');
     await clickButton('续费');
     expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain(`¥${activePlan.price_fen / 100}`);
     await clickButton('确认购买');
@@ -238,14 +250,16 @@ describe('RelayAccessModal commercial rollout', () => {
   it('keeps unmatched draft offers blocked when there is no server catalogue', async () => {
     await renderIntegratedPlans();
     await openPlanChooser();
-    expect([...container.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent)).toEqual(['59', '99', '159']);
+    // With no catalogue there is no current commercial plan, so the panel falls
+    // back to the plain layout and prints the currency inline.
+    expect([...container.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent)).toEqual(['¥59', '¥99', '¥159']);
     await clickButton('获取 CatsCo 个人版');
     expect(findButton('暂未开放购买').disabled).toBe(true);
     await clickButton('暂未开放购买');
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 
-  it.each(['catsco-basic', 'catsco-personal', 'catsco-pro'])('preserves renewal and blocks included lower tiers for %s', async slug => {
+  it.each(['catsco-basic', 'catsco-standard', 'catsco-advanced'])('preserves renewal and blocks included lower tiers for %s', async slug => {
     const plans = personalPlanOffers.map((plan, index) => ({ ...plan, id: 90 + index }));
     const activePlan = plans.find(plan => plan.slug === slug);
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans });
@@ -271,7 +285,7 @@ describe('RelayAccessModal commercial rollout', () => {
     const plans = personalPlanOffers.map((plan, index) => ({ ...plan, id: 90 + index }));
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans });
     api.getRelayCommercial.mockResolvedValue({ enabled: true, summary: { entitlements: [
-      { plan_id: 91, plan_slug: 'catsco-personal', state: 'active' },
+      { plan_id: 91, plan_slug: 'catsco-standard', state: 'active' },
     ] } });
     await renderIntegratedPlans({ initialPlanSlug: 'catsco-basic' });
     expect(container.querySelector('.relay-access-purchase-confirm')).toBeNull();
@@ -755,7 +769,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).not.toContain('领取体验包');
   });
 
-  it('renders the current Free, Personal and Pro catalog without exposing internal quota values', async () => {
+  it('renders the current Free, Basic and Standard catalog without exposing internal quota values', async () => {
     api.getCommercialCatalog.mockResolvedValue({
       enabled: true,
       test_mode: true,
@@ -763,21 +777,23 @@ describe('RelayAccessModal commercial rollout', () => {
       channels: [],
       plans: [
         {
-          id: 21,
-          slug: 'catsco-personal',
-          name: '个人版',
-          description: '适合将 XiaoBa 作为日常个人助手。',
-          price_fen: 39900,
+          id: 90,
+          slug: 'catsco-basic',
+          name: '基础版',
+          description: '适合提炼资料重点、起草邮件和文案。',
+          price_fen: 5900,
           duration_days: 30,
+          plan_tier: 1,
           model_budgets: { 'MiniMax-M2.7': 1750, 'MiniMax-M3': 1750, 'deepseek-v4-flash': 1750, 'gpt-5.6-terra': 1750, 'gpt-5.6-sol': 1750, 'gpt-5.6-luna': 1750 },
         },
         {
-          id: 22,
-          slug: 'catsco-pro',
-          name: '专业版',
-          description: '适合高频、多任务并行或复杂工作。',
-          price_fen: 79900,
+          id: 91,
+          slug: 'catsco-standard',
+          name: '个人版',
+          description: '适合每天整理文件、汇总数据和待办。',
+          price_fen: 9900,
           duration_days: 30,
+          plan_tier: 2,
           model_budgets: { 'MiniMax-M2.7': 5250, 'MiniMax-M3': 5250, 'deepseek-v4-flash': 5250, 'gpt-5.6-terra': 5250, 'gpt-5.6-sol': 5250, 'gpt-5.6-luna': 5250 },
         },
       ],
@@ -788,17 +804,15 @@ describe('RelayAccessModal commercial rollout', () => {
 
     expect(container.textContent).toContain('选择适合你的套餐');
     expect(container.textContent).toContain('免费版');
+    expect(container.textContent).toContain('基础版');
     expect(container.textContent).toContain('个人版');
-    expect(container.textContent).toContain('专业版');
     expect(container.textContent).toContain('¥0');
-    expect(container.textContent).toContain('¥399');
-    expect(container.textContent).toContain('¥799');
-    expect(container.textContent).toContain('约为个人版 3 倍的任务容量');
+    expect(container.textContent).toContain('¥59');
+    expect(container.textContent).toContain('¥99');
     expect(container.textContent).not.toContain('200000000');
     expect(container.textContent).not.toContain('10500');
     expect(container.textContent).not.toContain('31500');
     expect(container.textContent).not.toContain('gpt-5.6-luna');
-    expect(container.querySelector('.relay-access-plan-row.recommended')?.textContent).toContain('专业版');
     expect(container.querySelectorAll('.relay-access-plan-row')).toHaveLength(3);
     expect(Array.from(container.querySelectorAll('.relay-access-plan-row button')).every((button) => button.disabled)).toBe(true);
   });
@@ -808,9 +822,9 @@ describe('RelayAccessModal commercial rollout', () => {
       enabled: true,
       channels: [{ id: 'preview', label: '预览' }],
       plans: [
-        { id: -59, slug: 'preview-basic', name: '基础版', price_fen: 5900, duration_days: 30 },
-        { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 9900, duration_days: 30 },
-        { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 15900, duration_days: 30 },
+        { id: -59, slug: 'preview-basic', name: '基础版', price_fen: 5900, duration_days: 30, plan_tier: 1 },
+        { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 9900, duration_days: 30, plan_tier: 2 },
+        { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 15900, duration_days: 30, plan_tier: 3 },
       ],
     });
     await renderModal({ showFreePlan: false, planPresentationOverrides: {
@@ -871,7 +885,7 @@ describe('RelayAccessModal commercial rollout', () => {
     api.getCommercialCatalog.mockResolvedValue({
       enabled: true,
       channels: [{ id: 'preview', label: '预览' }],
-      plans: [{ id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30 }],
+      plans: [{ id: 918, slug: 'catsco-standard', name: '个人版', price_fen: 9900, duration_days: 30, plan_tier: 2 }],
     });
     await renderModal({ enterprisePlanContent: <section aria-label="企业布局预览">定制企业服务内容</section> });
     await openPlanChooser();
@@ -880,7 +894,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.querySelector('.relay-access-enterprise-card')).toBeNull();
     await clickButton('个人');
     await clickButton('选择个人版');
-    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥399');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥99');
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 
@@ -889,7 +903,7 @@ describe('RelayAccessModal commercial rollout', () => {
       enabled: true,
       channels: [{ id: 'preview', label: '预览' }],
       plans: [
-        { id: -59, slug: 'preview-basic', name: '基础版', price_fen: 5900, duration_days: 30 },
+        { id: -59, slug: 'preview-basic', name: '基础版', price_fen: 5900, duration_days: 30, plan_tier: 1 },
         { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30 },
         { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30 },
       ],
@@ -921,19 +935,21 @@ describe('RelayAccessModal commercial rollout', () => {
       channels: [{ id: 'alipay_page', label: '支付宝支付', test_mode: false }],
       plans: [
         {
-          id: 21,
-          slug: 'catsco-personal',
-          name: '个人版',
-          price_fen: 39900,
+          id: 90,
+          slug: 'catsco-basic',
+          name: '基础版',
+          price_fen: 5900,
           duration_days: 30,
+          plan_tier: 1,
           model_budgets: { 'MiniMax-M2.7': 1750 },
         },
         {
-          id: 22,
-          slug: 'catsco-pro',
-          name: '专业版',
-          price_fen: 79900,
+          id: 91,
+          slug: 'catsco-standard',
+          name: '个人版',
+          price_fen: 9900,
           duration_days: 30,
+          plan_tier: 2,
           model_budgets: { 'MiniMax-M2.7': 5250 },
         },
         {
@@ -958,10 +974,10 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.querySelectorAll('.relay-access-plan-row')).toHaveLength(4);
   });
 
-  it('offers renewal for an active Pro plan and blocks lower-tier purchases', async () => {
+  it('offers renewal for the top plan and blocks lower-tier purchases', async () => {
     const plans = [
-      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 100 } },
-      { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 300 } },
+      { id: 891, slug: 'catsco-standard', name: '个人版', price_fen: 9900, duration_days: 30, plan_tier: 2, model_budgets: { 'gpt-5.6-terra': 100 } },
+      { id: 892, slug: 'catsco-advanced', name: '专业版', price_fen: 15900, duration_days: 30, plan_tier: 3, model_budgets: { 'gpt-5.6-terra': 300 } },
     ];
     api.getCommercialCatalog.mockResolvedValue({
       enabled: true,
@@ -974,7 +990,7 @@ describe('RelayAccessModal commercial rollout', () => {
         uid: 38,
         models: ['gpt-5.6-terra'],
         entitlements: [{
-          plan_id: 22, plan_name: '专业版', source: 'invite', state: 'active',
+          plan_id: 892, plan_name: '专业版', source: 'invite', state: 'active',
           starts_at: '2026-08-14T00:00:00Z', expires_at: '2026-09-13T00:00:00Z',
         }],
       },
@@ -998,10 +1014,10 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('已释放的实例无法恢复');
   });
 
-  it('offers Personal users an immediate Pro upgrade with explicit reset timing', async () => {
+  it('offers Basic users an immediate Standard upgrade with explicit reset timing', async () => {
     const plans = [
-      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 100 } },
-      { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 300 } },
+      { id: 890, slug: 'catsco-basic', name: '基础版', price_fen: 5900, duration_days: 30, plan_tier: 1, model_budgets: { 'gpt-5.6-terra': 100 } },
+      { id: 891, slug: 'catsco-standard', name: '个人版', price_fen: 9900, duration_days: 30, plan_tier: 2, model_budgets: { 'gpt-5.6-terra': 300 } },
     ];
     api.getCommercialCatalog.mockResolvedValue({
       enabled: true,
@@ -1014,7 +1030,7 @@ describe('RelayAccessModal commercial rollout', () => {
         uid: 38,
         models: ['gpt-5.6-terra'],
         entitlements: [{
-          plan_id: 21, plan_slug: 'catsco-personal', plan_name: '个人版', source: 'order', state: 'active',
+          plan_id: 890, plan_slug: 'catsco-basic', plan_name: '基础版', source: 'order', state: 'active',
           starts_at: '2026-08-14T00:00:00Z', expires_at: '2026-09-13T00:00:00Z',
         }],
       },
@@ -1024,22 +1040,23 @@ describe('RelayAccessModal commercial rollout', () => {
     await openPlanChooser();
 
     const rows = Array.from(container.querySelectorAll('.relay-access-plan-row'));
-    const personalButton = rows.find(row => row.textContent.includes('个人版'))?.querySelector('button');
-    const proButton = rows.find(row => row.textContent.includes('专业版'))?.querySelector('button');
-    expect(personalButton?.textContent).toContain('续费');
-    expect(personalButton?.disabled).toBe(false);
-    expect(proButton?.textContent).toContain('升级至专业版');
-    expect(proButton?.disabled).toBe(false);
+    const basicButton = rows.find(row => row.textContent.includes('基础版'))?.querySelector('button');
+    const standardButton = rows.find(row => row.textContent.includes('个人版'))?.querySelector('button');
+    expect(basicButton?.textContent).toContain('续费');
+    expect(basicButton?.disabled).toBe(false);
+    expect(standardButton?.textContent).toContain('升级至个人版');
+    expect(standardButton?.disabled).toBe(false);
 
-    await clickButton('升级至专业版');
+    await clickButton('升级至个人版');
     expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 30 天，额度按新套餐重置。');
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 
   it('opens the wide plan chooser from the quota card and keeps the purchase flow connected', async () => {
     const plans = [
-      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 100 } },
-      { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 300 } },
+      { id: 890, slug: 'catsco-basic', name: '基础版', price_fen: 5900, duration_days: 30, plan_tier: 1, model_budgets: { 'gpt-5.6-terra': 100 } },
+      { id: 891, slug: 'catsco-standard', name: '个人版', price_fen: 9900, duration_days: 30, plan_tier: 2, model_budgets: { 'gpt-5.6-terra': 200 } },
+      { id: 892, slug: 'catsco-advanced', name: '专业版', price_fen: 15900, duration_days: 30, plan_tier: 3, model_budgets: { 'gpt-5.6-terra': 300 } },
     ];
     api.getCommercialCatalog.mockResolvedValue({
       enabled: true,
@@ -1052,7 +1069,7 @@ describe('RelayAccessModal commercial rollout', () => {
         uid: 38,
         models: ['gpt-5.6-terra'],
         entitlements: [{
-          plan_id: 21, plan_slug: 'catsco-personal', plan_name: '个人版', source: 'order', state: 'active',
+          plan_id: 890, plan_slug: 'catsco-basic', plan_name: '基础版', source: 'order', state: 'active',
           starts_at: '2026-08-14T00:00:00Z', expires_at: '2026-09-13T00:00:00Z',
         }],
       },
@@ -1071,7 +1088,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(chooser).not.toBeNull();
     expect(chooser.id).toBe('relay-access-plan-chooser');
     expect(planChooserButton.getAttribute('aria-expanded')).toBe('true');
-    expect(chooser.querySelectorAll('.relay-access-plan-list-chooser .relay-access-plan-row')).toHaveLength(3);
+    expect(chooser.querySelectorAll('.relay-access-plan-list-chooser .relay-access-plan-row')).toHaveLength(4);
     expect(chooser.textContent).toContain('个人企业');
 
     const enterpriseTab = chooser.querySelector('[role="tab"][aria-selected="false"]');
@@ -1089,7 +1106,7 @@ describe('RelayAccessModal commercial rollout', () => {
       personalTab.click();
       await Promise.resolve();
     });
-    expect(chooser.querySelectorAll('.relay-access-plan-list-chooser .relay-access-plan-row')).toHaveLength(3);
+    expect(chooser.querySelectorAll('.relay-access-plan-list-chooser .relay-access-plan-row')).toHaveLength(4);
 
     const upgradeButton = [...chooser.querySelectorAll('button')].find(button => button.textContent.includes('升级至专业版'));
     expect(upgradeButton).not.toBeUndefined();
