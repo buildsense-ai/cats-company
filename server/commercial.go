@@ -137,7 +137,18 @@ func resolvePlanDeploymentProfile(existing *types.CommercialPlan, requested *str
 			return profile, nil
 		}
 	}
-	return types.CloudWorkerPrivateNAT, nil
+	// A brand-new plan with no fleet named runs on the shared container cluster.
+	//
+	// The column default is private_nat, so leaving this to the schema means a
+	// new package silently buys a dedicated ECS instance per buyer — roughly six
+	// times the per-seat infrastructure cost of a shared slot, with no error and
+	// nothing in the console to notice. The two failure modes are not symmetric:
+	// under-delivering a dedicated machine is a visible support ticket, while
+	// over-provisioning dedicated machines is a silent bill.
+	//
+	// An enterprise package that really wants a dedicated instance still says so
+	// explicitly, and existing plans keep the profile already stored on their row.
+	return types.CloudWorkerPackedShared, nil
 }
 
 func commercialUsageSummaryForUser(summary *types.CommercialSummary) *commercialUserSummary {
