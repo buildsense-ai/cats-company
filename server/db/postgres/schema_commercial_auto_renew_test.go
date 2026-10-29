@@ -155,6 +155,13 @@ func TestPostgresCommercialAutoRenewConfigAndRuns(t *testing.T) {
 	} else if len(priced) != 1 || priced[0].UID != newUID {
 		t.Fatalf("a priced plan must be due and a free plan must not: %#v", priced)
 	}
+	// The rest of this test asserts the schedule is empty, so hand the fixture
+	// accounts back instead of leaving them opted in.
+	for _, uid := range []int64{newUID, freeUID} {
+		if _, err := db.SetCommercialAutoRenewConfig(uid, false, ""); err != nil {
+			t.Fatalf("disable auto renew for fixture uid %d: %v", uid, err)
+		}
+	}
 
 	// Disabling the switch removes the account from the schedule entirely.
 	if _, err := db.SetCommercialAutoRenewConfig(uid, false, ""); err != nil {
