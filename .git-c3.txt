@@ -1,0 +1,42 @@
+ops(commercial): 旧套餐下架脚本（只改 sale_state，默认只报告）
+
+内测/过渡套餐（9.9 / 39.9 那批）需要从售卖目录摘掉；399/799 也一起下架，但**保留**
+续费能力，因为还有人在用。
+
+## 为什么不是启动时的自动迁移
+
+下架套餐是运营决定，不是数据库结构。写进 `CreateSchema` 就会在每次重启时重新断言
+一遍 —— 运营反悔重新上架后，下一次部署又把它藏起来。今天刚因为同样的写法修过
+`cloud_worker_included` 的回填（注释说加了 guard，SQL 却是无条件 UPDATE）。
+
+所以做成一个手动脚本：默认只报告，`--apply` 才改。
+
+## 只动一列
+
+    UPDATE commercial_plans SET sale_state = 'hidden' WHERE slug IN (…)
+
+明确不做：
+
+- 不改 `price_fen` / `duration_days`：历史订单与续费快照按套餐行取值
+- 不写 `archived_at`：archive 会把 `state` 置 1，续期与自动续费都会停
+- 不删任何行：订单、权益、账本都引用 `plan_id`
+
+报告里带 `active_users` / `open_orders` / `paid_periods`，先看清影响面再决定。
+
+## 下架后的行为（已核对代码）
+
+| 路径 | 是否看 sale_state |
+| --- | --- |
+| 前台售卖列表 | 看，hidden 即消失 |
+| 履约事务 | 只看 `state`，存量订单照常履约 |
+| 自动续费 runner | 不看，只读权益到期时间 |
+| 额度同步 relay | 不看 |
+
+所以存量买家：继续用已买到的额度与机器、继续被自动续费识别、只是前台看不到卡片。
+
+## 用法
+
+    DSN='postgres://…' bash ops/retire-legacy-plans.sh            # 报告
+    DSN='postgres://…' bash ops/retire-legacy-plans.sh --apply    # 执行
+
+`bash -n` 通过。
