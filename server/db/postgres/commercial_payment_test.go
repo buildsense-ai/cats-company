@@ -235,6 +235,7 @@ func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
 	// idempotent, and reject a stale preview expiry.
 	personalPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: "catsco-personal", Name: "Personal", DurationDays: 30,
+		CloudWorkerIncluded: true,
 		ModelBudgets: map[string]float64{
 			"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100,
 			"glm-5.3-flash": 2100, "gpt-5.6-terra": 2100,
@@ -835,14 +836,18 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	t.Helper()
 	personalID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialPersonalPlanSlug, Name: "个人版", PriceFen: 39900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100, "glm-5.3-flash": 2100, "gpt-5.6-terra": 2100, "gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100}, DurationDays: 30,
+		// Whether a package mints a machine is data, not a slug check. The two
+		// official packages happen to include one; a new plan defaults to false.
+		CloudWorkerIncluded: true,
+		ModelBudgets:        map[string]float64{"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100, "glm-5.3-flash": 2100, "gpt-5.6-terra": 2100, "gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create personal plan: %v", err)
 	}
 	proID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialProPlanSlug, Name: "专业版", PriceFen: 79900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-flash": 6300, "glm-5.3-flash": 6300, "gpt-5.6-terra": 6300, "gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300, "chatgpt-image-latest": 300}, DurationDays: 30,
+		CloudWorkerIncluded: true,
+		ModelBudgets:        map[string]float64{"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-flash": 6300, "glm-5.3-flash": 6300, "gpt-5.6-terra": 6300, "gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300, "chatgpt-image-latest": 300}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create pro plan: %v", err)

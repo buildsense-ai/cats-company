@@ -256,7 +256,19 @@ func (h *AccountAdminHandler) buildCommercialAdjustmentPreview(ctx context.Conte
 		// future; the summary only lists unexpired entitlements.
 		var latestExtendable *types.CommercialEntitlement
 		for _, ent := range summary.Entitlements {
-			if ent == nil || ent.State != "active" || !commercialExtendablePlanSlug(ent.PlanSlug) {
+			if ent == nil || ent.State != "active" {
+				continue
+			}
+			// Whether a plan can be extended internally is a property of the plan,
+			// not of its slug. The old check named catsco-personal / catsco-pro, so
+			// every package launched after those two was silently unrenewable from
+			// the operator console — the buyer kept paying and the only way to add a
+			// period was to hand-write rows.
+			//
+			// The rule is now the one the rest of the file already needs: a plan with
+			// a price and a positive period can be extended. Free and internal
+			// packages have no price, so they stay out without a slug list.
+			if !commercialExtendablePlan(planByID[ent.PlanID]) {
 				continue
 			}
 			if ent.ExpiresAt == nil || !ent.ExpiresAt.After(now) {
@@ -267,7 +279,7 @@ func (h *AccountAdminHandler) buildCommercialAdjustmentPreview(ctx context.Conte
 			}
 		}
 		if latestExtendable == nil {
-			return nil, &types.CommercialAdjustmentError{Code: "no_active_plan", Message: "当前没有有效的个人版/专业版套餐；如已到期，请使用「更换套餐」重新开通"}
+			return nil, &types.CommercialAdjustmentError{Code: "no_active_plan", Message: "当前没有有效的付费套餐；如已到期，请使用「更换套餐」重新开通"}
 		}
 		plan := planByID[latestExtendable.PlanID]
 		if plan == nil {
@@ -335,12 +347,23 @@ func commercialAdjustmentRenewsCloudWorkers(action string, result *types.Commerc
 	}
 }
 
-// commercialExtendablePlanSlug reports whether the plan participates in the
-// internal renewal extension. Keep this in step with the postgres
-// commercialPersonalPlanSlug / commercialProPlanSlug pair (the paid official
-// plans that carry the cloud-worker perk).
-func commercialExtendablePlanSlug(slug string) bool {
-	return slug == "catsco-personal" || slug == "catsco-pro"
+// commercialExtendablePlan reports whether a plan is eligible for the internal
+// renewal extension: an operator appends one paid period after the current
+// expiry without resetting usage.
+//
+// It reads the plan instead of a slug allowlist. The allowlist used to name the
+// two official packages, which meant every plan launched afterwards was silently
+// exempt from the operator's only way to add a period — the buyer kept paying
+// and the only fix was hand-written rows.
+//
+// Price is the discriminator, and deliberately the only one: free and internal
+// packages are priced at zero, while anything sold is not. The period is not
+// checked here because "this package has no period" is a different answer from
+// "this account has nothing to extend" — the caller already distinguishes them
+// with unsupported_plan vs no_active_plan, and folding the duration test into
+// eligibility would collapse the two into a confusing message.
+func commercialExtendablePlan(plan *types.CommercialPlan) bool {
+	return plan != nil && plan.PriceFen > 0
 }
 
 // commercialPlanQuotaTotal mirrors postgres commercialOperatorPlanQuota; keep
