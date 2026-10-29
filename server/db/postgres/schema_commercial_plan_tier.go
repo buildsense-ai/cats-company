@@ -29,15 +29,15 @@ DO $$ BEGIN
 		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_plan_tier CHECK (plan_tier >= 0);
 	END IF;
 END $$;
--- Backfill the two packages that occupied rungs 2 and 3 before this column
--- existed, so an existing buyer keeps its "续费" / "已包含" / "升级" behaviour the
--- moment this deploys. Guarded on 0 for the same reason as the machine flag: the
--- backfill must run once, and re-asserting it on every boot would undo an
--- operator who deliberately took a retired package off the ladder.
+-- Deliberately no backfill. The ladder describes the packages on sale, and
+-- joining it is an explicit decision an operator records on the row.
 --
--- Rung 1 has no historical occupant: the ¥59 package is new.
-UPDATE commercial_plans SET plan_tier = 2 WHERE slug = 'catsco-personal' AND plan_tier = 0;
-UPDATE commercial_plans SET plan_tier = 3 WHERE slug = 'catsco-pro'      AND plan_tier = 0;
+-- Backfilling the retired ¥399 / ¥799 packages would give an existing buyer a
+-- backend rung while the public catalog no longer lists them: the webapp derives
+-- the buyer's rung by matching entitlements against the catalog, so it would
+-- keep offering every new package as a plain purchase while the backend refused
+-- anything below the retired rung. A package hidden from the catalog has to be
+-- off the ladder, or the two sides disagree about what the buyer may buy.
 `
 
 const rollbackCommercialPlansAddTier = `

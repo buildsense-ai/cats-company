@@ -17,37 +17,30 @@ import (
 // That shape broke every time a package line changed: a renamed package lost
 // its "续费 / 已包含 / 升级至" behaviour, and a new package could never join.
 // The rung is a column now, so these tests assert the two things a column can
-// get wrong: the migration's one-time backfill, and the ordering the purchase
+// get wrong: what the migration leaves behind, and the ordering the purchase
 // guard depends on.
 
-// The backfill is the only reason an existing buyer keeps their behaviour across
-// the deploy. It must run exactly once — re-asserting it on every boot would
-// undo an operator who deliberately took a retired package off the ladder — so
-// the assertion is on the guarded shape, not merely on the values.
-func TestCommercialPlanTierMigrationBackfillsLegacyRungs(t *testing.T) {
+// The rung is opt-in. A package that never set one stays at 0, which every
+// caller reads as "no ladder rules apply".
+//
+// In particular the migration must not guess a rung for a retired package: the
+// public catalog stops listing it, the webapp therefore cannot compute the
+// buyer's rung from it, and a backend rung would then reject purchases the UI
+// still offered. That mismatch is the failure this test pins down.
+func TestCommercialPlanTierMigrationLeavesPackagesOffLadder(t *testing.T) {
 	ddl := migrateCommercialPlansAddTier
 
 	if !strings.Contains(ddl, "ADD COLUMN IF NOT EXISTS plan_tier") {
 		t.Fatal("the migration must add plan_tier idempotently")
 	}
-	// Rung 2 / 3 belong to the two packages that held them before the column
-	// existed. Rung 1 is new: the ¥59 package had no historical occupant.
-	for _, want := range []string{
-		"UPDATE commercial_plans SET plan_tier = 2 WHERE slug = 'catsco-personal' AND plan_tier = 0;",
-		"UPDATE commercial_plans SET plan_tier = 3 WHERE slug = 'catsco-pro'      AND plan_tier = 0;",
-	} {
-		if !strings.Contains(ddl, want) {
-			t.Fatalf("backfill missing %q", want)
-		}
-	}
-	// `AND plan_tier = 0` is the guard. Without it every restart re-asserts the
-	// rung and silently undoes an operator's decision — the exact bug the
-	// cloud_worker_included backfill had.
-	if strings.Contains(ddl, "SET plan_tier = 2 WHERE slug = 'catsco-personal';") {
-		t.Fatal("the backfill must be guarded on plan_tier = 0; an unguarded UPDATE runs on every boot")
+	if !strings.Contains(ddl, "DEFAULT 0") {
+		t.Fatal("a package must default to off-ladder; defaulting to 1 would make every new package the cheapest tier")
 	}
 	if !strings.Contains(ddl, "CHECK (plan_tier >= 0)") {
 		t.Fatal("a negative rung would sort below every package and disable the downgrade guard")
+	}
+	if strings.Contains(ddl, "UPDATE commercial_plans") {
+		t.Fatal("the migration must not assign rungs: a retired package with a backend rung disagrees with the catalog-driven webapp")
 	}
 }
 

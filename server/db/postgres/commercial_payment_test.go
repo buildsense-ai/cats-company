@@ -235,6 +235,10 @@ func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
 	// idempotent, and reject a stale preview expiry.
 	personalPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: "catsco-personal", Name: "Personal", DurationDays: 30,
+		// Extension eligibility is "this package is sold for money", so the
+		// fixture must carry a price. A zero price means free/internal, which the
+		// operator console cannot extend.
+		PriceFen:            39900,
 		CloudWorkerIncluded: true,
 		ModelBudgets: map[string]float64{
 			"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100,
@@ -836,6 +840,10 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	t.Helper()
 	personalID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialPersonalPlanSlug, Name: "个人版", PriceFen: 39900, Currency: "CNY", SaleState: "test",
+		// The official packages sit on the upgrade ladder, so the fixture has to
+		// carry a rung. Without it both plans are off-ladder and the "upgrade"
+		// below is treated as a separate purchase.
+		PlanTier:            2,
 		// Whether a package mints a machine is data, not a slug check. The two
 		// official packages happen to include one; a new plan defaults to false.
 		CloudWorkerIncluded: true,
@@ -846,6 +854,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	}
 	proID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialProPlanSlug, Name: "专业版", PriceFen: 79900, Currency: "CNY", SaleState: "test",
+		PlanTier:            3,
 		CloudWorkerIncluded: true,
 		ModelBudgets:        map[string]float64{"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-flash": 6300, "glm-5.3-flash": 6300, "gpt-5.6-terra": 6300, "gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300, "chatgpt-image-latest": 300}, DurationDays: 30,
 	})

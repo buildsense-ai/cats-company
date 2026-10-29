@@ -304,9 +304,9 @@ func TestReconcileSortedNamesAreDeterministic(t *testing.T) {
 // plan" and "free / legacy", because getting that wrong makes Free track the
 // relay catalog and hand out flagship models to every account.
 func TestReconcileSelectionKeepsFreeAndLegacyOut(t *testing.T) {
-	// Rungs the migration backfills. If a package line is replaced, these slugs
-	// change and this test must change with them — that is the point: the
-	// mapping is explicit rather than inferred from a name.
+	// Rungs the current package line uses. A package that replaces the line
+	// changes these numbers, and this test changes with them — that is the
+	// point: the mapping is explicit data rather than inferred from a name.
 	officialRungs := map[string]int{
 		commercialPersonalPlanSlug: 2,
 		commercialProPlanSlug:      3,

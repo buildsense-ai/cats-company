@@ -301,6 +301,11 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		// Chain the extension on the latest paid-period end, not the currently
 		// effective row: an extension segment starts at the previous expiry, so
 		// consecutive extensions must follow the newest segment.
+		//
+		// Eligibility is price, not slug. The slug list named the two official
+		// packages, so the preview (which already reads the plan) and this apply
+		// step disagreed for every package launched afterwards: the operator saw
+		// "extendable" and the commit failed with unsupported_plan.
 		var currentPlanID int64
 		var currentExpires time.Time
 		err = tx.QueryRow(`
@@ -308,10 +313,10 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 			FROM commercial_entitlements e
 			JOIN commercial_plans p ON p.id = e.plan_id
 			WHERE e.uid = $1 AND e.state = 'active'
-			  AND p.slug IN ($2, $3)
-			  AND e.expires_at IS NOT NULL AND e.expires_at > $4
+			  AND p.price_fen > 0
+			  AND e.expires_at IS NOT NULL AND e.expires_at > $2
 			ORDER BY e.expires_at DESC, e.starts_at DESC, e.id DESC
-			LIMIT 1`, adjustment.UID, commercialPersonalPlanSlug, commercialProPlanSlug, now).Scan(&currentPlanID, &currentExpires)
+			LIMIT 1`, adjustment.UID, now).Scan(&currentPlanID, &currentExpires)
 		if err == sql.ErrNoRows {
 			// Distinguish an expired paid package from an account that never
 			// had one so the operator knows if a plan change can reopen it.
@@ -320,14 +325,14 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 				SELECT EXISTS(
 					SELECT 1 FROM commercial_entitlements e
 					JOIN commercial_plans p ON p.id = e.plan_id
-					WHERE e.uid = $1 AND e.state = 'active' AND p.slug IN ($2, $3))`,
-				adjustment.UID, commercialPersonalPlanSlug, commercialProPlanSlug).Scan(&hadPaid); err != nil {
+					WHERE e.uid = $1 AND e.state = 'active' AND p.price_fen > 0))`,
+				adjustment.UID).Scan(&hadPaid); err != nil {
 				return nil, fmt.Errorf("check expired commercial package: %w", err)
 			}
 			if hadPaid {
 				return nil, commercialAdjustmentError("no_active_plan", "the current package has expired; use a plan change to reopen it")
 			}
-			return nil, commercialAdjustmentError("unsupported_plan", "only the personal and pro packages support renewal extension")
+			return nil, commercialAdjustmentError("unsupported_plan", "the current package is not a paid package and cannot be extended")
 		}
 		if err != nil {
 			return nil, fmt.Errorf("load extendable commercial package: %w", err)
