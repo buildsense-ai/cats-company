@@ -1152,8 +1152,18 @@ var commercialCodePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{3,63}$
 // becomes sellable with no control-plane change. Only the plan identities stay
 // pinned, because "this slug is an official paid plan" is a business fact, not
 // a model fact.
+//
+// The retired ¥399 / ¥799 line stays listed so editing one still cannot invent
+// a model or move its total. The current line must be listed too, otherwise the
+// protection would only cover the first package of the line — which is how
+// `catsco-standard`, `catsco-advanced` and `catsco-team` shipped unguarded.
 var commercialOfficialPaidPlanSlugs = map[string]struct{}{
-	"catsco-basic":        {},
+	// Current packages (prices 59 / 99 / 159 / 599).
+	"catsco-basic":    {},
+	"catsco-standard": {},
+	"catsco-advanced": {},
+	"catsco-team":     {},
+	// Retired packages still held by their buyers.
 	"catsco-personal":     {},
 	"catsco-pro":          {},
 	"catsco-team-monthly": {},

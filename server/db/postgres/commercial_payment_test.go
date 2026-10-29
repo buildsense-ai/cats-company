@@ -843,7 +843,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		// The official packages sit on the upgrade ladder, so the fixture has to
 		// carry a rung. Without it both plans are off-ladder and the "upgrade"
 		// below is treated as a separate purchase.
-		PlanTier:            2,
+		PlanTier: 2,
 		// Whether a package mints a machine is data, not a slug check. The two
 		// official packages happen to include one; a new plan defaults to false.
 		CloudWorkerIncluded: true,
@@ -856,7 +856,12 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		Slug: commercialProPlanSlug, Name: "专业版", PriceFen: 79900, Currency: "CNY", SaleState: "test",
 		PlanTier:            3,
 		CloudWorkerIncluded: true,
-		ModelBudgets:        map[string]float64{"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-flash": 6300, "glm-5.3-flash": 6300, "gpt-5.6-terra": 6300, "gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300, "chatgpt-image-latest": 300}, DurationDays: 30,
+		// The slot size and retention window travel with the credit, so the
+		// fixture must pin them: leaving them empty would exercise the fleet
+		// default and never prove the plan's values survive fulfilment.
+		CloudWorkerRuntimePlan:   types.CloudWorkerRuntimePro,
+		CloudWorkerRetentionDays: 15,
+		ModelBudgets:             map[string]float64{"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-flash": 6300, "glm-5.3-flash": 6300, "gpt-5.6-terra": 6300, "gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300, "chatgpt-image-latest": 300}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create pro plan: %v", err)
@@ -917,6 +922,25 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	var availableCredits int
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid = $1 AND state = 'available' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, paidUID).Scan(&availableCredits); err != nil || availableCredits != 1 {
 		t.Fatalf("immediate upgrade should leave exactly one available cloud-worker credit: count=%d err=%v", availableCredits, err)
+	}
+	// The upgrade credit must describe the package that was paid for. The slot
+	// size and retention window are read from the plan inside the fulfilment
+	// transaction and copied onto the credit, because a credit can outlive the
+	// plan row: a retired package is archived while paid credits stay spendable.
+	// Without this assertion a plan that sold "pro" could silently provision a
+	// default-sized slot and a shorter retention than the copy promised.
+	var creditRuntimePlan string
+	var creditRetentionDays int
+	if err := db.db.QueryRow(`
+		SELECT runtime_plan, retention_days FROM cloud_worker_credits
+		WHERE uid = $1 AND source_ref = $2`, paidUID, "order:"+proOrder.OrderNo).Scan(&creditRuntimePlan, &creditRetentionDays); err != nil {
+		t.Fatalf("read upgrade credit slot: %v", err)
+	}
+	if creditRuntimePlan != types.CloudWorkerRuntimePro {
+		t.Fatalf("upgrade credit slot=%q want %q", creditRuntimePlan, types.CloudWorkerRuntimePro)
+	}
+	if creditRetentionDays != 15 {
+		t.Fatalf("upgrade credit retention=%d want 15", creditRetentionDays)
 	}
 	personalRenewal, err := db.CreateCommercialOrder(&types.CommercialOrder{
 		OrderNo: "CCTIERPROREPEAT", UID: paidUID, PlanID: proID, Channel: "test",
