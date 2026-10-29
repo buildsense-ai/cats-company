@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -31,6 +32,52 @@ type CloudWorkerAdminBillingHandler interface {
 // over from a crashed one, so readers stop treating the old marker as busy.
 const cloudWorkerBillingClaimWindow = 30 * time.Minute
 
+// cloudWorkerOpsScriptDir is where the image bakes the provider scripts
+// (`deploy/prod/ops` → `/opt/catsco/ops`).
+const cloudWorkerOpsScriptDir = "/opt/catsco/ops"
+
+// resolveCloudWorkerBillingScript locates `billing-worker.sh`.
+//
+// It used to be a single guess: `billing-worker.sh` next to the configured renew
+// script. That held while renew pointed at the ops directory, and broke silently
+// when the platform rollout repointed renew/destroy at the packed adapter
+// directory — which ships route.sh and friends but not billing-worker.sh. From
+// then on every on-demand trial action failed with "no such file or directory":
+// a paid customer's trial could not be converted to the monthly subscription
+// they had just bought, and the expiry sweep could not suspend an expired trial,
+// so the instance kept billing on demand with nothing in the console but a
+// repeated log line.
+//
+// Order: an explicit `CATSCO_WORKER_BILLING_SCRIPT` wins; then the historical
+// location next to the renew script; then the image's ops directory. The error
+// names every path tried, because "file not found" on a background sweep is
+// otherwise indistinguishable from a provider failure.
+func resolveCloudWorkerBillingScript(configured, renewScript, opsDir string) (string, error) {
+	const name = "billing-worker.sh"
+	if configured = strings.TrimSpace(configured); configured != "" {
+		return configured, nil
+	}
+	var tried []string
+	if dir := strings.TrimSpace(filepath.Dir(strings.TrimSpace(renewScript))); renewScript != "" && dir != "." {
+		candidate := filepath.Join(dir, name)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+		tried = append(tried, candidate)
+	}
+	if opsDir = strings.TrimSpace(opsDir); opsDir != "" {
+		candidate := filepath.Join(opsDir, name)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+		tried = append(tried, candidate)
+	}
+	if len(tried) == 0 {
+		return "", fmt.Errorf("billing script %s is not configured; set CATSCO_WORKER_BILLING_SCRIPT", name)
+	}
+	return "", fmt.Errorf("billing script %s not found (tried %s); set CATSCO_WORKER_BILLING_SCRIPT", name, strings.Join(tried, ", "))
+}
+
 // Caller holds opMu. The database claim protects against overlapping servers,
 // payment fulfillment and expiry work already read from an older snapshot.
 func (h *CloudWorkerHandler) runBillingAction(item types.CloudWorkerLifecycle, action string, automatic bool) error {
@@ -45,7 +92,13 @@ func (h *CloudWorkerHandler) runBillingAction(item types.CloudWorkerLifecycle, a
 	if !claimed {
 		return fmt.Errorf("billing action already running or lifecycle changed")
 	}
-	script := filepath.Join(filepath.Dir(h.renewScript), "billing-worker.sh")
+	script, err := resolveCloudWorkerBillingScript(h.billingScript, h.renewScript, cloudWorkerOpsScriptDir)
+	if err != nil {
+		// Release the claim: nothing reached the provider, so the next sweep or
+		// payment must be able to try again instead of waiting out the window.
+		_ = store.CompleteCloudWorkerBillingAction(item.ID, action, time.Time{}, err.Error())
+		return err
+	}
 	out, err := h.runScript(script, "--name", item.TenantName, "--action", action)
 	if err != nil && strings.TrimSpace(out) != "" {
 		err = fmt.Errorf("%w: %s", err, truncateWorkerOutput(out))

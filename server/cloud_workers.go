@@ -51,9 +51,12 @@ type CloudWorkerHandler struct {
 	quota map[int64]int
 
 	// Executable scripts invoked for heavy cloud operations (empty = disabled).
-	provisionScript   string
-	resetScript       string
-	renewScript       string
+	provisionScript string
+	resetScript     string
+	renewScript     string
+	// billingScript is optional: an empty value falls back to the historical
+	// location next to renewScript and then to the image's ops directory.
+	billingScript     string
 	updateScript      string
 	rollbackScript    string
 	destroyScript     string
@@ -147,18 +150,22 @@ type CloudWorkerConfig struct {
 	ProvisionScript   string // CATSCO_WORKER_PROVISION_SCRIPT
 	ResetScript       string // CATSCO_WORKER_RESET_SCRIPT
 	RenewScript       string // CATSCO_WORKER_RENEW_SCRIPT
-	UpdateScript      string // CATSCO_WORKER_UPDATE_SCRIPT
-	RollbackScript    string // CATSCO_WORKER_ROLLBACK_SCRIPT
-	DestroyScript     string // CATSCO_WORKER_DESTROY_SCRIPT
-	ExpireScript      string // CATSCO_WORKER_EXPIRE_SCRIPT (optional; stops a packed worker at package expiry)
-	ImagesScript      string // CATSCO_WORKER_IMAGES_SCRIPT
-	ReleasesScript    string // CATSCO_WORKER_RELEASES_SCRIPT
-	StatusScript      string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
-	SSHJumpHost       string
-	SSHJumpAlias      string
-	SSHJumpPort       string
-	SSHJumpUser       string
-	SSHJumpKey        string
+	// BillingScript is CATSCO_WORKER_BILLING_SCRIPT. Optional: the trial
+	// conversion/suspend script normally sits in the image's ops directory, and
+	// leaving this empty keeps that default without hard-coding it in callers.
+	BillingScript  string // CATSCO_WORKER_BILLING_SCRIPT
+	UpdateScript   string // CATSCO_WORKER_UPDATE_SCRIPT
+	RollbackScript string // CATSCO_WORKER_ROLLBACK_SCRIPT
+	DestroyScript  string // CATSCO_WORKER_DESTROY_SCRIPT
+	ExpireScript   string // CATSCO_WORKER_EXPIRE_SCRIPT (optional; stops a packed worker at package expiry)
+	ImagesScript   string // CATSCO_WORKER_IMAGES_SCRIPT
+	ReleasesScript string // CATSCO_WORKER_RELEASES_SCRIPT
+	StatusScript   string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
+	SSHJumpHost    string
+	SSHJumpAlias   string
+	SSHJumpPort    string
+	SSHJumpUser    string
+	SSHJumpKey     string
 	// SSHHostJumpKey and SSHHostStateRoot are paths as seen from the
 	// cats-ctyun host, where copied admin commands are executed. They must
 	// never contain key material itself.
@@ -232,6 +239,7 @@ func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 		ProvisionScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
 		ResetScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
 		RenewScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
+		BillingScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_BILLING_SCRIPT")),
 		UpdateScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
 		RollbackScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
 		DestroyScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
@@ -262,6 +270,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		provisionScript:   cfg.ProvisionScript,
 		resetScript:       cfg.ResetScript,
 		renewScript:       cfg.RenewScript,
+		billingScript:     cfg.BillingScript,
 		updateScript:      cfg.UpdateScript,
 		rollbackScript:    cfg.RollbackScript,
 		destroyScript:     cfg.DestroyScript,
