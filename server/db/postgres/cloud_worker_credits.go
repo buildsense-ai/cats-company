@@ -11,12 +11,16 @@ import (
 
 // CloudWorkerCreditSummary reports paid one-time cloud-worker credits. A
 // consumed credit is intentionally not returned when the worker is deleted.
+//
+// A queued credit still counts toward the total: the buyer paid for a machine and
+// is waiting for capacity, so dropping it from the count would make a purchase
+// look like it never happened while the queue hint was showing.
 func (a *Adapter) CloudWorkerCreditSummary(uid int64) (total, available int, err error) {
 	if uid <= 0 {
 		return 0, 0, fmt.Errorf("invalid cloud worker credit owner")
 	}
 	err = a.db.QueryRow(`
-		SELECT COUNT(*) FILTER (WHERE state IN ('available','reserved','consumed')),
+		SELECT COUNT(*) FILTER (WHERE state IN ('available','reserved','consumed','queued')),
 		       COUNT(*) FILTER (WHERE state = 'available')
 		FROM cloud_worker_credits
 		WHERE uid = $1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, uid).Scan(&total, &available)

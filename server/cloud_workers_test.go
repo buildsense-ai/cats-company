@@ -405,6 +405,10 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 			body = "@echo off\r\necho ok\r\n"
 		case "fail":
 			body = "@echo off\r\nexit /b 1\r\n"
+		case "capacity-full":
+			// The packed adapter signals an exhausted tier pool with exit 75 so the
+			// control plane can queue the paid credit instead of failing it.
+			body = "@echo off\r\necho [packed] error: tier standard is full on every member\r\nexit /b 75\r\n"
 		case "fail-detail":
 			body = "@echo off\r\necho provider refused the destroy\r\nexit /b 1\r\n"
 		case "awaiting-recycle":
@@ -448,6 +452,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		body = "#!/bin/sh\necho ok\n"
 	case "fail":
 		body = "#!/bin/sh\nexit 1\n"
+	case "capacity-full":
+		body = "#!/bin/sh\necho '[packed] error: tier standard is full on every member' >&2\nexit 75\n"
 	case "fail-detail":
 		body = "#!/bin/sh\necho 'provider refused the destroy'\nexit 1\n"
 	case "awaiting-recycle":

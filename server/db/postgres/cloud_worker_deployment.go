@@ -129,6 +129,23 @@ WHERE cloud_deployment->>'profile' = 'packed_shared'
         'CTYUN_JUMP_IP','CTYUN_JUMP_PORT','CTYUN_JUMP_USER','CTYUN_JUMP_KEY']
 `
 
+// allowCloudWorkerCreditQueuedState lets a paid credit wait for capacity.
+//
+// A pooled tier serves a fixed number of tenants per node (15/15/10/3), so a
+// burst of purchases can arrive with every slot taken. Before this state the
+// only options were to fail the purchase (the buyer paid and got nothing) or to
+// hand the credit back as generic 'available' (the request is lost, because the
+// buyer has no reason to click create again). 'queued' keeps the debt explicit
+// and lets the capacity sweep retry it automatically.
+const allowCloudWorkerCreditQueuedState = `
+ALTER TABLE cloud_worker_credits DROP CONSTRAINT IF EXISTS chk_cloud_worker_credits_state;
+ALTER TABLE cloud_worker_credits ADD CONSTRAINT chk_cloud_worker_credits_state
+    CHECK (state IN ('available','reserved','consumed','revoked','queued'));
+ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS queued_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_credits_queued
+    ON cloud_worker_credits (queued_at) WHERE state = 'queued';
+`
+
 func (a *Adapter) CloudWorkerProfileCreditSummary(uid int64, profile string) (total, available int, err error) {
 	return a.CloudWorkerConfiguredCreditSummary(uid, profile, "")
 }
@@ -143,7 +160,7 @@ func (a *Adapter) CloudWorkerConfiguredCreditSummary(uid int64, profile, billing
 	if !valid || uid <= 0 {
 		return 0, 0, fmt.Errorf("invalid deployment profile owner")
 	}
-	err = a.db.QueryRow(`SELECT COUNT(*) FILTER (WHERE state IN ('available','reserved','consumed')),
+	err = a.db.QueryRow(`SELECT COUNT(*) FILTER (WHERE state IN ('available','reserved','consumed','queued')),
 		COUNT(*) FILTER (WHERE state='available') FROM cloud_worker_credits
 		WHERE uid=$1 AND deployment_profile=$2 AND ($3='' OR billing_mode=$3) AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)`, uid, profile, billing).Scan(&total, &available)
 	return

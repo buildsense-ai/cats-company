@@ -408,6 +408,20 @@ type CloudWorkerLifecycle struct {
 	State         string
 }
 
+// CloudWorkerQueuedCredit is one paid credit waiting for shared-fleet capacity.
+//
+// A pooled tier has a fixed number of tenants per node, so a burst of purchases
+// can legitimately arrive while every slot is taken. The buyer already paid and
+// asked for a machine, so the request has to survive the wait; dropping it back
+// to a generic "available" credit would either lose the request (the buyer never
+// clicks again) or mint an unwanted worker for a credit they deliberately left
+// unspent.
+type CloudWorkerQueuedCredit struct {
+	UID      int64
+	Tier     string
+	QueuedAt time.Time
+}
+
 // Cloud worker renewal outcome statuses reported by RenewForOwner.
 const (
 	CloudWorkerRenewApplied = "applied"

@@ -94,6 +94,9 @@ func (a *Adapter) CreateSchema() error {
 		// Earlier builds copied the ECS machine parameters into shared-container
 		// deployment snapshots; a packed worker has none of them.
 		stripPackedSharedMachineSettings,
+		// A paid credit must be able to wait for capacity instead of failing
+		// the purchase when a tier pool is momentarily full.
+		allowCloudWorkerCreditQueuedState,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
 		migrateCommercialRefundColumns,

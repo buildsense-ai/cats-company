@@ -190,6 +190,64 @@ type CloudWorkerCreditStore interface {
 	MarkCloudWorkerLifecycleDeleted(id int64, errText string) error
 }
 
+// cloudWorkerQueueStore parks a paid credit that could not be provisioned
+// because the package tier's shared fleet had no free slot, and reports the
+// queue so the console can show a wait instead of an error.
+//
+// Kept separate from CloudWorkerCreditStore so focused test stores keep
+// compiling; a store that cannot queue simply falls back to releasing the
+// credit, which the buyer can spend again after capacity returns.
+type cloudWorkerQueueStore interface {
+	QueueCloudWorkerCredit(uid int64, reservation string) (bool, error)
+	CloudWorkerQueuePosition(uid int64) (int, error)
+	ListQueuedCloudWorkerCredits(minAge time.Duration, limit int) ([]types.CloudWorkerQueuedCredit, error)
+	ClaimQueuedCloudWorkerCredit(uid int64) (bool, error)
+}
+
+// cloudWorkerQueueRetrySeconds is how long a queued buyer is told to wait
+// before the console re-checks. It matches the capacity sweep interval: a slot
+// that frees up is picked up within about a minute, so a shorter hint would
+// only produce pointless polling.
+const cloudWorkerQueueRetrySeconds = 60
+
+// cloudWorkerQueueMinAge keeps the sweep from retrying the same credit inside
+// back-to-back sweeps. A tier that just filled up needs a release (a destroy or
+// an expiry) before it has room again, and that takes far longer than one tick.
+const cloudWorkerQueueMinAge = 45 * time.Second
+
+// cloudWorkerCapacityFull reports whether a failed provision was caused by an
+// exhausted tier pool rather than by a broken machine.
+//
+// The packed adapter exits with 75 for this case so the distinction survives
+// the shell boundary; the message check keeps older adapters (which die with a
+// generic code) from being reported to buyers as an infrastructure failure.
+func cloudWorkerCapacityFull(err error, output string) bool {
+	if err == nil {
+		return false
+	}
+	var exitErr interface{ ExitCode() int }
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 75 {
+		return true
+	}
+	return strings.Contains(output, "is full on every member") || strings.Contains(output, "cluster placement failed")
+}
+
+// cloudWorkerQueuePosition reports this owner's place in the capacity queue,
+// or -1 when nothing is queued. It is best-effort: a store without queue
+// support simply reports "not queued".
+func (h *CloudWorkerHandler) cloudWorkerQueuePosition(uid int64) int {
+	queuer, ok := h.credits.(cloudWorkerQueueStore)
+	if !ok || uid <= 0 {
+		return -1
+	}
+	position, err := queuer.CloudWorkerQueuePosition(uid)
+	if err != nil {
+		log.Printf("[cloud-worker] queue position uid=%d failed: %v", uid, err)
+		return -1
+	}
+	return position
+}
+
 // CloudWorkerLifecycleExtender is the per-instance form used when the
 // provider returns an authoritative expiry for a renewal. Keeping this
 // optional preserves compatibility with focused/test stores that only expose
@@ -606,6 +664,18 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 			"used":      used,
 			"remaining": remaining,
 		},
+	}
+	// A paid credit waiting for a slot is invisible in "workers" (no machine
+	// exists yet), so the console needs its own signal. Without it the buyer
+	// sees an enabled quota with no worker and clicks create again, which only
+	// adds a second queue entry. -1 means nothing is queued; 0 means this buyer
+	// is first in line, which still has to be reported.
+	if position := h.cloudWorkerQueuePosition(uid); position >= 0 {
+		response["queue"] = map[string]interface{}{
+			"queued":              true,
+			"position":            position,
+			"retry_after_seconds": cloudWorkerQueueRetrySeconds,
+		}
 	}
 	if statusLoaded {
 		response["status_cached_at"] = statusUpdatedAt.UTC().Format(time.RFC3339Nano)
@@ -1671,6 +1741,43 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		// 脚本的具体失败原因（如云资源配额不足）只写入服务器日志，不回显给前端。
 		log.Printf("[cloud-worker] provision %s failed: %v; output=%s", tenantName, err, truncateWorkerOutput(provOut))
+		// A full tier pool is not a failure: the buyer paid for a slot that is
+		// momentarily taken. Placement happens before any container exists, so
+		// there is nothing to clean up — park the credit and let the capacity
+		// sweep retry it. Treating this like any other provision error would
+		// either destroy a paid order or leave the buyer with an error page on
+		// the busiest day of the month.
+		if cloudWorkerCapacityFull(err, provOut) {
+			queued := false
+			if reservedCredit {
+				if queuer, ok := h.credits.(cloudWorkerQueueStore); ok {
+					if ok, queueErr := queuer.QueueCloudWorkerCredit(uid, reservation); queueErr != nil {
+						log.Printf("[cloud-worker] queue credit uid=%d failed: %v", uid, queueErr)
+					} else {
+						queued = ok
+					}
+				}
+				if !queued {
+					// Keep the credit spendable rather than silently losing it; the
+					// buyer can retry manually and the sweep re-evaluates capacity.
+					_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+				}
+			}
+			if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
+				log.Printf("[cloud-worker] rollback delete for queued uid %d failed: %v", result.UID, rollbackErr)
+			}
+			position := h.cloudWorkerQueuePosition(uid)
+			log.Printf("[cloud-worker] tier capacity full uid=%d tier=%s queued=%v position=%d", uid, runtimePlan, queued, position)
+			writeJSON(w, http.StatusAccepted, map[string]interface{}{
+				"error":               "this package's shared fleet is full right now; your machine is queued and starts automatically",
+				"code":                "cloud_worker_capacity_queued",
+				"queued":              queued,
+				"queue_position":      position,
+				"tier":                runtimePlan,
+				"retry_after_seconds": cloudWorkerQueueRetrySeconds,
+			})
+			return
+		}
 		// The provision script may have created the cloud instance before
 		// failing on a later step. Try to destroy any partially created
 		// instance so we do not leave a still-billed orphan behind (the
@@ -1850,6 +1957,39 @@ func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 	// same gate: it must run after the sweep has released it.
 	for _, uid := range rebuildOwners {
 		h.restoreCloudWorkerAfterDeletion(uid)
+	}
+	h.retryQueuedCloudWorkers()
+}
+
+// retryQueuedCloudWorkers retries buyers whose paid credit was parked because
+// their package tier had no free slot.
+//
+// Runs after the sweep released the operation gate, because retrying goes
+// through HandleCreate, which takes the same gate. Each credit is flipped back
+// to 'available' first so the normal reserve/create path applies unchanged; if
+// the pool is still full the create parks it again, which is why the claim is
+// safe to repeat every sweep.
+func (h *CloudWorkerHandler) retryQueuedCloudWorkers() {
+	queuer, ok := h.credits.(cloudWorkerQueueStore)
+	if !ok || h.provisionScript == "" {
+		return
+	}
+	queued, err := queuer.ListQueuedCloudWorkerCredits(cloudWorkerQueueMinAge, 10)
+	if err != nil {
+		log.Printf("[cloud-worker] queued credit sweep failed: %v", err)
+		return
+	}
+	for _, item := range queued {
+		claimed, claimErr := queuer.ClaimQueuedCloudWorkerCredit(item.UID)
+		if claimErr != nil {
+			log.Printf("[cloud-worker] queued credit claim uid=%d failed: %v", item.UID, claimErr)
+			continue
+		}
+		if !claimed {
+			continue
+		}
+		log.Printf("[cloud-worker] retrying queued worker uid=%d tier=%s queued_at=%s", item.UID, item.Tier, item.QueuedAt.UTC().Format(time.RFC3339))
+		h.AutoProvisionForOwner(item.UID)
 	}
 }
 

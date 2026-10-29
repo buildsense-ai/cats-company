@@ -90,6 +90,10 @@ const cloudWorkerCreateMessage = (e) => {
       return '云端实例供给失败，可能有残留实例待清理，可在列表中删除';
     case 'cloud_worker_operation_busy':
       return '另一项云员工操作正在执行，请等待完成后再创建';
+    case 'cloud_worker_capacity_queued':
+      // Paid and parked: this is a wait, not a failure, so it must not be
+      // rendered as “创建失败” (the buyer would try again and queue twice).
+      return '当前套餐共享机已满，你已进入排队；轮到时自动开工，无需重复提交';
     case 'cloud_worker_invalid_username':
     case 'cloud_worker_create_failed':
     default:
@@ -617,6 +621,7 @@ export default function AgentStoreModal({
   const [generatingInviteCode, setGeneratingInviteCode] = useState(null);
   const [generatedInviteCodes, setGeneratedInviteCodes] = useState({});
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
+  const [cloudQueue, setCloudQueue] = useState(null); // {queued,position,retry_after_seconds} when a paid slot is waiting for capacity
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
   const [cloudImages, setCloudImages] = useState([]);
   const [cloudImagesByWorker, setCloudImagesByWorker] = useState(null); // available worker image versions from the control plane meta
@@ -1225,6 +1230,9 @@ export default function AgentStoreModal({
     // disabled" (quota.enabled === false) so the UI does not mislead.
     setCloudQuotaError(!cloudRes.quota && !cloudRes.workers);
     setCloudQuota(cloudRes.quota || null);
+    // A queued credit has no worker yet, so it must travel separately: without
+    // it the panel shows an unused quota and the buyer clicks create again.
+    setCloudQueue(cloudRes.queue || null);
     // Enrich provider-only facts after the roster is already visible. Online
     // presence and the application version continue to come from CatsCompany.
     setBots((current) => mergeCloudWorkerFacts(current, cloudRes.workers || []));
@@ -1251,6 +1259,7 @@ export default function AgentStoreModal({
         if (!active) return;
         setCloudQuotaError(false);
         setCloudQuota(cloudRes?.quota || null);
+        setCloudQueue(cloudRes?.queue || null);
         setBots((current) => mergeCloudWorkerFacts(current, cloudRes?.workers || []));
         const running = (cloudRes?.workers || []).find((worker) => worker?.operation_status === 'running');
         if (running?.tenant_name) {
@@ -1347,6 +1356,18 @@ export default function AgentStoreModal({
         visibility: 'public',
       };
 
+      // A full shared fleet answers 202 with no bot: the paid slot is queued and
+      // starts on its own once a peer is destroyed. Rendering the success screen
+      // here would hand out a bot that does not exist, and re-submitting would
+      // queue a second machine.
+      if (isManaged && result?.code === 'cloud_worker_capacity_queued') {
+        await loadBots({ silent: true }).catch(() => {});
+        if (onBotsChanged) onBotsChanged();
+        feedback.notify({ tone: 'info', message: cloudWorkerCreateMessage({ data: result }) });
+        setTab('create');
+        return;
+      }
+
       // [CRITICAL HANDSHAKE]: Automatically force a bidirectional subscription so the bot 
       // instantly appears in both sides' Contact lists, avoiding ghost P2P topics.
       if (!isManaged && fullResult.api_key && user?.uid) {
@@ -1410,6 +1431,14 @@ export default function AgentStoreModal({
     try {
       setError('');
       const created = await api.createCloudWorker({ username, display_name: trimmed });
+      // 202 = the tier pool is full and the paid slot is queued. There is no bot
+      // yet, so the roster upsert and the "已创建" toast would both be lies.
+      if (created?.code === 'cloud_worker_capacity_queued') {
+        await loadBots({ silent: true }).catch(() => {});
+        if (onBotsChanged) onBotsChanged();
+        feedback.notify({ tone: 'info', message: cloudWorkerCreateMessage({ data: created }) });
+        return;
+      }
       // Show the new worker immediately (panel roster + chat banner) instead
       // of waiting for the next roster refresh; the cloud panel keeps polling
       // it until the runtime reports connected.
@@ -1425,6 +1454,14 @@ export default function AgentStoreModal({
     } catch (e) {
       // 按后端错误码区分提示；具体技术原因（如云资源配额）只进后端日志
       const message = cloudWorkerCreateMessage(e);
+      if (e?.data?.code === 'cloud_worker_capacity_queued') {
+        // Paid and queued, not failed: keep it out of the red error slot so the
+        // buyer does not queue a second machine by clicking create again.
+        await loadBots({ silent: true }).catch(() => {});
+        if (onBotsChanged) onBotsChanged();
+        feedback.notify({ tone: 'info', message });
+        return;
+      }
       setError(message);
       throw new Error(message);
     }
@@ -1765,6 +1802,7 @@ export default function AgentStoreModal({
                 <CloudWorkerPanel
                   quota={cloudQuota}
                   quotaError={cloudQuotaError}
+                  queue={cloudQueue}
                   workers={cloudWorkers}
                   images={cloudImages}
                   imagesByWorker={cloudImagesByWorker}
@@ -1984,6 +2022,7 @@ export default function AgentStoreModal({
               <CloudWorkerPanel
                 quota={cloudQuota}
                 quotaError={cloudQuotaError}
+                queue={cloudQueue}
                 workers={cloudWorkers}
                 images={cloudImages}
                   imagesByWorker={cloudImagesByWorker}

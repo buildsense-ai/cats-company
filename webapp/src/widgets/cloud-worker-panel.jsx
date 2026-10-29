@@ -100,6 +100,7 @@ const randomCode = () => String(Math.floor(1000 + Math.random() * 9000));
 export default function CloudWorkerPanel({
   quota,
   quotaError,
+  queue = null,
   workers = [],
   images = [],
   imagesByWorker = null,
@@ -223,7 +224,12 @@ export default function CloudWorkerPanel({
       .then(cancelReset, () => {});
   };
 
-  const quotaNote = quotaError ? (
+  const quotaNote = queue && queue.queued ? (
+    <p className="cc-cloud-quota-wait">
+      <RefreshCw size={13} /> 高峰期排队中{Number(queue.position) > 0 ? `，前面还有 ${Number(queue.position)} 位` : ''}
+      ，轮到时自动开工，无需重复提交
+    </p>
+  ) : quotaError ? (
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端状态查询失败，请稍后重试</p>
   ) : !actionAvailable('create') ? (
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端创建服务尚未配置，请联系管理员</p>
