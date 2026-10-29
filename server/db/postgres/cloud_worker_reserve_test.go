@@ -35,10 +35,10 @@ func TestReserveCloudWorkerConfiguredCreditCarriesCreditExpiry(t *testing.T) {
 			mock.ExpectExec(`UPDATE cloud_worker_credits c\s+SET state = CASE`).
 				WithArgs(int64(38)).
 				WillReturnResult(sqlmock.NewResult(0, 0))
-			mock.ExpectQuery(`SELECT id, deployment_profile, billing_mode, expires_at, retention_days FROM cloud_worker_credits`).
+			mock.ExpectQuery(`SELECT id, deployment_profile, billing_mode, expires_at, retention_days, runtime_plan FROM cloud_worker_credits`).
 				WithArgs(int64(38), "", "").
-				WillReturnRows(sqlmock.NewRows([]string{"id", "deployment_profile", "billing_mode", "expires_at", "retention_days"}).
-					AddRow(int64(7), "private_nat", "month", tc.value, tc.retention))
+				WillReturnRows(sqlmock.NewRows([]string{"id", "deployment_profile", "billing_mode", "expires_at", "retention_days", "runtime_plan"}).
+					AddRow(int64(7), "private_nat", "month", tc.value, tc.retention, "pro"))
 			mock.ExpectExec(`UPDATE cloud_worker_credits\s+SET state = 'reserved', reservation_ref = \$2`).
 				WithArgs(int64(7), "create-38-1").
 				WillReturnResult(sqlmock.NewResult(0, 1))
@@ -60,6 +60,11 @@ func TestReserveCloudWorkerConfiguredCreditCarriesCreditExpiry(t *testing.T) {
 			}
 			if selection.RetentionDays != tc.retention {
 				t.Fatalf("retention=%d want %d", selection.RetentionDays, tc.retention)
+			}
+			// The slot size travels with the credit, not with a lookup at create
+			// time: a package can be retired between purchase and provisioning.
+			if selection.RuntimePlan != "pro" {
+				t.Fatalf("runtime plan=%q want pro", selection.RuntimePlan)
 			}
 		})
 	}
