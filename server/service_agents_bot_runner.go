@@ -602,7 +602,22 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 				continue
 			}
 			// 过程展示（工具调用、stdout、skill 内容）不是答案。
+			//
+			// 但它是一条**可观测的「bot 还在干」证据**：老客户端（v1.6.4 及更早，
+			// 也就是线上全部真实 bot）不会发「回合结束」标记，平台只能靠静默窗口
+			// 猜。于是最常见的失败形状是：bot 先说一句「收到，我先执行…」，接着
+			// 跑工具，十几秒后才给正文 —— 静默窗口在工具还在跑的时候就到点，把
+			// 那句前言当答案交了出去。生产数据里，近 7 天交付的 bot 答案有近一半
+			// 是这种前言。
+			//
+			// 所以：手里已经攒了待交付的文本时，见到工具活动就把静默窗口往后推一轮。
+			// 只推不无限等 —— 最后一条工具活动之后仍然只有 Settle 的宽限，bot 中途
+			// 崩掉不会把调用方一直挂到整单超时；没有工具活动的 bot（纯聊天）行为
+			// 一个字都不变，不会因为这条多等。
 			if strings.EqualFold(strings.TrimSpace(msg.Mode), "code") {
+				if len(parts) > 0 {
+					settleTill = time.Now().Add(tuning.Settle)
+				}
 				continue
 			}
 			txt := strings.TrimSpace(msg.Content)
