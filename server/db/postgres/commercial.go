@@ -535,12 +535,12 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	var inviteID, planID int64
 	var maxRedemptions, redeemedCount, cloudWorkerCredits, inviteState, planState, durationDays int
 	var expiresAt sql.NullTime
-	var planSlug, planName, cloudWorkerProfile, cloudWorkerBilling string
+	var planSlug, planName, cloudWorkerProfile, cloudWorkerBilling, cloudWorkerRuntimePlan string
 	var monthlyBudget float64
 	var budgetsRaw []byte
 	err = tx.QueryRow(`
 		SELECT c.id, c.plan_id, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.cloud_worker_billing_mode, c.state, c.expires_at,
-		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state
+		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state, p.cloud_worker_runtime_plan
 		FROM commercial_invite_codes c
 		JOIN commercial_plans p ON p.id = c.plan_id
 		WHERE lower(c.code) = lower($1)
@@ -560,6 +560,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		&budgetsRaw,
 		&durationDays,
 		&planState,
+		&cloudWorkerRuntimePlan,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("invite code not found")
@@ -578,6 +579,16 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	}
 	// Retention follows the invite's plan length (7d → 3 days, longer → 7).
 	retentionDays := types.CloudWorkerRetentionDays(0, durationDays)
+	// The slot size is a plan attribute and has to travel with the credit for the
+	// same reason the order path copies it: the credit can outlive the plan row it
+	// came from. This path used to insert the credit by hand without the column,
+	// so every invite-funded shared worker fell back to the fleet default slot no
+	// matter which package the invite was cut from — a ¥159 package delivered the
+	// same container as a ¥59 one.
+	cloudWorkerRuntimePlan, runtimePlanValid := types.NormalizeCloudWorkerRuntimePlan(cloudWorkerRuntimePlan)
+	if !runtimePlanValid {
+		return nil, fmt.Errorf("invalid invite cloud worker runtime plan")
+	}
 	var duplicate int
 	if err := tx.QueryRow(`
 		SELECT COUNT(*)
@@ -632,9 +643,9 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	}
 	for ordinal := 1; ordinal <= cloudWorkerCredits; ordinal++ {
 		if _, err := tx.Exec(`
-			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode, retention_days)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile, cloudWorkerBilling, retentionDays); err != nil {
+			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode, retention_days, runtime_plan)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile, cloudWorkerBilling, retentionDays, cloudWorkerRuntimePlan); err != nil {
 			return nil, fmt.Errorf("create invite cloud worker credit: %w", err)
 		}
 	}

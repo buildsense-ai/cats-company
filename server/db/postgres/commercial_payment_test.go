@@ -1096,6 +1096,21 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if revokedPersonal != 1 || reservedPersonal != 1 || availablePro != 1 {
 		t.Fatalf("invite upgrade credit states mismatch: revoked_personal=%d reserved_personal=%d available_pro=%d", revokedPersonal, reservedPersonal, availablePro)
 	}
+	// The invite path used to insert the credit by hand without the slot column.
+	// Every invite-funded shared worker then fell back to the fleet default, so a
+	// ¥159 package delivered the same container as a ¥59 one. The order path has
+	// had this assertion since the column landed; the invite path needs its own,
+	// because it does not go through grantCloudWorkerCredit.
+	var inviteCreditRuntimePlan string
+	if err := db.db.QueryRow(`
+		SELECT c.runtime_plan FROM cloud_worker_credits c
+		JOIN commercial_entitlements e ON e.id = c.entitlement_id
+		WHERE e.uid = $1 AND e.source_ref = $2 AND c.state = 'available'`, inviteUID, proInvite.Code).Scan(&inviteCreditRuntimePlan); err != nil {
+		t.Fatalf("load invite credit slot: %v", err)
+	}
+	if inviteCreditRuntimePlan != types.CloudWorkerRuntimePro {
+		t.Fatalf("invite credit slot=%q want %q", inviteCreditRuntimePlan, types.CloudWorkerRuntimePro)
+	}
 	if _, err := db.db.Exec(`UPDATE cloud_worker_credits SET reserved_at = CURRENT_TIMESTAMP - INTERVAL '30 minutes' WHERE entitlement_id = $1 AND state = 'reserved'`, personalEntitlementID); err != nil {
 		t.Fatalf("age personal invite reservation: %v", err)
 	}
