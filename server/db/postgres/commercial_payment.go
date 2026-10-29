@@ -12,7 +12,7 @@ import (
 )
 
 const commercialPlanColumns = `id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included, plan_tier`
+  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included, plan_tier, cloud_worker_runtime_plan`
 
 // commercialRefundMinRetentionDays bounds the retention window after a refund
 // for lifecycles that predate the per-plan retention column. A refund is a
@@ -605,7 +605,14 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 			if err != nil {
 				return nil, false, err
 			}
-			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt, profile, retention); err != nil {
+			// The slot size travels with the credit, not with the create call: a
+			// credit can outlive the plan row it came from (a retired package is
+			// archived while paid credits stay spendable).
+			runtimePlan, err := planCloudWorkerRuntimePlan(tx, order.PlanID)
+			if err != nil {
+				return nil, false, err
+			}
+			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt, profile, retention, runtimePlan); err != nil {
 				return nil, false, err
 			}
 		}

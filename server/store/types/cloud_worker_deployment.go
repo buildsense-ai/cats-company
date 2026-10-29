@@ -1,6 +1,9 @@
 package types
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Deployment profiles are operator-issued capabilities, never a public create input.
 const (
@@ -46,6 +49,10 @@ func CloudWorkerBillingForProfile(profile, billing string) string {
 type CloudWorkerCreditSelection struct {
 	Profile     string
 	BillingMode string
+	// RuntimePlan is the shared-fleet slot size the purchased package bought.
+	// Empty keeps the fleet default (standard), which is what credits issued
+	// before the column existed carry.
+	RuntimePlan string
 	// RetentionDays is how long the worker's data survives package expiry; it
 	// travels with the credit so the create path schedules the same window the
 	// purchased package promised.
@@ -64,6 +71,31 @@ func NormalizeCloudWorkerProfile(profile string) (string, bool) {
 		return profile, true
 	}
 	return profile, false
+}
+
+// Shared-fleet runtime tiers. These must match the packed manager's
+// plib_plan_values so a package's density assumption survives the hand-off:
+// light 100 / standard 200 / pro 400 / heavy 800 CPU weight.
+const (
+	CloudWorkerRuntimeLight    = "light"
+	CloudWorkerRuntimeStandard = "standard"
+	CloudWorkerRuntimePro      = "pro"
+	CloudWorkerRuntimeHeavy    = "heavy"
+)
+
+// NormalizeCloudWorkerRuntimePlan validates a runtime tier. An empty string is
+// valid and means "let the fleet decide": that is what operator-issued credits
+// and every package created before the column existed carry, and rewriting them
+// to an explicit tier would change what an already-paid slot gets.
+func NormalizeCloudWorkerRuntimePlan(plan string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(plan)) {
+	case "":
+		return "", true
+	case CloudWorkerRuntimeLight, CloudWorkerRuntimeStandard, CloudWorkerRuntimePro, CloudWorkerRuntimeHeavy:
+		return strings.ToLower(strings.TrimSpace(plan)), true
+	default:
+		return plan, false
+	}
 }
 
 // CloudWorkerRetentionDays resolves how long a worker's data survives package

@@ -1465,6 +1465,10 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	// retentionDays comes from the purchased plan's credit (7-day package → 3
 	// days, longer → 7 days); 0 keeps the fleet-wide default.
 	retentionDays := 0
+	// runtimePlan is the shared-fleet slot size bought by the package. Empty
+	// keeps the fleet default, which is what operator-issued and pre-existing
+	// credits carry.
+	runtimePlan := ""
 	profile := types.CloudWorkerPrivateNAT
 	billing := types.CloudWorkerMonthly
 	requestedProfile, _ := r.Context().Value(cloudWorkerProfileContextKey{}).(string)
@@ -1480,6 +1484,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			profile, billing = selected.Profile, selected.BillingMode
 			creditExpiresAt = selected.ExpiresAt
 			retentionDays = selected.RetentionDays
+			runtimePlan = selected.RuntimePlan
 		}
 	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 		selected, reserved, reserveErr := profiled.ReserveCloudWorkerProfileCredit(uid, reservation, requestedProfile)
@@ -1638,14 +1643,22 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer cleanupCredentialFile()
-	provOut, err := h.runScript(h.provisionScript,
+	provisionArgs := []string{
 		"--name", tenantName,
 		"--body-id", officialBodyID,
 		"--credential-file", credentialFile,
 		"--bot-uid", strconv.FormatInt(result.UID, 10),
 		"--user-uid", strconv.FormatInt(uid, 10),
 		"--user-name", creator.Username,
-		"--user-display", creator.DisplayName)
+		"--user-display", creator.DisplayName,
+	}
+	// Only the shared container fleet has runtime tiers. A dedicated ECS
+	// instance's size comes from the provider flavor, so passing a packed tier
+	// there would be meaningless at best.
+	if deployment.Profile == types.CloudWorkerPackedShared && runtimePlan != "" {
+		provisionArgs = append(provisionArgs, "--plan", runtimePlan)
+	}
+	provOut, err := h.runScript(h.provisionScript, provisionArgs...)
 	if err != nil {
 		// 脚本的具体失败原因（如云资源配额不足）只写入服务器日志，不回显给前端。
 		log.Printf("[cloud-worker] provision %s failed: %v; output=%s", tenantName, err, truncateWorkerOutput(provOut))

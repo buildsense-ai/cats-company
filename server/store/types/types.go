@@ -73,21 +73,24 @@ type CommercialPlan struct {
 	// CloudWorkerIncluded says whether this package buys a cloud worker at all.
 	// It replaces the slug allow-list that used to gate fulfilment, so a new
 	// package needs a data change rather than a code change.
-	CloudWorkerIncluded bool    `json:"cloud_worker_included"`
+	CloudWorkerIncluded bool `json:"cloud_worker_included"`
 	// PlanTier is the package's rung on the upgrade ladder (ordinal, never
 	// displayed). 0 means "not on the ladder": free, internal and legacy
 	// packages. The public catalog does expose it — it describes the buyer's own
 	// upgrade path and carries no pricing information.
 	PlanTier int `json:"plan_tier"`
-	ID                  int64   `json:"id"`
-	Slug                string  `json:"slug"`
-	Name                string  `json:"name"`
-	Description         string  `json:"description,omitempty"`
-	PriceFen            int64   `json:"price_fen"`
-	Currency            string  `json:"currency"`
-	SaleState           string  `json:"sale_state"`
-	PurchaseLimit       int     `json:"purchase_limit"`
-	MonthlyBudget       float64 `json:"monthly_budget_cny,omitempty"`
+	// CloudWorkerRuntimePlan is the shared-fleet slot size this package buys
+	// (light/standard/pro/heavy). Empty means "the fleet default".
+	CloudWorkerRuntimePlan string  `json:"cloud_worker_runtime_plan,omitempty"`
+	ID                     int64   `json:"id"`
+	Slug                   string  `json:"slug"`
+	Name                   string  `json:"name"`
+	Description            string  `json:"description,omitempty"`
+	PriceFen               int64   `json:"price_fen"`
+	Currency               string  `json:"currency"`
+	SaleState              string  `json:"sale_state"`
+	PurchaseLimit          int     `json:"purchase_limit"`
+	MonthlyBudget          float64 `json:"monthly_budget_cny,omitempty"`
 	// RealCostCNY is the real upstream cost budget behind this plan's points.
 	// Quota conversion uses points / real_cost_cny when set; 0 keeps the
 	// built-in official anchor (or the relay default for custom plans).

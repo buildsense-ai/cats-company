@@ -203,15 +203,15 @@ func (a *Adapter) ReserveCloudWorkerConfiguredCredit(uid int64, reservation, pro
 		return selection, false, fmt.Errorf("release stale cloud worker credit reservation: %w", err)
 	}
 	var id int64
-	var selectedProfile, selectedBilling string
+	var selectedProfile, selectedBilling, selectedRuntimePlan string
 	var selectedRetention sql.NullInt64
 	var selectedExpiresAt sql.NullTime
 	err = tx.QueryRow(`
-		SELECT id, deployment_profile, billing_mode, expires_at, retention_days FROM cloud_worker_credits
+		SELECT id, deployment_profile, billing_mode, expires_at, retention_days, runtime_plan FROM cloud_worker_credits
 		WHERE uid = $1 AND state = 'available' AND ($2 = '' OR deployment_profile = $2) AND ($3 = '' OR billing_mode = $3)
 		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 		ORDER BY CASE WHEN billing_mode = 'month' THEN 0 ELSE 1 END, CASE WHEN deployment_profile = 'public_ip' THEN 0 ELSE 1 END, created_at, id
-		FOR UPDATE SKIP LOCKED LIMIT 1`, uid, profile, billing).Scan(&id, &selectedProfile, &selectedBilling, &selectedExpiresAt, &selectedRetention)
+		FOR UPDATE SKIP LOCKED LIMIT 1`, uid, profile, billing).Scan(&id, &selectedProfile, &selectedBilling, &selectedExpiresAt, &selectedRetention, &selectedRuntimePlan)
 	if err == sql.ErrNoRows {
 		return selection, false, nil
 	}
@@ -227,7 +227,7 @@ func (a *Adapter) ReserveCloudWorkerConfiguredCredit(uid int64, reservation, pro
 	if err := tx.Commit(); err != nil {
 		return selection, false, fmt.Errorf("commit cloud worker credit reservation: %w", err)
 	}
-	selection = types.CloudWorkerCreditSelection{Profile: selectedProfile, BillingMode: selectedBilling, RetentionDays: int(selectedRetention.Int64)}
+	selection = types.CloudWorkerCreditSelection{Profile: selectedProfile, BillingMode: selectedBilling, RetentionDays: int(selectedRetention.Int64), RuntimePlan: selectedRuntimePlan}
 	if selectedExpiresAt.Valid {
 		value := selectedExpiresAt.Time.UTC()
 		selection.ExpiresAt = &value
@@ -549,7 +549,7 @@ func (a *Adapter) MarkCloudWorkerLifecycleAwaitingRecycle(id int64, note string)
 // grantCloudWorkerCredit is called inside the payment fulfillment transaction.
 // profile is the fleet the purchased plan targets; it travels with the credit so
 // the later provisioning call places the worker on the right backend.
-func grantCloudWorkerCredit(tx *sql.Tx, uid int64, sourceRef string, expiresAt time.Time, profile string, retentionDays int) error {
+func grantCloudWorkerCredit(tx *sql.Tx, uid int64, sourceRef string, expiresAt time.Time, profile string, retentionDays int, runtimePlan string) error {
 	if uid <= 0 || strings.TrimSpace(sourceRef) == "" {
 		return fmt.Errorf("invalid cloud worker credit grant")
 	}
@@ -560,14 +560,40 @@ func grantCloudWorkerCredit(tx *sql.Tx, uid int64, sourceRef string, expiresAt t
 	if retentionDays < 0 || retentionDays > 90 {
 		return fmt.Errorf("invalid cloud worker retention window")
 	}
+	runtimePlan, validPlan := types.NormalizeCloudWorkerRuntimePlan(runtimePlan)
+	if !validPlan {
+		return fmt.Errorf("invalid cloud worker runtime plan")
+	}
 	_, err := tx.Exec(`
-		INSERT INTO cloud_worker_credits(uid, source_ref, expires_at, deployment_profile, retention_days)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (source_ref) DO NOTHING`, uid, strings.TrimSpace(sourceRef), expiresAt, profile, retentionDays)
+		INSERT INTO cloud_worker_credits(uid, source_ref, expires_at, deployment_profile, retention_days, runtime_plan)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (source_ref) DO NOTHING`, uid, strings.TrimSpace(sourceRef), expiresAt, profile, retentionDays, runtimePlan)
 	if err != nil {
 		return fmt.Errorf("grant cloud worker credit: %w", err)
 	}
 	return nil
+}
+
+// planCloudWorkerRuntimePlan resolves which shared-fleet slot size a plan buys.
+//
+// An empty value is the honest answer for every package created before this
+// column existed and for operator-issued credits: the fleet default is what
+// those already deliver, and inventing a tier would silently change the
+// resources behind money that was already paid.
+func planCloudWorkerRuntimePlan(tx *sql.Tx, planID int64) (string, error) {
+	var raw string
+	err := tx.QueryRow(`SELECT cloud_worker_runtime_plan FROM commercial_plans WHERE id = $1`, planID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read plan runtime plan: %w", err)
+	}
+	plan, ok := types.NormalizeCloudWorkerRuntimePlan(raw)
+	if !ok {
+		return "", nil
+	}
+	return plan, nil
 }
 
 // planIncludesCloudWorker reports whether the purchased package buys a cloud

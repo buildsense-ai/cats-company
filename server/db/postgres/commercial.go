@@ -65,6 +65,7 @@ func scanCommercialPlan(scanner interface {
 		&plan.CloudWorkerRetentionDays,
 		&plan.CloudWorkerIncluded,
 		&plan.PlanTier,
+		&plan.CloudWorkerRuntimePlan,
 	); err != nil {
 		return nil, err
 	}
@@ -147,7 +148,7 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 	}
 	rows, err := a.db.Query(`
 		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-		       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included, plan_tier
+			       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included, plan_tier, cloud_worker_runtime_plan
 		FROM commercial_plans
 		` + where + `
 		ORDER BY sort_order ASC, id ASC`)
@@ -207,6 +208,10 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	if plan.PlanTier < 0 {
 		return 0, fmt.Errorf("commercial plan tier must be non-negative")
 	}
+	runtimePlan, validRuntimePlan := types.NormalizeCloudWorkerRuntimePlan(plan.CloudWorkerRuntimePlan)
+	if !validRuntimePlan {
+		return 0, fmt.Errorf("invalid cloud worker runtime plan")
+	}
 	budgets, err := encodeModelBudgets(plan.ModelBudgets)
 	if err != nil {
 		return 0, fmt.Errorf("encode model budgets: %w", err)
@@ -230,9 +235,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	err = a.db.QueryRow(`
 		INSERT INTO commercial_plans(
 			slug, name, description, price_fen, currency, sale_state, purchase_limit,
-			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, auto_update_models, cloud_worker_included, plan_tier
+			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, auto_update_models, cloud_worker_included, plan_tier, cloud_worker_runtime_plan
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -252,7 +257,8 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 			cloud_worker_retention_days = EXCLUDED.cloud_worker_retention_days,
 			auto_update_models = EXCLUDED.auto_update_models,
 			cloud_worker_included = EXCLUDED.cloud_worker_included,
-			plan_tier = EXCLUDED.plan_tier
+			plan_tier = EXCLUDED.plan_tier,
+			cloud_worker_runtime_plan = EXCLUDED.cloud_worker_runtime_plan
 		WHERE commercial_plans.archived_at IS NULL
 		RETURNING id`,
 		strings.TrimSpace(plan.Slug),
@@ -275,6 +281,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		plan.AutoUpdateModels,
 		plan.CloudWorkerIncluded,
 		maxInt(plan.PlanTier, 0),
+		runtimePlan,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create commercial plan: %w", err)

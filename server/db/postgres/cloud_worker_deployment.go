@@ -61,6 +61,22 @@ BEGIN
 END $$;
 ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS retention_days INT NOT NULL DEFAULT 0
     CHECK (retention_days BETWEEN 0 AND 90);
+-- Which runtime tier the worker runs at on the shared container fleet.
+--
+-- The packed cluster allocates memory and CPU weight per slot (light/standard/
+-- pro/heavy). Without this column every package bought the same slot, so a
+-- package priced at three times another delivered identical machine resources —
+-- the only difference was the token allowance, and the density plan the pricing
+-- assumed (fewer, larger slots for the dearer packages) never reached the
+-- scheduler. The empty default means "use the fleet default", which is what
+-- every existing row should keep.
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS cloud_worker_runtime_plan VARCHAR(16) NOT NULL DEFAULT ''
+    CHECK (cloud_worker_runtime_plan IN ('', 'light', 'standard', 'pro', 'heavy'));
+-- The credit carries the tier so the create path does not have to re-read the
+-- package: a credit can outlive the plan row it came from (the plan is archived
+-- after a package line is retired, while paid credits stay spendable).
+ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS runtime_plan VARCHAR(16) NOT NULL DEFAULT ''
+    CHECK (runtime_plan IN ('', 'light', 'standard', 'pro', 'heavy'));
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS retention_days INT NOT NULL DEFAULT 0
     CHECK (retention_days BETWEEN 0 AND 90);
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_mode VARCHAR(16) NOT NULL DEFAULT 'month' CHECK (billing_mode IN ('month','ondemand'));

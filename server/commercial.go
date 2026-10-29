@@ -93,6 +93,9 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 	// Which fleet a plan buys is an internal capacity decision; the public
 	// catalog only advertises quotas and prices.
 	copy.CloudWorkerDeploymentProfile = ""
+	// The runtime tier is capacity too: a buyer who cached "pro" would expect a
+	// bigger slot after an operator retuned the plan.
+	copy.CloudWorkerRuntimePlan = ""
 	// Retention windows are an internal capacity/cost decision.
 	copy.CloudWorkerRetentionDays = 0
 	// Whether a package mints a machine is a capacity decision too. The public
@@ -153,6 +156,32 @@ func resolvePlanDeploymentProfile(existing *types.CommercialPlan, requested *str
 	// An enterprise package that really wants a dedicated instance still says so
 	// explicitly, and existing plans keep the profile already stored on their row.
 	return types.CloudWorkerPackedShared, nil
+}
+
+// resolvePlanRuntimePlan keeps a plan's shared-fleet slot size when the admin
+// request omits the field, for the same reason as the fleet assignment: the
+// editor does not round-trip every column, and an absent field must not resize
+// slots that are already on sale.
+//
+// An empty value is a real answer, not a missing one: it means "whatever the
+// fleet defaults to", which is what every package created before this field
+// existed is already delivering.
+func resolvePlanRuntimePlan(existing *types.CommercialPlan, requested *string) (string, error) {
+	if requested != nil {
+		plan, ok := types.NormalizeCloudWorkerRuntimePlan(strings.TrimSpace(*requested))
+		if !ok {
+			return "", fmt.Errorf("unsupported cloud worker runtime plan")
+		}
+		return plan, nil
+	}
+	if existing != nil {
+		plan, ok := types.NormalizeCloudWorkerRuntimePlan(existing.CloudWorkerRuntimePlan)
+		if !ok {
+			return "", fmt.Errorf("stored cloud worker runtime plan is invalid")
+		}
+		return plan, nil
+	}
+	return "", nil
 }
 
 func commercialUsageSummaryForUser(summary *types.CommercialSummary) *commercialUserSummary {
@@ -1344,6 +1373,10 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			// Pointer so an absent field keeps the plan's current fleet
 			// instead of decoding to "" and landing on private_nat.
 			CloudWorkerDeploymentProfile *string `json:"cloud_worker_deployment_profile"`
+			// Empty keeps the fleet default; the editor sends "light"/"standard"/
+			// "pro"/"heavy" to pin a slot size. Pointer for the same reason as the
+			// fleet: an editor that does not know the field must not clear it.
+			CloudWorkerRuntimePlan *string `json:"cloud_worker_runtime_plan"`
 			// 0 keeps the derived window (7d→3, longer→7); a positive value pins it.
 			CloudWorkerRetentionDays int `json:"cloud_worker_retention_days"`
 			// Pointer so an absent field keeps the plan's current setting instead of
@@ -1456,6 +1489,11 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			}
 			planTier = *req.PlanTier
 		}
+		runtimePlan, runtimePlanErr := resolvePlanRuntimePlan(existingPlan, req.CloudWorkerRuntimePlan)
+		if runtimePlanErr != nil {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported cloud worker runtime plan"})
+			return
+		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
 			Slug:                         req.Slug,
 			Name:                         req.Name,
@@ -1475,6 +1513,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			CloudWorkerRetentionDays:     req.CloudWorkerRetentionDays,
 			CloudWorkerIncluded:          cloudWorkerIncluded,
 			PlanTier:                     planTier,
+			CloudWorkerRuntimePlan:       runtimePlan,
 			DurationDays:                 req.DurationDays,
 			State:                        req.State,
 			SortOrder:                    req.SortOrder,
