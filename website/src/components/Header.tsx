@@ -40,8 +40,8 @@ export function Header() {
     <header className="site-header">
       <div className="mx-auto flex h-[72px] max-w-[1200px] items-center justify-between px-5 sm:px-8">
         <a href={homeHref('#top')} className="site-header-brand rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-cats-500 focus-visible:ring-offset-4" aria-label="CatsCo 首页">
-          <img className="site-header-brand-mark" src="/catsco-brand-mark.webp" alt="" width="256" height="96" />
-          <img className="site-header-wordmark" src="/catsco-wordmark.webp" alt="" width="512" height="93" />
+          <img className="site-header-brand-mark" src="/catsco-brand-mark-small.webp" alt="" width="128" height="48" />
+          <img className="site-header-wordmark" src="/catsco-wordmark-small.webp" alt="" width="168" height="31" />
         </a>
 
         <nav className="site-primary-nav hidden items-center gap-9 text-sm font-medium text-[#52605B] md:flex" aria-label="主导航">
