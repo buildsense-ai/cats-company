@@ -51,11 +51,19 @@ func (a *Adapter) SetCommercialAutoRenewConfig(uid int64, enabled bool, note str
 	return &config, nil
 }
 
-// ListDueCommercialAutoRenew returns enabled users whose latest active
-// personal/pro window expires inside the lead time and has already become
-// effective (starts_at <= now). The latest expiry across all active segments
-// is compared so an account renewed early is never extended twice, and the
-// starts_at guard keeps a future-dated extension segment from re-triggering.
+// ListDueCommercialAutoRenew returns enabled users whose latest active paid
+// window expires inside the lead time and has already become effective
+// (starts_at <= now). The latest expiry across all active segments is compared
+// so an account renewed early is never extended twice, and the starts_at guard
+// keeps a future-dated extension segment from re-triggering.
+//
+// Which plans may be auto-renewed is the same rule the manual 「顺延续费」 path
+// uses (commercialExtendablePlan): a plan with a price and a positive period.
+// The old predicate named catsco-personal / catsco-pro, so every package
+// launched after those two was silently excluded — the console showed the
+// account as having auto-renew enabled while the runner never picked it up and
+// the paid machine lapsed on schedule. Free and internal packages have no
+// price, so they stay out without a slug list.
 func (a *Adapter) ListDueCommercialAutoRenew(now time.Time, within time.Duration) ([]*types.CommercialAutoRenewDue, error) {
 	if within <= 0 {
 		return nil, nil
@@ -67,13 +75,14 @@ func (a *Adapter) ListDueCommercialAutoRenew(now time.Time, within time.Duration
 		JOIN commercial_plans p ON p.id = e.plan_id
 		WHERE c.enabled = TRUE
 		  AND e.state = 'active'
-		  AND p.slug IN ($3, $4)
+		  AND p.price_fen > 0
+		  AND p.duration_days > 0
 		  AND e.expires_at IS NOT NULL
 		  AND e.expires_at > $1
 		GROUP BY c.uid
 		HAVING MAX(e.expires_at) <= $2
 		   AND MAX(e.starts_at) <= $1
-		ORDER BY c.uid`, now, now.Add(within), commercialPersonalPlanSlug, commercialProPlanSlug)
+		ORDER BY c.uid`, now, now.Add(within))
 	if err != nil {
 		return nil, fmt.Errorf("list due commercial auto renew: %w", err)
 	}

@@ -27,6 +27,23 @@ func TestAutoRenewStartupMigrationMatchesFile(t *testing.T) {
 	}
 }
 
+// seedAutoRenewPlan inserts one package with an explicit price so the tests can
+// tell a sellable plan from a free one. Price is the only thing the renewability
+// rule looks at, and the free plan proves the filter actually applies.
+func seedAutoRenewPlan(t *testing.T, db *Adapter, slug, name string, priceFen int64, durationDays int) int64 {
+	t.Helper()
+	var planID int64
+	if err := db.db.QueryRow(`
+		INSERT INTO commercial_plans(
+			slug, name, price_fen, currency, sale_state, monthly_budget_cny,
+			model_budgets, duration_days, state, sort_order
+		) VALUES ($1, $2, $3, 'CNY', 'public', 0, '{"MiniMax-M2.7":5250}'::jsonb, $4, 0, 120)
+		RETURNING id`, slug, name, priceFen, durationDays).Scan(&planID); err != nil {
+		t.Fatalf("seed plan %s: %v", slug, err)
+	}
+	return planID
+}
+
 func TestPostgresCommercialAutoRenewConfigAndRuns(t *testing.T) {
 	rawDSN := os.Getenv("CATS_PG_TEST_DSN")
 	if rawDSN == "" {
@@ -103,6 +120,40 @@ func TestPostgresCommercialAutoRenewConfigAndRuns(t *testing.T) {
 	// extension segment: the latest segment has not started yet.
 	if generous, err := db.ListDueCommercialAutoRenew(now, 60*24*time.Hour); err != nil || len(generous) != 0 {
 		t.Fatalf("future-dated extension must never be due: %#v %v", generous, err)
+	}
+
+	// A package launched after catsco-personal / catsco-pro must still be in the
+	// schedule. The predicate used to name those two slugs, so every newer plan
+	// showed auto-renew as enabled in the console while the runner silently
+	// skipped it and the paid window lapsed on schedule.
+	newPlanID := seedAutoRenewPlan(t, db, "catsco-starter-2026", "Starter 2026", 39900, 30)
+	newUID := createFlashMigrationUser(t, db, "auto-renew-new-plan")
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
+		VALUES ($1, $2, 'order', 'auto-renew-new-plan', 'active', $3, $4)`,
+		newUID, newPlanID, now.Add(-27*24*time.Hour), now.Add(4*24*time.Hour)); err != nil {
+		t.Fatalf("seed newer plan entitlement: %v", err)
+	}
+	if _, err := db.SetCommercialAutoRenewConfig(newUID, true, "新套餐自动续费"); err != nil {
+		t.Fatalf("enable auto renew for the newer plan: %v", err)
+	}
+	// A free package has no price, so it must never enter the schedule: there is
+	// nothing to extend and the extend path would fail on it every hour.
+	freePlanID := seedAutoRenewPlan(t, db, "catsco-free-trial", "免费试用", 0, 30)
+	freeUID := createFlashMigrationUser(t, db, "auto-renew-free")
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
+		VALUES ($1, $2, 'operator', 'auto-renew-free', 'active', $3, $4)`,
+		freeUID, freePlanID, now.Add(-27*24*time.Hour), now.Add(2*24*time.Hour)); err != nil {
+		t.Fatalf("seed free plan entitlement: %v", err)
+	}
+	if _, err := db.SetCommercialAutoRenewConfig(freeUID, true, "免费版"); err != nil {
+		t.Fatalf("enable auto renew for the free plan: %v", err)
+	}
+	if priced, err := db.ListDueCommercialAutoRenew(now, 7*24*time.Hour); err != nil {
+		t.Fatalf("list due auto renew with a newer priced plan: %v", err)
+	} else if len(priced) != 1 || priced[0].UID != newUID {
+		t.Fatalf("a priced plan must be due and a free plan must not: %#v", priced)
 	}
 
 	// Disabling the switch removes the account from the schedule entirely.
