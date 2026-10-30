@@ -1004,6 +1004,11 @@ func main() {
 		if botProfiles, ok := db.(server.ServiceBotProfileReader); ok {
 			publishHandler.SetBotProfiles(botProfiles)
 		}
+		// bot-as-tool 安全闸：runner.bot_uid 必须是自己名下的 bot。
+		// 线上装配必须走到这一行 —— 少了它，「把别人的 bot 包装成自己的工具上架」就是敞开的。
+		if botOwners, ok := db.(server.ServiceBotOwnerReader); ok {
+			publishHandler.SetBotOwners(botOwners)
+		}
 		// 下架/上架都会改变目录可见性 → 让在线 MCP 会话立即收到 list_changed。
 		publishHandler.SetCatalogNotifier(serviceAgentsMCPHandler)
 		mux.HandleFunc("POST /api/service-agents/publish", jwtAuthWithDB(publishHandler.HandlePublish))

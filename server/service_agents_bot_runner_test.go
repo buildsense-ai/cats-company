@@ -42,6 +42,9 @@ type fakeBotStore struct {
 	topicErr error
 	// leases 记录每次 StartServiceRun 的租约秒数（由本次超时推导）。
 	leases []int
+	// activeRuns / countErr 给并发闸用：数「同一个应用还有几单在跑」。
+	activeRuns int
+	countErr   error
 }
 
 type fakeBotMessage struct {

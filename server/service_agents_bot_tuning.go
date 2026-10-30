@@ -28,6 +28,7 @@ const (
 	envBotRunnerSettleSeconds         = "CATSCO_BOT_RUNNER_SETTLE_SECONDS"
 	envBotRunnerAmbiguityGraceSeconds = "CATSCO_BOT_RUNNER_AMBIGUITY_GRACE_SECONDS"
 	envBotRunnerPollMillis            = "CATSCO_BOT_RUNNER_POLL_INTERVAL_MS"
+	envBotRunnerMaxInflight           = "CATSCO_BOT_RUNNER_MAX_INFLIGHT"
 
 	// 单应用覆盖（definition.runner，改完下一次调用即生效；不需要重启）。
 	fieldBotRunnerTimeoutSeconds        = "timeout_seconds"
@@ -47,7 +48,10 @@ const (
 	minBotRunnerAmbiguityGrace = 1 * time.Second
 	maxBotRunnerAmbiguityGrace = 5 * time.Minute
 	minBotRunnerPoll           = 50 * time.Millisecond
-	maxBotRunnerPoll           = 5 * time.Second
+	// maxBotRunnerInflight 是单应用并发上限的天花板：再高只是把失败从「超时」变成
+	// 「更晚的超时」，没有意义。
+	maxBotRunnerInflight = 16
+	maxBotRunnerPoll     = 5 * time.Second
 
 	// botDefinitionReadTimeout 是「热更新多读一次 definition」的上限。
 	// 读不到就用会话快照派活 —— 它只影响 bot 多快开始干活，不影响调用方拿到句柄。
@@ -65,6 +69,12 @@ type botRunnerTuning struct {
 	AmbiguityGrace time.Duration
 	// Poll 是轮询消息表的间隔。
 	Poll time.Duration
+	// MaxInflight 是同一个应用允许同时在跑的单数（0 = 不限）。
+	//
+	// bot 侧的会话是串行的：并发打过去不会更快，只会让后面几单排队到超时 ——
+	// 而超时的提示是「bot 没回」，与真实原因（在忙）南辕北辙。设了上限就能立刻
+	// 如实回一句「正在忙，稍后重试」。
+	MaxInflight int
 }
 
 // builtinBotRunnerTuning 是没有任何配置时的行为（等于历史实现）。
@@ -92,6 +102,9 @@ func platformBotRunnerTuning() botRunnerTuning {
 	if v, ok := botRunnerEnvMillis(envBotRunnerPollMillis); ok {
 		t.Poll = v
 	}
+	if v, ok := botRunnerEnvInt(envBotRunnerMaxInflight); ok {
+		t.MaxInflight = v
+	}
 	return t.clamped()
 }
 
@@ -102,6 +115,8 @@ type runnerTuningOverrides struct {
 	SettleSeconds         *float64 `json:"settle_seconds"`
 	AmbiguityGraceSeconds *float64 `json:"ambiguity_grace_seconds"`
 	PollIntervalMillis    *float64 `json:"poll_interval_ms"`
+	// MaxInflight 是同一个应用允许同时跑的单数；0 = 不限。
+	MaxInflight *float64 `json:"max_inflight"`
 }
 
 // botRunnerTuningFor 解析一次调用要用的参数：平台默认 + definition.runner 覆盖。
@@ -131,6 +146,10 @@ func botRunnerTuningFor(definition json.RawMessage) botRunnerTuning {
 	if o.PollIntervalMillis != nil {
 		t.Poll = millisToDuration(*o.PollIntervalMillis)
 	}
+	if o.MaxInflight != nil {
+		// JSON 里 0 = 显式不限（覆盖平台 env 设的全局上限）。
+		t.MaxInflight = int(*o.MaxInflight)
+	}
 	return t.clamped()
 }
 
@@ -144,6 +163,7 @@ func (t botRunnerTuning) clamped() botRunnerTuning {
 		min(minBotRunnerAmbiguityGrace, t.Timeout),
 		min(maxBotRunnerAmbiguityGrace, t.Timeout))
 	t.Poll = clampDuration(t.Poll, minBotRunnerPoll, min(maxBotRunnerPoll, t.Timeout))
+	t.MaxInflight = clampInt(t.MaxInflight, 0, maxBotRunnerInflight)
 	return t
 }
 
@@ -214,4 +234,32 @@ func botRunnerEnvMillis(name string) (time.Duration, bool) {
 		return 0, false
 	}
 	return d, true
+}
+
+// botRunnerEnvInt 读一个整数型 env。
+// 与毫秒/秒那几个不同的是：这里 **0 是有效值**（= 不限并发），所以只把负数/非数字当坏值。
+func botRunnerEnvInt(name string) (int, bool) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, false
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		log.Printf("bot runner: ignore %s=%q (not a count)", name, raw)
+		return 0, false
+	}
+	return value, true
+}
+
+func clampInt(v, lo, hi int) int {
+	if hi < lo {
+		hi = lo
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }

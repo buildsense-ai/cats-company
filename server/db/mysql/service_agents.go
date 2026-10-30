@@ -145,6 +145,24 @@ func (a *Adapter) GetServiceRun(ctx context.Context, runID string) (store.Servic
 	return run, nil
 }
 
+// CountActiveServiceRunsForAgent 数同一个应用还有几单在跑（bot 并发闸用）。
+// 语义与 postgres 版一致：只走 runs → sessions，state 含 submitted（已受理也占位），
+// excludeRunID 排除调用方自己这一单。
+func (a *Adapter) CountActiveServiceRunsForAgent(ctx context.Context, agentID int64, excludeRunID string) (int, error) {
+	var n int
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM service_runs r
+		JOIN service_sessions s ON s.session_id = r.session_id
+		WHERE s.agent_id = ?
+		  AND r.state IN ('submitted','running')
+		  AND r.run_id <> ?`, agentID, excludeRunID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active service runs for agent: %w", err)
+	}
+	return n, nil
+}
+
 func (a *Adapter) CreateServiceRunIdempotent(ctx context.Context, sessionID, clientToken string, input json.RawMessage) (store.ServiceRun, bool, error) {
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)

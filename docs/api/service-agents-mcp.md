@@ -390,6 +390,27 @@ bot 的一个回合是**分钟级**的：上下文压缩、多轮模型推理、
 收尾规则：收到第一段后**再等 2 秒没有新消息**才收尾 —— bot 会把长回复切段，
 收太早会把答案截断。
 
+### 上架前提：`bot_uid` 必须是自己的 bot
+
+发布时服务端校验「这个 bot 的 owner 就是发布者」，不是则 `400 bot_not_owned`。
+没这条的话，任何人都能把别人的 bot 包成自己的工具上架：调用方以为在用那个 bot 的服务，
+实际是发布者在替它接单、蹭它的算力，还会顺带继承那个 bot 的好友可见性。
+
+执行时还会再校验一次（`bot_not_owned: …`）：definition 会热更新，内部发布通道也不经过
+用户发布接口，只在发布时拦一次等于留了后门。
+
+### 并发：`runner.max_inflight`
+
+bot 侧的会话是串行的，并发打过去不会更快 —— 后几单会排队到超时，而超时的文案是
+「bot 没回」，把「在忙」说成了「不理你」。
+
+```jsonc
+"runner": { "type": "bot", "bot_uid": 982, "max_inflight": 2 }
+```
+
+设了上限后，超出的单**立刻**以 `bot_busy: 这个应用同时已经有 N 单在跑（上限 M）…` 收尾，
+并标 `retryable=true`（调用方应当稍后重试，不要同一任务反复重发）。
+不写 = 不限（保持历史行为）；平台级默认可用 `CATSCO_BOT_RUNNER_MAX_INFLIGHT` 设，上限 16。
 ### 一次调用 = 一个 bot 会话
 
 **这是 `runner.type=bot` 与其它 runner 最大的行为差异之一，必须知道。**
@@ -540,6 +561,10 @@ definition**，而不是用 MCP 会话建立时快照进工具闭包的那份。
   // 也支持 {"unit":"run","per_run":0.05} / {"unit":"second","per_second":0.001}
 }
 ```
+
+**bot 型不支持 `unit=token`**：token 用量产生在 bot 那一侧，平台拿不到（run 的 `usage_json` 为空），
+按 token 计价会一直算成 0 元 —— 发布者以为在收费，实际全程免费。发布接口直接拒绝
+（`400 invalid_pricing_for_bot`）。bot 型用 `unit=run`（按次）或 `unit=second`（按时长）。
 
 ### 账本表 `service_run_ledger`
 
