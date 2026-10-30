@@ -114,6 +114,8 @@ type ScopedDeviceGrant struct {
 	Operations           []DeviceGrantOperation `json:"operations"`
 	CreatedAt            int64                  `json:"createdAt"`
 	ExpiresAt            int64                  `json:"expiresAt"`
+	// Server-owned absolute lifetime; renewal cannot turn a short grant into a perpetual capability.
+	RenewableUntil int64 `json:"renewableUntil,omitempty"`
 }
 
 type DeviceSelectionStatus string
@@ -634,6 +636,7 @@ func (r *userDeviceRegistry) issueDeviceGrants(actorUID int64, ownerUID int64, t
 			Operations:           ops,
 			CreatedAt:            createdAt,
 			ExpiresAt:            expiresAt,
+			RenewableUntil:       createdAt + int64((24*time.Hour)/time.Millisecond),
 		})
 	}
 	r.rememberGrants(grants)

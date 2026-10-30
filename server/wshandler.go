@@ -1421,11 +1421,16 @@ func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
 		h.handleArtifactResultReceipt(client, msg.ArtifactResult)
 	case msg.SkillMutationGrant != nil:
 		h.handleSkillMutationGrant(client, msg.SkillMutationGrant)
+	case msg.DeviceGrantRenewal != nil:
+		h.handleDeviceGrantRenewal(client, msg.DeviceGrantRenewal)
 	}
 }
 
 func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 	if msg == nil {
+		return false
+	}
+	if msg.DeviceGrantRenewal != nil {
 		return false
 	}
 	if msg.Acc != nil || msg.Login != nil || msg.Sub != nil || msg.Pub != nil || msg.Get != nil || msg.Set != nil || msg.Del != nil || msg.Note != nil || msg.Friend != nil || msg.ArtifactResult != nil || msg.SkillMutationGrant != nil {
@@ -1473,7 +1478,7 @@ func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
 		})
 		return
 	}
-	features := []string{"client_msg_id", "device_rpc", "thin_tool_rpc"}
+	features := []string{"client_msg_id", "device_rpc", "thin_tool_rpc", "device_grant_renewal.v1", "remote_shell_timeout.v1"}
 	params := map[string]interface{}{
 		"ver":   "0.1.0",
 		"build": "catscompany",

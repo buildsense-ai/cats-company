@@ -9,18 +9,19 @@ import (
 
 // ClientMessage is the top-level client-to-server message envelope.
 type ClientMessage struct {
-	Hi          *MsgClientHi     `json:"hi,omitempty"`
-	Acc         *MsgClientAcc    `json:"acc,omitempty"`
-	Login       *MsgClientLogin  `json:"login,omitempty"`
-	Sub         *MsgClientSub    `json:"sub,omitempty"`
-	Pub         *MsgClientPub    `json:"pub,omitempty"`
-	Get         *MsgClientGet    `json:"get,omitempty"`
-	Set         *MsgClientSet    `json:"set,omitempty"`
-	Del         *MsgClientDel    `json:"del,omitempty"`
-	Note        *MsgClientNote   `json:"note,omitempty"`
-	Friend      *MsgClientFriend `json:"friend,omitempty"`
-	DeviceRPC   *MsgDeviceRPC    `json:"device_rpc,omitempty"`
-	ThinToolRPC *MsgThinToolRPC  `json:"thin_tool_rpc,omitempty"`
+	Hi                 *MsgClientHi           `json:"hi,omitempty"`
+	Acc                *MsgClientAcc          `json:"acc,omitempty"`
+	Login              *MsgClientLogin        `json:"login,omitempty"`
+	Sub                *MsgClientSub          `json:"sub,omitempty"`
+	Pub                *MsgClientPub          `json:"pub,omitempty"`
+	Get                *MsgClientGet          `json:"get,omitempty"`
+	Set                *MsgClientSet          `json:"set,omitempty"`
+	Del                *MsgClientDel          `json:"del,omitempty"`
+	Note               *MsgClientNote         `json:"note,omitempty"`
+	Friend             *MsgClientFriend       `json:"friend,omitempty"`
+	DeviceRPC          *MsgDeviceRPC          `json:"device_rpc,omitempty"`
+	ThinToolRPC        *MsgThinToolRPC        `json:"thin_tool_rpc,omitempty"`
+	DeviceGrantRenewal *MsgDeviceGrantRenewal `json:"device_grant_renewal,omitempty"`
 	// ArtifactResult accepts only a receipt from a connected human preview.
 	// Result submission itself uses the authenticated Bot HTTP endpoint.
 	ArtifactResult *MsgArtifactResult `json:"artifact_result,omitempty"`
@@ -44,6 +45,7 @@ type ServerMessage struct {
 	Notification       *MsgServerNotification        `json:"notification,omitempty"`
 	DeviceRPC          *MsgDeviceRPC                 `json:"device_rpc,omitempty"`
 	ThinToolRPC        *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
+	DeviceGrantRenewal *MsgDeviceGrantRenewal        `json:"device_grant_renewal,omitempty"`
 	ArtifactResult     *MsgArtifactResult            `json:"artifact_result,omitempty"`
 	SkillMutationGrant *MsgSkillMutationGrant        `json:"skill_mutation_grant,omitempty"`
 	// ServiceRunReceipt 是定制应用 run 的生命周期回注回执（完成/失败/待补充输入；
