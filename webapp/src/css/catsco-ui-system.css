@@ -22,6 +22,7 @@
   --cc-panel: #ffffff;
   --cc-panel-raised: #f7f7f8;
   --cc-history-panel-bg: #ffffff;
+  --cc-modal-surface: #ffffff;
   --cc-history-hover: #f1f1f2;
   --cc-history-hover-border: rgba(17, 24, 39, 0.06);
   --cc-control-surface: #f2f2f4;
@@ -130,6 +131,7 @@ html[data-theme="dark"] {
   --cc-panel: #232325;
   --cc-panel-raised: #272729;
   --cc-history-panel-bg: #272729;
+  --cc-modal-surface: #272729;
   --cc-history-hover: #37373a;
   --cc-history-hover-border: rgba(255, 255, 255, 0.08);
   --cc-control-surface: #2c2c2f;
@@ -173,6 +175,7 @@ html[data-theme="liquid"] {
   --cc-panel: rgba(255, 255, 255, 0.86);
   --cc-panel-raised: rgba(255, 255, 255, 0.96);
   --cc-history-panel-bg: #ffffff;
+  --cc-modal-surface: #ffffff;
   --cc-history-hover: rgba(86, 98, 217, 0.12);
   --cc-history-hover-border: rgba(86, 98, 217, 0.14);
   --cc-control-surface: rgba(224, 230, 255, 0.68);

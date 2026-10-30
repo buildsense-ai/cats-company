@@ -28,6 +28,7 @@ import { getAuthRevision, getToken } from '../auth-session';
 import { normalizeArtifactOpenBinding, artifactOpenBindingUsable } from '../gateway-annotations';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import { useFeedback } from '../components/feedback-system';
+import { useDetachSessionConfirm } from './detach-session-confirm';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import { previewFileDescriptor } from './chat-message';
 import PwaDownloadLink from './pwa-download-link';
@@ -170,12 +171,16 @@ export default function CloudArtifactsPanel({
   onGatewayAnnotationMode,
   onGatewayAnnotationState,
   onStartAnnotation,
+  onApplicationOpened,
   annotationCapture,
   onAnnotationSubmit,
   onAnnotationScreenshot,
   onAnnotationCancel,
 }) {
   const feedback = useFeedback();
+  // Opening an application in its own tab leaves the conversation behind, so
+  // every entrance to that path asks first.
+  const { requestDetach, dialog: detachDialog } = useDetachSessionConfirm();
   const normalizedInitialTab = ['active', 'deleted', 'files', 'gateway'].includes(initialTab)
     ? initialTab
     : 'files';
@@ -207,6 +212,9 @@ export default function CloudArtifactsPanel({
   const modeSyncRef = useRef(null);
   const gatewayLaunchSequenceRef = useRef(0);
   const consumedInitialAppRef = useRef(null);
+  // Which conversation this panel instance is showing. The application is only
+  // closed when this changes, not when the panel receives its first props.
+  const previousTopicIdRef = useRef(topicId);
   const [viewerRelation, setViewerRelation] = useState('');
   const [canPublish, setCanPublish] = useState(false);
   const [tagCounts, setTagCounts] = useState([]);
@@ -225,6 +233,10 @@ export default function CloudArtifactsPanel({
   // same `src` leaves the existing document in place, so a republished application
   // would keep showing what it served the first time; remounting fetches it anew.
   const gatewayReloadKeyRef = useRef(0);
+  // Mirrors `gatewayPreview` for the open path, which runs outside render.
+  const gatewayPreviewRef = useRef(null);
+  // The address the frame is currently showing.
+  const gatewayFrameURLRef = useRef('');
   const [gatewayRefreshing, setGatewayRefreshing] = useState(false);
   const retireGatewayOpen = useCallback(() => {
     ++gatewayOpenSequenceRef.current;
@@ -285,6 +297,7 @@ export default function CloudArtifactsPanel({
     if (tab === 'gateway' && nextTab !== 'gateway') {
       retireGatewayOpen();
       onGatewayFrameChange?.(null);
+      gatewayPreviewRef.current = null;
       setGatewayPreview(null);
       setGatewayAnnotationMode('off');
     }
@@ -359,7 +372,7 @@ export default function CloudArtifactsPanel({
   // set its session cookie during the open, so the application recognises the
   // visitor and knows which conversation they came from. If that request fails
   // for any reason we still open the plain URL, so the action never dead-ends.
-  const openGatewayApp = useCallback(async (app, target = 'panel', { keepOnLaunchFailure = false } = {}) => {
+  const openGatewayApp = useCallback(async (app, target = 'panel', { keepOnLaunchFailure = false, force = false } = {}) => {
     if (!app?.id || !app?.url) return;
     // A new tab opens the application's own address. That is the address to show,
     // to bookmark, and to hand to anyone else. Identity arrives on its own: the
@@ -367,8 +380,23 @@ export default function CloudArtifactsPanel({
     // so the gateway recognises the visitor without a one-shot launch code — which
     // is also why this path never has to touch the launch endpoint at all.
     if (target === 'window') {
-      window.open(app.url, '_blank', 'noopener,noreferrer');
+      requestDetach(app, () => window.open(app.url, '_blank', 'noopener,noreferrer'));
       return;
+    }
+    // Already showing exactly this application in this conversation: do nothing.
+    //
+    // Re-entering would mint a second launch code and rebuild the frame. The
+    // gateway treats a launch code as single-use, so the reload lands on either
+    // `code_expired_or_used` or a guest page — and a guest page is what makes the
+    // application ask for identity when a task is submitted. The refresh action
+    // asks for this explicitly, so it is the one caller that overrides it.
+    if (!force) {
+      const showing = gatewayPreviewRef.current;
+      if (showing
+        && String(showing.id) === String(app.id)
+        && String(showing.panelTopicId || '') === String(topicId || '')) {
+        return;
+      }
     }
     const launchSequence = ++gatewayLaunchSequenceRef.current;
     // Panel opens own one capability per instance.
@@ -429,14 +457,41 @@ export default function CloudArtifactsPanel({
     const bindingController = new AbortController();
     gatewayBindingControllerRef.current = bindingController;
     onGatewayFrameChange?.(null);
-    gatewayReloadKeyRef.current += 1;
-    setGatewayPreview({
+    // Remount the frame only when the address actually changes, or when the
+    // address is the plain application page (a reload there costs nothing).
+    //
+    // A launch address is single-use: the gateway accepts it exactly once. Bumping
+    // the key for the same launch address made the browser load it a second time,
+    // and the gateway answered with an expired code — the frame then rendered as a
+    // guest, which is why the application demanded identity when a task was
+    // submitted. Reusing a live frame is both cheaper and the only correct thing.
+    const isLaunchAddress = /\/_launch\/|(\?|&)code=/.test(String(viewerURL));
+    const sameAddress = String(viewerURL) === gatewayFrameURLRef.current;
+    if (!sameAddress || !isLaunchAddress) {
+      gatewayReloadKeyRef.current += 1;
+      gatewayFrameURLRef.current = String(viewerURL);
+    }
+    const nextPreview = {
       ...app,
       viewerURL,
       visitor,
       artifact,
       openBinding,
       bindingSignal: bindingController.signal,
+      // The conversation this open belongs to, so a repeat request from the same
+      // conversation can be recognised as "already showing" and skipped.
+      panelTopicId: String(topicId || ''),
+    };
+    gatewayPreviewRef.current = nextPreview;
+    setGatewayPreview(nextPreview);
+    // Applications are opened from two places: a card in the conversation, and
+    // this panel's own list. Only the first used to reach the conversation's
+    // record, so an application opened from the list was remembered nowhere and
+    // vanished on the next switch. Reporting it here makes both paths equal.
+    onApplicationOpened?.({
+      id: String(app.id || ''),
+      url: String(app.url || ''),
+      title: String(app.title || ''),
     });
     setGatewayAnnotationMode('off');
     setGatewayAnnotationCapabilityNote(artifactOpenBindingUsable(openBinding)
@@ -469,6 +524,8 @@ export default function CloudArtifactsPanel({
         // stale response overwrite the panel the user is actually looking at.
         await openGatewayApp({ id: open.id, title: open.title, url: open.url }, 'panel', {
           keepOnLaunchFailure: !open.visitor,
+          // The user pressed refresh: remounting is the whole point.
+          force: true,
         });
       } catch {
         setError('应用刷新失败，请稍后重试（当前内容保持不变）');
@@ -480,16 +537,26 @@ export default function CloudArtifactsPanel({
     await loadContent();
   }, [gatewayPreview, gatewayRefreshing, loadContent, openGatewayApp, tab]);
 
+  // Unmount-only cleanup.
+  //
+  // This used to depend on the frame-change callback, which the parent rebuilds
+  // on every render. React then ran the cleanup on every render, and each run
+  // bumped the open sequence — which cancelled the application launch that had
+  // just started and left the panel on the catalogue. The latest callback is
+  // read through a ref so the effect can run exactly once.
+  const frameChangeRef = useRef(onGatewayFrameChange);
+  frameChangeRef.current = onGatewayFrameChange;
   useEffect(() => () => {
     retireGatewayOpen();
-    onGatewayFrameChange?.(null);
+    frameChangeRef.current?.(null);
     modeSyncRef.current = null;
-  }, [onGatewayFrameChange, retireGatewayOpen]);
+  }, [retireGatewayOpen]);
 
   useEffect(() => {
     const invalidate = () => {
       retireGatewayOpen();
       onGatewayFrameChange?.(null);
+      gatewayPreviewRef.current = null;
       setGatewayPreview(null);
       setGatewayAnnotationMode('off');
     };
@@ -543,9 +610,6 @@ export default function CloudArtifactsPanel({
     setArtifacts([]);
     setFiles([]);
     setGatewayApps([]);
-    retireGatewayOpen();
-    onGatewayFrameChange?.(null);
-    setGatewayPreview(null);
     setViewerRelation('');
     setCanPublish(false);
     setTagCounts([]);
@@ -556,15 +620,46 @@ export default function CloudArtifactsPanel({
     loadContent();
     return () => {
       requestSequenceRef.current += 1;
-      gatewayLaunchSequenceRef.current += 1;
     };
   }, [loadContent]);
+
+  // An open application belongs to (Agent, conversation), not to the tab that
+  // happens to be selected. It is closed only when the panel is pointed at a
+  // different conversation — and only then: clearing on the first mount wiped the
+  // launch that had just started, which is why returning to a conversation showed
+  // the catalogue instead of the application.
+  useEffect(() => {
+    if (previousTopicIdRef.current === topicId) return undefined;
+    previousTopicIdRef.current = topicId;
+    retireGatewayOpen();
+    onGatewayFrameChange?.(null);
+    gatewayPreviewRef.current = null;
+    setGatewayPreview(null);
+    return () => {
+      gatewayLaunchSequenceRef.current += 1;
+    };
+  }, [topicId]);
 
   useEffect(() => {
     if (tab !== 'gateway' || !initialApp?.id || !initialApp?.url) return;
     const consumed = consumedInitialAppRef.current;
-    if (consumed?.app === initialApp && consumed.agentUid === agentUid && consumed.topicId === topicId) return;
-    consumedInitialAppRef.current = { app: initialApp, agentUid, topicId };
+    // Compare by identity of the application, not by object reference. The
+    // parent rebuilds `initialApp` on every conversation switch, so a reference
+    // check relaunched the iframe and threw away whatever the application was
+    // holding — a half-filled form, a scroll position, an open editor. Same
+    // application in the same conversation means "already showing it".
+    const sameApplication = consumed
+      && consumed.agentUid === agentUid
+      && consumed.topicId === topicId
+      && String(consumed.appId) === String(initialApp.id)
+      && String(consumed.appURL) === String(initialApp.url);
+    if (sameApplication) return;
+    consumedInitialAppRef.current = {
+      appId: String(initialApp.id),
+      appURL: String(initialApp.url),
+      agentUid,
+      topicId,
+    };
     openGatewayApp(initialApp);
   }, [initialApp, tab, openGatewayApp, agentUid, topicId]);
 
@@ -1190,6 +1285,7 @@ export default function CloudArtifactsPanel({
                   onClick={() => {
                     retireGatewayOpen();
                     onGatewayFrameChange?.(null);
+                    gatewayPreviewRef.current = null;
                     setGatewayPreview(null);
                   }}
                   aria-label="返回应用列表"
@@ -1234,6 +1330,13 @@ export default function CloudArtifactsPanel({
               <iframe
                 className="cloud-artifacts-gateway-frame"
                 key={gatewayReloadKeyRef.current}
+                // The launch address, because that is what carries the visitor's
+                // identity: loading the plain application address makes the frame
+                // a guest, and an application that needs to know who is asking
+                // refuses to run. The code is single-use, so this frame must be
+                // built exactly once per open: the panel is never unmounted for a
+                // conversation switch, only moved off-screen, and a new instance
+                // re-mints its own code through `openGatewayApp`.
                 src={gatewayPreview.viewerURL || gatewayPreview.url}
                 title={gatewayPreview.title || gatewayPreview.id}
                 onLoad={(event) => onGatewayFrameChange?.({
@@ -1251,6 +1354,16 @@ export default function CloudArtifactsPanel({
                 referrerPolicy="no-referrer"
                 style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}
               />
+            </div>
+          )}
+          {tab === 'gateway' && !gatewayPreview && gatewayApps.length === 0 && (
+            // An empty catalogue still renders the list container: "this Agent
+            // publishes no applications" is information, and a panel that
+            // renders nothing at all looks broken.
+            <div className="cloud-artifacts-list cloud-artifacts-list-empty">
+              <p className="cloud-artifacts-empty">
+                {loading ? '正在读取应用…' : (error || '这个 Agent 还没有发布应用。')}
+              </p>
             </div>
           )}
           {tab === 'gateway' && !gatewayPreview && gatewayApps.length > 0 && (
@@ -1349,6 +1462,7 @@ export default function CloudArtifactsPanel({
             onConfirm={deleteTagEverywhere}
           />
         )}
+        {detachDialog}
       </section>
     </>
   );

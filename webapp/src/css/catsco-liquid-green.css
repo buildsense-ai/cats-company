@@ -12,6 +12,7 @@ html[data-theme="liquid"][data-liquid-variant="green"] {
   --cc-panel: #1a1c1d;
   --cc-panel-raised: #222425;
   --cc-history-panel-bg: #222425;
+  --cc-modal-surface: #222425;
   --cc-history-hover: #303634;
   --cc-history-hover-border: rgba(198, 240, 228, 0.12);
   --cc-control-surface: #252829;

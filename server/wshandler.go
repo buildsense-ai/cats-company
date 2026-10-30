@@ -1645,6 +1645,7 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		return
 	}
 	sawGatewayAnnotationsIngress := hasGatewayAnnotationsMetadata(payload.Metadata)
+	payload.Metadata = h.validateAppOpenMetadata(uid, topic, payload.Metadata)
 	payload.Metadata, err = h.validateGatewayAnnotationsMetadata(uid, topic, payload.Metadata)
 	if err != nil {
 		// A rejected annotated message must never strand a task delivery
@@ -1895,6 +1896,9 @@ func (h *Hub) fanoutStreamEvent(uid int64, topicID string, streamType string, co
 	// Streaming events are transport-only: neither the annotation attachment
 	// nor any (forged) server-context copy may ride them.
 	streamBase := metadataWithoutXiaobaRuntime(metadataWithoutGatewayAnnotationContext(metadataWithoutGatewayAnnotations(metadataWithoutArtifactContext(metadata))))
+	// A stream fragment is not an answer: an application request must ride only
+	// the persisted message, never a delta that repeats.
+	streamBase = metadataWithoutAppOpen(streamBase)
 	for key, value := range streamBase {
 		streamMetadata[key] = value
 	}

@@ -955,6 +955,38 @@ describe('CloudArtifactsPanel', () => {
     expect(api.requestArtifactLaunch).not.toHaveBeenCalled();
   });
 
+  test('does not relaunch the same application when the parent rebuilds its record', async () => {
+    const app = { id: 'stable-app', title: 'Stable', url: 'https://artifact.catsco.cc/stable-app/' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url });
+
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')?.getAttribute('src')).toBe(app.url);
+
+    // Switching conversations hands the panel a freshly built record for the
+    // same application. Treating that as a new application would tear the
+    // iframe down and lose everything it was holding.
+    api.requestArtifactLaunch.mockClear();
+    await renderPanel({
+      initialTab: 'gateway',
+      initialApp: { id: 'stable-app', title: 'Stable', url: app.url },
+    });
+    await flush();
+    expect(api.requestArtifactLaunch).not.toHaveBeenCalled();
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')?.getAttribute('src')).toBe(app.url);
+
+    // A genuinely different application still opens.
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://artifact.catsco.cc/second-app/' });
+    await renderPanel({
+      initialTab: 'gateway',
+      initialApp: { id: 'second-app', title: 'Second', url: 'https://artifact.catsco.cc/second-app/' },
+    });
+    await flush();
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+  });
+
   test('shares the gateway public address, not the conversation-bound viewer URL', async () => {
     api.listArtifactApps.mockResolvedValueOnce({
       apps: [{
@@ -1019,10 +1051,19 @@ describe('CloudArtifactsPanel', () => {
     expect(frame?.getAttribute('src')).toBe('https://artifact.catsco.cc/saturday-demo/');
     expect(openSpy).not.toHaveBeenCalled();
 
-    // Opening in a new page stays available as a secondary action.
+    // Opening in a new page stays available as a secondary action, but it is
+    // confirmed first: the new tab no longer belongs to this conversation.
     await act(async () => {
       [...container.querySelectorAll('button')]
         .find((button) => button.textContent === '新页面打开').click();
+      await Promise.resolve();
+    });
+    expect(openSpy).not.toHaveBeenCalled();
+    // The confirmation is portalled onto the document, outside the panel.
+    expect(document.body.textContent).toContain('新页面打开，则不再绑定会话');
+    await act(async () => {
+      [...document.querySelectorAll('button')]
+        .find((button) => button.textContent === '仍然打开').click();
       await Promise.resolve();
     });
     // A new tab opens the application's own address, never the hosted viewer:
@@ -1068,6 +1109,9 @@ describe('CloudArtifactsPanel', () => {
     });
 
     expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'saturday-demo', topic_id: 'p2p_7_440' });
+    // The frame loads the launch address, because that is what carries the
+    // visitor's identity: the plain application address is a guest, and an
+    // application that has to know who is asking refuses to run.
     expect(container.querySelector('.cloud-artifacts-gateway-frame')?.getAttribute('src'))
       .toBe('https://artifact.catsco.cc/_launch/code-123?next=/saturday-demo/');
     expect(container.textContent).not.toContain('身份未附带');
@@ -1092,6 +1136,12 @@ describe('CloudArtifactsPanel', () => {
     await act(async () => {
       [...container.querySelectorAll('button')]
         .find((button) => button.textContent === '新页面打开').click();
+      await Promise.resolve();
+    });
+    // The tab loses the conversation binding, so the user is asked first.
+    await act(async () => {
+      [...document.querySelectorAll('button')]
+        .find((button) => button.textContent === '仍然打开').click();
       await Promise.resolve();
     });
     expect(openSpy).toHaveBeenCalledWith(
@@ -1170,6 +1220,8 @@ describe('CloudArtifactsPanel', () => {
     });
     const change = gatewayFrameChanges.at(-1);
     expect(change).toMatchObject({
+      // The frame loads what the launch returned, which is what carries the
+      // visitor's identity for this one open.
       url: 'data:text/html,<p>gateway</p>',
       framePresent: true,
       artifact: expect.objectContaining({ id: 'promo-content-studio', publish_version: 18 }),
@@ -1216,6 +1268,12 @@ describe('CloudArtifactsPanel', () => {
     await act(async () => {
       [...container.querySelectorAll('button')]
         .find((button) => button.textContent === '新页面打开').click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      // The confirmation is portalled onto the document, outside the panel.
+      [...document.querySelectorAll('button')]
+        .find((button) => button.textContent === '仍然打开').click();
       await Promise.resolve();
     });
     // No launch could be obtained, so the tab still opens the application's own

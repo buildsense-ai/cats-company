@@ -40,6 +40,23 @@ import {
   writeComposerPhoneUploadSession,
 } from '../utils/composer-draft-storage';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
+import {
+  emptyArtifactPanelEntry,
+  forgetArtifactPanel,
+  loadArtifactPanelStore,
+  mountedArtifactTopics,
+  normalizeArtifactPanelEntry,
+  readArtifactPanel,
+  rememberArtifactPanel,
+  saveArtifactPanelStore,
+} from '../utils/artifact-panel-state';
+import {
+  appOpenCommandForMessage,
+  appOpenMessageKey,
+  applicationMentionedInText,
+  findAppOpenTarget,
+} from '../utils/app-open-command';
+import { useDetachSessionConfirm } from '../widgets/detach-session-confirm';
 import { getAuthRevision, getToken } from '../auth-session';
 import {
   GATEWAY_ANNOTATIONS_CONTRACT,
@@ -95,6 +112,9 @@ const QUESTION_INDEX_MAX_SCANNED_PER_LOAD = 2000;
 const QUESTION_INDEX_MAX_ITEMS = 250;
 const STRUCTURED_MENTION_ALL = 'all';
 const TYPING_TIMEOUT_MS = 10000;
+// How long to wait before opening an application the user named, so a message
+// that mentions two applications settles on one instead of flicking between them.
+const MENTION_OPEN_SETTLE_MS = 260;
 const PREVIEW_COMPOSER_TEXT_DRAG_HOLD_MS = 140;
 const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
@@ -759,6 +779,78 @@ export default function MessagesView({
 }) {
   const feedback = useFeedback();
   const conversationFork = useConversationFork({ topic, userId: user.uid, onActivateTopic });
+  // The right-hand application panel belongs to the conversation that opened
+  // it. Its state is kept per topic, so switching conversations neither closes
+  // the panel nor hands one conversation's application to another; the last few
+  // conversations are also written to storage so a reload brings the panel back.
+  const artifactPanelStoreRef = useRef(null);
+  if (artifactPanelStoreRef.current === null) {
+    let storage = null;
+    try {
+      storage = window.localStorage;
+    } catch {
+      storage = null;
+    }
+    artifactPanelStoreRef.current = loadArtifactPanelStore(storage, user.uid);
+  }
+  const initialArtifactPanelRef = useRef(null);
+  if (initialArtifactPanelRef.current === null) {
+    initialArtifactPanelRef.current = readArtifactPanel(artifactPanelStoreRef.current, topic);
+  }
+  const [artifactPanelVersion, setArtifactPanelVersion] = useState(0);
+  const { requestDetach, dialog: detachDialog } = useDetachSessionConfirm();
+  // The panel's live values, readable from callbacks and effects that must not
+  // depend on them (a topic switch has to save the values as they were, not as
+  // the next render will produce them).
+  const activeArtifactPanelRef = useRef(initialArtifactPanelRef.current);
+  // Which conversation the live mirror above describes. Without this, writing
+  // one conversation's record would move the mirror, and the next switch would
+  // then save that state under the conversation that is leaving.
+  const artifactPanelMirrorTopicRef = useRef(topic);
+  // The applications this Agent publishes, refreshed on every render. A ref
+  // rather than state so the composer can consult the catalogue the instant the
+  // user sends, without re-registering its handler.
+  const knownArtifactsRef = useRef([]);
+  const previousPanelTopicRef = useRef(topic);
+  const persistArtifactPanels = useCallback((store) => {
+    let storage = null;
+    try {
+      storage = window.localStorage;
+    } catch {
+      storage = null;
+    }
+    saveArtifactPanelStore(storage, user.uid, store);
+  }, [user.uid]);
+  const writeArtifactPanelEntry = useCallback((topicId, entry, { silent = false } = {}) => {
+    const key = String(topicId || '');
+    if (!key) return;
+    artifactPanelStoreRef.current = rememberArtifactPanel(artifactPanelStoreRef.current, key, entry);
+    // The live mirror only ever describes the conversation on screen. Writing
+    // another conversation's record (an application opening in the background,
+    // a request addressed elsewhere) must not replace it, or the next switch
+    // would save that other state into whichever conversation is leaving.
+    if (key === String(artifactPanelMirrorTopicRef.current || '')) {
+      activeArtifactPanelRef.current = readArtifactPanel(artifactPanelStoreRef.current, key);
+    }
+    persistArtifactPanels(artifactPanelStoreRef.current);
+    // `silent` records a fact that is already true on screen — the panel just
+    // opened this very application. Re-rendering for it would rebuild the panel
+    // mid-handshake and drop the frame's session.
+    if (!silent) setArtifactPanelVersion((current) => current + 1);
+  }, [persistArtifactPanels]);
+  const forgetArtifactPanelEntry = useCallback((topicId) => {
+    const key = String(topicId || '');
+    if (!key) return;
+    artifactPanelStoreRef.current = forgetArtifactPanel(artifactPanelStoreRef.current, key);
+    // Forget the live mirror too, otherwise saving it back on the next topic
+    // switch would resurrect the panel the user just closed.
+    if (key === String(artifactPanelMirrorTopicRef.current || '')) {
+      activeArtifactPanelRef.current = emptyArtifactPanelEntry();
+    }
+    persistArtifactPanels(artifactPanelStoreRef.current);
+    setArtifactPanelVersion((current) => current + 1);
+  }, [persistArtifactPanels]);
+
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
   const [pendingAttachments, setPendingAttachments] = useState([]);
@@ -797,7 +889,7 @@ export default function MessagesView({
   const [galleryHasMore, setGalleryHasMore] = useState(false);
   const [galleryLoading, setGalleryLoading] = useState(false);
   const [galleryStatus, setGalleryStatus] = useState('');
-  const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
+  const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(() => initialArtifactPanelRef.current.agentUid);
   // Gateway annotation drafts are stored per topic × agent × app in session
   // storage (see utils/gateway-annotation-drafts.js) and mirrored into state
   // for the composer bar. The context outlives the artifact sidebar, so an
@@ -904,10 +996,28 @@ export default function MessagesView({
   const gatewayAnnotationHostRef = useRef(null);
   const gatewayAnnotationPanelStateRef = useRef(null);
   const gatewayAnnotationReadyTimerRef = useRef(0);
-  const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
-  const [cloudArtifactsReturnOpen, setCloudArtifactsReturnOpen] = useState(false);
-  const [cloudArtifactsTab, setCloudArtifactsTab] = useState('files');
-  const [cloudArtifactsInitialApp, setCloudArtifactsInitialApp] = useState(null);
+  const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(() => initialArtifactPanelRef.current.open);
+  const [cloudArtifactsReturnOpen, setCloudArtifactsReturnOpen] = useState(() => initialArtifactPanelRef.current.returnOpen);
+  const [cloudArtifactsTab, setCloudArtifactsTab] = useState(() => initialArtifactPanelRef.current.tab);
+  const [cloudArtifactsInitialApp, setCloudArtifactsInitialApp] = useState(() => initialArtifactPanelRef.current.app);
+  // A message can carry a request to open one of the conversation Agent's
+  // applications. It is parked here and acted on by an effect that knows which
+  // Agent this conversation belongs to; the key set stops a message that is
+  // replayed (or fanned out twice) from opening the panel twice.
+  const [pendingAppOpenMessage, setPendingAppOpenMessage] = useState(null);
+  const appOpenHandledKeysRef = useRef(new Set());
+  // An Agent that cannot emit the structured open command still answers with a
+  // card for the application it is talking about. That card is the request: the
+  // user asked for an application and the reply points at exactly one. Parking
+  // it here lets one effect decide, so a replayed message opens the panel once.
+  const appCardHandledKeysRef = useRef(new Set());
+  // The application the user actually asked for, in the current conversation.
+  // A reply that happens to name an application must not open one on its own;
+  // it may only confirm a request the user already made.
+  const requestedApplicationRef = useRef('');
+  // One open at a time, and only after the send settles.
+  const mentionOpenTimerRef = useRef(null);
+  const mentionOpenInFlightRef = useRef(false);
   const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
   const [artifactRegistryRevision, setArtifactRegistryRevision] = useState(0);
@@ -1008,6 +1118,72 @@ export default function MessagesView({
       .map((item) => [item.id, item])).values());
   }, [messages, olderGalleryItems]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
+  // What this conversation's panel shows comes from that conversation's own
+  // record, never from the panel state of whichever conversation was on screen a
+  // moment ago.
+  //
+  // The visible state (which tab, which application, whether it is open) used to
+  // be shared globals. Opening application 1 in conversation 1 left those globals
+  // holding application 1; switching to conversation 2 then rendered its panel
+  // from them and showed application 1 there as well — exactly the report
+  // "conversation 2 shows application 1". A record per conversation removes the
+  // possibility instead of trying to keep two copies in sync.
+  //
+  // The one exception is a request that is opening a panel right now: its record
+  // is written synchronously by `openArtifactApp`, so the record already carries
+  // the request's own application and the exception only matters for the very
+  // first render after the click.
+  const pendingPanelRequest = Boolean(cloudArtifactsRequest?.requestId)
+    && (!cloudArtifactsRequest.topicId || cloudArtifactsRequest.topicId === topic);
+  const ownPanelRecord = readArtifactPanel(artifactPanelStoreRef.current, topic);
+  const ownPanelIsAuthoritative = !pendingPanelRequest;
+  // A file preview takes the panel's place; the record still remembers which
+  // application was open so it comes back when the preview is dismissed. A
+  // request that is opening this panel counts as open from the first render,
+  // before its record has been written.
+  const activePanelOpen = !previewFile
+    && (cloudArtifactsListOpen || Boolean(ownPanelRecord.open) || pendingPanelRequest);
+  const activePanelTab = ownPanelIsAuthoritative && ownPanelRecord.open
+    ? ownPanelRecord.tab
+    : cloudArtifactsTab;
+  const activePanelApp = ownPanelIsAuthoritative && ownPanelRecord.open
+    ? ownPanelRecord.app
+    : cloudArtifactsInitialApp;
+  // Panels of other conversations stay mounted while the user works elsewhere:
+  // an application's own process only survives if its iframe is never torn down.
+  //
+  // The conversation on screen is added even when its record has not been
+  // written yet: a panel request is still being consumed at that point, so the
+  // store does not know this conversation has a panel open. Without the
+  // fallback the request rendered nothing at all — the panel never appeared, and
+  // every follow-up step (list, application, annotation) silently did nothing.
+  const mountedArtifactPanelTopics = useMemo(() => {
+    const mounted = mountedArtifactTopics(artifactPanelStoreRef.current, topic);
+    if (!topic || mounted.includes(topic)) return mounted;
+    const current = readArtifactPanel(artifactPanelStoreRef.current, topic);
+    return current.open || pendingPanelRequest ? [topic, ...mounted] : mounted;
+  }, [artifactPanelVersion, pendingPanelRequest, topic]);
+  // Identities must stay stable across unrelated re-renders: the panel re-opens
+  // an application whenever its initialApp object changes, so recreating these
+  // objects every render would relaunch the iframe in a loop.
+  const artifactPanelEntries = useMemo(() => {
+    const entries = {};
+    for (const panelTopic of mountedArtifactPanelTopics) {
+      entries[panelTopic] = readArtifactPanel(artifactPanelStoreRef.current, panelTopic);
+    }
+    return entries;
+  }, [mountedArtifactPanelTopics, artifactPanelVersion]);
+  // A stable rendering order, independent of which conversation is on screen.
+  //
+  // `mountedArtifactPanelTopics` ranks the active conversation first because that
+  // is how slots are handed out under the ceiling. Rendering in that order made
+  // the sibling panels swap places on every switch, and re-ordering an iframe in
+  // the DOM reloads it — which is one of the ways a running application lost its
+  // work. Sorting by topic id keeps each frame in the same position forever.
+  const artifactPanelRenderOrder = useMemo(
+    () => [...mountedArtifactPanelTopics].sort(),
+    [mountedArtifactPanelTopics],
+  );
   const previewImageTriggerRef = useRef(null);
   const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
@@ -2368,7 +2544,36 @@ export default function MessagesView({
     setCloudArtifactsListOpen(false);
     setCloudArtifactsReturnOpen(false);
     setCloudArtifactsTab('files');
-  }, [cancelArtifactViewerHandoff, clearActiveArtifactFocus]);
+    // Closing is an explicit decision: the conversation must not re-open the
+    // application the next time it is visited.
+    forgetArtifactPanelEntry(topic);
+  }, [cancelArtifactViewerHandoff, clearActiveArtifactFocus, forgetArtifactPanelEntry, topic]);
+
+  // Remember an application the panel opened by itself.
+  //
+  // Both ways of opening an application — a card in the conversation, or the
+  // list inside the panel — must leave the same record. Only the card path used
+  // to write one, which is why applications opened from the panel's list were
+  // not restored when the user came back to the conversation, while an
+  // application opened from a card was.
+  const recordPanelApplication = useCallback((app) => {
+    const appId = String(app?.id || '').trim();
+    const appUrl = String(app?.url || '').trim();
+    if (!topic || !appId || !appUrl) return;
+    writeArtifactPanelEntry(topic, {
+      open: true,
+      agentUid: Number(activeArtifactAgentUIDRef.current || 0),
+      app: { id: appId, url: appUrl, title: String(app?.title || '') },
+      tab: 'gateway',
+      returnOpen: false,
+    }, { silent: true });
+  }, [topic, writeArtifactPanelEntry]);
+
+  const changeArtifactPanelTab = useCallback((nextTab) => {    setCloudArtifactsTab(nextTab);
+    if (!topic) return;
+    const current = activeArtifactPanelRef.current || emptyArtifactPanelEntry();
+    writeArtifactPanelEntry(topic, { ...current, tab: nextTab });
+  }, [topic, writeArtifactPanelEntry]);
 
   const openRemoteArtifactFullscreen = useCallback(async (file) => {
     const focus = artifactMessageFocusFromPreviewFile(
@@ -2466,10 +2671,11 @@ export default function MessagesView({
   // with it. The generic file preview would show the entry point as a stored
   // page and could not hand off to a new tab. "Open in a new page" stays where it
   // already is — in that viewer, which knows the conversation to carry.
-  const openArtifactApp = useCallback(async (artifact, { newPage = false } = {}) => {
+  const openArtifactApp = useCallback(async (artifact, { newPage = false, topicId = topic } = {}) => {
     const agentUid = Number(artifact?.agent_uid || artifact?.agentUid || 0);
     const appId = String(artifact?.id || artifact?.artifact_id || '').trim();
-    if (agentUid <= 0 || !appId) return;
+    const panelTopic = String(topicId || '');
+    if (agentUid <= 0 || !appId || !panelTopic) return;
     // A new tab opens the application's own address: that is the address to show,
     // to bookmark, and to hand to anyone else. Identity arrives on its own, since
     // the platform signs a domain cookie the browser also sends to the gateway
@@ -2480,9 +2686,25 @@ export default function MessagesView({
         feedback.notify({ tone: 'warning', message: '这个应用暂时没有可打开的地址。' });
         return;
       }
-      window.open(destination, '_blank', 'noopener,noreferrer');
+      // The new tab is an ordinary page: it does not carry this conversation's
+      // binding, so say so before opening it.
+      requestDetach(artifact, () => window.open(destination, '_blank', 'noopener,noreferrer'));
       return;
     }
+    // The record always goes to the conversation the application belongs to.
+    // Requests can arrive late (an answer to a message sent before the user
+    // switched away), and writing them against whatever conversation is on
+    // screen is what made one conversation show another's application.
+    writeArtifactPanelEntry(panelTopic, {
+      open: true,
+      agentUid,
+      app: { ...artifact },
+      tab: 'gateway',
+      returnOpen: false,
+    });
+    // Only the conversation on screen owns the visible state; for any other one
+    // the record above is enough, and it is restored when the user goes there.
+    if (panelTopic !== String(topic || '')) return;
     setPendingArtifactRefresh(null);
     setPreviewFile(null);
     clearActiveArtifactFocus();
@@ -2494,10 +2716,56 @@ export default function MessagesView({
     setCloudArtifactsInitialApp({ ...artifact });
     setCloudArtifactsReturnOpen(false);
     setCloudArtifactsListOpen(true);
-  }, [clearActiveArtifactFocus, feedback, topic]);
+  }, [clearActiveArtifactFocus, feedback, requestDetach, topic, writeArtifactPanelEntry]);
 
-  const captureArtifactMessageContext = useCallback(async () => {
-    const focus = activeArtifactFocusRef.current;
+  // Open the application the user just named, right away.
+  //
+  // Waiting for the Agent to answer and then for it to choose a tool makes a
+  // one-second intention take a full round trip. The catalogue is already here,
+  // so the name in the message is enough: match it locally and open the panel
+  // while the reply is still being written.
+  //
+  // Three guards keep it from feeling jumpy: an application already on screen is
+  // not opened again, only one open is in flight at a time, and the open waits a
+  // short settle window so a sentence naming two applications lands on one.
+  const openMentionedApplication = useCallback(async (text, targetTopic) => {
+    const agentUid = Number(activeArtifactAgentUIDRef.current || 0);
+    if (!targetTopic || agentUid <= 0) return;
+
+    const alreadyShowing = (appId) => {
+      const current = readArtifactPanel(artifactPanelStoreRef.current, targetTopic);
+      return Boolean(current.open) && String(current.app?.id || '') === String(appId || '');
+    };
+
+    let match = applicationMentionedInText(text, knownArtifactsRef.current);
+    if (!match) {
+      // A gateway-only application is not in the registry list, so ask the
+      // catalogue. This is one request, not a model round trip.
+      let apps = [];
+      try {
+        const response = await api.listArtifactApps(agentUid);
+        apps = Array.isArray(response?.apps) ? response.apps : [];
+      } catch {
+        return;
+      }
+      match = applicationMentionedInText(text, apps);
+    }
+    if (!match) return;
+
+    const appId = String(match.id);
+    const appEntry = { ...match, agent_uid: agentUid };
+    requestedApplicationRef.current = appId;
+    // Only one match can ever reach this point, so there is nothing to settle
+    // between: waiting first only made the panel arrive later than a click.
+    if (alreadyShowing(appId)) return;
+    if (mentionOpenInFlightRef.current) return;
+    mentionOpenInFlightRef.current = true;
+    Promise.resolve(openArtifactApp(appEntry, { topicId: targetTopic }))
+      .catch(() => undefined)
+      .then(() => { mentionOpenInFlightRef.current = false; });
+  }, [openArtifactApp]);
+
+  const captureArtifactMessageContext = useCallback(async () => {    const focus = activeArtifactFocusRef.current;
     const topicGeneration = artifactTopicGenerationRef.current;
     const empty = { contextRef: '' };
     const localFocusValid = Boolean(focus
@@ -2715,10 +2983,25 @@ export default function MessagesView({
     clearRuntimePlan();
     setReplyTo(null);
     setPreviewFile(null);
-    setCloudArtifactsAgentUID(0);
-    setCloudArtifactsListOpen(false);
-    setCloudArtifactsReturnOpen(false);
-    setCloudArtifactsTab('files');
+    // The application panel belongs to the conversation that opened it: park the
+    // outgoing conversation's panel state and bring back the incoming one's,
+    // instead of closing it as if the user had asked to close it.
+    {
+      const previousTopic = previousPanelTopicRef.current;
+      if (previousTopic && previousTopic !== topic) {
+        writeArtifactPanelEntry(previousTopic, activeArtifactPanelRef.current);
+      }
+      previousPanelTopicRef.current = topic;
+      artifactPanelMirrorTopicRef.current = topic;
+      const restored = readArtifactPanel(artifactPanelStoreRef.current, topic);
+      activeArtifactPanelRef.current = restored;
+      setCloudArtifactsAgentUID(restored.agentUid);
+      setCloudArtifactsListOpen(restored.open);
+      setCloudArtifactsReturnOpen(restored.returnOpen);
+      setCloudArtifactsTab(restored.tab);
+      setCloudArtifactsInitialApp(restored.app);
+      setArtifactPanelVersion((current) => current + 1);
+    }
     const cachedGroupProfile = isGroup && groupId
       ? groupProfileCacheRef.current.get(String(groupId))
       : null;
@@ -2804,6 +3087,15 @@ export default function MessagesView({
     } else {
       setCloudArtifactsListOpen(true);
       setCloudArtifactsReturnOpen(false);
+      // A request can arrive right after the conversation switched; record it
+      // against the conversation it was addressed to, not whatever is on screen.
+      writeArtifactPanelEntry(topic, {
+        open: true,
+        agentUid: agentUID,
+        app: cloudArtifactsRequest.app || null,
+        tab: cloudArtifactsRequest.initialTab || 'files',
+        returnOpen: false,
+      });
     }
     onCloudArtifactsRequestConsumed?.(cloudArtifactsRequest.requestId);
   }, [
@@ -2812,12 +3104,12 @@ export default function MessagesView({
     onCloudArtifactsRequestConsumed,
     previewAgentFile,
     topic,
+    writeArtifactPanelEntry,
   ]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {
-      if (hasFileDrag(event.dataTransfer)) {
-        event.preventDefault();
+      if (hasFileDrag(event.dataTransfer)) {        event.preventDefault();
       }
       if (event.type === 'drop') clearChatAttachmentDrag();
     };
@@ -3089,6 +3381,45 @@ export default function MessagesView({
           setAwaitingAgentReply(false);
         }
         updateTopicSeq(topic, serverMsg.id);
+
+        // An Agent asking the viewer to open one of its applications arrives as
+        // one ordinary message. It is only parked here: whether the request is
+        // allowed depends on which Agent owns this conversation, which the
+        // consuming effect resolves against the Agent roster.
+        if (!sameUID(fromUid, user.uid) && serverMsg.metadata?.app_open) {
+          setPendingAppOpenMessage({ message: serverMsg, topic });
+        } else if (!sameUID(fromUid, user.uid) && isFinalTextMessage(serverMsg)) {
+          // An Agent that cannot send the structured command still answers with
+          // the application's own address in its reply — that is what the card in
+          // the message is built from. If it names the application the user asked
+          // for, the panel opens now.
+          //
+          // Decided here, once, with no state. Parking the reply and letting an
+          // effect act on it re-rendered the whole conversation twice per
+          // delivery, and a replayed reply parked it again: that is what made
+          // both the cards and the message text flicker three or four times.
+          const cardKey = appOpenMessageKey(serverMsg);
+          const cardText = String(serverMsg.content || '');
+          if (cardKey && /https?:\/\//i.test(cardText) && !appCardHandledKeysRef.current.has(cardKey)) {
+            appCardHandledKeysRef.current.add(cardKey);
+            const wantedId = String(requestedApplicationRef.current || '');
+            if (wantedId) {
+              const app = (knownArtifactsRef.current || [])
+                .find((item) => String(item?.id || item?.artifact_id || '') === wantedId);
+              const appUrl = String(app?.url || '').replace(/\/+$/, '');
+              if (app && appUrl && cardText.includes(appUrl)) {
+                const current = readArtifactPanel(artifactPanelStoreRef.current, topic);
+                const alreadyOpen = current.open && String(current.app?.id || '') === wantedId;
+                if (!alreadyOpen) {
+                  openArtifactApp(
+                    { ...app, agent_uid: Number(activeArtifactAgentUIDRef.current) || 0 },
+                    { topicId: topic },
+                  );
+                }
+              }
+            }
+          }
+        }
 
         // Send read receipt if message is from peer
         if (!sameUID(fromUid, user.uid)) {
@@ -3561,6 +3892,51 @@ export default function MessagesView({
     ? groupAgent
     : topicAgent;
 
+  // Consume an Agent's request to open one of its applications.
+  //
+  // Three things are checked before anything opens, and each one fails closed:
+  // the command must name this conversation's Agent, the application must come
+  // back in that Agent's own catalogue, and each message may act only once.
+  // The catalogue is the authority on the address, so nothing inside the message
+  // can steer the viewer at a different origin.
+  useEffect(() => {
+    if (!pendingAppOpenMessage) return;
+    const { message: commandMessage, topic: commandTopic } = pendingAppOpenMessage;
+    setPendingAppOpenMessage(null);
+    if (!commandMessage || commandTopic !== topic) return;
+
+    const agentUid = Number(selectedAgent?.uid || selectedAgent?.id || 0);
+    const command = appOpenCommandForMessage({
+      message: commandMessage,
+      topic,
+      topicAgentUid: agentUid,
+      seenKeys: appOpenHandledKeysRef.current,
+    });
+    if (!command) return;
+    appOpenHandledKeysRef.current.add(command.key);
+
+    let cancelled = false;
+    (async () => {
+      let apps = [];
+      try {
+        const response = await api.listArtifactApps(agentUid);
+        apps = Array.isArray(response?.apps) ? response.apps : [];
+      } catch {
+        // A catalogue that cannot be read cannot authorise anything.
+        return;
+      }
+      if (cancelled || activeTopicRef.current !== topic) return;
+      const target = findAppOpenTarget(apps, command.appId);
+      if (!target) return;
+      openArtifactApp({ ...target, agent_uid: agentUid });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [openArtifactApp, pendingAppOpenMessage, selectedAgent?.id, selectedAgent?.uid, topic]);
+
+
   const syncPhoneUploads = useCallback(async ({ final = false } = {}) => {
     const sessionId = phoneUploadSessionRef.current?.session_id;
     const sessionTopic = phoneUploadTopicRef.current;
@@ -3780,6 +4156,14 @@ export default function MessagesView({
         sendTopic = topicToActivate?.topicId || topicToActivate?.topic_id || sendTopic;
       }
       switchesTopic = sendTopic !== topic;
+
+      // "I want to use the research app" is answered here, before the Agent has
+      // replied, so the panel opens in the time it takes to render. It runs
+      // after sendTopic is resolved on purpose: a message sent to a *new*
+      // conversation used to open the application against the conversation that
+      // was on screen, which is how one conversation ended up showing another
+      // one's application.
+      void openMentionedApplication(text, sendTopic);
 
       await syncPhoneUploads({ final: true });
       attachmentsToSend = [...readComposerAttachmentDraft(composerDraftStoreRef.current, topic)];
@@ -5106,9 +5490,16 @@ export default function MessagesView({
     ? (groupSupportsArtifacts ? groupAgentUID : 0)
     : (peerIsBot && peerUID > 0 && resolvedPeerProfile?.cloud_artifacts_enabled === true ? peerUID : 0);
   activeArtifactAgentUIDRef.current = activeArtifactAgentUID;
-  const knownArtifacts = artifactRegistryState.agentUID === activeArtifactAgentUID
-    ? artifactRegistryState.artifacts
-    : [];
+  // A stable reference matters here: every message receives this list, and a new
+  // array on each render defeats their memoisation and re-renders the whole
+  // conversation — which is what made the text and the cards visibly flicker on
+  // every registry refresh.
+  const knownArtifacts = useMemo(() => (
+    artifactRegistryState.agentUID === activeArtifactAgentUID
+      ? (Array.isArray(artifactRegistryState.artifacts) ? artifactRegistryState.artifacts : [])
+      : []
+  ), [artifactRegistryState, activeArtifactAgentUID]);
+  knownArtifactsRef.current = knownArtifacts;
   // The "shared to the cloud" notice answers "did the thing I just published
   // appear in the registry?" A gateway application is already published the
   // moment it exists there, so counting it would announce a share that never
@@ -7397,7 +7788,76 @@ export default function MessagesView({
         </div>
       )}
       </div>
-        {sidePanelOpen && (
+        {artifactPanelRenderOrder.map((panelTopic) => {
+          const entry = artifactPanelEntries[panelTopic];
+          if (!entry?.open) return null;
+          const isActive = panelTopic === topic;
+          // The conversation on screen follows its live state: previewing a file
+          // or backing out to the list closes the application here exactly as
+          // before. Parked conversations follow what they had open.
+          if (isActive && !activePanelOpen) return null;
+          return (
+            <div
+              key={`artifact-panel-${panelTopic}`}
+              className="v3-file-preview-shell"
+              // A hidden iframe is throttled and eventually frozen by the
+              // browser, which is why a running application lost its progress
+              // when the user looked at another conversation. Keeping the panel
+              // laid out but off-screen leaves the frame rendering, so its work
+              // keeps running; the active conversation is the only one on screen.
+              style={isActive ? undefined : {
+                position: 'fixed',
+                top: 0,
+                left: '-20000px',
+                width: '900px',
+                height: '700px',
+                pointerEvents: 'none',
+              }}
+              aria-hidden={isActive ? undefined : 'true'}
+              data-panel-parked={isActive ? undefined : 'true'}
+            >
+              {isActive && (
+                <div
+                  className="v3-preview-resize-handle"
+                  role="separator"
+                  aria-label="调整预览宽度"
+                  aria-orientation="vertical"
+                  tabIndex={0}
+                  onPointerDown={handlePreviewResizePointerDown}
+                  onKeyDown={handlePreviewResizeKeyDown}
+                  title="拖动调整预览宽度"
+                />
+              )}
+              <CloudArtifactsPanel
+                workspaceFullscreen={isActive ? previewExpanded : false}
+                onToggleWorkspaceFullscreen={isActive ? togglePreviewWorkspace : undefined}
+                onWorkspacePreviewChange={isActive ? handleWorkspacePreviewChange : undefined}
+                agentUid={entry.agentUid}
+                topicId={panelTopic}
+                tab={isActive ? activePanelTab : entry.tab}
+                initialApp={isActive ? activePanelApp : entry.app}
+                onTabChange={isActive ? changeArtifactPanelTab : undefined}
+                onClose={isActive ? closeSidePanel : () => forgetArtifactPanelEntry(panelTopic)}
+                onPreviewArtifact={isActive ? previewCloudArtifact : undefined}
+                onPreviewFile={isActive ? previewAgentFile : undefined}
+                // A panel parked in another conversation must not drive this
+                // conversation's annotation session or composer.
+                onGatewayFrameChange={isActive ? handleGatewayArtifactFrameChange : undefined}
+                annotationCapture={isActive ? gatewayAnnotationCapture : null}
+                onAnnotationScreenshot={isActive ? requestInlineScreenshot : undefined}
+                onAnnotationSubmit={isActive ? sendInlineAnnotation : undefined}
+                onAnnotationCancel={isActive ? cancelInlineAnnotation : undefined}
+                onGatewayAnnotationMode={isActive ? handleGatewayAnnotationMode : undefined}
+                onGatewayAnnotationState={isActive ? gatewayAnnotationPanelStateSetter : undefined}
+                // An application opened from inside the panel is opened by the
+                // panel itself; this reports it so the conversation remembers it
+                // exactly like one opened from a chat card.
+                onApplicationOpened={isActive ? recordPanelApplication : undefined}
+              />
+            </div>
+          );
+        })}
+        {sidePanelOpen && !cloudArtifactsListOpen && (
           <div className="v3-file-preview-shell">
             <div
               className="v3-preview-resize-handle"
@@ -7409,45 +7869,22 @@ export default function MessagesView({
               onKeyDown={handlePreviewResizeKeyDown}
               title="拖动调整预览宽度"
             />
-            {cloudArtifactsListOpen ? (
-              <CloudArtifactsPanel
-                workspaceFullscreen={previewExpanded}
-                onToggleWorkspaceFullscreen={togglePreviewWorkspace}
-                onWorkspacePreviewChange={handleWorkspacePreviewChange}
-                agentUid={cloudArtifactsAgentUID}
-                topicId={topic}
-                tab={cloudArtifactsTab}
-                initialApp={cloudArtifactsInitialApp}
-                onTabChange={setCloudArtifactsTab}
-                onClose={closeSidePanel}
-                onPreviewArtifact={previewCloudArtifact}
-                onPreviewFile={previewAgentFile}
-                onGatewayFrameChange={handleGatewayArtifactFrameChange}
-                annotationCapture={gatewayAnnotationCapture}
-                onAnnotationScreenshot={requestInlineScreenshot}
-                onAnnotationSubmit={sendInlineAnnotation}
-                onAnnotationCancel={cancelInlineAnnotation}
-                onGatewayAnnotationMode={handleGatewayAnnotationMode}
-                onGatewayAnnotationState={gatewayAnnotationPanelStateSetter}
-              />
-            ) : (
-              <FilePreviewPanel
-                workspaceFullscreen={previewExpanded}
-                onToggleWorkspaceFullscreen={togglePreviewWorkspace}
-                file={previewFile}
-                pendingRemoteArtifactFile={pendingArtifactRefresh}
-                onBack={cloudArtifactsReturnOpen ? returnToCloudArtifacts : undefined}
-                onClose={closeSidePanel}
-                backgroundRef={chatColumnRef}
-                onRemoteArtifactRefreshReady={handleArtifactRefreshReady}
-                onRemoteArtifactRefreshFailed={handleArtifactRefreshFailed}
-                onRemoteArtifactFrameChange={handleRemoteArtifactFrameChange}
-                onOpenRemoteArtifactFullscreen={openRemoteArtifactFullscreen}
-                allowWorkspaceFullscreen
-                annotationApi={api}
-                onFileAnnotationSent={handleFileAnnotationSent}
-              />
-            )}
+            <FilePreviewPanel
+              workspaceFullscreen={previewExpanded}
+              onToggleWorkspaceFullscreen={togglePreviewWorkspace}
+              file={previewFile}
+              pendingRemoteArtifactFile={pendingArtifactRefresh}
+              onBack={cloudArtifactsReturnOpen ? returnToCloudArtifacts : undefined}
+              onClose={closeSidePanel}
+              backgroundRef={chatColumnRef}
+              onRemoteArtifactRefreshReady={handleArtifactRefreshReady}
+              onRemoteArtifactRefreshFailed={handleArtifactRefreshFailed}
+              onRemoteArtifactFrameChange={handleRemoteArtifactFrameChange}
+              onOpenRemoteArtifactFullscreen={openRemoteArtifactFullscreen}
+              allowWorkspaceFullscreen
+              annotationApi={api}
+              onFileAnnotationSent={handleFileAnnotationSent}
+            />
           </div>
         )}
       </div>
@@ -7469,6 +7906,7 @@ export default function MessagesView({
           triggerRef={previewImageTriggerRef}
         />
       )}
+      {detachDialog}
       {showTutorialPicker && (
         <TutorialTaskPicker
           tasks={tutorialTasks}
