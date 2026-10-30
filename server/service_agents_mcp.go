@@ -47,6 +47,10 @@ const (
 	serviceRunAsyncContractVersion  = "catsco.service-run-async.v1"
 	serviceRunResultContractVersion = "catsco.service-run-result.v1"
 	maxServiceSyncWait              = 45 * time.Second
+	// 同步等待时的轮询退避区间：快任务 20ms 起，慢任务逐步放到 200ms。
+	// 固定 10ms 在 45 秒窗口里是 4500 轮 × 2 条 SQL，对结果毫无增益。
+	minServiceRunPollInterval = 20 * time.Millisecond
+	maxServiceRunPollInterval = 200 * time.Millisecond
 )
 
 var errServiceRunNotOwned = errors.New("service run not owned by caller")
@@ -580,9 +584,12 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if !reused {
 		// 外部执行后端（runner.type=http）：异步转发到用户 endpoint，结果写成 result 事件；
 		// 平台自带执行（codex）不声张，照旧由 worker claim。
-		h.external.MaybeDispatch(ctx, agent, run, callerUID, botUID)
+		//
+		// 传 current 不传 agent：current 带的是刚读到的归属与 definition。派发侧要拿它校验
+		// 「这个 bot 是不是应用主人的」，用会话快照的话 owner 为 0 → 校验被跳过。
+		h.external.MaybeDispatch(ctx, current, run, callerUID, botUID)
 		// bot-as-tool（runner.type=bot）：把 input 发给另一个 bot，等它回话后写回结果。
-		h.botRunner.MaybeDispatch(ctx, agent, run, callerUID)
+		h.botRunner.MaybeDispatch(ctx, current, run, callerUID)
 	}
 	// bot 回合是分钟级的（上下文压缩 + 多轮推理），同步等只会把主 Agent 卡住，
 	// 所以这里直接返回运行句柄：调用方拿 run_id 自己去问 catsco_run_status，或等回执。
@@ -662,6 +669,11 @@ func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent stor
 // 给「天生慢」的执行后端用：干等只会把调用它的主 Agent 卡住，
 // 而它拿到的句柄足够自己决定是去干别的还是去轮询。
 func (h *ServiceAgentsMCPHandler) serviceRunHandleResult(sessionID string, run store.ServiceRun, notes ...string) *mcp.CallToolResult {
+	// 已经终态就如实报终态：调用方是拿这个 status 决定「要不要继续等」的，
+	// 明明已经跑完还让它再轮询一轮，只是多一次无意义的等待。
+	if terminal, env := serviceRunTerminalEnvelope(run); terminal {
+		return serviceRunToolResult(env, notes...)
+	}
 	envelope := ServiceRunEnvelope{
 		ContractVersion: serviceRunAsyncContractVersion,
 		RunID:           run.RunID,
@@ -682,6 +694,8 @@ func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string
 			wait = maxServiceSyncWait
 		}
 	}
+	// interval 是轮询间隔：从 20ms 起步，指数退避到 maxServiceRunPollInterval。
+	interval := minServiceRunPollInterval
 	deadline := time.Now().Add(wait)
 	for {
 		events, err := h.store.ListServiceRunEvents(ctx, run.RunID, 0, 100)
@@ -707,7 +721,15 @@ func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string
 		select {
 		case <-ctx.Done():
 			wait = 0
-		case <-time.After(10 * time.Millisecond):
+		case <-time.After(interval):
+			// 退避：开头密一点（快任务别多等），逐步拉长到上限。固定 10ms 在 45 秒
+			// 窗口里要查 4500 轮、每轮两条 SQL —— 没人需要这个精度，库却要付全款。
+			if interval < maxServiceRunPollInterval {
+				interval *= 2
+				if interval > maxServiceRunPollInterval {
+					interval = maxServiceRunPollInterval
+				}
+			}
 		}
 		if wait == 0 {
 			break

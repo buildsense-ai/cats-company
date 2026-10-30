@@ -306,13 +306,14 @@ func (r *ServiceBotRunner) MaybeDispatch(ctx context.Context, agent store.Servic
 		return
 	}
 	req := botRunRequest{
-		RunID:     run.RunID,
-		SessionID: run.SessionID,
-		Slug:      agent.Slug,
-		BotUID:    botUID,
-		AgentID:   agent.ID,
-		CallerUID: callerUID,
-		Input:     run.Input,
+		RunID:         run.RunID,
+		SessionID:     run.SessionID,
+		Slug:          agent.Slug,
+		BotUID:        botUID,
+		AgentID:       agent.ID,
+		AgentOwnerUID: agent.OwnerUID,
+		CallerUID:     callerUID,
+		Input:         run.Input,
 		// 会话快照：热更新读不到时用它（不能因为一次读失败就不派活）。
 		SnapshotDefinition: definition,
 	}
@@ -370,15 +371,23 @@ type botDefinitionReader interface {
 	GetServiceAgentDefinition(ctx context.Context, agentID int64, definitionRev int64) (slug string, thresholdSeconds int, definitionJSON json.RawMessage, err error)
 }
 
+// botRunCounter 是「数一下同一个应用还有几单在跑」的窄能力（并发闸用）。
+// 与 botRunnerStore 分开：缺这个能力时并发闸自动关闭，其余功能不受影响。
+type botRunCounter interface {
+	CountActiveServiceRunsForAgent(ctx context.Context, agentID int64, excludeRunID string) (int, error)
+}
+
 type botRunRequest struct {
 	RunID     string
 	SessionID string
 	Slug      string
 	BotUID    int64
 	// AgentID 用于后台重读最新 definition（热更新）。
-	AgentID   int64
-	CallerUID int64
-	Input     json.RawMessage
+	AgentID int64
+	// AgentOwnerUID 是应用主人的 uid，用来校验 bot 归属（0 = 平台内部应用，不校验）。
+	AgentOwnerUID int64
+	CallerUID     int64
+	Input         json.RawMessage
 	// SnapshotDefinition 是 invoke 时拿到的那份（会话快照），热更新读不到时兜底。
 	SnapshotDefinition json.RawMessage
 	// Tuning 是本次 run 的执行参数（已合并平台默认与 definition 覆盖）。
@@ -393,6 +402,12 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 			_ = r.store.FailServiceRun(context.Background(), req.RunID, "bot_runner_panic", false)
 		}
 	}()
+	// 回环边必须在**所有**退出路径上摘掉，包括「抢不到 run / bot 已换人 / 并发闸拦住」
+	// 这些还没开始干活就返回的分支。以前这个 defer 放在 StartServiceRun 成功之后，
+	// 上面那些分支会把边留到 TTL 过期（10 分钟），窗口内正当的委派会被误判成绕圈。
+	if r.loops != nil {
+		defer r.loops.releaseRun(req.RunID)
+	}
 
 	// 热更新放在这里（后台 goroutine）而不是 MaybeDispatch：
 	// 那张「立即返回运行句柄」的承诺不能被一次 DB 读拖慢。
@@ -416,27 +431,41 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		log.Printf("bot runner: run=%s already taken or terminal; skip", req.RunID)
 		return
 	}
-	// run 一旦由本文处理，收尾时就要把回环表里那条边摘掉：
-	// 不摘的话，一次正常交付过的协作会在 10 分钟窗口内继续参与判定，
-	// 变成「干完活了，再正当委派一次却被说在绕圈」。
-	defer func() {
-		if r.loops != nil {
-			r.loops.releaseRun(req.RunID)
-		}
-	}()
 
 	// 只确认目标 bot 还存在。谁能调这个应用由**可见性**决定（MCP invoke 已经做过了）：
 	// 系统里不能有两套不同步的授权规则 —— 曾经这里另有一套「bot 的 owner 必须在白名单里」，
 	// 结果应用标了 public，别人调用仍然报 bot_not_shared；而且两处都要改才能改对。
 	// 现在 runner 只管执行，授权口径只有一个（store.ServiceAgentVisibleTo）。
-	if _, err := r.store.GetBotOwner(req.BotUID); err != nil {
+	owner, err := r.store.GetBotOwner(req.BotUID)
+	if err != nil {
 		r.fail(req, "bot_not_found: 目标 bot 不存在或已删除")
+		return
+	}
+	// 归属校验（第二道，发布接口是第一道）：definition 会热更新，内部发布通道也不经过
+	// 用户发布接口 —— 只靠发布时拦一次，等于给「改一次配置就把别人的 bot 挂过来」留了门。
+	if req.AgentOwnerUID != 0 && owner != req.AgentOwnerUID {
+		r.fail(req, "bot_not_owned: 这个应用指向的 bot 不属于应用主人，已停止派发（配置被改过？请让发布者重新选自己的 bot）")
 		return
 	}
 	if !r.hub.BotRuntimeOnline(req.BotUID) {
 		// 不干等：bot 没有在线运行时，消息发出去也没人接。
 		r.fail(req, "bot_offline: 目标 bot 当前不在线，等它上线后再试")
 		return
+	}
+	// 并发闸（可选能力）：设了上限就先数一下同一个应用还有几单在跑。
+	//
+	// 没有上限时的行为是「全部派出去 → bot 侧串行 → 后面几单等到超时」，而超时的
+	// 文案是「bot 没回」，把「在忙」说成了「不理你」。查不到数就放行 —— 预检是体验
+	// 优化，不能因为存储抖一下就拒绝正常调用。
+	if tuning.MaxInflight > 0 {
+		if counter, ok := r.store.(botRunCounter); ok {
+			if n, err := counter.CountActiveServiceRunsForAgent(context.Background(), req.AgentID, req.RunID); err == nil && n >= tuning.MaxInflight {
+				r.failRetryable(req, fmt.Sprintf(
+					"bot_busy: 这个应用同时已经有 %d 单在跑（上限 %d），这一单没有派出去。请稍后重试；同一任务不要反复重发",
+					n, tuning.MaxInflight))
+				return
+			}
+		}
 	}
 
 	prompt := botRunnerPromptText(req.Input)
@@ -992,6 +1021,15 @@ func botReplyBelongsTo(msg *types.Message, promptID int64, sessionID string, com
 
 func (r *ServiceBotRunner) fail(req botRunRequest, errorText string) {
 	if err := r.store.FailServiceRun(context.Background(), req.RunID, errorText, false); err != nil &&
+		!errors.Is(err, store.ErrServiceRunConflict) {
+		log.Printf("bot runner: fail run=%s: %v", req.RunID, err)
+	}
+}
+
+// failRetryable 与 fail 相同，但把「可重试」标出来：并发闸拦住这类失败重试就能成功，
+// 执行环境的问题（bot 不在线、命令缺失）重试没有意义 —— 两者的区别要让调用方看见。
+func (r *ServiceBotRunner) failRetryable(req botRunRequest, errorText string) {
+	if err := r.store.FailServiceRun(context.Background(), req.RunID, errorText, true); err != nil &&
 		!errors.Is(err, store.ErrServiceRunConflict) {
 		log.Printf("bot runner: fail run=%s: %v", req.RunID, err)
 	}

@@ -145,6 +145,28 @@ func (a *Adapter) GetServiceRun(ctx context.Context, runID string) (store.Servic
 	return run, nil
 }
 
+// CountActiveServiceRunsForAgent 数同一个应用还有几单在跑（bot 并发闸用）。
+//
+// 只走 runs → sessions 两张表：agent_id 在 sessions 上，runs 上有 session_id 外键，
+// 不需要碰 definition 的 JSON。excludeRunID 排除自己 —— 调用方已经把这一单抢下来了，
+// 它当然算在「在跑」里。
+//
+// state 用 IN ('submitted','running')：submitted 是「已受理、还没被谁抢」，同样占着并发的位。
+func (a *Adapter) CountActiveServiceRunsForAgent(ctx context.Context, agentID int64, excludeRunID string) (int, error) {
+	var n int
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM service_runs r
+		JOIN service_sessions s ON s.session_id = r.session_id
+		WHERE s.agent_id = $1
+		  AND r.state IN ('submitted','running')
+		  AND r.run_id <> $2`, agentID, excludeRunID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active service runs for agent: %w", err)
+	}
+	return n, nil
+}
+
 func (a *Adapter) CreateServiceRunIdempotent(ctx context.Context, sessionID, clientToken string, input json.RawMessage) (store.ServiceRun, bool, error) {
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -44,6 +45,8 @@ type ServiceAgentPublishHandler struct {
 	notifier  serviceAgentCatalogNotifier
 	// botProfiles：runner.type=bot 时用 bot 自己的描述当工具标签（可选能力）。
 	botProfiles ServiceBotProfileReader
+	// botOwners：校验 runner.bot_uid 归属（把别人的 bot 挂成自己的工具是安全问题）。
+	botOwners ServiceBotOwnerReader
 }
 
 // ServiceBotProfileReader 读 bot 自身资料。bot-as-tool 的「标签」默认取
@@ -56,6 +59,53 @@ type ServiceBotProfileReader interface {
 // SetBotProfiles 注入 bot 资料读取器（线上由主库适配器实现）。
 func (h *ServiceAgentPublishHandler) SetBotProfiles(reader ServiceBotProfileReader) {
 	h.botProfiles = reader
+}
+
+// ServiceBotOwnerReader 读 bot 归属，用来校验「上架的 bot 是你自己的」。
+// 与 botProfiles 分开：读描述是可选的美化，读归属是安全校验，注入情况要能分辨。
+type ServiceBotOwnerReader interface {
+	GetBotOwner(botUID int64) (int64, error)
+}
+
+// SetBotOwners 注入 bot 归属读取器（线上由主库适配器实现）。
+//
+// 未注入时不阻断发布（测试/裁剪部署），但线上装配必须注入 —— 否则「把别人的 bot
+// 包装成自己的工具上架」这条路是敞开的。
+func (h *ServiceAgentPublishHandler) SetBotOwners(reader ServiceBotOwnerReader) {
+	h.botOwners = reader
+}
+
+// validateBotRunnerDefinition 校验 bot-as-tool 发布的两条硬规则，返回错误码与说明。
+//
+//  1. runner.bot_uid 必须是发布者自己的 bot。以前只校验「bot 存在」，于是任何人都能把
+//     别人的 bot 挂成自己的工具：调用方以为在用那个 bot 的服务，实际是发布者在替它接单、
+//     蹭它的算力，甚至还能继承 bot 的社交可见性（见 serviceAgentViewerResolver）。
+//  2. bot 型应用不能按 token 计价。token 用量产生在 bot 那一侧，平台拿不到
+//     （CompleteServiceRun 的 usage 传 nil），按 token 计价会一直算成 0 元：发布者以为
+//     在收费，实际全程免费。要看时长用 second，要按次用 run。
+func (h *ServiceAgentPublishHandler) validateBotRunnerDefinition(uid int64, definition json.RawMessage) (string, string) {
+	botUID, isBot := ParseBotRunnerBotUID(definition)
+	if !isBot {
+		return "", ""
+	}
+	if pricing := ParseServiceAgentPricing(definition); pricing != nil && pricing.Unit == ServicePricingUnitToken {
+		return "invalid_pricing_for_bot", "bot 型应用不能用 unit=token 计价：token 用量在 bot 那一侧产生，平台取不到，只会一直算 0 元。请改用 unit=run（按次）或 unit=second（按时长）"
+	}
+	if h.botOwners == nil {
+		return "", ""
+	}
+	owner, err := h.botOwners.GetBotOwner(botUID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "bot_not_found", fmt.Sprintf("definition.runner.bot_uid=%d 指向的 bot 不存在", botUID)
+		}
+		// 存储抖动不该把一次正常发布挡掉，但也不能当成校验通过：如实报可重试。
+		return "bot_owner_unavailable", "暂时无法确认这个 bot 的归属，请稍后重试"
+	}
+	if owner != uid {
+		return "bot_not_owned", "definition.runner.bot_uid 只能是自己的 bot：把别人的 bot 包装成工具上架，等于替对方接单"
+	}
+	return "", ""
 }
 
 // fillDescriptionFromBot 用 bot 自己的描述补上 definition.description。
@@ -252,6 +302,16 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		return
 	} else if len(normalized) > 0 {
 		req.Definition = normalized
+	}
+	// bot-as-tool 的两条硬规则先判（归属 + 计价）：它们决定「这次上架的到底是谁在干活」，
+	// 比描述缺失严重得多，所以排在自动补描述之前。
+	if code, detail := h.validateBotRunnerDefinition(uid, req.Definition); code != "" {
+		status := http.StatusBadRequest
+		if code == "bot_owner_unavailable" {
+			status = http.StatusServiceUnavailable
+		}
+		writeServiceJSON(w, status, map[string]any{"error": code, "detail": detail})
+		return
 	}
 	// 分享给别人（公开 / 好友）就必须写描述：调用方是另一个 Agent，它看不到包内容、
 	// 也没有主 Agent 的上下文，description 是它判断「这个工具做什么、什么情况下该用」
