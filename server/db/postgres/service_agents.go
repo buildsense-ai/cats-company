@@ -278,39 +278,41 @@ func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 只有「外部执行」类型的 run 允许被 worker 认领。
+	//
+	// bot / http / mcp 是平台侧自己执行的（service_agents_bot_runner.go、service_agents_external.go）：
+	// bot 型在 tools/call 里就已经返回句柄并由平台派活，http/mcp 由平台反调对端。
+	// 一旦被 worker 抢走，run 会落到一个没有 runner.command 的执行器上，最终以 no_command 失败，
+	// 而真正的执行方（平台）再也等不到它 —— 所以必须在 SQL 层面挡住。
+	//
+	// 取的是会话钉定版本（service_sessions.definition_rev）里的 runner.type，与派活时看到的一致；
+	// 版本行缺失时按 codex 兜底，保持历史行为。
+	const claimableRunnerPredicate = `COALESCE(v.definition_json->'runner'->>'type', 'codex') IN ('codex','worker')`
 	query := `
-		SELECT r.run_id FROM service_runs r
-		WHERE r.state IN ('submitted','orphaned')
-		ORDER BY r.created_at
-		FOR UPDATE SKIP LOCKED
-		LIMIT $1`
-	args := []any{limit}
-	if ownerUID > 0 {
-		// per-user 凭据：只领自己名下应用的 run（平台 internal 应用不在此列）。
-		query = `
-			SELECT r.run_id
-			FROM service_runs r
-			JOIN service_sessions s ON s.session_id = r.session_id
-			JOIN service_agents a ON a.id = s.agent_id
-			WHERE r.state IN ('submitted','orphaned')
-			  AND a.owner_kind = 'user' AND a.owner_uid = $2
-			ORDER BY r.created_at
-			FOR UPDATE SKIP LOCKED
-			LIMIT $1`
-		args = append(args, ownerUID)
-	} else if len(slugs) > 0 {
-		// 按 agent slug 过滤：join 会话 → 应用；worker 只领自己声明的应用。
-		query = `
 		SELECT r.run_id
 		FROM service_runs r
 		JOIN service_sessions s ON s.session_id = r.session_id
 		JOIN service_agents a ON a.id = s.agent_id
-		WHERE r.state IN ('submitted','orphaned') AND a.slug = ANY($2)
-		ORDER BY r.created_at
-		FOR UPDATE SKIP LOCKED
-		LIMIT $1`
+		LEFT JOIN service_agent_versions v ON v.agent_id = s.agent_id AND v.version = s.definition_rev
+		WHERE r.state IN ('submitted','orphaned')
+		  AND ` + claimableRunnerPredicate
+	args := []any{limit}
+	if ownerUID > 0 {
+		// per-user 凭据：只领自己名下应用的 run（平台 internal 应用不在此列）。
+		query += `
+		  AND a.owner_kind = 'user' AND a.owner_uid = $2`
+		args = append(args, ownerUID)
+	} else if len(slugs) > 0 {
+		// 按 agent slug 过滤：join 会话 → 应用；worker 只领自己声明的应用。
+		query += `
+		  AND a.slug = ANY($2)`
 		args = append(args, slugs)
 	}
+	// 锁只加在 service_runs 上：JOIN 进来的会话/应用/版本行不该被认领锁住。
+	query += `
+		ORDER BY r.created_at
+		FOR UPDATE OF r SKIP LOCKED
+		LIMIT $1`
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("select claimable service runs: %w", err)

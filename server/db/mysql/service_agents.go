@@ -276,39 +276,31 @@ func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 与 PostgreSQL 侧同一套约束：只有 codex / worker 这类「外部执行」的 run 允许被认领。
+	// bot / http / mcp 由平台自己执行，被 worker 抢走只会落到 no_command 上。
+	predicate := "COALESCE(JSON_UNQUOTE(JSON_EXTRACT(v.definition_json, '$.runner.type')), 'codex') IN ('codex','worker')"
 	query := `
-		SELECT run_id FROM service_runs
-		WHERE state IN ('submitted','orphaned')
-		ORDER BY created_at
-		LIMIT ?
-		FOR UPDATE SKIP LOCKED`
-	queryArgs := []any{limit}
-	if ownerUID > 0 {
-		// per-user 凭据：只领自己名下应用的 run（平台 internal 应用不在此列）。
-		query = `
-			SELECT r.run_id
-			FROM service_runs r
-			JOIN service_sessions s ON s.session_id = r.session_id
-			JOIN service_agents a ON a.id = s.agent_id
-			WHERE r.state IN ('submitted','orphaned')
-			  AND a.owner_kind = 'user' AND a.owner_uid = ?
-			ORDER BY r.created_at
-			LIMIT ?
-			FOR UPDATE SKIP LOCKED`
-		queryArgs = []any{ownerUID, limit}
-	} else if len(slugs) > 0 {
-		// 按 agent slug 过滤：worker 只领自己声明的应用（FIND_IN_SET 兼容 MySQL 5.7）。
-		query = `
 		SELECT r.run_id
 		FROM service_runs r
 		JOIN service_sessions s ON s.session_id = r.session_id
 		JOIN service_agents a ON a.id = s.agent_id
-		WHERE r.state IN ('submitted','orphaned') AND FIND_IN_SET(a.slug, ?) > 0
+		LEFT JOIN service_agent_versions v ON v.agent_id = s.agent_id AND v.version = s.definition_rev
+		WHERE r.state IN ('submitted','orphaned') AND ` + predicate
+	condArgs := []any{}
+	if ownerUID > 0 {
+		// per-user 凭据：只领自己名下应用的 run（平台 internal 应用不在此列）。
+		query += ` AND a.owner_kind = 'user' AND a.owner_uid = ?`
+		condArgs = append(condArgs, ownerUID)
+	} else if len(slugs) > 0 {
+		// 按 agent slug 过滤：worker 只领自己声明的应用（FIND_IN_SET 兼容 MySQL 5.7）。
+		query += ` AND FIND_IN_SET(a.slug, ?) > 0`
+		condArgs = append(condArgs, strings.Join(slugs, ","))
+	}
+	query += `
 		ORDER BY r.created_at
 		LIMIT ?
 		FOR UPDATE SKIP LOCKED`
-		queryArgs = []any{strings.Join(slugs, ","), limit}
-	}
+	queryArgs := append(condArgs, limit)
 	rows, err := tx.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("select claimable service runs: %w", err)

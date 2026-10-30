@@ -387,6 +387,58 @@ func TestServiceRunLedgerWriterSelfCallRecordedButNotCharged(t *testing.T) {
 	}
 }
 
+// bot-as-tool（runner.type=bot）必须走「待扣」。
+//
+// bot 的模型开销记在它自己的 owner 名下，调用方这边平台一分钱都收不到；
+// 落成 settled_platform（= 假定 relay 已扣）会让按 run/second 定价的 bot 应用永远免费，
+// 额度预检也看不见这笔待扣。
+func TestResolveBillingStateBotRunner(t *testing.T) {
+	cases := []struct {
+		name  string
+		run   store.ServiceRunBillable
+		gross int64
+		want  string
+	}{
+		{
+			name:  "bot 跨账号调用记待扣",
+			run:   store.ServiceRunBillable{RunnerType: "bot", OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 7, CallerUID: 8},
+			gross: 10000,
+			want:  store.ServiceBillingPendingCredit,
+		},
+		{
+			name:  "bot 自己调自己仍是 self_call",
+			run:   store.ServiceRunBillable{RunnerType: "bot", OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 7, CallerUID: 7},
+			gross: 10000,
+			want:  store.ServiceBillingSelfCall,
+		},
+		{
+			name:  "bot 平台自营记待扣",
+			run:   store.ServiceRunBillable{RunnerType: "bot", OwnerKind: store.ServiceAgentOwnerInternal, OwnerUID: 0, CallerUID: 7},
+			gross: 10000,
+			want:  store.ServiceBillingPendingCredit,
+		},
+		{
+			name:  "bot 未定价仍是 free",
+			run:   store.ServiceRunBillable{RunnerType: "bot", OwnerKind: store.ServiceAgentOwnerUser, OwnerUID: 7, CallerUID: 8},
+			gross: 0,
+			want:  store.ServiceBillingFree,
+		},
+		{
+			name:  "codex 平台执行保持 settled_platform",
+			run:   store.ServiceRunBillable{RunnerType: "codex", OwnerKind: store.ServiceAgentOwnerInternal},
+			gross: 10000,
+			want:  store.ServiceBillingSettledPlatform,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveBillingState(tc.run, tc.gross); got != tc.want {
+				t.Fatalf("billing state = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // 平台自带执行（codex）是真实模型成本（已由 relay 在模型调用时扣），自己调自己也得付。
 func TestServiceRunLedgerWriterCodexSelfCallStaysSettled(t *testing.T) {
 	run := ledgerTestRun("run_self_codex", `{"pricing":{"unit":"token","per_1k_tokens":0.02}}`)
