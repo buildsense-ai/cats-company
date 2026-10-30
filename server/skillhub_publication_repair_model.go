@@ -196,10 +196,11 @@ func runPublicationRepairModel(parent context.Context, db publicationRepairModel
 	if err != nil || evidence != lease.Input.Evidence {
 		return nil, store.ErrSkillHubPublicationConflict
 	}
-	for _, issue := range material.Report.Issues {
-		if issue.Category == "package_safety" || (issue.Blocking && (issue.Code != "metadata.description_missing" || issue.Category != "format" || issue.RepairPolicy != "confirmation_required")) {
-			return nil, store.ErrSkillHubPublicationDenied
-		}
+	// Check the supported single description selector BEFORE reserving a paid
+	// dispatch. The model never chooses a path, field or entry index. Reports
+	// requiring multiple distinct drafts are outside this first-round lane.
+	if _, err := publicationModelDescriptionProposal(material.Report, "selector eligibility only"); err != nil {
+		return nil, err
 	}
 	request := publicationRepairModelRequest{PayerUID: actor, Config: config, Policy: publicationRepairModelPolicy,
 		System: publicationRepairModelSystem, SourceText: material.SourceText, Report: material.Report,
