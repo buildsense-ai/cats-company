@@ -216,3 +216,30 @@ func TestCloudWorkerHandleCreateStillFailsOnRealError(t *testing.T) {
 		t.Fatalf("a generic failure must not be queued: calls=%d", credits.queueCalls)
 	}
 }
+
+// Two different buyers must be able to provision at the same time.
+//
+// The operation gate used to be a single process-wide mutex. A provision takes
+// about 25 seconds, so at peak only one buyer could start per half minute and
+// everyone else got "another cloud worker operation is already running" — the
+// whole fleet's provisioning was serialized, not just the busy account. This
+// test holds one owner's gate and proves another owner is unaffected.
+func TestCloudWorkerOperationGateIsPerOwner(t *testing.T) {
+	h, _ := newCloudWorkerTestHandler("")
+
+	held := h.lockOwnerOperation(7)
+	defer held.Unlock()
+
+	// The same owner is refused while its own operation runs.
+	if lock, ok := h.tryBeginOperation(httptest.NewRecorder(), 7); ok {
+		lock.Unlock()
+		t.Fatal("the same owner must not start a second concurrent operation")
+	}
+
+	// A second owner is accepted immediately: this is what peak traffic needs.
+	other, ok := h.tryBeginOperation(httptest.NewRecorder(), 8)
+	if !ok {
+		t.Fatal("a different owner must be able to provision in parallel")
+	}
+	other.Unlock()
+}

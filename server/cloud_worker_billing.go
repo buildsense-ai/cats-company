@@ -78,8 +78,9 @@ func resolveCloudWorkerBillingScript(configured, renewScript, opsDir string) (st
 	return "", fmt.Errorf("billing script %s not found (tried %s); set CATSCO_WORKER_BILLING_SCRIPT", name, strings.Join(tried, ", "))
 }
 
-// Caller holds opMu. The database claim protects against overlapping servers,
-// payment fulfillment and expiry work already read from an older snapshot.
+// Caller holds the owner's operation lock. The database claim protects against
+// overlapping servers, payment fulfillment and expiry work already read from an
+// older snapshot.
 func (h *CloudWorkerHandler) runBillingAction(item types.CloudWorkerLifecycle, action string, automatic bool) error {
 	store, ok := h.credits.(cloudWorkerBillingStore)
 	if !ok || h.renewScript == "" {
@@ -151,15 +152,16 @@ func (h *CloudWorkerHandler) HandleAdminBilling(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing action"})
 		return
 	}
-	if !h.tryBeginOperation(w) {
-		return
-	}
-	defer h.opMu.Unlock()
+	// Lock the tenant's owner, not the process. An operator-triggered billing
+	// action used to take the global gate, so a single convert (about 20s) made
+	// every buyer's create return "busy".
 	item, err := store.GetCloudWorkerBillingLifecycle(input.Tenant)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "managed lifecycle not found"})
 		return
 	}
+	opLock := h.lockOwnerOperation(item.OwnerUID)
+	defer opLock.Unlock()
 	if input.Action == "convert" && item.BillingMode == types.CloudWorkerMonthly {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "monthly"})
 		return
@@ -213,7 +215,9 @@ func (h *CloudWorkerHandler) HandleAdminBilling(w http.ResponseWriter, r *http.R
 }
 
 // handleAdminRenew extends one paid worker's provider subscription by a single
-// cycle on operator request. Caller holds opMu, which serialises it against
+// cycle on operator request. Caller holds the owner's operation lock, which
+// serialises it against that owner's own actions while leaving other owners
+// free to provision in parallel.
 // every other provider operation in this process; the DB claim is not reused
 // here because it is drawn around the on-demand billing machine only.
 func (h *CloudWorkerHandler) handleAdminRenew(w http.ResponseWriter, item *types.CloudWorkerLifecycle) {

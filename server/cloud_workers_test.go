@@ -1378,8 +1378,8 @@ func TestCloudWorkerHandleActionRejectsMalformedBody(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
 	}
-	if h.opMu.TryLock() {
-		h.opMu.Unlock()
+	if lock := h.ownerOperationLock(7); lock.TryLock() {
+		lock.Unlock()
 	} else {
 		t.Fatal("malformed action body must not start an operation")
 	}
@@ -1580,8 +1580,11 @@ func TestCloudWorkerBusyOperationReturnsConflictWithoutQueueing(t *testing.T) {
 		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
 	}
 
-	h.opMu.Lock()
-	defer h.opMu.Unlock()
+	// Hold the owner's operation gate: with a per-owner lock, another account
+	// provisioning must not be affected, which is the whole point of the shape
+	// change. This test only needs the owner to look busy.
+	ownerLock := h.lockOwnerOperation(7)
+	defer ownerLock.Unlock()
 
 	tests := []struct {
 		method string

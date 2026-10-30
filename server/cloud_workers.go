@@ -79,11 +79,26 @@ type CloudWorkerHandler struct {
 
 	scriptTimeout time.Duration
 
-	// opMu serializes all cloud operations (create / update / rollback / reset /
-	// delete). These are low-frequency, long-running, paid-instance actions;
-	// a global lock keeps quota checks atomic and prevents a single user from
-	// piling up concurrent script processes.
-	opMu        sync.Mutex
+	// opLocks serializes cloud operations (create / update / rollback / reset /
+	// delete) per owner, not globally.
+	//
+	// These actions are low-frequency and long-running (a provision takes about
+	// 25 seconds), so a single process-wide mutex meant one buyer's provision
+	// rejected every other buyer with "another operation is already running".
+	// At peak that is not a wait, it is an outage: only one person could buy per
+	// half minute, and everyone else got a conflict. What actually needs to be
+	// atomic is one owner's quota check plus create, which is what a per-owner
+	// lock gives. Two different owners provisioning in parallel is safe: they get
+	// different tenants and different containers, and the shared-fleet slot
+	// decision is made on the cluster side.
+	opLocksMu sync.Mutex
+	opLocks   map[int64]*sync.Mutex
+
+	// sweepMu keeps the periodic expiry sweep from overlapping itself. It is not
+	// an owner operation gate: the sweep works on existing lifecycles and is
+	// protected by database claims, which is what makes it safe next to a
+	// concurrent create.
+	sweepMu     sync.Mutex
 	operationMu sync.Mutex
 	operations  map[string]cloudWorkerOperation
 
@@ -412,16 +427,45 @@ func (h *CloudWorkerHandler) cloudWorkerOperation(id string) (cloudWorkerOperati
 	return op, true
 }
 
-func (h *CloudWorkerHandler) tryBeginOperation(w http.ResponseWriter) bool {
-	if h.opMu.TryLock() {
-		return true
+// ownerOperationLock returns the mutex guarding one owner's cloud operations.
+//
+// Entries are never deleted: an owner only gets one when they have a cloud
+// worker, so the map is bounded by the number of buyers rather than by traffic.
+func (h *CloudWorkerHandler) ownerOperationLock(uid int64) *sync.Mutex {
+	h.opLocksMu.Lock()
+	defer h.opLocksMu.Unlock()
+	if h.opLocks == nil {
+		h.opLocks = make(map[int64]*sync.Mutex)
+	}
+	lock, ok := h.opLocks[uid]
+	if !ok {
+		lock = &sync.Mutex{}
+		h.opLocks[uid] = lock
+	}
+	return lock
+}
+
+// lockOwnerOperation blocks until this owner's cloud operation gate is free.
+// The returned mutex must be unlocked by the caller.
+func (h *CloudWorkerHandler) lockOwnerOperation(uid int64) *sync.Mutex {
+	lock := h.ownerOperationLock(uid)
+	lock.Lock()
+	return lock
+}
+
+// tryBeginOperation takes this owner's cloud operation gate without waiting.
+// It returns the locked mutex on success; the caller must unlock it.
+func (h *CloudWorkerHandler) tryBeginOperation(w http.ResponseWriter, uid int64) (*sync.Mutex, bool) {
+	lock := h.ownerOperationLock(uid)
+	if lock.TryLock() {
+		return lock, true
 	}
 	w.Header().Set("Retry-After", "15")
 	writeJSON(w, http.StatusConflict, map[string]string{
-		"error": "another cloud worker operation is already running",
+		"error": "another cloud worker operation is already running for this account",
 		"code":  "cloud_worker_operation_busy",
 	})
-	return false
+	return nil, false
 }
 
 // parseWorkerCreateQuota parses "CATSCO_WORKER_CREATE_QUOTA" of the form
@@ -1216,8 +1260,8 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewRep
 	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
 		return nil
 	}
-	h.opMu.Lock()
-	defer h.opMu.Unlock()
+	opLock := h.lockOwnerOperation(uid)
+	defer opLock.Unlock()
 	lifecycleStore, ok := h.credits.(interface {
 		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
 	})
@@ -1484,13 +1528,15 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// All paid-instance operations are serialized so the quota check and the
-	// bot creation stay atomic and no single user can pile up concurrent
-	// script processes.
-	if !h.tryBeginOperation(w) {
+	// All paid-instance operations of one account are serialized so the quota
+	// check and the bot creation stay atomic and no single user can pile up
+	// concurrent script processes. The gate is per owner: a global one meant one
+	// buyer's 25-second provision rejected everybody else at peak.
+	opLock, ok := h.tryBeginOperation(w, uid)
+	if !ok {
 		return
 	}
-	defer h.opMu.Unlock()
+	defer opLock.Unlock()
 
 	// Parse and validate the request before reserving a paid credit. Invalid
 	// requests must never make a user's entitlement appear consumed/reserved.
@@ -1948,11 +1994,11 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 // afterwards: a renewal cannot revive a destroy that is already running, so
 // the credit granted by that payment is spent on a replacement instance.
 func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
-	if !h.opMu.TryLock() {
+	if !h.sweepMu.TryLock() {
 		return
 	}
 	rebuildOwners := h.sweepExpiredWorkersLocked(now)
-	h.opMu.Unlock()
+	h.sweepMu.Unlock()
 	// Rebuilding provisions a new worker through HandleCreate, which takes the
 	// same gate: it must run after the sweep has released it.
 	for _, uid := range rebuildOwners {
@@ -1995,7 +2041,7 @@ func (h *CloudWorkerHandler) retryQueuedCloudWorkers() {
 
 // sweepExpiredWorkersLocked performs the lifecycle transitions documented on
 // SweepExpiredWorkers and returns the owners that need a replacement worker.
-// The caller owns h.opMu.
+// The caller owns the sweep gate.
 func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 	started := time.Now()
 	store, ok := h.credits.(interface {
@@ -2129,7 +2175,8 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 //
 // An available credit is the only ticket accepted here: the shared rollout
 // quota is a one-time grant and must never silently mint a new free instance
-// on every expiry. Runs outside h.opMu because HandleCreate acquires it.
+// on every expiry. Runs outside the sweep gate because HandleCreate acquires the
+// owner's operation lock.
 func (h *CloudWorkerHandler) restoreCloudWorkerAfterDeletion(uid int64) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -2334,7 +2381,8 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	if !h.tryBeginOperation(w) {
+	opLock, ok := h.tryBeginOperation(w, uid)
+	if !ok {
 		if cleanupCredentialFile != nil {
 			cleanupCredentialFile()
 		}
@@ -2345,7 +2393,7 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	// polling contract; the repaired Nginx route gives legacy requests enough
 	// time to finish instead of failing at the generic 60-second timeout.
 	if r.URL.Query().Get("async") != "1" {
-		defer h.opMu.Unlock()
+		defer opLock.Unlock()
 		if cleanupCredentialFile != nil {
 			defer cleanupCredentialFile()
 		}
@@ -2364,7 +2412,7 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	}
 	operationID, idErr := newCloudWorkerOperationID()
 	if idErr != nil {
-		h.opMu.Unlock()
+		opLock.Unlock()
 		if cleanupCredentialFile != nil {
 			cleanupCredentialFile()
 		}
@@ -2401,10 +2449,10 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 			h.requestCloudStatusRefresh(true)
 			h.finishCloudWorkerOperation(operationID, "succeeded", "")
 		}
-		// Publish the terminal state before releasing the global gate. This
+		// Publish the terminal state before releasing the gate. This
 		// avoids a small race where a subsequent action is accepted while the
 		// previous operation is still reported as running by the roster.
-		h.opMu.Unlock()
+		opLock.Unlock()
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"status": "pending", "action": action, "operation_id": operationID,

@@ -186,14 +186,16 @@ func TestAutoProvisionForOwnerRetriesBusyOperation(t *testing.T) {
 	autoProvisionRetryDelay = func(int) time.Duration { return 30 * time.Millisecond }
 	t.Cleanup(func() { autoProvisionRetryDelay = previousDelay })
 
-	h.opMu.Lock()
+	// Hold this owner's gate so the auto-provision retry loop has to wait; a
+	// global gate would also have blocked every other account at peak.
+	ownerLock := h.lockOwnerOperation(42)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		h.AutoProvisionForOwner(42)
 	}()
 	time.Sleep(15 * time.Millisecond)
-	h.opMu.Unlock()
+	ownerLock.Unlock()
 
 	select {
 	case <-done:
