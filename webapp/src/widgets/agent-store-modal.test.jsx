@@ -1628,7 +1628,10 @@ describe('AgentStoreModal', () => {
     const workerRow = container.querySelector('.cc-cloud-worker');
     expect(workerRow).not.toBeNull();
     expect(workerRow.textContent).toContain('云端审查助手');
-    expect(workerRow.textContent).toContain('未连接，等待上线');
+    // A worker created seconds ago is still starting: it has no container facts
+    // yet, so the panel must say "启动中" instead of the red "实例不存在" or the
+    // ambiguous "未连接" it used to show for the whole provision window.
+    expect(workerRow.textContent).toContain('启动中');
   });
 
   test.each([

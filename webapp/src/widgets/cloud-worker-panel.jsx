@@ -41,6 +41,16 @@ const statusMeta = (status) => (
   || CLOUD_STATUS_META.unknown
 );
 
+// A shared-container worker answers "missing" while its container is still
+// being created: the roster row exists (the tenant name is persisted before
+// provisioning) but the cluster has nothing to report yet. Rendering that as a
+// red "实例不存在" made every purchase look broken for the ~25 seconds the
+// provision takes, and the buyer's first instinct is to refresh or buy again.
+const displayStatus = (worker) => (isCloudWorkerPending(worker)
+  && ['missing', 'unavailable', ''].includes(String(worker?.cloud_status || '').toLowerCase())
+  ? 'provisioning'
+  : worker?.cloud_status);
+
 const cloudLifecycleHint = (status) => {
   const normalized = String(status || '').toLowerCase();
   if (['expired', 'freezing', 'frozen'].includes(normalized)) {
@@ -360,7 +370,8 @@ export default function CloudWorkerPanel({
               const id = worker.id || worker.uid;
               const workerKey = String(worker.tenant_name || id);
               const isFocusedWorker = workerKey === focusedWorkerKey;
-              const meta = statusMeta(worker.cloud_status);
+              const meta = statusMeta(displayStatus(worker));
+              const shownStatus = displayStatus(worker);
               const lifecycleHint = worker.trial_notice || cloudLifecycleHint(worker.cloud_status);
               const managementBlocked = cloudActionsBlocked(worker.cloud_status);
               const remoteActing = worker.cloud_operation_status === 'running';
@@ -412,12 +423,16 @@ export default function CloudWorkerPanel({
                   <div className="cc-cloud-worker-meta">
                     <span>员工连接 <b>{worker.runtime_status === 'connected'
                       ? '已连接'
-                      : worker.runtime_status === 'not_connected' ? '未连接，等待上线' : '暂未确认'}</b></span>
+                      : worker.runtime_status === 'not_connected'
+                        ? (['provisioning', 'creating'].includes(String(shownStatus || '').toLowerCase())
+                          ? '启动中，通常 1 分钟内上线'
+                          : '未连接，等待上线')
+                        : '暂未确认'}</b></span>
                     <span>应用版本 <b>{worker.app_version || '暂未读取'}</b></span>
                     <span>基础镜像 <b>{worker.cloud_version || '暂未读取'}</b></span>
                     {!worker.app_version && !worker.cloud_version && !worker.cloud_image_id && (
                       <span>
-                        {['provisioning', 'creating'].includes(String(worker.cloud_status || '').toLowerCase())
+                        {['provisioning', 'creating'].includes(String(shownStatus || '').toLowerCase())
                           ? '实例创建完成后显示版本信息'
                           : '暂未读取到版本信息'}
                       </span>
