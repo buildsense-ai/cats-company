@@ -36,8 +36,10 @@ Only trusted service ports prepare material. `PrepareMaterial` must read and
 verify the exact retained private candidate bytes/hash from the supplied receipt,
 then produce at most 1 MiB of valid UTF-8 model-readable text without NULs. It
 must not truncate silently, read a different version or mutate the live Skill.
-This slice does not implement that Runtime/Cloud reader; the function signature
-is not proof of a real retained-source read. The coordinator independently
+The separate [private material client](skillhub-publication-repair-material.md)
+can now read exact original Cloud wire bytes, but is not wired to this port and
+does not yet implement the semantic parser/projection or live Runtime verifier;
+the function signature is not proof of a real retained-source read. The coordinator independently
 matches the complete report and normalized issues to the admitted round.
 
 The lane refuses package-safety issues and blocking issues other than missing
