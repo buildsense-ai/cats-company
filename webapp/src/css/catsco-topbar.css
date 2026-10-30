@@ -1464,8 +1464,9 @@
 
 .v3-service-agent-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   padding: 10px;
   border-radius: 10px;
 }
@@ -1481,19 +1482,23 @@
 }
 
 .v3-service-agent-info {
-  flex: 1 1 auto;
+  /* 低于 220px 就让操作按钮整行下移：面板是 min(420px, 86vw)，
+     三个按钮吃掉一半宽度后，文字只剩一条缝。 */
+  flex: 1 1 220px;
   min-width: 0;
 }
 
 .v3-service-agent-name {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 6px;
+  gap: 2px 6px;
   font-size: 13px;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 名字长、徽标多时换行，而不是被 ellipsis 吃掉：
+     「我的」「私有」这类标签一旦被截，用户根本看不出这行是什么。 */
+  white-space: normal;
+  overflow: visible;
 }
 
 .v3-service-agent-version {
@@ -1554,6 +1559,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  /* 换到下一行时靠右，跟在上面那块的节奏一致 */
+  margin-left: auto;
 }
 
 /* 工具描述：调用方 Agent 就是靠这段文字决定要不要用，所以要露出来。 */
