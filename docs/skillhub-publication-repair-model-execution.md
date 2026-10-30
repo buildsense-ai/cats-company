@@ -41,12 +41,15 @@ is not proof of a real retained-source read. The coordinator independently
 matches the complete report and normalized issues to the admitted round.
 
 The lane refuses package-safety issues and blocking issues other than missing
-runtime descriptions requiring confirmation. It drafts only, never treats the
+runtime descriptions requiring confirmation. Before reserving a dispatch it
+also requires one supported description selector (identical duplicates are
+allowed; distinct entrypoints/locations fail closed). It drafts only, never treats the
 model's text or the report's recommendation as approval. The fixed system
 instruction treats source/report text as untrusted data, forbids tools and
 functional/identity/permission changes and asks for a plain-text description
-draft. Later proposal parsing/selector binding and exact human confirmation
-remain separate; an instruction to the model is not a security boundary.
+draft. Exact human confirmation remains separate; an instruction to the model
+is not a security boundary. The restricted consumer below independently binds
+the same selector to retained output before proposing anything.
 
 The immutable request digest includes original payer, provider/model/output
 token cap, policy version, exact system prompt/source/report, full original
@@ -89,6 +92,57 @@ task state. A future task controller must map uncertainty to the existing
 checkpoint after loss of authority. The journal grants at most one dispatch
 authorization, not exactly-once provider execution/billing.
 
+## Retained model output to human-confirmable description
+
+`retainPublicationModelDescription` is a separate internal, unwired consumer.
+Its narrow store interface contains no model dispatch, round claim, human
+confirmation, candidate writer or publisher. It accepts the private retained
+result from the coordinator, not browser/model-supplied text or a chosen path.
+It rereads the immutable model journal and matches the exact output, call,
+request, task/round evidence and dispatch lease (including original dispatch
+generation on takeover). A complete verified report supplies the selector;
+the model supplies **only text**. Text is preserved byte-for-byte, not trimmed,
+extracted from JSON/Markdown, rendered or interpreted as instructions. The
+existing proposal validator requires nonblank UTF-8, at most 8192 bytes and
+supported controls/selector shape. Invalid or oversized retained output stops;
+there is no model retry to make it fit.
+
+The consumer checks current private task authority, exact first-round task and
+lease, original candidate/report evidence and a trusted source verifier before
+one proposal attempt. Proposal storage transactionally rechecks current
+authority and lease and atomically retains the exact draft plus the
+`waiting_confirmation` checkpoint. This is **not human confirmation** and writes
+no candidate/live file. A successful response is frozen and read back before
+return; an errored/unknown proposal response permits only read recovery, never
+a second proposal/model invocation in that attempt. Missing/inconsistent
+recovery produces static `publication.model_description_uncertain` without
+private write errors. A malformed nil success is also uncertain, not approval.
+
+Recovery checks for an existing draft **before** requesting a pending execution
+lease: the proposal has already finished that lease's round. The draft GET
+independently rechecks current active publisher/Bot/body/private membership;
+historical task/model reads alone do not authorize it. It validates exact draft
+text/key/evidence/task/round/current lease, verifies source, rereads the model
+journal, then rechecks current-authority draft GET. It can retain an already
+human-confirmed draft without creating or changing its confirmation. Fresh
+proposal requires a live pending lease; existing draft recovery does not
+restart a round merely because the lease later expires. Point-in-time checks
+are not distributed atomic authorization across Runtime and database.
+
+A trusted controller can reconstruct the private result and original lease
+from retained journal/task history after restart; neither is a process-local
+grant. The consumer still rereads the journal and requires the independent
+current-authority gates and trusted source verification. Browser/model input
+must never be promoted into this private type or used as verified report data.
+
+A future real `VerifySource` adapter must support both pending execution and
+waiting/confirmed draft recovery against the same original retained source;
+it must not require an unfinished round for read-only recovery. No such real
+source/provider adapter or task controller is registered by this slice. An
+unknown outcome still needs controller stop/recovery policy; it is not inferred
+to mean no charge, no commit or permission to retry. The exact confirmation UI
+and subsequent private-copy application remain separate human/trusted steps.
+
 ## Verification and remaining work
 
 Local unit tests cover request identity/private bytes, unsafe material and report
@@ -101,12 +155,19 @@ takeover, finish, cancellation, other actors and membership loss. The required
 JWT/HTTPS/PostgreSQL publication contract now runs this coordinator with real
 current-task/journal writes, loses a committed output reply, reconstructs and
 recovers exactly one synthetic invocation, rejects model rebinding, then feeds
-that untrusted draft into the existing separately confirmed-description path.
+that untrusted draft through the restricted consumer into the existing
+separately confirmed-description path. The consumer contract loses a real
+committed proposal reply and reconstructs after the pending round has finished;
+only current-authority reads recover the same unconfirmed text/key and one
+waiting round. Its unit tests cover selector/text bounds, authority loss,
+changed journal/report/task evidence, cancellation, uncertain write recovery,
+pointer isolation, replay and concurrent consumers. The existing required
+`TestPublicationRepairModel` race selection includes the consumer tests.
 Runtime source/material/provider remain synthetic ports; this is not paid-model
 or real user/Cloud/Runtime end-to-end acceptance. Missing local PG DSN skips are
 not database passes.
 
-Real material/source/provider adapters, restricted draft consumer/automatic safe
-format executor, multiround retained ancestry, both publication entry points'
+Real material/source/provider adapters, automatic safe format executor and task
+controller, multiround retained ancestry, both publication entry points'
 complete trusted continuation and controlled rollout remain. Chinese marketplace
 manuals and author-managed images are still after the repair/publish loop.

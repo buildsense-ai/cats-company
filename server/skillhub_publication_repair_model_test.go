@@ -284,8 +284,49 @@ func TestPublicationRepairModelRejectsUnsafeMaterialBeforeDispatch(t *testing.T)
 	}
 }
 
+func TestPublicationRepairModelUnsupportedSelectorNeverDispatches(t *testing.T) {
+	for _, mode := range []string{"distinct", "no_index", "field", "path"} {
+		t.Run(mode, func(t *testing.T) {
+			db, lease, config, ports, calls := repairModelTestFixture(t)
+			material, err := ports.PrepareMaterial(context.Background(), db.task)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "distinct":
+				other := material.Report.Issues[0]
+				index := int64(1)
+				other.Location.EntryIndex = &index
+				material.Report.Issues = append(material.Report.Issues, other)
+			case "no_index":
+				material.Report.Issues[0].Location.EntryIndex = nil
+			case "field":
+				material.Report.Issues[0].Location.Field = "name"
+			case "path":
+				material.Report.Issues[0].Location.RelativePath = "README.md"
+			}
+			evidence, err := publicationRepairEvidence(material.Report, lease.Input.Evidence.CandidateHash)
+			if err != nil {
+				t.Fatal("fixture must pass complete report validation", err)
+			}
+			lease.Input.Evidence = evidence
+			db.task.Input.Evidence = evidence
+			db.task.IdentityHash, _ = db.task.Input.IdentityHash()
+			db.task.Rounds[0].Lease = lease
+			ports.PrepareMaterial = func(context.Context, store.SkillHubPublicationRepairTask) (publicationRepairModelMaterial, error) {
+				return material, nil
+			}
+			if got, err := runPublicationRepairModel(context.Background(), db, 1, lease, config, ports); err == nil || got != nil || *calls != 0 || db.starts != 0 {
+				t.Fatal("unsupported description selector consumed paid dispatch", err)
+			}
+		})
+	}
+}
+
 func TestPublicationRepairModelAuthorityRecheckedAtEveryBoundary(t *testing.T) {
-	for boundary := 1; boundary <= 12; boundary++ {
+	// One initial read, then two reads around each of five source checks:
+	// preparation, request binding, invocation, retention and final return.
+	for boundary := 1; boundary <= 11; boundary++ {
 		t.Run(time.Duration(boundary).String(), func(t *testing.T) {
 			db, lease, config, ports, calls := repairModelTestFixture(t)
 			db.readHook = func(n int) error {
@@ -295,14 +336,17 @@ func TestPublicationRepairModelAuthorityRecheckedAtEveryBoundary(t *testing.T) {
 				return nil
 			}
 			result, err := runPublicationRepairModel(context.Background(), db, 1, lease, config, ports)
-			if db.reads < boundary {
-				return
+			if db.reads != boundary {
+				t.Fatalf("authority checkpoint %d was not the stopping read (task reads = %d)", boundary, db.reads)
 			}
-			if err == nil || result != nil {
+			if !errors.Is(err, store.ErrSkillHubPublicationDenied) || result != nil {
 				t.Fatal("authority loss succeeded", boundary)
 			}
 			if boundary <= 7 && *calls != 0 {
 				t.Fatal("provider before authority checkpoint", boundary, *calls)
+			}
+			if boundary > 7 && *calls != 1 {
+				t.Fatal("post-invocation checkpoint did not follow exactly one call", boundary, *calls)
 			}
 		})
 	}
