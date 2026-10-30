@@ -293,6 +293,15 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "bundle_required"})
 		return
 	}
+	// 包体必须是合法 JSON：它会原样进 service_agent_versions.package_json（jsonb）。
+	// 不校验就交给数据库报错 —— 调用方拿到的是 500 publish_unavailable，完全看不出是自己传错了。
+	if !json.Valid(bundle) {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
+			"error":  "invalid_bundle",
+			"detail": "bundle 必须是 JSON（内容寻址的包清单，例如 {\"schema\":\"catsco.service-agent.external.v1\",\"files\":[]}）",
+		})
+		return
+	}
 	// 入参 schema 与包通道（agent.json）同一套校验规则（对象 / 顶层 type / 8 KiB）。
 	// 先报格式错误再报内容缺失：让调用方一次改对，而不是先补描述再撞 schema。
 	if normalized, err := normalizeServiceAgentDefinition(req.Definition); err != nil {

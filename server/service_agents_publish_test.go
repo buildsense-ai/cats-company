@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,8 +45,13 @@ func postPublish(t *testing.T, url string, body map[string]any) (int, map[string
 	return resp.StatusCode, out
 }
 
+// bundleB64 把测试载荷包成**合法的**包 JSON。
+//
+// 发布通道会把包体原样写进 service_agent_versions.package_json（jsonb），所以包体必须是
+// JSON —— 非 JSON 现在由发布接口直接 400 invalid_bundle 挡掉，不再交给数据库报 500。
 func bundleB64(payload string) string {
-	return base64.StdEncoding.EncodeToString([]byte(payload))
+	return base64.StdEncoding.EncodeToString([]byte(
+		fmt.Sprintf(`{"schema":"catsco.service-agent.test.v1","payload":%q,"files":[]}`, payload)))
 }
 
 func TestServiceAgentPublishRequiresWhitelist(t *testing.T) {
@@ -151,7 +157,12 @@ func TestServiceAgentPublishOwnershipAndIdempotency(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("publish status = %d (%v)", status, out)
 	}
-	sum := sha256.Sum256([]byte("package-v1"))
+	// package_hash 是**解码后**包体内容的 sha256（内容寻址），不是 base64 串的哈希。
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatalf("decode bundle: %v", err)
+	}
+	sum := sha256.Sum256(raw)
 	if got := out["package_hash"]; got != hex.EncodeToString(sum[:]) {
 		t.Fatalf("package_hash = %v, want sha256(bundle)", got)
 	}

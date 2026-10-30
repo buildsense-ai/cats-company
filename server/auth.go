@@ -414,13 +414,31 @@ func EmailFromContext(ctx context.Context) string {
 	return email
 }
 
-// extractToken gets the token from Authorization header or query param.
+// extractToken 取调用方凭证：Authorization 头优先。
+//
+// query 里的 token 只留给 WebSocket 升级（浏览器的 WebSocket API 没法带自定义头，这是
+// 唯一正当的用途；ServeWS 自己也会读一次）。其它 HTTP 接口一律不接受：URL 会进代理日志、
+// 访问日志和 Referer —— 日志留存多久，这个会话凭据就泄露多久，而且它长得和正常链接一样。
 func extractToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
+	if !allowsQueryToken(r) {
+		return ""
+	}
 	return r.URL.Query().Get("token")
+}
+
+// allowsQueryToken 只对 WebSocket 升级放行 query token。
+func allowsQueryToken(r *http.Request) bool {
+	if r.URL.Path != "/v0/channels" {
+		return false
+	}
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 }
 
 // extractAPIKey gets the API key from Authorization header or query param.

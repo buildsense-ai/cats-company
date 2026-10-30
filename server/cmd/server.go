@@ -954,6 +954,9 @@ func main() {
 		if friendReader, ok := db.(server.ServiceAgentFriendReader); ok {
 			serviceAgentsMCPHandler.SetFriendReader(friendReader)
 		}
+		// 好友关系变了 → 在线 MCP 会话要重算工具集（list_changed）：
+		// 「好友可见」的应用增删都发生在好友关系变化的那一刻，不推就只等到重连才生效。
+		friendHandler.SetCatalogNotifier(serviceAgentsMCPHandler)
 		balanceChecker := server.NewServiceBalanceCheckerFromEnv()
 		// 待扣金额（外部 runner 已跑但还没结算的部分）也要算进已用额度，
 		// 否则没结算前调用方可以绕过预算反复调。

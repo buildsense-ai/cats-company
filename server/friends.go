@@ -16,6 +16,8 @@ import (
 type FriendHandler struct {
 	db  store.Store
 	hub *Hub
+	// catalog 是目录变更通知器（在线 MCP 会话的工具集刷新）。可选能力。
+	catalog serviceAgentCatalogNotifier
 }
 
 // NewFriendHandler creates a new FriendHandler.
@@ -25,6 +27,21 @@ func NewFriendHandler(db store.Store, hubs ...*Hub) *FriendHandler {
 		hub = hubs[0]
 	}
 	return &FriendHandler{db: db, hub: hub}
+}
+
+// SetCatalogNotifier 注入目录变更通知器（线上由 ServiceAgentsMCPHandler 实现）。
+//
+// 好友关系决定「好友可见」应用的可见性：成了好友就该立刻出现，拉黑/删好友就该立刻消失。
+// 不推的话，客户端手里那份工具清单是上一回合的快照，要重连才会更新 —— 用户会看不到
+// 刚被分享的应用，或者对着已经收回的应用继续点（后者由 invoke 的实时校验兜住，前者不会自愈）。
+func (h *FriendHandler) SetCatalogNotifier(notifier serviceAgentCatalogNotifier) {
+	h.catalog = notifier
+}
+
+func (h *FriendHandler) notifyServiceCatalogChanged() {
+	if h.catalog != nil {
+		h.catalog.NotifyCatalogChanged()
+	}
 }
 
 // FriendActionRequest is the JSON body for friend actions.
@@ -196,6 +213,8 @@ func (h *FriendHandler) HandleAcceptRequest(w http.ResponseWriter, r *http.Reque
 
 	recipients := append(h.friendEventRecipients(targetUID), req.UserID)
 	h.notifyFriendEvent("accepted", targetUID, req.UserID, "", recipients...)
+	// 成了好友：对方「好友可见」的应用要立刻出现在我的工具清单里。
+	h.notifyServiceCatalogChanged()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 }
 
@@ -256,6 +275,8 @@ func (h *FriendHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 	// an Agent owner's session only need a relationship refresh.
 	h.notifyFriendEvent("blocked", uid, req.UserID, "", uid)
 	h.notifyFriendEvent("removed", uid, req.UserID, "", h.friendEventRecipients(req.UserID)...)
+	// 拉黑等于解除好友：好友可见的应用要立刻从对方的工具清单里消失。
+	h.notifyServiceCatalogChanged()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "blocked"})
 }
 
@@ -275,6 +296,8 @@ func (h *FriendHandler) HandleRemoveFriend(w http.ResponseWriter, r *http.Reques
 
 	recipients := append(h.friendEventRecipients(friendID), uid)
 	h.notifyFriendEvent("removed", uid, friendID, "", recipients...)
+	// 好友关系变了，「好友可见」的应用清单就变了 → 让在线 MCP 会话重算工具集。
+	h.notifyServiceCatalogChanged()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
