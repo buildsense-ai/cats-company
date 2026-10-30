@@ -127,6 +127,9 @@ type ServiceAgentDescriptor struct {
 	OwnerKind  string
 	OwnerUID   int64
 	Visibility string
+	// State 只有「我的应用」接口会填（active / inactive / archived）。
+	// 目录接口只返回 active，所以那边恒为空。
+	State string
 	// 工具契约（调用方 Agent 判断「何时用、怎么传参」的唯一依据）。
 	// Description 来自作者 manifest，原样下发；InputSchema 是 input 字段的 JSON Schema 文本
 	// （空串 = 作者未声明，平台退回通用参数写法）。
@@ -160,7 +163,19 @@ var (
 	ErrServiceAgentOwnedByOther = errors.New("service agent owned by another owner")
 	// ErrServiceAgentInternalReserved 表示用户试图抢占平台内部 agent 的 slug。
 	ErrServiceAgentInternalReserved = errors.New("service agent slug reserved for internal publishing")
+	// ErrServiceAgentNotInactive 表示应用还在架；彻底删除要求先收回（下架）。
+	ErrServiceAgentNotInactive = errors.New("service agent is still active; unpublish it first")
+	// ErrServiceAgentRunsPending 表示还有正在跑的任务，等它结束再删。
+	ErrServiceAgentRunsPending = errors.New("service agent has running or submitted runs")
 )
+
+// ServiceAgentPurgeResult 是彻底删除的产物统计（给接口回话，也方便人核对删了什么）。
+type ServiceAgentPurgeResult struct {
+	Slug     string
+	Versions int64
+	Sessions int64
+	Runs     int64
+}
 
 // ServiceAgentViewer 是「谁在看」——可见性要按访问者求值。
 //
@@ -225,6 +240,20 @@ type ServiceAgentStore interface {
 	// 重新发布会把它恢复为 active（幂等，见 ClaimServiceAgentOwnership）。
 	// 不存在 → ErrServiceAgentNotFound；不是本人（含平台 internal 条目）→ ErrServiceAgentOwnedByOther。
 	SetServiceAgentState(ctx context.Context, slug string, ownerUID int64, active bool) error
+	// ListServiceAgentsByOwner 列出某个 owner 名下的全部应用（含已下架），用于「我的应用」管理面。
+	// 与 ListServiceAgents 的区别只有一个：不过滤 state —— 下架后目录里看不到，但本人必须还能看到、
+	// 还能重新启用或彻底删除，否则「收回」就等于失联。
+	ListServiceAgentsByOwner(ctx context.Context, ownerUID int64) ([]ServiceAgentDescriptor, error)
+	// PurgeServiceAgent 彻底删除一个**已下架**的应用及其运行数据（owner 本人才能操作）。
+	//
+	// 删除范围：agent、全部版本、全部会话、全部 run（事件/回执/检查点走 CASCADE）。
+	// **账本 service_run_ledger 不删**：它是账务凭证，删了就没法对账；行随 run 消失后
+	// 仍可按 run_id 追溯。
+	//
+	// 拒绝条件：不存在 → ErrServiceAgentNotFound；不是本人 → ErrServiceAgentOwnedByOther；
+	// 平台 internal → ErrServiceAgentInternalReserved；仍是 active → ErrServiceAgentNotInactive
+	// （要求先收回，避免误删线上应用）；还有 running/submitted 的 run → ErrServiceAgentRunsPending。
+	PurgeServiceAgent(ctx context.Context, slug string, ownerUID int64) (ServiceAgentPurgeResult, error)
 	GetServiceAgentPackage(ctx context.Context, packageHash string) (bundle json.RawMessage, err error)
 	// GetServiceAgentPackageHash 返回该 agent 当前最新版本的 assets_hash（无包时为空串）。
 	GetServiceAgentPackageHash(ctx context.Context, agentID int64) (string, error)
