@@ -203,3 +203,28 @@ func (f *fakeBotStore) delivered(hub *fakeBotHub) []string {
 	defer f.mu.Unlock()
 	return append([]string(nil), hub.delivered...)
 }
+
+// —— 异步句柄必须带 structuredContent ——
+//
+// 客户端（XiaoBa 的 mcp-tool-bridge）只从 structuredContent 里读 status/run_id 去自动轮询，
+// 文本只用来兜底展示。bot 型这条路径以前返回 nil，于是句柄在客户端解析不出来，
+// 自动轮询根本不启动，模型看到的就是一句「run=… status=running」当答案。
+func TestServiceRunHandleCarriesStructuredEnvelope(t *testing.T) {
+	h := NewServiceAgentsMCPHandler(newFakeServiceAgentStore())
+	result, env := h.serviceRunHandleResult("sess_async", store.ServiceRun{RunID: "run_async", State: "running"})
+	if result == nil || len(result.Content) == 0 {
+		t.Fatal("句柄必须同时给文本摘要（有些客户端只渲染 content）")
+	}
+	if env.Status != ServiceRunRunning || env.RunID != "run_async" || env.SessionID != "sess_async" {
+		t.Fatalf("handle envelope = %+v，调用方拿不到 run_id/status 就没法轮询", env)
+	}
+	// 已终态：如实报终态，别再让调用方白等一轮。
+	done := store.ServiceRun{
+		RunID: "run_done", State: "completed",
+		Result: json.RawMessage(`{"contract_version":"catsco.service-run-result.v1","run_id":"run_done","session_id":"sess_done","status":"completed"}`),
+	}
+	_, doneEnv := h.serviceRunHandleResult("sess_done", done)
+	if doneEnv.Status != ServiceRunCompleted {
+		t.Fatalf("status = %q, want completed", doneEnv.Status)
+	}
+}
