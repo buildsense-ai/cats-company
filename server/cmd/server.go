@@ -990,6 +990,8 @@ func main() {
 		}
 		mux.HandleFunc("GET /api/service-agents/catalog/access", jwtAuthWithDB(catalogHandler.HandleAccess))
 		mux.HandleFunc("GET /api/service-agents/catalog", jwtAuthWithDB(catalogHandler.HandleCatalog))
+		// 「我的应用」：含已下架，只有本人看得到（目录接口仍只列 active）。
+		mux.HandleFunc("GET /api/service-agents/mine", jwtAuthWithDB(catalogHandler.HandleMine))
 		mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleAdd))
 		mux.HandleFunc("DELETE /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleRemove))
 		// 自述建议：只有「丢弃」这一个动作。采纳 = 面板预填编辑表单 + 人点发布，
@@ -1007,6 +1009,8 @@ func main() {
 		mux.HandleFunc("POST /api/service-agents/publish", jwtAuthWithDB(publishHandler.HandlePublish))
 		// 收回分享（下架）：只有发布者本人能操作；重新发布同一 slug 即重新上架。
 		mux.HandleFunc("DELETE /api/service-agents/{slug}", jwtAuthWithDB(publishHandler.HandleUnpublish))
+		// 彻底删除：只对「已下架」的应用开放（先收回再删，留一次反悔）。
+		mux.HandleFunc("DELETE /api/service-agents/{slug}/purge", jwtAuthWithDB(publishHandler.HandlePurge))
 		// Orchestration internal API for runtime instances (design §4.3; instances
 		// reach it over the shared VPC). Authn = per-instance bearer token
 		// (CATS_SERVICE_INSTANCE_TOKEN); service tokens are minted on claim with

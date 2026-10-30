@@ -61,11 +61,20 @@ export default function ServiceAgentsPanel({ onClose }) {
     setLoading(true);
     setError('');
     try {
-      const [catalogData, botsData] = await Promise.all([
+      const [catalogData, mineData, botsData] = await Promise.all([
         api.getServiceAgentsCatalog(),
+        typeof api.getMyServiceAgents === 'function'
+          ? Promise.resolve(api.getMyServiceAgents()).catch(() => null)
+          : Promise.resolve(null),
         typeof api.getMyBots === 'function' ? api.getMyBots().catch(() => null) : Promise.resolve(null),
       ]);
-      setAgents(Array.isArray(catalogData?.agents) ? catalogData.agents : []);
+      const catalogAgents = Array.isArray(catalogData?.agents) ? catalogData.agents : [];
+      // 已下架的应用不会出现在目录里（这是对的），但本人必须还能看到 —— 否则
+      // 「收回」之后就既不能重新上架，也没法彻底删除。
+      const catalogSlugs = new Set(catalogAgents.map((item) => item.slug));
+      const retiredAgents = (Array.isArray(mineData?.agents) ? mineData.agents : [])
+        .filter((item) => item && item.slug && item.state && item.state !== 'active' && !catalogSlugs.has(item.slug));
+      setAgents([...catalogAgents, ...retiredAgents]);
       const rawBots = botsData?.bots ?? botsData?.agents ?? botsData;
       setBots(Array.isArray(rawBots) ? rawBots : []);
     } catch (err) {
@@ -298,6 +307,29 @@ export default function ServiceAgentsPanel({ onClose }) {
       setDismissingIntro((prev) => {
         const next = new Set(prev);
         next.delete(slug);
+        return next;
+      });
+    }
+  }, []);
+
+  // 彻底删除（仅限已下架的应用）：会删掉版本、会话与运行记录，账本保留。
+  const purgeAgent = useCallback(async (agent) => {
+    if (!agent?.slug) return;
+    const label = agent.name || agent.slug;
+    if (!window.confirm(`彻底删除「${label}」？\n\n会连同它的全部版本、会话与运行记录一起删除，无法恢复；账本会保留用于对账。`)) {
+      return;
+    }
+    setUnpublishing((prev) => new Set(prev).add(agent.slug));
+    setError('');
+    try {
+      await api.purgeServiceAgent(agent.slug);
+      setAgents((prev) => prev.filter((item) => item.slug !== agent.slug));
+    } catch (err) {
+      setError(err?.message || '彻底删除失败，请稍后重试。');
+    } finally {
+      setUnpublishing((prev) => {
+        const next = new Set(prev);
+        next.delete(agent.slug);
         return next;
       });
     }
@@ -808,6 +840,8 @@ export default function ServiceAgentsPanel({ onClose }) {
             const hidden = !selected;
             const toggle = scopeBotUid ? toggleBotAgent : toggleSubscription;
             const runnerLabel = runnerLabelOf(agent);
+            // 已下架（只在「我的应用」里出现）：目录里没有它，本人还能重新上架或彻底删除。
+            const retired = Boolean(agent.state && agent.state !== 'active');
             const inputSummary = inputSummaryOf(agent);
             // 自己分享的不写「某某分享」：那是我自己，写上去只是噪音。
             const showSharer = Boolean(agent.owner_name) && !agent.mine;
@@ -817,6 +851,9 @@ export default function ServiceAgentsPanel({ onClose }) {
                   <div className="v3-service-agent-name">
                     {agent.name || agent.slug}
                     <span className="v3-service-agent-version">v{agent.version}</span>
+                    {retired ? (
+                      <span className="v3-service-agent-badge is-retired">已停用</span>
+                    ) : null}
                     {agent.mine ? <span className="v3-service-agent-badge">我的</span> : null}
                     {agent.visibility === 'private' ? (
                       <span className="v3-service-agent-badge is-private">私有</span>
@@ -903,6 +940,29 @@ export default function ServiceAgentsPanel({ onClose }) {
                   ) : null}
                 </div>
                 <div className="v3-service-agent-actions">
+                  {retired ? (
+                    <>
+                      <button
+                        type="button"
+                        className="v3-service-agent-edit"
+                        disabled={busy}
+                        onClick={() => startEdit(agent)}
+                        title="重新上架：打开编辑表单，确认后照常发布（同一 slug 即恢复）"
+                      >
+                        重新上架
+                      </button>
+                      <button
+                        type="button"
+                        className="v3-service-agent-unpublish is-confirm"
+                        disabled={unpublishing.has(agent.slug)}
+                        onClick={() => purgeAgent(agent)}
+                        title="彻底删除：连同版本、会话与运行记录一起删（账本保留用于对账）"
+                      >
+                        {unpublishing.has(agent.slug) ? '删除中…' : '彻底删除'}
+                      </button>
+                    </>
+                  ) : (
+                  <>
                   {agent.mine ? (
                     <button
                       type="button"
@@ -966,8 +1026,9 @@ export default function ServiceAgentsPanel({ onClose }) {
                     }
                   >
                     {hidden ? <Plus size={15} /> : <X size={15} />}
-                    <span>{hidden ? '添加' : '删除'}</span>
+                    <span>{hidden ? '添加' : '移出清单'}</span>
                   </button>
+                  </>)}
                 </div>
               </li>
             );

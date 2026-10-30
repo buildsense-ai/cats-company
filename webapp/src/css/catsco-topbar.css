@@ -1968,6 +1968,12 @@
   color: var(--cc-muted, #6b7280);
 }
 
+/* 已下架：目录里看不到，只有本人在「Agent 工具」里能看到（可重新上架或彻底删除）。 */
+.v3-service-agent-badge.is-retired {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}
+
 /* 好友级：介于「公开（蓝）」和「私有（灰）」之间的存在感 ——
    它是分享出去的，但只给认识的人，视觉上不该和公开一样醒目。 */
 .v3-service-agent-badge.is-friends {

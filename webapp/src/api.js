@@ -492,6 +492,8 @@ export const api = {
   // 内测门（2026-10-16）：catalog/access 汇报本账号是否可见入口（非白名单静默隐藏）。
   getServiceAgentsCatalogAccess: () => request('GET', '/api/service-agents/catalog/access'),
   getServiceAgentsCatalog: () => request('GET', '/api/service-agents/catalog'),
+  // 含已下架：下架后目录看不到，但本人要能重新上架或彻底删除。
+  getMyServiceAgents: () => request('GET', '/api/service-agents/mine'),
   addServiceAgentSubscription: (slug) => (
     request('PUT', `/api/service-agents/${encodeURIComponent(slug)}/subscription`)
   ),
@@ -503,6 +505,8 @@ export const api = {
   // 收回分享（下架）：只有发布者本人能调用；下架后目录与 tools/list 立即不可见，
   // 已缓存工具名的客户端再调用会拿到 agent_not_found。重新发布会恢复上架。
   unpublishServiceAgent: (slug) => request('DELETE', `/api/service-agents/${encodeURIComponent(slug)}`),
+  // 彻底删除（仅限已下架；账本保留）
+  purgeServiceAgent: (slug) => request('DELETE', `/api/service-agents/${encodeURIComponent(slug)}/purge`),
   // 丢弃「自述建议」（应用自己建议的对外描述）。采纳不走上行：那是发布，
   // 面板把建议预填进编辑表单，由人确认后走 publish。
   dismissServiceAgentSelfIntro: (slug) => (

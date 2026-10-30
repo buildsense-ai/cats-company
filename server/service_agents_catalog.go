@@ -118,6 +118,9 @@ type serviceCatalogEntry struct {
 	OwnerKind  string `json:"owner_kind,omitempty"`
 	Mine       bool   `json:"mine"`
 	Visibility string `json:"visibility,omitempty"`
+	// State 只有「我的应用」接口（/api/service-agents/mine）会填：active / inactive。
+	// 目录接口恒为空 —— 它只返回 active，填了也没意义。
+	State string `json:"state,omitempty"`
 	// Description：调用方 Agent 看到的工具描述（作者写的原文）。
 	// 空 = 作者没写，别人（另一个 Agent）只能靠名字猜，基本等于用不起来。
 	Description string `json:"description,omitempty"`
@@ -289,6 +292,52 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 				if schema := strings.TrimSpace(agent.SelfIntroInputSchema); schema != "" {
 					entry.SelfIntro.InputSchema = json.RawMessage(schema)
 				}
+			}
+		}
+		entries = append(entries, entry)
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{"agents": entries})
+}
+
+// HandleMine GET /api/service-agents/mine
+//
+// 自己的全部应用（含已下架）。目录接口（HandleCatalog）只列 active，这是对的：
+// 别人的目录不该出现停用应用。但 owner 自己必须还能看到 —— 否则「收回」之后就
+// 既不能重新启用、也没法彻底删除，等于失联。这也是面板要显示可操作按钮的前提。
+func (h *ServiceAgentCatalogHandler) HandleMine(w http.ResponseWriter, r *http.Request) {
+	uid, ok := h.ensureAllowed(w, r)
+	if !ok {
+		return
+	}
+	agents, err := h.store.ListServiceAgentsByOwner(r.Context(), uid)
+	if err != nil {
+		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "catalog_unavailable"})
+		return
+	}
+	entries := make([]serviceCatalogEntry, 0, len(agents))
+	for _, agent := range agents {
+		entry := serviceCatalogEntry{
+			Slug:                  agent.Slug,
+			Name:                  agent.Name,
+			Version:               agent.Version,
+			AsyncThresholdSeconds: agent.AsyncThresholdSeconds,
+			OwnerKind:             agent.OwnerKind,
+			Mine:                  true,
+			Visibility:            agent.Visibility,
+			State:                 agent.State,
+			Description:           agent.Description,
+			RunnerKind:            serviceAgentRunnerKind(agent.DefinitionJSON),
+		}
+		if schema := strings.TrimSpace(agent.InputSchema); schema != "" {
+			entry.InputSchema = json.RawMessage(schema)
+		}
+		if definition := strings.TrimSpace(agent.DefinitionJSON); definition != "" {
+			entry.Definition = json.RawMessage(definition)
+		}
+		if suggestion := strings.TrimSpace(agent.SelfIntroDescription); suggestion != "" {
+			entry.SelfIntro = &serviceCatalogSelfIntro{Description: suggestion}
+			if schema := strings.TrimSpace(agent.SelfIntroInputSchema); schema != "" {
+				entry.SelfIntro.InputSchema = json.RawMessage(schema)
 			}
 		}
 		entries = append(entries, entry)

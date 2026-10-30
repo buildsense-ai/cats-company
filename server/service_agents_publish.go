@@ -371,6 +371,64 @@ func (h *ServiceAgentPublishHandler) HandleUnpublish(w http.ResponseWriter, r *h
 	writeServiceJSON(w, http.StatusOK, map[string]any{"slug": slug, "state": "inactive"})
 }
 
+// HandlePurge DELETE /api/service-agents/{slug}/purge
+//
+// 彻底删除一个**已下架**的应用：agent、全部版本、全部会话、全部 run（事件/回执/检查点
+// 走级联）。**账本 service_run_ledger 保留** —— 它是账务凭证，删了就没法对账。
+//
+// 为什么要求先收回：一条 DELETE 就抹掉还在被调用的应用太危险。先下架、看一眼、
+// 再删；而下架这一步是可逆的（重新发布同一 slug 即恢复），给用户留一次反悔。
+func (h *ServiceAgentPublishHandler) HandlePurge(w http.ResponseWriter, r *http.Request) {
+	uid := UIDFromContext(r.Context())
+	if uid == 0 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if h.allowed != nil && !h.allowed(uid) {
+		writeServiceJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+		return
+	}
+	slug := strings.TrimSpace(r.PathValue("slug"))
+	if !serviceAgentSlugRe.MatchString(slug) {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_slug"})
+		return
+	}
+	result, err := h.store.PurgeServiceAgent(r.Context(), slug, uid)
+	switch {
+	case errors.Is(err, store.ErrServiceAgentNotFound):
+		writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "agent_not_found"})
+		return
+	case errors.Is(err, store.ErrServiceAgentOwnedByOther), errors.Is(err, store.ErrServiceAgentInternalReserved):
+		writeServiceJSON(w, http.StatusForbidden, map[string]any{
+			"error": "not_owner", "detail": "只有发布者本人能删除该应用",
+		})
+		return
+	case errors.Is(err, store.ErrServiceAgentNotInactive):
+		writeServiceJSON(w, http.StatusConflict, map[string]any{
+			"error": "agent_active", "detail": "先收回（下架）再彻底删除",
+		})
+		return
+	case errors.Is(err, store.ErrServiceAgentRunsPending):
+		writeServiceJSON(w, http.StatusConflict, map[string]any{
+			"error": "runs_pending", "detail": "还有正在运行的任务，等它结束再删",
+		})
+		return
+	case err != nil:
+		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "purge_unavailable"})
+		return
+	}
+	if h.notifier != nil {
+		h.notifier.NotifyCatalogChanged()
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{
+		"slug":     result.Slug,
+		"purged":   true,
+		"versions": result.Versions,
+		"sessions": result.Sessions,
+		"runs":     result.Runs,
+	})
+}
+
 // decodeServiceAgentBundle 解 base64（兼容 data URL 前缀），并做基本大小/格式校验。
 func decodeServiceAgentBundle(raw string) ([]byte, error) {
 	trimmed := strings.TrimSpace(raw)
