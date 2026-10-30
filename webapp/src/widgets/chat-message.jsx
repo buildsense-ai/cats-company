@@ -1118,7 +1118,7 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
   const liquidConversation = useLiquidConversation();
   const [replyRevealing, setReplyRevealing] = useState(false);
   const softStream = liquidConversation && !isSelf && Boolean(message._streaming) && !message._stopped
@@ -1608,15 +1608,24 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       <ImageDown size={15} aria-hidden="true" />
                       <span>制作分享图</span>
                     </button>}
-                    {onCreateConversationFork && <button
-                      type="button"
-                      role="menuitem"
-                      disabled={conversationForkDisabled || conversationForkAnchorId <= 0}
-                      onClick={handleCreateConversationForkClick}
-                    >
-                      <Copy size={15} aria-hidden="true" />
-                      <span>复制对话</span>
-                    </button>}
+                    {onCreateConversationFork && <>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={conversationForkDisabled || conversationForkAnchorId <= 0 || conversationForkMidTurn}
+                        title={conversationForkMidTurn ? '这一轮回复还在进行，等结束后就能从这里复制' : undefined}
+                        onClick={handleCreateConversationForkClick}
+                      >
+                        <Copy size={15} aria-hidden="true" />
+                        <span>复制对话</span>
+                      </button>
+                      {/* Saying why beats a greyed-out row: the entry is not
+                          broken, it is waiting for the reply to finish. The
+                          sentence gives the one action that works — come back. */}
+                      {conversationForkMidTurn && <p className="cc-fork-help" role="note">
+                        这一轮回复还在进行，等它结束后就能从这里复制。
+                      </p>}
+                    </>}
                   </div>
                 )}
               </div>
@@ -1648,6 +1657,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.onCreateConversationShare === nextProps.onCreateConversationShare &&
     prevProps.onCreateConversationFork === nextProps.onCreateConversationFork &&
     prevProps.conversationForkDisabled === nextProps.conversationForkDisabled &&
+    prevProps.conversationForkMidTurn === nextProps.conversationForkMidTurn &&
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.executionState === nextProps.executionState &&
     prevProps.executionNote === nextProps.executionNote &&

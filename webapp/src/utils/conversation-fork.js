@@ -31,6 +31,28 @@ export function forkAnchorMessageId(group) {
   return id;
 }
 
+// Whether the copy point sits inside a reply that is still being produced.
+//
+// The server accepts an anchor only when it closes a turn, which it decides by
+// looking at the next stored message: if that is still the agent talking, the
+// reply is not finished. The menu can decide the same thing from the same list,
+// so it does not have to guess or to wait for a rejection. Offering the entry
+// regardless meant the user clicked, waited, and then read a refusal about a
+// position we already knew was mid-reply.
+//
+// This is deliberately the adjacency rule and nothing cleverer: the displayed
+// groups merge segments and would hide the very boundary being checked.
+export function forkAnchorIsMidTurn(messages, anchorId, agentUid) {
+  const id = Number(anchorId) || 0;
+  if (!id || !Array.isArray(messages)) return false;
+  const index = messages.findIndex(message => Number(message?.seq_id || message?.id || 0) === id);
+  if (index < 0) return false;
+  const next = messages[index + 1];
+  if (!next) return false;
+  const agent = String(agentUid || '') || String(messages[index]?.from_uid ?? '');
+  return Boolean(agent) && String(next.from_uid ?? '') === agent;
+}
+
 // The anchor errors are a verdict about the chosen point, not about whether the
 // request got through. Retrying the same point gives the same verdict every time,
 // so an entry that offers "retry" for them is a button that cannot succeed: the
@@ -101,11 +123,12 @@ export function describeForkError(error) {
     session_fork_forbidden: '只能复制你参与的一人一 Agent 会话，请确认该 Agent 仍在好友列表中。',
     session_fork_request_conflict: '请求标识与原请求不一致，请重新查询原复制结果。',
     session_fork_source_unavailable: '原会话不可用或已变化，请检查原会话后重试。',
-    // The chosen spot is not the end of a reply. Plain wording: pick the place
-    // where the answer finishes. The second sentence covers the case where the
-    // reply ends with tool output instead of text: there is no last text
-    // message to pick, and the next reply is the only place that works.
-    session_fork_anchor_not_turn_end: '这个位置不是回复结束的地方，没法从这里复制。请点在这段回复的最后一条消息上再试；如果这段回复之后还有工具执行过程，请点下一条回复。',
+    // The chosen spot is inside a reply that is still being produced. This is a
+    // wait, not a mistake the user made, so the wording says what to do rather
+    // than what went wrong: the reply is not finished yet, come back when it is.
+    // Naming the tool process here would explain the machinery instead of the
+    // single thing the user needs to know.
+    session_fork_anchor_not_turn_end: '这一轮回复还在进行，等它结束后就能从这里复制。',
     session_fork_unavailable: '暂时无法复制会话，请稍后重试。',
     session_fork_not_found: '尚未找到此复制请求，可以使用原请求重试。',
     session_fork_ack_timeout: '运行该 Agent 的设备长时间没有响应，可能版本过旧或已离线。请确认设备在线并升级到支持会话复制的版本后，重新创建副本。',

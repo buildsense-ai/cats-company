@@ -107,15 +107,19 @@ it('does not offer a close control for a copy that is only still initializing', 
 it('offers no impossible action after an anchor verdict', async () => {
   const create = vi.fn();
   const cancel = vi.fn();
-  for (const code of ['session_fork_anchor_not_turn_end', 'session_fork_anchor_compacted']) {
+  // Each verdict gets wording for its own cause: a reply still being produced is
+  // a wait, while a spot summarized away needs a newer position.
+  for (const [code, guidance] of [
+    ['session_fork_anchor_not_turn_end', '等它结束后'],
+    ['session_fork_anchor_compacted', '更接近现在的位置'],
+  ]) {
     // 4xx is a rejection: the copy never began, so the prefix says so.
     await act(async () => root.render(<ConversationForkNotice canCreate fork={{ error: code, errorStatus: 409, create, cancel }} />));
     expect(container.textContent).toContain('复制没有开始');
     expect(container.textContent).not.toContain('重试复制');
     expect(container.textContent).not.toContain('取消复制');
-    // The wording still tells the user what to do instead: pick the end of this
-    // reply, or pick a position closer to now.
-    expect(container.textContent).toMatch(/最后一条|更接近现在的位置/);
+    // The wording still tells the user what to do.
+    expect(container.textContent).toContain(guidance);
   }
   expect(create).not.toHaveBeenCalled();
   expect(cancel).not.toHaveBeenCalled();

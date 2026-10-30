@@ -1,4 +1,4 @@
-import { canForkConversation, describeForkError, forkAnchorMessageId, forkComposerNotice, forkTargetTopic, isForkAnchorError, normalizeForkRecord } from './conversation-fork';
+import { canForkConversation, describeForkError, forkAnchorIsMidTurn, forkAnchorMessageId, forkComposerNotice, forkTargetTopic, isForkAnchorError, normalizeForkRecord } from './conversation-fork';
 
 const agent = { uid: 2, is_owner: true };
 
@@ -77,8 +77,13 @@ describe('bounded copy anchor', () => {
     })).toBe(0);
   });
 
-  it('explains that the copy point has to be the end of a reply', () => {
-    expect(describeForkError('session_fork_anchor_not_turn_end')).toContain('最后一条');
+  // The point was refused because the reply is still being produced. That is a
+  // wait, not a mistake: the sentence has to say "come back when it finishes"
+  // rather than describe a boundary rule the user has no reason to know.
+  it('asks the user to wait for the reply to finish', () => {
+    const text = describeForkError('session_fork_anchor_not_turn_end');
+    expect(text).toContain('还在进行');
+    expect(text).toContain('等它结束后');
   });
 });
 
@@ -155,5 +160,35 @@ describe('fork composer notice', () => {
     expect(forkComposerNotice(undefined)).toBe('');
     expect(forkComposerNotice('')).toBe('');
     expect(forkComposerNotice('ready')).toBe('');
+  });
+});
+
+// Whether the copy point closes a turn is what the server checks before it will
+// cut a copy. The menu can see the same thing from the same message list, so it
+// has to say "wait" instead of sending the click and reporting a refusal.
+describe('whether a copy point is mid-turn', () => {
+  const messages = [
+    { id: 1, from_uid: 1, content: 'question' },
+    { id: 2, from_uid: 2, content: 'answer' },
+    { id: 3, from_uid: 2, content: 'still working' },
+    { id: 4, from_uid: 1, content: 'next question' },
+  ];
+
+  it('is mid-turn while the agent keeps talking after the anchor', () => {
+    expect(forkAnchorIsMidTurn(messages, 2, 2)).toBe(true);
+  });
+
+  it('closes a turn when the next message is not the agent', () => {
+    expect(forkAnchorIsMidTurn(messages, 3, 2)).toBe(false);
+  });
+
+  it('closes a turn when nothing follows', () => {
+    expect(forkAnchorIsMidTurn(messages, 4, 2)).toBe(false);
+  });
+
+  it('says nothing without a usable anchor or list', () => {
+    expect(forkAnchorIsMidTurn(messages, 0, 2)).toBe(false);
+    expect(forkAnchorIsMidTurn(messages, 999, 2)).toBe(false);
+    expect(forkAnchorIsMidTurn(null, 2, 2)).toBe(false);
   });
 });
