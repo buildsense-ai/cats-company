@@ -1022,15 +1022,18 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.mock-create-conversation-fork')).toBeNull();
   });
 
-  it('disables the pending target composer and renders provenance outside message history', async () => {
+  it('disables the pending target composer without marking the copy in the chat', async () => {
     api.getConversationFork.mockResolvedValueOnce({
       request_id: 'pending-copy', source_topic_id: 'p2p_1_2', target_topic_id: 'grp_99', state: 'pending',
     });
     await mountTopic(root, 'grp_99', { isGroup: true, groupId: 99 });
     expect(container.querySelector('textarea').disabled).toBe(true);
     expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
-    expect(container.querySelector('[role="note"]').textContent).toContain('复制自 p2p_1_2');
-    expect(container.querySelector('.v3-timeline').textContent).not.toContain('复制自');
+    // A copy reads as an ordinary conversation. The provenance record still
+    // drives the disabled composer above, but it is no longer shown as a banner:
+    // "复制自 grp_..." only surfaced an internal id the user cannot act on.
+    expect(container.querySelector('.cc-fork-provenance')).toBeNull();
+    expect(container.textContent).not.toContain('复制自');
     expect(container.textContent).toContain('暂不能发送消息');
     expect(api.sendMessage).not.toHaveBeenCalled();
   });

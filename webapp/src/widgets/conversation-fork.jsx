@@ -1,8 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Copy, ExternalLink, Info, LoaderCircle, MoreHorizontal, RefreshCw, X } from 'lucide-react';
-import { describeForkError } from '../utils/conversation-fork';
+import { Copy, ExternalLink, LoaderCircle, MoreHorizontal, RefreshCw, X } from 'lucide-react';
+import { describeForkError, isForkAnchorError } from '../utils/conversation-fork';
 import { useConversationFork } from '../utils/use-conversation-fork';
 import '../css/conversation-fork.css';
+
+// A rejection and an unconfirmed result are different situations and the
+// wording has to say which one happened: "复制没有开始" tells the user the copy
+// never began, while "复制结果未确认" is for the case where the request may or
+// may not have been carried out.
+function forkErrorPrefix(fork) {
+  const status = Number(fork?.errorStatus) || 0;
+  return status >= 400 && status < 500 ? '复制没有开始' : '复制结果未确认';
+}
 
 export function ConversationForkAction({ eligible, busy, pending, onCreate }) {
   const [open, setOpen] = useState(false);
@@ -45,7 +54,7 @@ export function ConversationForkMenuItem({ topic, userId, name, onActivateTopic 
   return <>
     <button type="button" role="menuitem" aria-label={`复制为新会话 ${name}`}
       disabled={fork.blocked || fork.busy || pending}
-      onClick={() => void fork.create({ newRequest: true })}>
+      onClick={() => void fork.create({ newRequest: true, untilMessageId: 0 })}>
       <Copy size={14} aria-hidden="true" /><span>复制为新会话</span>
     </button>
     <div className="cc-fork-sidebar-status">
@@ -58,10 +67,9 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
   const { operation, provenance, busy, error, targetError, checking, blocked } = fork;
   return (
     <>
-      {provenance && <div className="cc-fork-notice cc-fork-provenance" role="note" aria-label="会话来源">
-        <Info size={15} aria-hidden="true" />
-        <span>复制自 <bdi>{provenance.source_topic_id}</bdi></span>
-      </div>}
+      {/* A copy reads as an ordinary conversation: the name already says where it
+          came from, and a "复制自 grp_..." banner only surfaces an internal id the
+          user cannot act on. */}
       {/* Dismissing hides the failure report only. A separate lookup error still
           needs its own "重新查询" action, so keep the block when one is present. */}
       {blocked && !(fork.noticeDismissed && provenance?.state === 'failed' && !targetError)
@@ -84,19 +92,24 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
       </div>}
       {(operation || busy || error) && <div className="cc-fork-notice" role={error || operation?.state === 'failed' ? 'alert' : 'status'}>
         {busy && <LoaderCircle size={16} className="is-spinning" aria-hidden="true" />}
-        <span>{error ? `复制结果未确认：${describeForkError(error)}` : busy ? '正在处理会话复制…'
+        <span>{error ? `${forkErrorPrefix(fork)}：${describeForkError(error)}` : busy ? '正在处理会话复制…'
           : operation?.state === 'failed' ? `复制失败：${describeForkError(operation.error) || '未能复制 Agent 上下文，请重新创建。'}`
             : operation?.state === 'ready' ? '新会话已就绪。' : '等待 Agent 初始化副本；若长时间未完成，请确认 Agent 在线且已更新到支持会话复制的版本。'}</span>
         {operation?.state === 'ready' && <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.open()}>
           <ExternalLink size={15} aria-hidden="true" />打开新会话
         </button>}
-        {canCreate && operation?.state === 'failed' && <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.create({ newRequest: true })}>
+        {canCreate && operation?.state === 'failed' && !isForkAnchorError(operation.error)
+          && <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.create({ newRequest: true })}>
           <Copy size={15} aria-hidden="true" />重新创建
         </button>}
-        {canCreate && (error && operation?.state !== 'ready' && operation?.state !== 'failed' || operation?.state === 'pending') && (
+        {canCreate && !isForkAnchorError(error)
+          && (error && operation?.state !== 'ready' && operation?.state !== 'failed' || operation?.state === 'pending') && (
           <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.create()}><RefreshCw size={15} aria-hidden="true" />重试复制</button>
         )}
-        {fork.cancel && (operation?.state === 'pending' || error) && (
+        {/* Cancelling acts on a request that exists. An anchor verdict already
+            ended this attempt and dropped the stored request, so cancel would send
+            nothing — the same dead control as retry, only quieter. */}
+        {fork.cancel && (operation?.state === 'pending' || (error && !isForkAnchorError(error))) && (
           <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.cancel()}>
             <X size={15} aria-hidden="true" />取消复制
           </button>

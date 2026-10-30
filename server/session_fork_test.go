@@ -66,7 +66,9 @@ func (s *forkTestStore) CancelSessionFork(_ context.Context, uid int64, request 
 	return s.record, nil
 }
 
-func (s *forkTestStore) ExpireSessionForks(context.Context, time.Time, int) (int, error) { return 0, nil }
+func (s *forkTestStore) ExpireSessionForks(context.Context, time.Time, int) (int, error) {
+	return 0, nil
+}
 
 type forkCreationTestStore struct {
 	*forkTestStore
@@ -218,8 +220,8 @@ func TestSessionForkGetIsUserScoped(t *testing.T) {
 func TestSessionForkCancelClosesOnlyAPendingCopyOfTheCaller(t *testing.T) {
 	for _, tc := range []struct {
 		name, request, state, initialError, wantState, wantError string
-		uid                                                     int64
-		wantCode                                                int
+		uid                                                      int64
+		wantCode                                                 int
 	}{
 		{"owner cancels pending", "one", "pending", "", "failed", types.SessionForkErrorCancelled, 7, 200},
 		{"another user cannot cancel", "one", "pending", "", "pending", "", 8, 404},
@@ -438,5 +440,37 @@ func TestSessionForkHistoryExposesRemappedReplies(t *testing.T) {
 	httpMessage := hub.historyAPIMessageForRecipient(7, message)
 	if httpMessage["reply_to"] != int(100) {
 		t.Fatalf("HTTP reply = %#v", httpMessage["reply_to"])
+	}
+}
+
+// The HTTP status is what the client keys its wording off: a 4xx means the copy
+// never began, so the notice can say so and drop the stored request instead of
+// reporting an unconfirmed result. Each reason therefore has to map to the status
+// the client expects, and an anchor verdict in particular must stay a 409 rather
+// than falling through to the generic 500.
+func TestSessionForkWriteMapsEveryReasonToItsStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code int
+		body string
+	}{
+		{"anchor is a rejection", store.ErrSessionForkAnchor, 409, "session_fork_anchor_not_turn_end"},
+		{"source unavailable", store.ErrSessionForkSource, 409, "session_fork_source_unavailable"},
+		{"request conflict", store.ErrSessionForkConflict, 409, "session_fork_request_conflict"},
+		{"forbidden", store.ErrSessionForkForbidden, 403, "session_fork_forbidden"},
+		{"not found", store.ErrSessionForkNotFound, 404, "session_fork_not_found"},
+		{"unknown stays generic", errors.New("boom"), 500, "session_fork_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			writeSessionFork(w, nil, tc.err)
+			if w.Code != tc.code {
+				t.Fatalf("status = %d, want %d", w.Code, tc.code)
+			}
+			if !strings.Contains(w.Body.String(), tc.body) {
+				t.Fatalf("body %q does not carry %q", w.Body.String(), tc.body)
+			}
+		})
 	}
 }

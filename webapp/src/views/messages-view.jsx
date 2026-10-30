@@ -13,7 +13,7 @@ import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag
 import ChatComposer from '../widgets/chat-composer';
 import HistoryLoadingState from '../widgets/history-loading-state';
 import { ConversationForkNotice } from '../widgets/conversation-fork';
-import { canForkConversation, forkComposerNotice } from '../utils/conversation-fork';
+import { canForkConversation, forkAnchorIsMidTurn, forkAnchorMessageId, forkComposerNotice } from '../utils/conversation-fork';
 import PublicationRepairPanel from '../widgets/skillhub-publication-repair-panel';
 import { useConversationFork } from '../utils/use-conversation-fork';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
@@ -5095,8 +5095,8 @@ export default function MessagesView({
     topic, userId: user.uid, agents: availableAgents,
     group: String(groupInfo?.id) === String(groupId) ? groupInfo : null, members,
   });
-  const createConversationFork = useCallback(() => {
-    void conversationFork.create({ newRequest: true });
+  const createConversationFork = useCallback((untilMessageId = 0) => {
+    void conversationFork.create({ newRequest: true, untilMessageId });
   }, [conversationFork.create]);
   const groupAgentUID = parseUid(groupAgent?.uid || groupAgent?.id);
   const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
@@ -6952,6 +6952,11 @@ export default function MessagesView({
           const candidate = conversationShareCandidateByMessage.get(group.message);
           const selectable = conversationShareMode && Boolean(candidate);
           const selected = selectable && conversationShareSelectedKeys.includes(candidate.key);
+          // A copy stops at a turn's end. When the reply this row belongs to is
+          // still producing, the menu says so up front instead of letting the
+          // click reach the server and come back refused.
+          const forkAnchorId = forkAnchorMessageId(group);
+          const forkMidTurn = forkAnchorIsMidTurn(messages, forkAnchorId, groupAgentUID);
           return (
             <div
               key={group.renderKey}
@@ -7000,6 +7005,8 @@ export default function MessagesView({
                   : undefined}
                 onCreateConversationFork={forkEligible && !conversationShareMode ? createConversationFork : undefined}
                 conversationForkDisabled={conversationFork.busy || conversationFork.operation?.state === 'pending'}
+                conversationForkAnchorId={forkAnchorId}
+                conversationForkMidTurn={forkMidTurn}
                 showThinking={showThinking}
                 isConsecutive={showThinking || liquidConversation
                   ? group.isConsecutive
