@@ -2,7 +2,7 @@
 
 ## Source and scope
 
-The page previews the platform's draft packages. Reference implementation: `webapp/src/widgets/plans/`, including `catsco-plans-modal.jsx`, `plan-offers.js`, `plan-chooser.css`, `enterprise-team.*`, and `enterprise-services.*`. `webapp/src/dev/README.md` and the default E layout in `plans-preview.jsx` describe the composition. Paths are relative to the repository root.
+The page presents platform packages and links to their authenticated purchase confirmation. Reference implementation: `webapp/src/widgets/plans/`, including `catsco-plans-modal.jsx`, `plan-offers.js`, `plan-chooser.css`, `enterprise-team.*`, and `enterprise-services.*`. `webapp/src/dev/README.md` and the default E layout in `plans-preview.jsx` describe the composition. Paths are relative to the repository root.
 
 Draft prices mirror `webapp/src/widgets/plans/plan-offers.js`; the server catalogue remains authoritative for live sales. Website contract tests check the four package prices against that draft source without importing platform code into the production bundle.
 
@@ -22,7 +22,7 @@ The chooser is page content within the shared website header and footer, with la
 - Retain the raised graphite FAQ surface, regular-weight questions, fixed question-row rhythm, individual toggles and expand/collapse all.
 - Follow the website's 1200px maximum content width. Below 821px, stack the cards within 480px; mobile has 20px gutters. Primary controls meet the website's 48px minimum.
 
-## Proposal content, not live sales
+## Package content and purchase confirmation
 
 | Proposal | Price per 30 days | Reference quota |
 | --- | --- | --- |
@@ -33,20 +33,20 @@ The chooser is page content within the shared website header and footer, with la
 
 Preserve the source feature ordering and nested Office / work-preference / parallel-task details. Replace Agent in public feature wording with the user-facing task description. To follow the explicit request to reproduce package contents, retain Token only as the source's quota unit and explain that it is estimated; avoid internal routing, cache and implementation vocabulary.
 
-Team: at most 10 people; dedicated 8-core CPU / 16 GB server; shared experience and Skill, knowledge base and permissions. Personal and professional proposals describe a cloud AI employee valid with the plan and a 15-day post-expiry retention period. These are draft terms awaiting owner approval, including quota measurement, model-dependent actual usage and priority availability.
+Team: at most 10 people; dedicated 8-core CPU / 16 GB server; shared experience and Skill, knowledge base and permissions. Personal and professional proposals describe a cloud AI employee valid with the plan and a 15-day post-expiry retention period. These descriptions follow the platform offer; the workspace confirms current terms, quota measurement and availability before purchase.
 
 Business Start remains ¥4,999/month and up for scoped implementation service, not a team account fee. Keep all five source services and the separately scoped advanced-service limitation. Do not invent certifications or availability.
 
 ## Interaction and destinations
 
 - Keep all three tab panels in the DOM with hidden state, tab/tabpanel relationships, roving tab index and ArrowLeft/ArrowRight/Home/End keyboard control.
-- Every package action opens a local native dialog with the selected name, price, 30-day validity, quota and team size where applicable. State that buying is unavailable and disable the purchase control. Native dialog supplies modal focus containment, Escape dismissal and trigger focus restoration; lock background scrolling only while open.
+- Each of the four package actions is a semantic link built with `appUrl('/', { open: 'relay', plan: <exact package slug>, source: 'pricing' })`. The workspace opens its purchase confirmation for that package. Authentication preserves the full destination through the `next` query parameter. Existing sessions go directly to the workspace; the workspace confirms availability, current price and upgrade rules before the user submits payment.
 - Do not create orders, invoke payments, modify account rights or request credentials.
-- Package actions stay in the local preview dialog. The login landing page retains invitation context only; legacy plan query parameters must not display retired prices or be relabeled as the new packages.
+- The public website does not show a disabled purchase preview or implement checkout. The login landing page retains invitation context only; legacy plan query parameters must not display retired prices or be relabeled as the new packages.
 - Invitation: use the existing `appLoginUrl({ access: 'invite', source: 'pricing', next: '/?open=relay' })` helper to keep authentication on the product domain.
 - Enterprise consultation: `/contact?topic=enterprise&service=business-start&source=pricing`.
-- Omit the preview/unavailable label above cards and the release notice below the invitation card. Keep the existing draft terms in the quota note, comparison note, FAQ and preview dialog. Keep Business Start separate from the team subscription in the comparison footnote. Opening date and final prices, quota, retention, server resources and service scope require owner confirmation.
+- Omit the preview/unavailable label above cards and the release notice below the invitation card. Explain in the quota note, comparison note and FAQ that the workspace confirms actual prices, quota and rights. Keep Business Start separate from the team subscription in the comparison footnote. Service scope, quota, retention and server resources remain subject to the workspace offer and owner-approved terms.
 
 ## Verification
 
-Contract checks cover draft price consistency with the platform. Responsive review covers personal/team/enterprise panels, confirmation dialogs, comparison scrolling and FAQ states at 390, 768, 1024 and 1440px, including keyboard navigation, focus restoration and absence of page-level horizontal overflow.
+Contract checks cover draft price consistency with the platform. Responsive review covers personal/team/enterprise panels, purchase destinations, comparison scrolling and FAQ states at 390, 768, 1024 and 1440px, including tab keyboard navigation, authentication return paths and absence of page-level horizontal overflow.

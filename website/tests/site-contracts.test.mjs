@@ -236,8 +236,9 @@ test('source avoids known interaction regressions', async () => {
   assert.match(pricingStyles, /grid-template-rows: subgrid;/)
   assert.match(pricingStyles, /background: #292929; color: #cecece;/)
   const pricing = await read('src/components/PricingPage.tsx')
-  assert.match(pricing, /aria-haspopup="dialog"/)
-  assert.match(pricing, /暂未开放购买/)
+  assert.match(pricing, /href=\{appUrl\('\/', \{ open: 'relay', plan: plan\.slug, source: 'pricing' \}\)\}/)
+  assert.match(pricing, /href=\{appUrl\('\/', \{ open: 'relay', plan: teamPlan\.slug, source: 'pricing' \}\)\}/)
+  assert.doesNotMatch(pricing, /暂未开放购买|<dialog|setSelectedPlan/)
   assert.doesNotMatch(pricing, /fetch\(|createCommercialOrder|createPayment/)
   assert.match(responsive, /@media \(prefers-reduced-motion: reduce\)/)
 })
@@ -261,4 +262,18 @@ test('login landing page retains invitation context without retired pricing', as
   const login = await read('src/components/LoginPage.tsx')
   assert.doesNotMatch(login, /CatsCo Free|CatsCo Pro|CatsCo Max|399|799|planDetails/)
   assert.match(login, /内测邀请码准入/)
+})
+
+test('workspace purchase links preserve the selected package through authentication', async () => {
+  const { authenticationRedirectPath } = await import('../../webapp/src/utils/auth-routes.js')
+  for (const { slug } of [...personalPlanOffers, teamPlanOffer]) {
+    const search = new URLSearchParams({ open: 'relay', plan: slug, source: 'pricing' }).toString()
+    const loginPath = authenticationRedirectPath({ authenticated: false, location: { pathname: '/', search: `?${search}` } })
+    assert.equal(new URL(loginPath, 'https://app.catsco.cn').pathname, '/login')
+    const resumed = authenticationRedirectPath({ authenticated: true, location: { pathname: '/login', search: new URL(loginPath, 'https://app.catsco.cn').search } })
+    assert.equal(resumed, `/?${search}`)
+  }
+  const workspace = await readFile(new URL('../../webapp/src/views/tinode-web.jsx', import.meta.url), 'utf8')
+  assert.match(workspace, /requestedOpen === 'relay'\) setShowRelayModal\(true\)/)
+  assert.match(workspace, /initialPlanSlug=\{new URLSearchParams\(search\)\.get\('plan'\)/)
 })
