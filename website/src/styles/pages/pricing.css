@@ -194,17 +194,6 @@ html:has(.pricing-page) {
 .pricing-faq-item h3 button:hover { color: #65c9b0; }
 .pricing-faq-item h3 span { flex: 0 0 20px; font-size: 25px; font-weight: 300; text-align: center; }
 .pricing-faq-item p { max-width: 900px; margin: 0; padding: 0 40px 24px 0; color: var(--pricing-secondary); font-size: 14px; font-weight: 350; line-height: 26px; }
-.pricing-confirmation { width: min(440px, calc(100% - 40px)); max-height: calc(100dvh - 40px); margin: auto; padding: 32px; border: 1px solid #454549; border-radius: 20px; color: #ececec; background: var(--plans-card); }
-.pricing-confirmation::backdrop { background: rgb(0 0 0 / 35%); }
-.pricing-confirmation h2 { margin: 16px 0 24px; font-size: 24px; font-weight: 600; }
-.pricing-confirmation .pricing-allowances > div + div { border-color: #3a3a3d; }
-.pricing-confirmation .pricing-allowances dt, .pricing-confirmation .pricing-price small, .pricing-confirmation .pricing-allowances dd span { color: #b8b8be; }
-.pricing-confirmation p { margin: 20px 0 0; color: #b8b8be; font-size: 13px; line-height: 24px; }
-.pricing-confirmation .pricing-plan-action { background: #ececec; }
-.pricing-confirmation-close { position: absolute; top: 16px; right: 16px; display: grid; place-items: center; width: 40px; height: 40px; padding: 10px; border: 0; border-radius: 9px; background: transparent; color: #b8b8be; }
-.pricing-confirmation-close:hover { background: #2c2c2f; }
-.pricing-confirmation-back { width: 100%; min-height: 48px; margin-top: 8px; border: 0; border-radius: 11px; background: #2c2c2f; color: #ececec; font-size: 14px; }
-.pricing-confirmation-back:hover { background: #39393d; }
 .pricing-page :is(a, button, [tabindex]):focus-visible { outline: 2px solid rgba(26,157,122,.55); outline-offset: 3px; }
 @media (hover: hover) and (pointer: fine) { .pricing-card:hover::before { opacity: .035; } }
 @media (prefers-reduced-motion: no-preference) {
@@ -245,17 +234,17 @@ html:has(.pricing-page) {
 }
 .pricing-team-offer { padding: 32px 40px; }
 .pricing-team-offer > p { margin: 8px 0 0; color: var(--cc-text-secondary); font-size: 14px; line-height: 24px; }
-.pricing-team-offer > button { width: 100%; min-height: 48px; margin-top: 20px; border: 1px solid transparent; border-radius: 11px; background: var(--cc-text); color: var(--plans-card); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
-.pricing-team-offer > button:hover { background: color-mix(in srgb, var(--cc-text) 88%, var(--plans-card)); }
-.pricing-team-offer > button:active { background: color-mix(in srgb, var(--cc-text) 78%, var(--plans-card)); }
-.pricing-team-offer > button:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 3px; }
+.pricing-team-offer > .pricing-plan-action { width: 100%; min-height: 48px; margin-top: 20px; border: 1px solid transparent; border-radius: 11px; background: var(--cc-text); color: var(--plans-card); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.pricing-team-offer > .pricing-plan-action:hover { background: color-mix(in srgb, var(--cc-text) 88%, var(--plans-card)); }
+.pricing-team-offer > .pricing-plan-action:active { background: color-mix(in srgb, var(--cc-text) 78%, var(--plans-card)); }
+.pricing-team-offer > .pricing-plan-action:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 3px; }
 .pricing-team-benefits { padding: 32px 40px; border-left: 1px solid var(--cc-border); }
 .pricing-team-benefits h3 { margin: 0; font-size: 16px; font-weight: 500; line-height: 26px; }
 .pricing-team-benefits ul { display: grid; gap: 22px; margin: 26px 0 0; padding: 0; list-style: none; }
 .pricing-team-benefits li { display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: start; gap: 14px; }
 .pricing-team-benefits li strong { font-size: 14px; font-weight: 500; line-height: 24px; }
 .pricing-team-benefits li p { margin: 3px 0 0; color: var(--cc-text-secondary); font-size: 13px; line-height: 22px; }
-@media (prefers-reduced-motion: no-preference) { .pricing-team-offer > button { transition: background-color 180ms ease; } }
+@media (prefers-reduced-motion: no-preference) { .pricing-team-offer > .pricing-plan-action { transition: background-color 180ms ease; } }
 @media (max-width: 1050px) { .pricing-team-offer, .pricing-team-benefits { padding: 28px; } }
 @media (max-width: 820px) {
   .pricing-team { grid-template-columns: minmax(0, 1fr); max-width: 480px; }

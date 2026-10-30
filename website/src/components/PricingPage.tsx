@@ -1,6 +1,6 @@
 import '../styles/pages/pricing.css';
-import { appLoginUrl } from '../site-links';
-import { useEffect, useRef, useState } from 'react';
+import { appLoginUrl, appUrl } from '../site-links';
+import { useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Icon } from './Icons';
 import type { IconName } from './Icons';
@@ -22,7 +22,7 @@ type PricingPlan = {
 };
 
 // Draft prices mirror webapp/src/widgets/plans/plan-offers.js.
-// The server catalogue is authoritative for live sales; this page only previews proposals.
+// The workspace catalogue confirms live prices and availability before purchase.
 const cloudNote = '云端 AI 员工随套餐有效；到期后保留 15 天，期间续费可恢复。';
 const plans: PricingPlan[] = [{
   slug: 'catsco-basic',
@@ -192,22 +192,22 @@ function ComparisonCell({ value }: { value: ComparisonValue }) {
 }
 const pricingFaqs = [{
   question: '基础版、个人版和专业版有什么区别？',
-  answer: '基础版面向资料整理、Office 文件处理和日常写作；个人版增加持续执行的后台任务、授权设备调用和个人工作偏好；专业版进一步提供多任务并行、复杂任务推进、历史工作检索和经验沉淀。以上为方案预览，正式权益以开放时的说明为准。'
+  answer: '基础版面向资料整理、Office 文件处理和日常写作；个人版增加持续执行的后台任务、授权设备调用和个人工作偏好；专业版进一步提供多任务并行、复杂任务推进、历史工作检索和经验沉淀。套餐详情以工作台购买确认页显示为准。'
 }, {
   question: '价格按月还是按年？',
-  answer: '当前方案草案为基础版 ¥59、个人版 ¥99、专业版 ¥159、团队版 ¥599，每期 30 天，页面简写为“/ 月”。尚未公布年付价格或折扣，也不会在此页发起自动续费。'
+  answer: '当前展示基础版 ¥59、个人版 ¥99、专业版 ¥159、团队版 ¥599，每期 30 天，页面简写为“/ 月”。尚未公布年付价格或折扣，也不会在此页发起自动续费。'
 }, {
   question: '页面上的额度如何理解？',
-  answer: '额度是用于估算可用量的参考，实际能完成的工作随所选模型、任务内容和文件长度而变化，不代表固定的任务或对话次数，也不承诺无限使用。最终额度及计量说明需在正式开放前确认。'
+  answer: '额度是用于估算可用量的参考，实际能完成的工作随所选模型、任务内容和文件长度而变化，不代表固定的任务或对话次数，也不承诺无限使用。额度及计量规则以工作台套餐说明为准。'
 }, {
   question: '现在可以正式购买或升级吗？',
-  answer: '暂未开放。当前是发布前方案预览，开放日期仍待确认。点击套餐按钮只会查看所选方案，不会创建订单、发起支付或更改已有权益。'
+  answer: '点击套餐按钮即可前往 CatsCo 工作台，查看对应套餐并确认购买或升级。尚未登录时会先进入登录流程，登录后继续所选套餐；实际价格、可售状态和升级规则以工作台显示为准。'
 }, {
   question: '云端 AI 员工到期后会怎样？',
-  answer: '个人版和专业版的当前方案草案为：云端 AI 员工随套餐有效，到期后保留 15 天，期间续费可恢复。此项仍需在正式开放前确认，实际服务规则以正式说明为准。'
+  answer: '个人版和专业版的套餐说明为：云端 AI 员工随套餐有效，到期后保留 15 天，期间续费可恢复。具体保留和恢复条件以工作台套餐说明为准。'
 }, {
   question: '团队版和 Business Start 有什么区别？',
-  answer: '团队版是最多 10 人共同使用和管理 AI 员工的套餐草案，包含独享服务器、共享知识库和权限管理。Business Start 是 ¥4,999 / 月起的企业落地服务，按约定范围提供环境准备、启动培训、首批场景和 Skill 初始化；复杂集成、私有化和长期支持需另行咨询。'
+  answer: '团队版是最多 10 人共同使用和管理 AI 员工的套餐，包含独享服务器、共享知识库和权限管理。Business Start 是 ¥4,999 / 月起的企业落地服务，按约定范围提供环境准备、启动培训、首批场景和 Skill 初始化；复杂集成、私有化和长期支持需另行咨询。'
 }, {
   question: '邀请码会改变套餐价格吗？',
   answer: '不会。邀请码用于内测准入和服务容量管理，不是折扣券。已有邀请码可通过页面下方入口前往 CatsCo 工作台登录。'
@@ -231,21 +231,8 @@ type PricingAudience = typeof audienceTabs[number]['value'];
 
 export function PricingPage() {
   const [audience, setAudience] = useState<PricingAudience>('personal');
-  const [selectedPlan, setSelectedPlan] = useState<PricingPlan | null>(null);
   const [openFaqs, setOpenFaqs] = useState<Set<number>>(() => new Set());
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const allFaqsOpen = openFaqs.size === pricingFaqs.length;
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (selectedPlan && !dialog.open) dialog.showModal();else if (!selectedPlan && dialog.open) dialog.close();
-    if (!selectedPlan) return;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [selectedPlan]);
   function handleTabKeys(event: KeyboardEvent<HTMLDivElement>) {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
@@ -275,7 +262,7 @@ export function PricingPage() {
             {plans.map(plan => <article className="pricing-card" key={plan.slug} aria-labelledby={`${plan.slug}-title`}>
               <span className="pricing-kicker">{plan.kicker}</span><h2 id={`${plan.slug}-title`}>{plan.name}</h2>
               <Price amount={plan.price} /><span className="pricing-tagline">{plan.tagline}</span><p className="pricing-description">{plan.description}</p>
-              <button className="pricing-plan-action" type="button" aria-haspopup="dialog" onClick={() => setSelectedPlan(plan)}><PaymentIcon />获取 CatsCo {plan.name}</button>
+              <a className="pricing-plan-action" href={appUrl('/', { open: 'relay', plan: plan.slug, source: 'pricing' })}><PaymentIcon />获取 CatsCo {plan.name}</a>
               <dl className="pricing-allowances"><div><dt><Icon name="layers" />Token 额度</dt><dd>{plan.capacity}<span>Token</span></dd></div></dl>
               <div className="pricing-feature-divider" />
               <ul className="pricing-features">{plan.features.map(feature => <li key={feature.label} className={feature.inherited ? 'is-inherited' : undefined}>
@@ -289,7 +276,7 @@ export function PricingPage() {
           <section className="pricing-team" aria-labelledby="pricing-team-title">
             <div className="pricing-team-offer">
               <span className="pricing-kicker">CATSCO TEAM</span><h2 id="pricing-team-title">团队版</h2><p>{teamPlan.description}</p><Price amount={teamPlan.price} />
-              <button className="pricing-plan-action" type="button" aria-haspopup="dialog" onClick={() => setSelectedPlan(teamPlan)}>获取 CatsCo 团队版</button>
+              <a className="pricing-plan-action" href={appUrl('/', { open: 'relay', plan: teamPlan.slug, source: 'pricing' })}>获取 CatsCo 团队版</a>
               <dl className="pricing-allowances"><div><dt><Icon name="users" />团队成员</dt><dd>最多 10 人</dd></div><div><dt><Icon name="layers" />Token 额度</dt><dd>{teamPlan.capacity}<span>Token</span></dd></div></dl>
             </div>
             <div className="pricing-team-benefits"><h3>团队协作，从同一个工作空间开始</h3><ul>{teamBenefits.map(item => <li key={item.title}><span className="pricing-benefit-icon"><Icon name={item.icon} /></span><div><strong>{item.title}</strong><p>{item.description}</p></div></li>)}</ul></div>
@@ -308,14 +295,14 @@ export function PricingPage() {
             </div>
           </section>
         </div>
-        <p className="pricing-estimate-note">Token 数为估算值，实际可用量随所选模型、任务内容及模型价格变化。以上价格、额度与权益均为方案草案，正式开放前仍需确认。</p>
+        <p className="pricing-estimate-note">Token 数为估算值，实际可用量随所选模型、任务内容及模型价格变化。点击套餐按钮可前往工作台确认购买，实际价格、额度与权益以工作台显示为准。</p>
         <section className="pricing-access" aria-labelledby="pricing-access-title">
           <div><span className="pricing-section-eyebrow">EARLY ACCESS</span><h2 id="pricing-access-title">已有邀请码？</h2><p>邀请码用于内测准入和服务承载管理，不是折扣券，也不会改变正式价格。</p></div>
           <a href={appLoginUrl({ access: 'invite', source: 'pricing', next: '/?open=relay' })}>使用邀请码登录<Icon name="arrowRight" /></a>
         </section>
         <section className="pricing-comparison" aria-labelledby="pricing-comparison-title">
           <header className="pricing-comparison-heading"><span className="pricing-section-eyebrow">PLAN COMPARISON</span><h2 id="pricing-comparison-title">比较不同方案</h2><p>从日常个人工作到团队协作，按用量、持续执行能力和协作需求查看差异。</p></header>
-          <p id="pricing-comparison-help" className="pricing-comparison-note">以下为方案草案。✓ 表示列入方案，— 表示未列入；“待确认”表示权益范围尚未确定。团队版的其他能力仍需单独确认。窄屏可左右滑动查看全部方案。</p>
+          <p id="pricing-comparison-help" className="pricing-comparison-note">以下为套餐差异参考，实际权益以工作台显示为准。✓ 表示列入方案，— 表示未列入；“待确认”表示权益范围尚未确定。团队版的其他能力仍需单独确认。窄屏可左右滑动查看全部方案。</p>
           <div className="pricing-comparison-scroll" role="region" aria-label="四档方案对比表" aria-describedby="pricing-comparison-help" tabIndex={0}>
             <table className="pricing-comparison-table">
               <caption className="pricing-sr-only">基础版、个人版、专业版和团队版的价格、额度、工作能力与协作资源对比</caption>
@@ -334,9 +321,5 @@ export function PricingPage() {
           <div className="pricing-faq-list" id="pricing-faq-list">{pricingFaqs.map((item, index) => <div className="pricing-faq-item" key={item.question}><h3><button id={`pricing-question-${index}`} type="button" aria-expanded={openFaqs.has(index)} aria-controls={`pricing-answer-${index}`} onClick={() => toggleFaq(index)}>{item.question}<span aria-hidden="true">{openFaqs.has(index) ? '−' : '+'}</span></button></h3><div id={`pricing-answer-${index}`} aria-labelledby={`pricing-question-${index}`} hidden={!openFaqs.has(index)}><p>{item.answer}</p></div></div>)}</div>
         </section>
       </section>
-      <dialog ref={dialogRef} className="pricing-confirmation" aria-labelledby="pricing-confirmation-title" aria-describedby="pricing-confirmation-note" onCancel={() => setSelectedPlan(null)} onClose={() => setSelectedPlan(null)}>
-        <button type="button" className="pricing-confirmation-close" aria-label="关闭方案预览" onClick={() => setSelectedPlan(null)} autoFocus><Icon name="close" /></button>
-        {selectedPlan && <><span className="pricing-kicker">方案预览</span><h2 id="pricing-confirmation-title">CatsCo {selectedPlan.name}</h2><Price amount={selectedPlan.price} /><dl className="pricing-allowances"><div><dt>有效期</dt><dd>30 天</dd></div><div><dt>参考额度</dt><dd>{selectedPlan.capacity}<span>Token</span></dd></div>{selectedPlan.slug === 'catsco-team' && <div><dt>团队成员</dt><dd>最多 10 人</dd></div>}</dl><p id="pricing-confirmation-note">该方案暂未开放购买。价格、额度和权益仍待正式确认；当前不会创建订单或发起支付。</p><button className="pricing-plan-action" type="button" disabled>暂未开放购买</button><button type="button" className="pricing-confirmation-back" onClick={() => setSelectedPlan(null)}>返回套餐</button></>}
-      </dialog>
     </main>;
 }
