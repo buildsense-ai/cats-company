@@ -598,7 +598,10 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 		// 绑定 run id 是为了在 run 收尾时能精确摘掉这条边 —— 否则正常交付过的
 		// 协作会在窗口内一直参与判定，变成误拦。
 		h.loops.record(callOrigin, targetBotUID, run.RunID)
-		return h.serviceRunHandleResult(session.SessionID, run, serviceArgsNote(args.Ignored)), nil, nil
+		// 句柄必须同时给 structuredContent（第二返回值）：调用方工具桥靠它解析
+		// status/run_id 去自动轮询；只给文本的话，客户端只能把「还在跑」当结果转给用户。
+		handleResult, handleEnv := h.serviceRunHandleResult(session.SessionID, run, serviceArgsNote(args.Ignored))
+		return handleResult, handleEnv, nil
 	}
 	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds, serviceArgsNote(args.Ignored))
 }
@@ -668,19 +671,24 @@ func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent stor
 // serviceRunHandleResult 立即返回运行句柄（不等终态）。
 // 给「天生慢」的执行后端用：干等只会把调用它的主 Agent 卡住，
 // 而它拿到的句柄足够自己决定是去干别的还是去轮询。
-func (h *ServiceAgentsMCPHandler) serviceRunHandleResult(sessionID string, run store.ServiceRun, notes ...string) *mcp.CallToolResult {
+//
+// 同时把 envelope 作为第二个返回值交给调用方去填 structuredContent —— 这不是可选项：
+// 调用方的工具桥（XiaoBa 的 mcp-tool-bridge）只认 structuredContent 里的 status/run_id，
+// 文本只用来兜底展示。以前这里返回 nil，于是 bot 型的异步句柄在客户端永远解析不出来，
+// 自动轮询根本不启动，模型最后看到的就是一句「run=… status=running」当答案。
+func (h *ServiceAgentsMCPHandler) serviceRunHandleResult(sessionID string, run store.ServiceRun, notes ...string) (*mcp.CallToolResult, ServiceRunEnvelope) {
 	// 已经终态就如实报终态：调用方是拿这个 status 决定「要不要继续等」的，
 	// 明明已经跑完还让它再轮询一轮，只是多一次无意义的等待。
 	if terminal, env := serviceRunTerminalEnvelope(run); terminal {
-		return serviceRunToolResult(env, notes...)
+		return serviceRunToolResult(env, notes...), env
 	}
-	envelope := ServiceRunEnvelope{
+	handle := ServiceRunEnvelope{
 		ContractVersion: serviceRunAsyncContractVersion,
 		RunID:           run.RunID,
 		SessionID:       sessionID,
 		Status:          ServiceRunRunning,
 	}
-	return serviceRunToolResult(envelope, notes...)
+	return serviceRunToolResult(handle, notes...), handle
 }
 
 func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string, run store.ServiceRun, thresholdSeconds int, notes ...string) (*mcp.CallToolResult, any, error) {
