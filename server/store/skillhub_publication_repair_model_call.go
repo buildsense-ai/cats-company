@@ -96,3 +96,10 @@ type SkillHubPublicationRepairModelCallStore interface {
 	CompleteSkillHubPublicationRepairModelCall(context.Context, int64, SkillHubPublicationRepairLease, string, SkillHubPublicationRepairModelOutput) (*SkillHubPublicationRepairModelCall, error)
 	GetSkillHubPublicationRepairModelCall(context.Context, int64, string, int) (*SkillHubPublicationRepairModelCall, error)
 }
+
+// Current execution authority, unlike private ledger/model-call history. The
+// original active human, Bot/body, task/topic/membership and exact unfinished
+// live lease are checked transactionally. It grants no model dispatch permission.
+type SkillHubPublicationRepairExecutionReader interface {
+	GetSkillHubPublicationRepairExecutionTask(context.Context, int64, SkillHubPublicationRepairLease) (*SkillHubPublicationRepairTask, error)
+}

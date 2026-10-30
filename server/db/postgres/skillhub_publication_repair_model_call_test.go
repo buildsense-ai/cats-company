@@ -364,3 +364,43 @@ func TestPostgresSkillHubPublicationRepairModelCallInvalidAndCancelled(t *testin
 		t.Fatal("cancelled result stored", err)
 	}
 }
+
+func TestPostgresSkillHubPublicationRepairModelExecutionReadCurrentAuthority(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"expired", "takeover", "finished", "cancelled", "other_actor", "membership"} {
+		t.Run(mode, func(t *testing.T) {
+			db, _, in, lease, _, other := repairModelFixture(t)
+			ctx, actor := context.Background(), in.Binding.ActorUID
+			before := getRepairBudget(t, db, actor, in.EntryID)
+			current, err := db.GetSkillHubPublicationRepairExecutionTask(ctx, actor, lease)
+			if err != nil || current == nil || !reflect.DeepEqual(current, before) {
+				t.Fatal("current execution read", err)
+			}
+			if journal, err := db.GetSkillHubPublicationRepairModelCall(ctx, actor, in.EntryID, 1); err != nil || journal != nil {
+				t.Fatal("execution read allocated dispatch", err)
+			}
+			switch mode {
+			case "expired":
+				expireRepairBudget(t, db, in.EntryID)
+			case "takeover":
+				expireRepairBudget(t, db, in.EntryID)
+				claimRepairBudget(t, db, actor, in.EntryID, lease.Input, "replacement")
+			case "finished":
+				finishRepairBudget(t, db, actor, lease, store.SkillHubPublicationRepairResult{Outcome: "validated", Evidence: lease.Input.Evidence})
+			case "cancelled":
+				requestCancelIntent(t, db, actor, in.EntryID, "ready")
+			case "other_actor":
+				actor = other
+			case "membership":
+				group, _ := store.ParseSkillHubPublicationRepairTopic(before.Input.TopicID)
+				deliveryExec(t, db, `DELETE FROM group_members WHERE group_id=$1 AND user_id=$2`, group, in.Binding.BotUID)
+			}
+			if result, err := db.GetSkillHubPublicationRepairExecutionTask(ctx, actor, lease); err == nil || result != nil {
+				t.Fatal("historical facts renewed current execution authority", mode, err)
+			}
+			if historical, err := db.GetSkillHubPublicationRepairTask(ctx, in.Binding.ActorUID, in.EntryID); err != nil || historical == nil || len(historical.Rounds) != 1 {
+				t.Fatal("execution read destroyed history/budget", err)
+			}
+		})
+	}
+}
