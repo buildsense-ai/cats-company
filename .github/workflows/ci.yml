@@ -89,6 +89,62 @@ jobs:
           XIAOBA_REPO: ../XiaoBa-CLI
         run: node scripts/test-publication-repair-source-paired.mjs
 
+  publication_repair_material_paired:
+    name: Publication repair private material paired contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: repair_material_test
+          POSTGRES_USER: catsco
+          POSTGRES_PASSWORD: catsco_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U catsco -d repair_material_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout CatsCo
+        uses: actions/checkout@v6
+        with:
+          path: cats-company
+      - name: Checkout pinned Cloud material reader
+        uses: actions/checkout@v6
+        with:
+          repository: buildsense-ai/catsco-skillhub-cloud
+          # Cloud PR71: private original rejection bytes; no model execution.
+          ref: f14df745048aeba14f22424a814b6590518a7523
+          path: skillhub-cloud
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: skillhub-cloud/package-lock.json
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: cats-company/go.mod
+          cache-dependency-path: cats-company/go.sum
+      - name: Prepare isolated Cloud database
+        working-directory: skillhub-cloud
+        env:
+          SKILLHUB_DATABASE_URL: postgres://catsco:catsco_test@127.0.0.1:5432/repair_material_test?sslmode=disable
+        run: |
+          npm ci --ignore-scripts --no-audit --fund=false
+          npm run db:migrate
+      - name: Verify actual Go client with Cloud PostgreSQL and TLS
+        working-directory: cats-company
+        env:
+          SKILLHUB_REPAIR_MATERIAL_ROOT: ${{ github.workspace }}/skillhub-cloud
+          SKILLHUB_TEST_DATABASE_URL: postgres://catsco:catsco_test@127.0.0.1:5432/repair_material_test?sslmode=disable
+          CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT: '1'
+        run: |
+          test -n "$SKILLHUB_TEST_DATABASE_URL"
+          go test -race ./server -run '^TestPublicationRepairMaterial(Client|CloudPostgres)' -count=1 -v
+
   # DB 契约测试独立成 job：与 backend（编译/单测/race/漏洞扫描）并行，
   # 避免 4~5 分钟的单步把整体墙钟拖到 9 分钟。
   # publication 套件（88 个用例，全部并行化）是 DB 契约里最重的一块，
@@ -587,6 +643,7 @@ jobs:
       - backend_db
       - backend_publication
       - publication_repair_source_paired
+      - publication_repair_material_paired
       - node_sdk
       - bot_example
       - shimo_worker
@@ -601,6 +658,7 @@ jobs:
         env:
           BACKEND: ${{ needs.backend.result }}
           REPAIR_SOURCE_PAIRED: ${{ needs.publication_repair_source_paired.result }}
+          REPAIR_MATERIAL_PAIRED: ${{ needs.publication_repair_material_paired.result }}
           NODE_SDK: ${{ needs.node_sdk.result }}
           BOT_EXAMPLE: ${{ needs.bot_example.result }}
           SHIMO_WORKER: ${{ needs.shimo_worker.result }}
@@ -612,7 +670,8 @@ jobs:
           printf 'backend=%s\nnode-sdk=%s\nbot-example=%s\nshimo-worker=%s\nwebapp=%s\ndependency-review=%s\nvalidation=%s\ndocker-images=%s\n' \
             "$BACKEND" "$NODE_SDK" "$BOT_EXAMPLE" "$SHIMO_WORKER" "$WEBAPP" "$DEPENDENCY_REVIEW" "$VALIDATION" "$DOCKER_IMAGES"
           echo "publication-repair-source-paired=$REPAIR_SOURCE_PAIRED"
-          if [[ "$BACKEND" != success || "$REPAIR_SOURCE_PAIRED" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$SHIMO_WORKER" != success || "$WEBAPP" != success || \
+          echo "publication-repair-material-paired=$REPAIR_MATERIAL_PAIRED"
+          if [[ "$BACKEND" != success || "$REPAIR_SOURCE_PAIRED" != success || "$REPAIR_MATERIAL_PAIRED" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$SHIMO_WORKER" != success || "$WEBAPP" != success || \
                 "$VALIDATION" != success || "$DOCKER_IMAGES" != success || \
                 ("$DEPENDENCY_REVIEW" != success && "$DEPENDENCY_REVIEW" != skipped) ]]; then
             echo 'One or more CI suites did not succeed.' >&2
