@@ -70,6 +70,7 @@ func TestPostgresSkillHubPublicationMigration(t *testing.T) {
 			exec(descriptionAcceptanceMigration(t, "down"))
 			exec(descriptionApplicationMigration(t, "down"))
 			exec(descriptionMigration(t, "down"))
+			exec(repairModelMigration(t, "down"))
 			exec(repairBudgetMigration(t, "down"))
 			exec(captureDeliveryMigration(t, "down"))
 			exec(captureMigration(t, "down"))

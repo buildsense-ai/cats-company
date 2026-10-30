@@ -37,8 +37,11 @@ An expired claim can be recovered only with the same request and evidence. It
 keeps its round number and receives a new token and generation, fencing the old
 worker. **A lease is not permission to repeat an uncertain paid model call.** A
 future executor must reconcile durable model-call/checkpoint state first, and
-stop with `model_result_uncertain` if it cannot establish what happened. That
-executor and its call checkpoints are not implemented here.
+stop with `model_result_uncertain` if it cannot establish what happened. The
+internal [model-call journal](skillhub-publication-repair-model-call.md) now
+retains one dispatch fence and optional untrusted output per round. It cannot
+grant a second dispatch after restart/takeover. The executor/provider adapter
+and its enforcement are not implemented here; no automatic repair is activated.
 
 Transport retry budgets remain independent. Recreating an adapter or rerunning
 schema startup preserves all rounds. Tables retain immutable tasks/checkpoints;

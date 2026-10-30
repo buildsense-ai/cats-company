@@ -75,6 +75,7 @@ func TestPostgresSkillHubPublicationReceiptMigration(t *testing.T) {
 			deliveryExec(t, db, descriptionAcceptanceMigration(t, "down"))
 			deliveryExec(t, db, descriptionApplicationMigration(t, "down"))
 			deliveryExec(t, db, descriptionMigration(t, "down"))
+			deliveryExec(t, db, repairModelMigration(t, "down"))
 			deliveryExec(t, db, repairBudgetMigration(t, "down"))
 			deliveryExec(t, db, commitDeliveryMigration(t, "down"))
 			deliveryExec(t, db, publicationCommitMigration(t, "down"))
