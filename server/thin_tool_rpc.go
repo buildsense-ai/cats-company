@@ -246,6 +246,12 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 
 	now := h.thinToolRPC.now()
 	expiresAt := now.Add(h.thinToolRPC.ttl)
+	// Shell requests may wait up to five minutes plus result delivery margin.
+	// Authorization above has already bounded msg.ExpiresAt to the device grant.
+	// Legacy requests keep their shorter explicit deadline unchanged.
+	if toolName == "execute_shell" && client.accountType == types.AccountBot && msg.GrantID != "" {
+		expiresAt = now.Add(310 * time.Second)
+	}
 	if msg.ExpiresAt > 0 {
 		if requested := time.UnixMilli(msg.ExpiresAt); requested.Before(expiresAt) {
 			expiresAt = requested
@@ -567,7 +573,7 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		return nil
 	}
 	grant, ok := h.userDevices.lookupGrant(msg.GrantID)
-	if !ok {
+	if !ok || h.deviceGrantWasRevoked(grant) {
 		return fmt.Errorf("device grant is not active")
 	}
 	if grant.TargetScope == "explicit_device" && !xiaobaRuntimeV2EnabledForClient(client) {
