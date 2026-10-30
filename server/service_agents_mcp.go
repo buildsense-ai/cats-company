@@ -780,6 +780,10 @@ func serviceRunErrorText(run store.ServiceRun) string {
 		return "no_command: 这个应用没有声明执行命令（runner.command）。请转告发布者：在「Agent 工具」里编辑该应用，补一条执行命令。"
 	case "worker_offline":
 		return "worker_offline: 发布者那边没有在线的 worker。请转告发布者在跑这个应用的那台机器上启动小八并登录。"
+	case "bot_runner_lost":
+		// 平台在 bot 回合中途重启/崩溃：这条 run 已经没有执行方，也无法从消息里可靠地认领
+		// （可能已回复、也可能没回），所以如实判失败。重试会开一个新的 bot 会话，可以安全重来。
+		return "bot_runner_lost: 执行这条任务的平台进程在 bot 回合中途中断了，这次结果无法恢复。这不是调用参数的问题，也不会自己变好；请重新发起一次（会开一个新的 bot 会话）。"
 	}
 	// 已经是「code: 一句人话」的形态就不再加尾巴。bot_offline / bot_timeout /
 	// bot_empty_input 这些失败原因自带说明，拼上 ": run terminated" 只会读成

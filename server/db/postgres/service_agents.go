@@ -661,14 +661,28 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// ① 租约过期的 running：尝试接管，次数耗尽转终态失败。
+	// ① 租约过期的 running：可被认领的执行方（codex/worker）继续「接管」，次数耗尽转终态失败。
+	//
+	//    bot 型 run 例外：没有人能接管它（claim 只认 codex/worker），attempts 永远不会增长，
+	//    留在 orphaned 就是永久悬挂——调用方轮询一辈子也等不到结论。所以直接判终态失败，
+	//    并给出明确原因；重试会开一个新的 bot 会话，可以安全重来。
 	rows, err := tx.QueryContext(ctx, `
-		UPDATE service_runs SET
-			state = CASE WHEN attempts >= 3 THEN 'failed' ELSE 'orphaned' END,
-			error_text = CASE WHEN attempts >= 3 THEN 'lease_expired_attempts' ELSE error_text END,
+		UPDATE service_runs r SET
+			state = CASE
+				WHEN COALESCE(v.definition_json->'runner'->>'type', 'codex') = 'bot' THEN 'failed'
+				WHEN r.attempts >= 3 THEN 'failed'
+				ELSE 'orphaned' END,
+			error_text = CASE
+				WHEN COALESCE(v.definition_json->'runner'->>'type', 'codex') = 'bot' THEN 'bot_runner_lost'
+				WHEN r.attempts >= 3 THEN 'lease_expired_attempts'
+				ELSE r.error_text END,
 			instance_id = ''
-		WHERE state = 'running' AND lease_expires_at < now()
-		RETURNING run_id, session_id, state`)
+		FROM service_sessions s
+		JOIN service_agents a ON a.id = s.agent_id
+		LEFT JOIN service_agent_versions v ON v.agent_id = s.agent_id AND v.version = s.definition_rev
+		WHERE r.session_id = s.session_id
+		  AND r.state = 'running' AND r.lease_expires_at < now()
+		RETURNING r.run_id, r.session_id, r.state, COALESCE(r.error_text, '')`)
 	if err != nil {
 		return 0, fmt.Errorf("reap service runs: %w", err)
 	}
@@ -676,11 +690,12 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 		runID     string
 		sessionID string
 		state     string
+		errorText string
 	}
 	var reaped []reapedRun
 	for rows.Next() {
 		var r reapedRun
-		if err := rows.Scan(&r.runID, &r.sessionID, &r.state); err != nil {
+		if err := rows.Scan(&r.runID, &r.sessionID, &r.state, &r.errorText); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan reaped service run: %w", err)
 		}
@@ -695,8 +710,8 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 		if r.state != "failed" {
 			continue
 		}
-		// 接管次数耗尽 → 终态失败：回执入箱（与 orphaned 中间态区分）。
-		if err := insertServiceRunReceiptTx(ctx, tx, r.runID, r.sessionID, "failed", "", "lease_expired_attempts"); err != nil {
+		// 终态失败：回执入箱（与 orphaned 中间态区分）。
+		if err := insertServiceRunReceiptTx(ctx, tx, r.runID, r.sessionID, "failed", "", r.errorText); err != nil {
 			return 0, err
 		}
 	}
