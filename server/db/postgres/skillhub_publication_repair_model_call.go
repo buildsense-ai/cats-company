@@ -11,6 +11,34 @@ import (
 )
 
 var _ store.SkillHubPublicationRepairModelCallStore = (*Adapter)(nil)
+var _ store.SkillHubPublicationRepairExecutionReader = (*Adapter)(nil)
+
+// This is not the historical task reader. Recheck the exact current execution
+// lease and private-topic authority without creating a dispatch or spending a
+// round. No lock is held after this bounded transaction returns.
+func (a *Adapter) GetSkillHubPublicationRepairExecutionTask(ctx context.Context, actor int64, lease store.SkillHubPublicationRepairLease) (*store.SkillHubPublicationRepairTask, error) {
+	if actor <= 0 || lease.Validate() != nil {
+		return nil, store.ErrSkillHubPublicationInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	tx, err := beginPublicationDelivery(ctx, a.db)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err := lockRepairModelRound(ctx, tx, actor, lease); err != nil {
+		return nil, err
+	}
+	task, err := readPublicationRepairTask(ctx, tx, lease.EntryID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
 
 func sameRepairModelLease(a, b store.SkillHubPublicationRepairLease) bool {
 	at, bt := a.Until, b.Until

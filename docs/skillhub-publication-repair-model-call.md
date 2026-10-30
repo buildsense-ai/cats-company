@@ -69,7 +69,10 @@ among concurrent starts, output replay, expired/taken-over leases, authority
 loss, privacy and direct SQL guards. Required CI runs these against PostgreSQL
 with `-race -v`; a local missing-DSN skip is not database evidence.
 
-The restricted executor/provider adapter, private candidate ancestry across
+The internal [restricted model coordinator](skillhub-publication-repair-model-execution.md)
+now consumes this journal with current execution/source checks, strict request
+binding and read-only completion recovery. It registers no real provider or
+worker and does not apply the output. The real executor/provider adapter, private candidate ancestry across
 multiple rounds, trusted continuation for both publication entry points and
 controlled end-to-end rollout remain subsequent work. This journal itself never
 calls or bills a model. Chinese marketplace manuals and author-managed images

@@ -49,6 +49,9 @@ jobs:
       - name: Test status-only reconciliation concurrency
         run: go test -race ./server -run '^TestSkillHubPublicationDescriptionReconcile' -count=1
 
+      - name: Test restricted repair model coordinator concurrency
+        run: go test -race ./server -run '^TestPublicationRepairModel' -count=1
+
       - name: Scan Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
@@ -154,7 +157,7 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: |
           test -n "$CATS_PG_TEST_DSN"
-          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationRepairModelCall' -count=1 -v
+          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationRepairModel(Call|Execution)' -count=1 -v
 
       - name: Test immutable derived publication terminal recovery
         env:

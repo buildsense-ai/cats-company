@@ -32,8 +32,9 @@ func verifyHumanDescriptionConfirmationPostgres(t *testing.T, db *postgres.Adapt
 		t.Fatal(err)
 	}
 	index := int64(0)
+	modelDraft := verifyRepairModelExecutionPostgres(t, ctx, db, actor, round.Lease, in.Receipt)
 	draft, err := proposePublicationDescription(ctx, db, actor, round.Lease, publicationReportFixture(in.Receipt).Validation,
-		store.SkillHubPublicationDescriptionProposal{RelativePath: "SKILL.md", Field: "description", EntryIndex: &index, Text: "Read a document and return its contents."})
+		store.SkillHubPublicationDescriptionProposal{RelativePath: "SKILL.md", Field: "description", EntryIndex: &index, Text: modelDraft})
 	if err != nil {
 		t.Fatal("retaining verified draft", err)
 	}
