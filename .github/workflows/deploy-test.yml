@@ -37,6 +37,16 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
 
+      - name: Sync public website media
+        timeout-minutes: 8
+        run: |
+          SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+          REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
+          website_public_root="${TEST_WEBSITE_PUBLIC_ROOT:-${TEST_STACK_ROOT}/website-public}"
+          ssh ${SSH_OPTS} "${REMOTE}" "mkdir -p '${website_public_root}'"
+          tar -C website/public -czf - . |
+            ssh ${SSH_OPTS} "${REMOTE}" "tar -xzf - -C '${website_public_root}'"
+
       - name: Upload test stack files
         timeout-minutes: 8
         run: |
