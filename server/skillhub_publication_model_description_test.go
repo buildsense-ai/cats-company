@@ -314,7 +314,9 @@ func TestPublicationRepairModelDescriptionSelectorAndText(t *testing.T) {
 }
 
 func TestPublicationRepairModelDescriptionChecksAuthorityOnRecovery(t *testing.T) {
-	for boundary := 1; boundary <= 3; boundary++ {
+	// An existing draft is read once before source verification and again
+	// afterwards. Each checkpoint must be reached, not silently skipped.
+	for boundary := 1; boundary <= 2; boundary++ {
 		t.Run(time.Duration(boundary).String(), func(t *testing.T) {
 			db, lease, result, report, _ := modelDescriptionFixture(t, "Read documents.")
 			verify := func(context.Context, store.SkillHubPublicationRepairTask) error { return nil }
@@ -329,13 +331,42 @@ func TestPublicationRepairModelDescriptionChecksAuthorityOnRecovery(t *testing.T
 				return nil
 			}
 			got, err := retainPublicationModelDescription(context.Background(), db, 1, lease, result, report, verify)
-			if db.draftReads >= boundary && (got != nil || err == nil) {
+			if db.draftReads != boundary {
+				t.Fatalf("authority checkpoint %d was not the stopping read (draft reads = %d)", boundary, db.draftReads)
+			}
+			if got != nil || !errors.Is(err, store.ErrSkillHubPublicationDenied) {
 				t.Fatal("authority loss returned draft")
 			}
 			if db.proposals != 1 {
 				t.Fatal("recovery retried proposal")
 			}
 		})
+	}
+}
+
+func TestPublicationRepairModelDescriptionAuthorityRevokedDuringRecoveryVerification(t *testing.T) {
+	db, lease, result, report, calls := modelDescriptionFixture(t, "Read documents.")
+	verify := func(context.Context, store.SkillHubPublicationRepairTask) error { return nil }
+	if _, err := retainPublicationModelDescription(context.Background(), db, 1, lease, result, report, verify); err != nil {
+		t.Fatal(err)
+	}
+	db.draftReads = 0
+	verified := 0
+	verify = func(context.Context, store.SkillHubPublicationRepairTask) error {
+		verified++
+		// The historical task/model readers still succeed; only the final
+		// current-authority draft GET can observe this revocation.
+		db.mu.Lock()
+		db.deny = true
+		db.mu.Unlock()
+		return nil
+	}
+	got, err := retainPublicationModelDescription(context.Background(), db, 1, lease, result, report, verify)
+	if got != nil || !errors.Is(err, store.ErrSkillHubPublicationDenied) || verified != 1 || db.draftReads != 2 {
+		t.Fatalf("revocation during verification not checked: draft=%v err=%v verifications=%d reads=%d", got != nil, err, verified, db.draftReads)
+	}
+	if db.proposals != 1 || db.commits != 1 || *calls != 1 || len(db.task.Rounds) != 1 {
+		t.Fatal("revoked recovery repeated model/proposal/round")
 	}
 }
 

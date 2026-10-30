@@ -324,7 +324,9 @@ func TestPublicationRepairModelUnsupportedSelectorNeverDispatches(t *testing.T) 
 }
 
 func TestPublicationRepairModelAuthorityRecheckedAtEveryBoundary(t *testing.T) {
-	for boundary := 1; boundary <= 12; boundary++ {
+	// One initial read, then two reads around each of five source checks:
+	// preparation, request binding, invocation, retention and final return.
+	for boundary := 1; boundary <= 11; boundary++ {
 		t.Run(time.Duration(boundary).String(), func(t *testing.T) {
 			db, lease, config, ports, calls := repairModelTestFixture(t)
 			db.readHook = func(n int) error {
@@ -334,14 +336,17 @@ func TestPublicationRepairModelAuthorityRecheckedAtEveryBoundary(t *testing.T) {
 				return nil
 			}
 			result, err := runPublicationRepairModel(context.Background(), db, 1, lease, config, ports)
-			if db.reads < boundary {
-				return
+			if db.reads != boundary {
+				t.Fatalf("authority checkpoint %d was not the stopping read (task reads = %d)", boundary, db.reads)
 			}
-			if err == nil || result != nil {
+			if !errors.Is(err, store.ErrSkillHubPublicationDenied) || result != nil {
 				t.Fatal("authority loss succeeded", boundary)
 			}
 			if boundary <= 7 && *calls != 0 {
 				t.Fatal("provider before authority checkpoint", boundary, *calls)
+			}
+			if boundary > 7 && *calls != 1 {
+				t.Fatal("post-invocation checkpoint did not follow exactly one call", boundary, *calls)
 			}
 		})
 	}
