@@ -584,9 +584,12 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if !reused {
 		// 外部执行后端（runner.type=http）：异步转发到用户 endpoint，结果写成 result 事件；
 		// 平台自带执行（codex）不声张，照旧由 worker claim。
-		h.external.MaybeDispatch(ctx, agent, run, callerUID, botUID)
+		//
+		// 传 current 不传 agent：current 带的是刚读到的归属与 definition。派发侧要拿它校验
+		// 「这个 bot 是不是应用主人的」，用会话快照的话 owner 为 0 → 校验被跳过。
+		h.external.MaybeDispatch(ctx, current, run, callerUID, botUID)
 		// bot-as-tool（runner.type=bot）：把 input 发给另一个 bot，等它回话后写回结果。
-		h.botRunner.MaybeDispatch(ctx, agent, run, callerUID)
+		h.botRunner.MaybeDispatch(ctx, current, run, callerUID)
 	}
 	// bot 回合是分钟级的（上下文压缩 + 多轮推理），同步等只会把主 Agent 卡住，
 	// 所以这里直接返回运行句柄：调用方拿 run_id 自己去问 catsco_run_status，或等回执。
