@@ -58,6 +58,7 @@ func TestPreparePublicationRepairModelMaterialRejectsMismatchedEvidenceBeforeRea
 		{"receipt", func(r *PublicationCloudValidationReport) {
 			r.Receipt.RequestHash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 		}},
+		{"schema-version", func(r *PublicationCloudValidationReport) { r.SchemaVersion = 0 }},
 		{"candidate", func(r *PublicationCloudValidationReport) {
 			r.Validation.CandidateHash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 		}},
@@ -90,27 +91,82 @@ func TestPreparePublicationRepairModelMaterialRejectsMismatchedEvidenceBeforeRea
 }
 
 func TestPreparePublicationRepairModelMaterialRejectsUntrustedTaskAndPeerErrors(t *testing.T) {
-	_, task, _ := projectionTestInput(t, []projectionTestFile{{"SKILL.md", "---\nname: reader\n---\n", false}})
-	reads := 0
-	reports := repairMaterialReportReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
-		reads++
-		return nil, errors.New("private upstream detail")
+	raw, task, report := projectionTestInput(t, []projectionTestFile{{"SKILL.md", "---\nname: reader\n---\n", false}})
+	reportReads, materialReads := 0, 0
+	validReports := repairMaterialReportReaderFunc(func(_ context.Context, receipt store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+		reportReads++
+		return &PublicationCloudValidationReport{SchemaVersion: 1, Receipt: publicationControlReceipt(receipt), Validation: snapshotPublicationRepairModelReport(report)}, nil
 	})
-	materials := repairOriginalMaterialReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) ([]byte, error) {
-		t.Fatal("candidate read after failed report")
-		return nil, nil
+	validMaterials := repairOriginalMaterialReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) ([]byte, error) {
+		materialReads++
+		return append([]byte(nil), raw...), nil
 	})
 	bad := snapshotPublicationRepairTask(task)
-	bad.Input.TopicID = "grp_456"
-	if _, err := preparePublicationRepairModelMaterial(context.Background(), bad, reports, materials); err == nil || reads != 0 {
-		t.Fatal("untrusted task was read", err)
+	bad.Rounds[0].Lease.Token = "invalid"
+	if _, err := preparePublicationRepairModelMaterial(context.Background(), bad, validReports, validMaterials); err == nil || reportReads != 0 || materialReads != 0 {
+		t.Fatal("invalid lease reached peer readers", err, reportReads, materialReads)
 	}
-	if _, err := preparePublicationRepairModelMaterial(context.Background(), task, reports, materials); !errors.Is(err, errPublicationRepairMaterialPreparation) || reads != 1 {
-		t.Fatal("private peer error was not mapped to a static error", err)
+	var nilReportReader *PublicationCommitCloudClient
+	var nilMaterialReader *publicationRepairMaterialClient
+	if _, err := preparePublicationRepairModelMaterial(context.Background(), task, nilReportReader, validMaterials); err == nil || reportReads != 0 || materialReads != 0 {
+		t.Fatal("typed-nil report reader was not rejected", err)
+	}
+	if _, err := preparePublicationRepairModelMaterial(context.Background(), task, validReports, nilMaterialReader); err == nil || reportReads != 0 || materialReads != 0 {
+		t.Fatal("typed-nil material reader was not rejected", err)
+	}
+	if _, err := preparePublicationRepairModelMaterial(context.Background(), task,
+		repairMaterialReportReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+			return nil, errors.New("private report upstream detail")
+		}), validMaterials); !errors.Is(err, errPublicationRepairMaterialPeer) || err.Error() == "private report upstream detail" || materialReads != 0 {
+		t.Fatal("private report error was not mapped to a static error", err)
+	}
+	if _, err := preparePublicationRepairModelMaterial(context.Background(), task, validReports,
+		repairOriginalMaterialReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) ([]byte, error) {
+			return nil, errors.New("private material upstream detail")
+		})); !errors.Is(err, errPublicationRepairMaterialPeer) || err.Error() == "private material upstream detail" {
+		t.Fatal("private material error was not mapped to a static error", err)
+	}
+	corrupt := append([]byte(nil), raw...)
+	corrupt[len(corrupt)-1] ^= 1
+	if _, err := preparePublicationRepairModelMaterial(context.Background(), task, validReports,
+		repairOriginalMaterialReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) ([]byte, error) { return corrupt, nil })); !errors.Is(err, errPublicationRepairMaterialPeer) {
+		t.Fatal("projector error was not mapped to a static error", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := preparePublicationRepairModelMaterial(ctx, task, reports, materials); !errors.Is(err, context.Canceled) || reads != 1 {
+	beforeReports, beforeMaterials := reportReads, materialReads
+	if _, err := preparePublicationRepairModelMaterial(ctx, task, validReports, validMaterials); !errors.Is(err, context.Canceled) || reportReads != beforeReports || materialReads != beforeMaterials {
 		t.Fatal("cancelled preparation performed peer work", err)
 	}
+}
+
+func TestPreparePublicationRepairModelMaterialHonorsCancellationAfterPeerReads(t *testing.T) {
+	raw, task, report := projectionTestInput(t, []projectionTestFile{{"SKILL.md", "---\nname: reader\n---\n", false}})
+	t.Run("report", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		reads := 0
+		_, err := preparePublicationRepairModelMaterial(ctx, task,
+			repairMaterialReportReaderFunc(func(_ context.Context, receipt store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+				cancel()
+				return &PublicationCloudValidationReport{SchemaVersion: 1, Receipt: publicationControlReceipt(receipt), Validation: report}, nil
+			}),
+			repairOriginalMaterialReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) ([]byte, error) { reads++; return raw, nil }))
+		if !errors.Is(err, context.Canceled) || reads != 0 {
+			t.Fatal("report cancellation did not stop before candidate read", err, reads)
+		}
+	})
+	t.Run("material", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		_, err := preparePublicationRepairModelMaterial(ctx, task,
+			repairMaterialReportReaderFunc(func(_ context.Context, receipt store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+				return &PublicationCloudValidationReport{SchemaVersion: 1, Receipt: publicationControlReceipt(receipt), Validation: report}, nil
+			}),
+			repairOriginalMaterialReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) ([]byte, error) {
+				cancel()
+				return raw, nil
+			}))
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("material cancellation was not returned", err)
+		}
+	})
 }

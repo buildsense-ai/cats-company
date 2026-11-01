@@ -2,12 +2,10 @@ package server
 
 import (
 	"context"
-	"errors"
+	"reflect"
 
 	"github.com/openchat/openchat/server/store"
 )
-
-var errPublicationRepairMaterialPreparation = errors.New("publication.repair_material_unavailable")
 
 type publicationRepairValidationReportReader interface {
 	Report(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error)
@@ -21,7 +19,8 @@ type publicationRepairOriginalMaterialReader interface {
 // The caller must bracket it with current task/lease and Runtime source checks;
 // this function is not itself authority to read or execute a Skill.
 func preparePublicationRepairModelMaterial(ctx context.Context, task store.SkillHubPublicationRepairTask, reports publicationRepairValidationReportReader, materials publicationRepairOriginalMaterialReader) (publicationRepairModelMaterial, error) {
-	if reports == nil || materials == nil || len(task.Rounds) != 1 ||
+	if nilPublicationRepairReader(reports) || nilPublicationRepairReader(materials) || len(task.Rounds) != 1 ||
+		task.Rounds[0].Lease.Validate() != nil ||
 		!validPublicationRepairModelTask(task, task.Rounds[0].Lease) {
 		return publicationRepairModelMaterial{}, store.ErrSkillHubPublicationInvalid
 	}
@@ -34,16 +33,16 @@ func preparePublicationRepairModelMaterial(ctx context.Context, task store.Skill
 		if ctx.Err() != nil {
 			return publicationRepairModelMaterial{}, ctx.Err()
 		}
-		return publicationRepairModelMaterial{}, errPublicationRepairMaterialPreparation
+		return publicationRepairModelMaterial{}, errPublicationRepairMaterialPeer
 	}
-	if cloudReport == nil || cloudReport.Receipt != publicationControlReceipt(receipt) ||
+	if cloudReport == nil || cloudReport.SchemaVersion != 1 || cloudReport.Receipt != publicationControlReceipt(receipt) ||
 		!validPublicationValidationReport(cloudReport.Validation, receipt.Query.SourceSnapshotHash) ||
 		cloudReport.Validation.Outcome != "rejected" || cloudReport.Validation.Truncated {
-		return publicationRepairModelMaterial{}, errPublicationRepairMaterialPreparation
+		return publicationRepairModelMaterial{}, errPublicationRepairMaterialPeer
 	}
 	evidence, err := publicationRepairEvidence(cloudReport.Validation, receipt.Query.SourceSnapshotHash)
 	if err != nil || evidence != task.Input.Evidence {
-		return publicationRepairModelMaterial{}, errPublicationRepairMaterialPreparation
+		return publicationRepairModelMaterial{}, errPublicationRepairMaterialPeer
 	}
 	if err := ctx.Err(); err != nil {
 		return publicationRepairModelMaterial{}, err
@@ -53,14 +52,27 @@ func preparePublicationRepairModelMaterial(ctx context.Context, task store.Skill
 		if ctx.Err() != nil {
 			return publicationRepairModelMaterial{}, ctx.Err()
 		}
-		return publicationRepairModelMaterial{}, errPublicationRepairMaterialPreparation
+		return publicationRepairModelMaterial{}, errPublicationRepairMaterialPeer
 	}
 	material, err := projectPublicationRepairMaterial(ctx, snapshotPublicationRepairTask(task), raw, cloudReport.Validation)
 	if err != nil {
 		if ctx.Err() != nil {
 			return publicationRepairModelMaterial{}, ctx.Err()
 		}
-		return publicationRepairModelMaterial{}, errPublicationRepairMaterialPreparation
+		return publicationRepairModelMaterial{}, errPublicationRepairMaterialPeer
 	}
 	return material, nil
+}
+
+func nilPublicationRepairReader(reader any) bool {
+	if reader == nil {
+		return true
+	}
+	v := reflect.ValueOf(reader)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
