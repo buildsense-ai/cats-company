@@ -32,6 +32,7 @@ type publicationRepairSourceEntryReader interface {
 type publicationRepairSourceTransport struct {
 	h        *Hub
 	apps     publicationDescriptionCopyStore // current authority Get only
+	tasks    store.SkillHubPublicationRepairExecutionReader
 	entries  publicationRepairSourceEntryReader
 	captures store.SkillHubPublicationCaptureReader
 	slots    chan struct{}
@@ -57,12 +58,17 @@ func newPublicationRepairSourceTransport(h *Hub) *publicationRepairSourceTranspo
 		return nil
 	}
 	a, ok := h.db.(publicationDescriptionCopyStore)
+	t, tasks := h.db.(store.SkillHubPublicationRepairExecutionReader)
 	e, entries := h.db.(publicationRepairSourceEntryReader)
 	c, captures := h.db.(store.SkillHubPublicationCaptureReader)
 	if !ok || !entries || !captures {
 		return nil
 	}
-	return &publicationRepairSourceTransport{h: h, apps: a, entries: e, captures: c,
+	var taskReader store.SkillHubPublicationRepairExecutionReader
+	if tasks {
+		taskReader = t
+	}
+	return &publicationRepairSourceTransport{h: h, apps: a, tasks: taskReader, entries: e, captures: c,
 		slots: make(chan struct{}, 8), pending: make(map[string]*publicationRepairSourcePending), active: make(map[string]bool)}
 }
 
@@ -84,6 +90,19 @@ func (h *Hub) publicationDescriptionSourceVerifier(actor int64) func(context.Con
 	}
 }
 
+func (h *Hub) verifyPublicationRepairTaskSource(ctx context.Context, actor int64, task store.SkillHubPublicationRepairTask, lease store.SkillHubPublicationRepairLease) error {
+	if h == nil || h.publicationRepairSource == nil {
+		return store.ErrSkillHubPublicationDenied
+	}
+	return h.publicationRepairSource.verifyTask(ctx, actor, task, lease)
+}
+
+func (h *Hub) publicationRepairTaskSourceVerifier(actor int64) func(context.Context, store.SkillHubPublicationRepairTask, store.SkillHubPublicationRepairLease) error {
+	return func(ctx context.Context, task store.SkillHubPublicationRepairTask, lease store.SkillHubPublicationRepairLease) error {
+		return h.verifyPublicationRepairTaskSource(ctx, actor, task, lease)
+	}
+}
+
 func validPublicationRepairSourceApplication(app store.SkillHubPublicationDescriptionApplication) bool {
 	identity, err := app.Input.IdentityHash()
 	if err != nil || app.IdentityHash != identity || app.ID != "pubdesc_"+identity || app.CreatedAt.IsZero() ||
@@ -93,11 +112,72 @@ func validPublicationRepairSourceApplication(app store.SkillHubPublicationDescri
 	return app.Result == nil || validatePublicationDescriptionCopyApplication(app) == nil
 }
 
+func validPublicationRepairSourceTask(task store.SkillHubPublicationRepairTask, lease store.SkillHubPublicationRepairLease) bool {
+	hash, err := task.Input.IdentityHash()
+	if err != nil || task.IdentityHash != hash || task.ID != lease.TaskID || !publicationRepairTaskID.MatchString(task.ID) ||
+		task.CreatedAt.IsZero() || task.Input.Receipt.Query.EntryID != lease.EntryID || lease.Validate() != nil ||
+		!lease.Until.After(time.Now()) || len(task.Rounds) != lease.Round || task.State() != "running" {
+		return false
+	}
+	for i, round := range task.Rounds {
+		if round.Lease.Validate() != nil || round.Lease.EntryID != lease.EntryID || round.Lease.TaskID != task.ID || round.Lease.Round != i+1 ||
+			(i == 0 && round.Lease.Input.Evidence != task.Input.Evidence) {
+			return false
+		}
+		if i == len(task.Rounds)-1 {
+			if round.Result != nil || !samePublicationRepairModelLease(round.Lease, lease) {
+				return false
+			}
+			continue
+		}
+		if round.Result == nil || round.Result.Validate() != nil || round.Result.Outcome != "rejected" ||
+			round.Result.Evidence != task.Rounds[i+1].Lease.Input.Evidence {
+			return false
+		}
+	}
+	return true
+}
+
 func (w *publicationRepairSourceTransport) verify(parent context.Context, actor int64, input store.SkillHubPublicationDescriptionApplication) error {
 	app := snapshotPublicationDescriptionApplication(input)
 	if actor <= 0 || !validPublicationRepairSourceApplication(app) {
 		return store.ErrSkillHubPublicationInvalid
 	}
+	id := app.Input.Receipt.Query.EntryID
+	authority := func(ctx context.Context) error {
+		current, err := w.apps.GetSkillHubPublicationDescriptionApplication(ctx, actor, id)
+		if err != nil {
+			return err
+		}
+		if current == nil || !reflect.DeepEqual(snapshotPublicationDescriptionApplication(*current), app) {
+			return store.ErrSkillHubPublicationConflict
+		}
+		return nil
+	}
+	return w.verifyLiveSource(parent, actor, id, app.Input.Receipt.Query, authority)
+}
+
+func (w *publicationRepairSourceTransport) verifyTask(parent context.Context, actor int64, input store.SkillHubPublicationRepairTask, lease store.SkillHubPublicationRepairLease) error {
+	task := snapshotPublicationRepairTask(input)
+	if actor <= 0 || w.tasks == nil || !validPublicationRepairSourceTask(task, lease) {
+		return store.ErrSkillHubPublicationInvalid
+	}
+	id := task.Input.Receipt.Query.EntryID
+	authority := func(ctx context.Context) error {
+		current, err := w.tasks.GetSkillHubPublicationRepairExecutionTask(ctx, actor, lease)
+		if err != nil {
+			return err
+		}
+		if current == nil || !validPublicationRepairSourceTask(*current, lease) ||
+			!reflect.DeepEqual(snapshotPublicationRepairTask(*current), task) {
+			return store.ErrSkillHubPublicationConflict
+		}
+		return nil
+	}
+	return w.verifyLiveSource(parent, actor, id, task.Input.Receipt.Query, authority)
+}
+
+func (w *publicationRepairSourceTransport) verifyLiveSource(parent context.Context, actor int64, id string, q store.SkillHubPublicationUploadQuery, authority func(context.Context) error) error {
 	ctx, cancel := context.WithTimeout(parent, publicationCaptureTimeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -110,17 +190,19 @@ func (w *publicationRepairSourceTransport) verify(parent context.Context, actor 
 	}
 	defer func() { <-w.slots }()
 	w.mu.Lock()
-	if w.active[app.ID] {
+	if w.active[id] {
 		w.mu.Unlock()
 		return store.ErrSkillHubPublicationBusy
 	}
-	w.active[app.ID] = true
+	w.active[id] = true
 	w.mu.Unlock()
-	defer func() { w.mu.Lock(); delete(w.active, app.ID); w.mu.Unlock() }()
+	defer func() { w.mu.Lock(); delete(w.active, id); w.mu.Unlock() }()
 
-	id := app.Input.Receipt.Query.EntryID
+	if err := authority(ctx); err != nil {
+		return err
+	}
 	// Entry identifies the original human/Bot/source. It is not new repair
-	// authority: application Get below also checks the confirmed private task.
+	// authority: the caller's application or live task/lease checkpoint does.
 	// No actor, path, selector or expected hash comes from a browser/model body.
 	entry, err := w.entries.GetSkillHubPublicationEntry(ctx, actor, id)
 	if err != nil {
@@ -134,12 +216,8 @@ func (w *publicationRepairSourceTransport) verify(parent context.Context, actor 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		current, err := w.apps.GetSkillHubPublicationDescriptionApplication(ctx, actor, id)
-		if err != nil {
+		if err := authority(ctx); err != nil {
 			return err
-		}
-		if current == nil || !reflect.DeepEqual(snapshotPublicationDescriptionApplication(*current), app) {
-			return store.ErrSkillHubPublicationConflict
 		}
 		currentEntry, err := w.entries.GetSkillHubPublicationEntry(ctx, actor, id)
 		if err != nil {
@@ -178,11 +256,9 @@ func (w *publicationRepairSourceTransport) verify(parent context.Context, actor 
 		return store.ErrSkillHubPublicationDenied
 	}
 	capture := *captured
-	q := app.Input.Receipt.Query
 	// Verify the unchanged ORIGINAL source against its original capture in every
-	// repair round. Draft.Evidence may identify a later independent repair copy;
-	// it is bound by the current application Get, not a replacement capture.
-	// This proof does not verify that copy's bytes or authorize continuation.
+	// repair round. A later repair candidate is independently bound by the task
+	// lease and material reader; this proof does not authorize that copy.
 	old := capture.Input.Binding
 	if capture.Input.Validate() != nil || capture.Input.EntryID != id || capture.CapturedAt.IsZero() ||
 		capture.Input.RequestBytes > publicationCaptureRuntimeMaxBytes || capture.Input.Revision != q.Revision ||

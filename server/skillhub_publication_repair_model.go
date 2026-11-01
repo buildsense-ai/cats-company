@@ -48,7 +48,9 @@ type publicationRepairModelRequest struct {
 }
 
 type publicationRepairModelPorts struct {
-	VerifySource    func(context.Context, store.SkillHubPublicationRepairTask) error
+	// VerifySource is bound to the same lease as the model attempt; it must not
+	// infer a replacement lease from the latest task snapshot.
+	VerifySource    func(context.Context, store.SkillHubPublicationRepairTask, store.SkillHubPublicationRepairLease) error
 	PrepareMaterial func(context.Context, store.SkillHubPublicationRepairTask) (publicationRepairModelMaterial, error)
 	// Adapter must enforce context/deadline, output bound and disabled paid
 	// retry/automatic tools. This slice registers no real provider adapter.
@@ -176,7 +178,7 @@ func runPublicationRepairModel(parent context.Context, db publicationRepairModel
 		if err := checkpoint(); err != nil {
 			return err
 		}
-		if err := ports.VerifySource(ctx, snapshotPublicationRepairTask(task)); err != nil {
+		if err := ports.VerifySource(ctx, snapshotPublicationRepairTask(task), lease); err != nil {
 			return err
 		}
 		return checkpoint()
