@@ -50,6 +50,16 @@ pointers are cloned. Default serialization still omits private source text.
 This does not re-run validation, confirm a description or alter source files.
 The function remains unwired to any production material/provider/controller port.
 
+`preparePublicationRepairModelMaterial` is the next internal composition step.
+It accepts only a pending first-round task snapshot, reads the historical
+validation report through the authenticated publication Cloud client, requires
+the exact stored receipt and admission evidence, then reads the original bytes
+through the private material client and passes them to the strict projector.
+Peer errors are reduced to a static failure and a mismatched report prevents the
+candidate read. The function is not a public route or model tool, and is not
+registered as a worker/provider callback. Its caller must still bracket the
+operation with fresh current-task/lease and live Runtime source checks.
+
 ## Remaining trusted caller obligations (NOT implemented here)
 
 Before **and after** reading, a future adapter/controller must recheck the current
@@ -60,8 +70,11 @@ SHA256 alone does not establish semantic identity or source authority.
 This reader handles revision 1 only, not later-round private candidate ancestry.
 
 There is no real provider invocation, billing, task loop, human confirmation,
-candidate mutation, source Skill change or publication in this slice. Existing
-production gates remain off. Runtime description drafts still need explicit
+candidate mutation, source Skill change or publication in this slice. The
+material composition tests currently use internal reader fakes; the existing
+paired contract independently verifies the real Cloud report/material trust
+boundaries, but does not yet exercise this composition against both real peers.
+Production gates remain off. Runtime description drafts still need explicit
 human confirmation; they are not the Chinese marketplace manual.
 
 ## Verification
