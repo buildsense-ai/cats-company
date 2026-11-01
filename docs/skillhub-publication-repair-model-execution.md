@@ -37,8 +37,9 @@ verify the exact retained private candidate bytes/hash from the supplied receipt
 then produce at most 1 MiB of valid UTF-8 model-readable text without NULs. It
 must not truncate silently, read a different version or mutate the live Skill.
 The separate [private material client](skillhub-publication-repair-material.md)
-can now read exact original Cloud wire bytes, but is not wired to this port and
-does not yet implement the semantic parser/projection or live Runtime verifier;
+can now read exact original Cloud wire bytes and strictly project supported
+source-only text file candidates with semantic hash verification, but is not
+wired to this port and does not implement the live Runtime verifier;
 the function signature is not proof of a real retained-source read. The coordinator independently
 matches the complete report and normalized issues to the admitted round.
 

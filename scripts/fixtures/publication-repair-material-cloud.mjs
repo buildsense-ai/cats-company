@@ -59,9 +59,16 @@ try {
     namespace: 'material-pair-' + suffix, displayName: 'Material paired fixture', contact: '',
     internalEmail: suffix + '@example.invalid', passwordHash: 'fixture' });
   owner = identity.user.id;
-  const raw = Buffer.from(JSON.stringify({ source: { type: 'files', files: [
-    { path: 'SKILL.md', content: '---\nname: material-pair-fixture\n---\nPrivate candidate; no runtime description.' }
-  ] } }));
+  // Deliberately not sorted: report index and hash sort have different roles.
+  // Non-BMP/U+E000 distinguish UTF-8 byte ordering from JS UTF-16 sorting;
+  // U+2028/U+2029/& prove JSON.stringify vs Go escape fidelity in hashes.
+  const originalFiles = [
+    { path: '😀.txt', contentBase64: Buffer.from('Non-BMP text. 中文').toString('base64') },
+    { path: '\ue000.txt', content: 'BMP private-use name.' },
+    { path: 'SKILL.md', contentBase64: Buffer.from('---\nname: material-pair-fixture\n---\nPrivate candidate; no runtime description.').toString('base64') },
+    { path: 'refs/&\u2028\u2029.txt', content: 'Examples <>&\r\n\twith literal � replacement and \\ud800 text.' }
+  ];
+  const raw = Buffer.from(JSON.stringify({ source: { type: 'files', files: originalFiles } }));
   const validation = validatePublishRequest(raw.toString());
   assert.equal(validation.status, 422);
   receipt = { schemaVersion: 1, entryRequestId: 'pubentry_' + id(), candidateRevision: 1, acceptanceEpoch: 1,
@@ -81,7 +88,7 @@ try {
   receipt.taskId = association.taskId; receipt.eventId = association.eventId;
   const task = async () => (await store.query('SELECT * FROM publication_tasks WHERE id=$1', [receipt.taskId])).rows[0];
   original = await task();
-  emit({ issuer, audience, ca: tls.cert.toString(), receipt, raw: raw.toString('base64') });
+  emit({ issuer, audience, ca: tls.cert.toString(), receipt, raw: raw.toString('base64'), report: validation.body.error.validation });
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   for await (const line of lines) {
     assert.ok(line.length < 256);

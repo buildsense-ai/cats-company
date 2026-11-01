@@ -23,13 +23,40 @@ It has no environment loader, Hub registration or production wiring.
   Cancellation and read share the task lock boundary. No writes/validation rerun.
   Bytes already transmitted cannot be retroactively revoked.
 
+## Bounded original model projection
+
+`projectPublicationRepairMaterial` is a pure, package-private parser. It accepts
+the current Runtime's **source-only files** envelope (text or canonical padded
+Base64), not ZIP or explicit manifest/form. All files must fit the complete
+1MiB text projection; binary/invalid UTF-8/NUL/control bytes, oversize or unsupported
+input fail with no partial material. No truncation, omitted files, inference,
+filesystem access, YAML parsing or Skill execution is performed.
+
+It verifies the pending first-round task identity and full retained rejection
+evidence, exact original wire hash/length, safe unique paths (including directory
+prefix collisions), and independently recomputes Cloud's
+`skillhub-publish-candidate-v1` hash from each decoded file's path/byte-size/SHA256
+and empty explicit manifest. Canonical JSON uses Cloud UTF-8 bytewise sorting and
+JSON.stringify string escaping; source order is separately preserved for report
+entry indexes. Duplicate/case-mismatched/unknown/null keys and unpaired JSON
+Unicode surrogates fail instead of silent replacement. The single supported
+description selector must resolve to the exact retained file, not a model path.
+
+The output is deterministic JSON text tagged `untrusted-skill-source`, with
+original indexes/paths/complete text, at most 1MiB including JSON escaping. It is
+untrusted data, not sanitized instructions or execution authority. Report nested
+pointers are cloned. Default serialization still omits private source text.
+
+This does not re-run validation, confirm a description or alter source files.
+The function remains unwired to any production material/provider/controller port.
+
 ## Remaining trusted caller obligations (NOT implemented here)
 
 Before **and after** reading, a future adapter/controller must recheck the current
-CatsCo human/Bot/private-topic/task/lease and live Runtime source. It must strictly
-parse the retained candidate with bounds, verify the semantic source snapshot
-hash, and produce a bounded safe model projection. Transport SHA256 alone does
-not establish any of these. No Skill code may be executed during extraction.
+CatsCo human/Bot/private-topic/task/lease and live Runtime source. It must obtain
+the exact verified retained report and call this parser with trusted stored task
+facts. Parser checks are integrity checks, not current authority. Transport
+SHA256 alone does not establish semantic identity or source authority.
 This reader handles revision 1 only, not later-round private candidate ancestry.
 
 There is no real provider invocation, billing, task loop, human confirmation,
@@ -50,7 +77,10 @@ is never disabled.
 `TestPublicationRepairMaterialCloudPostgres` proves lost response without retry,
 client/handler reconstruction with identical retained bytes, active publisher
 checks, cancellation denial and zero publication commits/permits. The fixture's
-upstream upload-grant introspection is synthetic. Runtime/source/provider are
+upstream upload-grant introspection and local task are synthetic. It additionally
+projects actual Cloud bytes/report and verifies semantic hashes across non-BMP
+and BMP-private-use path sorting, U+2028/U+2029/ampersand escaping and Base64,
+while preserving the source entry index. Runtime/source/provider are
 not exercised and this is not a production/paid end-to-end test.
 
 Local runs without PostgreSQL/Cloud dependencies explicitly skip the paired test;

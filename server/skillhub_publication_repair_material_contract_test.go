@@ -74,6 +74,7 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 		Issuer, Audience, CA string
 		Receipt              publicationCloudReceiptRequest
 		Raw                  []byte
+		Report               PublicationValidationReport
 	}
 	read(&setup)
 	r := setup.Receipt
@@ -85,6 +86,13 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	if receipt.Validate() != nil || len(setup.Raw) == 0 {
 		t.Fatal("invalid fixture receipt/material")
 	}
+	// Synthetic local task only; Cloud source/hash/report and HTTPS/store are
+	// real. Current CatsCo task and live Runtime authority remain future work.
+	local, _, _, _, _ := repairModelTestFixture(t)
+	task := local.task
+	task.Input.Receipt = receipt
+	task.Rounds[0].Lease.EntryID = receipt.Query.EntryID
+	bindProjectionTestTask(t, &task, setup.Report)
 	ca := x509.NewCertPool()
 	if !ca.AppendCertsFromPEM([]byte(setup.CA)) {
 		t.Fatal("invalid fixture CA")
@@ -125,6 +133,10 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 		if err != nil || !bytes.Equal(got, setup.Raw) {
 			t.Fatal("real material read failed", err)
 		}
+		material, err := projectPublicationRepairMaterial(ctx, task, got, setup.Report)
+		if err != nil || material.SourceText == "" || !strings.Contains(material.SourceText, `"entryIndex":2,"path":"SKILL.md"`) {
+			t.Fatal("Cloud candidate/report did not project with exact source hash/order", err)
+		}
 	}
 	denied := func(c *publicationRepairMaterialClient) {
 		t.Helper()
@@ -164,5 +176,5 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	if s := command("state"); s.Requests != 6 || s.State != "cancelled" || !s.CancelledUnchanged {
 		t.Fatal("cancelled read retried or resurrected task", s)
 	}
-	t.Log("real CatsCo client -> Cloud HTTPS handler -> PostgreSQL: lost response without auto-retry, reconstructed exact replay, disabled publisher and cancellation deny; zero commits/permits; upstream grant synthetic, no Runtime/model")
+	t.Log("real CatsCo client -> Cloud HTTPS handler -> PostgreSQL -> strict original projection: Cloud semantic hash matches Go across UTF-8/non-BMP/U+2028/U+2029/<>& and Base64; preserved source index; lost response without auto-retry, reconstructed replay, disabled publisher/cancellation deny; zero commits/permits; local task/upstream grant synthetic, no Runtime/model")
 }

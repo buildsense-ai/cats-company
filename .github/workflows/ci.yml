@@ -143,7 +143,7 @@ jobs:
           CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT: '1'
         run: |
           test -n "$SKILLHUB_TEST_DATABASE_URL"
-          go test -race ./server -run '^TestPublicationRepairMaterial(Client|CloudPostgres)' -count=1 -v
+          go test -race ./server -run '^TestPublicationRepairMaterial(Client|Projection|CloudPostgres)' -count=1 -v
 
   # DB 契约测试独立成 job：与 backend（编译/单测/race/漏洞扫描）并行，
   # 避免 4~5 分钟的单步把整体墙钟拖到 9 分钟。
