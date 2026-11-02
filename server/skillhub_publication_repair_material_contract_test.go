@@ -155,17 +155,57 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	client = newClient()
 	exact(client)
 	exact(client)
-	if s := command("state"); s.Requests != 3 || !s.Unchanged {
+	// Compose both real Cloud/PostgreSQL reads with the constrained coordinator.
+	// Runtime authority, provider and dispatch journal remain explicit test doubles.
+	reportClient, err := NewPublicationCommitCloudClient(PublicationCommitCloudConfig{
+		Enabled: true, Issuer: setup.Issuer, Audience: setup.Audience, PeerSecret: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatal("construct Cloud report client", err)
+	}
+	reportTransport := reportClient.client.Transport.(*http.Transport)
+	reportTransport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: ca}
+	t.Cleanup(reportTransport.CloseIdleConnections)
+	modelStore, lease, modelConfig, _, _ := repairModelTestFixture(t)
+	task = modelStore.task
+	task.Input.Receipt = receipt
+	lease.EntryID = receipt.Query.EntryID
+	task.Rounds[0].Lease = lease
+	bindProjectionTestTask(t, &task, setup.Report)
+	lease = task.Rounds[0].Lease
+	modelStore.task = snapshotPublicationRepairTask(task)
+	var sourceChecks, invocations int
+	ports := newPublicationRepairModelPorts(
+		func(_ context.Context, got store.SkillHubPublicationRepairTask, gotLease store.SkillHubPublicationRepairLease) error {
+			sourceChecks++
+			if got.ID != task.ID || got.IdentityHash != task.IdentityHash || !samePublicationRepairModelLease(gotLease, lease) {
+				t.Fatal("Runtime verifier lost the synthetic task/lease binding")
+			}
+			return nil
+		}, reportClient, client,
+		func(_ context.Context, request publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error) {
+			invocations++
+			if request.TaskID != task.ID || request.SourceText == "" || request.Report.CandidateHash != receipt.Query.SourceSnapshotHash {
+				t.Fatal("coordinator did not pass verified Cloud report and projected private material")
+			}
+			return store.SkillHubPublicationRepairModelOutput{Text: "synthetic draft only"}, nil
+		},
+	)
+	result, err := runPublicationRepairModel(ctx, modelStore, 1, lease, modelConfig, ports)
+	if err != nil || result == nil || result.call.Output == nil || result.call.Output.Text != "synthetic draft only" || invocations != 1 || sourceChecks < 5 {
+		t.Fatal("real Cloud reads did not compose through the constrained coordinator", err, invocations, sourceChecks)
+	}
+	if s := command("state"); s.Requests != 5 || !s.Unchanged || s.Commits != 0 || s.Permits != 0 {
 		t.Fatal("replay changed retained task", s)
 	}
 	command("disable")
 	denied(client)
-	if s := command("state"); s.Requests != 4 || !s.Unchanged {
+	if s := command("state"); s.Requests != 6 || !s.Unchanged {
 		t.Fatal("disabled read retried or mutated task", s)
 	}
 	command("enable")
 	exact(client)
-	if s := command("state"); s.Requests != 5 || !s.Unchanged {
+	if s := command("state"); s.Requests != 7 || !s.Unchanged {
 		t.Fatal("reenabled read changed task", s)
 	}
 	if s := command("cancel"); s.State != "cancelled" {
@@ -173,8 +213,8 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	}
 	command("restart")
 	denied(newClient())
-	if s := command("state"); s.Requests != 6 || s.State != "cancelled" || !s.CancelledUnchanged {
+	if s := command("state"); s.Requests != 8 || s.State != "cancelled" || !s.CancelledUnchanged {
 		t.Fatal("cancelled read retried or resurrected task", s)
 	}
-	t.Log("real CatsCo client -> Cloud HTTPS handler -> PostgreSQL -> strict original projection: Cloud semantic hash matches Go across UTF-8/non-BMP/U+2028/U+2029/<>& and Base64; preserved source index; lost response without auto-retry, reconstructed replay, disabled publisher/cancellation deny; zero commits/permits; local task/upstream grant synthetic, no Runtime/model")
+	t.Log("real CatsCo Cloud report/material clients -> Cloud HTTPS handlers -> PostgreSQL -> constrained coordinator and strict projection; Runtime verifier, provider and dispatch store synthetic; exactly one synthetic invocation; lost response without retry, reconstructed replay, disabled publisher/cancellation deny; zero Cloud commits/permits")
 }

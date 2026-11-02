@@ -71,11 +71,12 @@ This reader handles revision 1 only, not later-round private candidate ancestry.
 
 There is no real provider invocation, billing, task loop, human confirmation,
 candidate mutation, source Skill change or publication in this slice. The
-material composition tests currently use internal reader fakes; the existing
-paired contract independently verifies the real Cloud report/material trust
-boundaries, but does not yet exercise this composition against both real peers.
-Production gates remain off. Runtime description drafts still need explicit
-human confirmation; they are not the Chinese marketplace manual.
+paired contract composes real CatsCo Cloud report/material clients and real
+Cloud PostgreSQL/TLS handlers through the constrained coordinator. Runtime
+source verification, provider invocation and dispatch journal remain explicit
+synthetic adapters; production gates remain off. Runtime description drafts
+still need explicit human confirmation; they are not the Chinese marketplace
+manual.
 
 ## Verification
 
@@ -89,12 +90,14 @@ is never disabled.
 
 `TestPublicationRepairMaterialCloudPostgres` proves lost response without retry,
 client/handler reconstruction with identical retained bytes, active publisher
-checks, cancellation denial and zero publication commits/permits. The fixture's
-upstream upload-grant introspection and local task are synthetic. It additionally
-projects actual Cloud bytes/report and verifies semantic hashes across non-BMP
-and BMP-private-use path sorting, U+2028/U+2029/ampersand escaping and Base64,
-while preserving the source entry index. Runtime/source/provider are
-not exercised and this is not a production/paid end-to-end test.
+checks, cancellation denial and zero publication commits/permits. It also routes
+the actual Cloud report and original bytes through the CatsCo coordinator and
+asserts one synthetic invocation after its lease-bound source checks. The
+fixture's upstream upload-grant introspection, local task, Runtime verifier,
+provider and dispatch journal are synthetic. It projects actual Cloud
+bytes/report and verifies semantic hashes across non-BMP and BMP-private-use
+path sorting, U+2028/U+2029/ampersand escaping and Base64, while preserving the
+source entry index. This is not a production/paid end-to-end test.
 
 Local runs without PostgreSQL/Cloud dependencies explicitly skip the paired test;
 CI sets `CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT=1` so missing dependencies fail.
