@@ -1,5 +1,5 @@
-// Test-only peer: real Cloud intake/store/material handler and PostgreSQL/TLS.
-// Upstream CatsCo grant is synthetic; this is not Runtime/model execution.
+// Test-only peer: real Cloud intake/store/report/material handlers and PostgreSQL/TLS.
+// CatsCo Runtime authority, model provider and dispatch ledger remain synthetic.
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import https from 'node:https';
@@ -14,8 +14,10 @@ const { loadConfig } = await load('packages/config/index.js');
 const { createStore, closePools } = await load('packages/database/store.js');
 const { createDelegatedPublicationIntake } = await load('packages/publication-delegation/intake.js');
 const { createDelegatedPublicationControlStore } = await load('packages/publication-delegation/control-store.js');
+const { createDelegatedPublicationCommitCoordinator } = await load('packages/publication-delegation/commit-coordinator.js');
 const { validatePublishRequest } = await load('packages/publish-validation/index.js');
 const { createPublicationRepairMaterialHandler } = await load('apps/api/publication-repair-material.js');
+const { createPublicationCommitHandler } = await load('apps/api/publication-commit.js');
 const { publicationPeerTLS } = await load('tests/helpers/publication-peer-tls.js');
 const id = () => randomUUID().replaceAll('-', '');
 const sha = data => createHash('sha256').update(data).digest('hex');
@@ -23,7 +25,7 @@ const issuer = 'https://catsco.invalid', secret = 'pubmaterial_' + 'a'.repeat(64
 const config = loadConfig({ databaseUrl: process.env.SKILLHUB_TEST_DATABASE_URL, nodeEnv: 'test',
   publicationTasksEnabled: true, publicationPublishingEnabled: true });
 const store = createStore(config), tls = await publicationPeerTLS();
-let owner, receipt, original, cancelled, handler, lose = false, requests = 0;
+let owner, receipt, original, cancelled, materialHandler, commitHandler, lose = false, requests = 0;
 const server = https.createServer(tls, async (req, res) => {
   requests++;
   const end = res.end.bind(res);
@@ -31,7 +33,10 @@ const server = https.createServer(tls, async (req, res) => {
     if (lose && res.statusCode === 200) { lose = false; res.destroy(); return res; }
     return end(...args);
   };
-  try { if (!await handler(req, res)) { res.writeHead(404); res.end(); } }
+  try {
+    if (await commitHandler(req, res) || await materialHandler(req, res)) return;
+    res.writeHead(404); res.end();
+  }
   catch { res.destroy(); }
 });
 let cleaned = false;
@@ -53,7 +58,12 @@ try {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const audience = `https://127.0.0.1:${server.address().port}`;
   const settings = { publicationRepairMaterial: { enabled: true, issuer, audience, peerSecret: secret, trustedProxyAddresses: [] } };
-  handler = createPublicationRepairMaterialHandler(settings, store);
+  materialHandler = createPublicationRepairMaterialHandler(settings, store);
+  const commitSettings = { enabled: true, issuer, audience, peerSecret: 'a'.repeat(64), trustedProxyAddresses: [] };
+  const commitConfig = { ...config, publicationCommitService: commitSettings };
+  commitHandler = createPublicationCommitHandler(commitConfig, store, {
+    coordinator: createDelegatedPublicationCommitCoordinator({ ...commitSettings, config, store }),
+  });
   const suffix = id(), actor = String(BigInt('0x' + suffix.slice(0, 12)) + 1000n);
   const identity = await store.claimCatsCoPublisherIdentity({ catsCoUid: actor, catsCoIssuer: issuer,
     namespace: 'material-pair-' + suffix, displayName: 'Material paired fixture', contact: '',
@@ -95,7 +105,7 @@ try {
     const { command } = JSON.parse(line);
     switch (command) {
       case 'lose': lose = true; break;
-      case 'restart': handler = createPublicationRepairMaterialHandler(settings, createStore(config)); break;
+      case 'restart': materialHandler = createPublicationRepairMaterialHandler(settings, createStore(config)); break;
       case 'disable': await store.query("UPDATE publisher_profiles SET status='disabled' WHERE user_id=$1", [owner]); break;
       case 'enable': await store.query("UPDATE publisher_profiles SET status='active' WHERE user_id=$1", [owner]); break;
       case 'cancel':
