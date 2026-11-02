@@ -263,6 +263,75 @@ func TestSkillHubPublicationRepairSourcePairedTaskLease(t *testing.T) {
 	t.Log("real XiaoBa Runtime RPC + current task/lease authority: live source accepted, removed original source rejected on a later task check; no capture/entry mutation, model, or file writes")
 }
 
+func TestPublicationRepairModelCoordinatorPairedLiveRuntimeFence(t *testing.T) {
+	for _, removeAtGrant := range []bool{false, true} {
+		name := "source-retained-through-dispatch"
+		if removeAtGrant {
+			name = "source-removed-after-grant"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := startRepairSourcePairedRuntime(t, "normal")
+			f, s := repairSourcePairedFixture(t, r, true)
+			task := snapshotPublicationRepairTask(s.task)
+			task.Rounds[0].Lease.Until = time.Now().Add(2 * time.Minute)
+			report := publicationReportFixture(task.Input.Receipt).Validation
+			evidence, err := publicationRepairEvidence(report, task.Input.Evidence.CandidateHash)
+			if err != nil {
+				t.Fatal("paired task/report fixture mismatch", err)
+			}
+			// Bind the synthetic model task/lease to this exact Cloud-shaped
+			// report; Runtime source authority itself is still exercised live.
+			task.Input.Evidence = evidence
+			task.Rounds[0].Lease.Input.Evidence = evidence
+			task.IdentityHash, err = task.Input.IdentityHash()
+			if err != nil {
+				t.Fatal("paired task identity", err)
+			}
+			lease := task.Rounds[0].Lease
+			s.task = task
+			db := &repairModelTestStore{task: task}
+			var invocations, verifications int
+			ports := publicationRepairModelPorts{
+				VerifySource: func(_ context.Context, got store.SkillHubPublicationRepairTask, gotLease store.SkillHubPublicationRepairLease) error {
+					verifications++
+					if got.ID != task.ID || got.IdentityHash != task.IdentityHash || !samePublicationRepairModelLease(gotLease, lease) {
+						t.Fatal("coordinator changed the live Runtime task/lease binding")
+					}
+					return repairTaskSourcePairedCall(t, f, got, r)
+				},
+				PrepareMaterial: func(_ context.Context, got store.SkillHubPublicationRepairTask) (publicationRepairModelMaterial, error) {
+					if got.ID != task.ID || got.Input.Receipt != task.Input.Receipt {
+						t.Fatal("coordinator selected different synthetic material task")
+					}
+					return publicationRepairModelMaterial{SourceText: "untrusted synthetic source", Report: report}, nil
+				},
+				InvokeOnce: func(context.Context, publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error) {
+					invocations++
+					return store.SkillHubPublicationRepairModelOutput{Text: "synthetic draft"}, nil
+				},
+			}
+			db.startHook = func(_ *store.SkillHubPublicationRepairModelCall, _ *bool) {
+				if removeAtGrant {
+					r.action(t, "remove")
+				}
+			}
+			result, err := runPublicationRepairModel(context.Background(), db, 7, lease,
+				publicationRepairModelConfig{Provider: "synthetic-provider", Model: "synthetic-model", MaxOutputTokens: 512}, ports)
+			if removeAtGrant {
+				if err == nil || result != nil || invocations != 0 || db.starts != 1 || verifications != 3 {
+					t.Fatal("removed live source crossed post-grant fence", result, err, invocations, db.starts, verifications)
+				}
+				t.Log("live Runtime source removed after grant was denied before synthetic provider invocation")
+			} else {
+				if err != nil || result == nil || invocations != 1 || db.starts != 1 || verifications != 5 {
+					t.Fatal("coordinator did not preserve source through one synthetic dispatch and five fences", result, err, invocations, db.starts, verifications)
+				}
+				t.Log("live Runtime source retained through five coordinator fences; one synthetic provider invocation")
+			}
+		})
+	}
+}
+
 func TestSkillHubPublicationRepairSourcePairedFailures(t *testing.T) {
 	for _, action := range []string{"change", "remove", "disable", "owner", "switching", "missing-capture", "mismatch"} {
 		t.Run(action, func(t *testing.T) {
