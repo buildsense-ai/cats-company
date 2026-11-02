@@ -238,12 +238,15 @@ func TestPublicationRepairModelCoordinatorUsesComposedTrustedMaterial(t *testing
 			return store.SkillHubPublicationRepairModelOutput{Text: "synthetic draft"}, nil
 		},
 	)
+	db.startHook = func(_ *store.SkillHubPublicationRepairModelCall, _ *bool) {
+		events = append(events, "dispatch_grant")
+	}
 	result, err := runPublicationRepairModel(context.Background(), db, 1, lease,
 		publicationRepairModelConfig{Provider: "synthetic-provider", Model: "synthetic-model", MaxOutputTokens: 1024}, ports)
 	if err != nil || result == nil || result.call.Output == nil || result.call.Output.Text != "synthetic draft" || db.starts != 1 {
 		t.Fatal("coordinator did not complete composed material flow", err)
 	}
-	firstReport, firstMaterial, invoke := -1, -1, -1
+	firstReport, firstMaterial, dispatchGrant, invoke := -1, -1, -1, -1
 	for i, event := range events {
 		if event == "report" && firstReport < 0 {
 			firstReport = i
@@ -251,15 +254,19 @@ func TestPublicationRepairModelCoordinatorUsesComposedTrustedMaterial(t *testing
 		if event == "material" && firstMaterial < 0 {
 			firstMaterial = i
 		}
+		if event == "dispatch_grant" {
+			dispatchGrant = i
+		}
 		if event == "invoke" {
 			invoke = i
 		}
 	}
-	if firstReport < 0 || firstMaterial <= firstReport || invoke <= firstMaterial || events[invoke-1] != "verify" {
-		t.Fatal("model call was not bracketed by lease-bound source verification around material preparation", events)
+	if firstReport < 0 || firstMaterial <= firstReport || dispatchGrant <= firstMaterial || invoke <= dispatchGrant ||
+		events[dispatchGrant-1] != "verify" || events[invoke-1] != "verify" {
+		t.Fatal("dispatch grant and model invocation were not independently bracketed by lease-bound source verification", events)
 	}
 	for _, event := range events[:invoke] {
-		if event == "verify" {
+		if event == "verify" || event == "dispatch_grant" {
 			continue
 		}
 		if event != "report" && event != "material" {

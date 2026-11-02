@@ -38,10 +38,14 @@ then produce at most 1 MiB of valid UTF-8 model-readable text without NULs. It
 must not truncate silently, read a different version or mutate the live Skill.
 The separate [private material client](skillhub-publication-repair-material.md)
 can now read exact original Cloud wire bytes and strictly project supported
-source-only text file candidates with semantic hash verification, but is not
-wired to this port and does not implement the live Runtime verifier;
-the function signature is not proof of a real retained-source read. The coordinator independently
-matches the complete report and normalized issues to the admitted round.
+source-only text file candidates with semantic hash verification. The internal
+`newPublicationRepairModelPorts` composition connects its `readOriginal` peer
+and the validation-report reader to this `PrepareMaterial` port; the composition
+does not construct clients or load credentials. It has no production call site
+or worker/provider registration, and the live Runtime verifier remains an
+explicit injected port. The function signature alone is not proof of a real
+retained-source read. The coordinator independently matches the complete
+report and normalized issues to the admitted round.
 
 The lane refuses package-safety issues and blocking issues other than missing
 runtime descriptions requiring confirmation. Before reserving a dispatch it
@@ -141,10 +145,12 @@ must never be promoted into this private type or used as verified report data.
 A future real `VerifySource` adapter must support both pending execution and
 waiting/confirmed draft recovery against the same original retained source;
 it must not require an unfinished round for read-only recovery. No such real
-source/provider adapter or task controller is registered by this slice. An
-unknown outcome still needs controller stop/recovery policy; it is not inferred
-to mean no charge, no commit or permission to retry. The exact confirmation UI
-and subsequent private-copy application remain separate human/trusted steps.
+source/provider adapter or task controller is registered by this slice; the
+material/report client composition is an internal helper only, with no
+production caller. An unknown outcome still needs controller stop/recovery
+policy; it is not inferred to mean no charge, no commit or permission to retry.
+The exact confirmation UI and subsequent private-copy application remain
+separate human/trusted steps.
 
 ## Verification and remaining work
 
