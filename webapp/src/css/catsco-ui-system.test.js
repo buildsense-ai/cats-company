@@ -2167,27 +2167,33 @@ describe('CatsCo shell styling', () => {
     expect(detailBodyRule).toContain('overscroll-behavior: contain;');
   });
 
-  it('keeps every assistant-manager tab stable and lets the hub grid use the remaining height', () => {
+  it('keeps assistant-manager tabs stable while the hub body owns scrolling', () => {
     const managerRule = ruleFor('.oc-modal.cc-agent-manager');
     const bodyRule = ruleFor('.cc-agent-manager-body');
     const hubBodyRule = ruleFor('.cc-agent-manager-body.cc-agent-manager-hub-body');
     const hubRule = ruleFor('.cc-agent-hub');
     const constrainedHubRule = ruleFor('.cc-agent-manager-hub-body .cc-agent-hub');
     const hubGridRule = ruleFor('.cc-agent-hub-grid');
+    const managerGridRule = ruleFor('.cc-agent-manager-hub .cc-agent-hub-grid');
 
     expect(managerRule).toContain('display: flex;');
     expect(managerRule).toContain('height: min(760px, calc(100vh - 32px));');
     expect(bodyRule).toContain('flex: 1 1 auto;');
     expect(bodyRule).toContain('min-height: 0;');
-    expect(hubBodyRule).toContain('overflow: hidden;');
+    expect(hubBodyRule).toContain('overflow-y: auto;');
+    expect(hubBodyRule).not.toContain('overflow: hidden;');
     expect(hubRule).toContain('display: flex;');
     expect(hubRule).toContain('flex-direction: column;');
     expect(hubRule).toContain('min-height: 0;');
     expect(hubRule).not.toContain('height: 100%;');
-    expect(constrainedHubRule).toContain('height: 100%;');
+    expect(constrainedHubRule).toContain('height: auto;');
+    expect(constrainedHubRule).toContain('flex: 1 0 auto;');
     expect(hubGridRule).toContain('flex: 1 1 auto;');
     expect(hubGridRule).toContain('overflow-y: auto;');
     expect(hubGridRule).toContain('max-height: 100%;');
+    expect(managerGridRule).toContain('flex: 0 0 auto;');
+    expect(managerGridRule).toContain('max-height: none;');
+    expect(managerGridRule).toContain('overflow: visible;');
     expect(ruleFor('.cc-agent-overview-stats strong'))
       .toContain('font-variant-numeric: tabular-nums;');
     expect(css).not.toContain('.cc-agent-usage-guide');
