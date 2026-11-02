@@ -1560,7 +1560,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			PlanID                 int64  `json:"plan_id"`
 			MaxRedemptions         int    `json:"max_redemptions"`
 			Count                  int    `json:"count"`
-			CloudWorkerCredits     int    `json:"cloud_worker_credits"`
+			CloudWorkerCredits     *int   `json:"cloud_worker_credits"`
 			CloudWorkerProfile     string `json:"cloud_worker_profile"`
 			CloudWorkerBillingMode string `json:"cloud_worker_billing_mode"`
 			State                  int    `json:"state"`
@@ -1598,7 +1598,16 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported invite state"})
 			return
 		}
-		if req.CloudWorkerCredits < 0 || req.CloudWorkerCredits > 100 {
+		// A nil count means "inherit from the bound plan"; an explicit 0 means a
+		// token-only invite. The old `int` field collapsed those two into 0, so a
+		// ¥59/¥99/¥159/¥599 package could be handed out by an invite that forgot
+		// to set the count and the buyer got no machine at all — silently, because
+		// the redemption itself succeeded.
+		credits, creditsInherit := 0, req.CloudWorkerCredits == nil
+		if req.CloudWorkerCredits != nil {
+			credits = *req.CloudWorkerCredits
+		}
+		if credits < 0 || credits > 100 {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "cloud_worker_credits must be between 0 and 100"})
 			return
 		}
@@ -1630,15 +1639,16 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			billing = types.CloudWorkerBillingForProfile(profile, normalized)
 		}
 		createRequest := &types.CommercialInviteCode{
-			CreateOnly:             req.CreateOnly,
-			PlanID:                 req.PlanID,
-			MaxRedemptions:         req.MaxRedemptions,
-			CloudWorkerCredits:     req.CloudWorkerCredits,
-			CloudWorkerProfile:     profile,
-			CloudWorkerBillingMode: billing,
-			State:                  req.State,
-			ExpiresAt:              expiresAt,
-			Note:                   req.Note,
+			CreateOnly:                req.CreateOnly,
+			PlanID:                    req.PlanID,
+			MaxRedemptions:            req.MaxRedemptions,
+			CloudWorkerCredits:        credits,
+			CloudWorkerCreditsInherit: creditsInherit,
+			CloudWorkerProfile:        profile,
+			CloudWorkerBillingMode:    billing,
+			State:                     req.State,
+			ExpiresAt:                 expiresAt,
+			Note:                      req.Note,
 		}
 		codes := make([]string, 0, count)
 		var id int64

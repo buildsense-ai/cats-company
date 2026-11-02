@@ -102,6 +102,14 @@ type CloudWorkerHandler struct {
 	operationMu sync.Mutex
 	operations  map[string]cloudWorkerOperation
 
+	// orphanRetryBlocked backs off accounts whose paid credit could not be
+	// turned into a worker (see retryOrphanedCloudWorkerCredits). Sweeps run
+	// every minute, so without this a permanently broken account would spend a
+	// create attempt — and log a failure — on every tick. Process-local on
+	// purpose: a restart retries once, which is what we want after a deploy.
+	orphanMu           sync.Mutex
+	orphanRetryBlocked map[int64]time.Time
+
 	// Cloud provider reads take seconds and must never sit on the HTTP request
 	// path. Requests read the latest completed snapshot while one background
 	// refresh (at most) updates it. Failed refreshes retain the last good value.
@@ -2005,6 +2013,78 @@ func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 		h.restoreCloudWorkerAfterDeletion(uid)
 	}
 	h.retryQueuedCloudWorkers()
+	h.retryOrphanedCloudWorkerCredits()
+}
+
+// cloudWorkerOrphanCreditMinAge is how long a paid credit may sit untouched
+// before the sweep picks it up. The payment path provisions in seconds, so a
+// credit this old means the goroutine never ran (process restart, panic, or a
+// redeploy in the window between commit and create).
+const cloudWorkerOrphanCreditMinAge = 10 * time.Minute
+
+// cloudWorkerOrphanRetryBackoff keeps a permanently broken account from
+// spending a create attempt every sweep tick. It is process-local on purpose:
+// a restart simply retries once, which is the desired behaviour.
+const cloudWorkerOrphanRetryBackoff = 15 * time.Minute
+
+// retryOrphanedCloudWorkerCredits is the backstop for "payment committed, then
+// the provisioning goroutine died".
+//
+// Credits are minted inside the fulfilment transaction and provisioning runs on
+// a bare `go` call, so nothing re-drives it if the process goes away in that
+// window. Without this sweep the buyer's package was fully paid and fully
+// entitled but no machine ever appeared, and the only symptom was a support
+// ticket.
+//
+// Only paid sources are considered (see ListOrphanedCloudWorkerCredits) and the
+// owner's operation lock is still honoured by HandleCreate, so a concurrent
+// manual create just makes this a no-op.
+func (h *CloudWorkerHandler) retryOrphanedCloudWorkerCredits() {
+	store, ok := h.credits.(interface {
+		ListOrphanedCloudWorkerCredits(time.Duration, int) ([]int64, error)
+	})
+	if !ok || h.provisionScript == "" {
+		return
+	}
+	uids, err := store.ListOrphanedCloudWorkerCredits(cloudWorkerOrphanCreditMinAge, 5)
+	if err != nil {
+		log.Printf("[cloud-worker] orphaned credit sweep failed: %v", err)
+		return
+	}
+	now := time.Now()
+	for _, uid := range uids {
+		h.orphanMu.Lock()
+		until, blocked := h.orphanRetryBlocked[uid]
+		h.orphanMu.Unlock()
+		if blocked && now.Before(until) {
+			continue
+		}
+		log.Printf("[cloud-worker] recovering paid worker with an unspent credit uid=%d (the payment hook never completed)", uid)
+		before, beforeErr := h.cloudWorkersOfOwner(uid)
+		h.AutoProvisionForOwner(uid)
+		after, afterErr := h.cloudWorkersOfOwner(uid)
+		if beforeErr != nil || afterErr != nil {
+			// The roster read failed, so we cannot tell whether anything
+			// happened. Do not back off on a guess; the next sweep retries.
+			continue
+		}
+		h.orphanMu.Lock()
+		if h.orphanRetryBlocked == nil {
+			h.orphanRetryBlocked = map[int64]time.Time{}
+		}
+		if len(after) <= len(before) {
+			// No worker appeared, so this attempt achieved nothing. Back off
+			// instead of retrying on every tick; the log above already makes the
+			// account visible to an operator.
+			h.orphanRetryBlocked[uid] = now.Add(cloudWorkerOrphanRetryBackoff)
+			h.orphanMu.Unlock()
+			log.Printf("[cloud-worker] orphaned credit recovery made no progress uid=%d workers=%d", uid, len(after))
+		} else {
+			delete(h.orphanRetryBlocked, uid)
+			h.orphanMu.Unlock()
+			log.Printf("[cloud-worker] orphaned credit recovered uid=%d workers=%d", uid, len(after))
+		}
+	}
 }
 
 // retryQueuedCloudWorkers retries buyers whose paid credit was parked because

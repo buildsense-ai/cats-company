@@ -386,7 +386,28 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 	if invite == nil {
 		return 0, fmt.Errorf("commercial invite code is nil")
 	}
-	if invite.CloudWorkerCredits < 0 || invite.CloudWorkerCredits > 100 {
+	// An invite that never chose a credit count follows the plan: a package that
+	// buys a machine hands out one credit per redemption, a token-only package
+	// hands out none.
+	//
+	// Without this, the zero value of the struct was read as a deliberate "no
+	// machine": minting a code for catsco-standard without repeating the count
+	// produced a fully paid package whose redemption never provisioned anything,
+	// and nothing failed — the buyer just silently had no worker. That is worse
+	// than the opposite mistake, because the pool is the thing the package sells.
+	if invite.CloudWorkerCreditsInherit {
+		var included bool
+		if err := a.db.QueryRow(`SELECT cloud_worker_included FROM commercial_plans WHERE id=$1`, invite.PlanID).Scan(&included); err != nil {
+			return 0, err
+		}
+		if included {
+			invite.CloudWorkerCredits = 1
+		} else {
+			invite.CloudWorkerCredits = 0
+		}
+	}
+	credits := invite.CloudWorkerCredits
+	if credits < 0 || credits > 100 {
 		return 0, fmt.Errorf("commercial invite cloud worker credits must be between 0 and 100")
 	}
 	profile, valid := types.NormalizeCloudWorkerProfile(invite.CloudWorkerProfile)
@@ -441,7 +462,7 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 		strings.ToUpper(strings.TrimSpace(invite.Code)),
 		invite.PlanID,
 		maxRedemptions,
-		invite.CloudWorkerCredits,
+		credits,
 		invite.State,
 		invite.ExpiresAt,
 		strings.TrimSpace(invite.Note),

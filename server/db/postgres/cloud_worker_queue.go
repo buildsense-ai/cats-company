@@ -60,6 +60,55 @@ func (a *Adapter) CloudWorkerQueuePosition(uid int64) (int, error) {
 	return ahead, nil
 }
 
+// ListOrphanedCloudWorkerCredits returns owners who still hold an unspent paid
+// credit that nobody has tried to spend for a while.
+//
+// Why this exists: a plan or invite redemption mints the credit inside the
+// payment transaction, then starts provisioning on a bare goroutine
+// (commercial_payment.go). If the process dies, is redeployed, or the goroutine
+// panics between the commit and the create, the credit stays 'available'
+// forever: the buyer paid, owns a machine on paper, and nothing ever retries.
+// The only recovery was "the customer notices and clicks create".
+//
+// Scope is deliberately narrow:
+//   - only paid sources ('order:%' / 'invite:%'), so operator grants and
+//     manually issued credits keep their current "spend it when you want" meaning
+//   - only 'available', so a create that is still running ('reserved') or one
+//     that parked on a full pool ('queued', handled by retryQueuedCloudWorkerCredits)
+//     is never double-spent
+//   - only credits older than minAge, so the normal payment-path goroutine is
+//     never raced
+func (a *Adapter) ListOrphanedCloudWorkerCredits(minAge time.Duration, limit int) ([]int64, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if minAge < 0 {
+		minAge = 0
+	}
+	rows, err := a.db.Query(`
+		SELECT uid FROM cloud_worker_credits
+		WHERE state = 'available'
+		  AND (source_ref LIKE 'order:%' OR source_ref LIKE 'invite:%')
+		  AND created_at <= CURRENT_TIMESTAMP - $1::interval
+		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		GROUP BY uid
+		ORDER BY MIN(created_at)
+		LIMIT $2`, fmt.Sprintf("%d seconds", int(minAge.Seconds())), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list orphaned cloud worker credits: %w", err)
+	}
+	defer rows.Close()
+	var uids []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err != nil {
+			return nil, fmt.Errorf("scan orphaned cloud worker credit: %w", err)
+		}
+		uids = append(uids, uid)
+	}
+	return uids, rows.Err()
+}
+
 // ListQueuedCloudWorkerCredits returns queued credits old enough to retry.
 // The minimum age keeps a retry loop from spinning against the same full pool
 // within one sweep interval, and lets a burst of purchases queue up in order.

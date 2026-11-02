@@ -35,7 +35,7 @@ func TestReserveCloudWorkerConfiguredCreditCarriesCreditExpiry(t *testing.T) {
 			mock.ExpectExec(`UPDATE cloud_worker_credits c\s+SET state = CASE`).
 				WithArgs(int64(38)).
 				WillReturnResult(sqlmock.NewResult(0, 0))
-			mock.ExpectQuery(`SELECT id, deployment_profile, billing_mode, expires_at, retention_days, runtime_plan FROM cloud_worker_credits`).
+			mock.ExpectQuery(`SELECT c\.id, c\.deployment_profile, c\.billing_mode, c\.expires_at, c\.retention_days, c\.runtime_plan\s+FROM cloud_worker_credits c`).
 				WithArgs(int64(38), "", "").
 				WillReturnRows(sqlmock.NewRows([]string{"id", "deployment_profile", "billing_mode", "expires_at", "retention_days", "runtime_plan"}).
 					AddRow(int64(7), "private_nat", "month", tc.value, tc.retention, "pro"))

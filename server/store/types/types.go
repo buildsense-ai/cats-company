@@ -206,24 +206,30 @@ type CommercialManagedRelayBudget struct {
 
 // CommercialInviteCode grants a plan entitlement when redeemed by a user.
 type CommercialInviteCode struct {
-	CloudWorkerBillingMode string     `json:"cloud_worker_billing_mode"`
-	CreateOnly             bool       `json:"-"`
-	ID                     int64      `json:"id"`
-	Code                   string     `json:"code"`
-	PlanID                 int64      `json:"plan_id"`
-	PlanSlug               string     `json:"plan_slug,omitempty"`
-	PlanName               string     `json:"plan_name,omitempty"`
-	MaxRedemptions         int        `json:"max_redemptions"`
-	RedeemedCount          int        `json:"redeemed_count"`
-	RedeemerUIDs           []int64    `json:"redeemer_uids"`
-	CloudWorkerCredits     int        `json:"cloud_worker_credits"`
-	CloudWorkerProfile     string     `json:"cloud_worker_profile"`
-	State                  int        `json:"state"`
-	ExpiresAt              *time.Time `json:"expires_at,omitempty"`
-	Note                   string     `json:"note,omitempty"`
-	CreatedByUID           int64      `json:"created_by_uid,omitempty"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	CloudWorkerBillingMode string  `json:"cloud_worker_billing_mode"`
+	CreateOnly             bool    `json:"-"`
+	ID                     int64   `json:"id"`
+	Code                   string  `json:"code"`
+	PlanID                 int64   `json:"plan_id"`
+	PlanSlug               string  `json:"plan_slug,omitempty"`
+	PlanName               string  `json:"plan_name,omitempty"`
+	MaxRedemptions         int     `json:"max_redemptions"`
+	RedeemedCount          int     `json:"redeemed_count"`
+	RedeemerUIDs           []int64 `json:"redeemer_uids"`
+	CloudWorkerCredits     int     `json:"cloud_worker_credits"`
+	// CloudWorkerCreditsInherit says the caller did not choose a credit count,
+	// so the store should derive it from the bound plan (see
+	// CreateCommercialInviteCode). It is not serialized: on the wire an absent
+	// `cloud_worker_credits` already means "inherit", while an explicit 0 means
+	// "token-only invite" and must stay a deliberate choice.
+	CloudWorkerCreditsInherit bool       `json:"-"`
+	CloudWorkerProfile        string     `json:"cloud_worker_profile"`
+	State                     int        `json:"state"`
+	ExpiresAt                 *time.Time `json:"expires_at,omitempty"`
+	Note                      string     `json:"note,omitempty"`
+	CreatedByUID              int64      `json:"created_by_uid,omitempty"`
+	CreatedAt                 time.Time  `json:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at"`
 }
 
 // CommercialEntitlement is a user's active or historical package assignment.
