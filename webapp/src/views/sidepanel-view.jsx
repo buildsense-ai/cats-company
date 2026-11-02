@@ -2521,6 +2521,8 @@ export default function ChatListView({
     );
   };
 
+  // The sidebar intentionally omits conversation-copy and provenance entries.
+  // Message-level copying and its shared status/API handling remain available.
   const renderTaskCopy = (chat, fallback = null, kindLabel = '') => (
     <div className="cc-chat-row-copy">
       {editingHistoryTopicId === chat.id ? (

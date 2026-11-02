@@ -345,11 +345,12 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
             setApps((previous) => previous.filter((app) => agentUID(app.sourceAgent) !== uid));
           }
         } finally {
-          if (requestID !== appsRequestRef.current) return;
-          loadedUIDs.add(uid);
-          setResolvedAgentCount(loadedUIDs.size);
-          setLoadingAgentCount(Math.max(0, accessible.length - loadedUIDs.size));
-          setFailedAgentUIDs([...failed]);
+          if (requestID === appsRequestRef.current) {
+            loadedUIDs.add(uid);
+            setResolvedAgentCount(loadedUIDs.size);
+            setLoadingAgentCount(Math.max(0, accessible.length - loadedUIDs.size));
+            setFailedAgentUIDs([...failed]);
+          }
         }
       };
       await Promise.all(accessible.map(loadAgentApps));
