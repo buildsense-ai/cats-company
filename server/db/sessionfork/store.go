@@ -239,11 +239,11 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	// so a single turn can read [user, agent, agent, agent]: an anchor on the first
 	// agent segment is answered but is not the turn's end.
 	if req.UntilMessageID > 0 && !anchorClosesTurn(all, anchor, req.AgentUID) {
-		return nil, store.ErrSessionForkSource
+		return nil, store.ErrSessionForkAnchor
 	}
-	title := req.Name
-	if title == "" {
-		title = "\u4f1a\u8bdd\u526f\u672c"
+	title, err := s.copyTitle(ctx, tx, req)
+	if err != nil {
+		return nil, err
 	}
 	groupID, err := s.insertID(ctx, tx, `INSERT INTO "groups" (name, owner_id, group_kind) VALUES (?, ?, 'agent_task')`, title, req.ActorUserID)
 	if err != nil {
@@ -639,4 +639,140 @@ func (s SQLStore) ExpireSessionForks(ctx context.Context, cutoff time.Time, limi
 		return 0, err
 	}
 	return expired, nil
+}
+
+// copyTitle names a copy after its source: 「名字」(1), 「名字」(2), and so on.
+//
+// A copy is an ordinary conversation to the user, so it should read like one
+// rather than carry a generic label. The suffix keeps siblings of the same source
+// apart, and it is computed over the owner's existing topics, so no two copies of
+// the same source share a name.
+//
+// The suffix alone does not make every pair of copies tellable apart. A source
+// name may use the whole column, and the room for it shrinks by the suffix's
+// width, so the base loses its last runes when trimmed — the runes that most
+// often differ between two long names. 「周×125 甲」 and 「周×125 乙」 both become
+// 「周×125(1)」 apart from their numbers. They are still distinct rows with
+// distinct numbers, and nothing breaks, but the name no longer says where each
+// came from. Keeping both ends of a long name would preserve that, and is worth
+// doing if these ever show up in practice.
+//
+// The source name is taken whole, including any trailing "(n)": a conversation
+// the user already named 「周报(1)」 yields 「周报(1)(1)」, because guessing which
+// parenthetical is a copy marker would rewrite a name the user chose.
+func (s SQLStore) copyTitle(ctx context.Context, tx *sql.Tx, req types.SessionForkRequest) (string, error) {
+	base := strings.TrimSpace(req.Name)
+	if base == "" {
+		var sourceName sql.NullString
+		err := tx.QueryRowContext(ctx, s.query("SELECT name FROM topics WHERE id = ?"), req.SourceTopicID).Scan(&sourceName)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		base = strings.TrimSpace(sourceName.String)
+	}
+	if base == "" {
+		// A direct conversation has no topic name of its own; the agent's display
+		// name is what the user sees in the list.
+		var agentName sql.NullString
+		err := tx.QueryRowContext(ctx, s.query("SELECT display_name FROM users WHERE id = ?"), req.AgentUID).Scan(&agentName)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		base = strings.TrimSpace(agentName.String)
+	}
+	if base == "" {
+		base = "会话"
+	}
+
+	// The owner's whole set of topic names is read and filtered here rather than in
+	// SQL: `LIKE ... ESCAPE` spells its escape differently on MySQL and PostgreSQL,
+	// and a name containing % or _ would otherwise need that difference spelled
+	// correctly in each dialect. One owner has few enough topics for this.
+	rows, err := tx.QueryContext(ctx, s.query("SELECT name FROM topics WHERE owner_id = ?"), req.ActorUserID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	// Concurrent copies of the same source would race here, but the window is a
+	// single transaction and the UI allows one copy at a time. Worst case two
+	// copies share a name; no data is lost, and the name is user-editable.
+	taken := int64(0)
+	for rows.Next() {
+		var name sql.NullString
+		if err = rows.Scan(&name); err != nil {
+			return "", err
+		}
+		suffix, ok := copySuffix(base, name.String)
+		if ok && suffix > taken {
+			taken = suffix
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return "", err
+	}
+	return nextCopyTitle(base, taken+1), nil
+}
+
+// copyNameLimit is the width of groups.name and topics.name (VARCHAR(128)).
+const copyNameLimit = 128
+
+// copyTitleStem is the part of the name a suffix is appended to.
+//
+// The suffix has to fit: a source name may already use the whole column, and
+// appending "(1)" to it would overflow. MySQL runs in strict mode here, so the
+// insert would fail and the user would see a generic 500 instead of a copy. The
+// base is therefore truncated by runes, not bytes, so a multi-byte character is
+// never cut in half.
+//
+// Generation and recognition both go through this function. Reading a name back
+// with a differently-trimmed stem would make a long base look like it had no
+// earlier copies, and the next copy would collide with the first.
+func copyTitleStem(base, suffix string) string {
+	runes := []rune(base)
+	room := copyNameLimit - len([]rune(suffix))
+	if room < 0 {
+		room = 0
+	}
+	if len(runes) > room {
+		runes = runes[:room]
+	}
+	return string(runes)
+}
+
+// nextCopyTitle builds 「base(n)」, keeping the result inside the column width.
+//
+// next is the suffix to use, already resolved from the names that exist.
+func nextCopyTitle(base string, next int64) string {
+	suffix := "(" + strconv.FormatInt(next, 10) + ")"
+	return copyTitleStem(base, suffix) + suffix
+}
+
+// copySuffix reports the n in "base(n)" and whether name is one of the names
+// nextCopyTitle could have produced for this base.
+//
+// The stem is compared against the same truncation nextCopyTitle applies, not
+// against the untrimmed base: a 126-rune base is stored as 125 runes plus "(1)",
+// so requiring the literal base as a prefix would never match — every copy after
+// the first would then be named "(1)" again.
+func copySuffix(base, name string) (int64, bool) {
+	if !strings.HasSuffix(name, ")") {
+		return 0, false
+	}
+	open := strings.LastIndex(name, "(")
+	if open < 0 {
+		return 0, false
+	}
+	digits := name[open+1 : len(name)-1]
+	if digits == "" || strings.HasPrefix(digits, "+") || strings.HasPrefix(digits, "-") {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	if name[:open] != copyTitleStem(base, name[open:]) {
+		return 0, false
+	}
+	return n, true
 }

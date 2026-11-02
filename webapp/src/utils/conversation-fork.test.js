@@ -1,4 +1,4 @@
-import { canForkConversation, describeForkError, forkComposerNotice, forkTargetTopic, normalizeForkRecord } from './conversation-fork';
+import { canForkConversation, describeForkError, forkAnchorIsMidTurn, forkAnchorMessageId, forkComposerNotice, forkTargetTopic, isForkAnchorError, normalizeForkRecord } from './conversation-fork';
 
 const agent = { uid: 2, is_owner: true };
 
@@ -26,6 +26,81 @@ describe('conversation fork eligibility', () => {
     expect(canForkConversation({ ...source, agents: [{ uid: 2, relation: 'friend' }] })).toBe(true);
     expect(canForkConversation({ ...source, members: [{ user_id: 3 }, source.members[1]] })).toBe(false);
     expect(canForkConversation({ ...source, agents: [{ uid: 2, relation: 'friend' }, { uid: 3, relation: 'friend' }], members: [{ user_id: 2 }, { user_id: 3 }] })).toBe(false);
+  });
+});
+
+describe('bounded copy anchor', () => {
+  it('anchors an agent reply on its last stored segment', () => {
+    // A reply over the segment limit is stored as several messages; the group
+    // keeps them in sourceMessages and the displayed message is the last one.
+    const group = {
+      type: 'text',
+      assistantAuthored: true,
+      message: { id: 30, seq_id: 30 },
+      sourceMessages: [{ id: 10, seq_id: 10 }, { id: 20, seq_id: 20 }, { id: 30, seq_id: 30 }],
+    };
+    expect(forkAnchorMessageId(group)).toBe(30);
+  });
+
+  it('has no anchor for a human message or a working block', () => {
+    expect(forkAnchorMessageId({ type: 'text', assistantAuthored: false, message: { seq_id: 7 }, sourceMessages: [{ seq_id: 7 }] })).toBe(0);
+    expect(forkAnchorMessageId({ type: 'working', assistantAuthored: true, messages: [{ seq_id: 8 }] })).toBe(0);
+    expect(forkAnchorMessageId(null)).toBe(0);
+  });
+
+  it('has no anchor when the message carries no usable id', () => {
+    expect(forkAnchorMessageId({ type: 'text', assistantAuthored: true, message: {}, sourceMessages: [{}] })).toBe(0);
+  });
+
+  it('has no anchor for a streaming placeholder', () => {
+    // A streaming reply is a local placeholder: its id is `stream:<id>` and it
+    // has no server-side row id yet. The server cannot resolve it, and
+    // answering "the conversation changed" would be misleading.
+    //
+    // The seq_id here is a small number on purpose: the streaming flag and the
+    // timestamp range are two separate guards, and only a small id lets the
+    // first one be the reason the anchor is refused.
+    const streaming = {
+      type: 'text',
+      assistantAuthored: true,
+      message: { id: 'stream:s1', seq_id: 30, _streaming: true },
+      sourceMessages: [{ id: 'stream:s1', seq_id: 30, _streaming: true }],
+    };
+    expect(forkAnchorMessageId(streaming)).toBe(0);
+  });
+
+  it('has no anchor for an id that cannot be a message row id', () => {
+    // A timestamp-shaped id is a local identifier the server cannot resolve,
+    // even when nothing marks the message as streaming.
+    expect(forkAnchorMessageId({
+      type: 'text', assistantAuthored: true, message: {}, sourceMessages: [{ seq_id: 1793154059347 }],
+    })).toBe(0);
+  });
+
+  // The point was refused because the reply is still being produced. That is a
+  // wait, not a mistake: the sentence has to say "come back when it finishes"
+  // rather than describe a boundary rule the user has no reason to know.
+  it('asks the user to wait for the reply to finish', () => {
+    const text = describeForkError('session_fork_anchor_not_turn_end');
+    expect(text).toContain('还在进行');
+    expect(text).toContain('等它结束后');
+  });
+});
+
+// An anchor verdict is final for that point: retrying the same point produces the
+// same verdict, so offering "retry" would be a button that cannot succeed.
+describe('fork anchor verdicts', () => {
+  it('treats both anchor errors as final', () => {
+    expect(isForkAnchorError('session_fork_anchor_not_turn_end')).toBe(true);
+    expect(isForkAnchorError('session_fork_anchor_compacted')).toBe(true);
+  });
+
+  it('leaves every other failure retryable', () => {
+    expect(isForkAnchorError('session_fork_source_unavailable')).toBe(false);
+    expect(isForkAnchorError('session_fork_source_busy')).toBe(false);
+    expect(isForkAnchorError('network interrupted')).toBe(false);
+    expect(isForkAnchorError('')).toBe(false);
+    expect(isForkAnchorError(undefined)).toBe(false);
   });
 });
 
@@ -85,5 +160,35 @@ describe('fork composer notice', () => {
     expect(forkComposerNotice(undefined)).toBe('');
     expect(forkComposerNotice('')).toBe('');
     expect(forkComposerNotice('ready')).toBe('');
+  });
+});
+
+// Whether the copy point closes a turn is what the server checks before it will
+// cut a copy. The menu can see the same thing from the same message list, so it
+// has to say "wait" instead of sending the click and reporting a refusal.
+describe('whether a copy point is mid-turn', () => {
+  const messages = [
+    { id: 1, from_uid: 1, content: 'question' },
+    { id: 2, from_uid: 2, content: 'answer' },
+    { id: 3, from_uid: 2, content: 'still working' },
+    { id: 4, from_uid: 1, content: 'next question' },
+  ];
+
+  it('is mid-turn while the agent keeps talking after the anchor', () => {
+    expect(forkAnchorIsMidTurn(messages, 2, 2)).toBe(true);
+  });
+
+  it('closes a turn when the next message is not the agent', () => {
+    expect(forkAnchorIsMidTurn(messages, 3, 2)).toBe(false);
+  });
+
+  it('closes a turn when nothing follows', () => {
+    expect(forkAnchorIsMidTurn(messages, 4, 2)).toBe(false);
+  });
+
+  it('says nothing without a usable anchor or list', () => {
+    expect(forkAnchorIsMidTurn(messages, 0, 2)).toBe(false);
+    expect(forkAnchorIsMidTurn(messages, 999, 2)).toBe(false);
+    expect(forkAnchorIsMidTurn(null, 2, 2)).toBe(false);
   });
 });

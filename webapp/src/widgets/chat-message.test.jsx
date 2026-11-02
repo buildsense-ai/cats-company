@@ -1142,10 +1142,12 @@ describe('ChatMessage rich file rendering', () => {
   it('copies a conversation from the message menu and preserves keyboard and pending states', async () => {
     const onCreateConversationFork = vi.fn();
     const message = { id: 22, from_uid: 2, content: 'Conversation reply', created_at: '2026-06-09T00:00:00Z' };
-    const renderMessage = async (disabled = false) => act(async () => {
+    // The copy entry needs an anchor: it is only actionable on the last message
+    // of a reply, because the server cuts whole turns.
+    const renderMessage = async (disabled = false, anchorId = 22) => act(async () => {
       root.render(<ChatMessage message={message} isSelf={false} senderName="CatsCo"
         onCreateConversationShare={vi.fn()} onCreateConversationFork={onCreateConversationFork}
-        conversationForkDisabled={disabled} />);
+        conversationForkDisabled={disabled} conversationForkAnchorId={anchorId} />);
     });
     await renderMessage();
     const trigger = container.querySelector('[aria-label="更多操作"]');
@@ -1157,6 +1159,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(document.activeElement).toBe(items[1]);
     await act(async () => Simulate.click(items[1]));
     expect(onCreateConversationFork).toHaveBeenCalledTimes(1);
+    expect(onCreateConversationFork).toHaveBeenCalledWith(22);
     expect(container.querySelector('[role="menu"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
     await renderMessage(true);
@@ -1168,6 +1171,12 @@ describe('ChatMessage rich file rendering', () => {
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     expect(container.querySelector('[role="menu"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
+
+    // Without an anchor the entry cannot address a turn, so it is not offered.
+    await renderMessage(false, 0);
+    await act(async () => Simulate.click(trigger));
+    items = container.querySelectorAll('[role="menuitem"]');
+    expect(items[1].disabled).toBe(true);
   });
 
   it('opens message actions after a mobile tap and keeps buttons clickable', async () => {

@@ -36,7 +36,6 @@
   padding: 0; border-radius: 4px; color: inherit; opacity: .75;
 }
 .cc-fork-notice .cc-fork-dismiss:hover { opacity: 1; background: var(--cc-control-surface, #eee); }
-.cc-fork-provenance { padding-block: 5px; font-size: 12px; }
 .cc-fork-sidebar-status .cc-fork-notice { padding: 8px; max-width: 248px; }
 @media (max-width: 600px) {
   .cc-fork-notice { padding-inline: 12px; }

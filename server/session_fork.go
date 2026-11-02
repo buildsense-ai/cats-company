@@ -218,6 +218,8 @@ func writeSessionFork(w http.ResponseWriter, f *types.SessionFork, err error) {
 		code, text = 404, err.Error()
 	case errors.Is(err, store.ErrSessionForkForbidden):
 		code, text = 403, err.Error()
+	case errors.Is(err, store.ErrSessionForkAnchor):
+		code, text = 409, err.Error()
 	case errors.Is(err, store.ErrSessionForkConflict), errors.Is(err, store.ErrSessionForkSource):
 		code, text = 409, err.Error()
 	}
