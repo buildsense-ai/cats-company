@@ -174,6 +174,8 @@ func repairSourcePairedFixtureEntryID(t *testing.T, r *repairSourcePairedRuntime
 		s.app = repairSourceApplicationForEntryID(t, s.app, entryID)
 		s.capture.Input.RequestHash, s.capture.Input.SourceSnapshotHash, s.capture.Input.RequestBytes = q.RequestHash, q.SourceSnapshotHash, q.RequestBytes
 		s.capture.Input.EntryID = entryID
+		entry := s.entries["repair-source-fixture"]
+		entry.ID = entryID
 	}
 	s.task = repairSourceTask(t, s.app)
 	return f, s
