@@ -2,6 +2,7 @@
 // CatsCo Runtime authority, model provider and dispatch ledger remain synthetic.
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import https from 'node:https';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -78,10 +79,14 @@ try {
     { path: 'SKILL.md', contentBase64: Buffer.from('---\nname: material-pair-fixture\n---\nPrivate candidate; no runtime description.').toString('base64') },
     { path: 'refs/&\u2028\u2029.txt', content: 'Examples <>&\r\n\twith literal � replacement and \\ud800 text.' }
   ];
-  const raw = Buffer.from(JSON.stringify({ source: { type: 'files', files: originalFiles } }));
+  const raw = process.env.SKILLHUB_REPAIR_PAIRED_CANDIDATE_PATH
+    ? fs.readFileSync(process.env.SKILLHUB_REPAIR_PAIRED_CANDIDATE_PATH)
+    : Buffer.from(JSON.stringify({ source: { type: 'files', files: originalFiles } }));
   const validation = validatePublishRequest(raw.toString());
   assert.equal(validation.status, 422);
-  receipt = { schemaVersion: 1, entryRequestId: 'pubentry_' + id(), candidateRevision: 1, acceptanceEpoch: 1,
+  const entryRequestId = process.env.SKILLHUB_REPAIR_PAIRED_ENTRY_ID || 'pubentry_' + id();
+  assert.match(entryRequestId, /^pubentry_[a-f0-9]{32}$/);
+  receipt = { schemaVersion: 1, entryRequestId, candidateRevision: 1, acceptanceEpoch: 1,
     requestHash: sha(raw), sourceSnapshotHash: validation.body.error.validation.candidateHash, requestBytes: raw.length,
     delegationId: 'pubgrant_' + id(), idempotencyKey: 'pubcandidate_' + id() };
   const accept = createDelegatedPublicationIntake({ enabled: true, config, store, issuer, audience,

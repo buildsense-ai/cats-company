@@ -175,11 +175,12 @@ pointer isolation, replay and concurrent consumers. The existing required
 separate required source-paired contract also runs the live task/lease verifier
 inside the coordinator: it checks the pinned XiaoBa Runtime before and after
 dispatch grant and immediately before a single synthetic provider invocation;
-removing the source after grant is denied without invocation. The report,
-material and dispatch-store adapters in this paired coordinator case remain
-synthetic. This is not a combined real Runtime + Cloud material + coordinator
-database test, paid-model test or real-user end-to-end acceptance. Missing local
-PG DSN skips are not database passes.
+removing the source after grant is denied without invocation. The required
+Runtime+Cloud/PostgreSQL contract now also uses the same exact Runtime-captured
+candidate for real Cloud rejection/report/material reads and invokes the live
+Runtime verifier at coordinator fences. Its provider and dispatch journal remain
+synthetic. Neither paired contract is a paid-model test or real-user end-to-end
+acceptance. Missing local PG DSN skips are not database passes.
 
 Real material/source/provider adapters, automatic safe format executor and task
 controller, multiround retained ancestry, both publication entry points'

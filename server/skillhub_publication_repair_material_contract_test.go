@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -27,9 +29,40 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 		}
 		t.Skip("requires Cloud checkout and migrated PostgreSQL")
 	}
+	var runtime *repairSourcePairedRuntime
+	var runtimeFixture *publicationWorkspaceFixture
+	var runtimeStore *repairSourceTestStore
+	entryID := publicationReadTestID
+	candidatePath := ""
+	if xiaoba := os.Getenv("XIAOBA_REPAIR_PAIRED_ROOT"); xiaoba != "" {
+		idBytes := make([]byte, 16)
+		if _, err := rand.Read(idBytes); err != nil {
+			t.Fatal("generate paired entry ID", err)
+		}
+		entryID = "pubentry_" + hex.EncodeToString(idBytes)
+		runtime = startRepairSourcePairedRuntime(t, "missing-description")
+		runtimeFixture, runtimeStore = repairSourcePairedFixtureEntryID(t, runtime, true, entryID)
+		captured := runtime.candidate(t, entryID)
+		candidatePath = filepath.Join(t.TempDir(), "runtime-candidate.json")
+		if err := os.WriteFile(candidatePath, captured.Body, 0o600); err != nil {
+			t.Fatal("write isolated candidate fixture", err)
+		}
+		runtimeStore.capture.Input.RequestHash = captured.RequestHash
+		runtimeStore.capture.Input.SourceSnapshotHash = captured.SourceSnapshotHash
+		runtimeStore.capture.Input.RequestBytes = captured.RequestBytes
+		if runtimeStore.app.Input.Receipt.Query.RequestHash != captured.RequestHash || runtimeStore.app.Input.Receipt.Query.SourceSnapshotHash != captured.SourceSnapshotHash || runtimeStore.app.Input.Receipt.Query.RequestBytes != captured.RequestBytes {
+			t.Fatal("local source authority fixture lost the Runtime capture binding")
+		}
+	} else if os.Getenv("CATSCO_REQUIRE_REPAIR_RUNTIME_CLOUD_CONTRACT") == "1" {
+		t.Fatal("pinned XiaoBa Runtime is mandatory for the combined contract")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 	cmd := exec.CommandContext(ctx, "node", filepath.Join("..", "scripts", "fixtures", "publication-repair-material-cloud.mjs"))
+	cmd.Env = os.Environ()
+	if candidatePath != "" {
+		cmd.Env = append(cmd.Env, "SKILLHUB_REPAIR_PAIRED_CANDIDATE_PATH="+candidatePath, "SKILLHUB_REPAIR_PAIRED_ENTRY_ID="+entryID)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +111,9 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	}
 	read(&setup)
 	r := setup.Receipt
+	if runtime != nil && (r.EntryRequestID != entryID || r.RequestHash != runtimeStore.capture.Input.RequestHash || r.SourceSnapshotHash != runtimeStore.capture.Input.SourceSnapshotHash || r.RequestBytes != runtimeStore.capture.Input.RequestBytes) {
+		t.Fatal("Runtime capture and Cloud rejection do not share the exact entry/hash/bytes")
+	}
 	receipt := store.SkillHubPublicationCloudReceipt{Query: store.SkillHubPublicationUploadQuery{
 		EntryID: r.EntryRequestID, Issuer: setup.Issuer, Audience: setup.Audience, Action: store.SkillHubPublicationUploadAction,
 		Revision: r.CandidateRevision, Epoch: r.AcceptanceEpoch, RequestHash: r.RequestHash,
@@ -135,7 +171,11 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 			t.Fatal("real material read failed", err)
 		}
 		material, err := projectPublicationRepairMaterial(ctx, task, got, projectionReport)
-		if err != nil || material.SourceText == "" || !strings.Contains(material.SourceText, `"entryIndex":2,"path":"SKILL.md"`) {
+		skillIndex := `"entryIndex":2,"path":"SKILL.md"`
+		if runtime != nil {
+			skillIndex = `"entryIndex":0,"path":"SKILL.md"`
+		}
+		if err != nil || material.SourceText == "" || !strings.Contains(material.SourceText, skillIndex) {
 			t.Fatal("Cloud candidate/report did not project with exact source hash/order", err)
 		}
 	}
@@ -182,6 +222,9 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	bindProjectionTestTask(t, &task, admissionReport.Validation)
 	lease = task.Rounds[0].Lease
 	modelStore.task = snapshotPublicationRepairTask(task)
+	if runtimeStore != nil {
+		runtimeStore.task = snapshotPublicationRepairTask(task)
+	}
 	var sourceChecks, invocations int
 	var reportReadErr, materialReadErr error
 	var cloudReport *PublicationCloudValidationReport
@@ -201,6 +244,9 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 			sourceChecks++
 			if got.ID != task.ID || got.IdentityHash != task.IdentityHash || !samePublicationRepairModelLease(gotLease, lease) {
 				t.Fatal("Runtime verifier lost the synthetic task/lease binding")
+			}
+			if runtime != nil {
+				return repairTaskSourcePairedCall(t, runtimeFixture, got, runtime)
 			}
 			return nil
 		}, reports, materials,
@@ -248,5 +294,9 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	if s := command("state"); s.Requests != 9 || s.State != "cancelled" || !s.CancelledUnchanged {
 		t.Fatal("cancelled read retried or resurrected task", s)
 	}
-	t.Log("real CatsCo Cloud report/material clients -> Cloud HTTPS handlers -> PostgreSQL -> constrained coordinator and strict projection; Runtime verifier, provider and dispatch store synthetic; exactly one synthetic invocation; lost response without retry, reconstructed replay, disabled publisher/cancellation deny; zero Cloud commits/permits")
+	if runtime != nil {
+		t.Log("same captured Runtime candidate -> real Cloud HTTPS/PostgreSQL rejection, report and original-material reads -> constrained coordinator with real Runtime source checks; synthetic provider/dispatch only, no publication commits/permits")
+	} else {
+		t.Log("real CatsCo Cloud report/material clients -> Cloud HTTPS handlers -> PostgreSQL -> constrained coordinator and strict projection; Runtime verifier, provider and dispatch store synthetic; exactly one synthetic invocation; lost response without retry, reconstructed replay, disabled publisher/cancellation deny; zero Cloud commits/permits")
+	}
 }

@@ -112,9 +112,13 @@ func (s *repairSourceTestStore) GetSkillHubPublicationEntry(ctx context.Context,
 }
 
 func repairSourceApplication(t *testing.T, app store.SkillHubPublicationDescriptionApplication) store.SkillHubPublicationDescriptionApplication {
+	return repairSourceApplicationForEntryID(t, app, publicationReadTestID)
+}
+
+func repairSourceApplicationForEntryID(t *testing.T, app store.SkillHubPublicationDescriptionApplication, entryID string) store.SkillHubPublicationDescriptionApplication {
 	t.Helper()
 	app = snapshotPublicationDescriptionApplication(app)
-	app.Input.Receipt.Query.EntryID = publicationReadTestID
+	app.Input.Receipt.Query.EntryID = entryID
 	task := store.SkillHubPublicationRepairInput{Receipt: app.Input.Receipt, TopicID: "grp_123", Evidence: app.Input.Draft.Evidence}
 	var err error
 	app.Input.Draft.TaskIdentityHash, err = task.IdentityHash()
