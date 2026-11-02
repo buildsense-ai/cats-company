@@ -31,7 +31,9 @@ func verifyRepairModelExecutionPostgres(t *testing.T, ctx context.Context, db *p
 	calls := 0
 	config := publicationRepairModelConfig{Provider: "synthetic-provider", Model: "synthetic-model", MaxOutputTokens: 2048}
 	ports := publicationRepairModelPorts{
-		VerifySource: func(context.Context, store.SkillHubPublicationRepairTask) error { return nil },
+		VerifySource: func(context.Context, store.SkillHubPublicationRepairTask, store.SkillHubPublicationRepairLease) error {
+			return nil
+		},
 		PrepareMaterial: func(_ context.Context, task store.SkillHubPublicationRepairTask) (publicationRepairModelMaterial, error) {
 			if task.Input.Receipt != receipt {
 				t.Error("material receipt changed")

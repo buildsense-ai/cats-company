@@ -140,6 +140,7 @@ func repairSourcePairedFixture(t *testing.T, r *repairSourcePairedRuntime, captu
 		s.app = repairSourceApplication(t, s.app)
 		s.capture.Input.RequestHash, s.capture.Input.SourceSnapshotHash, s.capture.Input.RequestBytes = q.RequestHash, q.SourceSnapshotHash, q.RequestBytes
 	}
+	s.task = repairSourceTask(t, s.app)
 	return f, s
 }
 
@@ -149,6 +150,27 @@ func repairSourcePairedCall(t *testing.T, f *publicationWorkspaceFixture, s *rep
 	defer cancel()
 	req, done := startRepairSourceCall(t, f, ctx, s.app)
 	reply := r.rpc(t, req) // unchanged CatsCo envelope; no test-side field repair
+	f.h.handleThinToolRPCResult(f.runtime, reply)
+	err := waitRepairSource(t, done)
+	status := http.StatusUnprocessableEntity
+	if err == nil {
+		status = http.StatusOK
+	}
+	deliveryAckStatus(t, f.runtime, status)
+	assertRepairSourceIdle(t, f)
+	return err
+}
+
+func repairTaskSourcePairedCall(t *testing.T, f *publicationWorkspaceFixture, task store.SkillHubPublicationRepairTask, r *repairSourcePairedRuntime) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- f.h.publicationRepairTaskSourceVerifier(7)(ctx, snapshotPublicationRepairTask(task), task.Rounds[len(task.Rounds)-1].Lease)
+	}()
+	req := receiveRepairSourceCall(t, f, done)
+	reply := r.rpc(t, req)
 	f.h.handleThinToolRPCResult(f.runtime, reply)
 	err := waitRepairSource(t, done)
 	status := http.StatusUnprocessableEntity
@@ -221,6 +243,24 @@ func TestSkillHubPublicationRepairSourcePairedLaterRounds(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestSkillHubPublicationRepairSourcePairedTaskLease(t *testing.T) {
+	r := startRepairSourcePairedRuntime(t, "normal")
+	f, s := repairSourcePairedFixture(t, r, true)
+	task := snapshotPublicationRepairTask(s.task)
+	if err := repairTaskSourcePairedCall(t, f, task, r); err != nil {
+		t.Fatal("real Runtime rejected current task/lease source proof", err)
+	}
+	before := s.capture
+	r.action(t, "remove")
+	if err := repairTaskSourcePairedCall(t, f, task, r); err == nil {
+		t.Fatal("task/lease verification replayed a removed source")
+	}
+	if s.capture != before || s.creates != 1 {
+		t.Fatal("live task source verification rewrote the original capture or entry")
+	}
+	t.Log("real XiaoBa Runtime RPC + current task/lease authority: live source accepted, removed original source rejected on a later task check; no capture/entry mutation, model, or file writes")
 }
 
 func TestSkillHubPublicationRepairSourcePairedFailures(t *testing.T) {

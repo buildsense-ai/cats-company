@@ -117,7 +117,9 @@ func repairModelTestFixture(t *testing.T) (*repairModelTestStore, store.SkillHub
 		Rounds: []store.SkillHubPublicationRepairRound{{Lease: lease}}}}
 	calls := new(int)
 	ports := publicationRepairModelPorts{
-		VerifySource: func(context.Context, store.SkillHubPublicationRepairTask) error { return nil },
+		VerifySource: func(context.Context, store.SkillHubPublicationRepairTask, store.SkillHubPublicationRepairLease) error {
+			return nil
+		},
 		PrepareMaterial: func(context.Context, store.SkillHubPublicationRepairTask) (publicationRepairModelMaterial, error) {
 			return publicationRepairModelMaterial{SourceText: "# Document reader\nRead document contents.", Report: report}, nil
 		},
@@ -273,7 +275,7 @@ func TestPublicationRepairModelRejectsUnsafeMaterialBeforeDispatch(t *testing.T)
 				db.task.Rounds[0].Lease = lease
 			}
 			if mode == "source_error" {
-				ports.VerifySource = func(context.Context, store.SkillHubPublicationRepairTask) error {
+				ports.VerifySource = func(context.Context, store.SkillHubPublicationRepairTask, store.SkillHubPublicationRepairLease) error {
 					return store.ErrSkillHubPublicationDenied
 				}
 			}
@@ -392,9 +394,9 @@ func TestPublicationRepairModelExactTaskAndLease(t *testing.T) {
 func TestPublicationRepairModelPortPointerIsolation(t *testing.T) {
 	db, lease, config, ports, _ := repairModelTestFixture(t)
 	verify := ports.VerifySource
-	ports.VerifySource = func(ctx context.Context, task store.SkillHubPublicationRepairTask) error {
+	ports.VerifySource = func(ctx context.Context, task store.SkillHubPublicationRepairTask, lease store.SkillHubPublicationRepairLease) error {
 		task.Rounds[0].Lease.Input.RequestID = "mutated"
-		return verify(ctx, task)
+		return verify(ctx, task, lease)
 	}
 	invoke := ports.InvokeOnce
 	ports.InvokeOnce = func(ctx context.Context, r publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error) {
