@@ -105,7 +105,7 @@ func TestSelfSharePublishCreatesBotAgent(t *testing.T) {
 
 // definition 是这次发布的真正内容，单独钉住：它决定「谁在干活、凭什么能被调用」。
 func TestSelfShareDefinitionShape(t *testing.T) {
-	raw, err := buildSelfShareDefinition("杰克运维", "把服务器排障的活派给杰克。", json.RawMessage(`{"type":"object"}`), 982)
+	raw, err := buildSelfShareDefinition("杰克运维", "把服务器排障的活派给杰克。", map[string]any{"type": "object"}, 982)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestSelfShareRejectsPublicAndMissingDescription(t *testing.T) {
 		},
 		{
 			name: "input_schema 不是对象",
-			args: serviceShareSelfArgs{Action: "publish", Name: "x", Description: "d", Visibility: "private", InputSchema: json.RawMessage(`"nope"`)},
+			args: serviceShareSelfArgs{Action: "publish", Name: "x", Description: "d", Visibility: "private", InputSchema: map[string]any{"type": "array"}},
 			want: "invalid_input_schema",
 		},
 	}
