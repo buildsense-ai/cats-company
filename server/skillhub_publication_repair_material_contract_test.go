@@ -86,6 +86,7 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	if receipt.Validate() != nil || len(setup.Raw) == 0 {
 		t.Fatal("invalid fixture receipt/material")
 	}
+	projectionReport := setup.Report
 	// Synthetic local task only; Cloud source/hash/report and HTTPS/store are
 	// real. Current CatsCo task and live Runtime authority remain future work.
 	local, _, _, _, _ := repairModelTestFixture(t)
@@ -133,7 +134,7 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 		if err != nil || !bytes.Equal(got, setup.Raw) {
 			t.Fatal("real material read failed", err)
 		}
-		material, err := projectPublicationRepairMaterial(ctx, task, got, setup.Report)
+		material, err := projectPublicationRepairMaterial(ctx, task, got, projectionReport)
 		if err != nil || material.SourceText == "" || !strings.Contains(material.SourceText, `"entryIndex":2,"path":"SKILL.md"`) {
 			t.Fatal("Cloud candidate/report did not project with exact source hash/order", err)
 		}
@@ -172,6 +173,7 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	if err != nil || admissionReport == nil || admissionReport.Receipt != publicationControlReceipt(receipt) {
 		t.Fatal("read retained Cloud report for synthetic admission", err)
 	}
+	projectionReport = admissionReport.Validation
 	modelStore, lease, modelConfig, _, _ := repairModelTestFixture(t)
 	task = modelStore.task
 	task.Input.Receipt = receipt
