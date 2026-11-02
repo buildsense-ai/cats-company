@@ -40,6 +40,7 @@ type RuntimeConfig struct {
 	Store          string `json:"store"`
 	RedisURL       string `json:"redis_url"`
 	RedisKeyPrefix string `json:"redis_key_prefix"`
+	RequireDurable bool   `json:"require_durable"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -86,6 +87,10 @@ func applyEnvOverrides(cfg *Config) {
 	applyEnvString("OC_RUNTIME_STORE", &cfg.Runtime.Store)
 	applyEnvString("OC_REDIS_URL", &cfg.Runtime.RedisURL)
 	applyEnvString("OC_REDIS_KEY_PREFIX", &cfg.Runtime.RedisKeyPrefix)
+	if raw := strings.TrimSpace(os.Getenv("OC_RUNTIME_REQUIRE_DURABLE")); raw != "" {
+		// Invalid nonempty values must not accidentally disable this safety gate.
+		cfg.Runtime.RequireDurable = raw != "0" && !strings.EqualFold(raw, "false")
+	}
 }
 
 func applyEnvInt(name string, target *int) {

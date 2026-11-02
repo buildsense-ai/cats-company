@@ -10,6 +10,7 @@ services:
       OC_DB_CONN_MAX_LIFETIME: "${OC_DB_CONN_MAX_LIFETIME:-}"
       OC_DB_CONN_MAX_IDLE_TIME: "${OC_DB_CONN_MAX_IDLE_TIME:-}"
       OC_RUNTIME_STORE: "${OC_RUNTIME_STORE:-}"
+      OC_RUNTIME_REQUIRE_DURABLE: "${OC_RUNTIME_REQUIRE_DURABLE:-false}"
       OC_REDIS_URL: "${OC_REDIS_URL:-}"
       OC_REDIS_KEY_PREFIX: "${OC_REDIS_KEY_PREFIX:-}"
       CATSCO_NODE_ID: "${CATSCO_NODE_ID:-}"
@@ -399,6 +400,23 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+    networks:
+      - prodnet
+
+  # Opt-in only. This is not a cache: preserve the bind mount across rollouts.
+  # No host port; only trusted services on prodnet may access it.
+  runtime-redis:
+    image: redis:7.4-alpine
+    profiles: ["runtime-redis"]
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - "${PROD_RUNTIME_REDIS_ROOT:-/srv/catscompany-prod/data/runtime-redis}:/data"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
     networks:
       - prodnet
 

@@ -1074,12 +1074,17 @@ func (s *RedisRuntimeState) isDeviceConnectorRevoked(claims *DeviceConnectorClai
 	if s == nil || s.client == nil || claims == nil {
 		return false
 	}
-	if exists, err := s.client.Exists(s.ctx, s.deviceConnectorRevokedTokenKey(claims.ID)).Result(); err == nil && exists > 0 {
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	if exists, err := s.client.Exists(ctx, s.deviceConnectorRevokedTokenKey(claims.ID)).Result(); err != nil || exists > 0 {
 		return true
 	}
-	raw, err := s.client.Get(s.ctx, s.deviceConnectorRevokedDeviceKey(claims.UID, claims.DeviceID)).Result()
-	if err != nil || raw == "" {
+	raw, err := s.client.Get(ctx, s.deviceConnectorRevokedDeviceKey(claims.UID, claims.DeviceID)).Result()
+	if errors.Is(err, redis.Nil) {
 		return false
+	}
+	if err != nil || strings.TrimSpace(raw) == "" || parseInt64(raw) <= 0 {
+		return true // Unavailable or corrupt revocation state cannot authorize a task.
 	}
 	revokedAt := time.UnixMilli(parseInt64(raw))
 	if claims.IssuedAt == nil {

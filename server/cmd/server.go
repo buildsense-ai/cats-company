@@ -252,6 +252,20 @@ func useRedisRuntime(cfg RuntimeConfig) bool {
 	return store == "redis" || (store == "" && strings.TrimSpace(cfg.RedisURL) != "")
 }
 
+func validateRuntimeConfig(cfg RuntimeConfig) error {
+	store := strings.ToLower(strings.TrimSpace(cfg.Store))
+	if store != "" && store != "memory" && store != "redis" {
+		return fmt.Errorf("unsupported runtime store (expected memory or redis)")
+	}
+	if cfg.RequireDurable && !useRedisRuntime(cfg) {
+		return fmt.Errorf("durable runtime required: configure redis runtime; process-local device grants are lost on restart")
+	}
+	if useRedisRuntime(cfg) && strings.TrimSpace(cfg.RedisURL) == "" {
+		return fmt.Errorf("redis runtime URL is required")
+	}
+	return nil
+}
+
 func openRedisRuntimeState(ctx context.Context, cfg RuntimeConfig) (*server.RedisRuntimeState, error) {
 	return server.NewRedisRuntimeState(ctx, server.RedisRuntimeOptions{
 		URL:       cfg.RedisURL,
@@ -273,6 +287,9 @@ func main() {
 
 	if err := configureJWTSecret(); err != nil {
 		log.Fatal(err)
+	}
+	if err := validateRuntimeConfig(cfg.Runtime); err != nil {
+		log.Fatalf("runtime configuration invalid: %v", err)
 	}
 
 	// Initialize database
@@ -304,6 +321,8 @@ func main() {
 		}
 		defer redisRuntime.Close()
 		log.Printf("runtime state initialized: mode=redis")
+	} else {
+		log.Printf("WARNING: runtime state initialized: mode=memory; active device grants and logout watermarks will not survive a server restart")
 	}
 	hub := server.NewHub(db, rateLimiter)
 	if redisRuntime != nil {
