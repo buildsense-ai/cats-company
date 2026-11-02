@@ -234,7 +234,7 @@ export function generateAuthCriticalCss({ write = true } = {}) {
   }) => {
     const source = readFileSync(join(WEBAPP_ROOT, path), 'utf8');
     const rules = extractCriticalRules(source, predicate, rootProperties, keyframes);
-    return rules ? `/* Source: ${path} */\n${rules}` : '';
+    return rules ? `/* Source: ${path.replaceAll('\\', '/')} */\n${rules}` : '';
   }).filter(Boolean);
   const additions = readFileSync(ADDITIONS_PATH, 'utf8').trim();
   const generated = [
