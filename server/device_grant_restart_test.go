@@ -13,6 +13,7 @@ import (
 // Separate runtime clients/registries model API process replacement. Redis
 // remains alive, exactly as it must during an API-only production rollout.
 func TestRedisDeviceGrantsSurviveAPIReplacementWithoutChangingAuthority(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	url, stop := newRedisRuntimeTestServer(t)
 	defer stop()
 	now := time.Now().Truncate(time.Millisecond)
@@ -44,7 +45,6 @@ func TestRedisDeviceGrantsSurviveAPIReplacementWithoutChangingAuthority(t *testi
 	defer state.Close()
 	after := newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(state)
 	after.now = func() time.Time { return now }
-	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	for _, original := range grants {
 		recovered, ok := after.lookupGrant(original.GrantID)
 		if !ok || !reflect.DeepEqual(recovered, original) {
@@ -63,7 +63,7 @@ func TestRedisDeviceGrantsSurviveAPIReplacementWithoutChangingAuthority(t *testi
 		}
 	}
 	// Check expiry independently of selection revision.
-	after.now = func() time.Time { return now.Add(11 * time.Minute) }
+	after.now = func() time.Time { return now.Add(after.grantTT + time.Minute) }
 	if _, ok := state.lookupDeviceGrant(grants[0].GrantID, unixMillis(after.now())); ok {
 		t.Fatal("expired grant recovered")
 	}

@@ -37,3 +37,14 @@ func TestRuntimeDurabilityEnvironment(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitMemoryWarnsWhenIgnoringRedisURL(t *testing.T) {
+	if runtimeConfigurationWarning(RuntimeConfig{Store: "memory", RedisURL: "redis://private"}) == "" {
+		t.Fatal("ignored URL must produce a startup warning")
+	}
+	for _, cfg := range []RuntimeConfig{{}, {RedisURL: "redis://private"}, {Store: "redis", RedisURL: "redis://private"}} {
+		if runtimeConfigurationWarning(cfg) != "" {
+			t.Fatal("unexpected conflict warning")
+		}
+	}
+}

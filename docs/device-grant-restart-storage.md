@@ -50,9 +50,22 @@ for development/backward compatibility, and is explicitly not restart-safe.
 4. Before recreating the API, validate Compose without printing secrets, start
    only `runtime-redis`, and confirm health plus `CONFIG GET appendonly`,
    `appendfsync` and `maxmemory-policy`. Take a backup before Redis upgrades.
+   Load-test the whole shared runtime (not just grants): `appendfsync always`
+   applies to routing/attention writes too. Observe write latency/p95/p99, CPU,
+   AOF/disk headroom, `used_memory`, `maxmemory`, `evicted_keys` (must stay zero),
+   rejected writes and the new authorization storage warnings. Size memory and
+   disk before cutover; `noeviction` rejects writes when full rather than evicting
+   authorization. Grant-write failures now log a redacted, rate-limited reason
+   (`out_of_memory`, `timeout`, etc.); this is not automatic capacity recovery.
 5. Deploy the API and confirm `runtime state initialized: mode=redis`. Invalid
    backend/URL or required-durable memory mode must fail startup; unavailable
    Redis must not silently fall back to process memory.
+   Each grant read/write and the combined token/device revocation check have
+   150ms budgets;
+   context deadlines are also enabled at the Redis socket layer. Storage-error
+   logs distinguish `grant_read`, `grant_write`, `revoked_token_read` and
+   `revoked_device_read`, without IDs, keys, payloads, URLs or raw Redis errors.
+   Identical operation/reason warnings are limited to one per 30 seconds.
 6. Test with two harmless target desktops: keep a read-only task alive over an
    API-only recreation, reconnect the same Bot body and desktop incarnation,
    then verify its existing grant/renewal still targets the original desktop.

@@ -266,6 +266,13 @@ func validateRuntimeConfig(cfg RuntimeConfig) error {
 	return nil
 }
 
+func runtimeConfigurationWarning(cfg RuntimeConfig) string {
+	if !useRedisRuntime(cfg) && strings.TrimSpace(cfg.RedisURL) != "" {
+		return "explicit memory runtime ignores configured Redis URL; device grants will not survive restart"
+	}
+	return ""
+}
+
 func openRedisRuntimeState(ctx context.Context, cfg RuntimeConfig) (*server.RedisRuntimeState, error) {
 	return server.NewRedisRuntimeState(ctx, server.RedisRuntimeOptions{
 		URL:       cfg.RedisURL,
@@ -290,6 +297,9 @@ func main() {
 	}
 	if err := validateRuntimeConfig(cfg.Runtime); err != nil {
 		log.Fatalf("runtime configuration invalid: %v", err)
+	}
+	if warning := runtimeConfigurationWarning(cfg.Runtime); warning != "" {
+		log.Printf("WARNING: %s", warning)
 	}
 
 	// Initialize database

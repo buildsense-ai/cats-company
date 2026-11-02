@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -50,6 +52,8 @@ type RedisRuntimeState struct {
 	nodes                 map[string]*Hub
 	subscribed            map[string]struct{}
 	attentionProbeWaiters map[string]chan bool
+	securityLogMu         sync.Mutex
+	securityLogLast       map[string]time.Time
 }
 
 // NewRedisRuntimeState connects to Redis and verifies it is reachable. If this
@@ -67,6 +71,8 @@ func NewRedisRuntimeState(ctx context.Context, opts RedisRuntimeOptions) (*Redis
 	if err != nil {
 		return nil, fmt.Errorf("invalid redis runtime URL: %w", err)
 	}
+	// go-redis otherwise ignores context deadlines for socket reads/writes.
+	redisOpts.ContextTimeoutEnabled = true
 	client := redis.NewClient(redisOpts)
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
@@ -720,10 +726,16 @@ func (s *RedisRuntimeState) rememberDeviceGrants(grants []ScopedDeviceGrant, now
 		}
 		payload, err := json.Marshal(grant)
 		if err != nil {
+			s.logDeviceAuthorizationFailure("grant_write", "invalid_payload")
 			continue
 		}
 		ttl := time.Duration(grant.ExpiresAt-now) * time.Millisecond
-		_ = s.client.Set(s.ctx, s.deviceGrantKey(grant.GrantID), payload, ttl).Err()
+		ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+		err = s.client.Set(ctx, s.deviceGrantKey(grant.GrantID), payload, ttl).Err()
+		cancel()
+		if err != nil {
+			s.logDeviceAuthorizationFailure("grant_write", redisAuthorizationErrorClass(err))
+		}
 	}
 }
 
@@ -731,12 +743,18 @@ func (s *RedisRuntimeState) lookupDeviceGrant(grantID string, now int64) (Scoped
 	if s == nil || grantID == "" {
 		return ScopedDeviceGrant{}, false
 	}
-	raw, err := s.client.Get(s.ctx, s.deviceGrantKey(grantID)).Result()
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	raw, err := s.client.Get(ctx, s.deviceGrantKey(grantID)).Result()
 	if err != nil {
+		if !errors.Is(err, redis.Nil) {
+			s.logDeviceAuthorizationFailure("grant_read", redisAuthorizationErrorClass(err))
+		}
 		return ScopedDeviceGrant{}, false
 	}
 	var grant ScopedDeviceGrant
 	if err := json.Unmarshal([]byte(raw), &grant); err != nil {
+		s.logDeviceAuthorizationFailure("grant_read", "invalid_payload")
 		return ScopedDeviceGrant{}, false
 	}
 	if grant.Status != "active" || grant.ExpiresAt <= now {
@@ -1076,14 +1094,24 @@ func (s *RedisRuntimeState) isDeviceConnectorRevoked(claims *DeviceConnectorClai
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
 	defer cancel()
-	if exists, err := s.client.Exists(ctx, s.deviceConnectorRevokedTokenKey(claims.ID)).Result(); err != nil || exists > 0 {
+	exists, err := s.client.Exists(ctx, s.deviceConnectorRevokedTokenKey(claims.ID)).Result()
+	if err != nil {
+		s.logDeviceAuthorizationFailure("revoked_token_read", redisAuthorizationErrorClass(err))
+		return true
+	}
+	if exists > 0 {
 		return true
 	}
 	raw, err := s.client.Get(ctx, s.deviceConnectorRevokedDeviceKey(claims.UID, claims.DeviceID)).Result()
 	if errors.Is(err, redis.Nil) {
 		return false
 	}
-	if err != nil || strings.TrimSpace(raw) == "" || parseInt64(raw) <= 0 {
+	if err != nil {
+		s.logDeviceAuthorizationFailure("revoked_device_read", redisAuthorizationErrorClass(err))
+		return true
+	}
+	if strings.TrimSpace(raw) == "" || parseInt64(raw) <= 0 {
+		s.logDeviceAuthorizationFailure("revoked_device_read", "invalid_watermark")
 		return true // Unavailable or corrupt revocation state cannot authorize a task.
 	}
 	revokedAt := time.UnixMilli(parseInt64(raw))
@@ -1091,6 +1119,45 @@ func (s *RedisRuntimeState) isDeviceConnectorRevoked(claims *DeviceConnectorClai
 		return true
 	}
 	return !claims.IssuedAt.Time.After(revokedAt)
+}
+
+// Only bounded categories enter logs: raw Redis errors may contain addresses,
+// keys or credentials. No grant/token IDs, device IDs or stored values escape.
+// Suppress repeats per operation/reason for 30s to avoid flooding during outage.
+func (s *RedisRuntimeState) logDeviceAuthorizationFailure(operation, reason string) {
+	key := operation + ":" + reason
+	now := time.Now()
+	s.securityLogMu.Lock()
+	if last := s.securityLogLast[key]; !last.IsZero() && now.Sub(last) < 30*time.Second {
+		s.securityLogMu.Unlock()
+		return
+	}
+	if s.securityLogLast == nil {
+		s.securityLogLast = make(map[string]time.Time)
+	}
+	s.securityLogLast[key] = now
+	s.securityLogMu.Unlock()
+	log.Printf("WARNING: device authorization storage failure: backend=redis operation=%s reason=%s action=deny_or_unavailable (same category limited to once per 30s)", operation, reason)
+}
+
+func redisAuthorizationErrorClass(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	if errors.Is(err, redis.ErrClosed) {
+		return "client_closed"
+	}
+	if strings.HasPrefix(err.Error(), "OOM ") {
+		return "out_of_memory"
+	}
+	return "redis_error"
 }
 
 func (s *RedisRuntimeState) localHub(nodeID string) *Hub {
