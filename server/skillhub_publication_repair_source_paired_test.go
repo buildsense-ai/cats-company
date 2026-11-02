@@ -321,12 +321,15 @@ func TestPublicationRepairModelCoordinatorPairedLiveRuntimeFence(t *testing.T) {
 				if err == nil || result != nil || invocations != 0 || db.starts != 1 || verifications != 3 {
 					t.Fatal("removed live source crossed post-grant fence", result, err, invocations, db.starts, verifications)
 				}
-			} else if err != nil || result == nil || invocations != 1 || db.starts != 1 || verifications < 4 {
-				t.Fatal("coordinator did not preserve source through one synthetic dispatch", result, err, invocations, db.starts, verifications)
+				t.Log("live Runtime source removed after grant was denied before synthetic provider invocation")
+			} else {
+				if err != nil || result == nil || invocations != 1 || db.starts != 1 || verifications != 5 {
+					t.Fatal("coordinator did not preserve source through one synthetic dispatch and five fences", result, err, invocations, db.starts, verifications)
+				}
+				t.Log("live Runtime source retained through five coordinator fences; one synthetic provider invocation")
 			}
 		})
 	}
-	t.Log("restricted coordinator + real pinned XiaoBa Runtime task/lease RPC; live source retained permits one synthetic provider call, source removed after grant is denied before provider; material/report adapters and dispatch store are synthetic")
 }
 
 func TestSkillHubPublicationRepairSourcePairedFailures(t *testing.T) {

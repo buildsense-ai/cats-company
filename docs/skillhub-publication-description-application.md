@@ -271,8 +271,10 @@ handler/storage checks for normal/malformed metadata, restart, changed/removed
 source, disabled capability, owner switch, transient Bot switch, missing capture
 and mismatched receipt, plus rounds 2/3 with unchanged or changed original source.
 The task/lease suite proves a current unfinished task against the real Runtime,
-then removes the original source and requires a later task check to fail. All
-four suites and thirteen subcases must pass. The runner fails on any skip
+then removes the original source and requires a later task check to fail. The
+coordinator-fence suite checks the live Runtime source around dispatch; removing
+it after dispatch grant must fail before the synthetic provider is invoked.
+All five suites and fifteen subcases must pass. The runner fails on any skip
 or missing case and is a required CI dependency. These are real cross-repository handler contracts with
 synthetic CatsCo authority/store and socket; not deployed or paid-model E2E.
 
