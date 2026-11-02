@@ -21,6 +21,16 @@ function containsFocus(dialog, target) {
   ));
 }
 
+export function restoreDialogFocus(opener, returnFocusRef) {
+  // Nested dialogs return to their live opener. Account-menu items unmount
+  // when selected, so fall back to the stable account trigger in that case.
+  const target = [opener, returnFocusRef?.current].find((element) => (
+    element instanceof HTMLElement && element !== document.body
+    && element.isConnected && !element.matches(':disabled') && visible(element)
+  ));
+  target?.focus({ preventScroll: true });
+}
+
 function isolateBackground(dialog) {
   const isolated = [];
   for (let branch = dialog; branch.parentElement; branch = branch.parentElement) {
@@ -44,7 +54,7 @@ function isolateBackground(dialog) {
 }
 
 // Shared behavior only: callers keep their existing dialog markup and visual styles.
-export default function useDialogBehavior(dialogRef, { onClose, initialFocusRef, returnFocusRef, open = true } = {}) {
+export default function useDialogBehavior(dialogRef, { onClose, initialFocusRef, initialFocus = 'control', returnFocusRef, open = true } = {}) {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
@@ -59,7 +69,9 @@ export default function useDialogBehavior(dialogRef, { onClose, initialFocusRef,
     const focusables = () => [...dialog.querySelectorAll(FOCUSABLE)].filter(visible).sort((left, right) => (
       left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
     ));
-    const focusFirst = () => (initialFocusRef?.current || focusables()[0] || dialog).focus({ preventScroll: true });
+    const focusFirst = () => (initialFocusRef?.current
+      || (initialFocus === 'heading' ? dialog.querySelector('.cc-dialog-reading-focus') : null)
+      || focusables()[0] || dialog).focus({ preventScroll: true });
     focusFirst();
 
     const handleFocus = (event) => {
@@ -78,6 +90,7 @@ export default function useDialogBehavior(dialogRef, { onClose, initialFocusRef,
           event.preventDefault();
           dialog.focus();
         } else if (!containsFocus(dialog, active)
+          || (initialFocus === 'heading' && active?.matches('.cc-dialog-reading-focus'))
           || (!event.shiftKey && active === nodes.at(-1))
           || (event.shiftKey && active === nodes[0])) {
           event.preventDefault();
@@ -92,13 +105,7 @@ export default function useDialogBehavior(dialogRef, { onClose, initialFocusRef,
       document.removeEventListener('keydown', handleKey);
       dialogStack.splice(dialogStack.indexOf(token), 1);
       releaseBackground();
-      // A menu item may unmount before the dialog opens. Prefer its stable trigger.
-      const returnTarget = [returnFocusRef?.current, opener].find((element) => (
-        element instanceof HTMLElement && element.isConnected && !element.matches(':disabled') && visible(element)
-      ));
-      if (returnTarget) {
-        returnTarget.focus({ preventScroll: true });
-      }
+      restoreDialogFocus(opener, returnFocusRef);
     };
-  }, [dialogRef, initialFocusRef, returnFocusRef, open]);
+  }, [dialogRef, initialFocusRef, initialFocus, returnFocusRef, open]);
 }

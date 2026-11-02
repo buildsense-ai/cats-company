@@ -65,6 +65,13 @@
 .cc-load-task-lines i { width: 7px; height: 7px; border: 0; background: var(--load-ink); border-radius: 2px; opacity: .55; }
 .cc-load-task-lines b { width: 44px; height: 3px; border-radius: 2px; background: var(--load-ink); transform-origin: left center; animation: cc-loading-write var(--cc-loading-cycle) infinite both; animation-delay: inherit; }
 .cc-load-task-lines b:last-child { margin-left: auto; width: 12px; opacity: .4; }
+.cc-load-agents { display: flex; align-items: center; justify-content: center; gap: 10px; width: 112px; height: 44px; }
+.cc-load-agent-mark { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 9px; background: var(--load-shape); color: var(--load-ink); }
+.cc-load-agent-dots { display: flex; align-items: center; gap: 4px; height: 12px; }
+.cc-load-agent-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--load-ink); opacity: .26; animation: cc-load-agent-dot 1.2s ease-in-out infinite; }
+.cc-load-agent-dots i:nth-child(2) { animation-delay: .16s; }
+.cc-load-agent-dots i:nth-child(3) { animation-delay: .32s; }
+@keyframes cc-load-agent-dot { 0%, 60%, 100% { opacity: .26; } 30% { opacity: .84; } }
 .image-viewport .cc-loading-state { --load-panel: var(--image-viewer-surface); --load-shape: #38383f; --load-ink: #92929f; color: #d1d5db; }
 .image-viewport-loading { position: absolute; inset: 0; pointer-events: none; }
 .catsco-connect-motion.cc-loading-state { min-height: 100px; padding: 10px; }

@@ -1502,6 +1502,126 @@ describe('AgentStoreModal', () => {
     expect(managedOption.textContent).not.toContain('可创建 0/1');
   });
 
+  test('shows an animated loading region until the roster is ready', async () => {
+    let resolveBots;
+    api.getMyBots.mockImplementation(() => new Promise((resolve) => { resolveBots = resolve; }));
+    await act(async () => {
+      root.render(<AgentStoreModal onClose={vi.fn()} user={{ uid: 7 }} />);
+    });
+    expect(container.querySelector('[data-loading-region]').getAttribute('aria-busy')).toBe('true');
+    expect(container.querySelector('[role="status"]').textContent).toContain('正在加载助手');
+    expect(container.querySelectorAll('[data-loading-kind="agents"] .cc-load-agent-mark')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-loading-kind="agents"] .cc-load-agent-dots i')).toHaveLength(3);
+    expect(container.querySelector('.cc-loading-label').textContent).toBe('正在加载助手');
+    expect(container.textContent).not.toContain('还没有 AI 助手');
+    await act(async () => { resolveBots({ bots: [] }); });
+    expect(container.querySelector('[data-loading-region]').getAttribute('aria-busy')).toBe('false');
+    expect(container.querySelector('.cc-loading-state')).toBeNull();
+    expect(container.textContent).toContain('还没有 AI 助手');
+  });
+
+  test('renders assistants and each invite code independently of slow invite requests', async () => {
+    let resolveInvite;
+    api.getMyBots.mockResolvedValue({ bots: [
+      { id: 42, display_name: '审查助手', relation: 'owner' },
+      { id: 43, display_name: '写作助手', relation: 'owner' },
+    ] });
+    api.getBotInviteCode.mockImplementation((id) => id === 42
+      ? new Promise((resolve) => { resolveInvite = resolve; })
+      : Promise.resolve({ code: 'WRITER-CODE' }));
+    await act(async () => {
+      root.render(<AgentStoreModal onClose={vi.fn()} user={{ uid: 7 }} />);
+    });
+    expect(container.textContent).toContain('审查助手');
+    expect(container.textContent).toContain('WRITER-CODE');
+    expect(container.querySelector('.cc-loading-state')).toBeNull();
+    const pending = container.querySelector('[aria-label="正在读取邀请码"]');
+    expect(pending.disabled).toBe(true);
+    expect(container.querySelectorAll('.cc-agent-card-manage')).toHaveLength(2);
+    expect(api.generateBotInviteCode).not.toHaveBeenCalled();
+    await act(async () => { resolveInvite({ code: 'REVIEW-CODE' }); });
+    expect(container.textContent).toContain('REVIEW-CODE');
+    expect(container.querySelector('[aria-label="正在读取邀请码"]')).toBeNull();
+  });
+
+  test('opens the requested assistant without waiting for its invite code', async () => {
+    api.getMyBots.mockResolvedValue({ bots: [{ id: 42, display_name: '审查助手', relation: 'owner' }] });
+    api.getBotInviteCode.mockImplementation(() => new Promise(() => {}));
+    await act(async () => {
+      root.render(<AgentStoreModal initialAgentId={42} onClose={vi.fn()} user={{ uid: 7 }} />);
+    });
+    expect(container.querySelector('.cc-agent-manage-form')).not.toBeNull();
+    expect(container.querySelector('.cc-loading-state')).toBeNull();
+  });
+
+  test('retries an invite read failure instead of generating a replacement code', async () => {
+    api.getMyBots.mockResolvedValue({ bots: [{ id: 42, display_name: '审查助手', relation: 'owner' }] });
+    api.getBotInviteCode.mockRejectedValueOnce(new Error('temporarily unavailable'))
+      .mockResolvedValue({ code: 'EXISTING-CODE' });
+    await act(async () => {
+      root.render(<AgentStoreModal onClose={vi.fn()} user={{ uid: 7 }} />);
+    });
+    const retry = container.querySelector('[aria-label="重试读取邀请码"]');
+    expect(retry).not.toBeNull();
+    await act(async () => { Simulate.click(retry); });
+    expect(container.textContent).toContain('EXISTING-CODE');
+    expect(api.generateBotInviteCode).not.toHaveBeenCalled();
+  });
+
+  test('does not let an older roster request replace a newer one', async () => {
+    let resolveOldBots;
+    api.getMyBots.mockImplementationOnce(() => new Promise((resolve) => { resolveOldBots = resolve; }))
+      .mockResolvedValue({ bots: [{ id: 43, display_name: '当前助手', relation: 'owner' }] });
+    const onClose = vi.fn();
+    await act(async () => {
+      root.render(<AgentStoreModal onClose={onClose} user={{ uid: 7 }} />);
+    });
+    await act(async () => {
+      root.render(<AgentStoreModal initialAgentId={999} onClose={onClose} user={{ uid: 7 }} />);
+    });
+    expect(container.textContent).toContain('当前助手');
+    await act(async () => {
+      resolveOldBots({ bots: [{ id: 42, display_name: '过期助手', relation: 'owner' }] });
+    });
+    expect(container.textContent).toContain('当前助手');
+    expect(container.textContent).not.toContain('过期助手');
+  });
+
+  test('ignores an invite response from an earlier roster refresh', async () => {
+    let resolveOldInvite;
+    api.getMyBots.mockResolvedValue({ bots: [{ id: 42, display_name: '审查助手', relation: 'owner' }] });
+    api.getBotInviteCode.mockImplementationOnce(() => new Promise((resolve) => { resolveOldInvite = resolve; }))
+      .mockResolvedValue({ code: 'CURRENT-CODE' });
+    const onClose = vi.fn();
+    await act(async () => {
+      root.render(<AgentStoreModal onClose={onClose} user={{ uid: 7 }} />);
+    });
+    await act(async () => {
+      root.render(<AgentStoreModal initialAgentId={999} onClose={onClose} user={{ uid: 7 }} />);
+    });
+    expect(container.textContent).toContain('CURRENT-CODE');
+    await act(async () => { resolveOldInvite({ code: 'OLD-CODE' }); });
+    expect(container.textContent).toContain('CURRENT-CODE');
+    expect(container.textContent).not.toContain('OLD-CODE');
+  });
+
+  test('offers retry after a roster failure without claiming the roster is empty', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      api.getMyBots.mockRejectedValueOnce(new Error('unavailable')).mockResolvedValue({ bots: [] });
+      await act(async () => {
+        root.render(<AgentStoreModal onClose={vi.fn()} user={{ uid: 7 }} />);
+      });
+      expect(container.textContent).toContain('助手列表暂时加载失败');
+      expect(container.textContent).not.toContain('还没有 AI 助手');
+      await act(async () => { Simulate.click(container.querySelector('.cc-agent-hub-load-error button')); });
+      expect(container.textContent).toContain('还没有 AI 助手');
+      expect(container.textContent).not.toContain('加载失败');
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   test('renders the assistant roster without waiting for cloud reconciliation', async () => {
     let resolveCloudWorkers;
     api.getMyBots.mockResolvedValue({

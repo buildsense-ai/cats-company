@@ -534,6 +534,7 @@ function TinodeWebApp({ location }) {
   const [desktopModalMode, setDesktopModalMode] = useState('connect');
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
+  const [openRelayPlanChooser, setOpenRelayPlanChooser] = useState(false);
   const [relayLinkHandled, setRelayLinkHandled] = useState(false);
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
@@ -544,6 +545,7 @@ function TinodeWebApp({ location }) {
     && activeView !== 'apps'
     && !downloadLinkPending
     && !showDesktopConnectModal
+    && !showRelayModal
     && !showWorkspaceOnboardingReplay
     && !workspaceOnboardingDismissedInSession
     && (showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
@@ -575,6 +577,7 @@ function TinodeWebApp({ location }) {
 
   const closeRelayModal = useCallback(() => {
     setShowRelayModal(false);
+    setOpenRelayPlanChooser(false);
     setRelayLinkHandled(true);
   }, []);
 
@@ -1761,6 +1764,7 @@ function TinodeWebApp({ location }) {
         
         <div className="cc-sidebar-content-shell">
           <SidebarContent
+            dialogReturnFocusRef={profileTriggerRef}
             activeTopic={visibleTopicId || null}
             onSelectTopic={(topic) => {
               setTaskDraft(null);
@@ -2010,11 +2014,12 @@ function TinodeWebApp({ location }) {
       )}
 
       {showFeedbackModal && (
-        <FeedbackModal user={user} onClose={() => setShowFeedbackModal(false)} />
+        <FeedbackModal user={user} returnFocusRef={profileTriggerRef} onClose={() => setShowFeedbackModal(false)} />
       )}
 
       {showDesktopConnectModal && (
         <DesktopConnectModal
+          returnFocusRef={profileTriggerRef}
           userId={user.uid}
           onClose={closeDesktopConnectModal}
           onConnected={desktopModalMode === 'computers' ? () => window.dispatchEvent(new Event('cc:devices-changed')) : handleDesktopConnected}
@@ -2031,8 +2036,8 @@ function TinodeWebApp({ location }) {
             userId={user.uid}
             visible
             onDismiss={() => setWorkspaceOnboardingDismissedInSession(true)}
-            onDownloadDashboard={() => openDesktopModal('download')}
-            dashboardDownloadOpen={showDesktopConnectModal}
+            onChoosePlan={() => { setOpenRelayPlanChooser(true); setShowRelayModal(true); }}
+            secondaryModalOpen={showDesktopConnectModal || showRelayModal}
           />
         </Suspense>
       )}
@@ -2046,13 +2051,16 @@ function TinodeWebApp({ location }) {
               setWorkspaceOnboardingDismissedInSession(true);
               setShowWorkspaceOnboardingReplay(false);
             }}
-            onDownloadDashboard={() => openDesktopModal('download')}
+            onChoosePlan={() => { setOpenRelayPlanChooser(true); setShowRelayModal(true); }}
+            secondaryModalOpen={showDesktopConnectModal || showRelayModal}
           />
         </Suspense>
       )}
 
       {showRelayModal && (
         <RelayAccessModal
+          returnFocusRef={profileTriggerRef}
+          initialPlanChooserOpen={openRelayPlanChooser}
           initialPlanSlug={new URLSearchParams(search).get('plan') || ''}
           onClose={closeRelayModal}
         />
@@ -2322,6 +2330,7 @@ function NoActiveTask({
 }
 
 function SidebarContent({
+  dialogReturnFocusRef,
   activeTopic,
   onSelectTopic,
   onOpenSearch,
@@ -2337,6 +2346,7 @@ function SidebarContent({
 }) {
   return (
     <ChatListView
+      dialogReturnFocusRef={dialogReturnFocusRef}
       activeTopic={activeTopic}
       onSelectTopic={onSelectTopic}
       onOpenSearch={onOpenSearch}

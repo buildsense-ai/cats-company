@@ -3,6 +3,7 @@ import { AlertCircle, Check, CheckCircle2, ChevronDown, ChevronUp, Cloud, Downlo
 import { api } from '../api';
 import PwaDownloadLink from './pwa-download-link';
 import LoadingState from './loading-state';
+import useDialogBehavior from '../utils/use-dialog-behavior';
 import ConversationDevicePicker from './conversation-device-picker';
 import {
   FALLBACK_RELEASE_VERSION,
@@ -78,28 +79,11 @@ function openDesktopDeepLink(href) {
   link.remove();
 }
 
-export default function DesktopConnectModal({ userId, onClose, onConnected, onStatusChange, initialMode = 'connect', topicId = '', activeAgent = null }) {
+export default function DesktopConnectModal({ userId, onClose, onConnected, onStatusChange, initialMode = 'connect', topicId = '', activeAgent = null, returnFocusRef }) {
   const computersMode = initialMode === 'computers';
   const hasConversationSelection = Boolean(topicId && (activeAgent?.uid || activeAgent?.id || topicId.startsWith('grp_')));
   const modalRef = useRef(null);
-  useEffect(() => {
-    if (!computersMode) return undefined;
-    const previousFocus = document.activeElement;
-    modalRef.current?.focus();
-    const onKey = event => {
-      if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
-      if (event.key !== 'Tab') return;
-      const controls = [...modalRef.current.querySelectorAll('button:not(:disabled), input:not(:disabled), a[href]')];
-      const first = controls[0], last = controls[controls.length - 1];
-      if (event.shiftKey && (document.activeElement === first || document.activeElement === modalRef.current)) {
-        event.preventDefault(); last?.focus();
-      } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === modalRef.current)) {
-        event.preventDefault(); first?.focus();
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('keydown', onKey); if (previousFocus?.isConnected) previousFocus.focus(); };
-  }, [computersMode, onClose]);
+  useDialogBehavior(modalRef, { onClose, returnFocusRef, initialFocus: 'heading' });
   const [state, setState] = useState('idle');
   const [error, setError] = useState('');
   const [showDownloads, setShowDownloads] = useState(initialMode === 'download');
@@ -516,7 +500,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
       >
         <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3 id="catsco-desktop-modal-title">{computersMode ? '电脑' : 'CatsCo 桌面端'}</h3>
+            <h3 id="catsco-desktop-modal-title" tabIndex={-1} className="cc-dialog-reading-focus">{computersMode ? '电脑' : 'CatsCo 桌面端'}</h3>
             {!computersMode && <p>连接电脑、查看设备，或下载当前版本。</p>}
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">

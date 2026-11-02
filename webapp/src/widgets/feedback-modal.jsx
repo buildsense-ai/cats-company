@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Cat, Plus, X } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import { api } from '../api';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
+import useDialogBehavior from '../utils/use-dialog-behavior';
 import {
   readStorageValue,
   removeStorageValue,
@@ -32,7 +33,9 @@ function isEmptyDraft({ category, title, description }) {
   return category === 'bug' && title.trim() === '' && description.trim() === '';
 }
 
-export default function FeedbackModal({ onClose, user }) {
+export default function FeedbackModal({ onClose, user, returnFocusRef }) {
+  const modalRef = useRef(null);
+  useDialogBehavior(modalRef, { onClose, returnFocusRef, initialFocus: 'heading' });
   const draftKey = useMemo(() => getDraftKey(user), [user]);
   const initialDraft = useMemo(() => readDraft(draftKey), [draftKey]);
   const category = initialDraft?.category || 'bug';
@@ -192,10 +195,10 @@ export default function FeedbackModal({ onClose, user }) {
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
-      <section className="oc-modal oc-feedback-modal cc-settings-secondary-surface" role="dialog" aria-modal="true" aria-label="意见反馈" onClick={(event) => event.stopPropagation()}>
+      <section ref={modalRef} tabIndex={-1} className="oc-modal oc-feedback-modal cc-settings-secondary-surface" role="dialog" aria-modal="true" aria-label="意见反馈" onClick={(event) => event.stopPropagation()}>
         <header className="oc-modal-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3>意见反馈</h3>
+            <h3 tabIndex={-1} className="cc-dialog-reading-focus">意见反馈</h3>
             <p>分享你的使用体验、问题或改进建议。</p>
           </div>
           <button type="button" aria-label="关闭" onClick={onClose}><X aria-hidden="true" /></button>
@@ -211,16 +214,13 @@ export default function FeedbackModal({ onClose, user }) {
           </div>
         ) : (
           <form className="oc-modal-body" onSubmit={handleSubmit}>
-            <div className="oc-feedback-intro">
-              <span className="oc-feedback-intro-icon" aria-hidden="true"><Cat /></span>
-              <div><h4>你的每一条反馈，都在帮助 CatsCo 变得更好</h4><p>请描述遇到的问题或建议，我们会认真查看。</p></div>
-            </div>
+            <p id="feedback-input-hint" className="oc-feedback-input-hint">支持粘贴或上传截图，最多 {MAX_ATTACHMENTS} 张。</p>
 
             <label className={`oc-feedback-message-field ${isDragging ? 'dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }} onDragLeave={() => setIsDragging(false)} onDrop={handleDrop}>
-              <textarea value={description} onChange={(event) => setDescription(event.target.value)} onPaste={handlePaste} maxLength={800} rows={8} required placeholder="描述你遇到的问题或建议" />
+              <textarea aria-label="问题或建议" aria-describedby="feedback-input-hint" value={description} onChange={(event) => setDescription(event.target.value)} onPaste={handlePaste} maxLength={800} rows={8} required placeholder="描述你遇到的问题或建议" />
               <div className="oc-feedback-media-tools">
                 {attachments.length > 0 && <div className="oc-feedback-preview-grid">{attachments.map((item) => <div className="oc-feedback-preview" key={item.id}><img src={item.previewUrl} alt={item.file.name} /><button type="button" aria-label={`移除 ${item.file.name}`} onClick={() => removeAttachment(item.id)}><X /></button></div>)}</div>}
-                <span className="oc-feedback-upload-button"><Plus aria-hidden="true" /><span>上传图片/录屏</span><input type="file" accept={IMAGE_UPLOAD_ACCEPT} multiple onChange={(event) => addFiles(event.target.files)} /></span>
+                <span className="oc-feedback-upload-button"><Plus aria-hidden="true" /><span>上传截图</span><input type="file" accept={IMAGE_UPLOAD_ACCEPT} multiple onChange={(event) => addFiles(event.target.files)} /></span>
               </div>
               <span className="oc-feedback-counter">{description.length}/800</span>
             </label>

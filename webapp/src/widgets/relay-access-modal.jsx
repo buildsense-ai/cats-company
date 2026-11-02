@@ -3,6 +3,8 @@ import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Cloud, Cop
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { salePlansForOffers } from './plans/plan-offers';
+import LoadingState from './loading-state';
+import { restoreDialogFocus } from '../utils/use-dialog-behavior';
 import {
   readStorageValue,
   writeStorageValue,
@@ -387,6 +389,7 @@ function activePackageName(packages) {
 
 function commercialAccountState(commercial, packages) {
   if ((packages || []).length > 0) return { label: '当前有效', className: 'active' };
+  if (!commercial) return { label: '暂不可用', className: 'neutral' };
   if (commercial?.enabled) return { label: '尚未开通', className: 'neutral' };
   return { label: '未开放', className: 'inactive' };
 }
@@ -772,7 +775,7 @@ function EnterprisePlanCard() {
   );
 }
 
-export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFreePlan = true, planPresentationOverrides = {}, teamPlanContent = null, enterprisePlanContent = null, planChooserNote = '', planOffers = null, personalPlanExcludedSlugs = [] }) {
+export default function RelayAccessModal({ onClose, initialPlanSlug = '', initialPlanChooserOpen = false, showFreePlan = true, planPresentationOverrides = {}, teamPlanContent = null, enterprisePlanContent = null, planChooserNote = '', planOffers = null, personalPlanExcludedSlugs = [], returnFocusRef }) {
   const feedback = useFeedback();
   const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [relayKey, setRelayKey] = useState(null);
@@ -791,7 +794,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   const [checkoutOrder, setCheckoutOrder] = useState(null);
   const [checkoutClock, setCheckoutClock] = useState(Date.now());
   const [paymentLoading, setPaymentLoading] = useState('');
-  const [planChooserOpen, setPlanChooserOpen] = useState(false);
+  const [planChooserOpen, setPlanChooserOpen] = useState(initialPlanChooserOpen);
   const [planChooserAudience, setPlanChooserAudience] = useState('personal');
   const [paymentPollError, setPaymentPollError] = useState('');
   const [trialLoading, setTrialLoading] = useState(false);
@@ -817,12 +820,13 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   useEffect(() => {
     restoreFocusRef.current = document.activeElement;
     const focusTimer = window.setTimeout(() => {
-      if (!planChooserRef.current && !purchaseConfirmRef.current) closeButtonRef.current?.focus();
+      if (!planChooserRef.current && !purchaseConfirmRef.current) {
+        modalRef.current?.querySelector('#relay-access-dialog-title')?.focus({ preventScroll: true });
+      }
     }, 0);
     return () => {
       window.clearTimeout(focusTimer);
-      const target = restoreFocusRef.current;
-      if (target instanceof HTMLElement && target.isConnected) target.focus();
+      restoreDialogFocus(restoreFocusRef.current, returnFocusRef);
     };
   }, []);
 
@@ -1075,6 +1079,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   const commercialState = commercialAccountState(commercial, activePackages);
   const currentResetInfo = usageResetInfo(currentUsage);
   const currentQuota = currentQuotaDisplay(currentUsage, commercialEnabled);
+  const quotaUsedValue = /^已用 (\d+(?:\.\d+)?)(%\+?)$/.exec(currentQuota.meta);
   const checkoutCountdown = commercialOrderCountdown(checkoutOrder, checkoutClock);
   const openOrders = commercialOrders.filter(order => ['created', 'pending', 'paid'].includes(order.status));
   const fulfilledOrders = commercialOrders.filter(order => order.status === 'fulfilled');
@@ -1558,7 +1563,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
+    if (event.shiftKey && (document.activeElement === first || document.activeElement?.id === 'relay-access-dialog-title')) {
       event.preventDefault();
       last.focus();
     } else if (!event.shiftKey && document.activeElement === last) {
@@ -1571,7 +1576,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
     <div className="oc-modal-overlay" onClick={onClose}>
       <div
         ref={modalRef}
-        className="oc-modal relay-access-modal cc-settings-secondary-surface"
+        className="oc-modal relay-access-modal relay-access-account cc-settings-secondary-surface"
         role="dialog"
         aria-modal="true"
         aria-labelledby="relay-access-dialog-title"
@@ -1581,7 +1586,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
       >
         <div className="oc-modal-header relay-access-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3 id="relay-access-dialog-title">套餐与权益</h3>
+            <h3 id="relay-access-dialog-title" tabIndex={-1} className="cc-dialog-reading-focus">套餐与权益</h3>
             <p id="relay-access-dialog-description">查看当前用量、套餐权益与订单记录。</p>
           </div>
           <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="关闭">
@@ -1589,15 +1594,14 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
           </button>
         </div>
 
-        <div className="relay-access-body">
+        <div className="relay-access-body" data-loading-region="" aria-busy={loading}>
           {loading && (
-            <div className="oc-settings-secondary" role="status" aria-live="polite">
-              正在读取套餐与权益…
-            </div>
+            <LoadingState kind="files" className="relay-access-account-loading" label="正在读取套餐与权益" />
           )}
           {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
           {warning && <InlineFeedback tone="warning">{warning}</InlineFeedback>}
 
+          {!loading && <>
           <section className="relay-access-commerce">
             <div className="relay-access-section-head">
               <div>
@@ -1607,7 +1611,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                     ? summarizeCommercial(commercialSummary)
                     : commercialEnabled
                       ? '当前没有有效套餐'
-                    : '套餐兑换暂未开放；当前额度和 API Key 不受影响。'}
+                    : commercial ? '套餐兑换暂未开放；当前额度和 API Key 不受影响。' : '套餐权益暂时无法读取，请关闭后重试。'}
                 </div>
               </div>
               <span className={`relay-access-state ${commercialState.className}`}>
@@ -1618,11 +1622,18 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
             <div className={`relay-access-current-quota ${currentQuota.className}`}>
               <div className="relay-access-current-quota-head">
                 <div className="relay-access-current-quota-heading">
-                  <span>{currentQuota.title}</span>
-                  <strong>{currentQuota.meta}</strong>
+                  <span>{currentQuota.title}{quotaUsedValue ? ' · 已用' : ''}</span>
+                  <div className="relay-access-current-quota-reading">
+                    <strong>
+                      {quotaUsedValue ? <>
+                        <span className="oc-visually-hidden">已用 </span>
+                        {quotaUsedValue[1]}<small>{quotaUsedValue[2]}</small>
+                      </> : currentQuota.meta}
+                    </strong>
+                    <em>{currentQuota.detail}</em>
+                  </div>
                 </div>
                 <div className="relay-access-current-quota-actions">
-                  <em>{currentQuota.detail}</em>
                   {salePlans.length > 0 && (
                     <button
                       type="button"
@@ -1657,39 +1668,59 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
               </div>
             </div>
 
-            <div
-              className="relay-access-billing-tabs"
-              role="tablist"
-              aria-label="套餐信息"
-              onKeyDown={handleTabListKeyDown}
-            >
-              <button
-                id="relay-access-entitlements-tab"
-                type="button"
-                role="tab"
-                aria-selected={commercialView === 'plans'}
-                aria-controls="relay-access-entitlements-panel"
-                tabIndex={commercialView === 'plans' ? 0 : -1}
-                className={commercialView === 'plans' ? 'active' : ''}
-                onClick={() => setCommercialView('plans')}
+            <div className="relay-access-billing-toolbar">
+              <div
+                className="relay-access-billing-tabs"
+                role="tablist"
+                aria-label="套餐信息"
+                onKeyDown={handleTabListKeyDown}
               >
-                <BadgeCheck size={15} />
-                当前权益
-              </button>
-              <button
-                id="relay-access-orders-tab"
-                type="button"
-                role="tab"
-                aria-selected={commercialView === 'orders'}
-                aria-controls="relay-access-orders-panel"
-                tabIndex={commercialView === 'orders' ? 0 : -1}
-                className={commercialView === 'orders' ? 'active' : ''}
-                onClick={() => setCommercialView('orders')}
-              >
-                <History size={15} />
-                订单记录
-                {commercialOrders.length > 0 && <span>{commercialOrders.length}</span>}
-              </button>
+                <button
+                  id="relay-access-entitlements-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={commercialView === 'plans'}
+                  aria-controls="relay-access-entitlements-panel"
+                  tabIndex={commercialView === 'plans' ? 0 : -1}
+                  className={commercialView === 'plans' ? 'active' : ''}
+                  onClick={() => setCommercialView('plans')}
+                >
+                  <BadgeCheck size={15} />
+                  当前权益
+                </button>
+                <button
+                  id="relay-access-orders-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={commercialView === 'orders'}
+                  aria-controls="relay-access-orders-panel"
+                  tabIndex={commercialView === 'orders' ? 0 : -1}
+                  className={commercialView === 'orders' ? 'active' : ''}
+                  onClick={() => setCommercialView('orders')}
+                >
+                  <History size={15} />
+                  订单记录
+                  {commercialOrders.length > 0 && <span>{commercialOrders.length}</span>}
+                </button>
+              </div>
+              {commercialView === 'orders' && commercialOrders.length > 0 && availableOrderFilters.length > 1 && (
+                <div className="relay-access-order-filters" role="group" aria-label="筛选订单">
+                  {availableOrderFilters.map((filter) => (
+                    <button
+                      type="button"
+                      key={filter.id}
+                      className={orderFilter === filter.id ? 'active' : ''}
+                      aria-pressed={orderFilter === filter.id}
+                      onClick={() => {
+                        setOrderFilter(filter.id);
+                        setShowAllOrders(false);
+                      }}
+                    >
+                      {filter.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {purchasePlan && (
@@ -1866,12 +1897,12 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                       </form>
                     </div>
                   </details>
-                ) : (
+                ) : commercial ? (
                   <div className="relay-access-token-note">
                     <Gift size={16} />
                     <span>{commercial?.note || '套餐和邀请码仍在内部测试。当前额度、API Key 和模型调用不受影响。'}</span>
                   </div>
-                )}
+                ) : <InlineFeedback tone="error">套餐权益读取失败，请关闭后重试。</InlineFeedback>}
                 {commercialEnabled && !commercialEnforced && (
                   <div className="oc-settings-secondary">
                     {commercial?.note || '当前为内测账单，购买记录不会自动改变已有模型额度。'}
@@ -1887,24 +1918,6 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                 role="tabpanel"
                 aria-labelledby="relay-access-orders-tab"
               >
-                {commercialOrders.length > 0 && availableOrderFilters.length > 1 && (
-                  <div className="relay-access-order-filters" role="group" aria-label="筛选订单">
-                    {availableOrderFilters.map((filter) => (
-                      <button
-                        type="button"
-                        key={filter.id}
-                        className={orderFilter === filter.id ? 'active' : ''}
-                        aria-pressed={orderFilter === filter.id}
-                        onClick={() => {
-                          setOrderFilter(filter.id);
-                          setShowAllOrders(false);
-                        }}
-                      >
-                        {filter.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
                 {visibleOrders.length > 0 ? (
                   <div className="relay-access-order-list">
                     {visibleOrders.map((order) => (
@@ -1919,17 +1932,20 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                         }}
                       >
                         <ReceiptText size={16} />
-                        <span>
-                          <strong>{order.plan_name}</strong>
-                          <em>{order.order_no} · {formatShortDateTime(order.created_at)}</em>
+                        <span className="relay-access-order-main">
+                          <span className="relay-access-order-heading">
+                            <strong>{order.plan_name}</strong>
+                            <em className={commercialOrderTone(order.status)}>
+                              {commercialOrderStatus(order.status)}
+                              {commercialOrderCountdown(order, checkoutClock) ? ` · ${commercialOrderCountdown(order, checkoutClock)}` : ''}
+                            </em>
+                          </span>
+                          <span className="relay-access-order-meta">
+                            <span>{formatShortDateTime(order.created_at)}</span>
+                            <span className="relay-access-order-id" title={order.order_no}>订单号 {order.order_no}</span>
+                          </span>
                         </span>
-                        <span>
-                          <strong>{formatPriceFen(order.amount_fen)}</strong>
-                          <em className={commercialOrderTone(order.status)}>
-                            {commercialOrderStatus(order.status)}
-                            {commercialOrderCountdown(order, checkoutClock) ? ` · ${commercialOrderCountdown(order, checkoutClock)}` : ''}
-                          </em>
-                        </span>
+                        <span className="relay-access-order-amount"><strong>{formatPriceFen(order.amount_fen)}</strong></span>
                       </button>
                     ))}
                   </div>
@@ -2024,7 +2040,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                     )}
 
                     <div className="relay-access-key-actions">
-                      <button type="button" disabled={busy} onClick={revealKey}>
+                      <button type="button" className="relay-access-key-copy-action" disabled={busy} onClick={revealKey}>
                         <Copy size={15} />
                         {actionLoading === 'reveal' ? '显示中…' : '显示并复制'}
                       </button>
@@ -2116,6 +2132,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
               </div>
             </details>
           </div>
+          </>}
         </div>
       </div>
       {planChooserOpen && (

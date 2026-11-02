@@ -106,6 +106,65 @@ describe('RelayAccessModal commercial rollout', () => {
     return [...container.querySelectorAll('button')].find(button => button.textContent.includes(label));
   }
 
+  it('shows a loading state until entitlements and orders arrive without flashing the disabled fallback', async () => {
+    let finishCommercial;
+    let finishOrders;
+    api.getRelayCommercial.mockReturnValue(new Promise(resolve => { finishCommercial = resolve; }));
+    api.getCommercialOrders.mockReturnValue(new Promise(resolve => { finishOrders = resolve; }));
+    await renderModal();
+    expect(container.querySelector('.relay-access-body').getAttribute('aria-busy')).toBe('true');
+    expect(container.textContent).toContain('正在读取套餐与权益');
+    expect(container.textContent).not.toContain('内部测试');
+    expect(container.textContent).not.toContain('未开放');
+    expect(container.querySelector('.relay-access-billing-tabs')).toBeNull();
+    await act(async () => {
+      finishCommercial({ enabled: true, enforce_enabled: true, summary: { entitlements: [{ id: 1, plan_name: '示例套餐', state: 'active' }] } });
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.relay-access-billing-tabs')).toBeNull();
+    await act(async () => {
+      finishOrders({ orders: [{ order_no: 'LOADING-TEST', plan_name: '示例套餐', status: 'fulfilled', amount_fen: 5900 }] });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.relay-access-body').getAttribute('aria-busy')).toBe('false');
+    expect(container.textContent).toContain('示例套餐');
+    expect(container.querySelector('#relay-access-orders-tab span').textContent).toBe('1');
+    expect(container.textContent).not.toContain('内部测试');
+  });
+
+  it('distinguishes a failed entitlement read from the service being disabled', async () => {
+    api.getRelayCommercial.mockRejectedValue(new Error('offline'));
+    await renderModal();
+    expect(container.textContent).toContain('套餐权益读取失败');
+    expect(container.textContent).not.toContain('内部测试');
+    expect(container.textContent).not.toContain('未开放');
+  });
+
+  it('opens the existing plan chooser directly for the onboarding entry without creating an order', async () => {
+    const plans = [
+      { id: 890, slug: 'catsco-basic', name: '基础版', price_fen: 5900, duration_days: 30, plan_tier: 1 },
+      { id: 891, slug: 'catsco-standard', name: '个人版', price_fen: 9900, duration_days: 30, plan_tier: 2 },
+      { id: 892, slug: 'catsco-advanced', name: '专业版', price_fen: 15900, duration_days: 30, plan_tier: 3 },
+    ];
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, plans, channels: [{ id: 'alipay_page', label: '支付宝支付' }] });
+    await act(async () => {
+      root.render(<CatsCoPlansModal onClose={vi.fn()} initialPlanChooserOpen />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const chooser = container.querySelector('#relay-access-plan-chooser');
+    expect(chooser).not.toBeNull();
+    expect([...chooser.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['个人', '团队', '企业']);
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+    await act(async () => chooser.querySelector('[aria-label="关闭升级套餐"]').click());
+    expect(container.querySelector('#relay-access-plan-chooser')).toBeNull();
+    expect(findButton('升级套餐')).not.toBeUndefined();
+    await openPlanChooser();
+    expect(container.querySelector('#relay-access-plan-chooser')).not.toBeNull();
+  });
+
   it('preselects the authenticated plan carried from the public pricing page', async () => {
     // `personal` is a legacy link alias; it now resolves by rung (2), not by
     // slug, so the ¥99 package answers it even though its slug changed.
@@ -629,6 +688,8 @@ describe('RelayAccessModal commercial rollout', () => {
     const progress = container.querySelector('[role="progressbar"][aria-label="套餐总用量"]');
     expect(progress?.getAttribute('aria-valuenow')).toBe('25');
     expect(progress?.getAttribute('aria-valuetext')).toBe('已用 25%');
+    expect(container.querySelector('.relay-access-current-quota-reading strong')?.textContent).toBe('已用 25%');
+    expect(container.querySelector('.relay-access-current-quota-reading em')?.textContent).toBe('剩余 75%');
     const entitlementsTab = container.querySelector('#relay-access-entitlements-tab');
     const ordersTab = container.querySelector('#relay-access-orders-tab');
     expect(entitlementsTab?.getAttribute('aria-controls')).toBe('relay-access-entitlements-panel');
@@ -1221,6 +1282,8 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('订单记录');
 
     expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(8);
+    expect(container.querySelector('.relay-access-billing-toolbar [aria-label="筛选订单"]')).not.toBeNull();
+    expect(container.querySelector('#relay-access-orders-panel [aria-label="筛选订单"]')).toBeNull();
     expect(container.textContent).toContain('查看其余 2 条');
     await clickButton('查看其余 2 条');
     expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(10);
@@ -1234,6 +1297,10 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('退款 / 关闭');
     expect(findButton('退款 / 关闭')?.getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(2);
+    const closedOrder = [...container.querySelectorAll('.relay-access-order-list > button')]
+      .find(row => row.textContent.includes('已关闭套餐'));
+    expect(closedOrder?.querySelector('.relay-access-order-heading')?.textContent).toContain('已关闭');
+    expect(closedOrder?.querySelector('.relay-access-order-id')?.getAttribute('title')).toBe('CCORDER10');
     expect(container.textContent).toContain('已退款套餐');
     expect(container.textContent).toContain('已关闭套餐');
   });

@@ -75,6 +75,44 @@ describe('DesktopConnectModal', () => {
     expect(moreDownloads.lastElementChild?.tagName).toBe('svg');
   });
 
+  test.each(['connect', 'download', 'computers'])('contains keyboard focus and handles Escape in %s mode', async initialMode => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const onClose = vi.fn();
+    await act(async () => root.render(<DesktopConnectModal initialMode={initialMode} onClose={onClose} />));
+    const heading = container.querySelector('h3');
+    expect(document.activeElement).toBe(heading);
+    expect(opener.closest('[inert]')).not.toBeNull();
+    const buttons = [...container.querySelectorAll('button')].filter(button => !button.disabled && !button.closest('[hidden]'));
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', cancelable: true })));
+    expect(document.activeElement).toBe(buttons[0]);
+    buttons[0].focus();
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, cancelable: true })));
+    expect(document.activeElement).toBe(buttons.at(-1));
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true })));
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })));
+    expect(onClose).toHaveBeenCalledOnce();
+    await act(async () => root.render(null));
+    expect(document.activeElement).toBe(opener);
+    expect(opener.hasAttribute('inert')).toBe(false);
+    opener.remove();
+  });
+
+  test.each([true, false])('restores a live opener or the stable account trigger (opener removed: %s)', async removeOpener => {
+    const opener = document.createElement('button');
+    const fallback = document.createElement('button');
+    document.body.append(opener, fallback);
+    opener.focus();
+    await act(async () => root.render(<DesktopConnectModal onClose={vi.fn()} returnFocusRef={{ current: fallback }} />));
+    if (removeOpener) opener.remove();
+    await act(async () => root.render(null));
+    expect(document.activeElement).toBe(removeOpener ? fallback : opener);
+    opener.remove();
+    fallback.remove();
+  });
+
   test.each(['connect', 'computers'])('keeps the guide out of the %s computer panel', async initialMode => {
     await act(async () => root.render(<DesktopConnectModal userId="38" initialMode={initialMode} onClose={vi.fn()} />));
     expect(container.textContent).not.toContain('新手指引');

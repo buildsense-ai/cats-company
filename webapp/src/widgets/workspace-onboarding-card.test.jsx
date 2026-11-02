@@ -112,17 +112,44 @@ describe('WorkspaceOnboardingCard', () => {
     window.removeEventListener('cc:data-changed', onDataChanged);
   });
 
-  it('treats the desktop download handoff as onboarding completion', async () => {
-    const onDownloadDashboard = vi.fn();
-    await mount({ onDownloadDashboard });
+  it('hands off to plan selection after closing the onboarding dialog', async () => {
+    const onDismiss = vi.fn();
+    const onChoosePlan = vi.fn(() => {
+      expect(document.querySelector('dialog[open]')).toBeNull();
+    });
+    await mount({ onChoosePlan, onDismiss });
+
+    expect(document.querySelector('#workspace-plans-title').textContent).toBe('获取专属助手');
+    expect(buttonWithText('下载桌面端')).toBeUndefined();
 
     await act(async () => {
-      Simulate.click(buttonWithText('下载桌面端'));
+      Simulate.click(buttonWithText('查看套餐'));
     });
 
-    expect(onDownloadDashboard).toHaveBeenCalledTimes(1);
+    expect(onChoosePlan).toHaveBeenCalledTimes(1);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(workspaceOnboardingStorageKey(42))).toBe('dismissed');
     expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
+  });
+
+  it('explains plan selection without exposing the previous local activation instructions', async () => {
+    await mount();
+    await act(async () => Simulate.click(buttonWithText('套餐说明')));
+    const help = document.querySelector('#workspace-assistant-help');
+    expect(document.querySelectorAll('dialog[open]')).toHaveLength(1);
+    expect(document.querySelector('.cc-workspace-onboarding-card[aria-labelledby="workspace-onboarding-title"][open]')).toBeNull();
+    expect(help.textContent).toContain('个人、团队与企业方案');
+    expect(help.textContent).not.toContain('激活系统自动分配的本地助手');
+    await act(async () => Simulate.click(buttonWithText('返回引导')));
+    expect(document.querySelector('#workspace-assistant-help')).toBeNull();
+    expect(document.querySelector('.cc-workspace-onboarding-card[open]')).not.toBeNull();
+  });
+
+  it('keeps the native onboarding dialog out of the top layer while another modal is open', async () => {
+    await mount({ secondaryModalOpen: true });
+    expect(document.querySelector('.cc-workspace-onboarding-card[open]')).toBeNull();
+    await mount({ secondaryModalOpen: false });
+    expect(document.querySelector('.cc-workspace-onboarding-card[open]')).not.toBeNull();
   });
 
   it('surfaces an invalid invite error without dismissing the onboarding', async () => {

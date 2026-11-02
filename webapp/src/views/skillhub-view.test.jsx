@@ -3099,8 +3099,8 @@ describe('SkillHubView', () => {
       await Promise.resolve();
       await new Promise(resolve => setTimeout(resolve, 0));
     });
-    expect(container.textContent).toContain('当前 Agent 已在服务器运行');
-    expect(container.textContent).toContain('已停止操作');
+    expect(container.textContent).toContain('当前助手的服务器需要升级，暂时无法读取工作区。');
+    expect(container.textContent).not.toContain('还没有自定义能力');
     expect(container.textContent).not.toContain('没有检测到支持 SkillHub 的在线 XiaoBa 运行环境');
     expect(requestSkillHubDeviceTool).not.toHaveBeenCalledWith(expect.objectContaining({
       toolName: 'skillhub.localBot.switch',
@@ -3110,6 +3110,46 @@ describe('SkillHubView', () => {
       request.toolName === 'skillhub.localWorkspace.get'
       && request.payload.bot_uid === '44'
     ))).toBe(false);
+  });
+
+  it('keeps background Runtime unavailability inside the workspace and recovers through refresh', async () => {
+    const desktop = {
+      deviceId: 'desktop-7', bodyId: 'desktop-body', runtimeRole: 'desktop',
+      active: true, routeConnected: true, routable: true,
+      capabilities: ['skillhub.localWorkspace.get', 'skillhub.localWorkspace.pagination.v1', 'skillhub.localSkill.share', 'skillhub.localSkill.finalize', 'skillhub.localBot.switch'],
+    };
+    api.getDevices.mockResolvedValue({ devices: [desktop] });
+    api.getBotBodyStatus.mockResolvedValue({ bot_uid: 42, bound: true, body_id: 'remote-body' });
+    await act(async () => root.render(<SkillHubView user={{ uid: 7 }} />));
+    expect(container.textContent).not.toContain('运行环境暂未连接');
+    expect(container.textContent).toContain('此能力已写入当前 Agent 的配置。');
+    await openCatalogue();
+    expect(container.textContent).not.toContain('运行环境暂未连接');
+    expect(container.querySelector('.cc-skillhub-alert.error')).toBeNull();
+    expect(requestSkillHubDeviceTool).not.toHaveBeenCalled();
+
+    await openCustomSkills();
+    expect(container.querySelector('.cc-skillhub-custom [role="status"]')?.textContent).toContain('当前助手的运行环境暂未连接。');
+    expect(container.textContent).not.toContain('还没有自定义能力');
+    const refresh = () => [...container.querySelectorAll('.cc-skillhub-local-actions button')].find(button => button.textContent.includes('刷新'));
+    await act(async () => Simulate.click(refresh()));
+    expect(api.getDevices).toHaveBeenCalledTimes(2);
+    expect(requestSkillHubDeviceTool).not.toHaveBeenCalled();
+
+    api.getDevices.mockResolvedValue({ devices: [desktop, {
+      ...desktop, deviceId: 'remote-42', bodyId: 'remote-body', runtimeRole: 'server', botUid: 42,
+    }] });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1', bot_uid: '42', active_bot_uid: '42',
+      skills: [{ local_skill_id: 'recovered', name: 'Recovered skill', relative_path: 'recovered' }],
+    });
+    await act(async () => Simulate.click(refresh()));
+    expect(container.textContent).not.toContain('运行环境暂未连接');
+    expect(container.textContent).toContain('Recovered skill');
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledTimes(1);
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'remote-42', toolName: 'skillhub.localWorkspace.get',
+    }));
   });
 
   it('keeps an offline server Runtime authoritative instead of switching the desktop Bot', async () => {
@@ -3196,8 +3236,8 @@ describe('SkillHubView', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     });
 
-    expect(container.textContent).toContain('服务器暂时离线或正在重连');
-    expect(container.textContent).toContain('已停止操作');
+    expect(container.textContent).toContain('当前助手的服务器暂未连接。');
+    expect(container.querySelector('.cc-skillhub-custom [role="alert"]')).toBeNull();
     expect(requestSkillHubDeviceTool).not.toHaveBeenCalledWith(expect.objectContaining({
       toolName: 'skillhub.localBot.switch',
       payload: expect.objectContaining({ bot_uid: '44' }),
@@ -3249,8 +3289,8 @@ describe('SkillHubView', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     });
 
-    expect(container.textContent).toContain('暂时无法确认当前 Agent 的运行环境绑定');
-    expect(container.textContent).toContain('已停止操作');
+    expect(container.textContent).toContain('暂时无法确认当前助手的运行环境。');
+    expect(container.textContent).not.toContain('还没有自定义能力');
     expect(requestSkillHubDeviceTool.mock.calls.some(([request]) => (
       request.toolName === 'skillhub.localBot.switch'
     ))).toBe(false);
@@ -4171,6 +4211,26 @@ describe('SkillHubView', () => {
     expect(container.textContent).toContain('已刷新，请再试一次');
   });
 
+  it('shows one capability loading indicator on initial load and manual refresh', async () => {
+    const initial = deferred();
+    const refresh = deferred();
+    api.getBotDefinitionSkills.mockReturnValueOnce(initial.promise).mockReturnValueOnce(refresh.promise);
+    await act(async () => root.render(<SkillHubView user={{ uid: 7 }} />));
+    const expectOneLoader = () => {
+      expect(container.querySelectorAll('.cc-loading-state')).toHaveLength(1);
+      expect(container.textContent).toContain('正在读取 Agent 能力');
+      expect(container.querySelector('.cc-skillhub-progress')).toBeNull();
+    };
+    expectOneLoader();
+    await act(async () => initial.resolve({ botId: '42', revision: 1, skills: [] }));
+    expect(container.querySelector('.cc-loading-state')).toBeNull();
+    await act(async () => Simulate.click(container.querySelector('[aria-label="刷新当前 Agent 的能力"]')));
+    expectOneLoader();
+    await act(async () => refresh.resolve({ botId: '42', revision: 2, skills: [] }));
+    expect(container.querySelector('.cc-loading-state')).toBeNull();
+    expect(container.textContent).toContain('还没有添加能力');
+  });
+
   it('ignores a late definition response after switching bots', async () => {
     const botA = deferred();
     const botB = deferred();
@@ -4200,6 +4260,8 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     expect(container.textContent).toContain('正在读取 Agent 能力');
+    expect(container.querySelectorAll('.cc-loading-state')).toHaveLength(1);
+    expect(container.querySelector('.cc-skillhub-progress')).toBeNull();
     expect(container.textContent).not.toContain('bot-a/skill');
     await act(async () => {
       botB.resolve({ revision: 2, skills: [{ source: 'skillhub', skillId: 'bot-b/skill', version: '1', contentHash: 'b'.repeat(64) }] });
