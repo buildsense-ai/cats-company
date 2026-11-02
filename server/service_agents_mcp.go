@@ -170,8 +170,21 @@ func (h *ServiceAgentsMCPHandler) buildServer(callerUID int64) *mcp.Server {
 	}
 	h.addRunStatusTool(srv, callerUID)
 	registered["catsco_run_status"] = struct{}{}
+	// 自分享：只有「调用者本身就是 bot、且它的 owner 在内测白名单里」才挂。
+	// 人的工具面里不该出现这个工具（面板上有），否则模型会拿着它去做本该人点的事。
+	if h.canSelfShare(callerUID) {
+		h.addSelfShareTool(context.Background(), srv, callerUID)
+		registered[serviceShareSelfToolName] = struct{}{}
+	}
 	h.registerLiveServer(callerUID, srv, registered)
 	return srv
+}
+
+// canSelfShare 是「能不能自分享」的注册期判定：与 handleShareSelf 里的校验同源，
+// 避免工具出现在不该出现的地方（人看到了只会误用）。
+func (h *ServiceAgentsMCPHandler) canSelfShare(callerUID int64) bool {
+	_, ok := h.selfShareOwner(callerUID)
+	return ok
 }
 
 func (h *ServiceAgentsMCPHandler) registerLiveServer(callerUID int64, srv *mcp.Server, tools map[string]struct{}) {
