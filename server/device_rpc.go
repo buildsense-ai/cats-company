@@ -337,7 +337,7 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		return
 	}
 	grant, ok := h.userDevices.lookupGrant(grantID)
-	if !ok {
+	if !ok || h.deviceGrantWasRevoked(grant) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "device grant is not active", map[string]interface{}{"request_id": requestID})
 		return
 	}
