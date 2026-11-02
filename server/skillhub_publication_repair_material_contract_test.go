@@ -176,9 +176,11 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	modelStore.task = snapshotPublicationRepairTask(task)
 	var sourceChecks, invocations int
 	var reportReadErr, materialReadErr error
+	var cloudReport *PublicationCloudValidationReport
 	reports := repairMaterialReportReaderFunc(func(readCtx context.Context, trusted store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
 		out, readErr := reportClient.Report(readCtx, trusted)
 		reportReadErr = readErr
+		cloudReport = out
 		return out, readErr
 	})
 	materials := repairOriginalMaterialReaderFunc(func(readCtx context.Context, trusted store.SkillHubPublicationCloudReceipt) ([]byte, error) {
@@ -204,7 +206,18 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	)
 	result, err := runPublicationRepairModel(ctx, modelStore, 1, lease, modelConfig, ports)
 	if err != nil || result == nil || result.call.Output == nil || result.call.Output.Text != "synthetic draft only" || invocations != 1 || sourceChecks < 5 {
-		t.Fatal("real Cloud reads did not compose through the constrained coordinator", err, "report read:", reportReadErr, "material read:", materialReadErr, "invocations:", invocations, "source checks:", sourceChecks)
+		if cloudReport == nil {
+			t.Fatal("real Cloud reads did not compose through the constrained coordinator", err, "report read:", reportReadErr, "material read:", materialReadErr, "report: nil", "invocations:", invocations, "source checks:", sourceChecks)
+		}
+		reportEvidence, evidenceErr := publicationRepairEvidence(cloudReport.Validation, receipt.Query.SourceSnapshotHash)
+		t.Fatal("real Cloud reads did not compose through the constrained coordinator", err,
+			"report read:", reportReadErr, "material read:", materialReadErr,
+			"report schema:", cloudReport.SchemaVersion, "receipt matches:", cloudReport.Receipt == publicationControlReceipt(receipt),
+			"report valid:", validPublicationValidationReport(cloudReport.Validation, receipt.Query.SourceSnapshotHash),
+			"outcome:", cloudReport.Validation.Outcome, "truncated:", cloudReport.Validation.Truncated,
+			"candidate matches:", cloudReport.Validation.CandidateHash == receipt.Query.SourceSnapshotHash,
+			"evidence matches:", evidenceErr == nil && reportEvidence == task.Input.Evidence, "evidence error:", evidenceErr,
+			"invocations:", invocations, "source checks:", sourceChecks)
 	}
 	if s := command("state"); s.Requests != 5 || !s.Unchanged || s.Commits != 0 || s.Permits != 0 {
 		t.Fatal("replay changed retained task", s)
