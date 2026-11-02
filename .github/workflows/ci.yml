@@ -539,6 +539,11 @@ jobs:
       - name: Validate prod compose
         run: docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/env.prod.example config
 
+      - name: Validate opt-in persistent runtime compose
+        run: |
+          OC_RUNTIME_STORE=redis OC_RUNTIME_REQUIRE_DURABLE=true OC_REDIS_URL=redis://runtime-redis:6379/0 \
+            docker compose --profile runtime-redis -f deploy/prod/docker-compose.yml --env-file deploy/prod/env.prod.example config --quiet
+
       # Guard the state-root trap: an overridden CTYUN_WORKER_STATE_ROOT must
       # move the container-side volume target with it, otherwise tenant-isolated
       # worker state silently escapes the persistent volume.
@@ -599,6 +604,7 @@ jobs:
           python3 deploy/website-nginx-config_test.py
           python3 deploy/nginx-config_test.py
           python3 deploy/compose-rollout_test.py
+          python3 deploy/runtime-storage_test.py
           python3 deploy/session-fork-config_test.py
 
   docker_images:
