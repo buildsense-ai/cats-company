@@ -166,12 +166,18 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	reportTransport := reportClient.client.Transport.(*http.Transport)
 	reportTransport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: ca}
 	t.Cleanup(reportTransport.CloseIdleConnections)
+	// Intake validates independently and persists its own immutable report ID.
+	// Seed the synthetic task from that exact retained report, as real admission does.
+	admissionReport, err := reportClient.Report(ctx, receipt)
+	if err != nil || admissionReport == nil || admissionReport.Receipt != publicationControlReceipt(receipt) {
+		t.Fatal("read retained Cloud report for synthetic admission", err)
+	}
 	modelStore, lease, modelConfig, _, _ := repairModelTestFixture(t)
 	task = modelStore.task
 	task.Input.Receipt = receipt
 	lease.EntryID = receipt.Query.EntryID
 	task.Rounds[0].Lease = lease
-	bindProjectionTestTask(t, &task, setup.Report)
+	bindProjectionTestTask(t, &task, admissionReport.Validation)
 	lease = task.Rounds[0].Lease
 	modelStore.task = snapshotPublicationRepairTask(task)
 	var sourceChecks, invocations int
@@ -219,17 +225,17 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 			"evidence matches:", evidenceErr == nil && reportEvidence == task.Input.Evidence, "evidence error:", evidenceErr,
 			"invocations:", invocations, "source checks:", sourceChecks)
 	}
-	if s := command("state"); s.Requests != 5 || !s.Unchanged || s.Commits != 0 || s.Permits != 0 {
+	if s := command("state"); s.Requests != 6 || !s.Unchanged || s.Commits != 0 || s.Permits != 0 {
 		t.Fatal("replay changed retained task", s)
 	}
 	command("disable")
 	denied(client)
-	if s := command("state"); s.Requests != 6 || !s.Unchanged {
+	if s := command("state"); s.Requests != 7 || !s.Unchanged {
 		t.Fatal("disabled read retried or mutated task", s)
 	}
 	command("enable")
 	exact(client)
-	if s := command("state"); s.Requests != 7 || !s.Unchanged {
+	if s := command("state"); s.Requests != 8 || !s.Unchanged {
 		t.Fatal("reenabled read changed task", s)
 	}
 	if s := command("cancel"); s.State != "cancelled" {
@@ -237,7 +243,7 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	}
 	command("restart")
 	denied(newClient())
-	if s := command("state"); s.Requests != 8 || s.State != "cancelled" || !s.CancelledUnchanged {
+	if s := command("state"); s.Requests != 9 || s.State != "cancelled" || !s.CancelledUnchanged {
 		t.Fatal("cancelled read retried or resurrected task", s)
 	}
 	t.Log("real CatsCo Cloud report/material clients -> Cloud HTTPS handlers -> PostgreSQL -> constrained coordinator and strict projection; Runtime verifier, provider and dispatch store synthetic; exactly one synthetic invocation; lost response without retry, reconstructed replay, disabled publisher/cancellation deny; zero Cloud commits/permits")
