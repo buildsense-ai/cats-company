@@ -39,9 +39,11 @@ type serviceShareSelfArgs struct {
 	Name   string `json:"name,omitempty" jsonschema:"应用名（省略则用 slug）"`
 	Slug   string `json:"slug,omitempty" jsonschema:"调用名，工具名是 catsco_<slug>；省略则按 name 生成，冲突自动加后缀"`
 	// 调用方 Agent 只凭这段文字决定要不要用，所以它是必填（private 除外）。
-	Description string          `json:"description,omitempty" jsonschema:"能做什么、什么情况下该用（分享给好友时必填）"`
-	InputSchema json.RawMessage `json:"input_schema,omitempty" jsonschema:"入参 JSON Schema（对象）"`
-	Visibility  string          `json:"visibility,omitempty" jsonschema:"private 或 friends（默认 friends）；public 只能本人到面板发布"`
+	Description string `json:"description,omitempty" jsonschema:"能做什么、什么情况下该用（分享给好友时必填）"`
+	// 用 map[string]any 而不是 json.RawMessage：SDK 会按 Go 类型推工具 schema，
+	// RawMessage 推出来是字符串，客户端传对象就会被参数校验挡掉（线上撞过）。
+	InputSchema map[string]any `json:"input_schema,omitempty" jsonschema:"入参 JSON Schema（对象，例如 {type:object,properties:{...}}）"`
+	Visibility  string         `json:"visibility,omitempty" jsonschema:"private 或 friends（默认 friends）；public 只能本人到面板发布"`
 }
 
 type serviceShareSelfResult struct {
@@ -245,7 +247,7 @@ func (h *ServiceAgentsMCPHandler) countSelfSharedAgents(ctx context.Context, own
 	return n, nil
 }
 
-func buildSelfShareDefinition(name, description string, inputSchema json.RawMessage, botUID int64) (json.RawMessage, error) {
+func buildSelfShareDefinition(name, description string, inputSchema map[string]any, botUID int64) (json.RawMessage, error) {
 	definition := map[string]any{
 		"name": name,
 		"runner": map[string]any{
@@ -261,7 +263,7 @@ func buildSelfShareDefinition(name, description string, inputSchema json.RawMess
 	if description != "" {
 		definition["description"] = description
 	}
-	if len(inputSchema) > 0 && string(inputSchema) != "null" {
+	if len(inputSchema) > 0 {
 		definition["input_schema"] = inputSchema
 	}
 	raw, err := json.Marshal(definition)
@@ -293,16 +295,16 @@ func normalizeSelfShareSlug(raw string) string {
 	return strings.Trim(builder.String(), "-")
 }
 
-func validateSelfShareInputSchema(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
+func validateSelfShareInputSchema(schema map[string]any) string {
+	if len(schema) == 0 {
 		return ""
-	}
-	var schema map[string]any
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		return "invalid_input_schema: input_schema 必须是 JSON 对象"
 	}
 	if t, ok := schema["type"].(string); ok && t != "" && t != "object" {
 		return "invalid_input_schema: input_schema.type 只能是 object（工具入参永远是一个对象）"
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return "invalid_input_schema: input_schema 不是合法 JSON"
 	}
 	if len(raw) > maxServiceAgentInputSchemaBytes {
 		return "invalid_input_schema: input_schema 太大（上限 8 KiB）"
