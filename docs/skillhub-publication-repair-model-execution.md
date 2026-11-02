@@ -171,10 +171,15 @@ only current-authority reads recover the same unconfirmed text/key and one
 waiting round. Its unit tests cover selector/text bounds, authority loss,
 changed journal/report/task evidence, cancellation, uncertain write recovery,
 pointer isolation, replay and concurrent consumers. The existing required
-`TestPublicationRepairModel` race selection includes the consumer tests.
-Runtime source/material/provider remain synthetic ports; this is not paid-model
-or real user/Cloud/Runtime end-to-end acceptance. Missing local PG DSN skips are
-not database passes.
+`TestPublicationRepairModel` race selection includes the consumer tests. A
+separate required source-paired contract also runs the live task/lease verifier
+inside the coordinator: it checks the pinned XiaoBa Runtime before and after
+dispatch grant and immediately before a single synthetic provider invocation;
+removing the source after grant is denied without invocation. The report,
+material and dispatch-store adapters in this paired coordinator case remain
+synthetic. This is not a combined real Runtime + Cloud material + coordinator
+database test, paid-model test or real-user end-to-end acceptance. Missing local
+PG DSN skips are not database passes.
 
 Real material/source/provider adapters, automatic safe format executor and task
 controller, multiround retained ancestry, both publication entry points'
