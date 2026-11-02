@@ -175,6 +175,17 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	lease = task.Rounds[0].Lease
 	modelStore.task = snapshotPublicationRepairTask(task)
 	var sourceChecks, invocations int
+	var reportReadErr, materialReadErr error
+	reports := repairMaterialReportReaderFunc(func(readCtx context.Context, trusted store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+		out, readErr := reportClient.Report(readCtx, trusted)
+		reportReadErr = readErr
+		return out, readErr
+	})
+	materials := repairOriginalMaterialReaderFunc(func(readCtx context.Context, trusted store.SkillHubPublicationCloudReceipt) ([]byte, error) {
+		out, readErr := client.readOriginal(readCtx, trusted)
+		materialReadErr = readErr
+		return out, readErr
+	})
 	ports := newPublicationRepairModelPorts(
 		func(_ context.Context, got store.SkillHubPublicationRepairTask, gotLease store.SkillHubPublicationRepairLease) error {
 			sourceChecks++
@@ -182,7 +193,7 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 				t.Fatal("Runtime verifier lost the synthetic task/lease binding")
 			}
 			return nil
-		}, reportClient, client,
+		}, reports, materials,
 		func(_ context.Context, request publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error) {
 			invocations++
 			if request.TaskID != task.ID || request.SourceText == "" || request.Report.CandidateHash != receipt.Query.SourceSnapshotHash {
@@ -193,7 +204,7 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	)
 	result, err := runPublicationRepairModel(ctx, modelStore, 1, lease, modelConfig, ports)
 	if err != nil || result == nil || result.call.Output == nil || result.call.Output.Text != "synthetic draft only" || invocations != 1 || sourceChecks < 5 {
-		t.Fatal("real Cloud reads did not compose through the constrained coordinator", err, invocations, sourceChecks)
+		t.Fatal("real Cloud reads did not compose through the constrained coordinator", err, "report read:", reportReadErr, "material read:", materialReadErr, "invocations:", invocations, "source checks:", sourceChecks)
 	}
 	if s := command("state"); s.Requests != 5 || !s.Unchanged || s.Commits != 0 || s.Permits != 0 {
 		t.Fatal("replay changed retained task", s)
