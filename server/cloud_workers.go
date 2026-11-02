@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/openchat/openchat/server/store"
@@ -109,6 +110,17 @@ type CloudWorkerHandler struct {
 	// purpose: a restart retries once, which is what we want after a deploy.
 	orphanMu           sync.Mutex
 	orphanRetryBlocked map[int64]time.Time
+
+	// orphanSweepInactiveOnce reports, once, why the orphan-credit backstop is
+	// not running. Two things disable it and neither is visible from the
+	// outside: the credit store not implementing the query (a wiring change, or
+	// a deployment whose adapter predates it) and an unconfigured provision
+	// script. Both used to be a bare `return`.
+	orphanSweepInactiveOnce sync.Once
+
+	// orphanSweepActive records that the backstop actually reached the store at
+	// least once, so /health-style checks can tell "running" from "silently off".
+	orphanSweepActive atomic.Bool
 
 	// Cloud provider reads take seconds and must never sit on the HTTP request
 	// path. Requests read the latest completed snapshot while one background
@@ -2044,8 +2056,13 @@ func (h *CloudWorkerHandler) retryOrphanedCloudWorkerCredits() {
 		ListOrphanedCloudWorkerCredits(time.Duration, int) ([]int64, error)
 	})
 	if !ok || h.provisionScript == "" {
+		// Say why, exactly once per reason. A silent type-assertion failure is
+		// the failure mode this whole backstop exists to remove: the sweep would
+		// be dead and every signal we have would still look healthy.
+		h.logOrphanSweepInactive(!ok, h.provisionScript == "")
 		return
 	}
+	h.orphanSweepActive.Store(true)
 	uids, err := store.ListOrphanedCloudWorkerCredits(cloudWorkerOrphanCreditMinAge, 5)
 	if err != nil {
 		log.Printf("[cloud-worker] orphaned credit sweep failed: %v", err)
@@ -2085,6 +2102,19 @@ func (h *CloudWorkerHandler) retryOrphanedCloudWorkerCredits() {
 			log.Printf("[cloud-worker] orphaned credit recovered uid=%d workers=%d", uid, len(after))
 		}
 	}
+}
+
+// logOrphanSweepInactive explains, once, why the orphan-credit backstop cannot
+// run. Kept separate from the caller so the reason list stays in one place.
+func (h *CloudWorkerHandler) logOrphanSweepInactive(storeUnsupported, noProvisionScript bool) {
+	h.orphanSweepInactiveOnce.Do(func() {
+		switch {
+		case noProvisionScript:
+			log.Printf("[cloud-worker] orphaned credit backstop is OFF: CATSCO_WORKER_PROVISION_SCRIPT is not configured, so a credit whose payment hook died can never be recovered automatically")
+		case storeUnsupported:
+			log.Printf("[cloud-worker] orphaned credit backstop is OFF: the credit store does not implement ListOrphanedCloudWorkerCredits (adapter older than the sweep?)")
+		}
+	})
 }
 
 // retryQueuedCloudWorkers retries buyers whose paid credit was parked because
