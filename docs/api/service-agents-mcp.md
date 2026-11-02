@@ -259,6 +259,41 @@ Agent，它看不到包内容、也没有主 Agent 的上下文，这段文字�
 - `input_schema` 写错只丢 schema、保留描述（描述才是主体；作者侧写错要报错，
   因为那是人主动提交的，这里是模型顺手给的）。
 
+
+## 自分享（`catsco_share_self`）：agent 可以把自己挂成工具
+
+上面那句「直接给 agent 一个发布工具是危险的」仍然成立 —— 所以给的不是发布工具，而是把
+那三个危险面逐个切掉之后剩下的那一小块：
+
+| 危险面 | 面板发布 | `catsco_share_self` |
+|---|---|---|
+| `runner.command` 写任意命令 | ✅ 可写 | ❌ 只生成 `runner:{type:"bot",bot_uid:<自己>}` |
+| `visibility: public` 对全平台放出 | ✅ 可写 | ❌ 只能 `private`/`friends`；传 `public` 直接报 `share_self_public_needs_owner` |
+| slug 写错覆盖别人的应用 | 409 报错 | 409 → 自动加 `-2`/`-3` 后缀，**不会覆盖** |
+| 挂别人的 bot | 归属校验 | ❌ `bot_uid` 取自调用者身份，参数里根本没有这个字段 |
+
+**可见性范围**：这个工具只在「调用者本身就是 bot、且它的 owner 在
+`CATSCO_SERVICE_CATALOG_UID_WHITELIST` 里」的 MCP 会话挂出来。人的工具面里没有它。
+
+**参数**
+
+```jsonc
+{ "action": "publish",            // publish（默认）| unpublish
+  "name": "杰克运维",
+  "slug": "jack-ops",             // 省略则按 name 生成
+  "description": "服务器排障派给杰克；用户问“为什么 502”时用",  // friends 必填
+  "input_schema": { "type": "object", "properties": { "text": { "type": "string" } } },
+  "visibility": "friends" }       // private | friends（默认 friends）
+```
+
+**边界（硬约束）**
+
+- 同一个 bot 最多分享成 `10` 个应用；超了报 `share_self_limit`。
+- `unpublish` 只能收回**自己挂的**（按 `definition.runner.bot_uid` 比对），收回即 `inactive`。
+- `definition.self_published = { bot_uid, at }` 留痕，出问题能看出「谁、什么时候放的」。
+- 每次 publish/unpublish 都记日志；目录变更会推 `list_changed`。
+- 与「加 bot 为好友」互不覆盖：自分享只写 `service_agents` 一条目录记录，
+  不触碰 channel agent binding；`friends` 可见性判定的仍然是**这个 bot 自己的好友**。
 ### 怎么让应用学会自述
 
 平台**不会**替应用生成描述 —— 外面没有「猜」的余地，只有应用自己知道自己什么时候该被找。
