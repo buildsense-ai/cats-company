@@ -57,6 +57,29 @@ type publicationRepairModelPorts struct {
 	InvokeOnce func(context.Context, publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error)
 }
 
+// newPublicationRepairModelPorts is the standard composition point for
+// the private source/report/material readers and the model coordinator. It
+// deliberately does not construct clients, load credentials, register a
+// worker, or enable a provider. Callers must supply the lease-bound Runtime
+// verifier and the already-configured read-only peers explicitly.
+func newPublicationRepairModelPorts(
+	verifySource func(context.Context, store.SkillHubPublicationRepairTask, store.SkillHubPublicationRepairLease) error,
+	reports publicationRepairValidationReportReader,
+	materials publicationRepairOriginalMaterialReader,
+	invokeOnce func(context.Context, publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error),
+) publicationRepairModelPorts {
+	if verifySource == nil || nilPublicationRepairReader(reports) || nilPublicationRepairReader(materials) || invokeOnce == nil {
+		return publicationRepairModelPorts{}
+	}
+	return publicationRepairModelPorts{
+		VerifySource: verifySource,
+		PrepareMaterial: func(ctx context.Context, task store.SkillHubPublicationRepairTask) (publicationRepairModelMaterial, error) {
+			return preparePublicationRepairModelMaterial(ctx, snapshotPublicationRepairTask(task), reports, materials)
+		},
+		InvokeOnce: invokeOnce,
+	}
+}
+
 type publicationRepairModelStore interface {
 	store.SkillHubPublicationRepairExecutionReader
 	store.SkillHubPublicationRepairModelCallStore

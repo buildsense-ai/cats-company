@@ -137,6 +137,137 @@ func repairModelTestFixture(t *testing.T) (*repairModelTestStore, store.SkillHub
 	return db, lease, publicationRepairModelConfig{Provider: "test-provider", Model: "test-model", MaxOutputTokens: 2048}, ports, calls
 }
 
+func TestPublicationRepairModelPortsComposeLeaseVerifierAndTrustedMaterialReaders(t *testing.T) {
+	raw, task, report := projectionTestInput(t, []projectionTestFile{{"SKILL.md", "---\nname: reader\n---\n", false}})
+	var reportReads, materialReads, invocations, verifications int
+	ports := newPublicationRepairModelPorts(
+		func(_ context.Context, got store.SkillHubPublicationRepairTask, lease store.SkillHubPublicationRepairLease) error {
+			verifications++
+			if got.ID != task.ID || !samePublicationRepairModelLease(lease, task.Rounds[0].Lease) {
+				t.Fatal("Runtime verifier was not bound to the captured task lease")
+			}
+			return nil
+		},
+		repairMaterialReportReaderFunc(func(_ context.Context, receipt store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+			reportReads++
+			if receipt != task.Input.Receipt {
+				t.Fatal("report reader received a caller-selected receipt")
+			}
+			return &PublicationCloudValidationReport{SchemaVersion: 1, Receipt: publicationControlReceipt(receipt), Validation: snapshotPublicationRepairModelReport(report)}, nil
+		}),
+		repairOriginalMaterialReaderFunc(func(_ context.Context, receipt store.SkillHubPublicationCloudReceipt) ([]byte, error) {
+			materialReads++
+			if receipt != task.Input.Receipt {
+				t.Fatal("material reader received a caller-selected receipt")
+			}
+			return append([]byte(nil), raw...), nil
+		}),
+		func(context.Context, publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error) {
+			invocations++
+			return store.SkillHubPublicationRepairModelOutput{Text: "synthetic only"}, nil
+		},
+	)
+	if ports.VerifySource == nil || ports.PrepareMaterial == nil || ports.InvokeOnce == nil {
+		t.Fatal("valid trusted dependencies did not compose")
+	}
+	if err := ports.VerifySource(context.Background(), task, task.Rounds[0].Lease); err != nil {
+		t.Fatal("lease-bound source verifier failed", err)
+	}
+	prepared, err := ports.PrepareMaterial(context.Background(), task)
+	if err != nil || prepared.SourceText == "" || prepared.Report.CandidateHash != report.CandidateHash || reportReads != 1 || materialReads != 1 {
+		t.Fatal("trusted readers did not produce coordinator material", err, reportReads, materialReads)
+	}
+	if verifications != 1 || invocations != 0 {
+		t.Fatal("material composition invoked provider or skipped source verification", verifications, invocations)
+	}
+
+	var nilReport *PublicationCommitCloudClient
+	var nilMaterial *publicationRepairMaterialClient
+	for name, got := range map[string]publicationRepairModelPorts{
+		"verifier": newPublicationRepairModelPorts(nil, repairMaterialReportReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+			return nil, nil
+		}), repairOriginalMaterialReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) ([]byte, error) { return nil, nil }), func(context.Context, publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error) {
+			return store.SkillHubPublicationRepairModelOutput{}, nil
+		}),
+		"report reader": newPublicationRepairModelPorts(ports.VerifySource, nilReport, repairOriginalMaterialReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) ([]byte, error) { return nil, nil }), ports.InvokeOnce),
+		"material reader": newPublicationRepairModelPorts(ports.VerifySource, repairMaterialReportReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+			return nil, nil
+		}), nilMaterial, ports.InvokeOnce),
+		"provider": newPublicationRepairModelPorts(ports.VerifySource, repairMaterialReportReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+			return nil, nil
+		}), repairOriginalMaterialReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) ([]byte, error) { return nil, nil }), nil),
+	} {
+		if got.VerifySource != nil || got.PrepareMaterial != nil || got.InvokeOnce != nil {
+			t.Fatalf("incomplete %s dependencies produced partially wired ports", name)
+		}
+	}
+}
+
+func TestPublicationRepairModelCoordinatorUsesComposedTrustedMaterial(t *testing.T) {
+	raw, task, report := projectionTestInput(t, []projectionTestFile{{"SKILL.md", "---\nname: reader\n---\n", false}})
+	db := &repairModelTestStore{task: snapshotPublicationRepairTask(task)}
+	lease := task.Rounds[0].Lease
+	var events []string
+	ports := newPublicationRepairModelPorts(
+		func(_ context.Context, got store.SkillHubPublicationRepairTask, gotLease store.SkillHubPublicationRepairLease) error {
+			events = append(events, "verify")
+			if got.ID != task.ID || !samePublicationRepairModelLease(gotLease, lease) {
+				t.Fatal("coordinator source verification lost exact task lease")
+			}
+			return nil
+		},
+		repairMaterialReportReaderFunc(func(_ context.Context, receipt store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+			events = append(events, "report")
+			if receipt != task.Input.Receipt {
+				t.Fatal("coordinator selected a different report receipt")
+			}
+			return &PublicationCloudValidationReport{SchemaVersion: 1, Receipt: publicationControlReceipt(receipt), Validation: snapshotPublicationRepairModelReport(report)}, nil
+		}),
+		repairOriginalMaterialReaderFunc(func(_ context.Context, receipt store.SkillHubPublicationCloudReceipt) ([]byte, error) {
+			events = append(events, "material")
+			if receipt != task.Input.Receipt {
+				t.Fatal("coordinator selected different candidate material")
+			}
+			return append([]byte(nil), raw...), nil
+		}),
+		func(_ context.Context, request publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error) {
+			events = append(events, "invoke")
+			if request.TaskID != task.ID || request.Round != lease.Input || request.SourceText == "" {
+				t.Fatal("coordinator invoked model without exact prepared material")
+			}
+			return store.SkillHubPublicationRepairModelOutput{Text: "synthetic draft"}, nil
+		},
+	)
+	result, err := runPublicationRepairModel(context.Background(), db, 1, lease,
+		publicationRepairModelConfig{Provider: "synthetic-provider", Model: "synthetic-model", MaxOutputTokens: 1024}, ports)
+	if err != nil || result == nil || result.call.Output == nil || result.call.Output.Text != "synthetic draft" || db.starts != 1 {
+		t.Fatal("coordinator did not complete composed material flow", err)
+	}
+	firstReport, firstMaterial, invoke := -1, -1, -1
+	for i, event := range events {
+		if event == "report" && firstReport < 0 {
+			firstReport = i
+		}
+		if event == "material" && firstMaterial < 0 {
+			firstMaterial = i
+		}
+		if event == "invoke" {
+			invoke = i
+		}
+	}
+	if firstReport < 0 || firstMaterial <= firstReport || invoke <= firstMaterial || events[invoke-1] != "verify" {
+		t.Fatal("model call was not bracketed by lease-bound source verification around material preparation", events)
+	}
+	for _, event := range events[:invoke] {
+		if event == "verify" {
+			continue
+		}
+		if event != "report" && event != "material" {
+			t.Fatal("unexpected pre-dispatch side effect", events)
+		}
+	}
+}
+
 func TestPublicationRepairModelRecoveryAndRequestBinding(t *testing.T) {
 	db, lease, config, ports, calls := repairModelTestFixture(t)
 	db.completeError = errors.New("lost completion reply PRIVATE")
