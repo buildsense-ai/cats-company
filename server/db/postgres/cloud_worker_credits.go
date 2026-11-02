@@ -210,11 +210,46 @@ func (a *Adapter) ReserveCloudWorkerConfiguredCredit(uid int64, reservation, pro
 	var selectedProfile, selectedBilling, selectedRuntimePlan string
 	var selectedRetention sql.NullInt64
 	var selectedExpiresAt sql.NullTime
+	// Which credit to spend is a real money decision, so the order is explicit:
+	//
+	//  1. The credit whose fleet matches the owner's *currently active* plan.
+	//     A credit is a purchased entitlement and a buyer can hold two (a legacy
+	//     dedicated-ECS package plus a new shared-fleet one). Spending the one
+	//     that matches what they are on delivers what they bought now and leaves
+	//     the other intact, instead of quietly opening a dedicated ECS for
+	//     somebody who just paid ¥99.
+	//  2. The shared container fleet next: its capacity is already paid for, so
+	//     it is the cheapest way to satisfy an unspecified request. The previous
+	//     order put public_ip first, which was right when the only alternative
+	//     was a dedicated private_nat instance — but packed_shared is a separate
+	//     product line, not a downgrade of public_ip, and ranking them together
+	//     meant an old public_ip credit could pre-empt a new shared one and buy
+	//     an ECS at roughly six times the cost.
+	//  3. public_ip before private_nat: unchanged from the original intent, so an
+	//     account holding both dedicated credits still gets the one it paid the
+	//     premium for.
+	//  4. Monthly before on-demand: on-demand is a temporary rate, and leaving a
+	//     monthly credit to expire later only wastes money.
+	//  5. Oldest first, so credits do not rot.
 	err = tx.QueryRow(`
-		SELECT id, deployment_profile, billing_mode, expires_at, retention_days, runtime_plan FROM cloud_worker_credits
-		WHERE uid = $1 AND state = 'available' AND ($2 = '' OR deployment_profile = $2) AND ($3 = '' OR billing_mode = $3)
-		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-		ORDER BY CASE WHEN billing_mode = 'month' THEN 0 ELSE 1 END, CASE WHEN deployment_profile = 'public_ip' THEN 0 ELSE 1 END, created_at, id
+		SELECT c.id, c.deployment_profile, c.billing_mode, c.expires_at, c.retention_days, c.runtime_plan
+		FROM cloud_worker_credits c
+		WHERE c.uid = $1 AND c.state = 'available' AND ($2 = '' OR c.deployment_profile = $2) AND ($3 = '' OR c.billing_mode = $3)
+		  AND (c.expires_at IS NULL OR c.expires_at > CURRENT_TIMESTAMP)
+		ORDER BY
+		  CASE WHEN EXISTS (
+		      SELECT 1
+		      FROM commercial_entitlements e
+		      JOIN commercial_plans p ON p.id = e.plan_id
+		      WHERE e.uid = c.uid AND e.state = 'active'
+		        AND e.starts_at <= CURRENT_TIMESTAMP
+		        AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+		        AND p.cloud_worker_deployment_profile = c.deployment_profile
+		  ) THEN 0 ELSE 1 END,
+		  CASE WHEN c.deployment_profile = 'packed_shared' THEN 0 ELSE 1 END,
+		  CASE WHEN c.deployment_profile = 'public_ip' THEN 0 ELSE 1 END,
+		  CASE WHEN c.billing_mode = 'month' THEN 0 ELSE 1 END,
+		  c.created_at, c.id
 		FOR UPDATE SKIP LOCKED LIMIT 1`, uid, profile, billing).Scan(&id, &selectedProfile, &selectedBilling, &selectedExpiresAt, &selectedRetention, &selectedRuntimePlan)
 	if err == sql.ErrNoRows {
 		return selection, false, nil
