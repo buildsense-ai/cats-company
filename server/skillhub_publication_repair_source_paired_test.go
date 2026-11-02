@@ -39,7 +39,10 @@ func startRepairSourcePairedRuntime(t *testing.T, mode string) *repairSourcePair
 	t.Helper()
 	xiaoba, node := os.Getenv("XIAOBA_REPAIR_PAIRED_ROOT"), os.Getenv("XIAOBA_REPAIR_PAIRED_NODE")
 	if xiaoba == "" || node == "" {
-		t.Skip("use scripts/test-publication-repair-source-paired.mjs for mandatory pinned Runtime contract")
+		if os.Getenv("CATSCO_REQUIRE_REPAIR_RUNTIME_CLOUD_CONTRACT") == "1" {
+			t.Fatal("XIAOBA_REPAIR_PAIRED_ROOT and XIAOBA_REPAIR_PAIRED_NODE are mandatory for the combined contract")
+		}
+		t.Skip("requires XIAOBA_REPAIR_PAIRED_ROOT and XIAOBA_REPAIR_PAIRED_NODE; use scripts/test-publication-repair-source-paired.mjs for mandatory pinned Runtime contract")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	cmd := exec.CommandContext(ctx, node, filepath.Join("..", "scripts", "fixtures", "publication-repair-source-runtime.mjs"), xiaoba, t.TempDir(), mode)
@@ -166,11 +169,11 @@ func repairSourcePairedFixtureEntryID(t *testing.T, r *repairSourcePairedRuntime
 			t.Fatal("wrong capture contract")
 		}
 		q := &s.app.Input.Receipt.Query
+		q.EntryID = entryID
 		q.RequestHash = result["requestHash"].(string)
 		q.SourceSnapshotHash = result["sourceSnapshotHash"].(string)
 		q.RequestBytes = int64(result["requestBytes"].(float64))
 		s.app.Input.Draft.Evidence.CandidateHash = q.SourceSnapshotHash
-		s.app.Input.Receipt.Query.EntryID = entryID
 		s.app = repairSourceApplicationForEntryID(t, s.app, entryID)
 		s.capture.Input.RequestHash, s.capture.Input.SourceSnapshotHash, s.capture.Input.RequestBytes = q.RequestHash, q.SourceSnapshotHash, q.RequestBytes
 		s.capture.Input.EntryID = entryID

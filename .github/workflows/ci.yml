@@ -145,7 +145,7 @@ jobs:
       - name: Install pinned XiaoBa Runtime dependencies
         working-directory: XiaoBa-CLI
         run: npm ci --prefer-offline --no-audit --fund=false
-      - name: Verify real Runtime + Cloud/PostgreSQL composition
+      - name: Verify Runtime + Cloud composition and exotic encoding vectors
         working-directory: cats-company
         env:
           SKILLHUB_REPAIR_MATERIAL_ROOT: ${{ github.workspace }}/skillhub-cloud
@@ -157,10 +157,6 @@ jobs:
           node scripts/test-publication-repair-runtime-cloud-paired.mjs
       - name: Verify remaining material unit and projection contracts
         working-directory: cats-company
-        env:
-          SKILLHUB_REPAIR_MATERIAL_ROOT: ${{ github.workspace }}/skillhub-cloud
-          SKILLHUB_TEST_DATABASE_URL: postgres://catsco:catsco_test@127.0.0.1:5432/repair_material_test?sslmode=disable
-          CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT: '1'
         run: go test -race ./server -run '^TestPublicationRepairMaterial(Client|Projection)' -count=1 -v
 
   # DB 契约测试独立成 job：与 backend（编译/单测/race/漏洞扫描）并行，

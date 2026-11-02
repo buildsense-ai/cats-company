@@ -179,7 +179,12 @@ removing the source after grant is denied without invocation. The required
 Runtime+Cloud/PostgreSQL contract now also uses the same exact Runtime-captured
 candidate for real Cloud rejection/report/material reads and invokes the live
 Runtime verifier at coordinator fences. Its provider and dispatch journal remain
-synthetic. Neither paired contract is a paid-model test or real-user end-to-end
+synthetic. The same mandatory runner separately preserves the original exotic
+Unicode/JSON-escaping Cloud vectors with a synthetic Runtime verifier. It sets
+`CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT=1` for both modes and additionally
+`CATSCO_REQUIRE_REPAIR_RUNTIME_CLOUD_CONTRACT=1` for the real Runtime mode,
+rejecting missing Runtime root/Node settings and every skip. Neither paired
+contract is a paid-model test or real-user end-to-end
 acceptance. Missing local PG DSN skips are not database passes.
 
 Real material/source/provider adapters, automatic safe format executor and task

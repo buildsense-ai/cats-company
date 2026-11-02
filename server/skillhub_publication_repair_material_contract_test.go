@@ -24,7 +24,7 @@ import (
 
 func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	if os.Getenv("SKILLHUB_REPAIR_MATERIAL_ROOT") == "" || os.Getenv("SKILLHUB_TEST_DATABASE_URL") == "" {
-		if os.Getenv("CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT") == "1" {
+		if os.Getenv("CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT") == "1" || os.Getenv("CATSCO_REQUIRE_REPAIR_RUNTIME_CLOUD_CONTRACT") == "1" {
 			t.Fatal("real Cloud checkout and PostgreSQL are mandatory")
 		}
 		t.Skip("requires Cloud checkout and migrated PostgreSQL")
@@ -47,10 +47,9 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 		if err := os.WriteFile(candidatePath, captured.Body, 0o600); err != nil {
 			t.Fatal("write isolated candidate fixture", err)
 		}
-		runtimeStore.capture.Input.RequestHash = captured.RequestHash
-		runtimeStore.capture.Input.SourceSnapshotHash = captured.SourceSnapshotHash
-		runtimeStore.capture.Input.RequestBytes = captured.RequestBytes
-		if runtimeStore.app.Input.Receipt.Query.RequestHash != captured.RequestHash || runtimeStore.app.Input.Receipt.Query.SourceSnapshotHash != captured.SourceSnapshotHash || runtimeStore.app.Input.Receipt.Query.RequestBytes != captured.RequestBytes {
+		capture := runtimeStore.capture.Input
+		if capture.EntryID != captured.EntryID || capture.RequestHash != captured.RequestHash || capture.SourceSnapshotHash != captured.SourceSnapshotHash || capture.RequestBytes != captured.RequestBytes ||
+			runtimeStore.app.Input.Receipt.Query.RequestHash != captured.RequestHash || runtimeStore.app.Input.Receipt.Query.SourceSnapshotHash != captured.SourceSnapshotHash || runtimeStore.app.Input.Receipt.Query.RequestBytes != captured.RequestBytes {
 			t.Fatal("local source authority fixture lost the Runtime capture binding")
 		}
 	} else if os.Getenv("CATSCO_REQUIRE_REPAIR_RUNTIME_CLOUD_CONTRACT") == "1" {
@@ -297,6 +296,9 @@ func TestPublicationRepairMaterialCloudPostgres(t *testing.T) {
 	if runtime != nil {
 		t.Log("same captured Runtime candidate -> real Cloud HTTPS/PostgreSQL rejection, report and original-material reads -> constrained coordinator with real Runtime source checks; synthetic provider/dispatch only, no publication commits/permits")
 	} else {
+		// The mandatory runner separately exercises the Cloud-owned Unicode
+		// vectors in this mode, with only Runtime authority synthetic.
+		t.Log("Cloud-owned exotic encoding vectors exercised")
 		t.Log("real CatsCo Cloud report/material clients -> Cloud HTTPS handlers -> PostgreSQL -> constrained coordinator and strict projection; Runtime verifier, provider and dispatch store synthetic; exactly one synthetic invocation; lost response without retry, reconstructed replay, disabled publisher/cancellation deny; zero Cloud commits/permits")
 	}
 }

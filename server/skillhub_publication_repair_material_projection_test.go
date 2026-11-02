@@ -39,7 +39,8 @@ func projectionTestInput(t *testing.T, files []projectionTestFile) ([]byte, stor
 	}
 	sort.Slice(facts, func(i, j int) bool { return facts[i]["path"].(string) < facts[j]["path"].(string) })
 	// Unit fixture uses Go JSON for ASCII facts only; independent Cloud/Node
-	// vectors in mandatory paired CI prove UTF-8 order/JSON.stringify fidelity.
+	// vectors in mandatory paired CI's separate cloud-exotic-vectors run prove
+	// UTF-8 order/JSON.stringify fidelity (not the ASCII Runtime fixture).
 	canonical, _ := json.Marshal(map[string]any{"domain": "skillhub-publish-candidate-v1", "manifest": map[string]any{}, "files": facts})
 	raw, _ := json.Marshal(map[string]any{"source": map[string]any{"type": "files", "files": entries}})
 	db, _, _, ports, _ := repairModelTestFixture(t)

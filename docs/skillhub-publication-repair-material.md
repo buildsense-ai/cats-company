@@ -98,13 +98,23 @@ Runtime, verifies matching entry ID/request hash/source hash/byte length at
 Cloud admission, then routes that retained Cloud report and original bytes
 through the coordinator while every source fence calls the live pinned Runtime.
 The fixture's upstream upload-grant introspection, local task, provider and
-dispatch journal are synthetic. It projects actual Cloud bytes/report and
-verifies semantic hashes across non-BMP and BMP-private-use path sorting,
-U+2028/U+2029/ampersand escaping and Base64, while preserving the source entry
-index. This is not a production/paid end-to-end test.
+dispatch journal are synthetic. The same mandatory runner then runs the test
+again in `cloud-exotic-vectors` mode, explicitly clearing the Runtime settings
+and candidate override. That second run uses Cloud's non-BMP/BMP-private-use
+paths, U+2028/U+2029/ampersand escaping and Base64 vectors, while preserving the
+original source entry index. Only that second run uses a synthetic Runtime
+verifier; it still uses real Cloud HTTPS/PostgreSQL report/material reads and
+the coordinator. Both runs must pass without skips. This is not a
+production/paid end-to-end test.
 
-Local runs without PostgreSQL/Cloud dependencies explicitly skip the paired test;
-CI sets `CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT=1` so missing dependencies fail.
+Local runs without PostgreSQL/Cloud dependencies explicitly skip the paired test.
+The mandatory runner sets `CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT=1` for both
+modes so missing Cloud/PostgreSQL dependencies fail. It additionally sets
+`CATSCO_REQUIRE_REPAIR_RUNTIME_CLOUD_CONTRACT=1` for `runtime-cloud`, requiring
+both `XIAOBA_REPAIR_PAIRED_ROOT` and `XIAOBA_REPAIR_PAIRED_NODE`; missing either
+fails with the dependency names instead of silently falling back to a synthetic
+Runtime. The runner requires the Node executable setting and database URL up
+front. Neither flag applies to the separate client/projection-only unit step.
 
 ```sh
 go test ./server -run '^TestPublicationRepairMaterial' -count=1 -v
