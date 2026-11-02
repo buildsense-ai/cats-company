@@ -263,3 +263,17 @@ func TestSelfShareLimitPerBot(t *testing.T) {
 		t.Fatalf("result = %q，超过上限应拒绝", shareText(t, result))
 	}
 }
+
+// 清单重算（publish 自身就会触发）不能把平台自带工具当「已下架」摘掉：
+// 线上实测过 —— 分享成功后工具立刻消失，bot 再也收不回来。
+func TestServiceSystemToolsSurviveCatalogRefresh(t *testing.T) {
+	if !isServiceSystemTool("catsco_run_status") {
+		t.Fatal("catsco_run_status 必须免于清单重算移除")
+	}
+	if !isServiceSystemTool(serviceShareSelfToolName) {
+		t.Fatal("catsco_share_self 必须免于清单重算移除")
+	}
+	if isServiceSystemTool("catsco_jack-ops") {
+		t.Fatal("agent 工具应该参与清单重算（下架就要摘掉）")
+	}
+}

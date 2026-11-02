@@ -187,6 +187,18 @@ func (h *ServiceAgentsMCPHandler) canSelfShare(callerUID int64) bool {
 	return ok
 }
 
+// isServiceSystemTool 判断是不是平台自带工具（不属于任何 agent）。
+//
+// 这类工具在「清单重算」时必须原样保留：它们不对应目录里的条目，混进删除列表就会被
+// 当成「已下架」摘掉，而 SDK 只在客户端重新 list 时才回来。
+func isServiceSystemTool(name string) bool {
+	switch name {
+	case "catsco_run_status", serviceShareSelfToolName:
+		return true
+	}
+	return false
+}
+
 func (h *ServiceAgentsMCPHandler) registerLiveServer(callerUID int64, srv *mcp.Server, tools map[string]struct{}) {
 	h.liveMu.Lock()
 	defer h.liveMu.Unlock()
@@ -218,7 +230,10 @@ func (h *ServiceAgentsMCPHandler) NotifySubscriptionChanged(callerUID int64) {
 		}
 		removeNames := make([]string, 0)
 		for name := range tools {
-			if name == "catsco_run_status" {
+			// 平台自带工具不属于任何 agent：清单重算不能把它们当「已下架」摘掉。
+			// 漏掉的后果很实在：bot 自分享成功会立刻触发清单重算，分享工具被移除后
+			// 它就再也没法收回或再分享 —— 线上实测正是这么炸的。
+			if isServiceSystemTool(name) {
 				continue
 			}
 			if _, ok := desired[name]; !ok {
