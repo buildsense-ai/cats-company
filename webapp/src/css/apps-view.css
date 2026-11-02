@@ -149,6 +149,14 @@ html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-apps-page {
   white-space: nowrap;
 }
 
+.cc-apps-loading-progress {
+  margin: 10px 0 14px;
+  color: var(--cc-text-secondary, #69707d);
+  font-size: 12px;
+  line-height: 1.4;
+  min-height: 17px;
+}
+
 .cc-apps-results { animation: cc-app-results-appear var(--cc-motion-content) var(--cc-motion-ease); }
 
 @keyframes cc-app-results-appear {

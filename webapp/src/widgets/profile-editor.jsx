@@ -88,7 +88,7 @@ export default function ProfileEditor({
   const userUID = user?.uid || user?.id || '';
   const currentThemeLabel = THEME_OPTIONS.find(({ id }) => id === theme)?.label || '浅色';
 
-  useDialogBehavior(modalRef, { onClose, returnFocusRef });
+  useDialogBehavior(modalRef, { onClose, returnFocusRef, initialFocus: 'heading' });
 
   useEffect(() => {
     if (window.matchMedia?.('(max-width: 768px)').matches) {
@@ -203,7 +203,7 @@ export default function ProfileEditor({
       >
         <div className="oc-profile-editor-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3 id="profile-editor-dialog-title">设置与资料</h3>
+            <h3 id="profile-editor-dialog-title" tabIndex={-1} className="cc-dialog-reading-focus">设置与资料</h3>
             <p id="profile-editor-dialog-description">资料需保存，外观与使用偏好即时生效。</p>
           </div>
           <button

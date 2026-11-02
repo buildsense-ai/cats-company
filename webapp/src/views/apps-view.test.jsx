@@ -89,6 +89,28 @@ describe('AppsView', () => {
     expect(container.querySelector('.cc-apps-page').getAttribute('aria-busy')).toBe('false');
   });
 
+  test('shows each Agent application as soon as its request resolves', async () => {
+    const finishes = {};
+    mocks.listArtifactApps.mockImplementation((uid) => new Promise((resolve) => { finishes[uid] = resolve; }));
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+    expect(titles()).toEqual([]);
+    expect(container.textContent).toContain('正在读取 2 个');
+
+    await act(async () => finishes['43']({ apps: [{ id: 'first', title: '先到的应用', url: 'https://artifact.catsco.cc/first/' }] }));
+    expect(titles()).toEqual(['先到的应用']);
+    expect(container.textContent).toContain('已加载 1 个 Agent，正在读取 1 个');
+
+    await act(async () => {
+      finishes['42']({ apps: [{ id: 'second', title: '后到的应用', url: 'https://artifact.catsco.cc/second/' }] });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(titles()).toHaveLength(2);
+    expect(titles()).toContain('先到的应用');
+    expect(titles()).toContain('后到的应用');
+    expect(container.querySelector('.cc-apps-loading-progress')).toBeNull();
+  });
+
   test('never flashes the loading motion on a fast load', async () => {
     vi.useFakeTimers();
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
@@ -345,6 +367,19 @@ describe('AppsView', () => {
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
     expect(titles()).toEqual(['Saturday 演示应用']);
     expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test('removes stale cards when an Agent now reports that it only has the legacy catalogue', async () => {
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+    const original = mocks.listArtifactApps.getMockImplementation();
+    mocks.listArtifactApps.mockImplementation(async (uid) => {
+      if (uid === '43') throw Object.assign(new Error('not found'), { status: 404 });
+      return { apps: [] };
+    });
+    await act(async () => { container.querySelector('.cc-apps-refresh').click(); });
+    expect(titles()).toEqual([]);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    mocks.listArtifactApps.mockImplementation(original);
   });
 
   test('does not claim to show remaining apps when every Agent request fails', async () => {

@@ -7515,17 +7515,68 @@ html[data-theme] .cc-agent-manager .cc-agent-hub-empty .cc-agent-empty-action:fo
 }
 
 .cc-agent-manager-body.cc-agent-manager-hub-body {
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* The body owns scrolling, including wheel gestures between cards and in the
+ * right gutter. The header remains outside this scroll container. */
+.oc-modal.cc-agent-manager.cc-agent-manager-hub {
+  --cc-agent-hub-right-inset: 44px;
+  padding-right: 0;
+}
+
+.cc-agent-manager-hub .cc-agent-manager-header {
+  padding-right: var(--cc-agent-hub-right-inset);
+}
+
+.cc-agent-manager-hub .cc-agent-manager-header::after {
+  right: var(--cc-agent-hub-right-inset);
+}
+
+.cc-agent-manager-hub .cc-agent-manager-body {
+  padding-right: 0;
+}
+
+.cc-agent-manager-hub .cc-agent-roster-toolbar {
+  padding-right: var(--cc-agent-hub-right-inset);
+}
+
+.cc-agent-manager-hub .cc-agent-cloud-manage-entry {
+  margin-right: var(--cc-agent-hub-right-inset);
+}
+
+.cc-agent-manager-hub .cc-agent-hub-grid {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  max-height: none;
+  padding-right: var(--cc-agent-hub-right-inset);
+  overflow: visible;
 }
 
 .cc-agent-manager-hub-body .cc-agent-hub {
-  height: 100%;
+  flex: 1 0 auto;
+  height: auto;
+  min-height: 0;
 }
 
 .cc-agent-manager-hub-body .cc-agent-hub-state,
 .cc-agent-manager-hub-body .cc-agent-hub-empty {
   flex: 1 1 auto;
   min-height: 0;
+}
+.cc-agent-manager-hub-body .cc-agent-hub-state.cc-loading-state {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 var(--cc-agent-hub-right-inset, 44px) 0 0;
+  gap: 12px;
+}
+.cc-agent-manager-hub-body .cc-agent-hub-state .cc-loading-motion {
+  flex: 0 0 44px;
+  width: 112px;
+  height: 44px;
 }
 
 .cc-agent-manage-form,
@@ -11599,8 +11650,8 @@ html[data-theme="liquid"] .v3-chat-item.active {
 @media (max-width: 520px) {
   .cc-agent-manager-hub-body .cc-agent-card-invite-row { gap: 8px; }
   .cc-agent-manager-hub-body .cc-agent-card-invite-value { font-size: 13px; letter-spacing: 0; }
-  .oc-modal.cc-agent-manager.cc-agent-manager-hub { padding: 16px; }
-  .cc-agent-manager-hub .cc-agent-manager-header { padding: 0 0 12px; }
+  .oc-modal.cc-agent-manager.cc-agent-manager-hub { --cc-agent-hub-right-inset: 16px; padding: 16px 0 16px 16px; }
+  .cc-agent-manager-hub .cc-agent-manager-header { padding: 0 var(--cc-agent-hub-right-inset) 12px 0; }
   .cc-agent-manager-hub .cc-agent-manager-body { padding: 12px 0 0; }
   .cc-agent-manager-hub .cc-agent-manager-title { font-size: 14px; gap: 6px; white-space: nowrap; }
   .cc-agent-manager-hub .cc-agent-manager-title > svg { width: 18px; }

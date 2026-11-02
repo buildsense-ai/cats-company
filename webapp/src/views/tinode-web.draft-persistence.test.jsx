@@ -180,8 +180,8 @@ vi.mock('../widgets/desktop-connect-modal', () => ({
 }));
 vi.mock('../widgets/feedback-modal', () => ({ default: () => null }));
 vi.mock('../widgets/relay-access-modal', () => ({
-  default: ({ onClose }) => (
-    <section data-testid="relay-access-modal">
+  default: ({ onClose, initialPlanChooserOpen = false }) => (
+    <section data-testid="relay-access-modal" data-plan-chooser={String(initialPlanChooserOpen)}>
       <button type="button" onClick={onClose}>关闭套餐与权益</button>
     </section>
   ),
@@ -434,7 +434,7 @@ test('restores empty-workspace composer focus after automatic onboarding closes'
   expect(document.activeElement).toBe(composer);
 });
 
-test('does not repeat onboarding after its local download handoff closes', async () => {
+test('does not repeat onboarding after its plan chooser handoff closes', async () => {
   setCachedUser('2026-09-18T00:00:01Z');
 
   await act(async () => {
@@ -444,17 +444,17 @@ test('does not repeat onboarding after its local download handoff closes', async
   });
 
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
-  const downloadButton = [...document.querySelectorAll('button')]
-    .find((button) => button.textContent.includes('下载桌面端'));
+  const planButton = [...document.querySelectorAll('button')]
+    .find((button) => button.textContent.includes('查看套餐'));
   await act(async () => {
-    downloadButton.click();
+    planButton.click();
   });
 
-  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('download'));
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="relay-access-modal"]')?.dataset.planChooser).toBe('true'));
   expect(localStorage.getItem(workspaceOnboardingStorageKey(1))).toBe('dismissed');
 
   await act(async () => {
-    container.querySelector('[data-testid="desktop-connect-modal"] button').click();
+    container.querySelector('[data-testid="relay-access-modal"] button').click();
   });
   expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
 });
@@ -637,17 +637,17 @@ test('restores SkillHub entry focus when onboarding replay closes over SkillHub'
   expect(document.activeElement).toBe(skillHubEntry);
 });
 
-test('replays onboarding from the settings entry over an active conversation and hands off download', async () => {
+test('replays onboarding from the settings entry over an active conversation and opens the plan chooser', async () => {
   setCachedUser('2026-09-17T23:59:59Z');
   await act(async () => renderWorkspace());
   await openOnboardingReplayFromSettingsEntry();
 
   await act(async () => {
     [...document.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('下载桌面端')).click();
+      .find((button) => button.textContent.includes('查看套餐')).click();
   });
 
-  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('download'));
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="relay-access-modal"]')?.dataset.planChooser).toBe('true'));
   expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
   expect(localStorage.getItem(workspaceOnboardingStorageKey(1))).toBe('dismissed');
 });

@@ -83,6 +83,8 @@ describe('entry bundle split', () => {
       '../css/catsco-secondary-headers.css',
       '../css/catsco-settings-controls.css',
       '../css/catsco-secondary-surfaces.css',
+      '../css/relay-access-account.css',
+      '../css/catsco-account-dialogs.css',
       '../css/search-overlay.css',
       '../css/catsco-input-states.css',
       '../css/catsco-app-focus.css',

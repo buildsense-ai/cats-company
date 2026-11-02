@@ -45,6 +45,19 @@ describe('ProfileEditor appearance settings', () => {
     });
   }
 
+  it('starts at the heading and keeps both Tab directions inside the dialog', async () => {
+    await renderEditor();
+    const heading = container.querySelector('#profile-editor-dialog-title');
+    const close = container.querySelector('.oc-profile-editor-close');
+    const save = container.querySelector('.oc-profile-editor-actions .oc-btn-primary');
+    expect(document.activeElement).toBe(heading);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(close);
+    heading.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(save);
+  });
+
   it('shows four explicit themes and selects an available theme', async () => {
     const onThemeChange = vi.fn();
     await renderEditor({ onThemeChange });

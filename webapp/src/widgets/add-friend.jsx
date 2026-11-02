@@ -34,7 +34,7 @@ function FriendSearchModeSelect({ value, onValueChange }) {
   );
 }
 
-export default function AddFriend({ currentUser, onClose, onSent, initialFocus = 'search' }) {
+export default function AddFriend({ currentUser, onClose, onSent, initialFocus = 'search', returnFocusRef }) {
   const [query, setQuery] = useState('');
   const [searchMode, setSearchMode] = useState('name');
   const [message, setMessage] = useState(() => defaultFriendMessage(currentUser));
@@ -55,7 +55,7 @@ export default function AddFriend({ currentUser, onClose, onSent, initialFocus =
   const [inviteCode, setInviteCode] = useState('');
   const [redeemingInvite, setRedeemingInvite] = useState(false);
   const [inviteSuccess, setInviteSuccess] = useState(false);
-  useDialogBehavior(dialogRef, { onClose, initialFocusRef: initialFocus === 'invite' ? inviteInputRef : searchInputRef });
+  useDialogBehavior(dialogRef, { onClose, returnFocusRef, initialFocusRef: initialFocus === 'invite' ? inviteInputRef : searchInputRef });
 
   useEffect(() => {
     loadPending();

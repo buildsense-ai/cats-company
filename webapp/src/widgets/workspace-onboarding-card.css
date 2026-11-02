@@ -1,41 +1,45 @@
 .cc-workspace-onboarding-card {
   box-sizing: border-box;
-  width: min(860px, calc(100% - 48px));
-  max-height: calc(100dvh - 80px);
-  margin: clamp(20px, 4vh, 48px) auto auto;
-  padding: 28px 40px 20px;
+  width: min(820px, calc(100% - 48px));
+  max-height: calc(100dvh - 48px);
+  margin: auto;
+  padding: 32px 32px 20px;
   overflow-y: auto;
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-lg);
   background: var(--cc-panel);
   color: var(--cc-text);
   text-align: left;
-  box-shadow: var(--cc-liquid-shadow, 0 22px 60px rgb(0 0 0 / 34%));
+  box-shadow: 0 18px 48px rgb(0 0 0 / 18%);
   font-family: var(--cc-font-sans);
 }
 .cc-workspace-onboarding-card[open] { animation: cc-onboarding-appear 220ms ease-out; }
-.cc-workspace-onboarding-card::backdrop { background: var(--cc-modal-backdrop); backdrop-filter: blur(3px); }
+.cc-workspace-onboarding-card::backdrop { background: color-mix(in srgb, var(--cc-modal-backdrop) 80%, transparent); backdrop-filter: blur(2px); }
 .cc-workspace-onboarding-heading { padding-right: 24px; }
-.cc-workspace-onboarding-card h1 { margin: 0; font-size: clamp(28px, 3.5vw, 32px); line-height: 1.3; font-weight: var(--cc-font-weight-semibold); letter-spacing: -.02em; }
+.cc-workspace-onboarding-card h1 { margin: 0; font-size: 28px; line-height: 1.4; font-weight: var(--cc-font-weight-semibold); letter-spacing: -.01em; }
 .cc-workspace-onboarding-card h1:focus { outline: none; }
-.cc-workspace-onboarding-card h2 { margin: 0; font-size: 17px; line-height: 26px; font-weight: var(--cc-font-weight-semibold); }
+.cc-workspace-onboarding-card h2 { margin: 0; font-size: 16px; line-height: 24px; font-weight: var(--cc-font-weight-semibold); }
 .cc-workspace-onboarding-card p { margin: 16px 0 0; color: var(--cc-text-secondary); font-size: 14px; line-height: 1.75; }
-.cc-workspace-onboarding-heading .cc-workspace-onboarding-greeting { margin: 0 0 12px; color: var(--cc-muted); font-size: 12px; }
+.cc-workspace-onboarding-heading .cc-workspace-onboarding-greeting { margin: 0 0 10px; color: var(--cc-muted); font-size: 12px; }
+.cc-workspace-onboarding-choice .cc-workspace-onboarding-heading { padding-right: 0; }
+.cc-workspace-onboarding-choice .cc-workspace-onboarding-heading h1 { line-height: 1.2; text-align: center; }
+.cc-workspace-onboarding-choice .cc-workspace-onboarding-heading > p:last-child { margin-top: 2px; line-height: 1.5; text-align: center; }
+.cc-workspace-onboarding-choice .cc-workspace-onboarding-greeting { margin-bottom: 6px; text-align: center; }
 .cc-workspace-onboarding-brand { color: var(--cc-accent-text); font-weight: var(--cc-font-weight-medium); }
 .cc-workspace-onboarding-card button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 10px 16px; border: 1px solid var(--cc-border); border-radius: var(--cc-radius-md); background: var(--cc-secondary-action-bg); color: var(--cc-secondary-action-text); font: inherit; font-size: 14px; cursor: pointer; transition: background-color 200ms ease, border-color 200ms ease; }
 .cc-workspace-onboarding-card button:hover:not(:disabled) { background: var(--cc-secondary-action-bg-hover); }
 .cc-workspace-onboarding-card button:disabled { opacity: .4; cursor: not-allowed; }
 .cc-workspace-onboarding-card button:focus-visible { outline: 2px solid var(--cc-text-secondary); outline-offset: 3px; }
-.cc-workspace-onboarding-card .cc-workspace-onboarding-close { position: absolute; top: 22px; right: 22px; min-height: 32px; padding: 6px; border: 0; background: transparent; color: var(--cc-muted); }
-.cc-workspace-onboarding-methods { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 32px; align-items: start; }
-.cc-workspace-onboarding-method { min-width: 0; padding: 24px; border: 1px solid var(--cc-border); border-radius: var(--cc-radius-lg); background: var(--cc-panel-raised); }
+.cc-workspace-onboarding-card .cc-workspace-onboarding-close { position: absolute; top: 20px; right: 20px; min-height: 32px; padding: 6px; border: 0; background: transparent; color: var(--cc-muted); }
+.cc-workspace-onboarding-methods { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 20px; align-items: stretch; }
+.cc-workspace-onboarding-method { display: flex; flex-direction: column; min-width: 0; padding: 22px; border: 1px solid var(--cc-border); border-radius: var(--cc-radius-lg); background: color-mix(in srgb, var(--cc-panel-raised) 55%, var(--cc-panel)); }
 .cc-workspace-onboarding-method-heading { display: flex; align-items: center; gap: 10px; }
 .cc-workspace-onboarding-method-heading svg { flex: 0 0 auto; color: var(--cc-accent-text); }
-.cc-workspace-onboarding-method > p { min-height: 49px; margin: 12px 0 24px; }
-.cc-workspace-onboarding-method-actions { box-sizing: border-box; display: grid; grid-template-columns: repeat(2, minmax(0, 112px)); justify-content: end; align-items: center; gap: 8px; margin-inline-end: -8px; }
-.cc-workspace-onboarding-method-actions > button { box-sizing: border-box; width: 100%; min-width: 0; height: 36px; min-height: 36px; padding: 0 10px; gap: 6px; font-size: 13px; white-space: nowrap; }
+.cc-workspace-onboarding-method > p { margin: 12px 0 22px; line-height: 1.7; }
+.cc-workspace-onboarding-method-actions { box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: auto; }
+.cc-workspace-onboarding-method-actions > button { box-sizing: border-box; min-width: 0; height: 38px; min-height: 38px; padding: 0 12px; gap: 6px; font-size: 13px; white-space: nowrap; }
 .cc-workspace-onboarding-method-actions > button > svg { flex-shrink: 0; }
-.cc-workspace-onboarding-card .cc-workspace-onboarding-help { position: relative; left: 10px; background: transparent; border-color: transparent; color: var(--cc-text-secondary); transition: color 200ms ease; }
+.cc-workspace-onboarding-card .cc-workspace-onboarding-help { padding-inline: 0; background: transparent; border-color: transparent; color: var(--cc-text-secondary); transition: color 200ms ease; }
 .cc-workspace-onboarding-card .cc-workspace-onboarding-help:is(:hover, :active, :focus-visible, [aria-expanded="true"]):not(:disabled) { background: transparent; border-color: transparent; color: var(--cc-text); }
 .cc-workspace-onboarding-card .cc-workspace-onboarding-action { background: color-mix(in srgb, var(--cc-accent) 82%, #000); border-color: transparent; color: #fff; font-weight: var(--cc-font-weight-medium); }
 .cc-workspace-onboarding-card .cc-workspace-onboarding-action:hover:not(:disabled) { background: color-mix(in srgb, var(--cc-accent) 88%, #000); }
@@ -54,10 +58,9 @@
 .cc-workspace-onboarding-invite-error { color: var(--cc-danger, #b42318) !important; }
 .cc-workspace-onboarding-invite-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
 .cc-workspace-onboarding-invite-footer button { min-width: 88px; height: 36px; min-height: 36px; padding: 0 16px; font-size: 13px; }
-.cc-workspace-onboarding-footer { display: flex; align-items: center; justify-content: flex-end; gap: 16px; margin-top: 24px; }
-.cc-workspace-onboarding-footer .cc-workspace-onboarding-start { min-width: 108px; }
-.cc-workspace-onboarding-card .cc-workspace-onboarding-start { background: #383838; border-color: transparent; color: #fff; font-weight: var(--cc-font-weight-medium); }
-.cc-workspace-onboarding-card .cc-workspace-onboarding-start:hover:not(:disabled) { background: #444; }
+.cc-workspace-onboarding-footer { display: flex; align-items: center; justify-content: flex-end; gap: 16px; margin-top: 16px; }
+.cc-workspace-onboarding-card .cc-workspace-onboarding-start { min-height: 38px; padding: 0 8px; background: transparent; border-color: transparent; color: var(--cc-muted); font-size: 13px; }
+.cc-workspace-onboarding-card .cc-workspace-onboarding-start:hover:not(:disabled) { background: var(--cc-hover); color: var(--cc-text); }
 .cc-workspace-onboarding-card.cc-workspace-onboarding-help-dialog { width: min(600px, calc(100% - 32px)); max-height: calc(100dvh - 48px); margin: auto; padding: 28px; overflow: hidden; }
 .cc-workspace-onboarding-help-dialog[open] { display: flex; flex-direction: column; }
 .cc-workspace-onboarding-help-dialog .cc-workspace-onboarding-heading { padding-right: 32px; flex-shrink: 0; }
@@ -79,11 +82,14 @@
 .cc-workspace-onboarding-help-footer button { min-height: 36px; padding: 0 16px; font-size: 13px; }
 @keyframes cc-onboarding-appear { from { opacity: 0; } to { opacity: 1; } }
 @media (max-width: 620px) {
-  .cc-workspace-onboarding-card { width: calc(100% - 24px); max-height: calc(100dvh - 32px); margin-top: 16px; padding: 24px 20px 18px; border-radius: var(--cc-radius-lg); }
+  .cc-workspace-onboarding-card { width: calc(100% - 24px); max-height: calc(100dvh - 32px); margin: auto; padding: 24px 20px 18px; border-radius: var(--cc-radius-lg); }
+  .cc-workspace-onboarding-card h1 { font-size: 24px; }
   .cc-workspace-onboarding-card .cc-workspace-onboarding-close { top: 12px; right: 12px; }
-  .cc-workspace-onboarding-methods { grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 24px; }
+  .cc-workspace-onboarding-methods { grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 20px; }
   .cc-workspace-onboarding-method { padding: 20px; }
   .cc-workspace-onboarding-method > p { min-height: 0; }
+  .cc-workspace-onboarding-method-actions > button, .cc-workspace-onboarding-card .cc-workspace-onboarding-start { min-height: 44px; height: 44px; }
+  .cc-workspace-onboarding-card .cc-workspace-onboarding-close { width: 44px; height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) { .cc-workspace-onboarding-card[open] { animation: none; } .cc-workspace-onboarding-card button, .cc-workspace-onboarding-invite-form input { transition: none; } }
 @media (max-width: 420px) {
