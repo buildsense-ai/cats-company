@@ -47,7 +47,7 @@ func (s *firstRoundControllerTestStore) GetSkillHubPublicationRepairTask(ctx con
 }
 
 func TestPublicationRepairModelFirstRoundControllerPersistsOnlyModelUncertainty(t *testing.T) {
-	for _, mode := range []string{"provider_uncertain", "report_read_error", "proposal_recovery_uncertain", "finish_lost", "finish_lost_after_commit", "finish_lost_read_error"} {
+	for _, mode := range []string{"provider_uncertain", "start_before_fence", "start_after_fence", "report_read_error", "proposal_recovery_uncertain", "finish_lost", "finish_lost_after_commit", "finish_lost_read_error", "completion_committed_history_read_lost"} {
 		t.Run(mode, func(t *testing.T) {
 			db, lease, cfg, ports, reports, verify, calls := repairDescriptionAttemptFixture(t)
 			controller := &firstRoundControllerTestStore{modelDescriptionTestStore: db}
@@ -57,6 +57,14 @@ func TestPublicationRepairModelFirstRoundControllerPersistsOnlyModelUncertainty(
 					*calls++
 					return store.SkillHubPublicationRepairModelOutput{}, errors.New("private provider outcome")
 				}
+			case "start_before_fence":
+				controller.startError = errors.New("temporary fence transaction failure")
+			case "start_after_fence":
+				controller.startError = errors.New("lost fence commit reply")
+				controller.startCommitBeforeError = true
+			case "completion_committed_history_read_lost":
+				controller.completeError = errors.New("completion reply lost")
+				controller.historyError = errors.New("history temporarily unavailable")
 			case "report_read_error":
 				reports = repairMaterialReportReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
 					return nil, errors.New("temporary report peer failure")
@@ -95,14 +103,18 @@ func TestPublicationRepairModelFirstRoundControllerPersistsOnlyModelUncertainty(
 			if err == nil || draft != nil {
 				t.Fatal("uncertain attempt reported success", err)
 			}
-			if mode == "provider_uncertain" || mode == "finish_lost" || mode == "finish_lost_after_commit" || mode == "finish_lost_read_error" {
+			if mode == "provider_uncertain" || mode == "start_after_fence" || mode == "finish_lost" || mode == "finish_lost_after_commit" || mode == "finish_lost_read_error" {
 				if !errors.Is(err, errPublicationRepairModelUncertain) || controller.finishCalls != 1 {
 					t.Fatal("model uncertainty was not durably stopped", err, controller.finishCalls)
 				}
-				if mode == "provider_uncertain" {
+				if mode == "provider_uncertain" || mode == "start_after_fence" {
 					want := store.SkillHubPublicationRepairResult{Outcome: "stopped", Code: "model_result_uncertain", Evidence: lease.Input.Evidence}
-					if !errors.Is(err, errPublicationRepairModelUncertainStopped) || !reflect.DeepEqual(*controller.task.Rounds[0].Result, want) || controller.task.State() != "stopped" || *calls != 1 || controller.taskReadCalls != 0 {
-						t.Fatal("wrong durable uncertainty checkpoint")
+					wantCalls := 1
+					if mode == "start_after_fence" {
+						wantCalls = 0
+					}
+					if !errors.Is(err, errPublicationRepairModelUncertainStopped) || !reflect.DeepEqual(*controller.task.Rounds[0].Result, want) || controller.task.State() != "stopped" || *calls != wantCalls || controller.taskReadCalls != 0 {
+						t.Fatal("wrong durable uncertainty checkpoint", mode)
 					}
 				} else if mode == "finish_lost_after_commit" {
 					want := store.SkillHubPublicationRepairResult{Outcome: "stopped", Code: "model_result_uncertain", Evidence: lease.Input.Evidence}
@@ -113,10 +125,28 @@ func TestPublicationRepairModelFirstRoundControllerPersistsOnlyModelUncertainty(
 					(mode == "finish_lost_read_error" && errors.Is(err, errPublicationRepairModelUncertainStopped)) {
 					t.Fatal("unconfirmed stop checkpoint was treated as committed", mode)
 				}
-			} else if controller.finishCalls != 0 || (mode == "proposal_recovery_uncertain" &&
-				(controller.task.State() != "waiting_confirmation" || controller.draft == nil || *calls != 1)) ||
+			} else if controller.finishCalls != 0 || (mode == "start_before_fence" &&
+				(controller.task.State() == "stopped" || controller.task.Rounds[0].Result != nil || *calls != 0)) ||
+				(mode == "completion_committed_history_read_lost" &&
+					(controller.task.State() == "stopped" || controller.task.Rounds[0].Result != nil || controller.draft != nil || *calls != 1)) ||
+				(mode == "proposal_recovery_uncertain" &&
+					(controller.task.State() != "waiting_confirmation" || controller.draft == nil || *calls != 1)) ||
 				(mode == "report_read_error" && controller.task.Rounds[0].Result != nil) {
 				t.Fatal("recoverable/transient error incorrectly stopped or lost task state", mode)
+			}
+			if mode == "completion_committed_history_read_lost" {
+				controller.historyError = nil
+				draft, err := runPublicationRepairFirstRoundAttempt(context.Background(), controller, 1, lease, cfg, ports, reports, verify)
+				if err != nil || draft == nil || *calls != 1 {
+					t.Fatal("retained output was not recovered without redispatch", err, *calls)
+				}
+			}
+			if mode == "start_before_fence" {
+				controller.startError = nil
+				draft, err := runPublicationRepairFirstRoundAttempt(context.Background(), controller, 1, lease, cfg, ports, reports, verify)
+				if err != nil || draft == nil || *calls != 1 {
+					t.Fatal("retry after an uncommitted fence did not complete", err, *calls)
+				}
 			}
 		})
 	}

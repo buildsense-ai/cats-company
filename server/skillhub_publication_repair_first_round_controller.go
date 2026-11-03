@@ -30,6 +30,19 @@ func runPublicationRepairFirstRoundAttempt(parent context.Context, db publicatio
 		// temporary source/report/store errors do not terminalize the task.
 		return draft, err
 	}
+	call, historyErr := db.GetSkillHubPublicationRepairModelCall(parent, actor, lease.EntryID, lease.Round)
+	if historyErr != nil || call == nil || !validFirstRoundControllerModelCall(*call, lease) {
+		// No readable fence proves a paid call may have been dispatched. Keep the
+		// round recoverable; a later attempt can safely retry an absent fence or
+		// inspect retained output without dispatching again.
+		return nil, errPublicationRepairModelUncertain
+	}
+	if call.Output != nil {
+		// Completion may have committed even though both its response and the
+		// first history read were lost. Re-enter the ordinary read-only recovery
+		// path; Start observes the existing fence and cannot grant another call.
+		return runPublicationRepairDescriptionAttempt(parent, db, actor, lease, config, ports, reports, verifyDescriptionSource)
+	}
 	result := store.SkillHubPublicationRepairResult{Outcome: "stopped", Code: "model_result_uncertain", Evidence: lease.Input.Evidence}
 	if finishErr := db.FinishSkillHubPublicationRepairRound(parent, actor, lease, result); finishErr != nil {
 		current, readErr := db.GetSkillHubPublicationRepairTask(parent, actor, lease.EntryID)
@@ -41,4 +54,12 @@ func runPublicationRepairFirstRoundAttempt(parent context.Context, db publicatio
 		return nil, errPublicationRepairModelUncertainStopped
 	}
 	return nil, errPublicationRepairModelUncertainStopped
+}
+
+func validFirstRoundControllerModelCall(call store.SkillHubPublicationRepairModelCall, lease store.SkillHubPublicationRepairLease) bool {
+	if call.Validate() != nil || call.DispatchLease.EntryID != lease.EntryID || call.DispatchLease.TaskID != lease.TaskID ||
+		call.DispatchLease.Round != lease.Round || call.DispatchLease.Input != lease.Input || call.DispatchLease.Generation > lease.Generation {
+		return false
+	}
+	return call.DispatchLease.Generation < lease.Generation || samePublicationRepairModelLease(call.DispatchLease, lease)
 }

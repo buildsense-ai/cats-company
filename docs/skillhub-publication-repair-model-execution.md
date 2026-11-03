@@ -191,7 +191,11 @@ confirms the stop is durable. If the write reply is lost, the helper reads back
 the task and returns that confirmed-stop result only when the exact lease,
 checkpoint and stopped state match; otherwise it returns the ordinary
 `publication.repair_model_result_uncertain` error, and persistence remains
-unconfirmed.
+unconfirmed. Before stopping, it also reads the immutable model-call journal:
+an absent dispatch fence is a recoverable pre-dispatch failure; a journal read
+failure remains nonterminal; and a retained output re-enters read-only draft
+recovery without another model dispatch. Only a valid existing fence without a
+retained output is terminalized as an unknown model result.
 Temporary source/report failures and uncertain draft persistence are deliberately
 not terminalized, because the latter may be recoverable through the next
 read-only draft attempt. This helper still consumes an already-claimed lease
