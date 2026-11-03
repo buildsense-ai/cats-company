@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 async function listen(server) {
@@ -34,7 +35,7 @@ test('demo forwards annotated JSON once and serves the documented parent origin'
   const gatewayPort = await availablePort();
   const directory = await mkdtemp(join(tmpdir(), 'catsco-annotation-demo-'));
   const logPath = join(directory, 'sends.jsonl');
-  const child = spawn(process.execPath, [new URL('./local-gateway-annotations-demo.mjs', import.meta.url).pathname], {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./local-gateway-annotations-demo.mjs', import.meta.url))], {
     env: {
       ...process.env,
       GATEWAY_ANNOTATIONS_PLATFORM_PORT: String(platformPort),
