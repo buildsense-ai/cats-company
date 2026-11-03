@@ -183,6 +183,24 @@ An existing human confirmation is preserved, never created by recovery. This
 helper does not finish uncertain/stopped checkpoints or implement the controller
 loop, safe automatic formatting, later rounds or publication continuation.
 
+`runPublicationRepairFirstRoundAttempt` wraps this helper with one conservative
+terminal transition: only `publication.repair_model_result_uncertain` is written
+as the existing `stopped/model_result_uncertain` checkpoint. A successful write
+returns a distinct internal error that still matches the uncertain sentinel and
+confirms the stop is durable. If the write reply is lost, the helper reads back
+the task and returns that confirmed-stop result only when the exact lease,
+checkpoint and stopped state match; otherwise it returns the ordinary
+`publication.repair_model_result_uncertain` error, and persistence remains
+unconfirmed. Before stopping, it also reads the immutable model-call journal:
+an absent dispatch fence is a recoverable pre-dispatch failure; a journal read
+failure remains nonterminal; and a retained output re-enters read-only draft
+recovery without another model dispatch. Only a valid existing fence without a
+retained output is terminalized as an unknown model result.
+Temporary source/report failures and uncertain draft persistence are deliberately
+not terminalized, because the latter may be recoverable through the next
+read-only draft attempt. This helper still consumes an already-claimed lease
+and is not a worker/controller loop or production call site.
+
 ## Verification and remaining work
 
 Local unit tests cover request identity/private bytes, unsafe material and report

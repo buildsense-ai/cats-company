@@ -20,6 +20,7 @@ type repairModelTestStore struct {
 	reads, starts, completes, histories     int
 	readHook                                func(int) error
 	startError, completeError, historyError error
+	startCommitBeforeError                  bool
 	startHook                               func(*store.SkillHubPublicationRepairModelCall, *bool)
 	completeHook                            func(*store.SkillHubPublicationRepairModelCall)
 }
@@ -45,6 +46,9 @@ func (s *repairModelTestStore) StartSkillHubPublicationRepairModelCall(ctx conte
 	s.starts++
 	if ctx.Err() != nil {
 		return nil, false, ctx.Err()
+	}
+	if s.startError != nil && !s.startCommitBeforeError {
+		return nil, false, s.startError
 	}
 	created := s.call == nil
 	if created {
@@ -327,14 +331,17 @@ func TestPublicationRepairModelRecoveryAndRequestBinding(t *testing.T) {
 }
 
 func TestPublicationRepairModelUncertainNeverRepeats(t *testing.T) {
-	for _, mode := range []string{"lost_start", "provider_error", "invalid_output", "oversize", "cancelled_provider", "lost_complete_and_read"} {
+	for _, mode := range []string{"lost_start_before_fence", "lost_start_after_fence", "provider_error", "invalid_output", "oversize", "cancelled_provider", "lost_complete_and_read"} {
 		t.Run(mode, func(t *testing.T) {
 			db, lease, config, ports, calls := repairModelTestFixture(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			switch mode {
-			case "lost_start":
+			case "lost_start_before_fence":
 				db.startError = errors.New("PRIVATE lost start")
+			case "lost_start_after_fence":
+				db.startError = errors.New("PRIVATE lost start")
+				db.startCommitBeforeError = true
 			case "provider_error", "invalid_output", "oversize", "cancelled_provider":
 				ports.InvokeOnce = func(context.Context, publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error) {
 					*calls++
@@ -361,7 +368,11 @@ func TestPublicationRepairModelUncertainNeverRepeats(t *testing.T) {
 			db.historyError = nil
 			count := *calls
 			_, _ = runPublicationRepairModel(context.Background(), db, 1, lease, config, ports)
-			if *calls != count {
+			if mode == "lost_start_before_fence" {
+				if *calls != count+1 {
+					t.Fatal("retry did not dispatch after proving no fence was committed")
+				}
+			} else if *calls != count {
 				t.Fatal("uncertain provider request reissued")
 			}
 		})
