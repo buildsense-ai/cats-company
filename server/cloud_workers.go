@@ -529,12 +529,18 @@ func parseWorkerCreateQuota(raw string) map[int64]int {
 }
 
 // cloudWorkerSummary is a roster item for a cloud-managed virtual employee.
+//
+// There is deliberately no `status` key. It used to be a constant "unknown",
+// which is worse than absent: every consumer's `worker.status || fallback` was
+// dead code, and a client could not tell "we never checked" from "we checked
+// and cannot tell". The authoritative fields are RuntimeStatus (did the
+// worker's own runtime connect?) and, on create, deployment_status
+// (provisioned/running).
 type cloudWorkerSummary struct {
 	UID           int64  `json:"uid"`
 	Username      string `json:"username"`
 	DisplayName   string `json:"display_name"`
 	TenantName    string `json:"tenant_name"`
-	Status        string `json:"status"`
 	RuntimeStatus string `json:"runtime_status"`
 	Version       string `json:"version,omitempty"`
 	ImageID       string `json:"image_id,omitempty"`
@@ -601,7 +607,6 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 		}
 		w := cloudWorkerSummary{
 			TenantName: tenantName,
-			Status:     "unknown",
 		}
 		if id, ok := b["id"].(int64); ok {
 			w.UID = id
