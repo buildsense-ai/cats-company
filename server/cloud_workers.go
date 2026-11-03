@@ -1461,6 +1461,19 @@ func (h *CloudWorkerHandler) cloudWorkerPaidUntil(ownerUID int64, creditExpiresA
 	return time.Time{}
 }
 
+// cloudWorkerProvisionExpiryArgs turns the paid window into the deployment
+// script argument that records it on the cluster. Shared-fleet tenants
+// otherwise look "never expiring" cluster-side until their first renewal, so
+// nothing reaps them when the platform scheduler stops (the cluster's
+// packed-retention.sh is that fallback). Dedicated ECS workers are reaped by
+// the provider subscription and carry no package expiry.
+func cloudWorkerProvisionExpiryArgs(profile string, paidUntil time.Time) []string {
+	if profile != types.CloudWorkerPackedShared || paidUntil.IsZero() {
+		return nil
+	}
+	return []string{"--expires-at", paidUntil.UTC().Format(time.RFC3339)}
+}
+
 // cloudWorkerProvisionCycles converts a paid window into whole prepaid months
 // (Tianyi prepaid instances are billed in monthly cycles). One hour of slack
 // keeps a window a few seconds short of a whole month from buying an extra
@@ -1827,6 +1840,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	if deployment.Profile == types.CloudWorkerPackedShared && runtimePlan != "" {
 		provisionArgs = append(provisionArgs, "--plan", runtimePlan)
 	}
+	provisionArgs = append(provisionArgs, cloudWorkerProvisionExpiryArgs(deployment.Profile, h.cloudWorkerPaidUntil(uid, creditExpiresAt))...)
 	provOut, err := h.runScript(h.provisionScript, provisionArgs...)
 	if err != nil {
 		// 脚本的具体失败原因（如云资源配额不足）只写入服务器日志，不回显给前端。
