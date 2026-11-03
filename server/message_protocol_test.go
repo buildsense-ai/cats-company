@@ -790,6 +790,7 @@ type identityMessageStore struct {
 	groupMembers       []*types.GroupMember
 	history            []*types.Message
 	getUsersByIDsCalls int
+	getMessagesLimit   int
 }
 
 func (s *identityMessageStore) GetBotOwner(botUID int64) (int64, error) {
@@ -868,6 +869,7 @@ func (s *identityMessageStore) GetMessagesSince(topicID string, sinceID int64, l
 }
 
 func (s *identityMessageStore) GetMessages(topicID string, limit, offset int) ([]*types.Message, error) {
+	s.getMessagesLimit = limit
 	var messages []*types.Message
 	for _, message := range s.history {
 		if message.TopicID == topicID {
@@ -984,4 +986,35 @@ func (s *metadataMessageStore) SaveMessageWithMetadata(topicID string, fromUID i
 	s.clientMsgID = clientMsgID
 	s.metadata = metadata
 	return s.id, s.duplicate, nil
+}
+
+func TestHandleGetMessagesClampsHistoryLimit(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
+		},
+		history: []*types.Message{{
+			ID:      31,
+			TopicID: "p2p_7_42",
+			FromUID: 7,
+			Content: "missed message",
+			MsgType: "text",
+		}},
+	}
+	hub := NewHub(store, nil)
+	handler := NewMessageHandler(store, hub)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=p2p_7_42&limit=100000", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+	rec := httptest.NewRecorder()
+	handler.HandleGetMessages(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get messages status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// An unbounded limit let a single request pull a whole topic history into
+	// the heap (and copy it again into the JSON payload); the handler clamps.
+	if store.getMessagesLimit != maxMessageHistoryLimit {
+		t.Fatalf("store limit=%d, want %d", store.getMessagesLimit, maxMessageHistoryLimit)
+	}
 }

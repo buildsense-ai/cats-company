@@ -1252,6 +1252,12 @@ func topicTypeForID(topicID string) string {
 const (
 	defaultAgentContextHistoryLimit = 100
 	maxAgentContextHistoryLimit     = 200
+	// maxMessageHistoryLimit bounds one REST history page. Without it a client
+	// asking for limit=100000 pulls that many rows, message bodies included,
+	// into the heap and then copies them again into the JSON payload.
+	// 2026-11-01: the server process reached anon-rss 5.2GB and the host
+	// OOM-killed it.
+	maxMessageHistoryLimit = 200
 )
 
 type latestMessagesBeforeStore interface {
@@ -1332,6 +1338,9 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 
 	if limit <= 0 {
 		limit = 50
+	}
+	if limit > maxMessageHistoryLimit {
+		limit = maxMessageHistoryLimit
 	}
 
 	var rawMsgs []*types.Message

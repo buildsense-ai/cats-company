@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
@@ -280,6 +281,36 @@ func openRedisRuntimeState(ctx context.Context, cfg RuntimeConfig) (*server.Redi
 	})
 }
 
+// startDiagnosticsServer exposes the Go runtime profiles on loopback when
+// CATS_DIAGNOSTICS_ADDR is set (for example 127.0.0.1:6063). It stays off by
+// default because these endpoints are unauthenticated: the listener is loopback
+// only and is read with docker exec or an SSH tunnel. Without it a slow heap
+// regression can only be guessed at from RSS (2026-11-01: the process reached
+// anon-rss 5.2GB and the host OOM-killed it with no profile to inspect).
+func startDiagnosticsServer() {
+	addr := strings.TrimSpace(os.Getenv("CATS_DIAGNOSTICS_ADDR"))
+	if addr == "" {
+		return
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	diagnostics := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		log.Printf("diagnostics endpoints listening on %s", addr)
+		if err := diagnostics.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("diagnostics server stopped: %v", err)
+		}
+	}()
+}
+
 func main() {
 	cfgPath := "tinode.conf"
 	if len(os.Args) > 1 {
@@ -301,6 +332,7 @@ func main() {
 	if warning := runtimeConfigurationWarning(cfg.Runtime); warning != "" {
 		log.Printf("WARNING: %s", warning)
 	}
+	startDiagnosticsServer()
 
 	// Initialize database
 	db, dbDriver, err := openStore(cfg.Database)
