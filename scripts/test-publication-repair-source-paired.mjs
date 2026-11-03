@@ -18,14 +18,15 @@ const result = spawnSync('go', ['test', './server', '-run', '^(TestSkillHubPubli
 process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
 if (result.error || result.status !== 0 || result.signal) throw new Error(`Paired source contract failed: ${result.error?.message || result.signal || result.status}`);
 const events = result.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
-const suites = ['TestSkillHubPublicationRepairSourcePairedReplay', 'TestSkillHubPublicationRepairSourcePairedFailures', 'TestSkillHubPublicationRepairSourcePairedLaterRounds', 'TestSkillHubPublicationRepairSourcePairedTaskLease', 'TestPublicationRepairModelCoordinatorPairedLiveRuntimeFence'];
+const suites = ['TestSkillHubPublicationRepairSourcePairedReplay', 'TestSkillHubPublicationRepairSourcePairedFailures', 'TestSkillHubPublicationRepairSourcePairedLaterRounds', 'TestSkillHubPublicationRepairSourcePairedTaskLease', 'TestPublicationRepairModelCoordinatorPairedLiveRuntimeFence', 'TestSkillHubPublicationRepairSourcePairedDraftRecovery'];
 const expected = [...suites, ...['normal', 'malformed'].map(n => `${suites[0]}/${n}`),
   ...['change', 'remove', 'disable', 'owner', 'switching', 'missing-capture', 'mismatch'].map(n => `${suites[1]}/${n}`),
   ...['round-2', 'round-2-source-changed', 'round-3', 'round-3-source-changed'].map(n => `${suites[2]}/${n}`),
-  ...['source-retained-through-dispatch', 'source-removed-after-grant'].map(n => `${suites[4]}/${n}`)];
+  ...['source-retained-through-dispatch', 'source-removed-after-grant'].map(n => `${suites[4]}/${n}`),
+  ...['waiting-expired', 'confirmed-expired', 'source-removed', 'authority-revoked'].map(n => `${suites[5]}/${n}`)];
 const passed = new Set(events.filter(e => e.Action === 'pass').map(e => e.Test));
 const ran = events.filter(e => e.Action === 'run' && e.Test);
 if (events.some(e => e.Action === 'skip' || e.Action === 'fail') || expected.some(n => !passed.has(n)) || ran.length !== expected.length || ran.some(e => !passed.has(e.Test))) {
-  throw new Error('All five suites and fifteen subcases must pass without skips');
+  throw new Error('All six suites and nineteen subcases must pass without skips');
 }
-console.log('[repair-source-paired] Real CatsCo transport and pinned XiaoBa handler/store; coordinator Runtime fence checked with synthetic model/material/store adapters, not deployed E2E.');
+console.log('[repair-source-paired] Real CatsCo transport and pinned XiaoBa handler/store; coordinator Runtime fence and read-only expired draft recovery checked with synthetic model/material/task authority, not deployed E2E.');
