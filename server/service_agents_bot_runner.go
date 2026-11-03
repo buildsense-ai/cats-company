@@ -139,6 +139,8 @@ type ServiceBotRunner struct {
 	ambiguityGrace time.Duration
 	// progressSilence 覆盖「bot 说还在干」后的额外等待上限（0=用平台默认）。
 	progressSilence time.Duration
+	// leaseRenew 覆盖续租间隔（测试用；0=平台默认 60s）。
+	leaseRenew time.Duration
 
 	// loops 是委托链回环表。run 收尾时靠它摘掉本次建立的边 —— 边存在的时间
 	// 应当正好等于「下游还在为上游干活」的那段，而不是一个固定窗口。
@@ -421,8 +423,14 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 	}
 
 	// 先在落库层面占住这个 run：抢不到说明已被别的执行方接管 / 已终态。
-	started, err := r.store.StartServiceRun(context.Background(), req.RunID,
-		fmt.Sprintf("bot:%d", req.BotUID), int(tuning.Timeout.Seconds())+60)
+	//
+	// 租约取短、靠续租保活（见 botRunLeaseSeconds）—— 预算可以到 6 小时，但租约只有 3 分钟。
+	leaseSeconds := int(tuning.Timeout.Seconds()) + 60
+	if leaseSeconds > botRunLeaseSeconds {
+		leaseSeconds = botRunLeaseSeconds
+	}
+	instanceID := fmt.Sprintf("bot:%d", req.BotUID)
+	started, err := r.store.StartServiceRun(context.Background(), req.RunID, instanceID, leaseSeconds)
 	if err != nil {
 		log.Printf("bot runner: start run=%s: %v", req.RunID, err)
 		return
@@ -431,6 +439,10 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		log.Printf("bot runner: run=%s already taken or terminal; skip", req.RunID)
 		return
 	}
+
+	// 长任务靠续租活着：不续的话租约到期会被 reaper 当成「执行方没了」判失败。
+	stopLease := r.keepLeaseAlive(req.RunID, instanceID)
+	defer stopLease()
 
 	// 只确认目标 bot 还存在。谁能调这个应用由**可见性**决定（MCP invoke 已经做过了）：
 	// 系统里不能有两套不同步的授权规则 —— 曾经这里另有一套「bot 的 owner 必须在白名单里」，
@@ -1081,4 +1093,48 @@ func mustJSON(v any) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return encoded
+}
+
+// 租约长度：**短租约 + 续租**，不是「租约 = 整单预算」。
+//
+// 租约等于预算时，进程崩了这条 run 要等到预算到期才被判死 —— 以前预算 30 分钟还能忍，
+// 放宽到 6 小时后就变成「崩一次挂 6 小时」。短租约 + 每 60s 续租：崩了 3 分钟内被 reaper
+// 收掉，而活着的小时级长任务一直续着，不受影响。
+const (
+	botRunLeaseSeconds    = 180
+	botRunLeaseRenewEvery = 60 * time.Second
+)
+
+// botLeaseRenewer 是「给运行中的 run 续租」的窄能力。
+// 缺这个能力时退化成老行为（租约=预算）：长任务照样能跑，只是崩了要久一点才被发现。
+type botLeaseRenewer interface {
+	RenewServiceLease(ctx context.Context, runID, instanceID string) (bool, error)
+}
+
+// keepLeaseAlive 在 run 结束前周期性续租，返回停止函数。
+func (r *ServiceBotRunner) keepLeaseAlive(runID, instanceID string) func() {
+	renewer, ok := r.store.(botLeaseRenewer)
+	if !ok {
+		return func() {}
+	}
+	every := botRunLeaseRenewEvery
+	if r.leaseRenew > 0 {
+		every = r.leaseRenew
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if _, err := renewer.RenewServiceLease(context.Background(), runID, instanceID); err != nil {
+					log.Printf("bot runner: renew lease run=%s: %v", runID, err)
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
 }

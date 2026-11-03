@@ -40,7 +40,10 @@ const (
 // 允许区间：防止一个手滑的 0 或 86400 把平台变成「永远不超时」或「立刻超时」。
 const (
 	minBotRunnerTimeout = 10 * time.Second
-	maxBotRunnerTimeout = 30 * time.Minute
+	// 上限 6 小时：视频渲染、批量转码这类活是小时级的，30 分钟的上限会让它们
+	// **必然**被判 bot_timeout —— 而租约靠续租保活（见 botRunLeaseSeconds），
+	// 所以放宽总预算不会让「进程崩了的 run」一直挂着。
+	maxBotRunnerTimeout = 6 * time.Hour
 	// settle 下限不能是 0：settle=0 会让「第一段到手就收尾」，而 bot 会把长回复
 	// 按 4000 字切段 —— 于是答案被默默截断，调用方拿到半句话且完全看不出异常。
 	minBotRunnerSettle         = 500 * time.Millisecond
