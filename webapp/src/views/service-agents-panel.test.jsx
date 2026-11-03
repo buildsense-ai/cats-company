@@ -215,9 +215,9 @@ describe('ServiceAgentsPanel', () => {
     expect(placeholder).toBeTruthy();
     expect(placeholder.textContent).toContain('还没有可用的工具');
     expect(placeholder.textContent).toContain('catsco_');
-    // 空目录时除了刷新，还要直接给一个「新建工具」入口。
+    // 空目录时除了刷新，还要直接给一个「把 bot 变成工具」入口。
     const placeholderButtons = [...placeholder.querySelectorAll('button')];
-    expect(placeholderButtons.some((node) => node.textContent.includes('新建工具'))).toBe(true);
+    expect(placeholderButtons.some((node) => node.textContent.includes('把 bot 变成工具'))).toBe(true);
     const refresh = placeholderButtons.find((node) => node.textContent.includes('刷新目录'));
     expect(refresh).toBeTruthy();
     await act(async () => {
@@ -267,7 +267,7 @@ describe('ServiceAgentsPanel', () => {
 
   it('从面板直接新建工具：填名称自动生成工具名，提交后给出 catsco_<slug>', async () => {
     await renderPanel();
-    const openBtn = container.querySelector('button[aria-label="新建工具"]');
+    const openBtn = container.querySelector('button[aria-label="把 bot 变成工具"]');
     expect(openBtn).toBeTruthy();
     await act(async () => {
       openBtn.click();
@@ -499,7 +499,7 @@ describe('ServiceAgentsPanel', () => {
     mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'legacy', version: 1, visibility: 'public' });
     await renderPanel();
     await act(async () => {
-      container.querySelector('button[aria-label="新建工具"]').click();
+      container.querySelector('button[aria-label="把 bot 变成工具"]').click();
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
@@ -541,7 +541,7 @@ describe('ServiceAgentsPanel', () => {
     mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'priced', version: 1, visibility: 'public' });
     await renderPanel();
     await act(async () => {
-      container.querySelector('button[aria-label="新建工具"]').click();
+      container.querySelector('button[aria-label="把 bot 变成工具"]').click();
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
@@ -578,7 +578,7 @@ describe('ServiceAgentsPanel', () => {
     // 切到按运行时长
     mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'priced2', version: 1, visibility: 'public' });
     await act(async () => {
-      container.querySelector('button[aria-label="新建工具"]').click();
+      container.querySelector('button[aria-label="把 bot 变成工具"]').click();
       await Promise.resolve();
     });
     const form2 = container.querySelector('.v3-service-agents-publish');
@@ -615,7 +615,7 @@ describe('ServiceAgentsPanel', () => {
     mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'jack-helper', version: 1, visibility: 'private' });
     await renderPanel();
     await act(async () => {
-      container.querySelector('button[aria-label="新建工具"]').click();
+      container.querySelector('button[aria-label="把 bot 变成工具"]').click();
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
@@ -655,7 +655,7 @@ describe('ServiceAgentsPanel', () => {
   it('发布表单只提供分享 bot，不再有直连与命令两种接入方式', async () => {
     await renderPanel();
     await act(async () => {
-      container.querySelector('button[aria-label="新建工具"]').click();
+      container.querySelector('button[aria-label="把 bot 变成工具"]').click();
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
@@ -726,7 +726,7 @@ describe('ServiceAgentsPanel', () => {
   it('工具表单会校验工具名，非法时不发请求', async () => {
     await renderPanel();
     await act(async () => {
-      container.querySelector('button[aria-label="新建工具"]').click();
+      container.querySelector('button[aria-label="把 bot 变成工具"]').click();
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
@@ -756,7 +756,7 @@ describe('ServiceAgentsPanel', () => {
     mocks.publishServiceAgent.mockResolvedValue({ slug: 'no-desc', version: 1, visibility: 'public' });
     await renderPanel();
     await act(async () => {
-      container.querySelector('button[aria-label="新建工具"]').click();
+      container.querySelector('button[aria-label="把 bot 变成工具"]').click();
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
@@ -892,7 +892,7 @@ describe('ServiceAgentsPanel', () => {
     it('默认就是分享 bot，并且不显示执行命令', async () => {
       await renderPanel();
       await act(async () => {
-        container.querySelector('button[aria-label="新建工具"]').click();
+        container.querySelector('button[aria-label="把 bot 变成工具"]').click();
         await Promise.resolve();
       });
       const form = container.querySelector('.v3-service-agents-publish');
@@ -909,7 +909,7 @@ describe('ServiceAgentsPanel', () => {
       mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'jack-ops', version: 1, visibility: 'public' });
       await renderPanel();
       await act(async () => {
-        container.querySelector('button[aria-label="新建工具"]').click();
+        container.querySelector('button[aria-label="把 bot 变成工具"]').click();
         await Promise.resolve();
       });
       const form = container.querySelector('.v3-service-agents-publish');
@@ -941,7 +941,7 @@ describe('ServiceAgentsPanel', () => {
     it('没选 bot 就不发请求：没有执行方，发出去也调不通', async () => {
       await renderPanel();
       await act(async () => {
-        container.querySelector('button[aria-label="新建工具"]').click();
+        container.querySelector('button[aria-label="把 bot 变成工具"]').click();
         await Promise.resolve();
       });
       const form = container.querySelector('.v3-service-agents-publish');
@@ -1004,7 +1004,7 @@ describe('ServiceAgentsPanel', () => {
       mocks.getMyBots.mockResolvedValue({ bots: [] });
       await renderPanel();
       await act(async () => {
-        container.querySelector('button[aria-label="新建工具"]').click();
+        container.querySelector('button[aria-label="把 bot 变成工具"]').click();
         await Promise.resolve();
       });
       const form = container.querySelector('.v3-service-agents-publish');
@@ -1018,7 +1018,7 @@ describe('ServiceAgentsPanel', () => {
   describe('三级可见性', () => {
     const openPublishForm = async () => {
       await act(async () => {
-        container.querySelector('button[aria-label="新建工具"]').click();
+        container.querySelector('button[aria-label="把 bot 变成工具"]').click();
         await Promise.resolve();
       });
       return container.querySelector('.v3-service-agents-publish');
