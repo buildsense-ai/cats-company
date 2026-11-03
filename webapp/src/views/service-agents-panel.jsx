@@ -464,17 +464,29 @@ export default function ServiceAgentsPanel({ onClose }) {
         </div>
       </div>
       {showPublish ? (
-        <form
-          className="v3-service-agents-publish"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!publishing) submitPublish();
-          }}
-        >
-          <div className="v3-service-agents-publish-title">{editingSlug ? '编辑工具' : '把 bot 变成工具'}</div>
+        <div className="v3-service-agents-publish-view">
+          <div className="v3-service-agents-publish-head">
+            <div className="v3-service-agents-publish-title">{editingSlug ? '编辑工具' : '把 bot 变成工具'}</div>
+            <button
+              type="button"
+              className="v3-service-agents-publish-back"
+              onClick={() => {
+                setShowPublish(false);
+                setPublishError('');
+              }}
+            >
+              返回列表
+            </button>
+          </div>
+          <form
+            className="v3-service-agents-publish"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!publishing) submitPublish();
+            }}
+          >
           <p className="v3-service-agents-publish-lead">
-            把你调教好的 bot 变成一个「工具」：别的 Agent、好友或所有人可以直接调用它。
-            做坏了随时可以停止分享。
+            把你调教好的 bot 变成别的 Agent 能直接调用的工具，随时可以停止分享。
           </p>
           {lockedRunner ? null : (
             <label className="v3-service-agents-field">
@@ -505,7 +517,7 @@ export default function ServiceAgentsPanel({ onClose }) {
               <span className="v3-service-agents-field-hint">
                 {bots.length === 0
                   ? '你还没有 bot。先在「我的机器人」里创建一个 —— 你调教好的 bot 就是能接活的那个。'
-                  : '别人调的是这个 bot 本身：它用自己的判断力干活。它在线（开着）时才接活，不在线会立刻报「不在线」。'}
+                  : '它在线时才接活；不在线会立刻报错，不会让你白等。'}
               </span>
             </label>
           )}
@@ -527,8 +539,7 @@ export default function ServiceAgentsPanel({ onClose }) {
               rows={4}
             />
             <span className="v3-service-agents-field-hint">
-              调用你的是另一个 Agent，它看不到你的内容、也没有你的对话上下文，
-              只能靠这段文字判断要不要用。写清：做什么 / 什么情况下该用 / 不该用 / 参数怎么填。
+              调用你的是另一个 Agent：写清做什么、什么时候用、参数怎么填。
             </span>
           </label>
           <label className="v3-service-agents-field">
@@ -666,8 +677,10 @@ export default function ServiceAgentsPanel({ onClose }) {
               取消
             </button>
           </div>
-        </form>
-      ) : null}
+          </form>
+        </div>
+      ) : (
+        <>
       {publishResult ? (
         <div className="v3-service-agents-published" role="status">
           <div>
@@ -755,8 +768,8 @@ export default function ServiceAgentsPanel({ onClose }) {
       </div>
       <p className="v3-service-agents-hint">
         {scopeBotUid
-          ? '为这个 Agent 配置可调用的工具；未配置过时默认全部可见，保存后按清单裁剪（只影响该 Agent）。'
-          : 'CatsCo 定制 Agent（以工具形式接入）。添加的会出现在你的账号工具集中；删除的将被移除，调用也会被拒绝。'}
+          ? '只影响这个 Agent：没配置过时全部可见，改完按清单裁剪。'
+          : '这些工具会出现在你所有 Agent 的工具集里；移出后调用会被拒绝。'}
       </p>
       {scopeBotUid && scopeLoading ? <div className="v3-service-agents-empty">读取该 Agent 的工具清单…</div> : null}
       {!loading && agents.length > 1 ? (
@@ -1042,6 +1055,8 @@ export default function ServiceAgentsPanel({ onClose }) {
           })}
         </ul>
       ))}
+        </>
+      )}
     </aside>
   );
 }

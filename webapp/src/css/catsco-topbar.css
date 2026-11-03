@@ -1277,19 +1277,53 @@
   line-height: 1.55;
 }
 
-.v3-service-agents-publish {
-  flex: 0 0 auto;
+.v3-service-agents-publish-view {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin: 0;
-  padding: 12px 14px 14px;
+}
+
+/* 表单自己占一屏：标题与「返回列表」钉顶、字段区滚动、按钮钉底。
+   和工具列表互斥，不再共用一个滚动条（那正是「挤在一起」的根源）。 */
+.v3-service-agents-publish-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
-  background: rgba(148, 163, 184, 0.06);
+}
+
+.v3-service-agents-publish-back {
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-muted, #6b7280);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.v3-service-agents-publish-back:hover {
+  background: rgba(148, 163, 184, 0.16);
+  color: inherit;
+}
+
+.v3-service-agents-publish {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 14px;
 }
 
 .v3-service-agents-publish-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -1407,9 +1441,14 @@
 }
 
 .v3-service-agents-publish-actions {
+  position: sticky;
+  bottom: 0;
   display: flex;
   gap: 8px;
-  margin-top: 2px;
+  margin: 0 -14px -14px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
+  background: var(--v3-bg-sidebar, var(--cc-bg, #fff));
 }
 
 .v3-service-agents-publish-actions button {
@@ -1597,15 +1636,22 @@
 /* ---- 收回分享（下架）---- */
 
 .v3-service-agent-actions {
-  flex: 0 0 auto;
+  /* 独占一行：编辑 / 停止分享 / 移出清单 三个按钮不再和名字、描述抢宽度 ——
+     窄面板里那一挤，名字和描述会被压成一条细缝，读起来很乱。 */
+  flex: 1 0 100%;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  /* 换到下一行时靠右，跟在上面那块的节奏一致 */
-  margin-left: auto;
+  margin-left: 0;
+  padding-top: 2px;
 }
 
-/* 工具描述：调用方 Agent 就是靠这段文字决定要不要用，所以要露出来。 */
+.v3-service-agent-edit,
+.v3-service-agent-unpublish,
+.v3-service-agent-toggle {
+  white-space: nowrap;
+}
 .v3-service-agent-desc {
   margin-top: 3px;
   font-size: 11px;

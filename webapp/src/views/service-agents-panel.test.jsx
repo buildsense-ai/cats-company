@@ -356,7 +356,8 @@ describe('ServiceAgentsPanel', () => {
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
-    expect(form?.textContent).toContain('编辑工具');
+    // 标题在表单视图的头部（表单自己占一屏），不在 <form> 里
+    expect(container.querySelector('.v3-service-agents-publish-head')?.textContent).toContain('编辑工具');
     const nameInput = form.querySelector('input:not([type])');
     const slugInput = form.querySelectorAll('input:not([type])')[1];
     expect(nameInput.value).toBe('我的时钟');
