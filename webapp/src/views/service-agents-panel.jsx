@@ -442,12 +442,12 @@ export default function ServiceAgentsPanel({ onClose }) {
               if (next && !editingSlug) setPublishResult(null);
               if (!next) resetPublishForm();
             }}
-            aria-label="新建工具"
+            aria-label="把 bot 变成工具"
             title="把你的 bot 变成别的 Agent 能直接调用的工具"
             className={showPublish ? 'is-primary-action is-active' : 'is-primary-action'}
           >
             <Plus size={16} />
-            <span>新建工具</span>
+            <span>把 bot 变成工具</span>
           </button>
           <button
             type="button"
@@ -471,7 +471,7 @@ export default function ServiceAgentsPanel({ onClose }) {
             if (!publishing) submitPublish();
           }}
         >
-          <div className="v3-service-agents-publish-title">{editingSlug ? '编辑工具' : '新建工具'}</div>
+          <div className="v3-service-agents-publish-title">{editingSlug ? '编辑工具' : '把 bot 变成工具'}</div>
           <p className="v3-service-agents-publish-lead">
             把你调教好的 bot 变成一个「工具」：别的 Agent、好友或所有人可以直接调用它。
             做坏了随时可以停止分享。
@@ -799,7 +799,7 @@ export default function ServiceAgentsPanel({ onClose }) {
           </span>
           <p className="v3-service-agents-placeholder-title">还没有可用的工具</p>
           <p className="v3-service-agents-placeholder-text">
-            点右上角「新建工具」，把你调教好的 bot 变成一个工具，它就会以
+            点右上角「把 bot 变成工具」，选一个你调教好的 bot，它就会以
             <code>catsco_&lt;工具名&gt;</code> 出现在这里 —— 你的 bot 直接就能调用。
           </p>
           <button
@@ -808,7 +808,7 @@ export default function ServiceAgentsPanel({ onClose }) {
             onClick={() => { setShowPublish(true); setPublishError(''); }}
           >
             <Plus size={14} />
-            新建工具
+            把 bot 变成工具
           </button>
           <button type="button" className="v3-service-agents-placeholder-action" onClick={load} disabled={loading}>
             <RefreshCw size={14} />
