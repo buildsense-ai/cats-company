@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,11 +27,22 @@ type repairSourcePairedRuntime struct {
 	source map[string]interface{}
 }
 
+type repairRuntimeCapturedCandidate struct {
+	EntryID            string
+	RequestHash        string
+	SourceSnapshotHash string
+	RequestBytes       int64
+	Body               []byte
+}
+
 func startRepairSourcePairedRuntime(t *testing.T, mode string) *repairSourcePairedRuntime {
 	t.Helper()
 	xiaoba, node := os.Getenv("XIAOBA_REPAIR_PAIRED_ROOT"), os.Getenv("XIAOBA_REPAIR_PAIRED_NODE")
 	if xiaoba == "" || node == "" {
-		t.Skip("use scripts/test-publication-repair-source-paired.mjs for mandatory pinned Runtime contract")
+		if os.Getenv("CATSCO_REQUIRE_REPAIR_RUNTIME_CLOUD_CONTRACT") == "1" {
+			t.Fatal("XIAOBA_REPAIR_PAIRED_ROOT and XIAOBA_REPAIR_PAIRED_NODE are mandatory for the combined contract")
+		}
+		t.Skip("requires XIAOBA_REPAIR_PAIRED_ROOT and XIAOBA_REPAIR_PAIRED_NODE; use scripts/test-publication-repair-source-paired.mjs for mandatory pinned Runtime contract")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	cmd := exec.CommandContext(ctx, node, filepath.Join("..", "scripts", "fixtures", "publication-repair-source-runtime.mjs"), xiaoba, t.TempDir(), mode)
@@ -113,7 +125,31 @@ func (r *repairSourcePairedRuntime) action(t *testing.T, action string) {
 	}
 }
 
+func (r *repairSourcePairedRuntime) candidate(t *testing.T, entryID string) repairRuntimeCapturedCandidate {
+	t.Helper()
+	var response struct {
+		RequestBody string `json:"requestBody"`
+		Receipt     struct {
+			EntryID            string `json:"entryId"`
+			RequestHash        string `json:"requestHash"`
+			SourceSnapshotHash string `json:"sourceSnapshotHash"`
+			RequestBytes       int64  `json:"requestBytes"`
+		} `json:"receipt"`
+	}
+	r.call(t, map[string]interface{}{"action": "candidate", "entryId": entryID}, &response)
+	body, err := base64.StdEncoding.DecodeString(response.RequestBody)
+	if err != nil || len(body) == 0 || response.Receipt.EntryID != entryID || response.Receipt.RequestBytes != int64(len(body)) || response.Receipt.RequestHash != publicationDescriptionSHA256Hex(string(body)) {
+		t.Fatal("invalid Runtime-captured candidate export", err)
+	}
+	return repairRuntimeCapturedCandidate{EntryID: response.Receipt.EntryID, RequestHash: response.Receipt.RequestHash,
+		SourceSnapshotHash: response.Receipt.SourceSnapshotHash, RequestBytes: response.Receipt.RequestBytes, Body: body}
+}
+
 func repairSourcePairedFixture(t *testing.T, r *repairSourcePairedRuntime, capture bool) (*publicationWorkspaceFixture, *repairSourceTestStore) {
+	return repairSourcePairedFixtureEntryID(t, r, capture, publicationReadTestID)
+}
+
+func repairSourcePairedFixtureEntryID(t *testing.T, r *repairSourcePairedRuntime, capture bool, entryID string) (*publicationWorkspaceFixture, *repairSourceTestStore) {
 	t.Helper()
 	f, s := newRepairSourceFixture(t)
 	source := s.entries["repair-source-fixture"].Input.Source
@@ -124,7 +160,7 @@ func repairSourcePairedFixture(t *testing.T, r *repairSourcePairedRuntime, captu
 	if capture {
 		reply := r.rpc(t, &MsgThinToolRPC{Type: thinToolRPCTypeRequest, RequestID: "pubcapture_paired_fixture_12345678", ToolName: string(DeviceCapabilitySkillHubPublicationCapture),
 			TargetOwnerUserID: "usr7", TargetDeviceID: "install-42", DeviceID: "install-42", ExpiresAt: unixMillis(time.Now().Add(20 * time.Second)),
-			Payload: map[string]interface{}{"entry_id": publicationReadTestID, "bot_uid": "42", "local_skill_id": source.LocalSkillID, "workspace_generation": source.WorkspaceGeneration}})
+			Payload: map[string]interface{}{"entry_id": entryID, "bot_uid": "42", "local_skill_id": source.LocalSkillID, "workspace_generation": source.WorkspaceGeneration}})
 		if reply.Error != nil {
 			t.Fatalf("initial real capture failed: %+v", reply.Error)
 		}
@@ -133,12 +169,16 @@ func repairSourcePairedFixture(t *testing.T, r *repairSourcePairedRuntime, captu
 			t.Fatal("wrong capture contract")
 		}
 		q := &s.app.Input.Receipt.Query
+		q.EntryID = entryID
 		q.RequestHash = result["requestHash"].(string)
 		q.SourceSnapshotHash = result["sourceSnapshotHash"].(string)
 		q.RequestBytes = int64(result["requestBytes"].(float64))
 		s.app.Input.Draft.Evidence.CandidateHash = q.SourceSnapshotHash
-		s.app = repairSourceApplication(t, s.app)
+		s.app = repairSourceApplicationForEntryID(t, s.app, entryID)
 		s.capture.Input.RequestHash, s.capture.Input.SourceSnapshotHash, s.capture.Input.RequestBytes = q.RequestHash, q.SourceSnapshotHash, q.RequestBytes
+		s.capture.Input.EntryID = entryID
+		entry := s.entries["repair-source-fixture"]
+		entry.ID = entryID
 	}
 	s.task = repairSourceTask(t, s.app)
 	return f, s
@@ -248,6 +288,10 @@ func TestSkillHubPublicationRepairSourcePairedLaterRounds(t *testing.T) {
 func TestSkillHubPublicationRepairSourcePairedTaskLease(t *testing.T) {
 	r := startRepairSourcePairedRuntime(t, "normal")
 	f, s := repairSourcePairedFixture(t, r, true)
+	candidate := r.candidate(t, s.capture.Input.EntryID)
+	if candidate.RequestHash != s.capture.Input.RequestHash || candidate.SourceSnapshotHash != s.capture.Input.SourceSnapshotHash || candidate.RequestBytes != s.capture.Input.RequestBytes {
+		t.Fatal("exported Runtime candidate differs from the frozen capture receipt")
+	}
 	task := snapshotPublicationRepairTask(s.task)
 	if err := repairTaskSourcePairedCall(t, f, task, r); err != nil {
 		t.Fatal("real Runtime rejected current task/lease source proof", err)

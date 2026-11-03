@@ -18,7 +18,9 @@ const source = path.join(root, 'skills', 'paired-demo');
 fs.mkdirSync(source, { recursive: true });
 fs.writeFileSync(path.join(source, 'SKILL.md'), mode === 'malformed'
   ? '---\nname: [broken YAML\n---\n'
-  : '---\nname: paired-demo\ndescription: Isolated repair fixture\n---\n# Demo');
+  : mode === 'missing-description'
+    ? '---\nname: paired-demo\n---\n# Demo'
+    : '---\nname: paired-demo\ndescription: Isolated repair fixture\n---\n# Demo');
 fs.writeFileSync(path.join(source, 'run.cjs'), 'require("fs").writeFileSync(__dirname + "/EXECUTED", "bad")');
 new BotSkillWorkspaceService(root, path.join(root, 'skills')).activate('42');
 const config = createCatsCoLocalConfigService({ runtimeRoot: root });
@@ -57,6 +59,12 @@ for await (const line of readline.createInterface({ input: process.stdin, crlfDe
     assert.deepEqual(files(path.join(root, 'skills')), before, 'RPC changed source files');
     if (reply.result) assert.equal(Object.keys(reply.result).length, request.tool_name === PUBLICATION_CAPTURE ? 6 : 7);
     send({ reply });
+    continue;
+  }
+  if (input.action === 'candidate') {
+    assert.match(input.entryId, /^pubentry_[a-f0-9]{32}$/);
+    const saved = JSON.parse(fs.readFileSync(path.join(root, 'data', 'skillhub-publications', `${input.entryId}.json`), 'utf8'));
+    send({ requestBody: Buffer.from(saved.requestBody).toString('base64'), receipt: saved.receipt });
     continue;
   }
   switch (input.action) {

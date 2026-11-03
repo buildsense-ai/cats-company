@@ -71,36 +71,50 @@ This reader handles revision 1 only, not later-round private candidate ancestry.
 
 There is no real provider invocation, billing, task loop, human confirmation,
 candidate mutation, source Skill change or publication in this slice. The
-paired contract composes real CatsCo Cloud report/material clients and real
-Cloud PostgreSQL/TLS handlers through the constrained coordinator. Runtime
-source verification, provider invocation and dispatch journal remain explicit
-synthetic adapters; production gates remain off. Runtime description drafts
-still need explicit human confirmation; they are not the Chinese marketplace
-manual.
+required combined paired contract uses the exact candidate bytes and entry/hash
+binding captured by pinned XiaoBa Runtime, sends those bytes through real Cloud
+intake/PostgreSQL/TLS, reads its retained report/material through the real Cloud
+clients, and checks the live Runtime source at each coordinator fence. Provider
+invocation and dispatch journal remain explicit synthetic adapters; production
+gates remain off. Runtime description drafts still need explicit human
+confirmation; they are not the Chinese marketplace manual.
 
 ## Verification
 
 Unit/real TLS client tests cover strict config/receipts, redirects, header/body
 corruption, timeout/cancel and concurrency limits. The required
 `publication_repair_material_paired` CI job checks out Cloud commit
-`f14df745048aeba14f22424a814b6590518a7523`, migrates a throwaway PostgreSQL database,
-and runs the Go client against the real Node HTTPS handler and store under race
-detection. A locally generated test CA is trusted explicitly; TLS verification
-is never disabled.
+`f14df745048aeba14f22424a814b6590518a7523` and XiaoBa Runtime commit
+`062c7cf1b11fa49fdc44466c1cbfe80b041d11c4`, migrates a throwaway PostgreSQL
+database, and runs the Go client against the real Node HTTPS handler and store
+under race detection. A locally generated test CA is trusted explicitly; TLS
+verification is never disabled.
 
 `TestPublicationRepairMaterialCloudPostgres` proves lost response without retry,
 client/handler reconstruction with identical retained bytes, active publisher
-checks, cancellation denial and zero publication commits/permits. It also routes
-the actual Cloud report and original bytes through the CatsCo coordinator and
-asserts one synthetic invocation after its lease-bound source checks. The
-fixture's upstream upload-grant introspection, local task, Runtime verifier,
-provider and dispatch journal are synthetic. It projects actual Cloud
-bytes/report and verifies semantic hashes across non-BMP and BMP-private-use
-path sorting, U+2028/U+2029/ampersand escaping and Base64, while preserving the
-source entry index. This is not a production/paid end-to-end test.
+checks, cancellation denial and zero publication commits/permits. In mandatory
+Runtime+Cloud mode it exports the exact candidate captured from the isolated
+Runtime, verifies matching entry ID/request hash/source hash/byte length at
+Cloud admission, then routes that retained Cloud report and original bytes
+through the coordinator while every source fence calls the live pinned Runtime.
+The fixture's upstream upload-grant introspection, local task, provider and
+dispatch journal are synthetic. The same mandatory runner then runs the test
+again in `cloud-exotic-vectors` mode, explicitly clearing the Runtime settings
+and candidate override. That second run uses Cloud's non-BMP/BMP-private-use
+paths, U+2028/U+2029/ampersand escaping and Base64 vectors, while preserving the
+original source entry index. Only that second run uses a synthetic Runtime
+verifier; it still uses real Cloud HTTPS/PostgreSQL report/material reads and
+the coordinator. Both runs must pass without skips. This is not a
+production/paid end-to-end test.
 
-Local runs without PostgreSQL/Cloud dependencies explicitly skip the paired test;
-CI sets `CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT=1` so missing dependencies fail.
+Local runs without PostgreSQL/Cloud dependencies explicitly skip the paired test.
+The mandatory runner sets `CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT=1` for both
+modes so missing Cloud/PostgreSQL dependencies fail. It additionally sets
+`CATSCO_REQUIRE_REPAIR_RUNTIME_CLOUD_CONTRACT=1` for `runtime-cloud`, requiring
+both `XIAOBA_REPAIR_PAIRED_ROOT` and `XIAOBA_REPAIR_PAIRED_NODE`; missing either
+fails with the dependency names instead of silently falling back to a synthetic
+Runtime. The runner requires the Node executable setting and database URL up
+front. Neither flag applies to the separate client/projection-only unit step.
 
 ```sh
 go test ./server -run '^TestPublicationRepairMaterial' -count=1 -v

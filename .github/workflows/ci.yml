@@ -119,6 +119,13 @@ jobs:
           # Cloud PR71: private original rejection bytes; no model execution.
           ref: f14df745048aeba14f22424a814b6590518a7523
           path: skillhub-cloud
+      - name: Checkout pinned XiaoBa Runtime
+        uses: actions/checkout@v6
+        with:
+          repository: buildsense-ai/XiaoBa-CLI
+          # PR569: real source capture and live repair-source checks.
+          ref: 062c7cf1b11fa49fdc44466c1cbfe80b041d11c4
+          path: XiaoBa-CLI
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -135,15 +142,22 @@ jobs:
         run: |
           npm ci --ignore-scripts --no-audit --fund=false
           npm run db:migrate
-      - name: Verify actual Go client with Cloud PostgreSQL and TLS
+      - name: Install pinned XiaoBa Runtime dependencies
+        working-directory: XiaoBa-CLI
+        run: npm ci --prefer-offline --no-audit --fund=false
+      - name: Verify Runtime + Cloud composition and exotic encoding vectors
         working-directory: cats-company
         env:
           SKILLHUB_REPAIR_MATERIAL_ROOT: ${{ github.workspace }}/skillhub-cloud
           SKILLHUB_TEST_DATABASE_URL: postgres://catsco:catsco_test@127.0.0.1:5432/repair_material_test?sslmode=disable
-          CATSCO_REQUIRE_REPAIR_MATERIAL_CONTRACT: '1'
+          XIAOBA_REPAIR_PAIRED_ROOT: ${{ github.workspace }}/XiaoBa-CLI
+          XIAOBA_REPAIR_PAIRED_NODE: node
         run: |
           test -n "$SKILLHUB_TEST_DATABASE_URL"
-          go test -race ./server -run '^TestPublicationRepairMaterial(Client|Projection|CloudPostgres)' -count=1 -v
+          node scripts/test-publication-repair-runtime-cloud-paired.mjs
+      - name: Verify remaining material unit and projection contracts
+        working-directory: cats-company
+        run: go test -race ./server -run '^TestPublicationRepairMaterial(Client|Projection)' -count=1 -v
 
   # DB 契约测试独立成 job：与 backend（编译/单测/race/漏洞扫描）并行，
   # 避免 4~5 分钟的单步把整体墙钟拖到 9 分钟。
