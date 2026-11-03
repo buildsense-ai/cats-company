@@ -119,6 +119,9 @@ func TestPublicationRepairModelProviderExactPrivateHTTPS(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/internal/users/1/key/reveal" {
 			keys.Add(1)
+			if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+				t.Error("key reveal must be a bodyless POST without chunked framing")
+			}
 			if r.Header.Get("Authorization") != "Bearer synthetic-admin-secret" || r.Header.Get("x-api-key") != "" {
 				t.Error("admin credential boundary")
 			}
@@ -135,6 +138,9 @@ func TestPublicationRepairModelProviderExactPrivateHTTPS(t *testing.T) {
 			t.Error("payer credential boundary")
 		}
 		raw, _ := io.ReadAll(r.Body)
+		if r.ContentLength != int64(len(raw)) || r.ContentLength <= 0 || len(r.TransferEncoding) != 0 {
+			t.Error("model request must have an exact nonempty content length without chunked framing")
+		}
 		var wire map[string]json.RawMessage
 		if json.Unmarshal(raw, &wire) != nil || len(wire) != 5 {
 			t.Error("unexpected wire fields")

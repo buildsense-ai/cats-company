@@ -72,7 +72,11 @@ with `-race -v`; a local missing-DSN skip is not database evidence.
 The internal [restricted model coordinator](skillhub-publication-repair-model-execution.md)
 now consumes this journal with current execution/source checks, strict request
 binding and read-only completion recovery. It registers no real provider or
-worker and does not apply the output. The real executor/provider adapter, private candidate ancestry across
+worker and does not apply the output. A separate default-off
+[model HTTP adapter](skillhub-publication-repair-model-provider.md) now exists,
+but has no production call site. Its one local HTTP attempt does not attest
+relay-internal retry/fallback or payer accounting; those remain rollout
+prerequisites. Production executor composition, private candidate ancestry across
 multiple rounds, trusted continuation for both publication entry points and
 controlled end-to-end rollout remain subsequent work. This journal itself never
 calls or bills a model. Chinese marketplace manuals and author-managed images

@@ -99,10 +99,15 @@ func publicationRepairProviderObject(raw []byte, keys ...string) (map[string]jso
 }
 
 func (p *publicationRepairModelProvider) post(ctx context.Context, endpoint, header, secret string, body []byte, limit int64) ([]byte, error) {
-	// NopCloser deliberately removes GetBody. Combined with non-idempotent POST,
+	// NoBody keeps empty key-reveal POSTs bodyless (not chunked). NopCloser
+	// deliberately removes GetBody for nonempty model requests. Combined with POST,
 	// no idempotency headers, fresh connections and no redirects, net/http cannot
 	// replay this request. Do not replace with a retrying SDK/shared client.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, io.NopCloser(bytes.NewReader(body)))
+	var reader io.Reader = http.NoBody
+	if len(body) > 0 {
+		reader = io.NopCloser(bytes.NewReader(body))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, reader)
 	if err != nil {
 		return nil, errPublicationRepairModelProvider
 	}

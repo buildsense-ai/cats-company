@@ -44,7 +44,9 @@ resolution, shortened by the coordinator/parent deadline. At most two active
 invocations per adapter are admitted, with slots held through response reading.
 The owned transport has TLS verification, no proxy/cookie jar, no redirects,
 compression, keepalive reuse, SDK retry, application retry or idempotency header.
-POST bodies deliberately have no `GetBody` replay callback. All HTTP failures,
+Empty key-reveal POSTs use `http.NoBody` (zero length, no chunked framing);
+nonempty model POSTs carry their exact content length. Both deliberately have
+no `GetBody` replay callback. All HTTP failures,
 429/5xx, incomplete replies, deadline/cancellation and malformed responses stop
 without another key/model request in that invocation.
 
