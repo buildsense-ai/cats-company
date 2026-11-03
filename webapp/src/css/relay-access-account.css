@@ -251,50 +251,90 @@
   font-weight: var(--cc-font-weight-medium);
 }
 
-.relay-access-account .relay-access-order-list > button {
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  min-height: 80px;
-  gap: 12px;
-  padding: 16px 0;
-  border-bottom-color: var(--cc-border);
+.relay-access-account .relay-access-order-row {
+  border-bottom: 1px solid var(--cc-border);
+}
+
+.relay-access-account .relay-access-order-row:last-child {
+  border-bottom: 0;
+}
+
+.relay-access-account .relay-access-order-summary {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  min-height: 88px;
+  gap: 14px;
+  width: 100%;
+  padding: 18px 16px;
+  border: 0;
   border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
   transition: background-color 160ms ease;
 }
 
-.relay-access-account .relay-access-order-list > button:hover {
+.relay-access-account .relay-access-order-summary:hover {
   background: var(--cc-hover);
 }
 
-.relay-access-account .relay-access-order-list > button.active,
-.relay-access-account .relay-access-order-list > button:active {
+.relay-access-account .relay-access-order-summary:active,
+.relay-access-account .relay-access-order-row.expanded .relay-access-order-summary {
   background: var(--cc-selected);
 }
 
-.relay-access-account .relay-access-order-list > button > svg {
+.relay-access-account .relay-access-order-summary > svg {
   justify-self: center;
   width: 18px;
   height: 18px;
+  color: var(--cc-muted);
+}
+
+.relay-access-account .relay-access-order-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 8px;
+}
+
+.relay-access-account .relay-access-order-summary:focus-visible,
+.relay-access-account .relay-access-order-id > button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
+}
+
+.relay-access-account .relay-access-order-chevron {
+  transition: transform 160ms ease;
+}
+
+.relay-access-account .relay-access-order-summary[aria-expanded="true"] .relay-access-order-chevron {
+  transform: rotate(180deg);
 }
 
 .relay-access-account .relay-access-order-heading {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  gap: 8px 16px;
 }
 
 .relay-access-account .relay-access-order-heading strong {
   color: var(--cc-text);
   font-size: 15px;
   font-weight: var(--cc-font-weight-semibold);
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
 .relay-access-account .relay-access-order-list .relay-access-order-heading em {
   display: inline-flex;
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: var(--cc-font-weight-regular);
+  line-height: 1.5;
   white-space: normal;
 }
 
@@ -302,10 +342,72 @@
   display: flex;
   min-width: 0;
   gap: 14px;
-  margin-top: 5px;
+  margin-top: 0;
   color: var(--cc-muted);
   font-size: 12px;
   line-height: 1.65;
+}
+
+.relay-access-account .relay-access-order-details {
+  margin: 0 16px 14px 54px;
+  padding: 14px 0 0;
+  border: 0;
+  border-top: 1px solid var(--cc-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.relay-access-account .relay-access-order-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 20px;
+}
+
+.relay-access-account .relay-access-order-detail-meta > span {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--cc-muted);
+  font-size: 12px;
+}
+
+.relay-access-account .relay-access-order-detail-meta > span > span {
+  flex: 0 0 auto;
+}
+
+.relay-access-account .relay-access-order-detail-meta .relay-access-order-id {
+  grid-column: 1 / -1;
+  overflow: visible;
+  white-space: normal;
+}
+
+.relay-access-account .relay-access-order-detail-meta strong {
+  min-width: 0;
+  color: var(--cc-text);
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.relay-access-account .relay-access-order-id > button {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-muted);
+  cursor: pointer;
+}
+
+.relay-access-account .relay-access-order-details .relay-access-checkout-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 0;
 }
 
 .relay-access-account .relay-access-order-meta > span:first-child {
@@ -474,6 +576,26 @@
     gap: 2px;
   }
 
+  .relay-access-account .relay-access-order-summary {
+    grid-template-columns: 22px minmax(0, 1fr) auto 14px;
+    gap: 8px;
+    min-height: 84px;
+    padding: 16px 12px;
+  }
+
+  .relay-access-account .relay-access-order-details {
+    margin: 0 12px 14px 42px;
+  }
+
+  .relay-access-account .relay-access-order-detail-meta {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .relay-access-account .relay-access-order-details .relay-access-checkout-actions > div {
+    flex-wrap: wrap;
+  }
+
   .relay-access-account .relay-access-key-panel.relay-access-tool-disclosure-content {
     padding-left: 0;
   }
@@ -494,7 +616,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .relay-access-account .relay-access-order-list > button {
+  .relay-access-account .relay-access-order-summary,
+  .relay-access-account .relay-access-order-chevron {
     transition: none;
   }
 }

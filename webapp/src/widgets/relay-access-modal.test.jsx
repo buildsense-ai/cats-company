@@ -1274,35 +1274,97 @@ describe('RelayAccessModal commercial rollout', () => {
       { order_no: 'CCORDER07', plan_name: '已生效套餐 7', amount_fen: 4900, status: 'fulfilled', created_at: '2026-08-04T01:00:00Z' },
       { order_no: 'CCORDER08', plan_name: '已生效套餐 8', amount_fen: 4900, status: 'fulfilled', created_at: '2026-08-03T01:00:00Z' },
       { order_no: 'CCORDER09', plan_name: '已退款套餐', amount_fen: 4900, status: 'refunded', created_at: '2026-08-02T01:00:00Z' },
-      { order_no: 'CCORDER10', plan_name: '已关闭套餐', amount_fen: 4900, status: 'closed', created_at: '2026-08-01T01:00:00Z' },
+      { order_no: 'CCORDER10', plan_name: '已关闭套餐', amount_fen: 4900, status: 'closed', created_at: '2026-08-01T01:00:00Z', closed_at: '2026-08-01T02:00:00Z' },
     ];
     api.getCommercialOrders.mockResolvedValue({ orders });
 
     await renderModal();
     await clickButton('订单记录');
 
-    expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(8);
+    expect(container.querySelectorAll('.relay-access-order-summary')).toHaveLength(8);
     expect(container.querySelector('.relay-access-billing-toolbar [aria-label="筛选订单"]')).not.toBeNull();
     expect(container.querySelector('#relay-access-orders-panel [aria-label="筛选订单"]')).toBeNull();
     expect(container.textContent).toContain('查看其余 2 条');
     await clickButton('查看其余 2 条');
-    expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(10);
+    expect(container.querySelectorAll('.relay-access-order-summary')).toHaveLength(10);
 
     await clickButton('待处理');
     expect(findButton('待处理')?.getAttribute('aria-pressed')).toBe('true');
-    const pendingRows = container.querySelectorAll('.relay-access-order-list > button');
+    const pendingRows = container.querySelectorAll('.relay-access-order-summary');
     expect(pendingRows).toHaveLength(1);
     expect(pendingRows[0].textContent).toContain('待支付套餐');
+    await clickButton('待支付套餐');
+    const expandedPending = container.querySelector('.relay-access-order-row.expanded');
+    expect(expandedPending?.querySelector('.relay-access-order-id')?.textContent).toContain('CCORDER01');
+    expect(expandedPending?.textContent).toContain('支付方式');
+    expect(container.querySelector('.relay-access-checkout:not(.relay-access-order-details)')).toBeNull();
+    expect(expandedPending?.querySelectorAll('.relay-access-order-amount')).toHaveLength(1);
+    await clickButton('待处理');
 
     await clickButton('退款 / 关闭');
     expect(findButton('退款 / 关闭')?.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(2);
-    const closedOrder = [...container.querySelectorAll('.relay-access-order-list > button')]
+    expect(container.querySelectorAll('.relay-access-order-summary')).toHaveLength(2);
+    const closedOrder = [...container.querySelectorAll('.relay-access-order-summary')]
       .find(row => row.textContent.includes('已关闭套餐'));
     expect(closedOrder?.querySelector('.relay-access-order-heading')?.textContent).toContain('已关闭');
-    expect(closedOrder?.querySelector('.relay-access-order-id')?.getAttribute('title')).toBe('CCORDER10');
+    await clickButton('已关闭套餐');
+    const expandedClosed = container.querySelector('.relay-access-order-row.expanded');
+    expect(expandedClosed?.querySelector('.relay-access-order-id')?.getAttribute('title')).toBe('CCORDER10');
+    expect(expandedClosed?.textContent).toContain('关闭时间');
     expect(container.textContent).toContain('已退款套餐');
     expect(container.textContent).toContain('已关闭套餐');
+  });
+
+  it('keeps copy, cancellation and refreshed status inside the expanded history row', async () => {
+    let order = {
+      order_no: 'CCHISTORYACTION01', plan_name: '历史订单操作测试', amount_fen: 5900,
+      status: 'pending', channel: 'alipay_page', created_at: '2026-11-01T01:00:00Z',
+      checkout_url: 'https://openapi.alipay.test/history',
+    };
+    const otherOrder = { order_no: 'CCHISTORYOTHER', plan_name: '另一笔订单', amount_fen: 9900, status: 'refunded' };
+    api.getCommercialOrders.mockImplementation((orderNo) => Promise.resolve(orderNo ? { order } : { orders: [otherOrder, order] }));
+    api.cancelCommercialOrder.mockImplementation(async () => {
+      order = { ...order, status: 'closed', checkout_url: '', closed_at: '2026-11-01T02:00:00Z' };
+      return { order };
+    });
+    await renderModal();
+    await clickButton('订单记录');
+    await clickButton('历史订单操作测试');
+    const summary = container.querySelector('.relay-access-order-row.expanded .relay-access-order-summary');
+    expect(summary.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelectorAll('.relay-access-checkout')).toHaveLength(1);
+    await act(async () => {
+      container.querySelector('[aria-label="复制订单号"]').click();
+      await Promise.resolve();
+    });
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(order.order_no);
+    await clickButton('取消订单');
+    expect(api.cancelCommercialOrder).toHaveBeenCalledWith(order.order_no, { timeoutMs: 25_000 });
+    expect(container.querySelector('.relay-access-order-row.expanded')?.textContent).toContain('关闭时间');
+    expect(container.querySelector('.relay-access-order-row.expanded .relay-access-order-summary')?.textContent).toContain('已关闭');
+    expect(container.querySelector('.relay-access-order-summary')?.textContent).toContain('另一笔订单');
+    await clickButton('刷新状态');
+    expect(api.getCommercialOrders).toHaveBeenCalledWith(order.order_no, { timeoutMs: 20_000 });
+    await clickButton('历史订单操作测试');
+    expect(container.querySelector('.relay-access-order-details')).toBeNull();
+    expect(summary.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('labels fallback update timestamps without claiming they are payment or closure times', async () => {
+    const order = {
+      order_no: 'CCUPDATETIME01', plan_name: '时间字段测试', amount_fen: 5900,
+      status: 'refunded', created_at: '2026-11-01T01:00:00Z', updated_at: '2026-11-01T02:00:00Z',
+    };
+    api.getCommercialOrders.mockResolvedValue({ orders: [order] });
+    await renderModal();
+    await clickButton('订单记录');
+    await clickButton('时间字段测试');
+    const details = container.querySelector('.relay-access-order-details');
+    expect(details.textContent).toContain('最近更新时间');
+    expect(details.textContent).not.toContain('退款时间');
+    expect(container.querySelectorAll('.relay-access-order-heading strong')).toHaveLength(1);
+    expect(container.querySelectorAll('.relay-access-order-amount')).toHaveLength(1);
+    expect(container.querySelectorAll('.relay-access-order-id')).toHaveLength(1);
   });
 
   it('creates and confirms a gray payment from the user purchase flow', async () => {

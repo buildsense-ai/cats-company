@@ -273,7 +273,26 @@ function commercialOrderTone(status) {
 function commercialOrderEventTime(order) {
   if (order?.status === 'fulfilled') return order.fulfilled_at || order.paid_at || order.updated_at;
   if (order?.status === 'paid') return order.paid_at || order.updated_at;
+  if (order?.status === 'closed') return order.closed_at || order.updated_at;
+  if (order?.status === 'refunded') return order.refunded_at || order.updated_at;
+  if (order?.status === 'failed') return order.failed_at || order.updated_at;
   return order?.updated_at || order?.created_at;
+}
+
+function commercialOrderEventLabel(order) {
+  if (order?.status === 'fulfilled' && order.fulfilled_at) return '生效时间';
+  if (['fulfilled', 'paid'].includes(order?.status) && order.paid_at) return '支付时间';
+  if (order?.status === 'closed' && order.closed_at) return '关闭时间';
+  if (order?.status === 'refunded' && order.refunded_at) return '退款时间';
+  if (order?.status === 'failed' && order.failed_at) return '失败时间';
+  return '最近更新时间';
+}
+
+function updateCommercialOrder(orders, order) {
+  const current = orders || [];
+  return current.some(item => item.order_no === order.order_no)
+    ? current.map(item => item.order_no === order.order_no ? order : item)
+    : [order, ...current];
 }
 
 function commercialOrderCountdown(order, now = Date.now()) {
@@ -792,6 +811,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
   const [paymentChannel, setPaymentChannel] = useState('');
   const [purchasePlan, setPurchasePlan] = useState(null);
   const [checkoutOrder, setCheckoutOrder] = useState(null);
+  const [checkoutInOrderHistory, setCheckoutInOrderHistory] = useState(false);
   const [checkoutClock, setCheckoutClock] = useState(Date.now());
   const [paymentLoading, setPaymentLoading] = useState('');
   const [planChooserOpen, setPlanChooserOpen] = useState(initialPlanChooserOpen);
@@ -1205,6 +1225,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
       ['created', 'pending'].includes(order.status) && order.plan_id === plan.id && order.channel === paymentChannel
     ));
     if (existing) {
+      setCheckoutInOrderHistory(false);
       setPaymentPollError('');
       setCheckoutOrder(existing);
       setError('');
@@ -1226,6 +1247,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
         saveCommercialPaymentRequestIDs(paymentRequestIDs.current);
       }
       setPaymentPollError('');
+      setCheckoutInOrderHistory(false);
       setCheckoutOrder(data.order || null);
       setCommercialOrders((current) => {
         const next = (current || []).filter((item) => item.order_no !== data.order?.order_no);
@@ -1286,6 +1308,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
 
   const openCommercialOrder = (order) => {
     setPurchasePlan(null);
+    setCheckoutInOrderHistory(false);
     setPaymentPollError('');
     setCheckoutOrder(order);
     if (order?.checkout_url) {
@@ -1299,6 +1322,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
     purchaseFromChooserRef.current = true;
     setPlanChooserOpen(false);
     setCheckoutOrder(null);
+    setCheckoutInOrderHistory(false);
     setPurchasePlan(plan);
   };
 
@@ -1358,7 +1382,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
       const data = await api.cancelCommercialOrder(checkoutOrder.order_no, { timeoutMs: 25_000 });
       if (!data?.order) throw new Error('暂未读取到取消结果');
       setCheckoutOrder(data.order);
-      setCommercialOrders((current) => [data.order, ...(current || []).filter((item) => item.order_no !== data.order.order_no)]);
+      setCommercialOrders((current) => updateCommercialOrder(current, data.order));
       clearCommercialPaymentRequestIDForOrder(paymentRequestIDs.current, data.order);
       feedback.notify({ tone: 'success', message: '订单已取消' });
     } catch (err) {
@@ -1420,10 +1444,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
       const data = await api.getCommercialOrders(checkoutOrder.order_no, { timeoutMs: 20_000 });
       if (!data?.order) throw new Error('暂未读取到订单状态');
       setCheckoutOrder(data.order);
-      setCommercialOrders((current) => {
-        const next = (current || []).filter((item) => item.order_no !== data.order.order_no);
-        return [data.order, ...next];
-      });
+      setCommercialOrders((current) => updateCommercialOrder(current, data.order));
       if (!['created', 'pending'].includes(data.order.status)) {
         clearCommercialPaymentRequestIDForOrder(paymentRequestIDs.current, data.order);
       }
@@ -1475,10 +1496,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
         failures = 0;
         setPaymentPollError('');
         setCheckoutOrder(data.order);
-        setCommercialOrders((current) => {
-          const next = (current || []).filter((item) => item.order_no !== data.order.order_no);
-          return [data.order, ...next];
-        });
+        setCommercialOrders((current) => updateCommercialOrder(current, data.order));
         if (data.order.status === 'closed') {
           closedAttemptsRemaining -= 1;
           shouldContinue = closedAttemptsRemaining > 0;
@@ -1571,6 +1589,65 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
       first.focus();
     }
   };
+
+  const checkoutPaymentContent = checkoutOrder && (
+    <>
+      {checkoutOrder.status === 'pending' && checkoutOrder.checkout_url && (
+        <div className="relay-access-payment-redirect">
+          <div>
+            {!checkoutInOrderHistory && <strong>{checkoutPaymentLabel} {formatPriceFen(checkoutOrder.amount_fen)}</strong>}
+            <span>将在支付宝官方收银台完成付款；支付成功后此处会自动更新。</span>
+          </div>
+          <a
+            href={checkoutOrder.checkout_url}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            前往支付宝付款
+            <ExternalLink size={15} />
+          </a>
+        </div>
+      )}
+      {checkoutOrder.status === 'pending' && checkoutOrder.channel !== 'test' && !checkoutOrder.checkout_url && (
+        <div className="relay-access-period-note">正在恢复支付宝收银台链接，请稍候。</div>
+      )}
+      {checkoutOrder.status === 'created' && (
+        <div className="relay-access-period-note">订单已保存，正在恢复支付链接。</div>
+      )}
+      {checkoutOrder.status === 'pending' && checkoutOrder.channel === 'test' && commercialCatalog?.test_mode && (
+        <button
+          type="button"
+          className="relay-access-test-payment"
+          onClick={() => confirmCommercialTestPayment()}
+          disabled={Boolean(paymentLoading)}
+        >
+          {paymentLoading === `confirm:${checkoutOrder.order_no}` ? '入账中…' : '完成灰度测试支付'}
+        </button>
+      )}
+      {checkoutOrder.status === 'paid' && (
+        <div className="relay-access-payment-success pending"><RotateCcw size={16} />支付已确认，正在发放套餐权益。</div>
+      )}
+      {checkoutOrder.status === 'fulfilled' && !checkoutInOrderHistory && (
+        <div className="relay-access-payment-success"><BadgeCheck size={16} />支付成功，套餐已生效。用量数据可能延迟几分钟刷新。</div>
+      )}
+      {paymentPollError && <InlineFeedback tone="warning">{paymentPollError}</InlineFeedback>}
+      <div className="relay-access-checkout-actions">
+        {!checkoutInOrderHistory && <span>{commercialOrderEventLabel(checkoutOrder)} · {formatShortDateTime(commercialOrderEventTime(checkoutOrder))}</span>}
+        <div>
+          {['created', 'pending', 'failed'].includes(checkoutOrder.status) && (
+            <button type="button" className="danger" onClick={() => cancelCommercialOrder()} disabled={Boolean(paymentLoading)}>
+              <X size={14} />
+              {paymentLoading === `cancel:${checkoutOrder.order_no}` ? '取消中…' : '取消订单'}
+            </button>
+          )}
+          <button type="button" onClick={() => refreshCheckoutOrder()} disabled={Boolean(paymentLoading)}>
+            <RotateCcw size={14} />
+            {paymentLoading === `refresh:${checkoutOrder.order_no}` ? '刷新中…' : '刷新状态'}
+          </button>
+        </div>
+      </div>
+    </>
+  );
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
@@ -1745,7 +1822,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
               </div>
             )}
 
-            {checkoutOrder && (
+            {checkoutOrder && commercialView !== 'orders' && !checkoutInOrderHistory && (
               <div ref={checkoutRef} className={`relay-access-checkout ${checkoutOrder.status}`}>
                 <div className="relay-access-checkout-head">
                   <div>
@@ -1774,60 +1851,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                   <span><strong>{paymentChannelLabel(paymentChannels, checkoutOrder.channel)}</strong>支付方式</span>
                   <span><strong>{checkoutCountdown || formatShortDateTime(checkoutOrder.created_at) || '-'}</strong>{checkoutCountdown ? '支付剩余时间' : '创建时间'}</span>
                 </div>
-                {checkoutOrder.status === 'pending' && checkoutOrder.checkout_url && (
-                  <div className="relay-access-payment-redirect">
-                    <div>
-                      <strong>{checkoutPaymentLabel} {formatPriceFen(checkoutOrder.amount_fen)}</strong>
-                      <span>将在支付宝官方收银台完成付款；支付成功后此处会自动更新。</span>
-                    </div>
-                    <a
-                      href={checkoutOrder.checkout_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      前往支付宝付款
-                      <ExternalLink size={15} />
-                    </a>
-                  </div>
-                )}
-                {checkoutOrder.status === 'pending' && checkoutOrder.channel !== 'test' && !checkoutOrder.checkout_url && (
-                  <div className="relay-access-period-note">正在恢复支付宝收银台链接，请稍候。</div>
-                )}
-                {checkoutOrder.status === 'created' && (
-                  <div className="relay-access-period-note">订单已保存，正在恢复支付链接。</div>
-                )}
-                {checkoutOrder.status === 'pending' && checkoutOrder.channel === 'test' && commercialCatalog?.test_mode && (
-                  <button
-                    type="button"
-                    className="relay-access-test-payment"
-                    onClick={confirmCommercialTestPayment}
-                    disabled={Boolean(paymentLoading)}
-                  >
-                    {paymentLoading === `confirm:${checkoutOrder.order_no}` ? '入账中…' : '完成灰度测试支付'}
-                  </button>
-                )}
-                {checkoutOrder.status === 'paid' && (
-                  <div className="relay-access-payment-success pending"><RotateCcw size={16} />支付已确认，正在发放套餐权益。</div>
-                )}
-                {checkoutOrder.status === 'fulfilled' && (
-                  <div className="relay-access-payment-success"><BadgeCheck size={16} />支付成功，套餐已生效。用量数据可能延迟几分钟刷新。</div>
-                )}
-                {paymentPollError && <InlineFeedback tone="warning">{paymentPollError}</InlineFeedback>}
-                <div className="relay-access-checkout-actions">
-                  <span>{formatShortDateTime(commercialOrderEventTime(checkoutOrder))}</span>
-                  <div>
-                    {['created', 'pending', 'failed'].includes(checkoutOrder.status) && (
-                      <button type="button" className="danger" onClick={cancelCommercialOrder} disabled={Boolean(paymentLoading)}>
-                        <X size={14} />
-                        {paymentLoading === `cancel:${checkoutOrder.order_no}` ? '取消中…' : '取消订单'}
-                      </button>
-                    )}
-                    <button type="button" onClick={refreshCheckoutOrder} disabled={Boolean(paymentLoading)}>
-                      <RotateCcw size={14} />
-                      {paymentLoading === `refresh:${checkoutOrder.order_no}` ? '刷新中…' : '刷新状态'}
-                    </button>
-                  </div>
-                </div>
+                {checkoutPaymentContent}
               </div>
             )}
 
@@ -1920,34 +1944,57 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
               >
                 {visibleOrders.length > 0 ? (
                   <div className="relay-access-order-list">
-                    {visibleOrders.map((order) => (
-                      <button
-                        type="button"
-                        key={order.order_no}
-                        className={checkoutOrder?.order_no === order.order_no ? 'active' : ''}
-                        aria-pressed={checkoutOrder?.order_no === order.order_no}
-                        onClick={() => {
-                          setPaymentPollError('');
-                          setCheckoutOrder(order);
-                        }}
-                      >
-                        <ReceiptText size={16} />
-                        <span className="relay-access-order-main">
-                          <span className="relay-access-order-heading">
-                            <strong>{order.plan_name}</strong>
-                            <em className={commercialOrderTone(order.status)}>
-                              {commercialOrderStatus(order.status)}
-                              {commercialOrderCountdown(order, checkoutClock) ? ` · ${commercialOrderCountdown(order, checkoutClock)}` : ''}
-                            </em>
-                          </span>
-                          <span className="relay-access-order-meta">
-                            <span>{formatShortDateTime(order.created_at)}</span>
-                            <span className="relay-access-order-id" title={order.order_no}>订单号 {order.order_no}</span>
-                          </span>
-                        </span>
-                        <span className="relay-access-order-amount"><strong>{formatPriceFen(order.amount_fen)}</strong></span>
-                      </button>
-                    ))}
+                    {visibleOrders.map((listedOrder) => {
+                      const expanded = checkoutInOrderHistory && checkoutOrder?.order_no === listedOrder.order_no;
+                      const order = expanded ? checkoutOrder : listedOrder;
+                      return (
+                        <article className={`relay-access-order-row${expanded ? ' expanded' : ''}`} key={order.order_no}>
+                          <button
+                            type="button"
+                            className="relay-access-order-summary"
+                            aria-expanded={expanded}
+                            aria-controls={`relay-access-order-${order.order_no}`}
+                            onClick={() => {
+                              setPaymentPollError('');
+                              setCheckoutInOrderHistory(!expanded);
+                              setCheckoutOrder(expanded ? null : order);
+                            }}
+                          >
+                            <ReceiptText size={16} />
+                            <span className="relay-access-order-main">
+                              <span className="relay-access-order-heading">
+                                <strong>{order.plan_name}</strong>
+                                <em className={commercialOrderTone(order.status)}>
+                                  {commercialOrderStatus(order.status)}
+                                  {commercialOrderCountdown(order, checkoutClock) ? ` · ${commercialOrderCountdown(order, checkoutClock)}` : ''}
+                                </em>
+                              </span>
+                              <span className="relay-access-order-meta">创建于 {formatShortDateTime(order.created_at)}</span>
+                            </span>
+                            <span className="relay-access-order-amount"><strong>{formatPriceFen(order.amount_fen)}</strong></span>
+                            <ChevronDown size={15} className="relay-access-order-chevron" aria-hidden="true" />
+                          </button>
+                          {expanded && (
+                            <div id={`relay-access-order-${order.order_no}`} ref={checkoutRef} className={`relay-access-checkout relay-access-order-details ${order.status}`}>
+                              <div className="relay-access-order-detail-meta">
+                                <span className="relay-access-order-id" title={order.order_no}>
+                                  <span>订单号</span>
+                                  <strong>{order.order_no}</strong>
+                                  <button type="button" aria-label="复制订单号" title="复制订单号" onClick={() => copyText(`order:${order.order_no}`, order.order_no)}>
+                                    {copied === `order:${order.order_no}` ? <Check size={12} /> : <Copy size={12} />}
+                                  </button>
+                                </span>
+                                <span><span>支付方式</span><strong>{paymentChannelLabel(paymentChannels, order.channel)}</strong></span>
+                                {!['created', 'pending'].includes(order.status) && commercialOrderEventTime(order) && (
+                                  <span><span>{commercialOrderEventLabel(order)}</span><strong>{formatShortDateTime(commercialOrderEventTime(order)) || '-'}</strong></span>
+                                )}
+                              </div>
+                              {checkoutPaymentContent}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="relay-access-order-empty">
