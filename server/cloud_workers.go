@@ -125,6 +125,18 @@ type CloudWorkerHandler struct {
 	sweepInactiveOnce      sync.Once
 	queueSweepInactiveOnce sync.Once
 
+	// idleSweeps counts consecutive expiry sweeps that found nothing due, so the
+	// loop can emit a low-frequency heartbeat. Guarded by sweepMu:
+	// sweepExpiredWorkersLocked only ever runs with the gate held.
+	//
+	// Why this exists: a healthy sweeper with nothing due used to return before
+	// its only log line, so production showed zero `[cloud-worker]` output for
+	// hours. "Idle" and "wedged" then look identical from the outside — which is
+	// exactly the ambiguity that cost a full investigation round on 2026-11-03,
+	// where an empty sweep was mistaken for a broken one. One line every ten
+	// minutes (144/day) makes an absence of output meaningful again.
+	idleSweeps int
+
 	// orphanSweepActive records that the backstop actually reached the store at
 	// least once, so /health-style checks can tell "running" from "silently off".
 	orphanSweepActive atomic.Bool
@@ -2041,6 +2053,12 @@ func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 // redeploy in the window between commit and create).
 const cloudWorkerOrphanCreditMinAge = 10 * time.Minute
 
+// cloudWorkerIdleSweepLogEvery is how many consecutively empty expiry sweeps
+// pass between idle heartbeat lines. The sweep ticks once a minute, so ten
+// means one line every ten minutes: enough that a silent log is evidence of a
+// wedged loop, sparse enough to stay out of the way of real events.
+const cloudWorkerIdleSweepLogEvery = 10
+
 // cloudWorkerOrphanRetryBackoff keeps a permanently broken account from
 // spending a create attempt every sweep tick. It is process-local on purpose:
 // a restart simply retries once, which is the desired behaviour.
@@ -2201,11 +2219,22 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 	items, err := store.ListCloudWorkerLifecycleDue(now, 100)
 	if err != nil {
 		log.Printf("[cloud-worker] lifecycle sweep list failed: %v", err)
+		h.idleSweeps = 0
 		return nil
 	}
 	if len(items) == 0 {
+		// An empty sweep is the normal steady state, but it must not be
+		// indistinguishable from a sweep that never ran. Heartbeat on the first
+		// empty tick after startup/activity (so a restart proves liveness) and
+		// then every cloudWorkerIdleSweepLogEvery ticks.
+		h.idleSweeps++
+		if (h.idleSweeps-1)%cloudWorkerIdleSweepLogEvery == 0 {
+			log.Printf("[cloud-worker] lifecycle sweep idle: nothing due (consecutive_empty=%d, duration=%s)",
+				h.idleSweeps, time.Since(started).Round(time.Millisecond))
+		}
 		return nil
 	}
+	h.idleSweeps = 0
 	markedPending, claimedCount, deleted, failed, awaitingRecycle := 0, 0, 0, 0, 0
 	var rebuildOwners []int64
 	queuedRebuild := map[int64]bool{}
