@@ -32,13 +32,13 @@ func runPublicationRepairFirstRoundAttempt(parent context.Context, db publicatio
 	}
 	result := store.SkillHubPublicationRepairResult{Outcome: "stopped", Code: "model_result_uncertain", Evidence: lease.Input.Evidence}
 	if finishErr := db.FinishSkillHubPublicationRepairRound(parent, actor, lease, result); finishErr != nil {
-		return nil, errPublicationRepairModelUncertain
+		current, readErr := db.GetSkillHubPublicationRepairTask(parent, actor, lease.EntryID)
+		if readErr != nil || current == nil || len(current.Rounds) != 1 ||
+			!samePublicationRepairModelLease(current.Rounds[0].Lease, lease) || current.Rounds[0].Result == nil ||
+			!reflect.DeepEqual(*current.Rounds[0].Result, result) || current.State() != "stopped" {
+			return nil, errPublicationRepairModelUncertain
+		}
+		return nil, errPublicationRepairModelUncertainStopped
 	}
-	current, readErr := db.GetSkillHubPublicationRepairTask(parent, actor, lease.EntryID)
-	if readErr != nil || current == nil || len(current.Rounds) != 1 ||
-		!samePublicationRepairModelLease(current.Rounds[0].Lease, lease) || current.Rounds[0].Result == nil ||
-		!reflect.DeepEqual(*current.Rounds[0].Result, result) || current.State() != "stopped" {
-		return nil, errPublicationRepairModelUncertain
-	}
-	return nil, errPublicationRepairModelUncertain
+	return nil, errPublicationRepairModelUncertainStopped
 }
