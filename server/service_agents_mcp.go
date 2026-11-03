@@ -51,6 +51,13 @@ const (
 	// 固定 10ms 在 45 秒窗口里是 4500 轮 × 2 条 SQL，对结果毫无增益。
 	minServiceRunPollInterval = 20 * time.Millisecond
 	maxServiceRunPollInterval = 200 * time.Millisecond
+	// 空闲 MCP 会话的存活上限。客户端从不发 DELETE（2026-11-03 当日 POST 91k、
+	// GET 30k、DELETE 0），而每个会话都钉住一个 *mcp.Server（全套工具 JSON
+	// schema 约 44KB）和一条阻塞在 SSE Read 的 goroutine。不设上限就是每天
+	// 约 1.3GB 的单调增长 —— 11-01 那次 anon-rss 5.2GB 的整机 OOM 就是它。
+	serviceMCPSessionIdleTimeout = 60 * time.Minute
+	// liveServers 回收间隔：SDK 关掉空闲会话后，server 实例要靠这里摘掉。
+	serviceMCPReapInterval = 10 * time.Minute
 )
 
 var errServiceRunNotOwned = errors.New("service run not owned by caller")
@@ -61,9 +68,12 @@ func NewServiceAgentsMCPHandler(st store.ServiceAgentStore) *ServiceAgentsMCPHan
 		loops:       newServiceAgentCallLoopGuard(serviceAgentCallLoopWindow),
 		liveServers: map[int64]map[*mcp.Server]map[string]struct{}{},
 	}
+	// SessionTimeout 必须大于 0：SDK 的零值语义是「空闲会话永不关闭」，而那正是
+	// 会话与 server 实例无界累积的原因。计时器按最后一次 HTTP 请求重置，所以
+	// 一次连续工作的 agent 不会被误杀。
 	h.http = mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return h.buildServer(UIDFromContext(r.Context()))
-	}, nil)
+	}, &mcp.StreamableHTTPOptions{SessionTimeout: serviceMCPSessionIdleTimeout})
 	return h
 }
 
@@ -158,7 +168,26 @@ func (h *ServiceAgentsMCPHandler) serviceAgentsVisibleOnly(agents []store.Servic
 	return visible
 }
 
+// cachedServer 返回该账号当前在册的 server（若有）。
+//
+// SDK 的 StreamableHTTPHandler 会**每个 HTTP 请求**调用一次 getServer 回调（协议
+// 版本协商一次、建会话一次），文档明确允许同一 server 被多次返回。原先每请求都
+// new 一个 *mcp.Server 并登记进 liveServers：2026-11-03 当天 POST 91k + GET 30k，
+// 等于每天造十几万个实例（每个约 44KB 工具 schema），并且永不释放 —— 这就是
+// 11-01 那次 anon-rss 5.2GB 整机 OOM 的来源。改为按 uid 复用后，实例数等于
+// 活跃调用账号数。
+func (h *ServiceAgentsMCPHandler) cachedServer(callerUID int64) *mcp.Server {
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	for srv := range h.liveServers[callerUID] {
+		return srv
+	}
+	return nil
+}
 func (h *ServiceAgentsMCPHandler) buildServer(callerUID int64) *mcp.Server {
+	if srv := h.cachedServer(callerUID); srv != nil {
+		return srv
+	}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "catsco-agents", Version: "0.1.0"}, &mcp.ServerOptions{
 		// 目录与订阅：工具清单会随账号清单变化动态调整（list_changed 通知）。
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{ListChanged: true}},
@@ -278,6 +307,71 @@ func serviceMCPHasLiveSessions(srv *mcp.Server) bool {
 		return true
 	}
 	return false
+}
+
+// StartLiveServerReaper 定期把已经没有任何会话的 server 从 liveServers 摘掉。
+//
+// SessionTimeout 只负责关闭空闲会话；server 实例仍然留在注册表里，要等「清单
+// 变更」才会被清理 —— 而清单变更可能几天不发生，进程就只能看着它涨。这里按
+// 会话存活与否回收，让 *mcp.Server（每条约 44KB 工具 schema）真正可被 GC。
+func (h *ServiceAgentsMCPHandler) StartLiveServerReaper(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = serviceMCPReapInterval
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.reapLiveServers()
+			}
+		}
+	}()
+}
+
+// reapLiveServers 丢弃没有在线会话的 server，并清掉随之空掉的账号桶。
+// Sessions() 内部有自己的锁，所以只在增删注册表的瞬间持 liveMu。
+func (h *ServiceAgentsMCPHandler) reapLiveServers() int {
+	type entry struct {
+		uid int64
+		srv *mcp.Server
+	}
+
+	h.liveMu.Lock()
+	candidates := make([]entry, 0, len(h.liveServers))
+	for uid, servers := range h.liveServers {
+		for srv := range servers {
+			candidates = append(candidates, entry{uid: uid, srv: srv})
+		}
+	}
+	h.liveMu.Unlock()
+
+	dead := make([]entry, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !serviceMCPHasLiveSessions(candidate.srv) {
+			dead = append(dead, candidate)
+		}
+	}
+	if len(dead) == 0 {
+		return 0
+	}
+
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	for _, candidate := range dead {
+		servers, ok := h.liveServers[candidate.uid]
+		if !ok {
+			continue
+		}
+		delete(servers, candidate.srv)
+		if len(servers) == 0 {
+			delete(h.liveServers, candidate.uid)
+		}
+	}
+	return len(dead)
 }
 
 // isAgentHiddenFor 判断 agent 是否被该账号屏蔽（清单移除）。

@@ -1010,6 +1010,9 @@ func main() {
 	// orchestration (both PG and MySQL adapters do).
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
+		// 会话与 server 实例的回收：SessionTimeout 关掉空闲会话，reaper 再把没有
+		// 会话的 server 摘出注册表（否则要等下一次清单变更才释放）。
+		serviceAgentsMCPHandler.StartLiveServerReaper(context.Background(), 0)
 		// 三级可见性（公开/好友/自用）里的「好友」需要一个关系源；
 		// 未注入时 friends 级应用只对发布者自己可见（fail-closed，不会变成公开）。
 		if friendReader, ok := db.(server.ServiceAgentFriendReader); ok {

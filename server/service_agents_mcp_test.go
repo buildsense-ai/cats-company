@@ -1322,3 +1322,104 @@ func TestServiceAgentRejectsClaimingAnotherBot(t *testing.T) {
 		t.Fatal("拿别人的 bot_uid 必须被拒（放行的只是自己）")
 	}
 }
+
+// liveServerCount / liveUIDBucketExists / hasLiveSessionsForUID 都走 liveMu：
+// 生产里 HTTP 处理协程会并发写这张表，测试读它必须同样持锁（-race 会抓）。
+func liveServerCount(h *ServiceAgentsMCPHandler, uid int64) int {
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	return len(h.liveServers[uid])
+}
+
+func liveUIDBucketExists(h *ServiceAgentsMCPHandler, uid int64) bool {
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	_, ok := h.liveServers[uid]
+	return ok
+}
+
+func hasLiveSessionsForUID(h *ServiceAgentsMCPHandler, uid int64) bool {
+	h.liveMu.Lock()
+	servers := make([]*mcp.Server, 0, len(h.liveServers[uid]))
+	for srv := range h.liveServers[uid] {
+		servers = append(servers, srv)
+	}
+	h.liveMu.Unlock()
+	for _, srv := range servers {
+		if serviceMCPHasLiveSessions(srv) {
+			return true
+		}
+	}
+	return false
+}
+
+// 2026-11-03 生产实测：当日 POST /api/mcp 91k、GET 30k、DELETE 0 —— 客户端从不
+// 关闭会话，而每个会话都钉住一个 *mcp.Server（约 44KB 工具 schema）和一条阻塞在
+// SSE Read 的 goroutine。SessionTimeout 负责关空闲会话，reaper 负责把随之失效的
+// server 摘出注册表；没有 reaper 就要等下一次清单变更才释放。
+func TestReapLiveServersDropsServersWithoutSessions(t *testing.T) {
+	handler := NewServiceAgentsMCPHandler(newFakeServiceAgentStore())
+	orphan := mcp.NewServer(&mcp.Implementation{Name: "orphan", Version: "0.1.0"}, nil)
+	handler.registerLiveServer(11, orphan, map[string]struct{}{"catsco_run_status": {}})
+
+	if dropped := handler.reapLiveServers(); dropped != 1 {
+		t.Fatalf("reaped %d servers, want 1", dropped)
+	}
+	if liveUIDBucketExists(handler, 11) {
+		t.Fatal("empty uid bucket must be dropped from liveServers")
+	}
+}
+
+func TestReapLiveServersKeepsServerWithLiveSession(t *testing.T) {
+	handler := NewServiceAgentsMCPHandler(newFakeServiceAgentStore())
+	ts := httptest.NewServer(mcpAuthStub(7, http.HandlerFunc(handler.ServeHTTP)))
+	t.Cleanup(ts.Close)
+
+	session := newMCPSession(t, ts.URL)
+	if got := liveServerCount(handler, 7); got != 1 {
+		t.Fatalf("live servers after connect = %d, want 1", got)
+	}
+	if dropped := handler.reapLiveServers(); dropped != 0 {
+		t.Fatalf("reaped %d servers that still had a session, want 0", dropped)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for hasLiveSessionsForUID(handler, 7) {
+		if time.Now().After(deadline) {
+			t.Fatal("server side never noticed the closed session")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if dropped := handler.reapLiveServers(); dropped != 1 {
+		t.Fatalf("reaped %d servers after the client closed, want 1", dropped)
+	}
+	if liveUIDBucketExists(handler, 7) {
+		t.Fatal("empty uid bucket must be dropped from liveServers")
+	}
+}
+
+// getServer 是每请求一次的回调（协议协商一次 + 建会话一次）。必须复用同一个
+// *mcp.Server，否则每个请求都造一个带全套工具 schema 的实例。
+func TestMCPServerReusedPerCaller(t *testing.T) {
+	handler := NewServiceAgentsMCPHandler(newFakeServiceAgentStore())
+	tsA := httptest.NewServer(mcpAuthStub(7, http.HandlerFunc(handler.ServeHTTP)))
+	t.Cleanup(tsA.Close)
+
+	newMCPSession(t, tsA.URL)
+	newMCPSession(t, tsA.URL)
+	if got := liveServerCount(handler, 7); got != 1 {
+		t.Fatalf("live servers for one caller = %d, want 1 (per-request builds leak)", got)
+	}
+
+	// 另一个调用者有自己的实例：工具清单按账号可见性生成，不能串。
+	tsB := httptest.NewServer(mcpAuthStub(8, http.HandlerFunc(handler.ServeHTTP)))
+	t.Cleanup(tsB.Close)
+	newMCPSession(t, tsB.URL)
+	if got := liveServerCount(handler, 8); got != 1 {
+		t.Fatalf("live servers for second caller = %d, want 1", got)
+	}
+}
