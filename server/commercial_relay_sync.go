@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -136,30 +137,75 @@ func (s *CommercialRelaySyncer) bootstrapConfiguredRelayUsers(ctx context.Contex
 }
 
 func (s *CommercialRelaySyncer) bootstrapConfiguredRelayUsersOnce(ctx context.Context) error {
+	missing, err := s.queueConfiguredRelayUsers(ctx)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		// 一条汇总日志代替「每个 uid 4 条 error」：这些账号需要人工处理
+		// （revoke relay key，或补建平台账号），重试无意义。
+		log.Printf("commercial relay baseline skipped %d relay key(s) with no platform account: %v", len(missing), missing)
+	}
+	return nil
+}
+
+// queueConfiguredRelayUsers 把 relay 侧配置了 key 的账号逐个入队做基线同步，
+// 同时返回其中在平台 users 表里已不存在的 uid。
+//
+// relay key 的生命周期独立于平台账号：删号之后 key 仍然 configured，平台自己的
+// 服务 key（例 cats-company-server / uid 9900020699）用的是平台外的合成 uid。
+// 建基线的第一步是锁 users 行（SELECT ... FROM users FOR UPDATE），这类账号无论
+// 重试多少次都不会成功 —— 在这里筛掉，避免每次启动都刷 4 倍日志和无效 relay 调用。
+func (s *CommercialRelaySyncer) queueConfiguredRelayUsers(ctx context.Context) ([]int64, error) {
 	// Relay usage rows include the full provider/model catalog. Keep bootstrap
 	// pages comfortably below RelayAdminClient's bounded response size.
 	const pageSize = 10
+	missing := map[int64]struct{}{}
 	for offset := 0; ; offset += pageSize {
 		var page commercialRelayUsageResponse
 		path := fmt.Sprintf("/internal/usage/users?offset=%d&limit=%d&include_governance=1", offset, pageSize)
 		if err := s.relayAdmin.Do(ctx, http.MethodGet, path, nil, &page); err != nil {
-			return fmt.Errorf("offset %d: %w", offset, err)
+			return nil, fmt.Errorf("offset %d: %w", offset, err)
 		}
 		for index := range page.Users {
 			user := &page.Users[index]
-			if user.Configured && user.UID > 0 {
-				if !s.notifyAndQueue(ctx, user.UID, true) {
-					if err := ctx.Err(); err != nil {
-						return fmt.Errorf("queue uid %d: %w", user.UID, err)
-					}
-					return fmt.Errorf("queue uid %d", user.UID)
+			if !user.Configured || user.UID <= 0 {
+				continue
+			}
+			if !s.platformUserExists(user.UID) {
+				missing[user.UID] = struct{}{}
+				continue
+			}
+			if !s.notifyAndQueue(ctx, user.UID, true) {
+				if err := ctx.Err(); err != nil {
+					return nil, fmt.Errorf("queue uid %d: %w", user.UID, err)
 				}
+				return nil, fmt.Errorf("queue uid %d", user.UID)
 			}
 		}
 		if len(page.Users) < pageSize || (page.TotalCount > 0 && offset+len(page.Users) >= page.TotalCount) {
-			return nil
+			return sortedRelayUIDs(missing), nil
 		}
 	}
+}
+
+// platformUserExists 判断该 uid 在平台 users 表里是否还有行。
+// 读库失败按「存在」处理：数据库抖动不该被当成账号已删，否则会静默漏同步。
+func (s *CommercialRelaySyncer) platformUserExists(uid int64) bool {
+	user, err := s.store.GetUser(uid)
+	if err != nil {
+		return true
+	}
+	return user != nil
+}
+
+func sortedRelayUIDs(set map[int64]struct{}) []int64 {
+	uids := make([]int64, 0, len(set))
+	for uid := range set {
+		uids = append(uids, uid)
+	}
+	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
+	return uids
 }
 
 // runRelayIdentitySync mirrors owner-platform usernames and emails onto relay
@@ -250,6 +296,12 @@ func (s *CommercialRelaySyncer) run(ctx context.Context) {
 				continue
 			}
 			if err := s.syncWithTimeout(ctx, request.uid); err != nil {
+				if errors.Is(err, store.ErrCommercialRelayUserMissing) {
+					// 账号在平台不存在（已删号，或 relay key 用的是平台外的合成
+					// uid）：基线永远建不成，这是终态而不是瞬时故障。
+					s.finishPermanentFailure(request.uid, generation)
+					continue
+				}
 				log.Printf("commercial relay sync failed uid=%d attempt=%d: %v", request.uid, attempt+1, err)
 				s.finishFailedSync(ctx, request.uid, generation, attempt)
 			} else {
@@ -362,6 +414,18 @@ func (s *CommercialRelaySyncer) finishSuccessfulSync(ctx context.Context, uid in
 		log.Printf("commercial relay follow-up queue is full; uid=%d will be retried by reconciliation", uid)
 		s.requestReconciliation()
 	}
+}
+
+// finishPermanentFailure 收掉一个不可能成功的待办：账号在平台不存在时，基线
+// 永远建不起来。与 finishFailedSync 的区别是不排重试、不打 error 日志。
+func (s *CommercialRelaySyncer) finishPermanentFailure(uid int64, generation uint64) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	pending := s.pendingUIDs[uid]
+	if pending == nil || pending.generation != generation {
+		return
+	}
+	delete(s.pendingUIDs, uid)
 }
 
 func (s *CommercialRelaySyncer) finishFailedSync(ctx context.Context, uid int64, generation uint64, attempt int) {

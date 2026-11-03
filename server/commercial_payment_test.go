@@ -1750,7 +1750,13 @@ func TestCommercialRelayBootstrapPagesEveryConfiguredKey(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(commercialRelayUsageResponse{Users: users, TotalCount: total})
 	}))
 	defer relay.Close()
-	store := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}}}
+	// 平台账号都在：这个用例只管分页，不关心「relay key 存在但账号已删」的场景
+	// （那条路径见 commercial_relay_bootstrap_test.go）。
+	users := make(map[int64]*types.User, total)
+	for uid := 1; uid <= total; uid++ {
+		users[int64(uid)] = &types.User{ID: int64(uid)}
+	}
+	store := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}}, users: users}
 	syncer := NewCommercialRelaySyncer(store, &RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()}, CommercialRelaySyncerOptions{EnforceEnabled: true})
 
 	syncer.bootstrapConfiguredRelayUsers(context.Background())

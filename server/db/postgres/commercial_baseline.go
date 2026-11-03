@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -52,7 +53,7 @@ func (a *Adapter) EnsureCommercialRelayBaseline(uid int64, profile string, budge
 	var lockedUID int64
 	if err := tx.QueryRow(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, uid).Scan(&lockedUID); err != nil {
 		if err == sql.ErrNoRows {
-			return false, fmt.Errorf("commercial relay baseline user not found")
+			return false, store.ErrCommercialRelayUserMissing
 		}
 		return false, fmt.Errorf("lock commercial relay baseline user: %w", err)
 	}
