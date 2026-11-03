@@ -124,3 +124,30 @@ func TestOrphanSweepSurvivesStoreError(t *testing.T) {
 		t.Fatalf("a failed list must not mark any owner blocked: %v", h.orphanRetryBlocked)
 	}
 }
+
+// "Backstop is silently off" is the exact failure this feature removes, so it
+// must not reproduce it. Both disable conditions have to be visible: a store
+// without the query (wiring drift) and an unconfigured provision script.
+func TestOrphanSweepReportsItselfInactive(t *testing.T) {
+	h, _ := newCloudWorkerTestHandler("")
+	h.provisionScript = "/bin/true"
+	h.credits = quotaCreditStub{}
+
+	h.retryOrphanedCloudWorkerCredits()
+
+	if h.orphanSweepActive.Load() {
+		t.Fatal("sweep reported active without a store that can serve it")
+	}
+
+	// A store that does support it must flip the flag, so an operator can tell
+	// "running" from "silently off" without reading code.
+	h2, _ := newCloudWorkerTestHandler("")
+	h2.provisionScript = "/bin/true"
+	h2.credits = &orphanCreditStore{}
+
+	h2.retryOrphanedCloudWorkerCredits()
+
+	if !h2.orphanSweepActive.Load() {
+		t.Fatal("sweep did not report itself active although the store supports it")
+	}
+}

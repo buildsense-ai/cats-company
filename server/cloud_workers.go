@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/openchat/openchat/server/store"
@@ -109,6 +110,24 @@ type CloudWorkerHandler struct {
 	// purpose: a restart retries once, which is what we want after a deploy.
 	orphanMu           sync.Mutex
 	orphanRetryBlocked map[int64]time.Time
+
+	// orphanSweepInactiveOnce reports, once, why the orphan-credit backstop is
+	// not running. Two things disable it and neither is visible from the
+	// outside: the credit store not implementing the query (a wiring change, or
+	// a deployment whose adapter predates it) and an unconfigured provision
+	// script. Both used to be a bare `return`.
+	orphanSweepInactiveOnce sync.Once
+
+	// sweepInactiveOnce / queueSweepInactiveOnce do the same for the two other
+	// background loops: the expiry sweep (needs a destroy script and a lifecycle
+	// store) and the capacity-queue retry (needs a provision script and a queue
+	// store). All three used to fail closed and silent.
+	sweepInactiveOnce      sync.Once
+	queueSweepInactiveOnce sync.Once
+
+	// orphanSweepActive records that the backstop actually reached the store at
+	// least once, so /health-style checks can tell "running" from "silently off".
+	orphanSweepActive atomic.Bool
 
 	// Cloud provider reads take seconds and must never sit on the HTTP request
 	// path. Requests read the latest completed snapshot while one background
@@ -2044,8 +2063,13 @@ func (h *CloudWorkerHandler) retryOrphanedCloudWorkerCredits() {
 		ListOrphanedCloudWorkerCredits(time.Duration, int) ([]int64, error)
 	})
 	if !ok || h.provisionScript == "" {
+		// Say why, exactly once per reason. A silent type-assertion failure is
+		// the failure mode this whole backstop exists to remove: the sweep would
+		// be dead and every signal we have would still look healthy.
+		h.logOrphanSweepInactive(!ok, h.provisionScript == "")
 		return
 	}
+	h.orphanSweepActive.Store(true)
 	uids, err := store.ListOrphanedCloudWorkerCredits(cloudWorkerOrphanCreditMinAge, 5)
 	if err != nil {
 		log.Printf("[cloud-worker] orphaned credit sweep failed: %v", err)
@@ -2087,6 +2111,19 @@ func (h *CloudWorkerHandler) retryOrphanedCloudWorkerCredits() {
 	}
 }
 
+// logOrphanSweepInactive explains, once, why the orphan-credit backstop cannot
+// run. Kept separate from the caller so the reason list stays in one place.
+func (h *CloudWorkerHandler) logOrphanSweepInactive(storeUnsupported, noProvisionScript bool) {
+	h.orphanSweepInactiveOnce.Do(func() {
+		switch {
+		case noProvisionScript:
+			log.Printf("[cloud-worker] orphaned credit backstop is OFF: CATSCO_WORKER_PROVISION_SCRIPT is not configured, so a credit whose payment hook died can never be recovered automatically")
+		case storeUnsupported:
+			log.Printf("[cloud-worker] orphaned credit backstop is OFF: the credit store does not implement ListOrphanedCloudWorkerCredits (adapter older than the sweep?)")
+		}
+	})
+}
+
 // retryQueuedCloudWorkers retries buyers whose paid credit was parked because
 // their package tier had no free slot.
 //
@@ -2098,6 +2135,7 @@ func (h *CloudWorkerHandler) retryOrphanedCloudWorkerCredits() {
 func (h *CloudWorkerHandler) retryQueuedCloudWorkers() {
 	queuer, ok := h.credits.(cloudWorkerQueueStore)
 	if !ok || h.provisionScript == "" {
+		h.logQueueSweepInactive(!ok, h.provisionScript == "")
 		return
 	}
 	queued, err := queuer.ListQueuedCloudWorkerCredits(cloudWorkerQueueMinAge, 10)
@@ -2119,6 +2157,18 @@ func (h *CloudWorkerHandler) retryQueuedCloudWorkers() {
 	}
 }
 
+// logQueueSweepInactive explains, once, why the capacity-queue retry cannot run.
+func (h *CloudWorkerHandler) logQueueSweepInactive(storeUnsupported, noProvisionScript bool) {
+	h.queueSweepInactiveOnce.Do(func() {
+		switch {
+		case noProvisionScript:
+			log.Printf("[cloud-worker] capacity-queue retry is OFF: CATSCO_WORKER_PROVISION_SCRIPT is not configured, so a buyer queued at peak would stay queued forever")
+		case storeUnsupported:
+			log.Printf("[cloud-worker] capacity-queue retry is OFF: the credit store does not implement ListQueuedCloudWorkerCredits")
+		}
+	})
+}
+
 // sweepExpiredWorkersLocked performs the lifecycle transitions documented on
 // SweepExpiredWorkers and returns the owners that need a replacement worker.
 // The caller owns the sweep gate.
@@ -2132,6 +2182,20 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 		MarkCloudWorkerLifecycleDeleted(int64, string) error
 	})
 	if !ok || h.destroyScript == "" {
+		// Two silent reasons, and both disable the whole expiry chain:
+		// no lifecycle store (wiring drift / older adapter) or no destroy script.
+		// A silent return here means expired packages are never archived and never
+		// destroyed — the customer keeps a free machine, and nothing in the logs
+		// says why. This is exactly the "config looks right, behaviour is wrong"
+		// shape that a bare `return` hides, so say it once.
+		h.sweepInactiveOnce.Do(func() {
+			switch {
+			case h.destroyScript == "":
+				log.Printf("[cloud-worker] lifecycle sweep is OFF: CATSCO_WORKER_DESTROY_SCRIPT is not configured, so expired packages are never archived or destroyed")
+			case !ok:
+				log.Printf("[cloud-worker] lifecycle sweep is OFF: the credit store does not implement the lifecycle surface (ListCloudWorkerLifecycleDue and friends)")
+			}
+		})
 		return nil
 	}
 	items, err := store.ListCloudWorkerLifecycleDue(now, 100)
