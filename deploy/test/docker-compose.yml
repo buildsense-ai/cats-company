@@ -236,6 +236,9 @@ services:
       CATS_ALIPAY_RETURN_URL: "${CATS_ALIPAY_RETURN_URL:-}"
       APP_ENV: test
       TZ: Asia/Shanghai
+      # Same host-level guard as prod, sized for the test stack: a bounded
+      # restart here instead of starving the box the two stacks share.
+      GOMEMLIMIT: "${TEST_SERVER_GOMEMLIMIT:-1GiB}"
     ports:
       - "${TEST_API_BIND_HOST:-127.0.0.1}:${TEST_API_HOST_PORT:-16061}:6061"
       - "${TEST_GRPC_BIND_HOST:-127.0.0.1}:${TEST_GRPC_HOST_PORT:-16062}:6062"
@@ -247,6 +250,10 @@ services:
       - "${TEST_STACK_ROOT}/data/catsco-worker:${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          memory: "${TEST_SERVER_MEMORY:-2g}"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:6061/health"]
       # Poll fast while the process boots: the default 15s cadence made a

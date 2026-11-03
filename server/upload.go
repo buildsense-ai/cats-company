@@ -53,6 +53,13 @@ const (
 	uploadTooLargeCode        = "upload_too_large"
 )
 
+// multipartMemoryLimit is how much of a multipart body is buffered in the heap
+// while the form is parsed; the rest spills to temp files and is streamed to its
+// destination. This used to be the full 300MB size cap, so every large upload
+// sat entirely in memory (2026-11-01: 288MB spreadsheets helped push a 7.5GB
+// host into a global OOM kill).
+const multipartMemoryLimit int64 = 16 << 20
+
 var allowedImageExts = map[string]bool{
 	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
 }
@@ -214,6 +221,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if !parseUploadMultipart(w, r, maxSize) {
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
@@ -451,6 +459,7 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 	if !parseUploadMultipart(w, r, maxSize) {
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
@@ -1363,7 +1372,7 @@ func (h *UploadHandler) receiveRawUpload(
 func parseUploadMultipart(w http.ResponseWriter, r *http.Request, maxSize int) bool {
 	body := &countingReadCloser{ReadCloser: r.Body}
 	r.Body = http.MaxBytesReader(w, body, int64(maxSize))
-	if err := r.ParseMultipartForm(int64(maxSize)); err != nil {
+	if err := r.ParseMultipartForm(multipartMemoryLimit); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
 			writeUploadTooLarge(w)

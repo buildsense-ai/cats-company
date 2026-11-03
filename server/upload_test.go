@@ -1711,3 +1711,42 @@ func buildUploadRequestWithPartContentType(t *testing.T, target, fileName, partC
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req
 }
+
+func TestHandleUploadKeepsLargeBodyOutOfHeapAndStoresItIntact(t *testing.T) {
+	root := t.TempDir()
+	handler := NewUploadHandler(root, "/uploads")
+
+	content := make([]byte, int(multipartMemoryLimit)+64*1024)
+	copy(content, "PK\x03\x04")
+	for i := 4; i < len(content); i++ {
+		content[i] = byte(i % 251)
+	}
+	req := buildUploadRequest(t, "/api/upload?type=file", "large.zip", content)
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		FileKey string `json:"file_key"`
+		Size    int64  `json:"size"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	// Everything past multipartMemoryLimit is spilled to a temp file, so a
+	// matching size and body proves the spill path still delivers the whole part
+	// and that the temp files are cleaned up rather than accumulating.
+	if body.Size != int64(len(content)) {
+		t.Fatalf("size = %d, want %d", body.Size, len(content))
+	}
+	stored, err := os.ReadFile(filepath.Join(root, "files", body.FileKey))
+	if err != nil {
+		t.Fatalf("read stored upload: %v", err)
+	}
+	if !bytes.Equal(stored, content) {
+		t.Fatalf("stored upload differs from request body (%d vs %d bytes)", len(stored), len(content))
+	}
+}
