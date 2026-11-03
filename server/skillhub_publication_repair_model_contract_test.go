@@ -29,25 +29,7 @@ func (s *repairModelLostCompletionStore) CompleteSkillHubPublicationRepairModelC
 func verifyRepairModelExecutionPostgres(t *testing.T, ctx context.Context, db *postgres.Adapter, actor int64, lease store.SkillHubPublicationRepairLease, receipt store.SkillHubPublicationCloudReceipt) *publicationRepairModelResult {
 	t.Helper()
 	calls := 0
-	config := publicationRepairModelConfig{Provider: "synthetic-provider", Model: "synthetic-model", MaxOutputTokens: 2048}
-	ports := publicationRepairModelPorts{
-		VerifySource: func(context.Context, store.SkillHubPublicationRepairTask, store.SkillHubPublicationRepairLease) error {
-			return nil
-		},
-		PrepareMaterial: func(_ context.Context, task store.SkillHubPublicationRepairTask) (publicationRepairModelMaterial, error) {
-			if task.Input.Receipt != receipt {
-				t.Error("material receipt changed")
-			}
-			return publicationRepairModelMaterial{SourceText: "Synthetic retained private document reader skill; no actual Runtime/files accessed.", Report: publicationReportFixture(receipt).Validation}, nil
-		},
-		InvokeOnce: func(_ context.Context, request publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error) {
-			calls++
-			if request.PayerUID != actor || request.Task.Receipt != receipt || request.Round != lease.Input {
-				t.Error("synthetic provider identity changed")
-			}
-			return store.SkillHubPublicationRepairModelOutput{Text: "Read a document and return its contents."}, nil
-		},
-	}
+	config, ports := repairModelPostgresPorts(t, actor, lease, receipt, &calls)
 	loss := &repairModelLostCompletionStore{Adapter: db, lose: true}
 	first, err := runPublicationRepairModel(ctx, loss, actor, lease, config, ports)
 	if err != nil || first == nil || first.call.Output == nil || calls != 1 {
@@ -71,6 +53,30 @@ func verifyRepairModelExecutionPostgres(t *testing.T, ctx context.Context, db *p
 	return again
 }
 
+func repairModelPostgresPorts(t *testing.T, actor int64, lease store.SkillHubPublicationRepairLease, receipt store.SkillHubPublicationCloudReceipt, calls *int) (publicationRepairModelConfig, publicationRepairModelPorts) {
+	t.Helper()
+	config := publicationRepairModelConfig{Provider: "synthetic-provider", Model: "synthetic-model", MaxOutputTokens: 2048}
+	ports := publicationRepairModelPorts{
+		VerifySource: func(context.Context, store.SkillHubPublicationRepairTask, store.SkillHubPublicationRepairLease) error {
+			return nil
+		},
+		PrepareMaterial: func(_ context.Context, task store.SkillHubPublicationRepairTask) (publicationRepairModelMaterial, error) {
+			if task.Input.Receipt != receipt {
+				t.Error("material receipt changed")
+			}
+			return publicationRepairModelMaterial{SourceText: "Synthetic retained private document reader skill; no actual Runtime/files accessed.", Report: publicationReportFixture(receipt).Validation}, nil
+		},
+		InvokeOnce: func(_ context.Context, request publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error) {
+			*calls++
+			if request.PayerUID != actor || request.Task.Receipt != receipt || request.Round != lease.Input {
+				t.Error("synthetic provider identity changed")
+			}
+			return store.SkillHubPublicationRepairModelOutput{Text: "Read a document and return its contents."}, nil
+		},
+	}
+	return config, ports
+}
+
 type modelDescriptionLostProposalStore struct {
 	*postgres.Adapter
 	proposals int
@@ -92,8 +98,13 @@ func verifyModelDescriptionRetentionPostgres(t *testing.T, ctx context.Context, 
 	result := verifyRepairModelExecutionPostgres(t, ctx, db, actor, lease, receipt)
 	verify := func(context.Context, store.SkillHubPublicationRepairTask) error { return nil }
 	report := publicationReportFixture(receipt).Validation
+	reports := repairMaterialReportReaderFunc(func(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+		return &PublicationCloudValidationReport{SchemaVersion: 1, Receipt: publicationControlReceipt(receipt), Validation: snapshotPublicationRepairModelReport(report)}, nil
+	})
+	recoveryCalls := 0
+	config, ports := repairModelPostgresPorts(t, actor, lease, receipt, &recoveryCalls)
 	loss := &modelDescriptionLostProposalStore{Adapter: db}
-	draft, err := retainPublicationModelDescription(ctx, loss, actor, lease, result, report, verify)
+	draft, err := runPublicationRepairDescriptionAttempt(ctx, loss, actor, lease, config, ports, reports, verify)
 	if err != nil || draft == nil || draft.ConfirmedAt != nil || draft.Input.Proposal.Text != result.call.Output.Text || loss.proposals != 1 {
 		t.Fatal("real draft retention lost response recovery", err, loss.proposals)
 	}
@@ -105,22 +116,21 @@ func verifyModelDescriptionRetentionPostgres(t *testing.T, ctx context.Context, 
 	// Rebuild ALL private replay input from durable evidence, not the previous
 	// process's result pointer or a process-local dispatch/confirmation grant.
 	journal, err := db.GetSkillHubPublicationRepairModelCall(ctx, actor, lease.EntryID, lease.Round)
-	if err != nil || journal == nil {
+	if err != nil || journal == nil || journal.OutputHash != result.call.OutputHash {
 		t.Fatal("reconstruct model journal", err)
 	}
 	task, err := db.GetSkillHubPublicationRepairTask(ctx, actor, lease.EntryID)
 	if err != nil || task == nil || len(task.Rounds) != 1 {
 		t.Fatal("reconstruct draft task", err)
 	}
-	rebuilt := &publicationRepairModelResult{call: snapshotPublicationRepairModelCall(*journal)}
-	again, err := retainPublicationModelDescription(ctx, db, actor, task.Rounds[0].Lease, rebuilt, report, verify)
+	again, err := runPublicationRepairDescriptionAttempt(ctx, db, actor, task.Rounds[0].Lease, config, ports, reports, verify)
 	if err != nil || again == nil || again.ConfirmationKey != draft.ConfirmationKey || again.Input.Proposal.Text != draft.Input.Proposal.Text || again.ConfirmedAt != nil {
 		t.Fatal("real reconstructed draft consumer replay", err)
 	}
 	task, err = db.GetSkillHubPublicationRepairTask(ctx, actor, lease.EntryID)
-	if err != nil || task == nil || len(task.Rounds) != 1 || task.State() != "waiting_confirmation" {
+	if err != nil || task == nil || len(task.Rounds) != 1 || task.State() != "waiting_confirmation" || recoveryCalls != 0 || loss.proposals != 1 {
 		t.Fatal("draft consumer reset budget/state", err)
 	}
-	t.Log("real PostgreSQL model-to-description consumer: exact retained model text, unconfirmed draft/checkpoint atomic commit, lost committed proposal response read-only recovery, reconstructed consumer replay after pending lease finishes; same one round, no confirmation/model retry/file write; source/provider synthetic")
+	t.Log("real PostgreSQL description attempt: retained-model pending execution -> exact unconfirmed draft/checkpoint atomic commit, lost committed proposal response read-only recovery, reconstructed attempt replay after pending lease finishes; same one round, no confirmation/model retry/file write; source/material/provider synthetic")
 	return again
 }

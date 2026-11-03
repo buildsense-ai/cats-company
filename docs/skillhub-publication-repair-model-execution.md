@@ -1,8 +1,9 @@
 # Restricted repair model coordinator
 
 `runPublicationRepairModel` consumes an already-claimed repair round and the
-private model-call journal. It is internal and has **no registered call site,
-worker, HTTP/RPC route, browser capability or real provider adapter**. Production
+private model-call journal. It is internal and has **no production call site,
+worker, HTTP/RPC route or browser capability**. A separate real HTTP adapter
+exists but is not registered. Production
 configuration is unchanged. An admitted task still does not automatically run.
 
 ## Bounded lane and current authority
@@ -64,7 +65,7 @@ receipt/topic/task identity and round input. Lease worker/token/generation are
 excluded so takeover can recover the original result without rebinding a new
 request. The output token limit is 1..8192. There are no arbitrary URLs,
 provider options, model tools or caller-supplied prompt templates. Normal JSON
-serialization omits private source/prompt; a future provider adapter must map
+serialization omits private source/prompt; a provider adapter must map
 the explicit typed fields, not blindly marshal the whole internal request.
 
 `InvokeOnce` is an injected service port, not a public tool. The separate
@@ -144,15 +145,43 @@ grant. The consumer still rereads the journal and requires the independent
 current-authority gates and trusted source verification. Browser/model input
 must never be promoted into this private type or used as verified report data.
 
-A future real `VerifySource` adapter must support both pending execution and
-waiting/confirmed draft recovery against the same original retained source;
-it must not require an unfinished round for read-only recovery. No such real
-source/provider adapter or task controller is registered by this slice; the
-material/report client composition is an internal helper only, with no
-production caller. An unknown outcome still needs controller stop/recovery
-policy; it is not inferred to mean no charge, no commit or permission to retry.
+The internal `publicationRepairDescriptionSourceVerifier` now supports both
+pending execution and waiting/confirmed draft recovery against the same original
+retained source. Pending execution still requires a live unfinished lease.
+Read-only recovery instead brackets task history with independent CURRENT draft
+authority reads, freezes the exact draft/confirmation state, and uses the
+dedicated Runtime source RPC against the original capture. Expired finished
+leases never become executable again. Source removal/change, lost authority or
+confirmation changing in flight conservatively stops the read. No source/provider
+adapter or task controller is registered in production by this slice. An unknown
+outcome still needs controller stop/recovery policy; it is not inferred to mean
+no charge, no commit or permission to retry.
 The exact confirmation UI and subsequent private-copy application remain
 separate human/trusted steps.
+
+## First-round description attempt
+
+`runPublicationRepairDescriptionAttempt` internally composes the coordinator and
+description consumer. Its total deadline is 90 seconds (or the earlier parent
+deadline); the nested model call retains its 60-second/lease-minus-five-seconds
+bound. It consumes an already-claimed first round, never claims another round,
+and has no worker, route, environment loader or production registration.
+
+It checks CURRENT draft authority first. With no draft, it requests the live
+execution lease and uses the journal-fenced coordinator. With a retained draft,
+it reconstructs the exact original lease/task/private result from durable
+history after CURRENT authority and source checks, without preparing model
+material, requesting an execution lease or invoking a provider. It rereads the
+trusted report, binds its complete receipt/evidence, rechecks source, calls the
+restricted consumer, then independently reads back the exact draft including
+confirmation state. A report read failure after a retained model result can be
+recovered without another dispatch. Lost completion/proposal replies and
+concurrent callers likewise do not authorize another model request.
+
+Returning `waiting_confirmation` is not approval, a file change or publication.
+An existing human confirmation is preserved, never created by recovery. This
+helper does not finish uncertain/stopped checkpoints or implement the controller
+loop, safe automatic formatting, later rounds or publication continuation.
 
 ## Verification and remaining work
 
@@ -168,7 +197,8 @@ current-task/journal writes, loses a committed output reply, reconstructs and
 recovers exactly one synthetic invocation, rejects model rebinding, then feeds
 that untrusted draft through the restricted consumer into the existing
 separately confirmed-description path. The consumer contract loses a real
-committed proposal reply and reconstructs after the pending round has finished;
+committed proposal reply through the description attempt and reconstructs that
+attempt after the pending round has finished;
 only current-authority reads recover the same unconfirmed text/key and one
 waiting round. Its unit tests cover selector/text bounds, authority loss,
 changed journal/report/task evidence, cancellation, uncertain write recovery,
@@ -188,6 +218,14 @@ Unicode/JSON-escaping Cloud vectors with a synthetic Runtime verifier. It sets
 rejecting missing Runtime root/Node settings and every skip. Neither paired
 contract is a paid-model test or real-user end-to-end
 acceptance. Missing local PG DSN skips are not database passes.
+
+The mandatory pinned Runtime source runner also requires waiting/confirmed
+expired-draft recovery, removed-source denial and revoked-authority denial with
+synthetic draft/task authority (six suites, nineteen subcases overall). Separate
+local TLS adapter tests compose a synthetic key/model HTTP server with the
+attempt and synthetic persistence/source/report ports; one invocation survives
+a lost proposal reply and reconstructed recovery. These are distinct contracts:
+they do not prove a single all-real Runtime/Cloud/PG/paid-provider composition.
 
 The internal material/source adapters and model HTTP adapter are not yet
 registered together in a production executor. Deployment-level relay no-retry

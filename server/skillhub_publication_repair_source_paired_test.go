@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -305,6 +306,56 @@ func TestSkillHubPublicationRepairSourcePairedTaskLease(t *testing.T) {
 		t.Fatal("live task source verification rewrote the original capture or entry")
 	}
 	t.Log("real XiaoBa Runtime RPC + current task/lease authority: live source accepted, removed original source rejected on a later task check; no capture/entry mutation, model, or file writes")
+}
+
+func TestSkillHubPublicationRepairSourcePairedDraftRecovery(t *testing.T) {
+	for _, mode := range []string{"waiting-expired", "confirmed-expired", "source-removed", "authority-revoked"} {
+		t.Run(mode, func(t *testing.T) {
+			r := startRepairSourcePairedRuntime(t, "normal")
+			f, s := repairSourcePairedFixture(t, r, true)
+			reader := repairDraftSourceFixture(t, s, mode == "confirmed-expired", true)
+			f.h.publicationRepairSource.drafts = reader
+			task := snapshotPublicationRepairTask(s.task)
+			before := s.capture
+			if mode == "source-removed" {
+				r.action(t, "remove")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- f.h.publicationRepairDescriptionSourceVerifier(7)(ctx, task) }()
+			req := receiveRepairSourceCall(t, f, done)
+			reply := r.rpc(t, req)
+			if mode == "authority-revoked" {
+				reader.denied = true
+			}
+			f.h.handleThinToolRPCResult(f.runtime, reply)
+			err := waitRepairSource(t, done)
+			status := http.StatusOK
+			switch mode {
+			case "source-removed":
+				status = http.StatusUnprocessableEntity
+				if err == nil {
+					t.Fatal("removed original source authorized draft recovery")
+				}
+			case "authority-revoked":
+				status = http.StatusConflict
+				if !errors.Is(err, store.ErrSkillHubPublicationDenied) {
+					t.Fatal("current draft authority loss ignored", err)
+				}
+			default:
+				if err != nil {
+					t.Fatal("expired finished draft source recovery", err)
+				}
+			}
+			deliveryAckStatus(t, f.runtime, status)
+			assertRepairSourceIdle(t, f)
+			if s.capture != before || !reflect.DeepEqual(s.task, task) {
+				t.Fatal("draft recovery changed task or source capture")
+			}
+		})
+	}
+	t.Log("real XiaoBa Runtime verifies original source for waiting/confirmed expired draft recovery; required CI pins Runtime; removed source and current authority loss denied; task/draft authority synthetic, no execution lease/model/write")
 }
 
 func TestPublicationRepairModelCoordinatorPairedLiveRuntimeFence(t *testing.T) {

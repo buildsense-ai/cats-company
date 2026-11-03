@@ -29,10 +29,18 @@ type publicationRepairSourceEntryReader interface {
 	GetSkillHubPublicationEntry(context.Context, int64, string) (*store.SkillHubPublicationEntry, error)
 }
 
+// Description GET is a CURRENT authority gate, unlike repair-task history.
+// Recovery after a proposal finishes its lease must use this separate gate.
+type publicationRepairDraftSourceReader interface {
+	GetSkillHubPublicationDescription(context.Context, int64, string) (*store.SkillHubPublicationDescriptionDraft, error)
+	GetSkillHubPublicationRepairTask(context.Context, int64, string) (*store.SkillHubPublicationRepairTask, error)
+}
+
 type publicationRepairSourceTransport struct {
 	h        *Hub
 	apps     publicationDescriptionCopyStore // current authority Get only
 	tasks    store.SkillHubPublicationRepairExecutionReader
+	drafts   publicationRepairDraftSourceReader
 	entries  publicationRepairSourceEntryReader
 	captures store.SkillHubPublicationCaptureReader
 	slots    chan struct{}
@@ -68,7 +76,8 @@ func newPublicationRepairSourceTransport(h *Hub) *publicationRepairSourceTranspo
 	if tasks {
 		taskReader = t
 	}
-	return &publicationRepairSourceTransport{h: h, apps: a, tasks: taskReader, entries: e, captures: c,
+	drafts, _ := h.db.(publicationRepairDraftSourceReader)
+	return &publicationRepairSourceTransport{h: h, apps: a, tasks: taskReader, drafts: drafts, entries: e, captures: c,
 		slots: make(chan struct{}, 8), pending: make(map[string]*publicationRepairSourcePending), active: make(map[string]bool)}
 }
 
@@ -101,6 +110,79 @@ func (h *Hub) publicationRepairTaskSourceVerifier(actor int64) func(context.Cont
 	return func(ctx context.Context, task store.SkillHubPublicationRepairTask, lease store.SkillHubPublicationRepairLease) error {
 		return h.verifyPublicationRepairTaskSource(ctx, actor, task, lease)
 	}
+}
+
+// Supports the retained-description consumer both before proposal and during
+// read-only recovery. A finished lease is NEVER promoted back to execution.
+func (h *Hub) publicationRepairDescriptionSourceVerifier(actor int64) func(context.Context, store.SkillHubPublicationRepairTask) error {
+	return func(ctx context.Context, task store.SkillHubPublicationRepairTask) error {
+		if h == nil || h.publicationRepairSource == nil || len(task.Rounds) != 1 {
+			return store.ErrSkillHubPublicationDenied
+		}
+		if task.Rounds[0].Result == nil {
+			return h.publicationRepairSource.verifyTask(ctx, actor, task, task.Rounds[0].Lease)
+		}
+		return h.publicationRepairSource.verifyDraftTask(ctx, actor, task)
+	}
+}
+
+func validPublicationRepairDraftSourceTask(task store.SkillHubPublicationRepairTask) bool {
+	if len(task.Rounds) != 1 || task.State() != "waiting_confirmation" {
+		return false
+	}
+	r := task.Rounds[0]
+	if r.Result == nil || r.Result.Validate() != nil || r.Result.Evidence != task.Input.Evidence {
+		return false
+	}
+	// Structural identity only. Expired finished leases are valid for read-only
+	// draft recovery; only independent current-authority draft GET authorizes it.
+	pending := snapshotPublicationRepairTask(task)
+	pending.Rounds[0].Result = nil
+	return r.Lease.Validate() == nil && validPublicationRepairModelTask(pending, r.Lease)
+}
+
+func (w *publicationRepairSourceTransport) verifyDraftTask(ctx context.Context, actor int64, input store.SkillHubPublicationRepairTask) error {
+	task := snapshotPublicationRepairTask(input)
+	if actor <= 0 || w.drafts == nil || !validPublicationRepairDraftSourceTask(task) {
+		return store.ErrSkillHubPublicationInvalid
+	}
+	id := task.Input.Receipt.Query.EntryID
+	var baseline *store.SkillHubPublicationDescriptionDraft
+	authority := func(ctx context.Context) error {
+		// Read CURRENT authority before history. History alone must never authorize
+		// a source RPC after cancellation, transfer, task or membership changes.
+		d, err := w.drafts.GetSkillHubPublicationDescription(ctx, actor, id)
+		if err != nil {
+			return err
+		}
+		if d == nil {
+			return store.ErrSkillHubPublicationDenied
+		}
+		frozen := snapshotPublicationModelDescription(*d)
+		current, err := w.drafts.GetSkillHubPublicationRepairTask(ctx, actor, id)
+		if err != nil {
+			return err
+		}
+		if current == nil || !reflect.DeepEqual(snapshotPublicationRepairTask(*current), task) || frozen.ValidateFor(task) != nil {
+			return store.ErrSkillHubPublicationConflict
+		}
+		if baseline == nil {
+			baseline = &frozen
+		} else if !reflect.DeepEqual(*baseline, frozen) {
+			return store.ErrSkillHubPublicationConflict
+		}
+		// Bracket history as well. Human confirmation arriving in-flight causes a
+		// conservative conflict; a later read can recover that new exact state.
+		latest, err := w.drafts.GetSkillHubPublicationDescription(ctx, actor, id)
+		if err != nil {
+			return err
+		}
+		if latest == nil || !reflect.DeepEqual(snapshotPublicationModelDescription(*latest), *baseline) {
+			return store.ErrSkillHubPublicationConflict
+		}
+		return ctx.Err()
+	}
+	return w.verifyLiveSource(ctx, actor, id, task.Input.Receipt.Query, authority)
 }
 
 func validPublicationRepairSourceApplication(app store.SkillHubPublicationDescriptionApplication) bool {
