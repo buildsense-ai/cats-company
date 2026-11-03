@@ -417,6 +417,7 @@ func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, rep
 		if err != nil {
 			return nil, err
 		}
+		notifySavedMessage(topicID, duplicate)
 		return &savedMessageResult{ID: id, Duplicate: duplicate}, nil
 	}
 	if payload.ClientMsgID != "" {
@@ -424,6 +425,7 @@ func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, rep
 		if err != nil {
 			return nil, err
 		}
+		notifySavedMessage(topicID, duplicate)
 		return &savedMessageResult{ID: id, Duplicate: duplicate}, nil
 	}
 
@@ -445,7 +447,20 @@ func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, rep
 	if err != nil {
 		return nil, err
 	}
+	notifySavedMessage(topicID, false)
 	return &savedMessageResult{ID: id}, nil
+}
+
+// notifySavedMessage 唤醒在同一 topic 上等回复的 bot runner。
+//
+// 放在落库成功之后、返回之前：等的一方是先订阅再查库，所以「先查一次」和
+// 「等通知」之间不存在漏窗口 —— 通知只可能让那次查询来得更早，不会让它丢失。
+// 幂等重发命中（duplicate）不算新消息，没有可等的新内容，不唤醒。
+func notifySavedMessage(topicID string, duplicate bool) {
+	if duplicate {
+		return
+	}
+	NotifyMessageArrived(topicID)
 }
 
 func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, payload *normalizedMessagePayload, msgID int64, exclude *Client) bool {
