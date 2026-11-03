@@ -239,6 +239,8 @@ services:
       # Same host-level guard as prod, sized for the test stack: a bounded
       # restart here instead of starving the box the two stacks share.
       GOMEMLIMIT: "${TEST_SERVER_GOMEMLIMIT:-1GiB}"
+      # Same opt-in diagnostics listener as prod; empty keeps it off.
+      CATS_DIAGNOSTICS_ADDR: "${CATS_DIAGNOSTICS_ADDR:-}"
     ports:
       - "${TEST_API_BIND_HOST:-127.0.0.1}:${TEST_API_HOST_PORT:-16061}:6061"
       - "${TEST_GRPC_BIND_HOST:-127.0.0.1}:${TEST_GRPC_HOST_PORT:-16062}:6062"

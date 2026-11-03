@@ -276,6 +276,10 @@ services:
       # kill. 2026-11-01: anon-rss reached 5.2GB on this 7.5GB host and the
       # kernel killed the process, which drops every websocket on the box.
       GOMEMLIMIT: "${PROD_SERVER_GOMEMLIMIT:-3GiB}"
+      # Off by default. Set to 127.0.0.1:6063 to expose /debug/pprof on the
+      # container's loopback; no host port is published, so read it with
+      # `docker exec ... wget -qO- http://127.0.0.1:6063/debug/pprof/heap`.
+      CATS_DIAGNOSTICS_ADDR: "${CATS_DIAGNOSTICS_ADDR:-}"
     ports:
       - "${PROD_API_BIND_HOST:-127.0.0.1}:${PROD_API_HOST_PORT:-26061}:6061"
       - "${PROD_GRPC_BIND_HOST:-127.0.0.1}:${PROD_GRPC_HOST_PORT:-26062}:6062"
