@@ -563,6 +563,7 @@ jobs:
           bash -n deploy/prod/ensure-wecom-agent-nginx.sh
           python3 deploy/prod/update-nginx-shimo-login_test.py
           python3 deploy/prod/update-nginx-cloud-worker-route_test.py
+          python3 deploy/prod/update-nginx-mcp-streaming_test.py
           python3 deploy/prod/update-nginx-v1-timeout_test.py
 
       - name: Test cloud worker provisioning and rollback
