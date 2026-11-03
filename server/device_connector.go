@@ -476,31 +476,39 @@ func (h *Hub) listDeviceAudit(ownerUID int64, limit int) []DeviceAuditEvent {
 	return h.deviceAudit.list(ownerUID, limit)
 }
 
-func (h *Hub) revokeDeviceConnectorDevice(ownerUID int64, deviceID string) {
+func (h *Hub) revokeDeviceConnectorDevice(ownerUID int64, deviceID string) error {
 	if h == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
-		return
+		return nil
 	}
 	now := time.Now()
+	if h.deviceAuthorization != nil {
+		return h.deviceAuthorization.revokeDevice(ownerUID, deviceID, now)
+	}
 	if state := h.connectorRuntime(); state != nil {
 		state.revokeDeviceConnectorDevice(ownerUID, deviceID, now)
-		return
+		return nil
 	}
 	if h.deviceRevokes != nil {
 		h.deviceRevokes.revokeDevice(ownerUID, deviceID)
 	}
+	return nil
 }
 
-func (h *Hub) revokeDeviceConnectorToken(tokenID string, expiresAt time.Time) {
+func (h *Hub) revokeDeviceConnectorToken(tokenID string, expiresAt time.Time) error {
 	if h == nil || strings.TrimSpace(tokenID) == "" {
-		return
+		return nil
+	}
+	if h.deviceAuthorization != nil {
+		return h.deviceAuthorization.revokeToken(tokenID, expiresAt)
 	}
 	if state := h.connectorRuntime(); state != nil {
 		state.revokeDeviceConnectorToken(tokenID, expiresAt)
-		return
+		return nil
 	}
 	if h.deviceRevokes != nil {
 		h.deviceRevokes.revokeToken(tokenID, expiresAt)
 	}
+	return nil
 }
 
 func (h *Hub) isDeviceConnectorRevoked(claims *DeviceConnectorClaims) bool {
@@ -508,6 +516,9 @@ func (h *Hub) isDeviceConnectorRevoked(claims *DeviceConnectorClaims) bool {
 		return false
 	}
 	now := time.Now()
+	if h.deviceAuthorization != nil {
+		return h.deviceAuthorization.isDeviceConnectorRevoked(claims, now)
+	}
 	if state := h.connectorRuntime(); state != nil {
 		return state.isDeviceConnectorRevoked(claims, now)
 	}

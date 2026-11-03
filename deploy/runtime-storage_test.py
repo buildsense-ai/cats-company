@@ -5,6 +5,22 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RuntimeStorageTest(unittest.TestCase):
+    def test_authorization_only_wiring_is_independent_and_opt_in(self):
+        names = ('OC_DEVICE_AUTH_STORE', 'OC_DEVICE_AUTH_REDIS_URL',
+                 'OC_DEVICE_AUTH_REDIS_KEY_PREFIX', 'OC_DEVICE_AUTH_REQUIRE_DURABLE')
+        for compose in ('deploy/prod/docker-compose.yml', 'deploy/test/docker-compose.yml'):
+            text = (ROOT / compose).read_text(encoding='utf-8')
+            for name in names:
+                self.assertIn(name + ':', text)
+            self.assertIn('OC_DEVICE_AUTH_STORE:-}', text)
+            self.assertIn('OC_DEVICE_AUTH_REQUIRE_DURABLE:-false}', text)
+        for example in ('.env.example', 'deploy/prod/env.prod.example',
+                        'deploy/test/env.test.example', 'deploy/test/env.test.postgres.example'):
+            text = (ROOT / example).read_text(encoding='utf-8')
+            for name in names:
+                self.assertIn(name + '=', text)
+            self.assertIn('OC_DEVICE_AUTH_REQUIRE_DURABLE=false', text)
+
     def test_persistent_redis_is_opt_in_and_not_public(self):
         text = (ROOT / 'deploy/prod/docker-compose.yml').read_text(encoding='utf-8')
         block = text.split('\n  runtime-redis:\n', 1)[1].split('\nnetworks:', 1)[0]

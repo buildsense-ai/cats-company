@@ -202,6 +202,7 @@ type RegisterUserDeviceRequest struct {
 
 type userDeviceRegistry struct {
 	selectionStore store.ConversationDeviceSelectionStore
+	authorization  deviceGrantStore
 	mu             sync.RWMutex
 	ttl            time.Duration
 	grantTT        time.Duration
@@ -233,6 +234,11 @@ func (r *userDeviceRegistry) withSharedRuntime(shared sharedRuntimeState) *userD
 		return r
 	}
 	r.shared = shared
+	return r
+}
+
+func (r *userDeviceRegistry) withAuthorizationStore(auth deviceGrantStore) *userDeviceRegistry {
+	r.authorization = auth
 	return r
 }
 
@@ -661,6 +667,10 @@ func (r *userDeviceRegistry) rememberGrants(grants []ScopedDeviceGrant) {
 		return
 	}
 	now := unixMillis(r.now())
+	if r.authorization != nil {
+		r.authorization.rememberDeviceGrants(grants, now)
+		return
+	}
 	if r.shared != nil {
 		r.shared.rememberDeviceGrants(grants, now)
 		return
@@ -681,6 +691,10 @@ func (r *userDeviceRegistry) lookupGrant(grantID string) (ScopedDeviceGrant, boo
 		return ScopedDeviceGrant{}, false
 	}
 	now := unixMillis(r.now())
+	if r.authorization != nil {
+		grant, ok := r.authorization.lookupDeviceGrant(strings.TrimSpace(grantID), now)
+		return grant, ok && r.grantSelectionCurrent(grant)
+	}
 	if r.shared != nil {
 		grant, ok := r.shared.lookupDeviceGrant(strings.TrimSpace(grantID), now)
 		return grant, ok && r.grantSelectionCurrent(grant)
@@ -1183,9 +1197,16 @@ func (h *DeviceHandler) HandleDeviceByID(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid device_id"})
 		return
 	}
+	if h.hub != nil {
+		// Authorization-only mode propagates persistence errors before unlink.
+		// Legacy shared-runtime mode retains its existing best-effort behavior.
+		if err := h.hub.revokeDeviceConnectorDevice(uid, deviceID); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "device revocation could not be saved; retry unlink"})
+			return
+		}
+	}
 	h.registry().unregister(uid, deviceID)
 	if h.hub != nil {
-		h.hub.revokeDeviceConnectorDevice(uid, deviceID)
 		h.hub.disconnectDeviceConnector(uid, deviceID, "device connector revoked")
 		h.hub.addDeviceAudit(uid, DeviceAuditEvent{
 			DeviceID: deviceID,
