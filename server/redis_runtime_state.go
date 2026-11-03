@@ -1125,6 +1125,10 @@ func (s *RedisRuntimeState) isDeviceConnectorRevoked(claims *DeviceConnectorClai
 // keys or credentials. No grant/token IDs, device IDs or stored values escape.
 // Suppress repeats per operation/reason for 30s to avoid flooding during outage.
 func (s *RedisRuntimeState) logDeviceAuthorizationFailure(operation, reason string) {
+	s.logDeviceAuthorizationEvent("failure", operation, reason, "deny_or_unavailable")
+}
+
+func (s *RedisRuntimeState) logDeviceAuthorizationEvent(event, operation, reason, action string) {
 	key := operation + ":" + reason
 	now := time.Now()
 	s.securityLogMu.Lock()
@@ -1137,7 +1141,7 @@ func (s *RedisRuntimeState) logDeviceAuthorizationFailure(operation, reason stri
 	}
 	s.securityLogLast[key] = now
 	s.securityLogMu.Unlock()
-	log.Printf("WARNING: device authorization storage failure: backend=redis operation=%s reason=%s action=deny_or_unavailable (same category limited to once per 30s)", operation, reason)
+	log.Printf("WARNING: device authorization storage %s: backend=redis operation=%s reason=%s action=%s (same category limited to once per 30s)", event, operation, reason, action)
 }
 
 func redisAuthorizationErrorClass(err error) string {

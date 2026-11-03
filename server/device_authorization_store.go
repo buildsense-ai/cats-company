@@ -69,16 +69,33 @@ func (s *RedisDeviceAuthorizationStore) revokeDevice(owner int64, device string,
 	device = normalized
 	ctx, cancel := context.WithTimeout(s.state.ctx, redisRuntimeWriteTimeout)
 	defer cancel()
-	// Concurrent unlink requests must never move the watermark backwards.
-	err = s.state.client.Eval(ctx, `
+	// Reads remain fail-closed; only explicit unlink repairs corrupt data. Keep
+	// read/compare/write atomic and compare decimal strings to avoid rounding
+	// a valid int64 watermark backwards through Lua's floating-point numbers.
+	result, err := s.state.client.Eval(ctx, `
+local function watermark(raw)
+  if not raw or not string.match(raw, '^%d+$') then return nil end
+  local value = string.gsub(raw, '^0+', '')
+  if value == '' or #value > 19 or (#value == 19 and value > '9223372036854775807') then return nil end
+  return value
+end
 local old = redis.call('GET', KEYS[1])
-if old and not tonumber(old) then return redis.error_reply('invalid watermark') end
-if not old or tonumber(old) < tonumber(ARGV[1]) then
+local previous = watermark(old)
+local next = ARGV[1]
+local repaired = old and not previous
+if not previous or #previous < #next or (#previous == #next and previous < next) then
   redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
 end
+if repaired then return 2 end
 return 1`, []string{s.state.deviceConnectorRevokedDeviceKey(owner, device)},
-		unixMillis(now), deviceConnectorTokenTTL.Milliseconds()).Err()
-	return s.revocationWriteResult("revoked_device_write", err)
+		unixMillis(now), deviceConnectorTokenTTL.Milliseconds()).Int()
+	if err := s.revocationWriteResult("revoked_device_write", err); err != nil {
+		return err
+	}
+	if result == 2 {
+		s.state.logDeviceAuthorizationEvent("repair", "revoked_device_write", "invalid_watermark_repaired", "revocation_saved")
+	}
+	return nil
 }
 
 func (s *RedisDeviceAuthorizationStore) revokeToken(id string, expires time.Time) error {

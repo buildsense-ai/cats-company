@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -222,8 +225,113 @@ func TestDeviceAuthorizationOnlyRevocationsPersistAndAreMonotonic(t *testing.T) 
 	if !s.isDeviceConnectorRevoked(claims, now) {
 		t.Fatal("corrupt watermark authorized")
 	}
-	if err := s.revokeDevice(7, "b", now); err == nil {
-		t.Fatal("corrupt watermark silently overwritten")
+	if err := s.revokeDevice(7, "b", now); err != nil {
+		t.Fatalf("explicit revocation must repair corrupt watermark: %v", err)
+	}
+}
+
+func TestDeviceAuthorizationOnlyUnlinkRepairsCorruptWatermark(t *testing.T) {
+	for _, corrupt := range []string{"PRIVATE_CORRUPT", "", "0", "-1", "1.5", "1e12", "+123", " 123 ", "nan", "inf", "9223372036854775808"} {
+		t.Run(corrupt, func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			s := authorizationStoreForTest(t, "redis://"+mr.Addr())
+			db := &authorizationSelectionStore{identityMessageStore: &identityMessageStore{users: map[int64]*types.User{
+				7: {ID: 7, AccountType: types.AccountHuman},
+			}}}
+			h, err := NewHubWithDeviceAuthorization(db, nil, s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.userDevices.register(7, RegisterUserDeviceRequest{DeviceID: "private-device", Capabilities: []string{"read_file"}}); err != nil {
+				t.Fatal(err)
+			}
+			key := s.state.deviceConnectorRevokedDeviceKey(7, "private-device")
+			mr.Set(key, corrupt)
+			claims := &DeviceConnectorClaims{UID: 7, DeviceID: "private-device", RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(time.Now().Add(-time.Hour))}}
+			var output bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&output)
+			defer log.SetOutput(previous)
+			// Reads cannot repair an unknown value or erase the security boundary.
+			if !h.isDeviceConnectorRevoked(claims) {
+				t.Fatal("corrupt watermark must deny before explicit repair")
+			}
+			if raw, _ := mr.Get(key); raw != corrupt {
+				t.Fatal("read mutated corrupt watermark")
+			}
+			start := time.Now().UnixMilli()
+			for attempt := 0; attempt < 2; attempt++ {
+				req := httptest.NewRequest(http.MethodDelete, "/api/devices/private-device", nil)
+				req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+				rec := httptest.NewRecorder()
+				NewDeviceHandler(db, h).HandleDeviceByID(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("unlink attempt %d: status=%d", attempt+1, rec.Code)
+				}
+				if _, ok := h.userDevices.activeDevice(7, "private-device"); ok {
+					t.Fatal("successful unlink retained registered device")
+				}
+				if !h.isDeviceConnectorRevoked(claims) {
+					t.Fatal("repair revived old credential")
+				}
+			}
+			raw, _ := mr.Get(key)
+			if watermark := parseInt64(raw); watermark < start || watermark > time.Now().UnixMilli() {
+				t.Fatal("repair did not save current server watermark")
+			}
+			if mr.TTL(key) <= 0 || mr.TTL(key) > deviceConnectorTokenTTL {
+				t.Fatal("repair lost bounded retention")
+			}
+			text := output.String()
+			if strings.Count(text, "reason=invalid_watermark_repaired") != 1 || !strings.Contains(text, "action=revocation_saved") {
+				t.Fatal("repair diagnostic missing or repeated")
+			}
+			if strings.Contains(text, "private-device") || strings.Contains(text, "PRIVATE_CORRUPT") || strings.Contains(text, "redis://") {
+				t.Fatal("repair diagnostic leaked private data")
+			}
+			_ = s.Close()
+			s = authorizationStoreForTest(t, "redis://"+mr.Addr())
+			if !s.isDeviceConnectorRevoked(claims, time.Now()) {
+				t.Fatal("restart lost repaired revocation")
+			}
+			claims.IssuedAt = jwt.NewNumericDate(time.Now().Add(time.Minute))
+			if s.isDeviceConnectorRevoked(claims, time.Now()) {
+				t.Fatal("new login after repair denied")
+			}
+		})
+	}
+}
+
+func TestDeviceAuthorizationOnlyRepairKeepsWatermarkMonotonic(t *testing.T) {
+	mr := miniredis.RunT(t)
+	s := authorizationStoreForTest(t, "redis://"+mr.Addr())
+	key := s.state.deviceConnectorRevokedDeviceKey(7, "a")
+	mr.Set(key, "corrupt")
+	now := time.Now().Truncate(time.Millisecond)
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(offset int) {
+			defer wg.Done()
+			if err := s.revokeDevice(7, "a", now.Add(time.Duration(offset)*time.Millisecond)); err != nil {
+				t.Errorf("concurrent unlink: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if raw, _ := mr.Get(key); parseInt64(raw) != now.Add(11*time.Millisecond).UnixMilli() {
+		t.Fatal("concurrent repair moved watermark backwards")
+	}
+	// Values beyond Lua's exact floating-point integer range must also remain
+	// monotonic: comparing rounded doubles could erase a later valid watermark.
+	for _, raw := range []string{"9223372036854775807", "0009223372036854775807"} {
+		mr.Set(key, raw)
+		if err := s.revokeDevice(7, "a", now); err != nil {
+			t.Fatal(err)
+		}
+		if retained, _ := mr.Get(key); retained != raw {
+			t.Fatal("valid later watermark was overwritten")
+		}
 	}
 }
 
@@ -243,6 +351,8 @@ func TestDeviceAuthorizationOnlyOutageNeverFallsBackOrAcknowledgesUnlink(t *test
 	now := time.Now()
 	grant := ScopedDeviceGrant{GrantID: "memory-fallback", Status: "active", ExpiresAt: now.Add(time.Minute).UnixMilli()}
 	h.userDevices.grants[grant.GrantID] = grant
+	// Corruption is repairable, but not while persistence itself is failing.
+	mr.Set(s.state.deviceConnectorRevokedDeviceKey(7, "a"), "corrupt")
 	mr.SetError("OOM private upstream data")
 	h.userDevices.rememberGrants([]ScopedDeviceGrant{grant})
 	if _, ok := h.userDevices.lookupGrant(grant.GrantID); ok {
@@ -262,6 +372,9 @@ func TestDeviceAuthorizationOnlyOutageNeverFallsBackOrAcknowledgesUnlink(t *test
 		t.Fatal("failed unlink partially removed device")
 	}
 	mr.SetError("")
+	if raw, _ := mr.Get(s.state.deviceConnectorRevokedDeviceKey(7, "a")); raw != "corrupt" {
+		t.Fatal("failed write falsely repaired corruption")
+	}
 	rec = httptest.NewRecorder()
 	NewDeviceHandler(db, h).HandleDeviceByID(rec, req)
 	if rec.Code != http.StatusOK {

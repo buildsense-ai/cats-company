@@ -38,6 +38,16 @@ does not by itself prove durable disk configuration.
 - Unlink saves revocation BEFORE removing/disconnecting the device. A Redis
   write failure returns HTTP 503, not a false success. Retrying unlink is safe;
   concurrent older writes cannot decrease a device watermark.
+- In this authorization-only mode, an explicit unlink atomically replaces a
+  corrupt (non-positive/non-decimal/out-of-range) watermark with the current
+  server timestamp and normal retention. It records the redacted/rate-limited
+  `invalid_watermark_repaired` diagnostic. Reads alone never repair or delete
+  corruption: they still deny access. Old credentials remain revoked after
+  repair and API replacement; a genuine later login can work. Do not manually
+  delete the revocation key to recover unlink. A real Redis write failure still
+  returns 503 and leaves the device registered; restore storage then retry.
+  These write-success guarantees apply to the new authorization-only mode,
+  not the legacy full shared-runtime best-effort revocation writer.
 - Read failures/corrupt authorization data deny use; no memory fallback. Grant
   writes and revocation reads/writes retain bounded socket contexts (150ms per
   operation/check). Storage diagnostics redact raw Redis connection errors.

@@ -1198,7 +1198,8 @@ func (h *DeviceHandler) HandleDeviceByID(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if h.hub != nil {
-		// Never report unlink success before its revocation is persisted.
+		// Authorization-only mode propagates persistence errors before unlink.
+		// Legacy shared-runtime mode retains its existing best-effort behavior.
 		if err := h.hub.revokeDeviceConnectorDevice(uid, deviceID); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "device revocation could not be saved; retry unlink"})
 			return
