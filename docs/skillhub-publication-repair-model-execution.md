@@ -183,6 +183,16 @@ An existing human confirmation is preserved, never created by recovery. This
 helper does not finish uncertain/stopped checkpoints or implement the controller
 loop, safe automatic formatting, later rounds or publication continuation.
 
+`runPublicationRepairFirstRoundAttempt` wraps this helper with one conservative
+terminal transition: only `publication.repair_model_result_uncertain` is written
+as the existing `stopped/model_result_uncertain` checkpoint, then read back and
+matched exactly. Lost stop-write replies remain uncertain; local memory is never
+treated as proof of a commit. Temporary source/report failures and uncertain
+draft persistence are deliberately not terminalized, because the latter may be
+recoverable through the next read-only draft attempt. This helper still consumes
+an already-claimed lease and is not a worker/controller loop or production call
+site.
+
 ## Verification and remaining work
 
 Local unit tests cover request identity/private bytes, unsafe material and report
