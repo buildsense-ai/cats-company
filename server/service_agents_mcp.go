@@ -647,7 +647,13 @@ func (h *ServiceAgentsMCPHandler) resolveBotScope(ctx context.Context, callerUID
 	if err != nil {
 		return 0, serviceToolError("bot_not_found: 指定的 bot 不存在或已删除")
 	}
-	if owner != callerUID {
+	// 两种合法身份，缺一条就断掉一整类调用方：
+	//   1. 账号代自己的 bot 调用 —— owner == callerUID（人在自己的会话里用 bot 身份）；
+	//   2. bot 用**自己的**凭证调用 —— callerUID == botUID（bot 运行时就是这样连 MCP 的）。
+	// 少了第 2 条，「agent 找 agent 干活」整条链路走不通：调用方 bot 一调就拿到 bot_not_owned
+	// （本地模拟实测：bot 1619 调好友分享的应用，87ms 被拒）。
+	// 这不是放权：一个 token 只能替自己申报身份，替不了别的 bot。
+	if owner != callerUID && callerUID != botUID {
 		return 0, serviceToolError("bot_not_owned: 该 bot 不属于当前账号")
 	}
 	definition, err := h.bots.GetBotDefinition(botUID)

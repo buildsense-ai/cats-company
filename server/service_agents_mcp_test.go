@@ -1275,3 +1275,50 @@ func TestServiceAgentsMCPBotSessionIsolation(t *testing.T) {
 		t.Fatalf("account-level continuation of a bot session should be rejected: %s", mcpToolErrorText(account))
 	}
 }
+
+// bot 用**自己的**凭证调 MCP（callerUID == bot_uid）不该被判成「不是这个 bot 的拥有者」。
+//
+// 本地模拟实测过：调用方 bot 一调就 87ms 拿到 bot_not_owned，「agent 找 agent 干活」整条走不通。
+func TestServiceAgentBotCallsWithItsOwnIdentity(t *testing.T) {
+	const botUID int64 = 7001
+	st := newFakeServiceAgentStore()
+	st.autoCompleteAfter = 5 * time.Millisecond
+	handler := NewServiceAgentsMCPHandler(st)
+	handler.SetBotIdentity(newFakeBotIdentity(botUID, 38, nil))
+	ts := httptest.NewServer(mcpAuthStub(botUID, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+
+	call, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "catsco_hello",
+		Arguments: map[string]any{"input": map[string]any{"q": 1}, "bot_uid": botUID},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if call.IsError {
+		t.Fatalf("bot 用自己身份调用不该被拒: %+v", call.Content)
+	}
+}
+
+// 放行的只有「自己」：拿别人的 bot_uid 仍然要拒。
+func TestServiceAgentRejectsClaimingAnotherBot(t *testing.T) {
+	const botUID int64 = 7001
+	st := newFakeServiceAgentStore()
+	handler := NewServiceAgentsMCPHandler(st)
+	handler.SetBotIdentity(newFakeBotIdentity(botUID, 38, nil))
+	ts := httptest.NewServer(mcpAuthStub(9999, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+
+	call, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "catsco_hello",
+		Arguments: map[string]any{"input": map[string]any{"q": 1}, "bot_uid": botUID},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if !call.IsError {
+		t.Fatal("拿别人的 bot_uid 必须被拒（放行的只是自己）")
+	}
+}
