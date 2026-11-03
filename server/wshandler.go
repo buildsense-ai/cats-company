@@ -48,6 +48,7 @@ type Hub struct {
 	botConvo                   botConvoTracker
 	nodeID                     string
 	sharedRuntime              sharedRuntimeState
+	deviceAuthorization        deviceAuthorizationStore
 	bodyLeases                 *botBodyLeaseManager
 	userDevices                *userDeviceRegistry
 	deviceAudit                *deviceAuditLog
@@ -178,6 +179,10 @@ func NewHub(db store.Store, rl *RateLimiter) *Hub {
 }
 
 func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeState, nodeID string) *Hub {
+	return newHubWithState(db, rl, shared, nodeID, nil)
+}
+
+func newHubWithState(db store.Store, rl *RateLimiter, shared sharedRuntimeState, nodeID string, auth deviceAuthorizationStore) *Hub {
 	if strings.TrimSpace(nodeID) == "" {
 		nodeID = newRuntimeNodeID()
 	}
@@ -196,8 +201,9 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		botConvo:                botConvoTracker{counters: make(map[string]*botConvoCount)},
 		nodeID:                  nodeID,
 		sharedRuntime:           shared,
+		deviceAuthorization:     auth,
 		bodyLeases:              newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
-		userDevices:             newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared).withSelectionStore(db),
+		userDevices:             newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared).withSelectionStore(db).withAuthorizationStore(auth),
 		deviceAudit:             newDeviceAuditLog(),
 		deviceRevokes:           newDeviceConnectorRevocationList(),
 		deviceClients:           make(map[int64]map[string]*Client),

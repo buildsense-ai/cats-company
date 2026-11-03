@@ -1,5 +1,10 @@
 # Restart-safe device grants (Rachel incident, 2026-11-02)
 
+> Scope clarification (2026-11-03): the rollout below switches the full shared
+> runtime, not only grants. For the narrower Rachel requirement, use the
+> alternative [authorization-only plan](device-authorization-only-storage.md).
+> Do not combine the two modes or treat shared Redis as required for XiaoBa #595.
+
 ## Cause and boundaries
 
 Rachel's grant renewed successfully at 15:45:33 CST. The API container was

@@ -269,7 +269,7 @@ func validateRuntimeConfig(cfg RuntimeConfig) error {
 
 func runtimeConfigurationWarning(cfg RuntimeConfig) string {
 	if !useRedisRuntime(cfg) && strings.TrimSpace(cfg.RedisURL) != "" {
-		return "explicit memory runtime ignores configured Redis URL; device grants will not survive restart"
+		return "explicit memory runtime ignores shared runtime Redis URL; independent device authorization settings are separate"
 	}
 	return ""
 }
@@ -329,6 +329,9 @@ func main() {
 	if err := validateRuntimeConfig(cfg.Runtime); err != nil {
 		log.Fatalf("runtime configuration invalid: %v", err)
 	}
+	if err := validateDeviceAuthorizationConfig(cfg.Runtime, cfg.DeviceAuthorization); err != nil {
+		log.Fatalf("device authorization configuration invalid: %v", err)
+	}
 	if warning := runtimeConfigurationWarning(cfg.Runtime); warning != "" {
 		log.Printf("WARNING: %s", warning)
 	}
@@ -356,6 +359,7 @@ func main() {
 	rateLimiter := server.NewRateLimiter(server.DefaultRateLimits())
 	httpLimiter := server.NewHTTPRateLimiter()
 	var redisRuntime *server.RedisRuntimeState
+	var deviceAuthorization *server.RedisDeviceAuthorizationStore
 	if useRedisRuntime(cfg.Runtime) {
 		redisRuntime, err = openRedisRuntimeState(context.Background(), cfg.Runtime)
 		if err != nil {
@@ -363,12 +367,30 @@ func main() {
 		}
 		defer redisRuntime.Close()
 		log.Printf("runtime state initialized: mode=redis")
+	} else if useRedisDeviceAuthorization(cfg.DeviceAuthorization) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		deviceAuthorization, err = server.NewRedisDeviceAuthorizationStore(ctx, server.RedisDeviceAuthorizationOptions{
+			URL: cfg.DeviceAuthorization.RedisURL, KeyPrefix: cfg.DeviceAuthorization.RedisKeyPrefix,
+		})
+		cancel()
+		if err != nil {
+			log.Fatalf("device authorization initialization failed: %v", err)
+		}
+		defer deviceAuthorization.Close()
+		log.Printf("runtime state initialized: mode=memory; device_authorization=redis (grants and revocations only)")
 	} else {
-		log.Printf("WARNING: runtime state initialized: mode=memory; active device grants and logout watermarks will not survive a server restart")
+		log.Printf("WARNING: runtime state initialized: mode=memory; device_authorization=memory; active device grants and logout watermarks will not survive a server restart")
 	}
-	hub := server.NewHub(db, rateLimiter)
+	var hub *server.Hub
 	if redisRuntime != nil {
 		hub = server.NewHubWithRuntime(db, rateLimiter, redisRuntime, envString("CATSCO_NODE_ID"))
+	} else if deviceAuthorization != nil {
+		hub, err = server.NewHubWithDeviceAuthorization(db, rateLimiter, deviceAuthorization)
+		if err != nil {
+			log.Fatalf("device authorization hub initialization failed: %v", err)
+		}
+	} else {
+		hub = server.NewHub(db, rateLimiter)
 	}
 	go hub.Run()
 	publicationCtx, stopPublicationDelivery := context.WithCancel(context.Background())

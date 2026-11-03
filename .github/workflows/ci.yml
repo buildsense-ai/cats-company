@@ -43,6 +43,9 @@ jobs:
       - name: Test backend
         run: go test ./server/...
 
+      - name: Test authorization-only storage concurrency
+        run: go test -race ./server ./server/cmd -run '^TestDeviceAuthorization' -count=1
+
       - name: Test race-sensitive concurrency
         run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|CaptureTransport|CaptureDispatcher|RepairSourceTransport|UploadTransport|Peer|CommitClient|CommitDispatcher|HumanCommit|CancellationTransport|CancellationDispatcher)|TestPublicationDescription(Copy|Derivation|Validation|ReleasePlan|ReleaseAuthorize)|Test(Read|Validate|Accept|Continue|Plan|Authorize|Record)ConfirmedPublicationDescription' -count=1
 
@@ -556,6 +559,14 @@ jobs:
       - name: Validate opt-in persistent runtime compose
         run: |
           OC_RUNTIME_STORE=redis OC_RUNTIME_REQUIRE_DURABLE=true OC_REDIS_URL=redis://runtime-redis:6379/0 \
+            docker compose --profile runtime-redis -f deploy/prod/docker-compose.yml --env-file deploy/prod/env.prod.example config --quiet
+
+      - name: Validate opt-in authorization-only compose
+        run: |
+          OC_RUNTIME_STORE=memory OC_RUNTIME_REQUIRE_DURABLE=false OC_REDIS_URL= \
+            OC_DEVICE_AUTH_STORE=redis OC_DEVICE_AUTH_REQUIRE_DURABLE=true \
+            OC_DEVICE_AUTH_REDIS_URL=redis://runtime-redis:6379/0 \
+            OC_DEVICE_AUTH_REDIS_KEY_PREFIX=catsco:prod:device-auth \
             docker compose --profile runtime-redis -f deploy/prod/docker-compose.yml --env-file deploy/prod/env.prod.example config --quiet
 
       # Guard the state-root trap: an overridden CTYUN_WORKER_STATE_ROOT must
