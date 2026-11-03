@@ -67,11 +67,13 @@ provider options, model tools or caller-supplied prompt templates. Normal JSON
 serialization omits private source/prompt; a future provider adapter must map
 the explicit typed fields, not blindly marshal the whole internal request.
 
-`InvokeOnce` is an injected service port, not a public tool. A future adapter
-must independently resolve the server-owned provider configuration, bill only
-the original human payer, enforce deadline/output bounds and disable automatic
-SDK/transport retries and tool execution. This slice performs **no paid call**
-and does not claim that an injected port enforces provider billing semantics.
+`InvokeOnce` is an injected service port, not a public tool. The separate
+[internal HTTP adapter](skillhub-publication-repair-model-provider.md) now maps
+the request to the original human's existing relay key and one bounded,
+nonretrying Anthropic-compatible HTTP attempt. It has no production call site.
+Relay-internal paid retries/fallbacks and actual accounting remain independent
+rollout prerequisites, not properties proved by the injected port or local
+client. These tests perform **no paid call**.
 
 ## Durable fence and unknown outcomes
 
@@ -187,7 +189,9 @@ rejecting missing Runtime root/Node settings and every skip. Neither paired
 contract is a paid-model test or real-user end-to-end
 acceptance. Missing local PG DSN skips are not database passes.
 
-Real material/source/provider adapters, automatic safe format executor and task
+The internal material/source adapters and model HTTP adapter are not yet
+registered together in a production executor. Deployment-level relay no-retry
+and payer accounting validation, automatic safe format executor and task
 controller, multiround retained ancestry, both publication entry points'
 complete trusted continuation and controlled rollout remain. Chinese marketplace
 manuals and author-managed images are still after the repair/publish loop.

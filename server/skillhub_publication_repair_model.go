@@ -52,8 +52,9 @@ type publicationRepairModelPorts struct {
 	// infer a replacement lease from the latest task snapshot.
 	VerifySource    func(context.Context, store.SkillHubPublicationRepairTask, store.SkillHubPublicationRepairLease) error
 	PrepareMaterial func(context.Context, store.SkillHubPublicationRepairTask) (publicationRepairModelMaterial, error)
-	// Adapter must enforce context/deadline, output bound and disabled paid
-	// retry/automatic tools. This slice registers no real provider adapter.
+	// Adapter must enforce context/deadline, output bound and no local retry or
+	// tools. The internal HTTP adapter remains unregistered; relay-side retry and
+	// payer accounting policy require independent validation before rollout.
 	InvokeOnce func(context.Context, publicationRepairModelRequest) (store.SkillHubPublicationRepairModelOutput, error)
 }
 
