@@ -38,6 +38,13 @@ const (
 
 	defaultBotRunnerTimeout      = 5 * time.Minute
 	defaultBotRunnerPollInterval = 500 * time.Millisecond
+	// botRunnerReplyPollCeiling 是「安全网轮询」退避的上限。
+	//
+	// 主路径是事件通知（NotifyMessageArrived），主动查库只在通知没送到时兜底：
+	// 多实例部署、别的进程直接写库、将来新加的落库路径忘了通知。连续静默就翻倍
+	// 退避到这个上限 —— 一条 6 小时的任务从「500ms 一次、四万多次查询」降到
+	// 「最多 10s 一次、两千次以内」，而有回复的调用被通知直接叫醒。
+	botRunnerReplyPollCeiling = 10 * time.Second
 	// 收到第一段回复后再等这么久没有新消息就收尾：bot 会把长回复切成多段
 	// （XiaoBa 按 4000 字切），收得太早会把答案截断。
 	//
@@ -615,6 +622,15 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 		seenAttach[key] = true
 		attachments = append(attachments, a)
 	}
+	// 先订阅、再查库。反过来的话，「订阅之前刚好落库」的那条会既读不到（查询
+	// 在它前面）、又收不到通知（订阅在它后面），只能干等安全网。
+	//
+	// topic 为空时 Subscribe 返回 nil channel：下面 select 里那个分支永远阻塞，
+	// 正好等价于「这个调用不可能收到通知」，不需要特判。
+	arrivals, stopArrivals := SubscribeMessageArrivals(topic)
+	defer stopArrivals()
+	// idle 累计「连续静默等了多久」，驱动安全网轮询的退避。
+	var idle time.Duration
 	for {
 		msgs, err := r.store.GetMessagesSince(topic, sinceID, botRunnerMessageBatch)
 		if err != nil {
@@ -785,8 +801,76 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			}
 			return "", nil, fmt.Errorf("bot_timeout: 等了 %s 目标 bot 没有回复", tuning.Timeout)
 		}
-		time.Sleep(tuning.Poll)
+		// 事件驱动：消息一落库就唤醒，不必等下一个安全网轮询。
+		// wait 是**最长**等待，还会被下面几个判定点提前收窄 —— 静默窗口到点、
+		// 进度封顶到点、歧义宽限到点、整单超时，都得准点醒，否则「收到回复却
+		// 迟迟不交付」只是换了个原因。
+		wait := botRunnerReplyWait(tuning, idle)
+		if len(parts) > 0 {
+			if d := time.Until(settleTill); d > 0 && d < wait {
+				wait = d
+			}
+		}
+		if stillWorking {
+			if d := time.Until(lastProgressAt.Add(r.progressSilenceLimit())); d > 0 && d < wait {
+				wait = d
+			}
+		}
+		if len(parts) == 0 && sawUnowned {
+			if d := time.Until(ambiguousAt.Add(tuning.AmbiguityGrace)); d > 0 && d < wait {
+				wait = d
+			}
+		}
+		if remaining := time.Until(deadline); remaining < wait {
+			wait = remaining
+		}
+		if wait <= 0 {
+			wait = time.Millisecond
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-arrivals:
+			// 有新消息：立刻回到顶部读一次，并复位退避。
+			timer.Stop()
+			idle = 0
+			continue
+		case <-timer.C:
+			if len(msgs) > 0 {
+				idle = 0
+			} else {
+				idle += wait
+			}
+		}
 	}
+}
+
+// botRunnerReplyWait 决定下一次主动查库之前最多等多久。
+//
+// 主路径是事件：「消息落库 → NotifyMessageArrived → 立刻醒」。这个值只是安全网
+// 的间隔 —— 通知没送到时（多实例部署、别的进程直接写库、将来新加的落库路径忘了
+// 通知）回复也不会烂在原地。
+//
+// 连续静默就翻倍退避到 botRunnerReplyPollCeiling：一条 6 小时的任务，安全网查询
+// 从「500ms 一次、四万多次」降到「最多 10s 一次、两千次以内」；而正常有回复的
+// 调用被通知直接叫醒，一次都不白等。
+func botRunnerReplyWait(tuning botRunnerTuning, idle time.Duration) time.Duration {
+	wait := tuning.Poll
+	if wait <= 0 {
+		wait = defaultBotRunnerPollInterval
+	}
+	if wait >= botRunnerReplyPollCeiling {
+		return wait
+	}
+	// idle 是「已经连续等了这么久」。每跨过一档就把等待翻倍，累计口径用**上一次**
+	// 的等待值推进，否则 idle=floor*4 时只会翻一倍（差一档）。
+	for waited := time.Duration(0); waited < idle; {
+		waited += wait
+		wait *= 2
+		if wait >= botRunnerReplyPollCeiling {
+			return botRunnerReplyPollCeiling
+		}
+	}
+	return wait
 }
 
 // botRunnerLocalPathPattern 匹配「本机绝对路径 + 扩展名」的形态。

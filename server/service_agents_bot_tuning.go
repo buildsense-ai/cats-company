@@ -70,7 +70,11 @@ type botRunnerTuning struct {
 	Settle time.Duration
 	// AmbiguityGrace 是「看得见回复却判断不出是不是给我」时等多久才如实失败。
 	AmbiguityGrace time.Duration
-	// Poll 是轮询消息表的间隔。
+	// Poll 是「安全网」查库的起始间隔 —— 不是主路径。
+	//
+	// 主路径是事件：消息落库后 NotifyMessageArrived 直接叫醒等待方。主动查库只在
+	// 通知没送到时兜底（多实例、别的进程写库、新落库路径忘了通知），连续静默会
+	// 从这个值翻倍退避到 botRunnerReplyPollCeiling。
 	Poll time.Duration
 	// MaxInflight 是同一个应用允许同时在跑的单数（0 = 不限）。
 	//
