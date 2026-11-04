@@ -153,6 +153,12 @@ function handleGateway(req, res, url) {
     res.end(fixtureHTML());
     return;
   }
+  if (url.pathname === '/_catsco/runtime/html2canvas-pro-1.6.7.min.js') {
+    const rendererPath = new URL('../webapp/public/catsco-runtime/html2canvas-pro-1.6.7.min.js', import.meta.url);
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(readFileSync(rendererPath));
+    return;
+  }
   if (url.pathname === '/catsco-annotations.js' || url.pathname === '/_catsco/runtime/annotations-v1.js') {
     const webappPath = new URL('../webapp/public/catsco-annotations.js', import.meta.url);
     if (!existsSync(webappPath)) { sendJSON(res, 500, { error: 'SDK missing' }); return; }

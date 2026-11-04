@@ -645,6 +645,7 @@
     style = document.createElement('style');
     style.id = 'catsco-annotation-style';
     style.textContent = [
+      '.catsco-annotation-select-surface{touch-action:none!important;}',
       '.catsco-annotation-overlay{position:fixed;inset:0;z-index:2147483646;pointer-events:none;}',
       '.catsco-annotation-highlight{position:fixed;pointer-events:none;border:2px solid #6366f1;',
       'background:rgba(99,102,241,0.15);border-radius:3px;z-index:2147483647;}',
@@ -1033,6 +1034,7 @@
       state.lastElement = null;
       state.regionDrag = null;
       if (state.selectGesture) state.suppressNextClick = true;
+      if (state.selectGesture) releaseGesturePointer(state.selectGesture);
       state.selectGesture = null;
       state.selectionRect = null;
     }
@@ -1047,6 +1049,7 @@
     }
 
     function handleMode(mode) {
+      document.documentElement.classList.toggle('catsco-annotation-select-surface', mode === 'select');
       if (state.mode !== mode) { clearSelection(); invalidateScreenshot(); }
       state.mode = mode;
       teardownOverlay();
@@ -1068,7 +1071,33 @@
       event.stopImmediatePropagation();
     }
 
+    var suppressCompatibilityMouse = false;
+    var mousePointer = null;
+
+    function releaseGesturePointer(gesture) {
+      try { gesture.pointerTarget?.releasePointerCapture?.(gesture.pointerId); } catch (error) { /* capture already lost */ }
+    }
+
+    function cancelGesture(event) {
+      var gesture = state.selectGesture;
+      if (!gesture && !state.regionDrag) return;
+      if (event && Number.isFinite(event.pointerId) && Number.isFinite(gesture?.pointerId)
+        && event.pointerId !== gesture.pointerId) return;
+      state.selectGesture = null;
+      state.regionDrag = null;
+      state.suppressNextClick = true;
+      if (gesture) releaseGesturePointer(gesture);
+      if (state.overlay) {
+        state.overlay.setHighlight(null);
+        state.overlay.setBadge(modeHints[state.mode] || '');
+      }
+    }
+
     function onSelectStart(event) {
+      if (event.type === 'mousedown' && suppressCompatibilityMouse) {
+        if (state.mode === 'select' || state.suppressNextClick) consumeGestureEvent(event);
+        return;
+      }
       // A new ordinary gesture cannot accidentally inherit a canceled
       // annotation's pending click suppression after mode has turned off.
       state.suppressNextClick = false;
@@ -1079,6 +1108,11 @@
         startX: event.clientX, startY: event.clientY, element: event.target,
         session: state.session, request: state.connectRequestId, page: currentPage(revision),
       };
+      if (event.type === 'mousedown' && mousePointer) {
+        state.selectGesture.pointerId = mousePointer.id;
+        state.selectGesture.pointerTarget = mousePointer.target;
+        try { mousePointer.target.setPointerCapture?.(mousePointer.id); } catch (error) { /* pointer already released */ }
+      }
       activeOverlay().setBadge(modeHints.select);
     }
 
@@ -1098,6 +1132,7 @@
       consumeGestureEvent(event);
       var gesture = state.selectGesture;
       state.selectGesture = null;
+      releaseGesturePointer(gesture);
       state.suppressNextClick = true;
       var page = currentPage(revision);
       if (!page || !gesture.page || gesture.session !== state.session || gesture.request !== state.connectRequestId
@@ -1118,10 +1153,38 @@
     }
 
     function onPointerControl(event) {
-      // Pointer events precede mouse events in browsers. Block app pointer
-      // handlers as well, while mouse events resolve the one gesture.
-      if (state.mode === 'select' || (event.type === 'pointerup' && state.suppressNextClick)) {
-        event.stopImmediatePropagation();
+      if (event.type === 'pointerdown' && state.mode !== 'select') {
+        suppressCompatibilityMouse = false;
+        state.suppressNextClick = false;
+      }
+      if (event.type === 'pointerdown' && event.pointerType === 'mouse') suppressCompatibilityMouse = false;
+      if (state.mode !== 'select') return;
+      // Mouse keeps its compatibility mousedown path, with capture acquired
+      // there. Touch and pen use pointer coordinates for the whole gesture.
+      event.stopImmediatePropagation();
+      if (!event.pointerType) return;
+      if (event.pointerType === 'mouse') {
+        if (event.type === 'pointerdown') mousePointer = { id: event.pointerId, target: event.target };
+        else if (event.type === 'pointerup' && state.selectGesture?.pointerId === event.pointerId) {
+          onSelectEnd(event);
+          suppressCompatibilityMouse = true;
+          mousePointer = null;
+        }
+        return;
+      }
+      event.preventDefault();
+      suppressCompatibilityMouse = true;
+      if (event.type === 'pointerdown') {
+        if (state.selectGesture || event.isPrimary === false) return;
+        onSelectStart(event);
+        if (state.selectGesture) {
+          state.selectGesture.pointerId = event.pointerId;
+          state.selectGesture.pointerTarget = event.target;
+          try { event.target.setPointerCapture?.(event.pointerId); } catch (error) { /* detached target */ }
+        }
+      } else if (state.selectGesture?.pointerId === event.pointerId) {
+        if (event.type === 'pointermove') onSelectMove(event);
+        else if (event.type === 'pointerup') onSelectEnd(event);
       }
     }
 
@@ -1239,7 +1302,7 @@
     }
 
     function onKeydown(event) {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
       if (state.mode === 'select') {
         consumeGestureEvent(event);
         invalidateScreenshot();
@@ -1324,7 +1387,11 @@
     registerInstance(onUrlChanged);
 
     document.addEventListener('pointerdown', onPointerControl, true);
+    document.addEventListener('pointermove', onPointerControl, true);
     document.addEventListener('pointerup', onPointerControl, true);
+    document.addEventListener('pointercancel', cancelGesture, true);
+    document.addEventListener('lostpointercapture', cancelGesture, true);
+    window.addEventListener('blur', cancelGesture);
     document.addEventListener('mousedown', onSelectStart, true);
     document.addEventListener('mousemove', onSelectMove, true);
     document.addEventListener('mouseup', onSelectEnd, true);
@@ -1377,10 +1444,15 @@
         invalidateScreenshot();
         state.disposed = true;
         state.mode = 'off';
+        document.documentElement.classList.remove('catsco-annotation-select-surface');
         teardownOverlay();
         clearSelection();
         document.removeEventListener('pointerdown', onPointerControl, true);
+        document.removeEventListener('pointermove', onPointerControl, true);
         document.removeEventListener('pointerup', onPointerControl, true);
+        document.removeEventListener('pointercancel', cancelGesture, true);
+        document.removeEventListener('lostpointercapture', cancelGesture, true);
+        window.removeEventListener('blur', cancelGesture);
         document.removeEventListener('mousedown', onSelectStart, true);
         document.removeEventListener('mousemove', onSelectMove, true);
         document.removeEventListener('mouseup', onSelectEnd, true);
