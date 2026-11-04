@@ -155,7 +155,7 @@ func (a *Adapter) CountActiveServiceRunsForAgent(ctx context.Context, agentID in
 		FROM service_runs r
 		JOIN service_sessions s ON s.session_id = r.session_id
 		WHERE s.agent_id = ?
-		  AND r.state IN ('submitted','running')
+		  AND r.state = 'running'
 		  AND r.run_id <> ?`, agentID, excludeRunID).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count active service runs for agent: %w", err)
@@ -172,7 +172,7 @@ func (a *Adapter) CountActiveServiceRunsForAgentCaller(ctx context.Context, agen
 		JOIN service_sessions s ON s.session_id = r.session_id
 		WHERE s.agent_id = ?
 		  AND s.caller_uid = ?
-		  AND r.state IN ('submitted','running')
+		  AND r.state = 'running'
 		  AND r.run_id <> ?`, agentID, callerUID, excludeRunID).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count active service runs for agent caller: %w", err)
@@ -660,7 +660,8 @@ func (a *Adapter) FailServiceRun(ctx context.Context, runID, errorText string, r
 	if err != nil {
 		return fmt.Errorf("lock service run for fail: %w", err)
 	}
-	if state != "running" {
+	// 与 postgres 版一致：submitted（还没人领）也能直接落终态。
+	if state != "running" && state != "submitted" {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit failed service run noop: %w", err)
 		}
