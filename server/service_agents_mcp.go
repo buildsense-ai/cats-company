@@ -154,7 +154,7 @@ func (h *ServiceAgentsMCPHandler) visibleServiceAgents(ctx context.Context, call
 // serviceAgentsVisibleOnly 按可见性（+ 可选个人屏蔽集）过滤 agent 清单。
 func (h *ServiceAgentsMCPHandler) serviceAgentsVisibleOnly(agents []store.ServiceAgentDescriptor, callerUID int64, hidden map[int64]struct{}) []store.ServiceAgentDescriptor {
 	// 可见性按访问者求值（friends 级需要好友关系）；同一请求内同一发布者最多查一次。
-	resolver := newServiceAgentViewerResolver(h.friends, callerUID)
+	resolver := newServiceAgentViewerResolverWithBots(h.friends, botOwnerReaderOf(h.store), callerUID)
 	visible := make([]store.ServiceAgentDescriptor, 0, len(agents))
 	for _, agent := range agents {
 		if !resolver.allows(agent) {
@@ -582,7 +582,7 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 			current.DefinitionJSON = string(definition)
 		}
 	}
-	if !newServiceAgentViewerResolver(h.friends, callerUID).allows(current) {
+	if !newServiceAgentViewerResolverWithBots(h.friends, botOwnerReaderOf(h.store), callerUID).allows(current) {
 		return serviceToolError("agent_not_found"), nil, nil
 	}
 	// 上架状态实时校验：这条兜底覆盖「list_changed 尚未送达客户端」的窗口期

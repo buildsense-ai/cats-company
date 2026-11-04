@@ -258,7 +258,7 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 	// 发布者显示名：一次批量取回（不在查询里 JOIN users —— 那会让 store 依赖另一个域）。
 	ownerNames := serviceAgentOwnerNames(h.store, agents)
 	// 可见性按访问者求值（friends 级需要好友关系）：一次请求里同一发布者最多查一次。
-	resolver := newServiceAgentViewerResolver(h.friends, uid)
+	resolver := newServiceAgentViewerResolverWithBots(h.friends, botOwnerReaderOf(h.store), uid)
 	for _, agent := range agents {
 		// 可见性（设计 L2）：自用只进自己的目录，好友级只给发布者的好友。
 		if !resolver.allows(agent) {
@@ -372,7 +372,7 @@ func (h *ServiceAgentCatalogHandler) setHidden(w http.ResponseWriter, r *http.Re
 	}
 	// 看不见的应用一律 404，跟「不存在」同一个回答：能订阅一个自用/别人家好友级应用，
 	// 等于让人用「加/删成功与否」探测别人的应用是否存在、叫什么。
-	resolver := newServiceAgentViewerResolver(h.friends, uid)
+	resolver := newServiceAgentViewerResolverWithBots(h.friends, botOwnerReaderOf(h.store), uid)
 	var target *store.ServiceAgentDescriptor
 	for i := range agents {
 		if agents[i].Slug != slug {

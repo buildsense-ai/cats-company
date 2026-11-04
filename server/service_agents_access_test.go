@@ -537,3 +537,67 @@ func TestServiceAgentInvokeFailsClosedWhenAccessReadFails(t *testing.T) {
 		t.Fatalf("读不到当前可见性时应如实报不可用: %s", mcpToolErrorText(res))
 	}
 }
+
+// fakeBotOwners 是可控的「bot → 主人」映射；查不到按「不是 bot」处理（ErrNoRows 的真实形状）。
+type fakeBotOwners struct {
+	mu     sync.Mutex
+	owners map[int64]int64
+	calls  int
+}
+
+func (f *fakeBotOwners) GetBotOwner(botUID int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if owner, ok := f.owners[botUID]; ok {
+		return owner, nil
+	}
+	return 0, errors.New("sql: no rows in result set")
+}
+
+func (f *fakeBotOwners) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// 主人的 bot 视同主人：否则「我给自己建的工具，我的 bot 用不了」——
+// 实测过：owner 38 发布的两支私有工具，他自己的 bot 1619 / 982 的 tools/list
+// 里一条都没有，于是在对话里永远调不到。
+func TestOwnerBotSeesOwnerAgents(t *testing.T) {
+	const owner, ownerBot, otherBot, stranger = int64(38), int64(1619), int64(999), int64(77)
+	owners := &fakeBotOwners{owners: map[int64]int64{ownerBot: owner, otherBot: 500}}
+	private := store.ServiceAgentDescriptor{Slug: "self-tool", OwnerUID: owner, Visibility: store.ServiceAgentVisibilityPrivate}
+	friendsLevel := store.ServiceAgentDescriptor{Slug: "friend-tool", OwnerUID: owner, Visibility: store.ServiceAgentVisibilityFriends}
+	resolver := newServiceAgentViewerResolverWithBots(nil, owners, ownerBot)
+	if !resolver.allows(private) {
+		t.Fatal("主人的 bot 必须看得见主人的私有工具，否则 bot-as-tool 在对话里根本用不起来")
+	}
+	if !resolver.allows(friendsLevel) {
+		t.Fatal("主人的 bot 也必须看得见好友级工具")
+	}
+	for name, viewer := range map[string]int64{"other bot": otherBot, "stranger": stranger} {
+		if newServiceAgentViewerResolverWithBots(nil, owners, viewer).allows(private) {
+			t.Fatalf("%s 不该看见别人的私有工具", name)
+		}
+	}
+	if !newServiceAgentViewerResolverWithBots(nil, owners, owner).allows(private) {
+		t.Fatal("发布者本人必须看得见自己的私有工具")
+	}
+	if newServiceAgentViewerResolver(nil, ownerBot).allows(private) {
+		t.Fatal("没注入 bot 归属查询时不该放行（fail-closed）")
+	}
+}
+
+// 一次请求里要为很多 agent 判可见性：bot 归属只该查一次，不能每个 agent 一次。
+func TestOwnerLookupIsCachedPerRequest(t *testing.T) {
+	const owner, ownerBot = int64(38), int64(1619)
+	owners := &fakeBotOwners{owners: map[int64]int64{ownerBot: owner}}
+	resolver := newServiceAgentViewerResolverWithBots(nil, owners, ownerBot)
+	for i := 0; i < 20; i++ {
+		resolver.allows(store.ServiceAgentDescriptor{Slug: fmt.Sprintf("tool-%d", i), OwnerUID: owner, Visibility: store.ServiceAgentVisibilityPrivate})
+	}
+	if got := owners.callCount(); got != 1 {
+		t.Fatalf("bot 归属查了 %d 次，应当一次请求只查一次", got)
+	}
+}
