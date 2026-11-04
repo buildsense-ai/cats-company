@@ -193,6 +193,13 @@ type ServiceAgentViewer struct {
 	// 它的联系人里。只认发布者的好友会让一支 bot 自己的社交圈白建 —— 别人是
 	// 冲着这个 bot 来的，不是冲着坐在电脑前那个人。
 	FriendOfBot bool
+	// BotOfOwner 表示访问者本身是**发布者的 bot**。
+	//
+	// 为什么要有这一档：bot-as-tool 的调用方永远是另一个 bot，而 bot 在平台里是
+	// 独立 uid。只认「发布者本人」会得到一个荒谬的结果 —— 你给自己建的私有工具，
+	// 你自己的 bot 在对话里根本看不见（实测：owner 38 的 bot 1619 / 982 的
+	// tools/list 里只有系统工具）。bot 是主人在平台上的代理，对它视同主人。
+	BotOfOwner bool
 }
 
 // ServiceAgentVisibleTo 判断 agent 是否对该访问者可见（目录过滤 + 调用准入共用）。
@@ -201,6 +208,10 @@ type ServiceAgentViewer struct {
 // 空串按 public 处理（老数据没有这个字段）。
 func ServiceAgentVisibleTo(agent ServiceAgentDescriptor, viewer ServiceAgentViewer) bool {
 	if agent.OwnerUID != 0 && agent.OwnerUID == viewer.UID {
+		return true
+	}
+	// 访问者是发布者自己的 bot：等同发布者本人，三个级别都给。
+	if viewer.BotOfOwner {
 		return true
 	}
 	switch agent.Visibility {

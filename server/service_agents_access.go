@@ -50,22 +50,51 @@ type ServiceAgentFriendReader interface {
 // serviceAgentFriendReader 是包内视角的别名：调用点写小写更清楚这是「窄能力」。
 type serviceAgentFriendReader = ServiceAgentFriendReader
 
+// serviceAgentBotOwnerReader 回答「这个 uid 的 bot 属于谁」（不是 bot 时返回 0）。
+//
+// 只用来回答一个问题：访问者是不是发布者自己的 bot。store 适配器已实现
+// GetBotOwner；未注入时这一档不生效，行为等于改造前（fail-closed）。
+type serviceAgentBotOwnerReader interface {
+	GetBotOwner(botUID int64) (int64, error)
+}
+
 type serviceAgentViewerResolver struct {
 	friends   serviceAgentFriendReader
+	botOwners serviceAgentBotOwnerReader
 	viewerUID int64
 	// friendCache 缓存「访问者与某 uid 是否好友」（请求期，按对方 uid 去重）。
 	// 键可能是发布者，也可能是执行 bot —— 两者都是普通用户 id。
 	friendCache map[int64]bool
+	// 访问者如果是 bot，它代表的主人只解析一次（一次请求内每个 agent 都要判）。
+	ownerResolved bool
+	ownerUID      int64
 }
 
 func newServiceAgentViewerResolver(friends serviceAgentFriendReader, viewerUID int64) *serviceAgentViewerResolver {
 	return &serviceAgentViewerResolver{friends: friends, viewerUID: viewerUID}
 }
 
+// newServiceAgentViewerResolverWithBots 额外注入「bot 归属」查询。
+//
+// 生产接线用这个：主人的 bot 调主人自己发布的工具时，必须视同主人本人，
+// 否则「我给自己建的工具，我的 bot 用不了」。
+func newServiceAgentViewerResolverWithBots(friends serviceAgentFriendReader, botOwners serviceAgentBotOwnerReader, viewerUID int64) *serviceAgentViewerResolver {
+	return &serviceAgentViewerResolver{friends: friends, botOwners: botOwners, viewerUID: viewerUID}
+}
+
 // viewerFor 组出判定该 agent 可见性所需的访问者。
 func (r *serviceAgentViewerResolver) viewerFor(agent store.ServiceAgentDescriptor) store.ServiceAgentViewer {
 	viewer := store.ServiceAgentViewer{UID: r.viewerUID}
-	if r == nil || r.friends == nil || r.viewerUID == 0 {
+	if r == nil || r.viewerUID == 0 {
+		return viewer
+	}
+	// 访问者是发布者自己的 bot：视同发布者本人（私有也给）。
+	// 放在最前面：这一档与好友关系无关，也不该为它多查一次好友。
+	if owner := r.viewerOwner(); owner != 0 && owner != r.viewerUID && owner == agent.OwnerUID {
+		viewer.BotOfOwner = true
+		return viewer
+	}
+	if r.friends == nil {
 		return viewer
 	}
 	if agent.Visibility != store.ServiceAgentVisibilityFriends {
@@ -152,4 +181,30 @@ func serviceAgentVisibilityAccepted() string {
 		store.ServiceAgentVisibilityFriends,
 		store.ServiceAgentVisibilityPrivate,
 	}, " / ")
+}
+
+// viewerOwner 返回访问者这个 uid 的主人（不是 bot 时返回 0）。一次请求只查一次。
+//
+// 不打印错误：普通用户每次请求都会走这里，GetBotOwner 对非 bot 返回 ErrNoRows
+// 是正常路径，打日志只会把日志刷满。
+func (r *serviceAgentViewerResolver) viewerOwner() int64 {
+	if r == nil || r.botOwners == nil || r.viewerUID == 0 {
+		return 0
+	}
+	if r.ownerResolved {
+		return r.ownerUID
+	}
+	r.ownerResolved = true
+	owner, err := r.botOwners.GetBotOwner(r.viewerUID)
+	if err != nil {
+		return 0
+	}
+	r.ownerUID = owner
+	return owner
+}
+
+// botOwnerReaderOf 从 store 里取「bot 归属」查询能力；缺了返回 nil（这一档不生效）。
+func botOwnerReaderOf(st any) serviceAgentBotOwnerReader {
+	reader, _ := st.(serviceAgentBotOwnerReader)
+	return reader
 }

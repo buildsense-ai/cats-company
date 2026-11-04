@@ -570,7 +570,7 @@ export default function ServiceAgentsPanel({ onClose }) {
                     checked={form.visibility === 'private'}
                     onChange={() => updateForm({ visibility: 'private' })}
                   />
-                  仅自己
+                  只有我和我的 bot
                 </label>
                 <label>
                   <input
@@ -689,7 +689,7 @@ export default function ServiceAgentsPanel({ onClose }) {
               ? ' · 公开，谁都能找到并调用'
               : publishResult.visibility === 'friends'
                 ? ' · 仅好友可见，他们能在目录里找到并加进清单'
-                : ' · 仅自己可用'}
+                : ' · 只有我和我的 bot 能调'}
           </div>
           {publishResult.runner === 'worker' ? (
             <div className="v3-service-agents-published-hint">

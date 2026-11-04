@@ -784,7 +784,7 @@ describe('ServiceAgentsPanel', () => {
 
     // 同样的内容，选了「仅自己」→ 允许发布
     const privateRadio = [...form.querySelectorAll('input[type="radio"]')]
-      .find((node) => node.parentElement?.textContent?.includes('仅自己'));
+      .find((node) => node.parentElement?.textContent?.includes('只有我和我的 bot'));
     await act(async () => {
       privateRadio.click();
       await Promise.resolve();
