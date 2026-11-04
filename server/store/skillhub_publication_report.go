@@ -57,7 +57,7 @@ func ValidPublicationValidationReport(p PublicationValidationReport, candidate s
 	blocking := false
 	for _, i := range p.Issues {
 		if !publicationIssueCode.MatchString(i.Code) || (i.Category != "format" && i.Category != "package_safety" && i.Category != "compatibility") ||
-			(i.RepairPolicy != "manual" && i.RepairPolicy != "confirmation_required" && i.RepairPolicy != "none") ||
+			(i.RepairPolicy != "automatic" && i.RepairPolicy != "manual" && i.RepairPolicy != "confirmation_required" && i.RepairPolicy != "none") ||
 			(i.Code == "metadata.description_missing" && i.RepairPolicy != "confirmation_required") ||
 			i.Message == "" || len(i.Message) > 1024 || !utf8.ValidString(i.Message) || strings.ContainsFunc(i.Message, func(r rune) bool { return r < 32 || r == 127 }) {
 			return false
@@ -65,6 +65,10 @@ func ValidPublicationValidationReport(p PublicationValidationReport, candidate s
 		l := i.Location
 		if (l.EntryIndex != nil && (*l.EntryIndex < 0 || *l.EntryIndex > 9007199254740991)) ||
 			(l.RelativePath != "" && l.RelativePath != "SKILL.md" && l.RelativePath != "skill.json" && l.RelativePath != "README.md") {
+			return false
+		}
+		if i.RepairPolicy == "automatic" && (i.Code != "metadata.name_whitespace" || i.Category != "format" || !i.Blocking ||
+			l.RelativePath != "SKILL.md" || l.Field != "name") {
 			return false
 		}
 		switch l.Field {
