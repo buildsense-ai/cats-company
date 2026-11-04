@@ -7,7 +7,10 @@ that do not understand them retain the existing protocol and original expiry.
 `device_grant_renewal` accepts `type: request`, `request_id`, and an opaque
 `grant_id`. Authority comes only from the stored live grant, not from client
 identity/device/operation fields. The direct response echoes the request and
-original grant IDs and includes either a replacement grant or a generic denial.
+original grant IDs and includes either the unchanged permanent grant, a
+replacement finite grant, or a generic denial. Permanent grants are idempotent
+on renewal: the server returns the same grant rather than rejecting clients
+that proactively renew.
 The endpoint is for the authenticated, current ordinary Bot runtime, not a
 Connector, human client, Wiki runtime or model-facing tool.
 
@@ -15,9 +18,10 @@ Before renewal the server checks the current Bot body lease/runtime credential,
 active actor/Bot, conversation access, own-account ownership, selected revision,
 explicit-target negotiation, target desktop incarnation, live route, original
 operation set and device logout watermark. Only grant ID and expiry change; the
-original creation time and all authority remain fixed. Each renewal is at most
-the original ten-minute grant duration, and never later than 24 hours from the
-initial creation. Pre-upgrade grants use the same creation-based upper bound.
+original creation time and all authority remain fixed for finite grants. Newly
+issued permanent grants do not need renewal. Renewal remains available for
+pre-upgrade finite grants, each at most the original ten-minute grant duration
+and never later than 24 hours from initial creation.
 The old grant is not immediately removed: in-flight old requests may finish
 within its original deadline. Logout and a selection revision change still
 invalidate old and renewed authorization. Logging back in on the same stable

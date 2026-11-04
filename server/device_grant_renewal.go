@@ -54,7 +54,7 @@ func (h *Hub) renewDeviceGrant(client *Client, msg *MsgDeviceGrantRenewal) (Scop
 		}
 	}
 	old, ok := h.userDevices.lookupGrant(msg.GrantID)
-	if !ok || old.Permanent || h.deviceGrantWasRevoked(old) || old.Source != "catscompany" || old.IdentityTrust != "server_canonical" || old.AgentID != formatUID(client.uid) ||
+	if !ok || h.deviceGrantWasRevoked(old) || old.Source != "catscompany" || old.IdentityTrust != "server_canonical" || old.AgentID != formatUID(client.uid) ||
 		old.AgentBodyID == "" || old.AgentBodyID != client.bodyID || old.OwnerUserID != old.ActorUserID ||
 		(old.TargetScope == "explicit_device" && !xiaobaRuntimeV2EnabledForClient(client)) {
 		return deny()
@@ -94,6 +94,9 @@ func (h *Hub) renewDeviceGrant(client *Client, msg *MsgDeviceGrantRenewal) (Scop
 		if !found {
 			return deny()
 		}
+	}
+	if old.Permanent {
+		return old, nil
 	}
 	now := unixMillis(h.userDevices.now())
 	deadline := old.RenewableUntil

@@ -29,7 +29,10 @@ selection revision, so later turns update one record instead of accumulating
 one permanent record per message. If an API restart causes a device to register
 again, it may receive a new grant ID; existing stored grants remain valid for
 the same device identity. A selection revision change or device unlink removes
-indexed grants. The wire expiry is set to 9999-12-31 for compatibility
+indexed grants. Index sets carry a permanent-member marker so a legacy finite
+grant refresh cannot apply a TTL to an index containing permanent grants.
+Index cleanup removes only observed members in an atomic Redis transaction,
+preserving concurrent grant writes. The wire expiry is set to 9999-12-31 for compatibility
 with older XiaoBa clients; `permanent: true` is authoritative to the server.
 This is a persistent authorization, not a persistent connection or route.
 Every operation still requires the exact device to be active and its Connector

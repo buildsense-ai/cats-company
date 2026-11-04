@@ -16,6 +16,13 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const permanentDeviceGrantIndexMarker = "__permanent_grant_present__"
+const cleanupPermanentDeviceGrantIndexScript = `
+if redis.call('SCARD', KEYS[1]) == 1 and redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then
+  return redis.call('DEL', KEYS[1])
+end
+return 0`
+
 const (
 	defaultRedisRuntimeKeyPrefix = "catsco:runtime"
 	redisRuntimeNodeTTL          = 30 * time.Second
@@ -734,20 +741,37 @@ func (s *RedisRuntimeState) rememberDeviceGrants(grants []ScopedDeviceGrant, now
 			ttl = time.Duration(grant.ExpiresAt-now) * time.Millisecond
 		}
 		ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
-		pipe := s.client.Pipeline()
-		pipe.Set(ctx, s.deviceGrantKey(grant.GrantID), payload, ttl)
 		selectionIndex := s.deviceGrantSelectionKey(parseFormattedUID(grant.ActorUserID), grant.SessionKey)
 		deviceIndex := s.deviceGrantDeviceKey(parseFormattedUID(grant.OwnerUserID), grant.DeviceID)
-		pipe.SAdd(ctx, selectionIndex, grant.GrantID)
-		pipe.SAdd(ctx, deviceIndex, grant.GrantID)
-		if grant.Permanent {
-			pipe.Persist(ctx, selectionIndex)
-			pipe.Persist(ctx, deviceIndex)
-		} else {
-			pipe.PExpire(ctx, selectionIndex, ttl)
-			pipe.PExpire(ctx, deviceIndex, ttl)
-		}
-		_, err = pipe.Exec(ctx)
+		_, err = s.client.Eval(ctx, `
+local grantKey = KEYS[1]
+local selectionIndex = KEYS[2]
+local deviceIndex = KEYS[3]
+local grantID = ARGV[1]
+local payload = ARGV[2]
+local ttl = tonumber(ARGV[3])
+local permanentMarker = ARGV[4]
+if ttl > 0 then
+  redis.call('SET', grantKey, payload, 'PX', ttl)
+else
+  redis.call('SET', grantKey, payload)
+end
+redis.call('SADD', selectionIndex, grantID)
+redis.call('SADD', deviceIndex, grantID)
+if ttl <= 0 then
+  redis.call('SADD', selectionIndex, permanentMarker)
+  redis.call('SADD', deviceIndex, permanentMarker)
+  redis.call('PERSIST', selectionIndex)
+  redis.call('PERSIST', deviceIndex)
+else
+  if redis.call('SISMEMBER', selectionIndex, permanentMarker) == 0 then
+    redis.call('PEXPIRE', selectionIndex, ttl)
+  end
+  if redis.call('SISMEMBER', deviceIndex, permanentMarker) == 0 then
+    redis.call('PEXPIRE', deviceIndex, ttl)
+  end
+end
+return 1`, []string{s.deviceGrantKey(grant.GrantID), selectionIndex, deviceIndex}, grant.GrantID, string(payload), ttl.Milliseconds(), permanentDeviceGrantIndexMarker).Result()
 		cancel()
 		if err != nil {
 			s.logDeviceAuthorizationFailure("grant_write", redisAuthorizationErrorClass(err))
@@ -791,14 +815,27 @@ func (s *RedisRuntimeState) revokeDeviceGrantsForSelection(actorUID int64, sessi
 		s.logDeviceAuthorizationFailure("grant_selection_revoke", redisAuthorizationErrorClass(err))
 		return
 	}
-	pipe := s.client.Pipeline()
+	pipe := s.client.TxPipeline()
+	otherIndices := make(map[string]struct{})
 	for _, id := range ids {
+		if id == permanentDeviceGrantIndexMarker {
+			continue
+		}
 		pipe.Del(ctx, s.deviceGrantKey(id))
 		if deviceKey := s.deviceGrantDeviceKeyForGrant(ctx, id); deviceKey != "" {
 			pipe.SRem(ctx, deviceKey, id)
+			otherIndices[deviceKey] = struct{}{}
 		}
 	}
-	pipe.Del(ctx, index)
+	for _, id := range ids {
+		if id != permanentDeviceGrantIndexMarker {
+			pipe.SRem(ctx, index, id)
+		}
+	}
+	pipe.Eval(ctx, cleanupPermanentDeviceGrantIndexScript, []string{index}, permanentDeviceGrantIndexMarker)
+	for deviceKey := range otherIndices {
+		pipe.Eval(ctx, cleanupPermanentDeviceGrantIndexScript, []string{deviceKey}, permanentDeviceGrantIndexMarker)
+	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		s.logDeviceAuthorizationFailure("grant_selection_revoke", redisAuthorizationErrorClass(err))
 	}
@@ -816,14 +853,27 @@ func (s *RedisRuntimeState) revokeDeviceGrantsForDevice(ownerUID int64, deviceID
 		s.logDeviceAuthorizationFailure("grant_device_revoke", redisAuthorizationErrorClass(err))
 		return
 	}
-	pipe := s.client.Pipeline()
+	pipe := s.client.TxPipeline()
+	otherIndices := make(map[string]struct{})
 	for _, id := range ids {
+		if id == permanentDeviceGrantIndexMarker {
+			continue
+		}
 		pipe.Del(ctx, s.deviceGrantKey(id))
 		if selectionKey := s.deviceGrantSelectionKeyForGrant(ctx, id); selectionKey != "" {
 			pipe.SRem(ctx, selectionKey, id)
+			otherIndices[selectionKey] = struct{}{}
 		}
 	}
-	pipe.Del(ctx, index)
+	for _, id := range ids {
+		if id != permanentDeviceGrantIndexMarker {
+			pipe.SRem(ctx, index, id)
+		}
+	}
+	pipe.Eval(ctx, cleanupPermanentDeviceGrantIndexScript, []string{index}, permanentDeviceGrantIndexMarker)
+	for selectionKey := range otherIndices {
+		pipe.Eval(ctx, cleanupPermanentDeviceGrantIndexScript, []string{selectionKey}, permanentDeviceGrantIndexMarker)
+	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		s.logDeviceAuthorizationFailure("grant_device_revoke", redisAuthorizationErrorClass(err))
 	}

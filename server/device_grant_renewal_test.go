@@ -148,6 +148,26 @@ func TestDeviceGrantRenewalWireAndLegacyCompatibility(t *testing.T) {
 	}
 }
 
+func TestPermanentDeviceGrantRenewalIsIdempotent(t *testing.T) {
+	h, bot, msg, _ := grantRenewalFixture(t)
+	grant, ok := h.userDevices.lookupGrant(msg.GrantID)
+	if !ok {
+		t.Fatal("missing fixture grant")
+	}
+	grant.Permanent = true
+	grant.ExpiresAt = permanentDeviceGrantExpiresAt
+	grant.RenewableUntil = 0
+	h.userDevices.rememberGrants([]ScopedDeviceGrant{grant})
+	msg.GrantID = grant.GrantID
+	got, err := h.renewDeviceGrant(bot, msg)
+	if err != nil {
+		t.Fatal("proactive renewal of permanent grant should be harmless", err)
+	}
+	if got.GrantID != grant.GrantID || !got.Permanent || got.ExpiresAt != permanentDeviceGrantExpiresAt {
+		t.Fatalf("permanent renewal changed grant: %#v", got)
+	}
+}
+
 func TestDeviceGrantRenewalExplicitTargetDoesNotChangeDefault(t *testing.T) {
 	h, bot, msg, now := grantRenewalFixture(t)
 	original, _ := h.userDevices.lookupGrant(msg.GrantID)
@@ -236,7 +256,7 @@ func TestDeviceGrantRenewalLogoutCannotBeUndoneByRelogin(t *testing.T) {
 	if !ok || !fresh.Permanent {
 		t.Fatal("fresh post-login task did not receive permanent authorization")
 	}
-	if _, err := h.renewDeviceGrant(bot, msg); err == nil {
-		t.Fatal("permanent authorization must not be converted into a short lease")
+	if renewed, err := h.renewDeviceGrant(bot, msg); err != nil || renewed.GrantID != fresh.GrantID || !renewed.Permanent {
+		t.Fatal("permanent authorization renewal should be idempotent", err)
 	}
 }

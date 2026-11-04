@@ -211,8 +211,29 @@ func TestPermanentDeviceGrantHasNoRedisExpiryAndIsRevokedBySelectionOrUnlink(t *
 	}
 	grant.CreatedAt = unixMillis(now.Add(time.Minute))
 	store.rememberDeviceGrants([]ScopedDeviceGrant{grant}, grant.CreatedAt)
-	if count, _ := store.state.client.SCard(context.Background(), store.state.deviceGrantSelectionKey(7, grant.SessionKey)).Result(); count != 1 {
+	if count, _ := store.state.client.SCard(context.Background(), store.state.deviceGrantSelectionKey(7, grant.SessionKey)).Result(); count != 2 {
 		t.Fatalf("same scope accumulated %d permanent grants", count)
+	}
+	finite := grant
+	finite.Permanent = false
+	finite.GrantID = "device_grant_legacy_finite"
+	finite.ExpiresAt = unixMillis(now.Add(10 * time.Minute))
+	store.rememberDeviceGrants([]ScopedDeviceGrant{finite}, unixMillis(now))
+	selectionIndex := store.state.deviceGrantSelectionKey(7, grant.SessionKey)
+	deviceIndex := store.state.deviceGrantDeviceKey(7, grant.DeviceID)
+	if mr.TTL(selectionIndex) != 0 || mr.TTL(deviceIndex) != 0 {
+		t.Fatal("finite grant write added an expiry to a mixed index containing a permanent grant")
+	}
+	finiteKey := store.state.deviceGrantKey(finite.GrantID)
+	if mr.TTL(finiteKey) <= 0 {
+		t.Fatal("legacy finite grant lost its own expiration")
+	}
+	mr.FastForward(11 * time.Minute)
+	if _, ok := store.lookupDeviceGrant(finite.GrantID, unixMillis(now.Add(11*time.Minute))); ok {
+		t.Fatal("legacy finite grant survived its own expiration")
+	}
+	if _, ok := store.lookupDeviceGrant(grant.GrantID, unixMillis(now.Add(11*time.Minute))); !ok {
+		t.Fatal("finite grant expiration expired the permanent grant")
 	}
 	store.revokeDeviceGrantsForSelection(7, grant.SessionKey)
 	if mr.Exists(key) {
