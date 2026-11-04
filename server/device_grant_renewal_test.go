@@ -27,6 +27,11 @@ func grantRenewalFixture(t *testing.T) (*Hub, *Client, *MsgDeviceGrantRenewal, *
 	}
 	devices, unavailable := h.userDeviceRouteCandidates(7)
 	turn := h.userDevices.turnContextForDevices(7, "p2p_7_42", "p2p", 42, "cloud", devices, unavailable)
+	legacyGrant := turn.Grants[0]
+	legacyGrant.Permanent = false
+	legacyGrant.ExpiresAt = legacyGrant.CreatedAt + defaultDeviceGrantTTL.Milliseconds()
+	legacyGrant.RenewableUntil = legacyGrant.CreatedAt + (24 * time.Hour).Milliseconds()
+	h.userDevices.rememberGrants([]ScopedDeviceGrant{legacyGrant})
 	return h, bot, &MsgDeviceGrantRenewal{Type: "request", RequestID: "renew-1", GrantID: turn.Grants[0].GrantID}, &now
 }
 
@@ -149,6 +154,10 @@ func TestDeviceGrantRenewalExplicitTargetDoesNotChangeDefault(t *testing.T) {
 	devices, unavailable := h.userDeviceRouteCandidates(7)
 	turn := h.userDevices.turnContextForDevices(7, "p2p_7_42", "p2p", 42, "cloud", devices, unavailable)
 	explicit := deviceGrantForID(t, turn.ExplicitGrants, "b")
+	explicit.Permanent = false
+	explicit.ExpiresAt = explicit.CreatedAt + defaultDeviceGrantTTL.Milliseconds()
+	explicit.RenewableUntil = explicit.CreatedAt + (24 * time.Hour).Milliseconds()
+	h.userDevices.rememberGrants([]ScopedDeviceGrant{explicit})
 	msg.GrantID = explicit.GrantID
 	*now = now.Add(4 * time.Minute)
 	next, err := h.renewDeviceGrant(bot, msg)
@@ -220,7 +229,14 @@ func TestDeviceGrantRenewalLogoutCannotBeUndoneByRelogin(t *testing.T) {
 		t.Fatal("fresh human turn lost authorization")
 	}
 	msg.GrantID = turn.Grants[0].GrantID
-	if _, err := h.renewDeviceGrant(bot, msg); err != nil {
-		t.Fatal("fresh post-login task cannot renew", err)
+	if msg.GrantID == old.GrantID {
+		t.Fatal("unlink and re-registration reused the old authorization ID")
+	}
+	fresh, ok := h.userDevices.lookupGrant(msg.GrantID)
+	if !ok || !fresh.Permanent {
+		t.Fatal("fresh post-login task did not receive permanent authorization")
+	}
+	if _, err := h.renewDeviceGrant(bot, msg); err == nil {
+		t.Fatal("permanent authorization must not be converted into a short lease")
 	}
 }

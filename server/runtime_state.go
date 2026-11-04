@@ -100,6 +100,8 @@ type sharedRuntimeState interface {
 
 	rememberDeviceGrants(grants []ScopedDeviceGrant, now int64)
 	lookupDeviceGrant(grantID string, now int64) (ScopedDeviceGrant, bool)
+	revokeDeviceGrantsForSelection(actorUID int64, sessionKey string)
+	revokeDeviceGrantsForDevice(ownerUID int64, deviceID string)
 	deviceSelectionPreference(actorUID int64, sessionKey string, now int64) (string, bool)
 	rememberDeviceSelection(actorUID int64, sessionKey string, preference deviceSelectionPreference)
 	deviceSelectionRecord(actorUID int64, sessionKey string) (deviceSelectionPreference, error)
@@ -661,12 +663,12 @@ func (s *sharedMemoryRuntimeState) rememberDeviceGrants(grants []ScopedDeviceGra
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for grantID, grant := range s.grants {
-		if grant.ExpiresAt <= now {
+		if !grant.Permanent && grant.ExpiresAt <= now {
 			delete(s.grants, grantID)
 		}
 	}
 	for _, grant := range grants {
-		if grant.GrantID == "" || grant.ExpiresAt <= now {
+		if grant.GrantID == "" || (!grant.Permanent && grant.ExpiresAt <= now) {
 			continue
 		}
 		s.grants[grant.GrantID] = grant
@@ -680,15 +682,43 @@ func (s *sharedMemoryRuntimeState) lookupDeviceGrant(grantID string, now int64) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, grant := range s.grants {
-		if grant.ExpiresAt <= now {
+		if !grant.Permanent && grant.ExpiresAt <= now {
 			delete(s.grants, id)
 		}
 	}
 	grant, ok := s.grants[grantID]
-	if !ok || grant.Status != "active" || grant.ExpiresAt <= now {
+	if !ok || grant.Status != "active" || (!grant.Permanent && grant.ExpiresAt <= now) {
 		return ScopedDeviceGrant{}, false
 	}
 	return grant, true
+}
+
+func (s *sharedMemoryRuntimeState) revokeDeviceGrantsForSelection(actorUID int64, sessionKey string) {
+	if s == nil || actorUID <= 0 || strings.TrimSpace(sessionKey) == "" {
+		return
+	}
+	actor := formatUID(actorUID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for grantID, grant := range s.grants {
+		if grant.ActorUserID == actor && grant.SessionKey == sessionKey {
+			delete(s.grants, grantID)
+		}
+	}
+}
+
+func (s *sharedMemoryRuntimeState) revokeDeviceGrantsForDevice(ownerUID int64, deviceID string) {
+	if s == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	owner := formatUID(ownerUID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for grantID, grant := range s.grants {
+		if grant.OwnerUserID == owner && grant.DeviceID == deviceID {
+			delete(s.grants, grantID)
+		}
+	}
 }
 
 func (s *sharedMemoryRuntimeState) deviceSelectionPreference(actorUID int64, sessionKey string, now int64) (string, bool) {
@@ -907,6 +937,11 @@ func (s *sharedMemoryRuntimeState) revokeDeviceConnectorDevice(ownerUID int64, d
 		s.revokedConnectorDevices[ownerUID] = ownerDevices
 	}
 	ownerDevices[deviceID] = revokedAt
+	for grantID, grant := range s.grants {
+		if grant.OwnerUserID == formatUID(ownerUID) && grant.DeviceID == deviceID {
+			delete(s.grants, grantID)
+		}
+	}
 }
 
 func (s *sharedMemoryRuntimeState) revokeDeviceConnectorToken(tokenID string, expiresAt time.Time) {

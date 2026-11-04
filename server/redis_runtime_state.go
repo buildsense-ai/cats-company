@@ -721,7 +721,7 @@ func (s *RedisRuntimeState) rememberDeviceGrants(grants []ScopedDeviceGrant, now
 		return
 	}
 	for _, grant := range grants {
-		if grant.GrantID == "" || grant.ExpiresAt <= now {
+		if grant.GrantID == "" || (!grant.Permanent && grant.ExpiresAt <= now) {
 			continue
 		}
 		payload, err := json.Marshal(grant)
@@ -729,9 +729,25 @@ func (s *RedisRuntimeState) rememberDeviceGrants(grants []ScopedDeviceGrant, now
 			s.logDeviceAuthorizationFailure("grant_write", "invalid_payload")
 			continue
 		}
-		ttl := time.Duration(grant.ExpiresAt-now) * time.Millisecond
+		ttl := time.Duration(0)
+		if !grant.Permanent {
+			ttl = time.Duration(grant.ExpiresAt-now) * time.Millisecond
+		}
 		ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
-		err = s.client.Set(ctx, s.deviceGrantKey(grant.GrantID), payload, ttl).Err()
+		pipe := s.client.Pipeline()
+		pipe.Set(ctx, s.deviceGrantKey(grant.GrantID), payload, ttl)
+		selectionIndex := s.deviceGrantSelectionKey(parseFormattedUID(grant.ActorUserID), grant.SessionKey)
+		deviceIndex := s.deviceGrantDeviceKey(parseFormattedUID(grant.OwnerUserID), grant.DeviceID)
+		pipe.SAdd(ctx, selectionIndex, grant.GrantID)
+		pipe.SAdd(ctx, deviceIndex, grant.GrantID)
+		if grant.Permanent {
+			pipe.Persist(ctx, selectionIndex)
+			pipe.Persist(ctx, deviceIndex)
+		} else {
+			pipe.PExpire(ctx, selectionIndex, ttl)
+			pipe.PExpire(ctx, deviceIndex, ttl)
+		}
+		_, err = pipe.Exec(ctx)
 		cancel()
 		if err != nil {
 			s.logDeviceAuthorizationFailure("grant_write", redisAuthorizationErrorClass(err))
@@ -757,7 +773,85 @@ func (s *RedisRuntimeState) lookupDeviceGrant(grantID string, now int64) (Scoped
 		s.logDeviceAuthorizationFailure("grant_read", "invalid_payload")
 		return ScopedDeviceGrant{}, false
 	}
-	if grant.Status != "active" || grant.ExpiresAt <= now {
+	if grant.Status != "active" || (!grant.Permanent && grant.ExpiresAt <= now) {
+		return ScopedDeviceGrant{}, false
+	}
+	return grant, true
+}
+
+func (s *RedisRuntimeState) revokeDeviceGrantsForSelection(actorUID int64, sessionKey string) {
+	if s == nil || actorUID <= 0 || strings.TrimSpace(sessionKey) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	index := s.deviceGrantSelectionKey(actorUID, sessionKey)
+	ids, err := s.client.SMembers(ctx, index).Result()
+	if err != nil {
+		s.logDeviceAuthorizationFailure("grant_selection_revoke", redisAuthorizationErrorClass(err))
+		return
+	}
+	pipe := s.client.Pipeline()
+	for _, id := range ids {
+		pipe.Del(ctx, s.deviceGrantKey(id))
+		if deviceKey := s.deviceGrantDeviceKeyForGrant(ctx, id); deviceKey != "" {
+			pipe.SRem(ctx, deviceKey, id)
+		}
+	}
+	pipe.Del(ctx, index)
+	if _, err := pipe.Exec(ctx); err != nil {
+		s.logDeviceAuthorizationFailure("grant_selection_revoke", redisAuthorizationErrorClass(err))
+	}
+}
+
+func (s *RedisRuntimeState) revokeDeviceGrantsForDevice(ownerUID int64, deviceID string) {
+	if s == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	index := s.deviceGrantDeviceKey(ownerUID, deviceID)
+	ids, err := s.client.SMembers(ctx, index).Result()
+	if err != nil {
+		s.logDeviceAuthorizationFailure("grant_device_revoke", redisAuthorizationErrorClass(err))
+		return
+	}
+	pipe := s.client.Pipeline()
+	for _, id := range ids {
+		pipe.Del(ctx, s.deviceGrantKey(id))
+		if selectionKey := s.deviceGrantSelectionKeyForGrant(ctx, id); selectionKey != "" {
+			pipe.SRem(ctx, selectionKey, id)
+		}
+	}
+	pipe.Del(ctx, index)
+	if _, err := pipe.Exec(ctx); err != nil {
+		s.logDeviceAuthorizationFailure("grant_device_revoke", redisAuthorizationErrorClass(err))
+	}
+}
+
+func (s *RedisRuntimeState) deviceGrantDeviceKeyForGrant(ctx context.Context, grantID string) string {
+	grant, ok := s.deviceGrantForIndex(ctx, grantID)
+	if !ok {
+		return ""
+	}
+	return s.deviceGrantDeviceKey(parseFormattedUID(grant.OwnerUserID), grant.DeviceID)
+}
+
+func (s *RedisRuntimeState) deviceGrantSelectionKeyForGrant(ctx context.Context, grantID string) string {
+	grant, ok := s.deviceGrantForIndex(ctx, grantID)
+	if !ok {
+		return ""
+	}
+	return s.deviceGrantSelectionKey(parseFormattedUID(grant.ActorUserID), grant.SessionKey)
+}
+
+func (s *RedisRuntimeState) deviceGrantForIndex(ctx context.Context, grantID string) (ScopedDeviceGrant, bool) {
+	raw, err := s.client.Get(ctx, s.deviceGrantKey(grantID)).Result()
+	if err != nil {
+		return ScopedDeviceGrant{}, false
+	}
+	var grant ScopedDeviceGrant
+	if err := json.Unmarshal([]byte(raw), &grant); err != nil {
 		return ScopedDeviceGrant{}, false
 	}
 	return grant, true
@@ -1075,6 +1169,7 @@ func (s *RedisRuntimeState) revokeDeviceConnectorDevice(ownerUID int64, deviceID
 		return
 	}
 	_ = s.client.Set(s.ctx, s.deviceConnectorRevokedDeviceKey(ownerUID, deviceID), unixMillis(revokedAt), deviceConnectorTokenTTL).Err()
+	s.revokeDeviceGrantsForDevice(ownerUID, deviceID)
 }
 
 func (s *RedisRuntimeState) revokeDeviceConnectorToken(tokenID string, expiresAt time.Time) {
@@ -1551,6 +1646,14 @@ func (s *RedisRuntimeState) userDeviceRouteKey(ownerUID int64, deviceID string) 
 
 func (s *RedisRuntimeState) deviceGrantKey(grantID string) string {
 	return s.key("device_grant", keyPart(grantID))
+}
+
+func (s *RedisRuntimeState) deviceGrantSelectionKey(actorUID int64, sessionKey string) string {
+	return s.key("device_grant_selection", fmt.Sprintf("%d", actorUID), keyPart(sessionKey))
+}
+
+func (s *RedisRuntimeState) deviceGrantDeviceKey(ownerUID int64, deviceID string) string {
+	return s.key("device_grant_device", fmt.Sprintf("%d", ownerUID), keyPart(deviceID))
 }
 
 func (s *RedisRuntimeState) deviceSelectionPreferenceKey(actorUID int64, sessionKey string) string {

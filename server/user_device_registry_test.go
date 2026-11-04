@@ -66,8 +66,13 @@ func TestUserDeviceRegistryRegistersAndIssuesScopedGrants(t *testing.T) {
 	if len(grant.Operations) != 5 || grant.Operations[0] != DeviceGrantReadFile || grant.Operations[1] != DeviceGrantResolveDir || grant.Operations[2] != DeviceGrantWriteFile || grant.Operations[3] != DeviceGrantEditFile || grant.Operations[4] != DeviceGrantSendFile {
 		t.Fatalf("grant should expose registered file operations, got %#v", grant.Operations)
 	}
-	if grant.CreatedAt != unixMillis(now) || grant.ExpiresAt != unixMillis(now.Add(2*time.Minute)) {
+	if grant.CreatedAt != unixMillis(now) || !grant.Permanent || grant.ExpiresAt != permanentDeviceGrantExpiresAt {
 		t.Fatalf("unexpected grant times: %#v", grant)
+	}
+	now = now.Add(time.Second)
+	reissued := registry.grantsForTurn(7, "p2p_7_42", "p2p", 42, "body-agent")
+	if len(reissued) != 1 || reissued[0].GrantID != grant.GrantID || reissued[0].CreatedAt != unixMillis(now) {
+		t.Fatalf("same authorization scope did not reuse its persistent grant: %#v", reissued)
 	}
 
 	registry.now = func() time.Time { return now.Add(2*time.Minute + time.Second) }
@@ -107,6 +112,38 @@ func TestUserDeviceRegistryStoresCurrentModelStatus(t *testing.T) {
 	}
 	if status.Source != "relay" || status.Model != "MiniMax-M3" {
 		t.Fatalf("unexpected latest model status: %#v", status)
+	}
+}
+
+func TestPermanentDeviceGrantSurvivesTenMinutesWhileConnectorStaysOnline(t *testing.T) {
+	now := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	registry := newUserDeviceRegistry(time.Hour)
+	registry.now = func() time.Time { return now }
+	if _, err := registry.register(7, RegisterUserDeviceRequest{
+		DeviceID: "laptop-main", Status: "online", Capabilities: []string{"read_file"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first := registry.grantsForTurn(7, "p2p_7_42", "p2p", 42, "body-agent")
+	if len(first) != 1 || !first[0].Permanent {
+		t.Fatalf("missing permanent authorization: %#v", first)
+	}
+	now = now.Add(11 * time.Minute)
+	registry.touch(7, "laptop-main")
+	if _, ok := registry.lookupGrant(first[0].GrantID); !ok {
+		t.Fatal("online connector grant expired after ten minutes")
+	}
+	second := registry.grantsForTurn(7, "p2p_7_42", "p2p", 42, "body-agent")
+	if len(second) != 1 || second[0].GrantID != first[0].GrantID {
+		t.Fatalf("ongoing authorization changed between turns: %#v", second)
+	}
+	if _, err := registry.register(7, RegisterUserDeviceRequest{
+		DeviceID: "laptop-main", Status: "offline", Capabilities: []string{"read_file"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if grants := registry.grantsForTurn(7, "p2p_7_42", "p2p", 42, "body-agent"); len(grants) != 0 {
+		t.Fatal("offline connector received an executable grant")
 	}
 }
 

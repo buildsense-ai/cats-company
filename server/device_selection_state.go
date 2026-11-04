@@ -122,6 +122,9 @@ func (r *userDeviceRegistry) confirmDeviceSelection(actor int64, session, device
 	if err := r.compareSelection(actor, session, expected, next); err != nil {
 		return deviceSelectionPreference{}, err
 	}
+	// A newly confirmed target creates a new authorization revision. Remove
+	// stored grants for older revisions; lookups also fail closed on revision.
+	r.revokeDeviceGrantsForSelection(actor, session)
 	return next, nil
 }
 

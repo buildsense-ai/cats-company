@@ -11,7 +11,7 @@ is an alternative rollout, not an extra switch required by that rollout.
 
 | State | Authorization-only deployment |
 | --- | --- |
-| Scoped device operation grants | Dedicated Redis prefix, existing short expiry |
+| Scoped device operation grants | Dedicated Redis prefix, persistent until selection change or device unlink |
 | Device unlink/revocation watermarks | Same Redis prefix, existing retention |
 | Connector token revocations | Same Redis prefix, existing expiry |
 | Conversation device selection and revision | Existing SQL store, unchanged |
@@ -22,8 +22,19 @@ is an alternative rollout, not an extra switch required by that rollout.
 | Messaging attention and publication/Artifact coordination | Existing behavior, unchanged |
 | Chats, users, files and model context | No migration in this change |
 
-The narrow wrapper reuses the existing Redis grant encoding, TTL, bounded reads
-and redacted diagnostics. It cannot implement the shared-runtime interface,
+The narrow wrapper reuses the existing Redis grant encoding, bounded reads and
+redacted diagnostics. Persistent grants use no Redis key TTL and reuse a stable
+ID for the same actor, Bot/session, device registration, target scope and
+selection revision, so later turns update one record instead of accumulating
+one permanent record per message. If an API restart causes a device to register
+again, it may receive a new grant ID; existing stored grants remain valid for
+the same device identity. A selection revision change or device unlink removes
+indexed grants. The wire expiry is set to 9999-12-31 for compatibility
+with older XiaoBa clients; `permanent: true` is authoritative to the server.
+This is a persistent authorization, not a persistent connection or route.
+Every operation still requires the exact device to be active and its Connector
+route to be live; offline requests fail and reconnecting the same device does
+not require reauthorization. The store cannot implement the shared-runtime interface,
 does not register a Redis runtime node and starts no routing/pubsub/heartbeat
 workers. It writes only grants and device/token revocations. Redis initialization
 does not by itself prove durable disk configuration.
@@ -31,8 +42,9 @@ does not by itself prove durable disk configuration.
 ## Safety boundaries
 
 - No new authority from model/user-supplied fields. The server's original grant
-  remains canonical. Selection revision, expiry, Bot/device identity, membership,
-  capability and live-route validation are unchanged.
+  remains canonical. Selection revision, Bot/device identity, membership,
+  capability and live-route validation remain enforced. Authorization does not
+  expire by elapsed time; changing selection or unlinking the device revokes it.
 - Persisting the device revocation watermark alongside grants is mandatory:
   persisting grants alone could revive old tasks after an unlink and restart.
 - Unlink saves revocation BEFORE removing/disconnecting the device. A Redis
@@ -100,10 +112,11 @@ explicit narrow store is rejected at startup, not silently overridden.
    grant/revocation keys appear under the dedicated prefix. No automatic memory
    fallback is allowed if Redis initialization fails.
 6. Start fresh harmless tasks. With the same Bot body/device incarnation, let
-   endpoints reconnect after an API-only replacement and verify still-valid
-   grants can be used/renewed. Test wrong Bot/device/session/operations, target
-   switch and switch-back, expiry, unlink/re-pair, revocation across replacement,
-   storage outage and retry. Verify ordinary chat, pairing and local routing.
+   endpoints reconnect after an API-only replacement and verify existing grants
+   remain usable without a new user confirmation. Test offline rejection and
+   reconnect, wrong Bot/device/session/operations, target switch and switch-back,
+   unlink/re-pair, revocation across replacement, storage outage and retry.
+   Verify ordinary chat, pairing and local routing.
 7. Roll back API code/config only with a reviewed maintenance plan. Keep Redis
    and its data/prefix. Returning to memory loses this protection and can lose
    revocation checks; it is not a transparent or safe automatic fallback.
@@ -111,8 +124,8 @@ explicit narrow store is rejected at startup, not silently overridden.
 ## Verification limits
 
 Unit tests use independent Redis clients and replacement Hubs plus miniredis.
-They check grant preservation, reconnect/renewal, SQL selection invalidation,
-revocation, expiry, outage denial, unlink failure handling and exact Redis key
+They check grant preservation without time expiry, reconnect, SQL selection invalidation,
+revocation, outage denial, unlink failure handling and exact Redis key
 scope. They do not prove real Redis AOF crash recovery, physical-disk durability,
 production latency or real-desktop E2E. Those need the maintenance-window checks.
 

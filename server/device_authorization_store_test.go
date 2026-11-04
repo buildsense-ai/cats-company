@@ -189,6 +189,44 @@ func TestDeviceAuthorizationOnlySurvivesReplacementWithoutMigratingRuntime(t *te
 	}
 }
 
+func TestPermanentDeviceGrantHasNoRedisExpiryAndIsRevokedBySelectionOrUnlink(t *testing.T) {
+	mr := miniredis.RunT(t)
+	store := authorizationStoreForTest(t, "redis://"+mr.Addr())
+	now := time.Now().Truncate(time.Millisecond)
+	grant := ScopedDeviceGrant{
+		Kind: "user_device_grant", Source: "catscompany", Status: "active", Permanent: true,
+		IdentityTrust: "server_canonical", DeviceID: "device-a", OwnerUserID: "usr7", ActorUserID: "usr7",
+		SessionKey: "session-a", TopicID: "topic-a", TopicType: "p2p", AgentID: "usr42", AgentBodyID: "body-a",
+		Operations: []DeviceGrantOperation{DeviceGrantReadFile}, CreatedAt: unixMillis(now),
+		ExpiresAt: permanentDeviceGrantExpiresAt, SelectionRevision: "revision-a",
+	}
+	grant.GrantID = persistentDeviceGrantID(grant)
+	store.rememberDeviceGrants([]ScopedDeviceGrant{grant}, unixMillis(now))
+	key := store.state.deviceGrantKey(grant.GrantID)
+	if mr.TTL(key) != 0 {
+		t.Fatal("permanent device grant received a Redis expiration")
+	}
+	if _, ok := store.lookupDeviceGrant(grant.GrantID, unixMillis(now.Add(365*24*time.Hour))); !ok {
+		t.Fatal("permanent grant expired while its selection remained active")
+	}
+	grant.CreatedAt = unixMillis(now.Add(time.Minute))
+	store.rememberDeviceGrants([]ScopedDeviceGrant{grant}, grant.CreatedAt)
+	if count, _ := store.state.client.SCard(context.Background(), store.state.deviceGrantSelectionKey(7, grant.SessionKey)).Result(); count != 1 {
+		t.Fatalf("same scope accumulated %d permanent grants", count)
+	}
+	store.revokeDeviceGrantsForSelection(7, grant.SessionKey)
+	if mr.Exists(key) {
+		t.Fatal("selection revision change left old permanent grant in Redis")
+	}
+	store.rememberDeviceGrants([]ScopedDeviceGrant{grant}, grant.CreatedAt)
+	if err := store.revokeDevice(7, grant.DeviceID, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if mr.Exists(key) {
+		t.Fatal("device unlink left old permanent grant in Redis")
+	}
+}
+
 func TestDeviceAuthorizationOnlyRevocationsPersistAndAreMonotonic(t *testing.T) {
 	mr := miniredis.RunT(t)
 	s := authorizationStoreForTest(t, "redis://"+mr.Addr())

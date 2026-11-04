@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 const (
 	defaultUserDeviceTTL             = 5 * time.Minute
 	defaultDeviceGrantTTL            = 10 * time.Minute
+	permanentDeviceGrantExpiresAt    = int64(253402300799999) // 9999-12-31T23:59:59.999Z; finite for legacy clients, permanent in practice.
 	defaultDevicePreferenceTTL       = 30 * time.Minute
 	maxUserDeviceIDLength            = 128
 	maxDeviceSelectionRevisionLength = 64
@@ -98,6 +101,7 @@ type ScopedDeviceGrant struct {
 	IdentityTrust        string                 `json:"identityTrust"`
 	IdentitySource       string                 `json:"identitySource,omitempty"`
 	DeviceID             string                 `json:"deviceId"`
+	DeviceRegisteredAt   int64                  `json:"deviceRegisteredAt,omitempty"`
 	DeviceDisplayName    string                 `json:"deviceDisplayName,omitempty"`
 	DeviceBodyID         string                 `json:"deviceBodyId,omitempty"`
 	DeviceInstallationID string                 `json:"deviceInstallationId,omitempty"`
@@ -114,6 +118,7 @@ type ScopedDeviceGrant struct {
 	Operations           []DeviceGrantOperation `json:"operations"`
 	CreatedAt            int64                  `json:"createdAt"`
 	ExpiresAt            int64                  `json:"expiresAt"`
+	Permanent            bool                   `json:"permanent,omitempty"`
 	// Server-owned absolute lifetime; renewal cannot turn a short grant into a perpetual capability.
 	RenewableUntil int64 `json:"renewableUntil,omitempty"`
 }
@@ -580,7 +585,6 @@ func (r *userDeviceRegistry) issueDeviceGrants(actorUID int64, ownerUID int64, t
 		return nil
 	}
 	createdAt := unixMillis(r.now())
-	expiresAt := unixMillis(r.now().Add(r.grantTT))
 	actorUserID := formatUID(actorUID)
 	ownerUserID := formatUID(ownerUID)
 	identitySource := userDeviceGrantIdentitySrc
@@ -617,16 +621,17 @@ func (r *userDeviceRegistry) issueDeviceGrants(actorUID int64, ownerUID int64, t
 		if explicit {
 			targetScope = "explicit_device"
 		}
-		grants = append(grants, ScopedDeviceGrant{
+		grant := ScopedDeviceGrant{
 			TargetScope:          targetScope,
 			SelectionRevision:    revision,
 			Kind:                 "user_device_grant",
 			Source:               "catscompany",
-			GrantID:              "device_grant_" + randomDeviceGrantIDSuffix(),
+			Permanent:            true,
 			Status:               "active",
 			IdentityTrust:        "server_canonical",
 			IdentitySource:       identitySource,
 			DeviceID:             device.DeviceID,
+			DeviceRegisteredAt:   device.RegisteredAt,
 			DeviceDisplayName:    device.DisplayName,
 			DeviceBodyID:         device.BodyID,
 			DeviceInstallationID: device.InstallationID,
@@ -641,12 +646,39 @@ func (r *userDeviceRegistry) issueDeviceGrants(actorUID int64, ownerUID int64, t
 			AgentBodyID:          agentBodyID,
 			Operations:           ops,
 			CreatedAt:            createdAt,
-			ExpiresAt:            expiresAt,
-			RenewableUntil:       createdAt + int64((24*time.Hour)/time.Millisecond),
-		})
+			ExpiresAt:            permanentDeviceGrantExpiresAt,
+		}
+		grant.GrantID = persistentDeviceGrantID(grant)
+		grants = append(grants, grant)
 	}
 	r.rememberGrants(grants)
 	return grants
+}
+
+func persistentDeviceGrantID(grant ScopedDeviceGrant) string {
+	scope, _ := json.Marshal(struct {
+		OwnerUserID          string
+		ActorUserID          string
+		SessionKey           string
+		TopicID              string
+		TopicType            string
+		AgentID              string
+		AgentBodyID          string
+		DeviceID             string
+		DeviceRegisteredAt   int64
+		DeviceBodyID         string
+		DeviceInstallationID string
+		TargetScope          string
+		SelectionRevision    string
+	}{
+		OwnerUserID: grant.OwnerUserID, ActorUserID: grant.ActorUserID, SessionKey: grant.SessionKey,
+		TopicID: grant.TopicID, TopicType: grant.TopicType, AgentID: grant.AgentID, AgentBodyID: grant.AgentBodyID,
+		DeviceID: grant.DeviceID, DeviceBodyID: grant.DeviceBodyID, DeviceInstallationID: grant.DeviceInstallationID,
+		DeviceRegisteredAt: grant.DeviceRegisteredAt,
+		TargetScope:        grant.TargetScope, SelectionRevision: grant.SelectionRevision,
+	})
+	digest := sha256.Sum256(scope)
+	return "device_grant_" + hex.EncodeToString(digest[:])
 }
 
 func devicesForOwner(ownerUID int64, devices []UserDevice) []UserDevice {
@@ -679,7 +711,7 @@ func (r *userDeviceRegistry) rememberGrants(grants []ScopedDeviceGrant) {
 	defer r.mu.Unlock()
 	r.cleanupExpiredGrantsLocked(now)
 	for _, grant := range grants {
-		if grant.GrantID == "" || grant.ExpiresAt <= now {
+		if grant.GrantID == "" || (!grant.Permanent && grant.ExpiresAt <= now) {
 			continue
 		}
 		r.grants[grant.GrantID] = grant
@@ -703,15 +735,59 @@ func (r *userDeviceRegistry) lookupGrant(grantID string) (ScopedDeviceGrant, boo
 	r.cleanupExpiredGrantsLocked(now)
 	grant, ok := r.grants[strings.TrimSpace(grantID)]
 	r.mu.Unlock()
-	if !ok || grant.Status != "active" || grant.ExpiresAt <= now {
+	if !ok || grant.Status != "active" || (!grant.Permanent && grant.ExpiresAt <= now) {
 		return ScopedDeviceGrant{}, false
 	}
 	return grant, r.grantSelectionCurrent(grant)
 }
 
+func (r *userDeviceRegistry) revokeDeviceGrantsForSelection(actorUID int64, sessionKey string) {
+	if r == nil || actorUID <= 0 || strings.TrimSpace(sessionKey) == "" {
+		return
+	}
+	if r.authorization != nil {
+		r.authorization.revokeDeviceGrantsForSelection(actorUID, sessionKey)
+		return
+	}
+	if r.shared != nil {
+		r.shared.revokeDeviceGrantsForSelection(actorUID, sessionKey)
+		return
+	}
+	actor := formatUID(actorUID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for grantID, grant := range r.grants {
+		if grant.ActorUserID == actor && grant.SessionKey == sessionKey {
+			delete(r.grants, grantID)
+		}
+	}
+}
+
+func (r *userDeviceRegistry) revokeDeviceGrantsForDevice(ownerUID int64, deviceID string) {
+	if r == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	if r.authorization != nil {
+		r.authorization.revokeDeviceGrantsForDevice(ownerUID, deviceID)
+		return
+	}
+	if r.shared != nil {
+		r.shared.revokeDeviceGrantsForDevice(ownerUID, deviceID)
+		return
+	}
+	owner := formatUID(ownerUID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for grantID, grant := range r.grants {
+		if grant.OwnerUserID == owner && grant.DeviceID == deviceID {
+			delete(r.grants, grantID)
+		}
+	}
+}
+
 func (r *userDeviceRegistry) cleanupExpiredGrantsLocked(now int64) {
 	for grantID, grant := range r.grants {
-		if grant.ExpiresAt <= now {
+		if !grant.Permanent && grant.ExpiresAt <= now {
 			delete(r.grants, grantID)
 		}
 	}

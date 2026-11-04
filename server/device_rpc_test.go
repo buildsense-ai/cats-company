@@ -283,6 +283,28 @@ func TestDeviceRPCRejectsOfflineDevice(t *testing.T) {
 	}
 }
 
+func TestPermanentDeviceGrantRejectsReplacementConnectorIncarnation(t *testing.T) {
+	hub, agent, _, _, grant := newDeviceRPCTestFixture(t, true)
+	if !grant.Permanent {
+		t.Fatal("fixture must use persistent authorization")
+	}
+	if _, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID: grant.DeviceID, BodyID: "replacement-body", InstallationID: "replacement-installation",
+		Status: "online", Capabilities: []string{"read_file"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID: "replacement-incarnation", Type: "request", RequestID: "rpc-replacement-incarnation",
+		GrantID: grant.GrantID, DeviceID: grant.DeviceID, Operation: "read_file",
+	})
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusForbidden || !strings.Contains(ack.Ctrl.Text, "incarnation changed") {
+		t.Fatalf("replacement connector reused an old authorization: %#v", ack.Ctrl)
+	}
+}
+
 func TestDeviceRPCRejectsShellOperationWithoutGrant(t *testing.T) {
 	hub, agent, _, _, grant := newDeviceRPCTestFixture(t, true)
 

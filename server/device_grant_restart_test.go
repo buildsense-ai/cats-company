@@ -54,6 +54,11 @@ func TestRedisDeviceGrantsSurviveAPIReplacementWithoutChangingAuthority(t *testi
 	if _, ok := after.lookupGrant("unknown-client-supplied-id"); ok {
 		t.Fatal("unknown grant resurrected")
 	}
+	after.now = func() time.Time { return now.Add(10 * 365 * 24 * time.Hour) }
+	if _, ok := state.lookupDeviceGrant(grants[0].GrantID, unixMillis(after.now())); !ok {
+		t.Fatal("permanent grant expired while the selection remained active")
+	}
+	after.now = func() time.Time { return now }
 	if _, err := after.confirmDeviceSelection(7, session, "b", "test", selection.Revision); err != nil {
 		t.Fatal(err)
 	}
@@ -61,11 +66,6 @@ func TestRedisDeviceGrantsSurviveAPIReplacementWithoutChangingAuthority(t *testi
 		if _, ok := after.lookupGrant(grant.GrantID); ok {
 			t.Fatal("selection change must invalidate default AND explicit grants")
 		}
-	}
-	// Check expiry independently of selection revision.
-	after.now = func() time.Time { return now.Add(after.grantTT + time.Minute) }
-	if _, ok := state.lookupDeviceGrant(grants[0].GrantID, unixMillis(after.now())); ok {
-		t.Fatal("expired grant recovered")
 	}
 }
 
