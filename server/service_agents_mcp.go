@@ -46,6 +46,9 @@ type ServiceAgentsMCPHandler struct {
 const (
 	serviceRunAsyncContractVersion  = "catsco.service-run-async.v1"
 	serviceRunResultContractVersion = "catsco.service-run-result.v1"
+	// 文本摘要里正文的截断长度（字符）。摘要不是交付通道，完整正文在
+	// structuredContent.output.text —— 这里只保证「模型看 content 也能看到结果」。
+	serviceRunSummaryLimit = 2000
 	maxServiceSyncWait              = 45 * time.Second
 	// 同步等待时的轮询退避区间：快任务 20ms 起，慢任务逐步放到 200ms。
 	// 固定 10ms 在 45 秒窗口里是 4500 轮 × 2 条 SQL，对结果毫无增益。
@@ -996,6 +999,12 @@ func serviceRunToolResult(env ServiceRunEnvelope, notes ...string) *mcp.CallTool
 		// 返问：把问题直接带进文本摘要，调用方 LLM 无需解析 structuredContent 即可续聊。
 		text += " question=" + serviceAwaitQuestionText(env) + "（补充=以同一 session_id 再次调用）"
 	}
+	// 正文必须进文本摘要：调用方（模型、第三方客户端，连我们自己写的探针都是）
+	// 常常只把 content 喂给模型看，只看到 status=completed 会以为「完成了但没有结果」。
+	// structuredContent 仍然保留完整正文，这里给一段（超长截断）的正文。
+	if out := serviceRunOutputText(env); out != "" {
+		text += " output=" + truncateForSummary(out, serviceRunSummaryLimit)
+	}
 	// 附件必须进文本摘要，不能只躺在 structuredContent 里。
 	//
 	// 调用方多半只把 content 喂给模型看（structuredContent 是给程序用的），
@@ -1021,6 +1030,32 @@ func serviceAwaitQuestionText(env ServiceRunEnvelope) string {
 		return "(问题内容缺失——请用 catsco_run_status 复核 run)"
 	}
 	return parsed.Question
+}
+
+// serviceRunOutputText 从 envelope 的 output 里取正文（展示用）。
+func serviceRunOutputText(env ServiceRunEnvelope) string {
+	if len(env.Output) == 0 {
+		return ""
+	}
+	var parsed struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(env.Output, &parsed); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Text)
+}
+
+// truncateForSummary 按「字」截断（中文按 rune 算），超长时留一句可操作的提示。
+func truncateForSummary(text string, limit int) string {
+	if limit <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…（正文过长已截断，完整内容见 structuredContent.output.text）"
 }
 
 func serviceToolError(message string) *mcp.CallToolResult {
