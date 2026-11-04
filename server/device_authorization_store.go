@@ -14,6 +14,7 @@ import (
 type deviceGrantStore interface {
 	rememberDeviceGrants([]ScopedDeviceGrant, int64)
 	lookupDeviceGrant(string, int64) (ScopedDeviceGrant, bool)
+	revokeDeviceGrant(ScopedDeviceGrant)
 	revokeDeviceGrantsForSelection(int64, string)
 	revokeDeviceGrantsForDevice(int64, string)
 }
@@ -57,6 +58,10 @@ func (s *RedisDeviceAuthorizationStore) rememberDeviceGrants(grants []ScopedDevi
 
 func (s *RedisDeviceAuthorizationStore) lookupDeviceGrant(id string, now int64) (ScopedDeviceGrant, bool) {
 	return s.state.lookupDeviceGrant(id, now)
+}
+
+func (s *RedisDeviceAuthorizationStore) revokeDeviceGrant(grant ScopedDeviceGrant) {
+	s.state.revokeDeviceGrant(grant)
 }
 
 func (s *RedisDeviceAuthorizationStore) revokeDeviceGrantsForSelection(actorUID int64, sessionKey string) {

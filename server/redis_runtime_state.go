@@ -765,10 +765,12 @@ if ttl <= 0 then
   redis.call('PERSIST', deviceIndex)
 else
   if redis.call('SISMEMBER', selectionIndex, permanentMarker) == 0 then
-    redis.call('PEXPIRE', selectionIndex, ttl)
+    local currentTTL = redis.call('PTTL', selectionIndex)
+    if currentTTL < 0 or currentTTL < ttl then redis.call('PEXPIRE', selectionIndex, ttl) end
   end
   if redis.call('SISMEMBER', deviceIndex, permanentMarker) == 0 then
-    redis.call('PEXPIRE', deviceIndex, ttl)
+    local currentTTL = redis.call('PTTL', deviceIndex)
+    if currentTTL < 0 or currentTTL < ttl then redis.call('PEXPIRE', deviceIndex, ttl) end
   end
 end
 return 1`, []string{s.deviceGrantKey(grant.GrantID), selectionIndex, deviceIndex}, grant.GrantID, string(payload), ttl.Milliseconds(), permanentDeviceGrantIndexMarker).Result()
@@ -801,6 +803,25 @@ func (s *RedisRuntimeState) lookupDeviceGrant(grantID string, now int64) (Scoped
 		return ScopedDeviceGrant{}, false
 	}
 	return grant, true
+}
+
+func (s *RedisRuntimeState) revokeDeviceGrant(grant ScopedDeviceGrant) {
+	if s == nil || grant.GrantID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	selectionIndex := s.deviceGrantSelectionKey(parseFormattedUID(grant.ActorUserID), grant.SessionKey)
+	deviceIndex := s.deviceGrantDeviceKey(parseFormattedUID(grant.OwnerUserID), grant.DeviceID)
+	pipe := s.client.TxPipeline()
+	pipe.Del(ctx, s.deviceGrantKey(grant.GrantID))
+	pipe.SRem(ctx, selectionIndex, grant.GrantID)
+	pipe.SRem(ctx, deviceIndex, grant.GrantID)
+	pipe.Eval(ctx, cleanupPermanentDeviceGrantIndexScript, []string{selectionIndex}, permanentDeviceGrantIndexMarker)
+	pipe.Eval(ctx, cleanupPermanentDeviceGrantIndexScript, []string{deviceIndex}, permanentDeviceGrantIndexMarker)
+	if _, err := pipe.Exec(ctx); err != nil {
+		s.logDeviceAuthorizationFailure("grant_revoke", redisAuthorizationErrorClass(err))
+	}
 }
 
 func (s *RedisRuntimeState) revokeDeviceGrantsForSelection(actorUID int64, sessionKey string) {

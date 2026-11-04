@@ -100,6 +100,7 @@ type sharedRuntimeState interface {
 
 	rememberDeviceGrants(grants []ScopedDeviceGrant, now int64)
 	lookupDeviceGrant(grantID string, now int64) (ScopedDeviceGrant, bool)
+	revokeDeviceGrant(ScopedDeviceGrant)
 	revokeDeviceGrantsForSelection(actorUID int64, sessionKey string)
 	revokeDeviceGrantsForDevice(ownerUID int64, deviceID string)
 	deviceSelectionPreference(actorUID int64, sessionKey string, now int64) (string, bool)
@@ -691,6 +692,15 @@ func (s *sharedMemoryRuntimeState) lookupDeviceGrant(grantID string, now int64) 
 		return ScopedDeviceGrant{}, false
 	}
 	return grant, true
+}
+
+func (s *sharedMemoryRuntimeState) revokeDeviceGrant(grant ScopedDeviceGrant) {
+	if s == nil || grant.GrantID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.grants, grant.GrantID)
+	s.mu.Unlock()
 }
 
 func (s *sharedMemoryRuntimeState) revokeDeviceGrantsForSelection(actorUID int64, sessionKey string) {

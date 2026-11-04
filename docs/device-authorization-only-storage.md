@@ -32,7 +32,10 @@ the same device identity. A selection revision change or device unlink removes
 indexed grants. Index sets carry a permanent-member marker so a legacy finite
 grant refresh cannot apply a TTL to an index containing permanent grants.
 Index cleanup removes only observed members in an atomic Redis transaction,
-preserving concurrent grant writes. The wire expiry is set to 9999-12-31 for compatibility
+preserving concurrent grant writes. If selection cleanup fails during a Redis
+outage, the SQL revision remains authoritative; a later stale-grant lookup
+retries deletion of only that grant ID, preserving grants for the new revision.
+The wire expiry is set to 9999-12-31 for compatibility
 with older XiaoBa clients; `permanent: true` is authoritative to the server.
 This is a persistent authorization, not a persistent connection or route.
 Every operation still requires the exact device to be active and its Connector

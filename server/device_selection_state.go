@@ -143,10 +143,9 @@ func (r *userDeviceRegistry) grantSelectionCurrent(grant ScopedDeviceGrant) bool
 		return false
 	}
 	if current.Revision != grant.SelectionRevision {
-		// A failed best-effort Redis cleanup must not leave stale permanent
-		// records forever. The durable selection revision denies this grant;
-		// retry indexed cleanup when that stale grant is next observed.
-		r.revokeDeviceGrantsForSelection(actor, grant.SessionKey)
+		// A failed best-effort cleanup must not leave stale records forever.
+		// Remove only this grant so a newer revision in the same session survives.
+		r.revokeDeviceGrant(grant)
 		return false
 	}
 	if grant.TargetScope == "explicit_device" {

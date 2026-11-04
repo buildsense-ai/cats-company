@@ -741,6 +741,23 @@ func (r *userDeviceRegistry) lookupGrant(grantID string) (ScopedDeviceGrant, boo
 	return grant, r.grantSelectionCurrent(grant)
 }
 
+func (r *userDeviceRegistry) revokeDeviceGrant(grant ScopedDeviceGrant) {
+	if r == nil || grant.GrantID == "" {
+		return
+	}
+	if r.authorization != nil {
+		r.authorization.revokeDeviceGrant(grant)
+		return
+	}
+	if r.shared != nil {
+		r.shared.revokeDeviceGrant(grant)
+		return
+	}
+	r.mu.Lock()
+	delete(r.grants, grant.GrantID)
+	r.mu.Unlock()
+}
+
 func (r *userDeviceRegistry) revokeDeviceGrantsForSelection(actorUID int64, sessionKey string) {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(sessionKey) == "" {
 		return

@@ -235,6 +235,20 @@ func TestPermanentDeviceGrantHasNoRedisExpiryAndIsRevokedBySelectionOrUnlink(t *
 	if _, ok := store.lookupDeviceGrant(grant.GrantID, unixMillis(now.Add(11*time.Minute))); !ok {
 		t.Fatal("finite grant expiration expired the permanent grant")
 	}
+	longFinite := finite
+	longFinite.SessionKey = "finite-only-session"
+	longFinite.DeviceID = "finite-only-device"
+	longFinite.GrantID = "device_grant_legacy_long"
+	longFinite.ExpiresAt = unixMillis(now.Add(10 * time.Minute))
+	shortFinite := longFinite
+	shortFinite.GrantID = "device_grant_legacy_short"
+	shortFinite.ExpiresAt = unixMillis(now.Add(5 * time.Minute))
+	store.rememberDeviceGrants([]ScopedDeviceGrant{longFinite, shortFinite}, unixMillis(now))
+	finiteSelectionIndex := store.state.deviceGrantSelectionKey(7, longFinite.SessionKey)
+	finiteDeviceIndex := store.state.deviceGrantDeviceKey(7, longFinite.DeviceID)
+	if mr.TTL(finiteSelectionIndex) < 9*time.Minute || mr.TTL(finiteDeviceIndex) < 9*time.Minute {
+		t.Fatal("short finite grant shortened a shared finite-only index TTL")
+	}
 	store.revokeDeviceGrantsForSelection(7, grant.SessionKey)
 	if mr.Exists(key) {
 		t.Fatal("selection revision change left old permanent grant in Redis")
@@ -271,18 +285,28 @@ func TestPermanentDeviceGrantCleanupRetriesAfterRedisOutage(t *testing.T) {
 	h.userDevices.rememberGrants([]ScopedDeviceGrant{grant})
 	grantKey := auth.state.deviceGrantKey(grant.GrantID)
 	mr.SetError("temporary redis outage")
-	if _, err := h.userDevices.confirmDeviceSelection(7, grant.SessionKey, "b", "test", selection.Revision); err != nil {
+	currentSelection, err := h.userDevices.confirmDeviceSelection(7, grant.SessionKey, "b", "test", selection.Revision)
+	if err != nil {
 		t.Fatal("selection update should still be committed", err)
 	}
 	mr.SetError("")
 	if !mr.Exists(grantKey) {
 		t.Fatal("expected cleanup to have failed during the simulated outage")
 	}
+	currentGrant := grant
+	currentGrant.DeviceID = "b"
+	currentGrant.SelectionRevision = currentSelection.Revision
+	currentGrant.CreatedAt++
+	currentGrant.GrantID = persistentDeviceGrantID(currentGrant)
+	h.userDevices.rememberGrants([]ScopedDeviceGrant{currentGrant})
 	if _, ok := h.userDevices.lookupGrant(grant.GrantID); ok {
 		t.Fatal("stale selection grant remained usable")
 	}
 	if mr.Exists(grantKey) {
 		t.Fatal("stale permanent grant was not cleaned on the next lookup")
+	}
+	if _, ok := auth.lookupDeviceGrant(currentGrant.GrantID, unixMillis(*clock)); !ok {
+		t.Fatal("stale grant cleanup deleted the current-revision grant")
 	}
 }
 
