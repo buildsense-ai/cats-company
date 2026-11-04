@@ -1431,8 +1431,19 @@ func (r *ServiceBotRunner) keepLeaseAlive(runID, instanceID string) func() {
 			case <-done:
 				return
 			case <-ticker.C:
-				if _, err := renewer.RenewServiceLease(context.Background(), runID, instanceID); err != nil {
+				ok, err := renewer.RenewServiceLease(context.Background(), runID, instanceID)
+				if err != nil {
 					log.Printf("bot runner: renew lease run=%s: %v", runID, err)
+					continue
+				}
+				if !ok {
+					// 这一单已经不归我们了（被接管 / 已终态）：继续续租没有意义。
+					//
+					// 以前这里把 false 静默忽略，于是「续租没生效」和「续租生效」长得一模一样，
+					// 线上出现过「续租写的窗口比续租间隔还短 → 长任务必被 reaper 判死」这种
+					// 静默故障，耗时一整轮排查才对上。留一条日志，下一次一眼能看见。
+					log.Printf("bot runner: lease lost run=%s (no longer owned); stop renewing", runID)
+					return
 				}
 			}
 		}
