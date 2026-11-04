@@ -76,6 +76,11 @@ const (
 	// 所有调用挤在一条会话里 —— 上一个任务的判断会漏到下一个任务。
 	botSessionMetadataKey = "catsco_bot_session_id"
 
+	// botCallMetadataKey 是平台写 prompt 时打的标记。认「谁在这个会话里说过话」时
+	// 必须把它排除：并发两单时每单都有一条调用方身份的 prompt，把它当成「有人说话」
+	// 会让另一单的答案全认不回来。
+	botCallMetadataKey = "catsco_bot_call"
+
 	// botTurnDoneMetadataKey 是「这一轮我说完了」的键，由 bot 侧在回合真正结束时
 	// 打在**最后那条回复**的 metadata 上。值是会话 id（与 catsco_bot_session_id 一致），
 	// 也接受 true —— 前者更严，后者是老客户端可能的写法。
@@ -638,6 +643,11 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 //  2. metadata 里 `catsco_bot_session_id` 与本次会话一致：明确表态属于哪个会话；
 //  3. 两者都没有（旧客户端）：只有「这个 topic 上除我之外没有别的单在等」时才认领 ——
 //     单子在等的时候，任何一条流水归谁都有可能。
+//  4. 例外：这个会话里只要**除目标 bot 之外**有人说过话（调用方，或调用方代言的
+//     bot；调用方本身是 agent bot 时，它的 runtime 会把目标 bot 的进度消息当成新
+//     任务回话，双方互刷），此后目标 bot 那些无标记消息是对那句话的回应，不是对
+//     我们 prompt 的答复 —— 一律不认。平台自己写的 prompt 不算（并发时每单都有一条）。
+//     附件不在此列：老客户端发附件天生没标记，拦掉就是「正文说已发送、文件收不到」。
 //
 // 之所以要这么严：topic 是固定的 `p2p_调用方_bot`，同一账号并发调同一个 bot 时
 // 所有 run 共用一条消息流；只按「bot 说的都算」会把别人的结果当自己的一起交出去。
@@ -659,14 +669,21 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64, sessionID string, tuning botRunnerTuning) (string, []ServiceRunAttachment, error) {
 	deadline := time.Now().Add(tuning.Timeout)
 	var (
-		sinceID     = promptID
-		parts       []string
-		seen        = map[int64]bool{}
-		settleTill  time.Time
-		size        int
-		sawUnowned  bool
-		sawOwned    bool
-		ambiguousAt time.Time
+		sinceID    = promptID
+		parts      []string
+		seen       = map[int64]bool{}
+		settleTill time.Time
+		size       int
+		sawUnowned bool
+		sawOwned   bool
+		// 调用方自己在这个 topic 里说过话（调用方是 bot 时，它的 runtime 会把目标 bot
+		// 的进度消息当成新任务回话）。记下第一句的 id：它之后目标 bot 的无标记消息
+		// 都是对那句话的回应，不是对我们的答复。
+		callerChatted   bool
+		callerChatterID int64
+		// 真的因为回环挡下过消息（决定失败时说「回环」还是说「并发分不清」）。
+		chatterBlocked bool
+		ambiguousAt    time.Time
 		// bot 明确说过「我还在干」：此时不许按静默窗口收尾。
 		stillWorking   bool
 		lastProgressAt time.Time
@@ -705,7 +722,22 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			if msg.ID > sinceID {
 				sinceID = msg.ID
 			}
+			// 除目标 bot 之外，有人在这个 topic 里说了话：调用方，或调用方代言的 bot
+			// 身份。之后目标 bot 那些**无标记**的消息是对这句话的回应，不是对我们
+			// prompt 的答复（见上面的认领规则第 4 条）。
+			//
+			// 平台自己写的 prompt 不算：同一账号并发两单时，第二单的 prompt 也以调用方
+			// 身份落在这里，把它当成「有人说话了」会让第一单的答案全认不回来。
+			//
+			// 不按 callerUID 判身份：调用方可以带 bot_uid 调用（账号代 bot 调用），那时
+			// 回环里的消息 FromUID 是那个 bot，按 callerUID 判会整条漏掉。
 			if msg.FromUID != botUID {
+				if msg.MsgType == "text" && !botRunnerPlatformPrompt(msg) {
+					if !callerChatted {
+						callerChatted = true
+						callerChatterID = msg.ID
+					}
+				}
 				continue
 			}
 			// 附件不能默默丢掉。bot 有时把长结果写成文件（或图片）发出来，正文只剩
@@ -771,6 +803,20 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 				// 按「见过明确归属就关门」处理的话，附件会被稳定地当成过程记录丢掉 ——
 				// 那正是「bot 明明发了文件，用户却什么都收不到」的形态。
 				// 所以只保留「有没有别的单在抢」这一个条件：抢的时候仍然不认。
+				// 有人在这个 topic 里说过话之后，目标 bot 的无标记消息是回环里的一句，
+				// 不是答案。实测：1619↔982 在 p2p_982_1619 互刷 18 条，单子 27.5s
+				// 就「completed」，交出去的是「回环碎片，没有新任务」。
+				//
+				// 附件仍然放行（与上面同一个理由：老客户端发附件天生没标记，拦掉就是
+				// 「正文说已发送、文件永远收不到」）。
+				//
+				// 只挡不认、**不置 sawUnowned**：置了就会触发下面的歧义快速失败，把
+				// 「调用方随口说了一句、真答案 40 秒后才带着 reply_to 回来」这种正常
+				// 调用提前打死。等满 timeout 再如实报原因，比抢着报错有用。
+				if callerChatted && msg.ID > callerChatterID && !isAttachment {
+					chatterBlocked = true
+					continue
+				}
 				if r.competingOnTopic(topic) > 0 || (sawOwned && !isAttachment) {
 					sawUnowned = true
 					if ambiguousAt.IsZero() {
@@ -851,14 +897,16 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 		}
 		// 看见回复了却认不了：别干等到超时，尽快让调用方知道是「分不清」而非「没回」。
 		if len(parts) == 0 && sawUnowned && time.Since(ambiguousAt) > tuning.AmbiguityGrace {
-			return "", nil, fmt.Errorf(
-				"bot_reply_ambiguous: 目标 bot 的回复没有指回本次调用（缺 reply_to），" +
-					"而同一会话上还有别的调用在等，无法判断哪条是这次的。请升级客户端后重试，或改为串行调用")
+			return "", nil, botRunnerAmbiguousError(chatterBlocked)
 		}
 		if time.Now().After(deadline) {
 			if len(parts) > 0 {
 				// 已经有内容：按「说到一半」交付，比丢掉更有用。
 				return strings.Join(parts, "\n\n"), attachments, nil
+			}
+			// 回环挡下过消息、又等满了 timeout：这是「分不清」，不是「没回」。
+			if chatterBlocked {
+				return "", nil, botRunnerAmbiguousError(true)
 			}
 			return "", nil, fmt.Errorf("bot_timeout: 等了 %s 目标 bot 没有回复", tuning.Timeout)
 		}
@@ -1174,6 +1222,39 @@ func botReplyBelongsTo(msg *types.Message, promptID int64, sessionID string, com
 	default:
 		return false
 	}
+}
+
+// botRunnerPlatformPrompt 判断一条消息是不是平台自己写的调用 prompt。
+//
+// 平台在同一个 topic 上用**调用方身份**写 prompt（这样 bot 看到的是「用户找我」），
+// 所以光看 FromUID 分不出「调用方自己说的话」和「平台代他发的 prompt」。
+func botRunnerPlatformPrompt(msg *types.Message) bool {
+	if msg == nil || msg.Metadata == nil {
+		return false
+	}
+	if flag, ok := msg.Metadata[botCallMetadataKey].(bool); ok && flag {
+		return true
+	}
+	return false
+}
+
+// botRunnerAmbiguousError 区分两种「看见了回复却认不了」：
+//
+//	chatter  —— 这个会话里除目标 bot 之外有人说过话，回来的东西分不清是答案还是
+//	           对那句话的回应（bot↔bot 互刷就是这种）；
+//	默认     —— 没有任何人插话，是并发几单抢同一 topic 的回复。
+//
+// 两种都要如实说清，不能让调用方以为「bot 没回」。
+func botRunnerAmbiguousError(chatter bool) error {
+	if chatter {
+		return fmt.Errorf(
+			"bot_reply_ambiguous: 这个会话里除目标 bot 之外有人说过话（调用方自己，或调用方代言的 bot），" +
+				"此后目标 bot 的回复分不清是答案还是对那句话的回应。若调用方是 agent bot，" +
+				"它的运行时应当在等待工具结果期间不要对该会话回话")
+	}
+	return fmt.Errorf(
+		"bot_reply_ambiguous: 目标 bot 的回复没有指回本次调用（缺 reply_to），" +
+			"而同一会话上还有别的调用在等，无法判断哪条是这次的。请升级客户端后重试，或改为串行调用")
 }
 
 func (r *ServiceBotRunner) fail(req botRunRequest, errorText string) {
