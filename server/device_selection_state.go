@@ -139,7 +139,14 @@ func (r *userDeviceRegistry) refreshDeviceSelection(actor int64, session string,
 func (r *userDeviceRegistry) grantSelectionCurrent(grant ScopedDeviceGrant) bool {
 	actor := parseFormattedUID(grant.ActorUserID)
 	current, err := r.selectionRecord(actor, grant.SessionKey)
-	if err != nil || current.Revision != grant.SelectionRevision {
+	if err != nil {
+		return false
+	}
+	if current.Revision != grant.SelectionRevision {
+		// A failed best-effort Redis cleanup must not leave stale permanent
+		// records forever. The durable selection revision denies this grant;
+		// retry indexed cleanup when that stale grant is next observed.
+		r.revokeDeviceGrantsForSelection(actor, grant.SessionKey)
 		return false
 	}
 	if grant.TargetScope == "explicit_device" {

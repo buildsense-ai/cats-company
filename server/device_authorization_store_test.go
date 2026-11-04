@@ -248,6 +248,44 @@ func TestPermanentDeviceGrantHasNoRedisExpiryAndIsRevokedBySelectionOrUnlink(t *
 	}
 }
 
+func TestPermanentDeviceGrantCleanupRetriesAfterRedisOutage(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
+	mr := miniredis.RunT(t)
+	fixture, _, request, clock := grantRenewalFixture(t)
+	grant, ok := fixture.userDevices.lookupGrant(request.GrantID)
+	if !ok {
+		t.Fatal("missing fixture grant")
+	}
+	db := &authorizationSelectionStore{identityMessageStore: fixture.db.(*identityMessageStore)}
+	auth := authorizationStoreForTest(t, "redis://"+mr.Addr())
+	h, err := NewHubWithDeviceAuthorization(db, nil, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.userDevices.now = func() time.Time { return *clock }
+	selection, err := h.userDevices.confirmDeviceSelection(7, grant.SessionKey, "a", "test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant.SelectionRevision = selection.Revision
+	h.userDevices.rememberGrants([]ScopedDeviceGrant{grant})
+	grantKey := auth.state.deviceGrantKey(grant.GrantID)
+	mr.SetError("temporary redis outage")
+	if _, err := h.userDevices.confirmDeviceSelection(7, grant.SessionKey, "b", "test", selection.Revision); err != nil {
+		t.Fatal("selection update should still be committed", err)
+	}
+	mr.SetError("")
+	if !mr.Exists(grantKey) {
+		t.Fatal("expected cleanup to have failed during the simulated outage")
+	}
+	if _, ok := h.userDevices.lookupGrant(grant.GrantID); ok {
+		t.Fatal("stale selection grant remained usable")
+	}
+	if mr.Exists(grantKey) {
+		t.Fatal("stale permanent grant was not cleaned on the next lookup")
+	}
+}
+
 func TestDeviceAuthorizationOnlyRevocationsPersistAndAreMonotonic(t *testing.T) {
 	mr := miniredis.RunT(t)
 	s := authorizationStoreForTest(t, "redis://"+mr.Addr())
