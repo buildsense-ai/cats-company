@@ -159,6 +159,9 @@ type ServiceBotRunner struct {
 	// 所以「有几单在等」决定了「bot 的一条没标 reply_to 的回复能不能归给我」。
 	mu       sync.Mutex
 	inFlight map[string]int
+	// admission 是「每应用一把」的准入锁（见 lockAgentAdmission）：闸 + 占位必须串行，
+	// 否则同时到达的几单会互相看见对方、全部被拦。
+	admission map[int64]*sync.Mutex
 }
 
 // NewServiceBotRunner 构造 runner；store/hub 缺能力时返回 nil（能力关闭）。
@@ -240,6 +243,30 @@ func (r *ServiceBotRunner) claimTopic(topic string) int {
 	}
 	r.inFlight[topic]++
 	return r.inFlight[topic]
+}
+
+// lockAgentAdmission 给「同一应用的准入」（两道闸 + 占位）加一把进程内串行锁。
+//
+// 为什么需要：闸是「查一次计数 → 决定放行 → 占位」，查与占之间有空档。同一毫秒到达
+// 的几单会各自查到「还没人占位」而一起放行，或者反过来一起看到对方而全被拦（实测过
+// 后者：并发 3 单 → 3 单全 caller_busy，一单没跑）。串行化之后结果是确定的：放行到
+// 上限、其余拒掉。
+//
+// key 只按 agent 分：同一应用上的准入本来就该排队，表的大小也钉在「应用数量」量级，
+// 不会随调用方增长。多实例部署时这把锁只在进程内有效，退化成偶尔略微超发。
+func (r *ServiceBotRunner) lockAgentAdmission(agentID int64) func() {
+	r.mu.Lock()
+	if r.admission == nil {
+		r.admission = map[int64]*sync.Mutex{}
+	}
+	gate := r.admission[agentID]
+	if gate == nil {
+		gate = &sync.Mutex{}
+		r.admission[agentID] = gate
+	}
+	r.mu.Unlock()
+	gate.Lock()
+	return gate.Unlock
 }
 
 // releaseTopic 在 run 收尾时释放登记（defer）。
@@ -435,32 +462,9 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		tuning = r.tuningFor(req.SnapshotDefinition)
 	}
 
-	// 先在落库层面占住这个 run：抢不到说明已被别的执行方接管 / 已终态。
-	//
-	// 租约取短、靠续租保活（见 botRunLeaseSeconds）—— 预算可以到 6 小时，但租约只有 3 分钟。
-	leaseSeconds := int(tuning.Timeout.Seconds()) + 60
-	if leaseSeconds > botRunLeaseSeconds {
-		leaseSeconds = botRunLeaseSeconds
-	}
-	instanceID := fmt.Sprintf("bot:%d", req.BotUID)
-	started, err := r.store.StartServiceRun(context.Background(), req.RunID, instanceID, leaseSeconds)
-	if err != nil {
-		log.Printf("bot runner: start run=%s: %v", req.RunID, err)
-		return
-	}
-	if !started {
-		log.Printf("bot runner: run=%s already taken or terminal; skip", req.RunID)
-		return
-	}
-
-	// 长任务靠续租活着：不续的话租约到期会被 reaper 当成「执行方没了」判失败。
-	stopLease := r.keepLeaseAlive(req.RunID, instanceID)
-	defer stopLease()
-
 	// 只确认目标 bot 还存在。谁能调这个应用由**可见性**决定（MCP invoke 已经做过了）：
 	// 系统里不能有两套不同步的授权规则 —— 曾经这里另有一套「bot 的 owner 必须在白名单里」，
 	// 结果应用标了 public，别人调用仍然报 bot_not_shared；而且两处都要改才能改对。
-	// 现在 runner 只管执行，授权口径只有一个（store.ServiceAgentVisibleTo）。
 	owner, err := r.store.GetBotOwner(req.BotUID)
 	if err != nil {
 		r.fail(req, "bot_not_found: 目标 bot 不存在或已删除")
@@ -477,6 +481,18 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		r.fail(req, "bot_offline: 目标 bot 当前不在线，等它上线后再试")
 		return
 	}
+	// 准入（两道闸）+ 占位串行执行。
+	//
+	// 顺序很关键：StartServiceRun 会把 run 推到 running，而两道闸都是「数 running 的单」
+	// 来判断有没有超额 —— 闸必须排在占位**之前**。反过来的话，同时到达的几单会先各自
+	// 占位、再互相看见对方，结果是全部被拦、一单都跑不起来（实测：同一调用方并发 3 单，
+	// 3 单全 caller_busy）。
+	//
+	// 再加一把「每应用一把」的进程内锁：同一毫秒一起到达时，检查与占位之间不留窗口，
+	// 结果稳定是「放行到上限、其余拒掉」。多实例部署时这把锁失效，退化成偶尔略微超发
+	// —— 宁可超发一单，也不要互相饿死。
+	unlockAdmission := r.lockAgentAdmission(req.AgentID)
+
 	// 并发闸（可选能力）：设了上限就先数一下同一个应用还有几单在跑。
 	//
 	// 没有上限时的行为是「全部派出去 → bot 侧串行 → 后面几单等到超时」，而超时的
@@ -485,6 +501,7 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 	if tuning.MaxInflight > 0 {
 		if counter, ok := r.store.(botRunCounter); ok {
 			if n, err := counter.CountActiveServiceRunsForAgent(context.Background(), req.AgentID, req.RunID); err == nil && n >= tuning.MaxInflight {
+				unlockAdmission()
 				r.failRetryable(req, fmt.Sprintf(
 					"bot_busy: 这个应用同时已经有 %d 单在跑（上限 %d），这一单没有派出去。请稍后重试；同一任务不要反复重发",
 					n, tuning.MaxInflight))
@@ -494,13 +511,12 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 	}
 
 	// 按调用方配额（第二道）：总闸防「工具被一起打爆」，这一道防「某个调用方把
-	// 总闸占满」。public 工具对全平台可见后，先到的调用方能把 16 个名额吃光，
-	// 这时真正的用户拿到的是 bot_busy —— 而说清「是你在刷」比「工具忙」有用。
-	//
-	// 只在总闸放行后才查；查不到数就放行（预检是体验优化，不该因存储抖动拒绝调用）。
+	// 总闸占满」。public 工具对全平台可见后，先到的调用方能把名额吃光，这时真正的
+	// 用户拿到的是 bot_busy —— 而说清「是你在刷」比「工具忙」有用。
 	if tuning.MaxCallerInflight > 0 {
 		if counter, ok := r.store.(botCallerRunCounter); ok {
 			if n, err := counter.CountActiveServiceRunsForAgentCaller(context.Background(), req.AgentID, req.CallerUID, req.RunID); err == nil && n >= tuning.MaxCallerInflight {
+				unlockAdmission()
 				r.failRetryable(req, fmt.Sprintf(
 					"caller_busy: 你在这个应用上同时已经有 %d 单在跑（每个调用方上限 %d），这一单没有派出去。等前面的跑完再发；同一任务不要反复重发",
 					n, tuning.MaxCallerInflight))
@@ -508,6 +524,29 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 			}
 		}
 	}
+
+	// 在落库层面占住这个 run：抢不到说明已被别的执行方接管 / 已终态。
+	//
+	// 租约取短、靠续租保活（见 botRunLeaseSeconds）—— 预算可以到 6 小时，但租约只有 3 分钟。
+	leaseSeconds := int(tuning.Timeout.Seconds()) + 60
+	if leaseSeconds > botRunLeaseSeconds {
+		leaseSeconds = botRunLeaseSeconds
+	}
+	instanceID := fmt.Sprintf("bot:%d", req.BotUID)
+	started, err := r.store.StartServiceRun(context.Background(), req.RunID, instanceID, leaseSeconds)
+	unlockAdmission()
+	if err != nil {
+		log.Printf("bot runner: start run=%s: %v", req.RunID, err)
+		return
+	}
+	if !started {
+		log.Printf("bot runner: run=%s already taken or terminal; skip", req.RunID)
+		return
+	}
+
+	// 长任务靠续租活着：不续的话租约到期会被 reaper 当成「执行方没了」判失败。
+	stopLease := r.keepLeaseAlive(req.RunID, instanceID)
+	defer stopLease()
 
 	prompt := botRunnerPromptText(req.Input)
 	if prompt == "" {

@@ -265,6 +265,9 @@ func TestBotRunnerPerCallerQuotaFailsFast(t *testing.T) {
 	if len(st.delivered(hub)) != 0 {
 		t.Fatal("配额超限时不应把消息投给 bot（那是白等一场）")
 	}
+	if st.startCalls != 0 {
+		t.Fatalf("被配额拦住的单不该去占位（StartServiceRun 调了 %d 次）—— 闸排在占位之后的话，同时到达的几单会互相看见对方、全部被拦", st.startCalls)
+	}
 }
 
 func TestBotRunnerPerCallerQuotaLeavesOtherCallersAlone(t *testing.T) {
@@ -275,7 +278,6 @@ func TestBotRunnerPerCallerQuotaLeavesOtherCallersAlone(t *testing.T) {
 	hub := &fakeBotHub{online: true}
 	runner := newTestBotRunner(st, hub)
 	agent := botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`)
-
 	go runner.execute(botRunRequest{
 		RunID: "run_other_caller", SessionID: "sess_other_caller", Slug: agent.Slug,
 		BotUID: 982, AgentID: agent.ID, CallerUID: 442,

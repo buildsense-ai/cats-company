@@ -159,7 +159,7 @@ func (a *Adapter) CountActiveServiceRunsForAgent(ctx context.Context, agentID in
 		FROM service_runs r
 		JOIN service_sessions s ON s.session_id = r.session_id
 		WHERE s.agent_id = $1
-		  AND r.state IN ('submitted','running')
+		  AND r.state = 'running'
 		  AND r.run_id <> $2`, agentID, excludeRunID).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count active service runs for agent: %w", err)
@@ -179,7 +179,7 @@ func (a *Adapter) CountActiveServiceRunsForAgentCaller(ctx context.Context, agen
 		JOIN service_sessions s ON s.session_id = r.session_id
 		WHERE s.agent_id = $1
 		  AND s.caller_uid = $2
-		  AND r.state IN ('submitted','running')
+		  AND r.state = 'running'
 		  AND r.run_id <> $3`, agentID, callerUID, excludeRunID).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count active service runs for agent caller: %w", err)
@@ -667,7 +667,10 @@ func (a *Adapter) FailServiceRun(ctx context.Context, runID, errorText string, r
 	if err != nil {
 		return fmt.Errorf("lock service run for fail: %w", err)
 	}
-	if state != "running" {
+	// running 之外还接受 submitted：准入闸排在占位之前，被闸拒掉的那一单还没人领，
+	// 没有执行方会跟它抢，直接落终态才是如实的（否则它会一直 submitted，被 reaper
+	// 两分钟后当成「没人领」收走，调用方看到的是 orphaned 而不是可重试的失败）。
+	if state != "running" && state != "submitted" {
 		// 宽容处理（幂等）：已终态/已接管 → 无操作。
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit failed service run noop: %w", err)
