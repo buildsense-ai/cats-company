@@ -217,8 +217,8 @@ func TestExplicitDeviceAuthorizationExpiryAndRolloutDisable(t *testing.T) {
 	}
 	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	now = now.Add(r.grantTT + time.Second)
-	if _, ok := r.lookupGrant(grant.GrantID); ok {
-		t.Fatal("expired capability revived after re-enabling v2")
+	if _, ok := r.lookupGrant(grant.GrantID); !ok {
+		t.Fatal("permanent explicit capability expired while its selection revision remained active")
 	}
 }
 
@@ -318,8 +318,8 @@ func TestExplicitTargetsWithoutDefaultAndWithOfflineDefault(t *testing.T) {
 	if ctx.Selection.Status != DeviceSelectionNeedsSelection || ctx.Selection.SelectedDevice != nil || len(ctx.Grants) != 0 || len(ctx.ExplicitGrants) != 1 {
 		t.Fatal("expired default must not choose B or block an independent B grant")
 	}
-	if _, ok := r.lookupGrant(old.GrantID); ok {
-		t.Fatal("expired old grant revived")
+	if _, ok := r.lookupGrant(old.GrantID); !ok {
+		t.Fatal("permanent exact-target grant expired with the default-selection lease")
 	}
 	if _, ok := r.lookupGrant(ctx.ExplicitGrants[0].GrantID); !ok {
 		t.Fatal("fresh exact-target grant rejected")

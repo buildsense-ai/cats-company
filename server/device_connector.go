@@ -488,6 +488,9 @@ func (h *Hub) revokeDeviceConnectorDevice(ownerUID int64, deviceID string) error
 		state.revokeDeviceConnectorDevice(ownerUID, deviceID, now)
 		return nil
 	}
+	if h.userDevices != nil {
+		h.userDevices.revokeDeviceGrantsForDevice(ownerUID, deviceID)
+	}
 	if h.deviceRevokes != nil {
 		h.deviceRevokes.revokeDevice(ownerUID, deviceID)
 	}

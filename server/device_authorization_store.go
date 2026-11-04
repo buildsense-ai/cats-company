@@ -14,6 +14,9 @@ import (
 type deviceGrantStore interface {
 	rememberDeviceGrants([]ScopedDeviceGrant, int64)
 	lookupDeviceGrant(string, int64) (ScopedDeviceGrant, bool)
+	revokeDeviceGrant(ScopedDeviceGrant)
+	revokeDeviceGrantsForSelection(int64, string)
+	revokeDeviceGrantsForDevice(int64, string)
 }
 
 type deviceAuthorizationStore interface {
@@ -57,6 +60,18 @@ func (s *RedisDeviceAuthorizationStore) lookupDeviceGrant(id string, now int64) 
 	return s.state.lookupDeviceGrant(id, now)
 }
 
+func (s *RedisDeviceAuthorizationStore) revokeDeviceGrant(grant ScopedDeviceGrant) {
+	s.state.revokeDeviceGrant(grant)
+}
+
+func (s *RedisDeviceAuthorizationStore) revokeDeviceGrantsForSelection(actorUID int64, sessionKey string) {
+	s.state.revokeDeviceGrantsForSelection(actorUID, sessionKey)
+}
+
+func (s *RedisDeviceAuthorizationStore) revokeDeviceGrantsForDevice(ownerUID int64, deviceID string) {
+	s.state.revokeDeviceGrantsForDevice(ownerUID, deviceID)
+}
+
 func (s *RedisDeviceAuthorizationStore) isDeviceConnectorRevoked(claims *DeviceConnectorClaims, now time.Time) bool {
 	return s.state.isDeviceConnectorRevoked(claims, now)
 }
@@ -92,6 +107,7 @@ return 1`, []string{s.state.deviceConnectorRevokedDeviceKey(owner, device)},
 	if err := s.revocationWriteResult("revoked_device_write", err); err != nil {
 		return err
 	}
+	s.state.revokeDeviceGrantsForDevice(owner, device)
 	if result == 2 {
 		s.state.logDeviceAuthorizationEvent("repair", "revoked_device_write", "invalid_watermark_repaired", "revocation_saved")
 	}

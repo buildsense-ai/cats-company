@@ -122,6 +122,9 @@ func (r *userDeviceRegistry) confirmDeviceSelection(actor int64, session, device
 	if err := r.compareSelection(actor, session, expected, next); err != nil {
 		return deviceSelectionPreference{}, err
 	}
+	// A newly confirmed target creates a new authorization revision. Remove
+	// stored grants for older revisions; lookups also fail closed on revision.
+	r.revokeDeviceGrantsForSelection(actor, session)
 	return next, nil
 }
 
@@ -136,7 +139,13 @@ func (r *userDeviceRegistry) refreshDeviceSelection(actor int64, session string,
 func (r *userDeviceRegistry) grantSelectionCurrent(grant ScopedDeviceGrant) bool {
 	actor := parseFormattedUID(grant.ActorUserID)
 	current, err := r.selectionRecord(actor, grant.SessionKey)
-	if err != nil || current.Revision != grant.SelectionRevision {
+	if err != nil {
+		return false
+	}
+	if current.Revision != grant.SelectionRevision {
+		// A failed best-effort cleanup must not leave stale records forever.
+		// Remove only this grant so a newer revision in the same session survives.
+		r.revokeDeviceGrant(grant)
 		return false
 	}
 	if grant.TargetScope == "explicit_device" {

@@ -189,6 +189,127 @@ func TestDeviceAuthorizationOnlySurvivesReplacementWithoutMigratingRuntime(t *te
 	}
 }
 
+func TestPermanentDeviceGrantHasNoRedisExpiryAndIsRevokedBySelectionOrUnlink(t *testing.T) {
+	mr := miniredis.RunT(t)
+	store := authorizationStoreForTest(t, "redis://"+mr.Addr())
+	now := time.Now().Truncate(time.Millisecond)
+	grant := ScopedDeviceGrant{
+		Kind: "user_device_grant", Source: "catscompany", Status: "active", Permanent: true,
+		IdentityTrust: "server_canonical", DeviceID: "device-a", OwnerUserID: "usr7", ActorUserID: "usr7",
+		SessionKey: "session-a", TopicID: "topic-a", TopicType: "p2p", AgentID: "usr42", AgentBodyID: "body-a",
+		Operations: []DeviceGrantOperation{DeviceGrantReadFile}, CreatedAt: unixMillis(now),
+		ExpiresAt: permanentDeviceGrantExpiresAt, SelectionRevision: "revision-a",
+	}
+	grant.GrantID = persistentDeviceGrantID(grant)
+	store.rememberDeviceGrants([]ScopedDeviceGrant{grant}, unixMillis(now))
+	key := store.state.deviceGrantKey(grant.GrantID)
+	if mr.TTL(key) != 0 {
+		t.Fatal("permanent device grant received a Redis expiration")
+	}
+	if _, ok := store.lookupDeviceGrant(grant.GrantID, unixMillis(now.Add(365*24*time.Hour))); !ok {
+		t.Fatal("permanent grant expired while its selection remained active")
+	}
+	grant.CreatedAt = unixMillis(now.Add(time.Minute))
+	store.rememberDeviceGrants([]ScopedDeviceGrant{grant}, grant.CreatedAt)
+	if count, _ := store.state.client.SCard(context.Background(), store.state.deviceGrantSelectionKey(7, grant.SessionKey)).Result(); count != 2 {
+		t.Fatalf("same scope accumulated %d permanent grants", count)
+	}
+	finite := grant
+	finite.Permanent = false
+	finite.GrantID = "device_grant_legacy_finite"
+	finite.ExpiresAt = unixMillis(now.Add(10 * time.Minute))
+	store.rememberDeviceGrants([]ScopedDeviceGrant{finite}, unixMillis(now))
+	selectionIndex := store.state.deviceGrantSelectionKey(7, grant.SessionKey)
+	deviceIndex := store.state.deviceGrantDeviceKey(7, grant.DeviceID)
+	if mr.TTL(selectionIndex) != 0 || mr.TTL(deviceIndex) != 0 {
+		t.Fatal("finite grant write added an expiry to a mixed index containing a permanent grant")
+	}
+	finiteKey := store.state.deviceGrantKey(finite.GrantID)
+	if mr.TTL(finiteKey) <= 0 {
+		t.Fatal("legacy finite grant lost its own expiration")
+	}
+	mr.FastForward(11 * time.Minute)
+	if _, ok := store.lookupDeviceGrant(finite.GrantID, unixMillis(now.Add(11*time.Minute))); ok {
+		t.Fatal("legacy finite grant survived its own expiration")
+	}
+	if _, ok := store.lookupDeviceGrant(grant.GrantID, unixMillis(now.Add(11*time.Minute))); !ok {
+		t.Fatal("finite grant expiration expired the permanent grant")
+	}
+	longFinite := finite
+	longFinite.SessionKey = "finite-only-session"
+	longFinite.DeviceID = "finite-only-device"
+	longFinite.GrantID = "device_grant_legacy_long"
+	longFinite.ExpiresAt = unixMillis(now.Add(10 * time.Minute))
+	shortFinite := longFinite
+	shortFinite.GrantID = "device_grant_legacy_short"
+	shortFinite.ExpiresAt = unixMillis(now.Add(5 * time.Minute))
+	store.rememberDeviceGrants([]ScopedDeviceGrant{longFinite, shortFinite}, unixMillis(now))
+	finiteSelectionIndex := store.state.deviceGrantSelectionKey(7, longFinite.SessionKey)
+	finiteDeviceIndex := store.state.deviceGrantDeviceKey(7, longFinite.DeviceID)
+	if mr.TTL(finiteSelectionIndex) < 9*time.Minute || mr.TTL(finiteDeviceIndex) < 9*time.Minute {
+		t.Fatal("short finite grant shortened a shared finite-only index TTL")
+	}
+	store.revokeDeviceGrantsForSelection(7, grant.SessionKey)
+	if mr.Exists(key) {
+		t.Fatal("selection revision change left old permanent grant in Redis")
+	}
+	store.rememberDeviceGrants([]ScopedDeviceGrant{grant}, grant.CreatedAt)
+	if err := store.revokeDevice(7, grant.DeviceID, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if mr.Exists(key) {
+		t.Fatal("device unlink left old permanent grant in Redis")
+	}
+}
+
+func TestPermanentDeviceGrantCleanupRetriesAfterRedisOutage(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
+	mr := miniredis.RunT(t)
+	fixture, _, request, clock := grantRenewalFixture(t)
+	grant, ok := fixture.userDevices.lookupGrant(request.GrantID)
+	if !ok {
+		t.Fatal("missing fixture grant")
+	}
+	db := &authorizationSelectionStore{identityMessageStore: fixture.db.(*identityMessageStore)}
+	auth := authorizationStoreForTest(t, "redis://"+mr.Addr())
+	h, err := NewHubWithDeviceAuthorization(db, nil, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.userDevices.now = func() time.Time { return *clock }
+	selection, err := h.userDevices.confirmDeviceSelection(7, grant.SessionKey, "a", "test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant.SelectionRevision = selection.Revision
+	h.userDevices.rememberGrants([]ScopedDeviceGrant{grant})
+	grantKey := auth.state.deviceGrantKey(grant.GrantID)
+	mr.SetError("temporary redis outage")
+	currentSelection, err := h.userDevices.confirmDeviceSelection(7, grant.SessionKey, "b", "test", selection.Revision)
+	if err != nil {
+		t.Fatal("selection update should still be committed", err)
+	}
+	mr.SetError("")
+	if !mr.Exists(grantKey) {
+		t.Fatal("expected cleanup to have failed during the simulated outage")
+	}
+	currentGrant := grant
+	currentGrant.DeviceID = "b"
+	currentGrant.SelectionRevision = currentSelection.Revision
+	currentGrant.CreatedAt++
+	currentGrant.GrantID = persistentDeviceGrantID(currentGrant)
+	h.userDevices.rememberGrants([]ScopedDeviceGrant{currentGrant})
+	if _, ok := h.userDevices.lookupGrant(grant.GrantID); ok {
+		t.Fatal("stale selection grant remained usable")
+	}
+	if mr.Exists(grantKey) {
+		t.Fatal("stale permanent grant was not cleaned on the next lookup")
+	}
+	if _, ok := auth.lookupDeviceGrant(currentGrant.GrantID, unixMillis(*clock)); !ok {
+		t.Fatal("stale grant cleanup deleted the current-revision grant")
+	}
+}
+
 func TestDeviceAuthorizationOnlyRevocationsPersistAndAreMonotonic(t *testing.T) {
 	mr := miniredis.RunT(t)
 	s := authorizationStoreForTest(t, "redis://"+mr.Addr())

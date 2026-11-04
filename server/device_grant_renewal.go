@@ -95,6 +95,9 @@ func (h *Hub) renewDeviceGrant(client *Client, msg *MsgDeviceGrantRenewal) (Scop
 			return deny()
 		}
 	}
+	if old.Permanent {
+		return old, nil
+	}
 	now := unixMillis(h.userDevices.now())
 	deadline := old.RenewableUntil
 	if deadline == 0 {

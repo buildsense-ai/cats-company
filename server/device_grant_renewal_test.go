@@ -27,6 +27,11 @@ func grantRenewalFixture(t *testing.T) (*Hub, *Client, *MsgDeviceGrantRenewal, *
 	}
 	devices, unavailable := h.userDeviceRouteCandidates(7)
 	turn := h.userDevices.turnContextForDevices(7, "p2p_7_42", "p2p", 42, "cloud", devices, unavailable)
+	legacyGrant := turn.Grants[0]
+	legacyGrant.Permanent = false
+	legacyGrant.ExpiresAt = legacyGrant.CreatedAt + defaultDeviceGrantTTL.Milliseconds()
+	legacyGrant.RenewableUntil = legacyGrant.CreatedAt + (24 * time.Hour).Milliseconds()
+	h.userDevices.rememberGrants([]ScopedDeviceGrant{legacyGrant})
 	return h, bot, &MsgDeviceGrantRenewal{Type: "request", RequestID: "renew-1", GrantID: turn.Grants[0].GrantID}, &now
 }
 
@@ -143,12 +148,36 @@ func TestDeviceGrantRenewalWireAndLegacyCompatibility(t *testing.T) {
 	}
 }
 
+func TestPermanentDeviceGrantRenewalIsIdempotent(t *testing.T) {
+	h, bot, msg, _ := grantRenewalFixture(t)
+	grant, ok := h.userDevices.lookupGrant(msg.GrantID)
+	if !ok {
+		t.Fatal("missing fixture grant")
+	}
+	grant.Permanent = true
+	grant.ExpiresAt = permanentDeviceGrantExpiresAt
+	grant.RenewableUntil = 0
+	h.userDevices.rememberGrants([]ScopedDeviceGrant{grant})
+	msg.GrantID = grant.GrantID
+	got, err := h.renewDeviceGrant(bot, msg)
+	if err != nil {
+		t.Fatal("proactive renewal of permanent grant should be harmless", err)
+	}
+	if got.GrantID != grant.GrantID || !got.Permanent || got.ExpiresAt != permanentDeviceGrantExpiresAt {
+		t.Fatalf("permanent renewal changed grant: %#v", got)
+	}
+}
+
 func TestDeviceGrantRenewalExplicitTargetDoesNotChangeDefault(t *testing.T) {
 	h, bot, msg, now := grantRenewalFixture(t)
 	original, _ := h.userDevices.lookupGrant(msg.GrantID)
 	devices, unavailable := h.userDeviceRouteCandidates(7)
 	turn := h.userDevices.turnContextForDevices(7, "p2p_7_42", "p2p", 42, "cloud", devices, unavailable)
 	explicit := deviceGrantForID(t, turn.ExplicitGrants, "b")
+	explicit.Permanent = false
+	explicit.ExpiresAt = explicit.CreatedAt + defaultDeviceGrantTTL.Milliseconds()
+	explicit.RenewableUntil = explicit.CreatedAt + (24 * time.Hour).Milliseconds()
+	h.userDevices.rememberGrants([]ScopedDeviceGrant{explicit})
 	msg.GrantID = explicit.GrantID
 	*now = now.Add(4 * time.Minute)
 	next, err := h.renewDeviceGrant(bot, msg)
@@ -220,7 +249,14 @@ func TestDeviceGrantRenewalLogoutCannotBeUndoneByRelogin(t *testing.T) {
 		t.Fatal("fresh human turn lost authorization")
 	}
 	msg.GrantID = turn.Grants[0].GrantID
-	if _, err := h.renewDeviceGrant(bot, msg); err != nil {
-		t.Fatal("fresh post-login task cannot renew", err)
+	if msg.GrantID == old.GrantID {
+		t.Fatal("unlink and re-registration reused the old authorization ID")
+	}
+	fresh, ok := h.userDevices.lookupGrant(msg.GrantID)
+	if !ok || !fresh.Permanent {
+		t.Fatal("fresh post-login task did not receive permanent authorization")
+	}
+	if renewed, err := h.renewDeviceGrant(bot, msg); err != nil || renewed.GrantID != fresh.GrantID || !renewed.Permanent {
+		t.Fatal("permanent authorization renewal should be idempotent", err)
 	}
 }

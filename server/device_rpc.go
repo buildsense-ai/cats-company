@@ -373,6 +373,12 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device offline", map[string]interface{}{"request_id": requestID, "device_id": grant.DeviceID})
 		return
 	}
+	if (grant.DeviceBodyID != "" && grant.DeviceBodyID != device.BodyID) ||
+		(grant.DeviceInstallationID != "" && grant.DeviceInstallationID != device.InstallationID) {
+		h.auditDeviceRPC(ownerUID, "rpc_rejected", "denied", "device incarnation changed since authorization", msg, grant)
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "device incarnation changed since authorization", map[string]interface{}{"request_id": requestID, "device_id": grant.DeviceID})
+		return
+	}
 	targetRoute, target := h.findDeviceRPCTarget(ownerUID, device)
 	if !targetRoute.validAt(nowForRoute(h)) {
 		h.auditDeviceRPC(ownerUID, "rpc_rejected", "unavailable", "device connection unavailable", msg, grant)
