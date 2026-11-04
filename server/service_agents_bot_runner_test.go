@@ -236,6 +236,25 @@ func (f *fakeBotStore) GetMessagesSince(topicID string, sinceID int64, limit int
 	return out, nil
 }
 
+// GetRecentMessages 与 postgres 实现同语义：这个 topic 最近 limit 条，id 升序。
+func (f *fakeBotStore) GetRecentMessages(topicID string, limit int) ([]*types.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
+	var out []*types.Message
+	for _, msg := range f.messages {
+		if msg.TopicID == topicID {
+			out = append(out, msg)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
+
 func (f *fakeBotStore) GetBotOwner(botUID int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

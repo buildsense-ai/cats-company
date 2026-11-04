@@ -81,6 +81,10 @@ const (
 	// 会让另一单的答案全认不回来。
 	botCallMetadataKey = "catsco_bot_call"
 
+	// botRunnerQuoteProbeLimit 是「探测目标 bot 会不会回填 reply_to」时看最近多少条。
+	// 50 条足够覆盖一次会话里的十来轮问答；更早的消息说明不了当前客户端版本。
+	botRunnerQuoteProbeLimit = 50
+
 	// botTurnDoneMetadataKey 是「这一轮我说完了」的键，由 bot 侧在回合真正结束时
 	// 打在**最后那条回复**的 metadata 上。值是会话 id（与 catsco_bot_session_id 一致），
 	// 也接受 true —— 前者更严，后者是老客户端可能的写法。
@@ -125,6 +129,12 @@ type botRunnerStore interface {
 	// 才能让 bot 知道这次调用该归到哪个会话（普通 SaveMessage 存不了 metadata）。
 	SaveMessageWithMetadata(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string, metadata map[string]interface{}) (int64, bool, error)
 	GetMessagesSince(topicID string, sinceID int64, limit int) ([]*types.Message, error)
+	// GetRecentMessages 取这个 topic 最近 limit 条（按 id 升序返回）。
+	//
+	// bot runner 用它探测「目标 bot 会不会回填 reply_to」：会回填的客户端才值得要求
+	// 归属，否则老客户端/人工代答的 bot 会被整片判成「分不清」。必须取**最近**的：
+	// 回填能力是随客户端版本变的，只看最早的几十条会把已升级的客户端判成不会。
+	GetRecentMessages(topicID string, limit int) ([]*types.Message, error)
 	GetBotOwner(botUID int64) (int64, error)
 }
 
@@ -668,14 +678,26 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 // 按 4000 字切段，收得太早会把答案截断。
 func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64, sessionID string, tuning botRunnerTuning) (string, []ServiceRunAttachment, error) {
 	deadline := time.Now().Add(tuning.Timeout)
+	// 这个 bot 会不会回填 reply_to：会的话，本次只认带归属的回复。
+	//
+	// 为什么要有这一条：调用方 bot 自激互刷时，目标 bot 被会话上下文带偏，**第一条**
+	// 答复就是「回环信息，没有新任务」这种话（实测 prompt 后 1 秒就到，早于任何人插话），
+	// 靠「有人说话才拒」的规则根本挡不住。而它真正的答复一定带着 reply_to（实测同一
+	// 个 bot 15 分钟内既回过带 reply_to 的「OK」，也回过一堆不带的闲话）。
+	//
+	// 反过来，不回填的客户端（老版本 / 人工代答的 bot）不能要求归属，否则整片判死 ——
+	// 所以先用历史消息探一次能力，探测失败按「不会」处理（fail-open，保持老行为）。
+	quoteProbe := r.botQuotesReplies(topic, botUID)
 	var (
 		sinceID    = promptID
 		parts      []string
 		seen       = map[int64]bool{}
 		settleTill time.Time
-		size       int
-		sawUnowned bool
-		sawOwned   bool
+		// 会回填的 bot 这次没回填（见 quoteProbe）：同样只挡不认、不做快速失败。
+		strictBlocked bool
+		size          int
+		sawUnowned    bool
+		sawOwned      bool
 		// 调用方自己在这个 topic 里说过话（调用方是 bot 时，它的 runtime 会把目标 bot
 		// 的进度消息当成新任务回话）。记下第一句的 id：它之后目标 bot 的无标记消息
 		// 都是对那句话的回应，不是对我们的答复。
@@ -796,6 +818,12 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			case botReplyOwnedExplicit:
 				sawOwned = true
 			case botReplyOwnedFallback:
+				// 这个 bot 会回填 reply_to（quoteProbe），这次却没有回填 —— 它是对着
+				// 会话上下文随口回了一句，不是本次调用的答复。附件照旧放行。
+				if quoteProbe && !isAttachment {
+					strictBlocked = true
+					continue
+				}
 				// 已经有过明确归属的回复，或者还有别的单在抢：这条不可能是答案。
 				//
 				// 附件例外：老客户端发附件走的是另一条发送路径，天生不带 reply_to
@@ -897,16 +925,16 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 		}
 		// 看见回复了却认不了：别干等到超时，尽快让调用方知道是「分不清」而非「没回」。
 		if len(parts) == 0 && sawUnowned && time.Since(ambiguousAt) > tuning.AmbiguityGrace {
-			return "", nil, botRunnerAmbiguousError(chatterBlocked)
+			return "", nil, botRunnerAmbiguousError(botAmbiguityOf(chatterBlocked, strictBlocked))
 		}
 		if time.Now().After(deadline) {
 			if len(parts) > 0 {
 				// 已经有内容：按「说到一半」交付，比丢掉更有用。
 				return strings.Join(parts, "\n\n"), attachments, nil
 			}
-			// 回环挡下过消息、又等满了 timeout：这是「分不清」，不是「没回」。
-			if chatterBlocked {
-				return "", nil, botRunnerAmbiguousError(true)
+			// 挡下过消息、又等满了 timeout：这是「分不清」，不是「没回」。
+			if chatterBlocked || strictBlocked {
+				return "", nil, botRunnerAmbiguousError(botAmbiguityOf(chatterBlocked, strictBlocked))
 			}
 			return "", nil, fmt.Errorf("bot_timeout: 等了 %s 目标 bot 没有回复", tuning.Timeout)
 		}
@@ -1238,23 +1266,70 @@ func botRunnerPlatformPrompt(msg *types.Message) bool {
 	return false
 }
 
-// botRunnerAmbiguousError 区分两种「看见了回复却认不了」：
+// botReplyAmbiguity 是「看见了回复却认不了」的三种成因。
 //
-//	chatter  —— 这个会话里除目标 bot 之外有人说过话，回来的东西分不清是答案还是
-//	           对那句话的回应（bot↔bot 互刷就是这种）；
-//	默认     —— 没有任何人插话，是并发几单抢同一 topic 的回复。
-//
-// 两种都要如实说清，不能让调用方以为「bot 没回」。
-func botRunnerAmbiguousError(chatter bool) error {
-	if chatter {
+// 分开是为了让调用方知道**下一步该做什么**：去查客户端、去串行化、还是去修调用方
+// bot 的运行时。糊成一句「bot 没回」等于让人从零开始排查。
+type botReplyAmbiguity int
+
+const (
+	botAmbiguousNone botReplyAmbiguity = iota
+	// botAmbiguousContention：没有任何人插话，是并发几单抢同一 topic 的回复。
+	botAmbiguousContention
+	// botAmbiguousChatter：这个会话里除目标 bot 之外有人说过话（bot↔bot 互刷）。
+	botAmbiguousChatter
+	// botAmbiguousUnowned：这个 bot 会回填 reply_to，这次却没有回填。
+	botAmbiguousUnowned
+)
+
+// botAmbiguityOf 按「挡下过什么」定成因：不会回填那条更具体，优先说它。
+func botAmbiguityOf(chatter, unowned bool) botReplyAmbiguity {
+	switch {
+	case unowned:
+		return botAmbiguousUnowned
+	case chatter:
+		return botAmbiguousChatter
+	default:
+		return botAmbiguousContention
+	}
+}
+
+// botRunnerAmbiguousError 把成因翻译成调用方能照着做的说法。
+func botRunnerAmbiguousError(reason botReplyAmbiguity) error {
+	switch reason {
+	case botAmbiguousUnowned:
+		return fmt.Errorf(
+			"bot_reply_ambiguous: 目标 bot 在这个会话里一直是回填 reply_to 的，这次没有指回本次调用。" +
+				"它多半是在对着会话上下文随口回话（例如被调用方 bot 的自激互刷带偏），" +
+				"不是本次结果。请重试；若持续出现，检查目标 bot 的会话上下文是否被别的消息污染")
+	case botAmbiguousChatter:
 		return fmt.Errorf(
 			"bot_reply_ambiguous: 这个会话里除目标 bot 之外有人说过话（调用方自己，或调用方代言的 bot），" +
 				"此后目标 bot 的回复分不清是答案还是对那句话的回应。若调用方是 agent bot，" +
 				"它的运行时应当在等待工具结果期间不要对该会话回话")
+	default:
+		return fmt.Errorf(
+			"bot_reply_ambiguous: 目标 bot 的回复没有指回本次调用（缺 reply_to），" +
+				"而同一会话上还有别的调用在等，无法判断哪条是这次的。请升级客户端后重试，或改为串行调用")
 	}
-	return fmt.Errorf(
-		"bot_reply_ambiguous: 目标 bot 的回复没有指回本次调用（缺 reply_to），" +
-			"而同一会话上还有别的调用在等，无法判断哪条是这次的。请升级客户端后重试，或改为串行调用")
+}
+
+// botQuotesReplies 探测目标 bot 在这个 topic 里有没有「回填 reply_to」的能力证据。
+//
+// 只看最近 botRunnerQuoteProbeLimit 条：回填能力随客户端版本变，远古消息不代表现在。
+// 探测失败一律按「不会」处理 —— 老客户端必须继续能用，宁可漏挡也不能整片判死。
+func (r *ServiceBotRunner) botQuotesReplies(topic string, botUID int64) bool {
+	msgs, err := r.store.GetRecentMessages(topic, botRunnerQuoteProbeLimit)
+	if err != nil {
+		log.Printf("bot runner: reply_to probe failed topic=%s: %v", topic, err)
+		return false
+	}
+	for _, msg := range msgs {
+		if msg != nil && msg.FromUID == botUID && msg.ReplyTo != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *ServiceBotRunner) fail(req botRunRequest, errorText string) {
