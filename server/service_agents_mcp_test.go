@@ -1423,3 +1423,49 @@ func TestMCPServerReusedPerCaller(t *testing.T) {
 		t.Fatalf("live servers for second caller = %d, want 1", got)
 	}
 }
+
+// 结果正文必须进文本摘要：调用方（模型、第三方客户端，连我们自己写的探针都是）
+// 常常只读 content，只看 status=completed 会以为「完成了但没有结果」。
+func TestRunToolResultSummaryCarriesOutputText(t *testing.T) {
+	env := ServiceRunEnvelope{
+		ContractVersion: serviceRunResultContractVersion,
+		RunID:           "run_1",
+		SessionID:       "sess_1",
+		Status:          ServiceRunCompleted,
+		Output:          json.RawMessage(`{"text":"能。你这次调用刚到，我这边直接收到并应答了。"}`),
+	}
+	text := serviceRunToolResult(env).Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "能。你这次调用刚到") {
+		t.Fatalf("文本摘要缺正文：%q", text)
+	}
+	if !strings.Contains(text, "status=completed") || !strings.Contains(text, "run=run_1") {
+		t.Fatalf("机器可读前缀被破坏：%q", text)
+	}
+}
+
+func TestRunToolResultSummaryTruncatesLongOutput(t *testing.T) {
+	long := strings.Repeat("字", serviceRunSummaryLimit+50)
+	env := ServiceRunEnvelope{
+		RunID: "run_1", SessionID: "sess_1", Status: ServiceRunCompleted,
+		Output: json.RawMessage(`{"text":"` + long + `"}`),
+	}
+	text := serviceRunToolResult(env).Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "已截断") {
+		t.Fatalf("超长正文应当留截断提示：%q", text[:120])
+	}
+	if got := strings.Count(text, "字"); got > serviceRunSummaryLimit+10 {
+		t.Fatalf("截断失效，正文 %d 字", got)
+	}
+}
+
+func TestRunToolResultSummaryWithoutOutputUnchanged(t *testing.T) {
+	// 只有句柄（running）或失败没有正文时，摘要格式保持不变（老客户端解析不受影响）。
+	env := ServiceRunEnvelope{RunID: "run_1", SessionID: "sess_1", Status: ServiceRunRunning}
+	text := serviceRunToolResult(env).Content[0].(*mcp.TextContent).Text
+	if strings.Contains(text, "output=") {
+		t.Fatalf("没有正文时不该出现 output：%q", text)
+	}
+	if text != "run=run_1 session_id=sess_1 status=running" {
+		t.Fatalf("摘要格式变了：%q", text)
+	}
+}
