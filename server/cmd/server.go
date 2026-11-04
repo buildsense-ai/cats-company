@@ -755,6 +755,10 @@ func main() {
 		Syncer:            commercialRelaySyncer,
 		RenewCloudWorkers: cloudWorkerHandler.RenewForOwner,
 		EnsureCloudWorker: cloudWorkerHandler.AutoProvisionForOwner,
+		// An upgrade changes the shared-fleet tier; fulfilment only extends the
+		// paid window, so the container must be told about the new tier or the
+		// customer pays for resources they never get.
+		SyncCloudWorkerPlan: cloudWorkerHandler.ApplyPlanToOwner,
 	})
 	commercialPaymentHandler.StartReconciliation(commercialServiceCtx, 5*time.Minute)
 	accountAdminHandler.SetCommercialPaymentHandler(commercialPaymentHandler)
