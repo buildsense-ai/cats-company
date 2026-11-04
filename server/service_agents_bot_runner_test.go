@@ -45,6 +45,9 @@ type fakeBotStore struct {
 	// activeRuns / countErr 给并发闸用：数「同一个应用还有几单在跑」。
 	activeRuns int
 	countErr   error
+	// callerActive / callerErr 给「按调用方配额」用：key 是 caller uid。
+	callerActive map[int64]int
+	callerErr    error
 }
 
 type fakeBotMessage struct {

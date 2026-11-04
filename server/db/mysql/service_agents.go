@@ -163,6 +163,23 @@ func (a *Adapter) CountActiveServiceRunsForAgent(ctx context.Context, agentID in
 	return n, nil
 }
 
+// CountActiveServiceRunsForAgentCaller 语义与 postgres 版一致，只多一个 caller 条件。
+func (a *Adapter) CountActiveServiceRunsForAgentCaller(ctx context.Context, agentID, callerUID int64, excludeRunID string) (int, error) {
+	var n int
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM service_runs r
+		JOIN service_sessions s ON s.session_id = r.session_id
+		WHERE s.agent_id = ?
+		  AND s.caller_uid = ?
+		  AND r.state IN ('submitted','running')
+		  AND r.run_id <> ?`, agentID, callerUID, excludeRunID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active service runs for agent caller: %w", err)
+	}
+	return n, nil
+}
+
 func (a *Adapter) CreateServiceRunIdempotent(ctx context.Context, sessionID, clientToken string, input json.RawMessage) (store.ServiceRun, bool, error) {
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)

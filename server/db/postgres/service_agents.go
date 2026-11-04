@@ -167,6 +167,26 @@ func (a *Adapter) CountActiveServiceRunsForAgent(ctx context.Context, agentID in
 	return n, nil
 }
 
+// CountActiveServiceRunsForAgentCaller 数「同一个调用方」在这个应用上还有几单在跑。
+//
+// 与上面那个只差一个 caller 条件：sessions.caller_uid 是「谁发起的」。一个应用被
+// 多方共用时，16 个总名额不该被先到的那一方全吃 —— 那是「工具忙」而不是「你忙」。
+func (a *Adapter) CountActiveServiceRunsForAgentCaller(ctx context.Context, agentID, callerUID int64, excludeRunID string) (int, error) {
+	var n int
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM service_runs r
+		JOIN service_sessions s ON s.session_id = r.session_id
+		WHERE s.agent_id = $1
+		  AND s.caller_uid = $2
+		  AND r.state IN ('submitted','running')
+		  AND r.run_id <> $3`, agentID, callerUID, excludeRunID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active service runs for agent caller: %w", err)
+	}
+	return n, nil
+}
+
 func (a *Adapter) CreateServiceRunIdempotent(ctx context.Context, sessionID, clientToken string, input json.RawMessage) (store.ServiceRun, bool, error) {
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)

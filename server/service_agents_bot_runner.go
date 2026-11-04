@@ -386,6 +386,12 @@ type botRunCounter interface {
 	CountActiveServiceRunsForAgent(ctx context.Context, agentID int64, excludeRunID string) (int, error)
 }
 
+// botCallerRunCounter 是「数一下这个调用方在同一个应用上还有几单在跑」的窄能力。
+// 与 botRunCounter 分开：缺这个能力时按调用方配额自动关闭（只剩总闸），行为等于改造前。
+type botCallerRunCounter interface {
+	CountActiveServiceRunsForAgentCaller(ctx context.Context, agentID, callerUID int64, excludeRunID string) (int, error)
+}
+
 type botRunRequest struct {
 	RunID     string
 	SessionID string
@@ -482,6 +488,22 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 				r.failRetryable(req, fmt.Sprintf(
 					"bot_busy: 这个应用同时已经有 %d 单在跑（上限 %d），这一单没有派出去。请稍后重试；同一任务不要反复重发",
 					n, tuning.MaxInflight))
+				return
+			}
+		}
+	}
+
+	// 按调用方配额（第二道）：总闸防「工具被一起打爆」，这一道防「某个调用方把
+	// 总闸占满」。public 工具对全平台可见后，先到的调用方能把 16 个名额吃光，
+	// 这时真正的用户拿到的是 bot_busy —— 而说清「是你在刷」比「工具忙」有用。
+	//
+	// 只在总闸放行后才查；查不到数就放行（预检是体验优化，不该因存储抖动拒绝调用）。
+	if tuning.MaxCallerInflight > 0 {
+		if counter, ok := r.store.(botCallerRunCounter); ok {
+			if n, err := counter.CountActiveServiceRunsForAgentCaller(context.Background(), req.AgentID, req.CallerUID, req.RunID); err == nil && n >= tuning.MaxCallerInflight {
+				r.failRetryable(req, fmt.Sprintf(
+					"caller_busy: 你在这个应用上同时已经有 %d 单在跑（每个调用方上限 %d），这一单没有派出去。等前面的跑完再发；同一任务不要反复重发",
+					n, tuning.MaxCallerInflight))
 				return
 			}
 		}
