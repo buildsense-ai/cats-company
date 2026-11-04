@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import FileAnnotationEditor from './file-annotation-editor';
+import { captureFilePreviewDOM } from '../utils/file-preview-dom-screenshots';
 
 vi.mock('../utils/file-preview-dom-screenshots', () => ({
   captureFilePreviewDOM: vi.fn(async () => {
@@ -80,6 +81,17 @@ describe('FileAnnotationEditor', () => {
     Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 600 });
     Object.defineProperty(img, 'complete', { configurable: true, value: true });
     return img;
+  }
+
+  function videoSurface(time = 12.5) {
+    const wrapper = mountSurface('<div><video data-file-annotation-surface="video"></video><button data-transport>播放</button></div>', 'video');
+    const video = wrapper.querySelector('video');
+    Object.defineProperties(video, {
+      videoWidth: { configurable: true, value: 800 }, videoHeight: { configurable: true, value: 600 },
+      readyState: { configurable: true, value: 2 }, seeking: { configurable: true, writable: true, value: false },
+    });
+    video.currentTime = time; video.pause = vi.fn();
+    return { wrapper, video };
   }
 
   function typeInto(element, text) {
@@ -468,6 +480,11 @@ describe('FileAnnotationEditor', () => {
   });
 
   it('supports cells targeting with one-based row/column and sheet name', async () => {
+    const captureDOM = captureFilePreviewDOM.getMockImplementation();
+    captureFilePreviewDOM.mockImplementationOnce(async (...args) => {
+      expect(container.querySelector('.file-annotation-current textarea')).not.toBeNull();
+      return captureDOM(...args);
+    });
     const api = makeApi();
     mount({ kind: 'cells', api });
     const wrapper = mountSurface('<div data-file-annotation-sheet="Sheet1"><table data-file-annotation-surface="cells"><tbody><tr><td data-file-annotation-row="1" data-file-annotation-column="2">B1</td></tr></tbody></table></div>', 'cells');
@@ -566,6 +583,127 @@ describe('FileAnnotationEditor', () => {
     expect(api.openFileAnnotationBinding).toHaveBeenCalledTimes(2);
   });
 
+  it('pauses at pointerdown, ignores another pointer and uses the actual release point', async () => {
+    const { api } = mount({ kind: 'video' }); const { video } = videoSurface();
+    await act(async () => button('框选区域').click());
+    await act(async () => {
+      video.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, clientX: 150, clientY: 150 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 2, clientX: 800, clientY: 600 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 2, clientX: 800, clientY: 600 }));
+    });
+    expect(video.pause).toHaveBeenCalled(); expect(container.querySelector('textarea')).toBeNull();
+    await act(async () => window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 400, clientY: 350 })));
+    await act(async () => typeInto(container.querySelector('textarea'), '这一帧'));
+    await act(async () => button('添加批注').click());
+    await act(async () => button('发送 1 条批注').click());
+    expect(api.sendFileAnnotations.mock.calls[0][0].file_annotations.annotations[0].target).toMatchObject({
+      time_seconds: 12.5, rect: { x: .0625, y: 1 / 12, width: .3125, height: 1 / 3 },
+    });
+  });
+
+  it('keeps comments across seek invalidation and captures the newly selected frame', async () => {
+    const { api } = mount({ kind: 'video' }); const { video } = videoSurface();
+    await act(async () => button('批注当前帧').click());
+    await act(async () => typeInto(container.querySelector('textarea'), '评论不能丢'));
+    await act(async () => { video.currentTime = 18.25; video.dispatchEvent(new Event('seeking')); });
+    expect(container.querySelector('textarea').value).toBe('评论不能丢');
+    expect(button('添加批注').disabled).toBe(true);
+    expect(container.querySelector('[role=alert]').textContent).toContain('评论已保留');
+    await act(async () => video.dispatchEvent(new Event('seeked')));
+    await act(async () => button('批注当前帧').click());
+    expect(container.querySelector('.file-annotation-popover-target').textContent).toContain('0:18.25');
+    await act(async () => button('添加批注').click());
+    await act(async () => button('发送 1 条批注').click());
+    expect(api.sendFileAnnotations.mock.calls[0][0].file_annotations.annotations[0]).toMatchObject({ body: '评论不能丢', target: { time_seconds: 18.25 } });
+  });
+
+  it('does not start a region gesture on the video transport controls', async () => {
+    const { api } = mount({ kind: 'video' }); const { wrapper } = videoSurface();
+    await act(async () => button('框选区域').click());
+    await act(async () => {
+      wrapper.querySelector('[data-transport]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, clientX: 150, clientY: 150 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 400, clientY: 350 }));
+    });
+    expect(api.openFileAnnotationBinding).not.toHaveBeenCalled();
+  });
+
+  it.each(['blur', 'pointercancel', 'lostpointercapture'])('recovers a video selection after %s', async type => {
+    mount({ kind: 'video' }); const { video } = videoSurface();
+    await act(async () => button('框选区域').click());
+    await act(async () => {
+      video.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 150, clientY: 150 }));
+      window.dispatchEvent(new Event(type));
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: 400, clientY: 350 }));
+    });
+    expect(container.querySelector('textarea')).toBeNull();
+    dragRegion(); await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('textarea')).not.toBeNull();
+  });
+
+  it('canceling an edit preserves its original queued comment and screenshot', async () => {
+    const { api } = mount({ kind: 'video' }); videoSurface();
+    await act(async () => button('批注当前帧').click());
+    await act(async () => typeInto(container.querySelector('textarea'), '原始评论'));
+    await act(async () => button('添加批注').click());
+    await act(async () => container.querySelector('[title="编辑批注"]').click());
+    await act(async () => typeInto(container.querySelector('textarea'), '未保存的编辑'));
+    await act(async () => button('取消选区').click());
+    expect(container.querySelector('.file-annotation-draft-label').textContent).toBe('原始评论');
+    await act(async () => button('发送 1 条批注').click());
+    expect(api.sendFileAnnotations.mock.calls[0][0].file_annotations.annotations[0].body).toBe('原始评论');
+  });
+
+  it('keeps image evidence when opening the composer resizes the preview, but invalidates zoom', async () => {
+    const observers = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe() {} disconnect() {}
+    });
+    try {
+      mount({ kind: 'image' }); const image = imageSurface();
+      await act(async () => button('框选区域').click()); dragRegion();
+      await act(async () => typeInto(container.querySelector('textarea'), '布局变化后保留'));
+      image.getBoundingClientRect = () => ({ left: 100, top: 50, x: 100, y: 50, width: 400, height: 300 });
+      await act(async () => {
+        for (const observer of [...observers]) observer.callback([{ target: image }]);
+        image.dispatchEvent(new CustomEvent('file-annotation-viewchange', { bubbles: true, detail: { reason: 'resize' } }));
+      });
+      expect(container.querySelector('textarea').value).toBe('布局变化后保留');
+      expect(container.querySelectorAll('.file-annotation-screenshots img')).toHaveLength(2);
+      expect(button('添加批注').disabled).toBe(false);
+      await act(async () => image.dispatchEvent(new CustomEvent('file-annotation-viewchange', { bubbles: true, detail: { reason: 'view' } })));
+      expect(container.querySelector('textarea')).toBeNull();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('repositions and clips the outline after the composer changes the preview bounds', async () => {
+    const observers = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe() {} disconnect() {}
+    });
+    try {
+      mount({ kind: 'video' }); const { video } = videoSurface();
+      await act(async () => button('批注当前帧').click());
+      video.getBoundingClientRect = () => ({ left: 100, top: 50, x: 100, y: 50, width: 400, height: 300 });
+      contentRef.current.getBoundingClientRect = () => ({ left: 100, top: 50, width: 400, height: 200 });
+      await act(async () => observers.at(-1).callback([]));
+      const outline = container.querySelector('.file-annotation-region-outline');
+      expect(outline.style.width).toBe('400px'); expect(outline.style.height).toBe('200px');
+      expect(outline.style.left).toBe('100px'); expect(outline.style.top).toBe('50px');
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('keeps an unfinished comment when switching from a full frame to a region', async () => {
+    mount({ kind: 'video' }); videoSurface();
+    await act(async () => button('批注当前帧').click());
+    await act(async () => typeInto(container.querySelector('textarea'), '选区更精确一些'));
+    await act(async () => button('框选区域').click());
+    dragRegion(); await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('textarea').value).toBe('选区更精确一些');
+    expect(button('添加批注').disabled).toBe(false);
+  });
+
   it('pauses a playing video without moving the playhead when entering a mode', async () => {
     const api = makeApi();
     mount({ kind: 'video', api });
@@ -573,7 +711,7 @@ describe('FileAnnotationEditor', () => {
     const video = wrapper.querySelector('video');
     video.pause = vi.fn();
     video.currentTime = 12.5;
-    await act(async () => button('整页/整段').click());
+    await act(async () => button('批注当前帧').click());
     await act(async () => { await Promise.resolve(); });
     expect(video.pause).toHaveBeenCalled();
     expect(video.currentTime).toBe(12.5);

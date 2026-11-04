@@ -231,6 +231,53 @@ describe('single select mode gesture capture', () => {
     }
   });
 
+  it.each(['blur', 'pointercancel', 'lostpointercapture'])('%s cancels an interrupted drag and the next gesture recovers', (type) => {
+    const { posted, button, mouse } = fixture();
+    mouse('mousedown', 100, 100); mouse('mousemove', 300, 300);
+    (type === 'blur' ? window : button).dispatchEvent(new Event(type, { bubbles: type !== 'blur' }));
+    mouse('mouseup', 300, 300); mouse('click', 300, 300);
+    expect(targetMessages(posted)).toHaveLength(0);
+    mouse('mousedown', 110, 110); mouse('mouseup', 110, 110); mouse('click', 110, 110);
+    expect(targetMessages(posted)).toHaveLength(1);
+  });
+
+  it.each(['touch', 'mouse', 'pen'])('%s pointer drag emits once, ignores another pointer and blocks compatibility mouse events', (pointerType) => {
+    const { posted, button, mouse } = fixture();
+    function pointer(type, id, x, y) {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y });
+      Object.defineProperties(event, { pointerId: { value: id }, pointerType: { value: pointerType }, isPrimary: { value: id === 1 } });
+      button.dispatchEvent(event);
+    }
+    pointer('pointerdown', 1, 100, 100);
+    if (pointerType === 'mouse') mouse('mousedown', 100, 100);
+    pointer('pointerdown', 2, 800, 800);
+    pointer('pointermove', 2, 850, 850);
+    pointer('pointerup', 2, 850, 850);
+    pointer('pointermove', 1, 200, 250);
+    pointer('pointerup', 1, 300, 350);
+    mouse('mousedown', 300, 350); mouse('mouseup', 300, 350); mouse('click', 300, 350);
+    expect(targetMessages(posted)).toHaveLength(1);
+    expect(targetMessages(posted)[0].selection).toMatchObject({ kind: 'region', target: {
+      rect: { x: .1, y: .1, width: .2, height: .25 },
+    } });
+  });
+
+  it('an ordinary touch tap works after annotation was canceled mid-gesture', () => {
+    const { button, mouse } = fixture();
+    const pointer = type => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 110, clientY: 110 });
+      Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: 'touch' } });
+      button.dispatchEvent(event);
+    };
+    pointer('pointerdown'); sendMode('off'); pointer('pointerup');
+    mouse('click', 110, 110);
+    const action = vi.fn(); button.addEventListener('click', action);
+    pointer('pointerdown'); pointer('pointerup');
+    mouse('mousedown', 110, 110); mouse('mouseup', 110, 110); mouse('click', 110, 110);
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(document.documentElement.classList.contains('catsco-annotation-select-surface')).toBe(false);
+  });
+
   it('new ordinary gesture after cancel/off passes through to app', () => {
     const { button, mouse } = fixture();
     mouse('mousedown', 100, 100); sendMode('off'); mouse('mouseup', 300, 300); mouse('click', 300, 300);

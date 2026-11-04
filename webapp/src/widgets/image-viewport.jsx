@@ -22,8 +22,10 @@ export default function ImageViewport({ src, alt = '图片预览', annotation = 
   const fitScale = imageFitScale(image, viewport);
   const geometry = imageViewGeometry(image, viewport, scale);
 
-  const changed = useCallback(() => {
-    rootRef.current?.dispatchEvent(new CustomEvent('file-annotation-viewchange', { bubbles: true }));
+  const changed = useCallback((reason) => {
+    rootRef.current?.dispatchEvent(new CustomEvent('file-annotation-viewchange', {
+      bubbles: true, detail: { reason: reason === 'resize' ? 'resize' : 'view' },
+    }));
   }, []);
   const anchorFor = event => {
     const box = scrollerRef.current.getBoundingClientRect();
@@ -60,7 +62,7 @@ export default function ImageViewport({ src, alt = '图片预览', annotation = 
           { left: node.scrollLeft, top: node.scrollTop }, { x: current.viewport.width / 2, y: current.viewport.height / 2 }),
         anchor: { x: next.width / 2, y: next.height / 2 } };
       }
-      setViewport(next); changed();
+      setViewport(next); changed('resize');
     };
     measure();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;

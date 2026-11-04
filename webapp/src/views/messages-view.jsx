@@ -1722,15 +1722,13 @@ export default function MessagesView({
       setGatewayAnnotationCapabilityNote('标注桥未连接，请等待应用加载完成后重试');
       return;
     }
+    if (mode === 'select' && inlineAnnotationCaptureRef.current) {
+      setGatewayAnnotationCapabilityNote('请先完成或取消当前批注');
+      return;
+    }
     const accepted = gatewayAnnotationHostRef.current?.setMode?.(mode) || false;
     if (!accepted) {
       setGatewayAnnotationCapabilityNote('应用未连接标注桥，无法标注');
-      return;
-    }
-    if (mode === 'select' && gatewayAnnotationCapture) {
-      // Re-entering select with a pending popover would silently drop that
-      // selection; ask the user to finish or cancel it first.
-      setGatewayAnnotationCapabilityNote('请先完成或取消当前批注');
       return;
     }
     if (mode === 'select') { inlineAnnotationCaptureRef.current = null; setGatewayAnnotationCapture(null); }
@@ -1753,7 +1751,7 @@ export default function MessagesView({
     const open = capture.openBinding;
     if (inlineAnnotationCaptureRef.current !== capture || !gatewayAnnotationMountedRef.current
       || capture.authRevision !== getAuthRevision() || capture.token !== getToken()
-      || capture.signal?.aborted || !artifactOpenBindingUsable(open)
+      || capture.invalidated || capture.signal?.aborted || !artifactOpenBindingUsable(open)
       || gatewayAnnotationClosedOpensRef.current.has(open?.open_ref)
       || current?.openBinding?.open_ref !== open.open_ref
       || current.frame !== capture.frame || !capture.frame?.isConnected
@@ -2262,6 +2260,10 @@ export default function MessagesView({
           authRevision: getAuthRevision(), token: getToken(),
           openBinding: { ...binding.openBinding },
           ...selection,
+          // Keep the user's text when adjusting a target in this same frame
+          // session. A different open/session starts with an empty comment.
+          body: inlineAnnotationCaptureRef.current?.identity?.sessionToken === String(host.sessionToken || '')
+            ? inlineAnnotationCaptureRef.current.body || '' : '',
           target: JSON.parse(JSON.stringify(selection.target)),
           page: page ? { ...page } : null,
           // Identity certificate: the capture is only confirmable while the
@@ -2293,8 +2295,18 @@ export default function MessagesView({
         }
       },
       onPageChange: (page) => {
-        inlineAnnotationCaptureRef.current = null;
-        setGatewayAnnotationCapture(null);
+        const capture = inlineAnnotationCaptureRef.current;
+        if (capture && capture.page?.path === page.path
+          && (capture.page?.revision || '') === (page.revision || '')) {
+          // Scroll/resize void geometry and screenshots, but not the user's
+          // writing. Keep the editor until they select a fresh target.
+          const invalidated = { ...capture, invalidated: true };
+          inlineAnnotationCaptureRef.current = invalidated;
+          setGatewayAnnotationCapture(invalidated);
+        } else {
+          inlineAnnotationCaptureRef.current = null;
+          setGatewayAnnotationCapture(null);
+        }
         gatewayAnnotationApplyFramePage(page);
       },
       onUnavailable: (binding, reason) => {

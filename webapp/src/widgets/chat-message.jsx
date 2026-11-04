@@ -20,6 +20,7 @@ import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet
 import MobilePdfPreview from './mobile-pdf-preview';
 import HTMLFilePreview from './html-file-preview';
 import FileAnnotationEditor from './file-annotation-editor';
+import VideoFilePreview from './video-file-preview';
 import ImageViewport from './image-viewport';
 import LoadingState from './loading-state';
 import FileAnnotationCard from './file-annotation-card';
@@ -3404,7 +3405,7 @@ export function FilePreviewPanel({
       />
       <aside
         ref={panelRef}
-        className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isImage || isPdf || isSpreadsheet ? 'wide' : ''}`}
+        className={`v3-file-preview-panel ${fileAnnotationMode ? 'is-file-annotating' : ''} ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isImage || isPdf || isSpreadsheet ? 'wide' : ''}`}
         role={shouldUseSheetMode ? 'dialog' : undefined}
         aria-modal={shouldUseSheetMode || undefined}
         aria-label="文件预览"
@@ -3574,13 +3575,8 @@ export function FilePreviewPanel({
               </div>
             )
           ) : isVideo ? (
-            <div className="v3-file-preview-image">
-              <video src={fetchableMediaURL(url)} data-file-annotation-surface="video"
-                controls={!fileAnnotationMode} playsInline preload="metadata"
-                aria-label={file.name || '视频预览'}
-                onError={() => setImageError(true)} />
-              {imageError && <p role="alert">视频加载失败，请下载原文件查看。</p>}
-            </div>
+            <VideoFilePreview key={url} src={fetchableMediaURL(url)}
+              label={file.name || '视频预览'} annotating={fileAnnotationMode} />
           ) : isPdf ? (
             shouldUseSheetMode || fileAnnotationMode || isWebKitPdfPreview() ? (
               <MobilePdfPreview url={fetchableMediaURL(url)} annotationMode={fileAnnotationMode} />
