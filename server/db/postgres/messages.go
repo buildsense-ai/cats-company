@@ -175,6 +175,34 @@ func (a *Adapter) GetMessagesSince(topicID string, sinceID int64, limit int) ([]
 	return scanMessages(rows, "scan message")
 }
 
+// GetRecentMessages 返回这个 topic 最近 limit 条消息（按 id 升序，与 GetMessagesSince 同向）。
+//
+// 先 DESC 取最近、再翻回来：调用方要的是「这条消息属于谁、有没有指回谁」，
+// 顺序必须和增量读保持一致，否则同一份逻辑要写两套游标判断。
+func (a *Adapter) GetRecentMessages(topicID string, limit int) ([]*types.Message, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := a.db.Query(
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata, COALESCE(reply_to, 0) AS reply_to
+		 FROM messages WHERE topic_id = $1
+		 ORDER BY id DESC LIMIT $2`,
+		topicID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get recent messages: %w", err)
+	}
+	defer rows.Close()
+	msgs, err := scanMessages(rows, "scan message")
+	if err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+	return msgs, nil
+}
+
 // GetMessages returns messages for a topic, ordered by time.
 func (a *Adapter) GetMessages(topicID string, limit, offset int) ([]*types.Message, error) {
 	if limit <= 0 {
