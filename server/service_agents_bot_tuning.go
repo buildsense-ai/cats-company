@@ -29,6 +29,7 @@ const (
 	envBotRunnerAmbiguityGraceSeconds = "CATSCO_BOT_RUNNER_AMBIGUITY_GRACE_SECONDS"
 	envBotRunnerPollMillis            = "CATSCO_BOT_RUNNER_POLL_INTERVAL_MS"
 	envBotRunnerMaxInflight           = "CATSCO_BOT_RUNNER_MAX_INFLIGHT"
+	envBotRunnerMaxCallerInflight     = "CATSCO_BOT_RUNNER_MAX_CALLER_INFLIGHT"
 
 	// 单应用覆盖（definition.runner，改完下一次调用即生效；不需要重启）。
 	fieldBotRunnerTimeoutSeconds        = "timeout_seconds"
@@ -54,7 +55,11 @@ const (
 	// maxBotRunnerInflight 是单应用并发上限的天花板：再高只是把失败从「超时」变成
 	// 「更晚的超时」，没有意义。
 	maxBotRunnerInflight = 16
-	maxBotRunnerPoll     = 5 * time.Second
+	// defaultBotRunnerMaxCallerInflight / maxBotRunnerCallerInflight 是「按调用方配额」
+	// 的默认与天花板。天花板取 8：总闸才 16，再大就等于没限。
+	defaultBotRunnerMaxCallerInflight = 2
+	maxBotRunnerCallerInflight        = 8
+	maxBotRunnerPoll                  = 5 * time.Second
 
 	// botDefinitionReadTimeout 是「热更新多读一次 definition」的上限。
 	// 读不到就用会话快照派活 —— 它只影响 bot 多快开始干活，不影响调用方拿到句柄。
@@ -82,15 +87,22 @@ type botRunnerTuning struct {
 	// 而超时的提示是「bot 没回」，与真实原因（在忙）南辕北辙。设了上限就能立刻
 	// 如实回一句「正在忙，稍后重试」。
 	MaxInflight int
+	// MaxCallerInflight 是「同一个调用方」对同一个应用最多能同时占几单（0 = 不限）。
+	//
+	// 为什么要在总闸之外再限一层：public 工具对全平台可见后，16 个名额会被先到的
+	// 调用方占满 —— 这时真正的用户拿到的是 bot_busy，而说清是「谁在刷」比「工具忙」
+	// 有用得多。单个 Agent 正常对话最多一到两单在飞，2 已经够宽。
+	MaxCallerInflight int
 }
 
 // builtinBotRunnerTuning 是没有任何配置时的行为（等于历史实现）。
 func builtinBotRunnerTuning() botRunnerTuning {
 	return botRunnerTuning{
-		Timeout:        defaultBotRunnerTimeout,
-		Settle:         defaultBotRunnerSettle,
-		AmbiguityGrace: botReplyAmbiguousGrace,
-		Poll:           defaultBotRunnerPollInterval,
+		Timeout:           defaultBotRunnerTimeout,
+		Settle:            defaultBotRunnerSettle,
+		AmbiguityGrace:    botReplyAmbiguousGrace,
+		Poll:              defaultBotRunnerPollInterval,
+		MaxCallerInflight: defaultBotRunnerMaxCallerInflight,
 	}
 }
 
@@ -111,6 +123,9 @@ func platformBotRunnerTuning() botRunnerTuning {
 	}
 	if v, ok := botRunnerEnvInt(envBotRunnerMaxInflight); ok {
 		t.MaxInflight = v
+	}
+	if v, ok := botRunnerEnvInt(envBotRunnerMaxCallerInflight); ok {
+		t.MaxCallerInflight = v
 	}
 	return t.clamped()
 }
@@ -171,6 +186,7 @@ func (t botRunnerTuning) clamped() botRunnerTuning {
 		min(maxBotRunnerAmbiguityGrace, t.Timeout))
 	t.Poll = clampDuration(t.Poll, minBotRunnerPoll, min(maxBotRunnerPoll, t.Timeout))
 	t.MaxInflight = clampInt(t.MaxInflight, 0, maxBotRunnerInflight)
+	t.MaxCallerInflight = clampInt(t.MaxCallerInflight, 0, maxBotRunnerCallerInflight)
 	return t
 }
 

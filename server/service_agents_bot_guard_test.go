@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -143,6 +144,15 @@ func (f *fakeBotStore) CountActiveServiceRunsForAgent(_ context.Context, _ int64
 	return f.activeRuns, f.countErr
 }
 
+func (f *fakeBotStore) CountActiveServiceRunsForAgentCaller(_ context.Context, _ int64, callerUID int64, _ string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.callerErr != nil {
+		return 0, f.callerErr
+	}
+	return f.callerActive[callerUID], nil
+}
+
 func TestBotRunnerStopsWhenBotOwnershipChanged(t *testing.T) {
 	st := newFakeBotStore()
 	st.owner = 38
@@ -226,5 +236,88 @@ func TestServiceRunHandleCarriesStructuredEnvelope(t *testing.T) {
 	_, doneEnv := h.serviceRunHandleResult("sess_done", done)
 	if doneEnv.Status != ServiceRunCompleted {
 		t.Fatalf("status = %q, want completed", doneEnv.Status)
+	}
+}
+
+// —— 按调用方配额：一个调用方不能把总闸占满 ——
+
+func TestBotRunnerPerCallerQuotaFailsFast(t *testing.T) {
+	st := newFakeBotStore()
+	st.owner = 38
+	// 441 在这个应用上已经占了 2 单（平台默认每调用方上限 2）。
+	st.callerActive = map[int64]int{441: 2}
+	hub := &fakeBotHub{online: true}
+	runner := newTestBotRunner(st, hub)
+	agent := botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`)
+
+	go runner.execute(botRunRequest{
+		RunID: "run_caller_busy", SessionID: "sess_caller_busy", Slug: agent.Slug,
+		BotUID: 982, AgentID: agent.ID, CallerUID: 441,
+		Input: json.RawMessage(`{"text":"hi"}`), SnapshotDefinition: json.RawMessage(agent.DefinitionJSON),
+	})
+
+	if !waitFor(t, func() bool { return st.errorText("run_caller_busy") != "" }, 2*time.Second) {
+		t.Fatal("run 没有收尾")
+	}
+	if text := st.errorText("run_caller_busy"); !strings.HasPrefix(text, "caller_busy") {
+		t.Fatalf("error = %q, want caller_busy…", text)
+	}
+	if len(st.delivered(hub)) != 0 {
+		t.Fatal("配额超限时不应把消息投给 bot（那是白等一场）")
+	}
+}
+
+func TestBotRunnerPerCallerQuotaLeavesOtherCallersAlone(t *testing.T) {
+	st := newFakeBotStore()
+	st.owner = 38
+	// 441 已经满了，但 442 是另一个调用方 —— 不该被别人的额度挡住。
+	st.callerActive = map[int64]int{441: 2}
+	hub := &fakeBotHub{online: true}
+	runner := newTestBotRunner(st, hub)
+	agent := botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`)
+
+	go runner.execute(botRunRequest{
+		RunID: "run_other_caller", SessionID: "sess_other_caller", Slug: agent.Slug,
+		BotUID: 982, AgentID: agent.ID, CallerUID: 442,
+		Input: json.RawMessage(`{"text":"hi"}`), SnapshotDefinition: json.RawMessage(agent.DefinitionJSON),
+	})
+
+	if !waitFor(t, func() bool { return len(st.delivered(hub)) > 0 }, 2*time.Second) {
+		t.Fatalf("另一个调用方应当照常派活（error=%q）", st.errorText("run_other_caller"))
+	}
+	if text := st.errorText("run_other_caller"); strings.HasPrefix(text, "caller_busy") {
+		t.Fatalf("不该被别的调用方的额度挡住：%q", text)
+	}
+}
+
+func TestBotRunnerPerCallerQuotaFailsOpenOnCounterError(t *testing.T) {
+	st := newFakeBotStore()
+	st.owner = 38
+	st.callerErr = fmt.Errorf("boom")
+	hub := &fakeBotHub{online: true}
+	runner := newTestBotRunner(st, hub)
+	agent := botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`)
+
+	go runner.execute(botRunRequest{
+		RunID: "run_counter_err", SessionID: "sess_counter_err", Slug: agent.Slug,
+		BotUID: 982, AgentID: agent.ID, CallerUID: 441,
+		Input: json.RawMessage(`{"text":"hi"}`), SnapshotDefinition: json.RawMessage(agent.DefinitionJSON),
+	})
+
+	if !waitFor(t, func() bool { return len(st.delivered(hub)) > 0 }, 2*time.Second) {
+		t.Fatalf("计数查不到时应放行（预检不该因存储抖动拒绝调用），error=%q", st.errorText("run_counter_err"))
+	}
+}
+
+// 平台默认值：每调用方 2 单；环境变量可以调，但会被夹到 [0,8]。
+func TestCallerInflightDefaultsAndClamp(t *testing.T) {
+	if got := builtinBotRunnerTuning().MaxCallerInflight; got != defaultBotRunnerMaxCallerInflight {
+		t.Fatalf("内置默认 = %d, want %d", got, defaultBotRunnerMaxCallerInflight)
+	}
+	if got := (botRunnerTuning{MaxCallerInflight: 999}).clamped().MaxCallerInflight; got != maxBotRunnerCallerInflight {
+		t.Fatalf("上限夹取 = %d, want %d", got, maxBotRunnerCallerInflight)
+	}
+	if got := (botRunnerTuning{MaxCallerInflight: -1}).clamped().MaxCallerInflight; got != 0 {
+		t.Fatalf("负值应夹到 0（不限），got %d", got)
 	}
 }
