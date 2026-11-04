@@ -415,7 +415,7 @@ func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit
 
 func (a *Adapter) RenewServiceLease(ctx context.Context, runID, instanceID string) (bool, error) {
 	res, err := a.db.ExecContext(ctx, `
-		UPDATE service_runs SET lease_expires_at = DATE_ADD(NOW(6), INTERVAL 30 SECOND)
+		UPDATE service_runs SET lease_expires_at = DATE_ADD(NOW(6), INTERVAL 120 SECOND)
 		WHERE run_id = ? AND state = 'running' AND instance_id = ?`, runID, instanceID)
 	if err != nil {
 		return false, fmt.Errorf("renew service lease: %w", err)
