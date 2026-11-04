@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Crosshair, ImageOff, MessageSquareText, Pencil, Plus, Send, Trash2, X, Scan } from 'lucide-react';
+import { videoTimeLabel } from './video-file-preview';
 import {
   FILE_ANNOTATIONS_CONTRACT,
   captureFilePreviewScreenshots,
@@ -61,14 +63,18 @@ export default function FileAnnotationEditor({
   const [, updateLayout] = useState(0);
 
   const epochRef = useRef(0);
+  const captureControllerRef = useRef(null);
+  const layoutReadyRef = useRef(null);
   const bindingRef = useRef(null);
   const sourceRef = useRef(null);
   const bindingPromiseRef = useRef(null);
   const bindingGenerationRef = useRef(0);
   const sendLockRef = useRef(false);
+  const editingDraftIDRef = useRef(null);
   const sentRef = useRef(new Set());
   const clientIDsRef = useRef(new Map());
   const panelRef = useRef(null);
+  const outlineRef = useRef(null);
   const dragRef = useRef(null);
   const inputRef = useRef(null);
   const mountedRef = useRef(true);
@@ -79,7 +85,7 @@ export default function FileAnnotationEditor({
 
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => { mountedRef.current = false; captureControllerRef.current?.abort(); };
   }, []);
 
   const revokeBinding = useCallback(() => {
@@ -93,8 +99,11 @@ export default function FileAnnotationEditor({
   // A new source identity invalidates everything captured for the old file.
   useEffect(() => {
     epochRef.current += 1;
+    captureControllerRef.current?.abort();
     revokeBinding();
     sourceRef.current = null;
+    editingDraftIDRef.current = null;
+    setBody('');
     setDrafts([]);
     setCurrent(null);
     setScreenshots(null);
@@ -113,13 +122,15 @@ export default function FileAnnotationEditor({
 
   const invalidateCapture = useCallback((message) => {
     epochRef.current += 1;
+    captureControllerRef.current?.abort();
     dragRef.current = null;
     setCapturing(false);
     setScreenshots(null);
     setRegion(null);
-    setCurrent(null);
+    setCurrent(previous => kind === 'video' && previous
+      ? { ...previous, stale: true, capture: null, failure: null } : null);
     if (message) setNotice(message);
-  }, []);
+  }, [kind]);
 
   // Page / seek / zoom / resize all make an in-flight capture stale. Native
   // `seeked` does not bubble, so it is bound on the media element itself.
@@ -132,6 +143,7 @@ export default function FileAnnotationEditor({
     const editingComment = () => document.activeElement?.closest?.('.file-annotation-popover');
     const onViewport = (event) => {
       if (event?.type === 'scroll' && event.target?.closest?.('.file-annotation-editor')) return;
+      if (kind === 'video') { updateLayout(value => value + 1); return; }
       if (event?.type === 'resize') {
         const width = window.innerWidth, height = window.innerHeight;
         if (width === viewportWidth && height === viewportHeight) return;
@@ -141,31 +153,31 @@ export default function FileAnnotationEditor({
       }
       invalidateCapture('页面或缩放已变化，请重新框选');
     };
-    const onSeek = () => invalidateCapture('播放位置已变化，请重新框选');
-    const onViewChange = () => invalidateCapture(surface?.dataset.fileAnnotationError || '页面视图已变化，请重新框选');
+    const onSeek = (event) => {
+      if (kind === 'video' && ['seeked', 'loadedmetadata'].includes(event.type)) {
+        updateLayout(value => value + 1);
+        return;
+      }
+      invalidateCapture('播放位置已变化，评论已保留。请暂停后重新选择当前帧。');
+    };
+    const onViewChange = event => {
+      if (event.detail?.reason === 'resize') { updateLayout(value => value + 1); return; }
+      invalidateCapture(surface?.dataset.fileAnnotationError || '页面视图已变化，请重新框选');
+    };
     window.addEventListener('resize', onViewport);
     window.addEventListener('scroll', onViewport, true);
     root?.addEventListener('seeked', onSeek, true);
     root?.addEventListener('loadedmetadata', onSeek, true);
+    if (kind === 'video') {
+      root?.addEventListener('seeking', onSeek, true);
+      root?.addEventListener('play', onSeek, true);
+    }
     root?.addEventListener('file-annotation-viewchange', onViewChange, true);
     let observer = null;
     if (typeof ResizeObserver === 'function' && root) {
-      const sizes = new Map([root, surface].filter(Boolean).map((node) => {
-        const box = node.getBoundingClientRect();
-        return [node, [box.width, box.height]];
-      }));
-      observer = new ResizeObserver((entries) => {
-        let changed = false;
-        for (const entry of entries) {
-          const box = entry.target.getBoundingClientRect();
-          const previous = sizes.get(entry.target);
-          if (entry.target === surface && previous
-            && (Math.abs(previous[0] - box.width) > 1 || Math.abs(previous[1] - box.height) > 1)) changed = true;
-          sizes.set(entry.target, [box.width, box.height]);
-        }
-        if (changed && !editingComment()) onViewport();
-        else updateLayout(value => value + 1);
-      });
+      // Opening the inline composer changes preview bounds, not source content.
+      // Page, zoom and DOM changes have their own invalidation events below.
+      observer = new ResizeObserver(() => updateLayout(value => value + 1));
       observer.observe(root);
       if (surface) observer.observe(surface);
     }
@@ -184,6 +196,8 @@ export default function FileAnnotationEditor({
       window.removeEventListener('scroll', onViewport, true);
       root?.removeEventListener('seeked', onSeek, true);
       root?.removeEventListener('loadedmetadata', onSeek, true);
+      root?.removeEventListener('seeking', onSeek, true);
+      root?.removeEventListener('play', onSeek, true);
       root?.removeEventListener('file-annotation-viewchange', onViewChange, true);
       observer?.disconnect();
       pageObserver?.disconnect();
@@ -220,17 +234,33 @@ export default function FileAnnotationEditor({
     finally { if (bindingPromiseRef.current === pending) bindingPromiseRef.current = null; }
   }, [api, file, source]);
 
+  useLayoutEffect(() => {
+    const complete = layoutReadyRef.current;
+    layoutReadyRef.current = null;
+    complete?.();
+  });
+
   // Copy the selected frame before waiting for the binding request. Evidence
   // is accepted only after the original file's binding has been validated.
-  const captureTarget = useCallback(async (target, epoch) => {
+  const captureTarget = useCallback(async (target, epoch, signal) => {
     setCapturing(true);
     setError('');
     setNotice('');
     setScreenshots(null);
     let stage = 'binding';
     try {
+      // Text and cell anchors survive reflow. Let the inline composer commit
+      // before the asynchronous DOM renderer records the preview dimensions.
+      if (kind === 'text' || kind === 'cells') {
+        await new Promise((resolve, reject) => {
+          const onAbort = () => { layoutReadyRef.current = null; reject(new DOMException('Capture canceled', 'AbortError')); };
+          layoutReadyRef.current = () => { signal.removeEventListener('abort', onAbort); resolve(); };
+          if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true });
+        });
+        if (!mountedRef.current || epoch !== epochRef.current) return null;
+      }
       const surface = contentRef?.current?.querySelector(SURFACE_SELECTOR);
-      const pending = captureFilePreviewScreenshots(surface, kind, target)
+      const pending = captureFilePreviewScreenshots(surface, kind, target, { signal })
         .then(result => ({ result }), failure => ({ failure }));
       await openBinding();
       if (!mountedRef.current || epoch !== epochRef.current) return null;
@@ -257,11 +287,14 @@ export default function FileAnnotationEditor({
     }
   }, [contentRef, kind, openBinding]);
 
-  const acceptTarget = useCallback(async (target, anchor = null) => {
+  const acceptTarget = useCallback(async (target, anchor = null, withScreenshot = needsScreenshot) => {
     const epoch = ++epochRef.current;
+    captureControllerRef.current?.abort();
+    const controller = new AbortController();
+    captureControllerRef.current = controller;
     setCurrent({ target, anchor, capture: null });
     setScreenshots(null);
-    const result = needsScreenshot ? await captureTarget(target, epoch) : null;
+    const result = withScreenshot ? await captureTarget(target, epoch, controller.signal) : null;
     if (!mountedRef.current || epochRef.current !== epoch) return false;
     setCurrent({ target, anchor, capture: result?.capture || null, failure: result?.failure });
     setRegion(null);
@@ -276,9 +309,10 @@ export default function FileAnnotationEditor({
 
   const addDraft = useCallback(() => {
     const trimmed = body.trim();
-    if (!trimmed || trimmed.length > 2000 || !current || (needsScreenshot && !current.capture)) return;
-    setDrafts((previous) => [...previous, {
-      id: `fa_${globalThis.crypto.randomUUID()}`,
+    if (!trimmed || Array.from(trimmed).length > 2000 || !current || current.stale || (needsScreenshot && !current.capture)) return;
+    const editingID = editingDraftIDRef.current;
+    const draft = {
+      id: editingID || `fa_${globalThis.crypto.randomUUID()}`,
       kind,
       body: trimmed,
       target: current.target,
@@ -286,7 +320,10 @@ export default function FileAnnotationEditor({
       capture: current.capture || null,
       textOnly: textOnly || !current.capture,
       uploads: null,
-    }]);
+    };
+    setDrafts(previous => editingID
+      ? previous.map(row => row.id === draft.id ? draft : row) : [...previous, draft]);
+    editingDraftIDRef.current = null;
     setTextOnly(false);
     setCurrent(null);
     setBody('');
@@ -295,19 +332,27 @@ export default function FileAnnotationEditor({
   }, [body, current, kind, needsScreenshot, textOnly]);
 
   const editDraft = useCallback((draft) => {
+    epochRef.current += 1; captureControllerRef.current?.abort();
+    setCapturing(false); setNotice(''); setError('');
     setCurrent({ target: draft.target, anchor: draft.anchor, capture: draft.capture || null });
     setScreenshots(draft.capture || null);
     setBody(draft.body);
     setTextOnly(draft.textOnly);
-    setDrafts((previous) => previous.filter((item) => item.id !== draft.id));
-    inputRef.current?.focus();
+    editingDraftIDRef.current = draft.id;
+    inputRef.current?.focus({ preventScroll: true });
   }, []);
 
   const removeDraft = useCallback((id) => {
+    if (editingDraftIDRef.current === id) {
+      editingDraftIDRef.current = null; setCurrent(null); setScreenshots(null); setBody('');
+    }
     setDrafts((previous) => previous.filter((item) => item.id !== id));
   }, []);
 
   const clearDrafts = useCallback(() => {
+    epochRef.current += 1; captureControllerRef.current?.abort();
+    editingDraftIDRef.current = null;
+    setCapturing(false); setBody('');
     setDrafts([]);
     setCurrent(null);
     setScreenshots(null);
@@ -316,10 +361,16 @@ export default function FileAnnotationEditor({
 
   const changeMode = useCallback((next) => {
     if (next === mode) return;
-    if (next !== 'off' && current) { setNotice('请先完成或取消当前选区'); return; }
+    if (next !== 'off' && current) {
+      epochRef.current += 1; captureControllerRef.current?.abort();
+      setCurrent(null); setScreenshots(null); setCapturing(false);
+    }
     if (next !== 'off' && kind === 'video') contentRef?.current?.querySelector('video')?.pause();
     if (next === 'off') {
+      editingDraftIDRef.current = null;
+      setBody('');
       epochRef.current += 1;
+      captureControllerRef.current?.abort();
       setCurrent(null);
       setScreenshots(null);
       setCapturing(false);
@@ -336,10 +387,13 @@ export default function FileAnnotationEditor({
   useEffect(() => {
     if (mode === 'off') return undefined;
     const onKeyDown = (event) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       event.preventDefault();
       event.stopPropagation();
+      editingDraftIDRef.current = null;
+      setBody('');
       epochRef.current += 1;
+      captureControllerRef.current?.abort();
       setRegion(null);
       setCurrent(null);
       setScreenshots(null);
@@ -432,16 +486,19 @@ export default function FileAnnotationEditor({
   }, [contentRef]);
 
   const onPointerDown = useCallback((event) => {
+    if (dragRef.current || (event.button != null && event.button !== 0)) return;
     if (mode === 'cells') {
       const hit = cellFromPoint(event);
       if (hit) {
         event.preventDefault();
-        dragRef.current = { cellStart: hit.cell, root: hit.root };
+        dragRef.current = { cellStart: hit.cell, root: hit.root, pointerId: event.pointerId };
       }
       return;
     }
     if (!isRegion) return;
     const surface = contentRef?.current?.querySelector(SURFACE_SELECTOR);
+    if (!surface || (event.target !== surface && !surface.contains(event.target))) return;
+    if (kind === 'video') surface.pause?.();
     const box = mediaContentBox(surface);
     if (!box) return;
     if (kind === 'html' && surface.dataset.fileAnnotationReady !== 'true') {
@@ -453,12 +510,14 @@ export default function FileAnnotationEditor({
       return;
     }
     event.preventDefault();
-    dragRef.current = { startX: event.clientX, startY: event.clientY, box, moved: false };
+    dragRef.current = { startX: event.clientX, startY: event.clientY, box, moved: false,
+      pointerId: event.pointerId, surface, timeSeconds: kind === 'video' ? Number(surface.currentTime) : undefined };
+    try { surface.setPointerCapture?.(event.pointerId); } catch { /* synthetic or released pointer */ }
   }, [cellFromPoint, contentRef, isRegion, kind, mode]);
 
   const onPointerMove = useCallback((event) => {
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag || (drag.pointerId != null && event.pointerId != null && drag.pointerId !== event.pointerId)) return;
     const moved = drag.moved || Math.abs(event.clientX - drag.startX) > 4 || Math.abs(event.clientY - drag.startY) > 4;
     drag.moved = moved;
     drag.lastX = event.clientX;
@@ -475,9 +534,11 @@ export default function FileAnnotationEditor({
 
   const onPointerUp = useCallback(async (event) => {
     const drag = dragRef.current;
+    if (drag?.pointerId != null && event.pointerId != null && drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
     setRegion(null);
     if (!drag) return;
+    try { drag.surface?.releasePointerCapture?.(drag.pointerId); } catch { /* capture already lost */ }
     // Cells: a real press-drag release across td cells selects the range.
     if (drag.cellStart) {
       const hit = cellFromPoint(event);
@@ -495,12 +556,13 @@ export default function FileAnnotationEditor({
       }
       return;
     }
-    if (!drag.moved) return;
+    const endX = Number.isFinite(event.clientX) ? event.clientX : drag.lastX ?? drag.startX;
+    const endY = Number.isFinite(event.clientY) ? event.clientY : drag.lastY ?? drag.startY;
     const rect = {
-      x: Math.min(drag.startX, drag.lastX),
-      y: Math.min(drag.startY, drag.lastY),
-      width: Math.abs(drag.lastX - drag.startX),
-      height: Math.abs(drag.lastY - drag.startY),
+      x: Math.min(drag.startX, endX),
+      y: Math.min(drag.startY, endY),
+      width: Math.abs(endX - drag.startX),
+      height: Math.abs(endY - drag.startY),
     };
     if (rect.width < 4 || rect.height < 4) return;
     let normalized;
@@ -524,7 +586,10 @@ export default function FileAnnotationEditor({
     if (kind === 'video') {
       const video = contentRef?.current?.querySelector(`${SURFACE_SELECTOR}`);
       if (video && Number.isFinite(video.currentTime)) {
-        target.time_seconds = Number(video.currentTime);
+        if (Math.abs(Number(video.currentTime) - drag.timeSeconds) > 0.05) {
+          setNotice('视频画面已变化，请暂停后重新框选'); return;
+        }
+        target.time_seconds = drag.timeSeconds;
         video.pause?.();
       }
     }
@@ -535,12 +600,21 @@ export default function FileAnnotationEditor({
     if (!isRegion && mode !== 'cells') return undefined;
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
-    const cancel = () => { dragRef.current = null; setRegion(null); };
+    const cancel = (event) => {
+      const drag = dragRef.current;
+      if (drag?.pointerId != null && event.pointerId != null && drag.pointerId !== event.pointerId) return;
+      dragRef.current = null; setRegion(null);
+      try { drag?.surface?.releasePointerCapture?.(drag.pointerId); } catch { /* capture already lost */ }
+    };
     window.addEventListener('pointercancel', cancel);
+    window.addEventListener('lostpointercapture', cancel);
+    window.addEventListener('blur', cancel);
     return () => {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('lostpointercapture', cancel);
+      window.removeEventListener('blur', cancel);
     };
   }, [isRegion, mode, onPointerMove, onPointerUp]);
 
@@ -660,147 +734,161 @@ export default function FileAnnotationEditor({
 
   const availableModes = kind === 'text' ? ['text'] : kind === 'cells' ? ['cells'] : ['region', 'whole'];
 
-  const regionStyle = (() => {
-    let shown = region;
-    if (!shown && current?.target.rect) {
-      const box = mediaContentBox(contentRef?.current?.querySelector(SURFACE_SELECTOR));
-      if (box) {
-        const rect = current.target.rect;
-        shown = { left: (box.left ?? box.x) + rect.x * box.width, top: (box.top ?? box.y) + rect.y * box.height, width: rect.width * box.width, height: rect.height * box.height };
+  const showOutline = Boolean((region || current?.target?.rect) && !current?.stale);
+  useLayoutEffect(() => {
+    const outline = outlineRef.current;
+    if (!outline) return undefined;
+    const position = () => {
+      const surface = contentRef?.current?.querySelector(SURFACE_SELECTOR);
+      if (!surface) return;
+      if (kind === 'video' && current && Math.abs(Number(surface.currentTime) - current.target.time_seconds) > 0.05) {
+        outline.hidden = true; return;
       }
-    }
-    if (!shown || !panelRef.current) return null;
-    const panel = (contentRef?.current?.closest('.v3-file-preview-panel') || panelRef.current).getBoundingClientRect();
-    return {
-      left: shown.left - panel.left,
-      top: shown.top - panel.top,
-      width: shown.width,
-      height: shown.height,
+      let shown = region;
+      if (!shown && current?.target?.rect) {
+        const box = mediaContentBox(surface), rect = current.target.rect;
+        if (box) shown = { left: box.x + rect.x * box.width, top: box.y + rect.y * box.height,
+          width: rect.width * box.width, height: rect.height * box.height };
+      }
+      if (!shown) { outline.hidden = true; return; }
+      const viewport = contentRef?.current?.getBoundingClientRect();
+      if (viewport?.width > 0 && viewport.height > 0) {
+        const left = Math.max(shown.left, viewport.left), top = Math.max(shown.top, viewport.top);
+        const right = Math.min(shown.left + shown.width, viewport.left + viewport.width);
+        const bottom = Math.min(shown.top + shown.height, viewport.top + viewport.height);
+        shown = { left, top, width: right - left, height: bottom - top };
+        if (shown.width <= 0 || shown.height <= 0) { outline.hidden = true; return; }
+      }
+      const parent = outline.offsetParent || document.documentElement;
+      const panel = parent.getBoundingClientRect();
+      Object.assign(outline.style, { left: (shown.left - panel.left - parent.clientLeft + parent.scrollLeft) + 'px',
+        top: (shown.top - panel.top - parent.clientTop + parent.scrollTop) + 'px',
+        width: shown.width + 'px', height: shown.height + 'px' });
+      outline.hidden = false;
     };
-  })();
+    position();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(position);
+    if (contentRef?.current) observer.observe(contentRef.current);
+    return () => observer.disconnect();
+  });
 
-  const popoverStyle = (() => {
-    const surface = contentRef?.current?.querySelector(SURFACE_SELECTOR);
-    const panel = contentRef?.current?.closest('.v3-file-preview-panel') || panelRef.current;
-    if (!current || !surface || !panel) return { display: 'none' };
-    const box = mediaContentBox(surface) || surface.getBoundingClientRect();
-    const panelRect = panel.getBoundingClientRect();
-    const width = Math.min(320, Math.max(180, panelRect.width - 24));
-    const rect = current.target.rect;
-    const anchorLeft = current.anchor ? current.anchor.left - panelRect.left : (box.left ?? box.x) + (rect?.x || 0) * box.width - panelRect.left;
-    const anchorRight = current.anchor ? current.anchor.right - panelRect.left : (box.left ?? box.x) + (rect ? rect.x + rect.width : 1) * box.width - panelRect.left;
-    let left = anchorRight + 8;
-    if (left + width > panelRect.width - 12) left = anchorLeft - width - 8;
-    left = Math.max(12, Math.min(left, panelRect.width - width - 12));
-    const maxHeight = Math.max(160, Math.min(360, panelRect.height - 24));
-    const top = Math.max(12, Math.min(current.anchor ? current.anchor.top - panelRect.top : (box.top ?? box.y) + (rect?.y || 0) * box.height - panelRect.top, panelRect.height - maxHeight - 12));
-    return { left, top, width, maxHeight };
-  })();
+  const cancelSelection = () => {
+    epochRef.current += 1;
+    captureControllerRef.current?.abort();
+    editingDraftIDRef.current = null;
+    setCapturing(false); setCurrent(null); setScreenshots(null); setBody(''); setNotice('');
+  };
+  const targetLabel = target => kind === 'video'
+    ? videoTimeLabel(target.time_seconds) : fileAnnotationTargetSummary(kind, target);
 
   return (
     <div className="file-annotation-editor" ref={panelRef} data-kind={kind} data-mode={mode}>
       <div className="file-annotation-toolbar" role="group" aria-label="文件批注">
-        <span className="file-annotation-toolbar-title">
-          {file?.name || '文件'} · {source?.topic_name ? `发送至「${source.topic_name}」` : '发送至文件所在会话'}
+        <span className="file-annotation-toolbar-title"><MessageSquareText size={16} /><strong>批注</strong>
+          {drafts.length > 0 && <span className="file-annotation-count">{drafts.length}</span>}
         </span>
         <div className="file-annotation-modes">
-          {availableModes.map((item) => (
-            <button
-              key={item}
-              type="button"
-              className={`file-annotation-mode${mode === item ? ' is-active' : ''}`}
-              aria-pressed={mode === item}
-              onClick={() => {
-                if (item === 'whole' && mode === 'whole') {
-                  if (!current) void selectWhole();
-                  else setNotice('请先完成或取消当前选区');
-                } else changeMode(mode === item ? 'off' : item);
-              }}
-            >
-              {kind === 'html' && item === 'whole' ? '当前可见页' : MODE_LABELS[item]}
-            </button>
-          ))}
+          {availableModes.map(item => <button key={item} type="button"
+            className={`file-annotation-mode${mode === item ? ' is-active' : ''}`}
+            aria-pressed={mode === item}
+            onClick={() => {
+              if (item === 'whole' && mode === 'whole') {
+                if (!current || current.stale) void selectWhole();
+                else setNotice('请先完成或取消当前选区');
+              } else changeMode(mode === item ? 'off' : item);
+            }}>
+            {item === 'region' ? <Crosshair size={15} /> : <Scan size={15} />}
+            {kind === 'video' && item === 'whole' ? '批注当前帧'
+              : kind === 'html' && item === 'whole' ? '当前可见页' : MODE_LABELS[item]}
+          </button>)}
         </div>
-        {mode !== 'off' && (
-          <p className={`file-annotation-hint${error ? ' is-error' : ''}`} role={error ? 'alert' : 'status'}>
-            {error || notice || (kind === 'text' ? '在原文中选中要批注的文本。'
-              : kind === 'cells' ? '点击要批注的单元格。'
-                : kind === 'html' && mode === 'whole' ? '批注当前可见页面；滚动或页面变化后请重新选择。'
-                  : '在内容上拖出要批注的区域；Esc 取消当前选区。')}
-          </p>
-        )}
+        {mode !== 'off' && <button className="file-annotation-icon-button" type="button" aria-label="退出批注"
+          title="退出批注" onClick={() => changeMode('off')}><X size={16} /></button>}
+        {!current && mode !== 'off' && <p className={`file-annotation-hint${error ? ' is-error' : ''}`} role={error ? 'alert' : 'status'}>
+          {error || notice || (kind === 'video' ? '调整播放进度，暂停后框选区域或批注当前帧。'
+            : kind === 'text' ? '选中原文中的文字，即可添加批注。'
+              : kind === 'cells' ? '点击或拖选单元格，即可添加批注。' : '在画面上拖动选择区域。Esc 取消选区。')}
+        </p>}
       </div>
 
-      {current && (
-        <div className="file-annotation-current file-annotation-popover" style={popoverStyle} role="dialog" aria-label="批注内容">
-          <span className="file-annotation-popover-target">
-            当前批注：{fileAnnotationTargetSummary(kind, current.target)}
-          </span>
-          {visualKind && (
-            <label className="file-annotation-text-only">
-              <input type="checkbox" checked={textOnly} disabled={capturing}
-                onChange={(event) => setTextOnly(event.currentTarget.checked)} />
-              不含截图，仅发送文字与定位
-            </label>
-          )}
-          {needsScreenshot && capturing && <p className="file-annotation-hint" role="status">正在捕获当前内容…</p>}
-          {needsScreenshot && screenshots?.images?.length > 0 && (
-            <div className="file-annotation-screenshots" aria-label="批注截图预览">
-              {screenshots.images.map((image) => (
-                <figure key={image.role}>
-                  <img src={image.data_url} alt={image.role === 'full' ? (screenshots.visiblePreview ? '当前可见内容截图' : '完整内容截图') : '选区截图'} />
-                  <figcaption>{image.role === 'full' ? (screenshots.visiblePreview ? '当前可见内容' : '完整内容') : '选区及周边'}</figcaption>
-                </figure>
-              ))}
-              {screenshots.warnings?.length > 0 && <p role="status">部分视觉证据：{screenshots.warnings.join('；')}</p>}
-            </div>
-          )}
-          {visualKind && !needsScreenshot && <p className="file-annotation-popover-note">将仅发送文字与定位，不含截图。</p>}
-          {current.failure && !textOnly && <div role="alert" className="file-annotation-popover-error">
-            <p>{current.failure.message}</p>
-            <button type="button" className="file-annotation-retry" disabled={capturing} onClick={() => void acceptTarget(current.target, current.anchor)}>重试当前选区</button>
-          </div>}
-          <textarea ref={inputRef} aria-label="批注内容" maxLength={2000} placeholder="写下要传达给 Agent 的批注内容…"
-            value={body} onChange={(event) => setBody(event.currentTarget.value)} />
-          <div className="file-annotation-popover-actions">
-            <button type="button" onClick={() => { epochRef.current += 1; setCapturing(false); setCurrent(null); setScreenshots(null); setNotice(''); }}>取消选区</button>
-            <button type="button" disabled={!body.trim() || capturing || (needsScreenshot && !current.capture)} onClick={addDraft}>添加批注</button>
-          </div>
+      {!current && kind === 'html' && mode !== 'off' && <div className="file-annotation-empty">
+        <Crosshair size={24} aria-hidden="true" /><strong>在页面中选择区域</strong>
+        <p>可拖动框选，也可批注整个当前可见页面。</p>
+      </div>}
+      {current && <section className="file-annotation-current file-annotation-popover" role="dialog" aria-label="批注内容">
+        <div className="file-annotation-composer-heading">
+          <strong className="file-annotation-popover-target">{kind === 'video' ? '视频帧 · ' : ''}{targetLabel(current.target)}</strong>
+          <button type="button" className="file-annotation-icon-button" aria-label="取消选区" title="取消选区" onClick={cancelSelection}><X size={16} /></button>
         </div>
-      )}
-
-      {drafts.length > 0 && (
-        <div className="file-annotation-drafts" role="group" aria-label="待发送批注">
-          {drafts.map((draft) => (
-            <div className="file-annotation-draft" key={draft.id}>
-              <span className="file-annotation-draft-label" title={draft.body}>
-                {fileAnnotationTargetSummary(kind, draft.target)}：{draft.body}
-              </span>
-              <button type="button" disabled={sending} aria-label="编辑批注" onClick={() => editDraft(draft)}>编辑</button>
-              <button type="button" disabled={sending} aria-label="删除批注" onClick={() => removeDraft(draft.id)}>删除</button>
-            </div>
-          ))}
+        <textarea ref={inputRef} aria-label="批注内容" placeholder="描述这里需要怎样修改…"
+          value={body} onChange={event => setBody(event.currentTarget.value)}
+          onKeyDown={event => {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); addDraft(); }
+          }} />
+        {current.stale && <p className="file-annotation-popover-error" role="alert">{notice || '画面已变化，评论已保留。请重新选择当前帧。'}</p>}
+        {needsScreenshot && capturing && <div className="file-annotation-capture-pending" role="status">
+          <span /> <span /> <p>{kind === 'video' ? '正在读取所选视频帧…' : '正在生成截图…'}</p>
+        </div>}
+        {needsScreenshot && screenshots?.images?.length > 0 && <div className="file-annotation-screenshots" aria-label="批注截图预览">
+          {screenshots.images.map(image => <figure key={image.role}>
+            <img src={image.data_url} alt={image.role === 'full' ? (kind === 'video' ? '所选视频帧' : '完整内容截图') : '选区截图'} />
+            <figcaption>{image.role === 'full' ? (kind === 'video' ? '所选视频帧' : screenshots.visiblePreview ? '当前可见内容' : '完整内容') : '选区细节'}</figcaption>
+          </figure>)}
+          {screenshots.warnings?.length > 0 && <p role="status">{screenshots.warnings.join('；')}</p>}
+        </div>}
+        {current.failure && !textOnly && <div role="alert" className="file-annotation-popover-error">
+          <p>{current.failure.message}</p>
+          <button type="button" className="file-annotation-retry" disabled={capturing}
+            onClick={() => void acceptTarget(current.target, current.anchor)}>重试当前选区</button>
+        </div>}
+        <div className="file-annotation-composer-options">
+          {visualKind && <label className="file-annotation-text-only">
+            <input type="checkbox" checked={textOnly} disabled={current.stale}
+              onChange={event => {
+                const checked = event.currentTarget.checked;
+                setTextOnly(checked);
+                if (checked) {
+                  epochRef.current += 1; captureControllerRef.current?.abort(); setCapturing(false);
+                } else void acceptTarget(current.target, current.anchor, true);
+              }} /><ImageOff size={14} />仅发送文字与定位
+          </label>}
+          <span className={Array.from(body.trim()).length > 2000 ? 'is-error' : ''}>{Array.from(body.trim()).length} / 2000</span>
         </div>
-      )}
-
-      {drafts.length > 0 && (
-        <div className="file-annotation-send-bar">
-          <button type="button" disabled={sending} onClick={clearDrafts}>清除全部</button>
-          <span className="spacer" />
-          <button type="button" disabled={sending} onClick={() => void send()}>
-            {sending ? '发送中…' : `发送 ${drafts.length} 条批注`}
+        <div className="file-annotation-popover-actions">
+          <span className="file-annotation-shortcut">⌘ / Ctrl + Enter 添加</span>
+          <button type="button" onClick={cancelSelection}>取消选区</button>
+          <button type="button" disabled={current.stale || !body.trim() || Array.from(body.trim()).length > 2000 || capturing || (needsScreenshot && !current.capture)} onClick={addDraft}>
+            <Plus size={15} />{editingDraftIDRef.current ? '保存批注' : '添加批注'}
           </button>
         </div>
-      )}
+      </section>}
 
-      {mode === 'off' && (
-        <button type="button" className="file-annotation-keyboard-target"
-          onClick={() => changeMode(kind === 'text' ? 'text' : kind === 'cells' ? 'cells' : 'whole')}>
-          {kind === 'html' ? '添加当前可见页批注（键盘）' : '添加整段/整页批注（键盘）'}
+      {drafts.length > 0 && <div className="file-annotation-drafts" role="group" aria-label="待发送批注">
+        {drafts.map(draft => <div className="file-annotation-draft" key={draft.id}>
+          {draft.capture?.images?.[1] && <img className="file-annotation-draft-thumbnail" src={draft.capture.images[1].data_url} alt="" />}
+          <div className="file-annotation-draft-content"><small>{targetLabel(draft.target)}</small>
+            <span className="file-annotation-draft-label" title={draft.body}>{draft.body}</span></div>
+          <button type="button" className="file-annotation-icon-button" disabled={sending} aria-label="编辑批注" title="编辑批注" onClick={() => editDraft(draft)}><Pencil size={15} /></button>
+          <button type="button" className="file-annotation-icon-button" disabled={sending} aria-label="删除批注" title="删除批注" onClick={() => removeDraft(draft.id)}><Trash2 size={15} /></button>
+        </div>)}
+      </div>}
+
+      {drafts.length > 0 && <div className="file-annotation-send-bar">
+        <button type="button" className="file-annotation-clear" disabled={sending} onClick={clearDrafts}>清除全部</button>
+        <span className="spacer" />
+        <button type="button" disabled={sending || Boolean(editingDraftIDRef.current)} onClick={() => void send()}>
+          <Send size={15} />{sending ? '发送中…' : `发送 ${drafts.length} 条批注`}
         </button>
-      )}
-
-      {regionStyle && <div className="file-annotation-region-outline" style={regionStyle} aria-hidden="true" />}
+      </div>}
+      {error && (current || mode === 'off') && <p className="file-annotation-error" role="alert">{error}</p>}
+      {(current || drafts.length > 0) && <p className="file-annotation-destination">{source?.topic_name ? `发送至「${source.topic_name}」` : '发送至文件所在会话'}</p>}
+      {mode === 'off' && <button type="button" className="file-annotation-keyboard-target"
+        onClick={() => changeMode(kind === 'text' ? 'text' : kind === 'cells' ? 'cells' : 'whole')}>
+        {kind === 'video' ? '用键盘批注当前帧' : kind === 'html' ? '添加当前可见页批注（键盘）' : '添加整段/整页批注（键盘）'}
+      </button>}
+      {showOutline && <div ref={outlineRef} className="file-annotation-region-outline" aria-hidden="true" />}
     </div>
   );
 }
