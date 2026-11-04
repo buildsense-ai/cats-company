@@ -26,7 +26,8 @@ func publicationReportFixture(r store.SkillHubPublicationCloudReceipt) *Publicat
 func TestSkillHubPublicationCommitClientReportStrictTransport(t *testing.T) {
 	for _, mode := range []string{"success", "automatic_name", "large_valid", "passed", "wrong_receipt", "wrong_candidate", "duplicate_report", "duplicate_issue", "duplicate_location",
 		"private_field", "private_path", "empty_location_field", "automatic_description", "null", "wrong_type", "wrong_schema", "unknown_coverage", "unknown_action", "lost_rejection",
-		"automatic_wrong_code", "automatic_wrong_category", "automatic_nonblocking", "automatic_wrong_field", "too_many_issues", "issue_budget", "report_budget", "transport_budget", "redirect", "encoding", "no_cache", "lost_reply", "outage"} {
+		"automatic_wrong_code", "automatic_wrong_category", "automatic_wrong_category_package_safety", "automatic_nonblocking", "automatic_wrong_field", "automatic_wrong_path_skill_json", "automatic_wrong_path_empty",
+		"too_many_issues", "issue_budget", "report_budget", "transport_budget", "redirect", "encoding", "no_cache", "lost_reply", "outage"} {
 		t.Run(mode, func(t *testing.T) {
 			expected := cancellationTestLease("https://hub.example").Receipt
 			peer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,21 +48,36 @@ func TestSkillHubPublicationCommitClientReportStrictTransport(t *testing.T) {
 				switch mode {
 				case "automatic_name":
 					entryIndex := int64(0)
-					out.Validation.Issues[0] = PublicationValidationIssue{Code: "metadata.name_whitespace", Category: "format", Blocking: true,
-						Location: PublicationValidationLocation{EntryIndex: &entryIndex, RelativePath: "SKILL.md", Field: "name"},
-						Message:  "入口 name 不能包含首尾空白。", RepairPolicy: "automatic"}
+					out.Validation.Issues[0] = automaticNameReportIssue(&entryIndex)
 				case "automatic_wrong_code":
-					out.Validation.Issues[0].Code = "metadata.name_invalid"
-					out.Validation.Issues[0].RepairPolicy = "automatic"
+					issue := automaticNameReportIssue(nil)
+					issue.Code = "metadata.name_invalid"
+					out.Validation.Issues[0] = issue
 				case "automatic_wrong_category":
-					out.Validation.Issues[0].Category = "compatibility"
-					out.Validation.Issues[0].RepairPolicy = "automatic"
+					issue := automaticNameReportIssue(nil)
+					issue.Category = "compatibility"
+					out.Validation.Issues[0] = issue
+				case "automatic_wrong_category_package_safety":
+					issue := automaticNameReportIssue(nil)
+					issue.Category = "package_safety"
+					out.Validation.Issues[0] = issue
 				case "automatic_nonblocking":
-					out.Validation.Issues[0].Blocking = false
-					out.Validation.Issues[0].RepairPolicy = "automatic"
+					issue := automaticNameReportIssue(nil)
+					issue.Blocking = false
+					out.Validation.Issues[0] = issue
+					out.Validation.Truncated = true
 				case "automatic_wrong_field":
-					out.Validation.Issues[0].Location.Field = "description"
-					out.Validation.Issues[0].RepairPolicy = "automatic"
+					issue := automaticNameReportIssue(nil)
+					issue.Location.Field = "description"
+					out.Validation.Issues[0] = issue
+				case "automatic_wrong_path_skill_json":
+					issue := automaticNameReportIssue(nil)
+					issue.Location.RelativePath = "skill.json"
+					out.Validation.Issues[0] = issue
+				case "automatic_wrong_path_empty":
+					issue := automaticNameReportIssue(nil)
+					issue.Location.RelativePath = ""
+					out.Validation.Issues[0] = issue
 				case "large_valid", "report_budget":
 					i := out.Validation.Issues[0]
 					i.Message = strings.Repeat("x", 900)
@@ -153,6 +169,12 @@ func TestSkillHubPublicationCommitClientReportStrictTransport(t *testing.T) {
 			}
 		})
 	}
+}
+
+func automaticNameReportIssue(entryIndex *int64) PublicationValidationIssue {
+	return PublicationValidationIssue{Code: "metadata.name_whitespace", Category: "format", Blocking: true,
+		Location: PublicationValidationLocation{EntryIndex: entryIndex, RelativePath: "SKILL.md", Field: "name"},
+		Message:  "入口 name 不能包含首尾空白。", RepairPolicy: "automatic"}
 }
 
 type humanReportCloud struct {
