@@ -757,3 +757,45 @@ relay 的 `current_usage` 上再比 `max_limit`，所以**碰额度上限一样�
 > `POST /internal/service-agents/{slug}/publish`（实例令牌）即可，平台自动派生并持久化 ——
 > 不需要另做「发布工具」。
 
+
+## 现场自检（一条命令）
+
+验「bot 当工具」这条链路以前靠临时探针，而探针本身坑过三次：HTTP 分片把 SSE 的
+`data:` 行切断被当成「0 个工具」、只看 `content[0].text` 就说「结果拿不到」（正文其实在
+`structuredContent.output.text`）、把某个配置组合的失败说成整个功能不可用。
+
+现在固化在 `scripts/verify-agent-tools.mjs`：
+
+```bash
+# 只看这个身份能看到哪些工具（只读）
+node scripts/verify-agent-tools.mjs --uid 1619 --secret "$CATSCO_JWT_SECRET"
+
+# 真调一次并等到终态（会真的起一单）
+node scripts/verify-agent-tools.mjs --uid 1619 --secret "$CATSCO_JWT_SECRET" \
+  --call catsco_my_tool --text "只回复 OK"
+```
+
+输出示例（真实一次快调）：
+
+```
+身份 uid=1619 可见工具 4 个：
+  - catsco_run_status
+  - catsco_share_self
+  - catsco_my_tool
+调用 catsco_my_tool ...
+  [3s] status=running
+  [9s] status=completed
+run=run_92fd... status=completed
+output: OK
+```
+
+要点：
+
+- `--json` 给机器读；退出码 0=成功、1=结果不符预期、2=参数问题、3=没等到终态；
+- 判成功看 **`structuredContent.status === 'completed'`**，不要看正文长得像不像答案；
+- 想复现「别人能不能用我的工具」，换 `--uid` 即可（可见性按身份判定）；
+- 解析层只按 SSE 事件边界切（空行），`fetch` 已经解掉传输层分片 —— 换成裸 socket
+  时要先自己去分片。
+
+单元测试 `scripts/verify-agent-tools.test.mjs` 跟 CI 一起跑，锁住分片、多行 data、
+半截 JSON 留痕、token 签名与参数解析这些点。
