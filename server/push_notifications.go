@@ -710,7 +710,7 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 	var deliveryErrors []error
 	deliveries := 0
 	for _, subscription := range subscriptions {
-		if subscription == nil || strings.HasPrefix(subscription.Endpoint, nativePushPrefix) {
+		if subscription == nil || isNativePushEndpoint(subscription.Endpoint) {
 			continue
 		}
 		if shouldSendToDevice != nil && !shouldSendToDevice(subscription) {

@@ -290,10 +290,12 @@ func (h *Hub) fanoutConversationTaskStatus(sourceUID int64, status *types.Conver
 }
 
 func (h *Hub) observeAgentPushTaskStatus(status *types.ConversationTaskStatus) {
-	if h == nil || h.agentPush == nil || status == nil {
+	if h == nil || status == nil {
 		return
 	}
-	h.agentPush.observeStatus(status)
+	if h.agentPush != nil {
+		h.agentPush.observeStatus(status)
+	}
 	if h.nativeAgentPush != nil {
 		h.nativeAgentPush.observeStatus(status)
 	}

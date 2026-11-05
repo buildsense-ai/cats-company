@@ -551,6 +551,7 @@ func main() {
 	pushNotificationService := server.NewPushNotificationService(pushSubscriptionStore)
 	nativePushService := server.NewNativePushService(pushSubscriptionStore)
 	hub.SetNativePushService(nativePushService)
+	nativeSurfaceHandler := server.NewNativeSurfaceHandler(nativePushService, db, hub, agentHandler, conversationHandler)
 	if err := nativePushService.ConfigError(); err != nil {
 		log.Printf("native push disabled: %v", err)
 	}
@@ -999,6 +1000,9 @@ func main() {
 	mux.HandleFunc("/api/stt/realtime", sttHandler.HandleRealtime)
 	mux.HandleFunc("/api/push/ios/config", jwtAuthWithDB(nativePushService.HandleStatus))
 	mux.HandleFunc("/api/push/ios/registrations", chainHTTP(nativePushService.HandleRegistration, jwtAuthWithDB, pushSubscriptionUserLimit))
+	mux.HandleFunc("/api/push/ios/activities", chainHTTP(nativeSurfaceHandler.HandleActivities, jwtAuthWithDB, pushSubscriptionUserLimit))
+	mux.HandleFunc("/api/push/ios/surfaces", chainHTTP(nativeSurfaceHandler.HandleSurfaces, jwtAuthWithDB, pushSubscriptionUserLimit))
+	mux.HandleFunc("/api/push/ios/snapshot", nativeSurfaceHandler.HandleSnapshot)
 	mux.HandleFunc("/api/push/ios/test", chainHTTP(nativePushService.HandleTest, jwtAuthWithDB, pushTestUserLimit))
 	mux.HandleFunc("/api/push/config", pushNotificationService.HandleStatus)
 	mux.HandleFunc("/api/push/subscriptions", chainHTTP(
