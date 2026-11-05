@@ -729,6 +729,8 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 		var response *http.Response
 		var sendErr error
 		status := 0
+		// provider 错误体（每次尝试前重置）：用来解释 4xx 到底为什么
+		pushBody := ""
 		for attempt := 1; attempt <= maxPushProviderAttempts; attempt++ {
 			response, sendErr = s.send(ctx, payload, &webpush.Subscription{
 				Endpoint: subscription.Endpoint,
@@ -745,9 +747,18 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 			})
 
 			status = 0
+			pushBody = ""
 			if response != nil {
 				status = response.StatusCode
 				if response.Body != nil {
+					// 失败时把 provider 的响应体读出来（限 512 字节）。不读的话日志只有
+					// "provider ... returned HTTP 400" 这一句，永远查不出是 VAPID 不匹配、
+					// payload 过大还是订阅过期 —— 2026-11-05 现场 140 次 400 全是它。
+					if status >= http.StatusBadRequest {
+						if raw, readErr := io.ReadAll(io.LimitReader(response.Body, 512)); readErr == nil {
+							pushBody = strings.TrimSpace(string(raw))
+						}
+					}
 					if closeErr := response.Body.Close(); closeErr != nil {
 						s.logf("web push: close response for provider %q: %v", endpointID, closeErr)
 					}
@@ -788,7 +799,12 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 			continue
 		}
 		if status < http.StatusOK || status >= http.StatusMultipleChoices {
-			deliveryErr := fmt.Errorf("provider %q returned HTTP %d", endpointID, status)
+			detail := ""
+			if pushBody != "" {
+				// 订阅 endpoint 可能出现在 provider 的错误体里，先脱敏再进日志
+				detail = ": " + redactPushEndpointError(errors.New(pushBody), subscription.Endpoint).Error()
+			}
+			deliveryErr := fmt.Errorf("provider %q returned HTTP %d%s", endpointID, status, detail)
 			s.logf("web push: %v", deliveryErr)
 			deliveryErrors = append(deliveryErrors, deliveryErr)
 			continue
