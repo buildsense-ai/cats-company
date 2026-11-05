@@ -55,6 +55,9 @@ type CloudWorkerHandler struct {
 	provisionScript string
 	resetScript     string
 	renewScript     string
+	// changePlanScript pushes a package tier change (light/standard/pro/heavy) to
+	// the packed container. Empty = tier changes stay a database-only fact.
+	changePlanScript string
 	// billingScript is optional: an empty value falls back to the historical
 	// location next to renewScript and then to the image's ops directory.
 	billingScript     string
@@ -204,6 +207,11 @@ type CloudWorkerConfig struct {
 	ProvisionScript   string // CATSCO_WORKER_PROVISION_SCRIPT
 	ResetScript       string // CATSCO_WORKER_RESET_SCRIPT
 	RenewScript       string // CATSCO_WORKER_RENEW_SCRIPT
+	// ChangePlanScript is CATSCO_WORKER_CHANGE_PLAN_SCRIPT. Optional: when set, an
+	// upgrade that changes the package's shared-fleet tier is pushed to the
+	// container (memory/swap/disk limits) instead of only extending the paid
+	// window. Empty disables the tier sync entirely.
+	ChangePlanScript string // CATSCO_WORKER_CHANGE_PLAN_SCRIPT
 	// BillingScript is CATSCO_WORKER_BILLING_SCRIPT. Optional: the trial
 	// conversion/suspend script normally sits in the image's ops directory, and
 	// leaving this empty keeps that default without hard-coding it in callers.
@@ -351,6 +359,7 @@ func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 		ProvisionScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
 		ResetScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
 		RenewScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
+		ChangePlanScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_CHANGE_PLAN_SCRIPT")),
 		BillingScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_BILLING_SCRIPT")),
 		UpdateScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
 		RollbackScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
@@ -382,6 +391,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		provisionScript:   cfg.ProvisionScript,
 		resetScript:       cfg.ResetScript,
 		renewScript:       cfg.RenewScript,
+		changePlanScript:  cfg.ChangePlanScript,
 		billingScript:     cfg.BillingScript,
 		updateScript:      cfg.UpdateScript,
 		rollbackScript:    cfg.RollbackScript,
@@ -1327,6 +1337,55 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewRep
 	}
 	h.requestCloudStatusRefresh(true)
 	return report
+}
+
+// ApplyPlanToOwner pushes a package tier change to every packed worker the owner
+// still runs.
+//
+// Background: an upgrade used to be a database-only fact. Fulfilment extended
+// the entitlement, the quota grants and the paid window, then called the renew
+// script — which only resumes a suspended container and rewrites its expiry.
+// The container kept the memory, CPU and disk of the tier it was created with,
+// so a customer who paid for a bigger package never received the resources.
+// runtimePlan was read once at provision time and never again.
+//
+// The adapter (CATSCO_WORKER_CHANGE_PLAN_SCRIPT) is idempotent: a tenant already
+// on the tier answers "noop" without being touched, which is why this is safe to
+// run after every fulfilment, including first purchases.
+//
+// Failures are logged and never propagated: the payment is already settled, and
+// a failed tier push must not look like a failed order.
+func (h *CloudWorkerHandler) ApplyPlanToOwner(uid int64, tier string) {
+	tier = strings.TrimSpace(tier)
+	if h == nil || uid <= 0 || h.changePlanScript == "" || tier == "" {
+		return
+	}
+	lifecycleStore, ok := h.credits.(interface {
+		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
+	})
+	if !ok {
+		log.Printf("[cloud-worker] plan sync: lifecycle store unavailable uid=%d tier=%s", uid, tier)
+		return
+	}
+	lifecycles, err := lifecycleStore.ListCloudWorkerLifecycles(uid)
+	if err != nil {
+		log.Printf("[cloud-worker] plan sync list uid=%d tier=%s failed: %v", uid, tier, err)
+		return
+	}
+	for _, lifecycle := range lifecycles {
+		if lifecycle.State == "delete_running" || lifecycle.State == "deleted" ||
+			strings.TrimSpace(lifecycle.TenantName) == "" {
+			continue
+		}
+		out, runErr := h.runScript(h.changePlanScript, "--name", lifecycle.TenantName, "--plan", tier)
+		if runErr != nil {
+			log.Printf("[cloud-worker] plan sync tenant=%s uid=%d tier=%s failed: %v",
+				lifecycle.TenantName, uid, tier, runErr)
+			continue
+		}
+		log.Printf("[cloud-worker] plan sync tenant=%s uid=%d tier=%s result=%s",
+			lifecycle.TenantName, uid, tier, strings.TrimSpace(string(out)))
+	}
 }
 
 // cloudWorkerRenewArgs builds the provider renewal invocation for one lifecycle.
