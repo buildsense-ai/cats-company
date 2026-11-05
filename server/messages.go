@@ -473,6 +473,9 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	}
 	if h.isTaskStatusPublisher(uid) {
 		h.agentPush.resetVisibleTailAtWorkingBoundary(uid, dataMsg)
+		if h.nativeAgentPush != nil {
+			h.nativeAgentPush.resetVisibleTailAtWorkingBoundary(uid, dataMsg)
+		}
 	}
 
 	if isGroupTopic(topicID) {

@@ -549,6 +549,11 @@ func main() {
 	msgHandler := server.NewMessageHandler(db, hub)
 	pushSubscriptionStore, _ := db.(store.PushSubscriptionStore)
 	pushNotificationService := server.NewPushNotificationService(pushSubscriptionStore)
+	nativePushService := server.NewNativePushService(pushSubscriptionStore)
+	hub.SetNativePushService(nativePushService)
+	if err := nativePushService.ConfigError(); err != nil {
+		log.Printf("native push disabled: %v", err)
+	}
 	hub.SetPushNotificationService(pushNotificationService)
 	if pushNotificationService.Enabled() {
 		log.Printf("web push notifications are enabled")
@@ -992,6 +997,9 @@ func main() {
 	mux.HandleFunc("/api/artifact-runtime", jwtAuthWithDB(artifactRuntimeHandler.HandleUser))
 	mux.HandleFunc("/api/stt/sessions", jwtAuthWithDB(sttHandler.HandleSession))
 	mux.HandleFunc("/api/stt/realtime", sttHandler.HandleRealtime)
+	mux.HandleFunc("/api/push/ios/config", jwtAuthWithDB(nativePushService.HandleStatus))
+	mux.HandleFunc("/api/push/ios/registrations", chainHTTP(nativePushService.HandleRegistration, jwtAuthWithDB, pushSubscriptionUserLimit))
+	mux.HandleFunc("/api/push/ios/test", chainHTTP(nativePushService.HandleTest, jwtAuthWithDB, pushTestUserLimit))
 	mux.HandleFunc("/api/push/config", pushNotificationService.HandleStatus)
 	mux.HandleFunc("/api/push/subscriptions", chainHTTP(
 		pushNotificationService.HandleSubscription,

@@ -159,6 +159,7 @@ jobs:
           cp deploy/sync-shimo-env.py "${tmpdir}/compose/"
           cp deploy/sync-shimo-worker-env.py "${tmpdir}/compose/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
+          cp deploy/sync-apns-env.py "${tmpdir}/compose/"
           cp deploy/sync-stt-env.py "${tmpdir}/compose/"
           cp deploy/prod/docker-compose.yml "${tmpdir}/compose/"
           cp deploy/tencent/nginx/catscompany-app.conf "${tmpdir}/compose/"
@@ -203,6 +204,10 @@ jobs:
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+          APNS_TEAM_ID: ${{ secrets.APNS_TEAM_ID }}
+          APNS_KEY_ID: ${{ secrets.APNS_KEY_ID }}
+          APNS_BUNDLE_ID: ${{ secrets.APNS_BUNDLE_ID }}
+          APNS_P8_BASE64: ${{ secrets.APNS_P8_BASE64 }}
           CATSCO_PUSH_RELAY_URL: ${{ secrets.CATSCO_PUSH_RELAY_URL }}
           CATSCO_PUSH_RELAY_TOKEN: ${{ secrets.CATSCO_PUSH_RELAY_TOKEN }}
           VOLCENGINE_STT_API_KEY: ${{ secrets.VOLCENGINE_STT_API_KEY }}
@@ -235,6 +240,9 @@ jobs:
             "$VAPID_PUBLIC_KEY" "$VAPID_PRIVATE_KEY" "$VAPID_SUBJECT" "$CATSCO_PUSH_RELAY_URL" "$CATSCO_PUSH_RELAY_TOKEN" |
             ssh ${SSH_OPTS} "${REMOTE}" \
               "sudo -n python3 ${PROD_STACK_ROOT}/compose/sync-vapid-env.py ${PROD_STACK_ROOT}/env/prod.env"
+          printf '%s\0%s\0%s\0%s\0' "$APNS_TEAM_ID" "$APNS_KEY_ID" "$APNS_BUNDLE_ID" "$APNS_P8_BASE64" |
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "sudo -n python3 ${PROD_STACK_ROOT}/compose/sync-apns-env.py ${PROD_STACK_ROOT}/env/prod.env ${PROD_STACK_ROOT}/secrets"
           printf '%s\0' "$VOLCENGINE_STT_API_KEY" |
             ssh ${SSH_OPTS} "${REMOTE}" \
               "sudo -n python3 ${PROD_STACK_ROOT}/compose/sync-stt-env.py ${PROD_STACK_ROOT}/env/prod.env"

@@ -294,6 +294,10 @@ func (h *Hub) observeAgentPushTaskStatus(status *types.ConversationTaskStatus) {
 		return
 	}
 	h.agentPush.observeStatus(status)
+	if h.nativeAgentPush != nil {
+		h.nativeAgentPush.observeStatus(status)
+	}
+	h.notifyNativeTaskStatus(status)
 }
 
 func (h *Hub) scheduleDisconnectedBotTaskRecovery(sourceUID int64, disconnectedAt time.Time) {

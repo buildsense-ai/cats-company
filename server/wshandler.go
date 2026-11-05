@@ -71,6 +71,8 @@ type Hub struct {
 	artifactResultWritebacks     *artifactResultWritebackStore
 	artifactTasks                *artifactTaskStore
 	push                         *PushNotificationService
+	nativePush                   *NativePushService
+	nativeAgentPush              *agentPushTurnCoordinator
 	agentPush                    *agentPushTurnCoordinator
 	taskGrace                    time.Duration
 	// taskReaperInterval is how often the disconnected-task recovery reaper
@@ -266,6 +268,13 @@ func newHubWithState(db store.Store, rl *RateLimiter, shared sharedRuntimeState,
 func (h *Hub) SetPushNotificationService(service *PushNotificationService) {
 	if h != nil {
 		h.push = service
+	}
+}
+
+func (h *Hub) SetNativePushService(service *NativePushService) {
+	if h != nil {
+		h.nativePush = service
+		h.nativeAgentPush = newAgentPushTurnCoordinator()
 	}
 }
 
@@ -2402,7 +2411,12 @@ func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
 }
 
 func (h *Hub) enqueueOfflineUserPush(uid int64, topic, body string) bool {
-	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 {
+	native := h.enqueueUserPushTransport(uid, topic, body, true)
+	web := h.enqueueUserPushTransport(uid, topic, body, false)
+	return native || web
+}
+func (h *Hub) enqueueUserPushTransport(uid int64, topic, body string, native bool) bool {
+	if h == nil || uid <= 0 || (native && !h.nativePush.Enabled()) || (!native && !h.push.Enabled()) {
 		return false
 	}
 	user, err := h.db.GetUser(uid)
@@ -2415,9 +2429,12 @@ func (h *Hub) enqueueOfflineUserPush(uid int64, topic, body string) bool {
 		URL:   "/",
 		Tag:   "catsco-new-message",
 	}
-	return h.push.EnqueueToUserWhen(uid, notification, func(ctx context.Context) bool {
-		return !h.isConversationNotificationsMuted(ctx, uid, topic)
-	}, func(subscription *types.PushSubscription) bool {
+	allowed := func(ctx context.Context) bool { return !h.isConversationNotificationsMuted(ctx, uid, topic) }
+	if native {
+		notification.URL = topic
+		return h.nativePush.Enqueue(uid, notification, allowed)
+	}
+	return h.push.EnqueueToUserWhen(uid, notification, allowed, func(subscription *types.PushSubscription) bool {
 		return !h.hasMessagingClientAttention(uid, pushSubscriptionID(subscription.Endpoint), topic)
 	})
 }
@@ -2481,9 +2498,14 @@ func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessa
 		return
 	}
 	deliver := func(notificationBody string) bool {
-		return h.enqueueOfflineUserPush(uid, topic, notificationBody)
+		return h.enqueueUserPushTransport(uid, topic, notificationBody, false)
 	}
 	h.agentPush.observeVisibleMessageBody(uid, senderUID, msg, body, deliver)
+	if h.nativeAgentPush != nil && h.nativePush.Enabled() {
+		h.nativeAgentPush.observeVisibleMessageBody(uid, senderUID, msg, body, func(body string) bool {
+			return h.enqueueUserPushTransport(uid, topic, body, true)
+		})
+	}
 }
 
 func pushNotificationMessageBody(msg *ServerMessage) string {
