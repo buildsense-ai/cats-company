@@ -602,6 +602,11 @@ func (h *BotDefinitionHandler) definitionResponse(
 	if record.Definition.Prompt != nil {
 		definition["prompt"] = record.Definition.Prompt
 	}
+	// nil means account defaults; an explicit empty list disables optional tools.
+	// Preserve that distinction for owner clients reading back their selection.
+	if record.Definition.ServiceAgents != nil {
+		definition["serviceAgents"] = append([]string{}, record.Definition.ServiceAgents...)
+	}
 	runtime := record.Runtime
 	if ownerUID > 0 && runtime.LastError != "" {
 		runtime.LastError = "Bot 配置应用失败"
