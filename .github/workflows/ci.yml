@@ -40,6 +40,17 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      # setup-go 只缓存模块和工具链，不缓存 GOCACHE。冷启动时 race 二进制要从零
+      # 编译整棵依赖树（2~3 分钟），这是 CI 里最大的一块固定开销。GOCACHE 是内容
+      # 寻址缓存，跨 run 复用安全；key 按 job 分开，避免几个 job 互相挤占。
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-build-${{ runner.os }}-${{ github.job }}-
+
       - name: Test backend
         run: go test ./server/...
 
@@ -195,6 +206,17 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      # setup-go 只缓存模块和工具链，不缓存 GOCACHE。冷启动时 race 二进制要从零
+      # 编译整棵依赖树（2~3 分钟），这是 CI 里最大的一块固定开销。GOCACHE 是内容
+      # 寻址缓存，跨 run 复用安全；key 按 job 分开，避免几个 job 互相挤占。
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-build-${{ runner.os }}-${{ github.job }}-
+
       - name: Tune PostgreSQL for throwaway CI data
         env:
           PG_CONTAINER_ID: ${{ job.services.postgres.id }}
@@ -212,39 +234,16 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1
 
-      - name: Test PostgreSQL SkillHub publication race hotspots
-        env:
-          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        # race 只覆盖并发/竞态相关用例，保留关键检测同时避免全量 race 的 4~5 分钟耗时。
-        run: go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication.*(Concurren|Race|Fencing|Atomic|Replay|Recovery)' -count=1
-
-      - name: Test retained derived publication outcome access
-        env:
-          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: |
-          test -n "$CATS_PG_TEST_DSN"
-          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationDescriptionReleaseOutcomeHistoricalRead$' -count=1 -v
-
-      - name: Test private repair model dispatch journal
+      # 五个 -race 步骤合并成一次调用。同一个包每跑一次 go test -race 都要重新
+      # 链接 race 二进制（单次 30~60 秒），这五步里绝大部分时间花在重复链接上，
+      # 而不是跑用例。合并后仍覆盖同样的用例：并发/竞态热点 + 四个终态契约。
+      # 失败时 -v 会把出错的用例名列出来，定位粒度不变。
+      - name: Test PostgreSQL SkillHub publication race-sensitive contracts
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: |
           test -n "$CATS_PG_TEST_DSN"
-          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationRepairModel(Call|Execution)' -count=1 -v
-
-      - name: Test immutable derived publication terminal recovery
-        env:
-          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: |
-          test -n "$CATS_PG_TEST_DSN"
-          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationDescriptionTerminal' -count=1 -v
-
-      - name: Test durable derived outcome reconciliation
-        env:
-          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: |
-          test -n "$CATS_PG_TEST_DSN"
-          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationDescriptionReconcile' -count=1 -v
+          go test -race ./server/db/postgres -count=1 -v -run '^(TestPostgresSkillHubPublication.*(Concurren|Race|Fencing|Atomic|Replay|Recovery)|TestPostgresSkillHubPublicationDescriptionReleaseOutcomeHistoricalRead|TestPostgresSkillHubPublicationRepairModel(Call|Execution)|TestPostgresSkillHubPublicationDescriptionTerminal|TestPostgresSkillHubPublicationDescriptionReconcile)$'
 
   backend_db:
     name: Backend DB contracts
@@ -288,6 +287,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+
+      # setup-go 只缓存模块和工具链，不缓存 GOCACHE。冷启动时 race 二进制要从零
+      # 编译整棵依赖树（2~3 分钟），这是 CI 里最大的一块固定开销。GOCACHE 是内容
+      # 寻址缓存，跨 run 复用安全；key 按 job 分开，避免几个 job 互相挤占。
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-build-${{ runner.os }}-${{ github.job }}-
 
       # 这些契约测试对每个用例都执行完整 migration（大量 DDL/COMMIT）。
       # CI 库是纯临时的，关掉 fsync/WAL 持久化可显著缩短提交延迟，
