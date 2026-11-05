@@ -128,6 +128,35 @@ describe('CloudWorkerPanel', () => {
     expect(container.textContent).not.toContain('共享机');
   });
 
+  test('shows expiry, retention and the no-SSH note for a packed worker', async () => {
+    const inTenDays = new Date(Date.now() + 10 * 86400000).toISOString();
+    await renderPanel({
+      workers: [worker({ backend: 'packed', package_expires_at: inTenDays, retention_days: 7 })],
+    });
+    const text = container.textContent;
+    expect(text).toContain('到期时间');
+    expect(text).toContain('还剩 10 天');
+    expect(text).toContain('停服后保留');
+    expect(text).toContain('通过平台连接');
+  });
+
+  test('marks an expiry within 7 days as urgent', async () => {
+    const inThreeDays = new Date(Date.now() + 3 * 86400000).toISOString();
+    await renderPanel({
+      workers: [worker({ backend: 'packed', package_expires_at: inThreeDays })],
+    });
+    const strong = Array.from(container.querySelectorAll('.cc-cloud-worker-meta b'))
+      .find((el) => el.textContent.includes('还剩 3 天'));
+    expect(strong).toBeTruthy();
+    expect(strong.style.color).not.toBe('');
+  });
+
+  test('does not invent an expiry when the lifecycle row is missing', async () => {
+    await renderPanel({ workers: [worker({ backend: 'packed' })] });
+    expect(container.textContent).not.toContain('到期时间');
+    expect(container.textContent).not.toContain('停服后保留');
+  });
+
   test('updates connection status when the roster refreshes', async () => {
     await renderPanel({ workers: [worker({ runtime_status: 'not_connected' })] });
     expect(container.textContent).toContain('未连接，等待上线');
