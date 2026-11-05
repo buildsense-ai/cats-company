@@ -51,6 +51,12 @@ func TestValidatePackedTenantNameMessage(t *testing.T) {
 	if strings.Contains(msg, "packed-") || strings.Contains(msg, "incus") {
 		t.Fatalf("不应暴露内部概念，实际: %s", msg)
 	}
+	if strings.Contains(msg, "缩短") || strings.Contains(msg, "重试") {
+		t.Fatalf("username 注册后改不了，不能建议用户自己改: %s", msg)
+	}
+	if !strings.Contains(msg, "管理员") {
+		t.Fatalf("应给出可执行的下一步（联系管理员），实际: %s", msg)
+	}
 }
 
 // 边界必须对齐：username 49 → 租户名 53，换算出的容器名刚好 ≤ 63。
@@ -69,5 +75,53 @@ func TestCloudWorkerTenantNameBudget(t *testing.T) {
 		if n := len("packed-" + tenant + "-sb"); n > 63 {
 			t.Fatalf("username %q → 备副本容器名 %d 字符，超 incus 上限 63", u, n)
 		}
+	}
+}
+
+// 常量之间必须自洽：任何一处单独改数字都会立刻红。
+func TestUsernameLimitConstants(t *testing.T) {
+	if maxUsernameLen != 49 {
+		t.Fatalf("maxUsernameLen 应为 49（incus 63 − packed- 7 − -sb 3 − bot- 4），实际 %d", maxUsernameLen)
+	}
+	if packedTenantNameMaxLen != len("bot-")+maxUsernameLen {
+		t.Fatalf("packedTenantNameMaxLen(%d) 必须 = len(bot-)+maxUsernameLen(%d)",
+			packedTenantNameMaxLen, len("bot-")+maxUsernameLen)
+	}
+	// 最长的容器名形态：packed-<tenant>-sb
+	if n := len("packed-") + packedTenantNameMaxLen + len("-sb"); n > 63 {
+		t.Fatalf("最长容器名 %d 字符，超 incus 上限 63", n)
+	}
+}
+
+// 自动生成的名字也不能超：注册时没填 username 会从 email 推导，
+// 历史上限是 54（base）和 64（candidate），都超过现在的 49。
+func TestRegistrationUsernameBaseFitsLimit(t *testing.T) {
+	cases := []string{
+		strings.Repeat("a", 80) + "@example.com",
+		strings.Repeat("verylonglocalpart", 5) + "@example.com",
+		"ab@example.com",
+		"user_name.with.dots@example.com",
+	}
+	for _, email := range cases {
+		base := registrationUsernameBase(email)
+		if len(base) > maxUsernameLen {
+			t.Fatalf("email %q → base %q 长 %d，超上限 %d", email, base, len(base), maxUsernameLen)
+		}
+		if len(base) < 3 {
+			t.Fatalf("email %q → base %q 太短，注册会失败", email, base)
+		}
+	}
+}
+
+// cloud worker 的用户名正则要和 maxUsernameLen 对齐。
+func TestWorkerUsernameReBoundary(t *testing.T) {
+	if !workerUsernameRe.MatchString(strings.Repeat("a", maxUsernameLen)) {
+		t.Fatalf("%d 字符应通过", maxUsernameLen)
+	}
+	if workerUsernameRe.MatchString(strings.Repeat("a", maxUsernameLen+1)) {
+		t.Fatalf("%d 字符应被拒绝", maxUsernameLen+1)
+	}
+	if !workerUsernameRe.MatchString("bot-1446-53215df3") {
+		t.Fatal("现网 bot 名应通过")
 	}
 }

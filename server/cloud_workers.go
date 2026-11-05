@@ -192,7 +192,8 @@ const (
 
 // workerUsernameRe constrains cloud worker usernames so the derived tenant
 // name stays safe to embed in URL paths and script argv.
-var workerUsernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
+// 上界与 maxUsernameLen 对齐：租户名 "bot-"+username 还要拼成 packed-<tenant>[-sb]。
+var workerUsernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,48}$`)
 var workerTenantSeparatorRe = regexp.MustCompile(`-+`)
 
 func cloudWorkerTenantName(username string) string {
@@ -209,7 +210,7 @@ func cloudWorkerTenantName(username string) string {
 //
 // 超了不是"名字不好看"：主容器可能根本建不出来，或者建出来了但永远没有 standby。
 // 独享 ECS 用不到容器名，不受这条限制。
-const packedTenantNameMaxLen = 53
+const packedTenantNameMaxLen = len("bot-") + maxUsernameLen
 
 func validatePackedTenantName(profile string, tenantName string) error {
 	if profile != types.CloudWorkerPackedShared {
@@ -218,8 +219,9 @@ func validatePackedTenantName(profile string, tenantName string) error {
 	if len(tenantName) <= packedTenantNameMaxLen {
 		return nil
 	}
-	// 面向用户/运营的措辞：不提容器名、incus 这些内部概念，技术细节留在调用方日志里。
-	return fmt.Errorf("用户名过长（%d 字符）：共享集群最多支持 %d 字符的用户名。请缩短用户名后重试，或改用独享 ECS 方案",
+	// 用户注册后**改不了 username**，所以不能建议"请缩短后重试"——那是个死胡同。
+	// 这条只可能命中历史遗留数据（新注册已经在入口挡掉了），走人工处理。
+	return fmt.Errorf("用户名过长（%d 字符，共享集群上限 %d）：用户名注册后不可修改，请联系管理员处理该账号，或改用独享 ECS 方案",
 		len(tenantName)-len("bot-"), packedTenantNameMaxLen-len("bot-"))
 }
 

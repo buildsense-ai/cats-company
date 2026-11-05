@@ -18,6 +18,18 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+// maxUsernameLen 是平台用户名的硬上限。
+//
+// 用户注册之后**改不了 username**（只有 display_name 可改），所以必须在创建那一刻
+// 就挡住：超长的 username 一旦写进 DB 就永久留在那儿。而共享集群要用它拼租户名 ——
+// tenant = "bot-" + username，容器名 = "packed-" + tenant（failover 再加 "-sb"），
+// incus 要求实例名 ≤63 字符（2026-11-05 实测：63 建得出，64 报 "Invalid instance name"）。
+// 53 - len("bot-") = 49。
+//
+// 这条只管"新写入"。历史遗留的超长用户名不会被改写，那种账号开通共享集群时会在
+// cloud-worker 那边被明确拒绝（用户没有自助改名的入口，需要人工处理）。
+const maxUsernameLen = 49
+
 func registrationUsernameBase(email string) string {
 	local := strings.ToLower(strings.SplitN(strings.TrimSpace(email), "@", 2)[0])
 	var builder strings.Builder
@@ -36,8 +48,9 @@ func registrationUsernameBase(email string) string {
 	if len(base) < 3 {
 		base = "user-" + base
 	}
-	if len(base) > 54 {
-		base = strings.TrimRight(base[:54], "-_")
+	// attempt=0 时直接用它当用户名，所以必须 ≤ maxUsernameLen。
+	if len(base) > maxUsernameLen {
+		base = strings.TrimRight(base[:maxUsernameLen], "-_")
 	}
 	if len(base) < 3 {
 		return "user"
@@ -64,8 +77,13 @@ func resolveRegistrationUsername(db store.Store, requestedUsername, email string
 		if attempt > 0 {
 			digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", strings.ToLower(email), attempt)))
 			candidate = fmt.Sprintf("%s-%x", base, digest[:4])
-			if len(candidate) > 64 {
-				candidate = fmt.Sprintf("%s-%x", strings.TrimRight(base[:55], "-_"), digest[:4])
+			// 追加 "-" + 8 位 hex 会占 9 个字符，超了就把 base 截到刚好放得下。
+			if len(candidate) > maxUsernameLen {
+				keep := maxUsernameLen - 9
+				if keep < 1 {
+					keep = 1
+				}
+				candidate = fmt.Sprintf("%s-%x", strings.TrimRight(base[:keep], "-_"), digest[:4])
 			}
 		}
 		existing, err := db.GetUserByUsername(candidate)
@@ -371,6 +389,13 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	email := req.Email
 	if req.Username != "" && len(req.Username) < 3 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username min 3 chars"})
+		return
+	}
+	// 用户名是永久标识（没有改名入口），必须在注册时就挡住超长值。
+	if len(req.Username) > maxUsernameLen {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("username max %d chars", maxUsernameLen),
+		})
 		return
 	}
 
