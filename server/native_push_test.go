@@ -60,6 +60,9 @@ func TestNativePushProviderContract(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
+		if payload["aps"].(map[string]interface{})["content-available"] != float64(1) {
+			t.Fatal("ordinary alert cannot request widget background refresh")
+		}
 		alert := payload["aps"].(map[string]interface{})["alert"].(map[string]interface{})
 		if strings.Contains(fmt.Sprint(alert), "private") {
 			t.Fatal("default preview leaked content")
@@ -77,6 +80,10 @@ func TestNativePushProviderContract(t *testing.T) {
 func TestNativePushDeliveryIsolationAndPreviews(t *testing.T) {
 	s, db := nativePushFixture(t)
 	db.subscriptions = append(db.subscriptions, &types.PushSubscription{UID: 7, Endpoint: "https://web-push.example/device", RegistrationID: "web-id"})
+	db.subscriptions = append(db.subscriptions,
+		&types.PushSubscription{UID: 7, Endpoint: "surface://7/widget-registration", Auth: "surface-v1:hash"},
+		&types.PushSubscription{UID: 7, Endpoint: "activitykit://production/cc.catsco.ios/" + strings.Repeat("cd", 32), Auth: "activity-v1"},
+	)
 	calls := 0
 	s.client = &http.Client{Transport: apnsRoundTripper(func(r *http.Request) (*http.Response, error) {
 		calls++

@@ -210,3 +210,31 @@ func TestDeletePushSubscriptionsByEndpointIgnoresRegistrationID(t *testing.T) {
 		t.Fatalf("unmet database expectations: %v", err)
 	}
 }
+
+func TestPushSubscriptionSurfaceVersionFencing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	adapter := &Adapter{db: db}
+	for _, affected := range []int64{1, 0} {
+		mock.ExpectExec(regexp.QuoteMeta(`UPDATE push_subscriptions SET auth = ? WHERE uid = ? AND endpoint = ? AND registration_id = ? AND p256dh = ? AND auth = ?`)).WithArgs("new-auth", int64(7), "activitykit://sandbox/bundle/token", "registration-current", "metadata", "old-auth").WillReturnResult(sqlmock.NewResult(0, affected))
+		claimed, err := adapter.CompareAndSwapPushSubscriptionAuth(context.Background(), 7, "activitykit://sandbox/bundle/token", "registration-current", "metadata", "old-auth", "new-auth")
+		if err != nil || claimed != (affected == 1) {
+			t.Fatalf("claimed=%v affected=%d err=%v", claimed, affected, err)
+		}
+	}
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM push_subscriptions WHERE uid = ? AND endpoint = ? AND registration_id = ? AND p256dh = ? AND auth = ?`)).WithArgs(int64(7), "surface://7/registration-current", "registration-current", "metadata", "hash").WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := adapter.DeletePushSubscriptionVersion(context.Background(), 7, "surface://7/registration-current", "registration-current", "metadata", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE push_subscriptions SET p256dh = ? WHERE uid = ? AND endpoint = ? AND registration_id = ? AND p256dh = ? AND auth = ?`)).WithArgs("new-metadata", int64(7), "activitykit://sandbox/bundle/token", "registration-current", "metadata", "new-auth").WillReturnResult(sqlmock.NewResult(0, 1))
+	changed, err := adapter.CompareAndSwapPushSubscriptionMetadata(context.Background(), 7, "activitykit://sandbox/bundle/token", "registration-current", "metadata", "new-metadata", "new-auth")
+	if err != nil || !changed {
+		t.Fatalf("metadata CAS changed=%v err=%v", changed, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

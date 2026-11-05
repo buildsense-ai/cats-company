@@ -194,3 +194,30 @@ func (a *Adapter) DeletePushSubscriptionsByRegistrationID(ctx context.Context, u
 	}
 	return nil
 }
+
+// CompareAndSwapPushSubscriptionAuth claims one generation and metadata version.
+func (a *Adapter) CompareAndSwapPushSubscriptionAuth(ctx context.Context, uid int64, endpoint, registrationID, metadata, oldAuth, newAuth string) (bool, error) {
+	result, err := a.db.ExecContext(ctx, `UPDATE push_subscriptions SET auth = $1 WHERE uid = $2 AND endpoint = $3 AND registration_id = $4 AND p256dh = $5 AND auth = $6`, newAuth, uid, endpoint, registrationID, metadata, oldAuth)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+// DeletePushSubscriptionVersion cannot retire a concurrent refresh or rotation.
+func (a *Adapter) DeletePushSubscriptionVersion(ctx context.Context, uid int64, endpoint, registrationID, metadata, auth string) error {
+	_, err := a.db.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE uid = $1 AND endpoint = $2 AND registration_id = $3 AND p256dh = $4 AND auth = $5`, uid, endpoint, registrationID, metadata, auth)
+	return err
+}
+
+// CompareAndSwapPushSubscriptionMetadata preserves the claimed event watermark
+// while a client changes its presentation privacy preference.
+func (a *Adapter) CompareAndSwapPushSubscriptionMetadata(ctx context.Context, uid int64, endpoint, registrationID, oldMetadata, newMetadata, auth string) (bool, error) {
+	result, err := a.db.ExecContext(ctx, `UPDATE push_subscriptions SET p256dh = $1 WHERE uid = $2 AND endpoint = $3 AND registration_id = $4 AND p256dh = $5 AND auth = $6`, newMetadata, uid, endpoint, registrationID, oldMetadata, auth)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}

@@ -10,6 +10,9 @@ import (
 // Reuse the message-turn coordinator: a real final answer replaces a generic
 // status candidate, and retries/status heartbeats cannot notify twice per run.
 func (h *Hub) notifyNativeTaskStatus(status *types.ConversationTaskStatus) {
+	if h != nil && h.nativePush != nil {
+		h.nativePush.enqueueActivityStatus(status)
+	}
 	if h == nil || !h.nativePush.Enabled() || h.nativeAgentPush == nil || status == nil || status.RunID == "" || status.SourceUID <= 0 {
 		return
 	}

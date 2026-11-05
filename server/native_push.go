@@ -31,16 +31,18 @@ type NativePushConfig struct {
 	TeamID, KeyID, BundleID, KeyFile string
 }
 type NativePushService struct {
-	store     store.PushSubscriptionStore
-	config    NativePushConfig
-	key       *ecdsa.PrivateKey
-	client    *http.Client
-	configErr error
-	mu        sync.Mutex
-	jwt       string
-	issued    time.Time
-	queue     chan pushDeliveryJob
-	workers   sync.Once
+	store         store.PushSubscriptionStore
+	config        NativePushConfig
+	key           *ecdsa.PrivateKey
+	client        *http.Client
+	configErr     error
+	mu            sync.Mutex
+	jwt           string
+	issued        time.Time
+	queue         chan nativeDeliveryJob
+	activityQueue chan nativeDeliveryJob
+	surfaces      *NativeSurfaceHandler
+	workers       sync.Once
 }
 
 func NewNativePushService(db store.PushSubscriptionStore) *NativePushService {
@@ -55,7 +57,7 @@ func NewNativePushServiceWithConfig(db store.PushSubscriptionStore, config Nativ
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ForceAttemptHTTP2 = true
-	s := &NativePushService{store: db, config: config, client: &http.Client{Transport: transport, Timeout: pushRequestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, queue: make(chan pushDeliveryJob, maxQueuedPushDeliveries)}
+	s := &NativePushService{store: db, config: config, client: &http.Client{Transport: transport, Timeout: pushRequestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, queue: make(chan nativeDeliveryJob, maxQueuedPushDeliveries), activityQueue: make(chan nativeDeliveryJob, maxQueuedPushDeliveries)}
 	if config.KeyFile != "" {
 		data, err := os.ReadFile(config.KeyFile)
 		if err == nil {
@@ -229,10 +231,6 @@ func (s *NativePushService) send(ctx context.Context, uid int64, n PushNotificat
 	if err != nil {
 		return result, errors.New("could not load APNs registrations")
 	}
-	bearer, err := s.bearer()
-	if err != nil {
-		return result, err
-	}
 	var failures []error
 	for _, sub := range subscriptions {
 		if sub == nil || !strings.HasPrefix(sub.Endpoint, nativePushPrefix) || sub.Auth != "apns-v1" || (registration != "" && sub.RegistrationID != registration) {
@@ -254,65 +252,17 @@ func (s *NativePushService) send(ctx context.Context, uid int64, n PushNotificat
 			title = "CatsCo"
 			body = "你有新的消息或任务进展，点按查看。"
 		}
-		payload := map[string]interface{}{"aps": map[string]interface{}{"alert": map[string]string{"title": title, "body": body}, "sound": "default", "thread-id": nativeCollapseID(n.URL)}, "registration_id": sub.RegistrationID, "topic_id": n.URL}
+		payload := map[string]interface{}{"aps": map[string]interface{}{"alert": map[string]string{"title": title, "body": body}, "sound": "default", "content-available": 1, "thread-id": nativeCollapseID(n.URL)}, "registration_id": sub.RegistrationID, "topic_id": n.URL}
 		data, err := json.Marshal(payload)
 		if err != nil || len(data) > maxPushPayloadLen {
 			return result, errors.New("APNs payload too large")
 		}
-		host := "https://api.push.apple.com"
-		if input.Environment == "sandbox" {
-			host = "https://api.sandbox.push.apple.com"
-		}
 		result.Attempted++
-		for attempt := 0; attempt < maxPushProviderAttempts; attempt++ {
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, host+"/3/device/"+input.Token, bytes.NewReader(data))
-			if err != nil {
-				return result, err
-			}
-			req.Header.Set("authorization", "bearer "+bearer)
-			req.Header.Set("apns-topic", s.config.BundleID)
-			req.Header.Set("apns-push-type", "alert")
-			req.Header.Set("apns-priority", "10")
-			req.Header.Set("apns-expiration", fmt.Sprint(time.Now().Add(time.Hour).Unix()))
-			req.Header.Set("apns-collapse-id", nativeCollapseID(n.URL+"/"+n.Tag))
-			req.Header.Set("content-type", "application/json")
-			response, sendErr := s.client.Do(req)
-			status := 0
-			reason := ""
-			if response != nil {
-				status = response.StatusCode
-				var detail struct {
-					Reason string `json:"reason"`
-				}
-				_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&detail)
-				_ = response.Body.Close()
-				reason = detail.Reason
-			}
-			if sendErr == nil && status == 200 {
-				result.Accepted++
-				break
-			}
-			if sendErr == nil && (status == 410 || status == 400 && (reason == "BadDeviceToken" || reason == "DeviceTokenNotForTopic")) {
-				// Generation-bound deletion cannot remove a newer registration/account.
-				if err := s.store.DeletePushSubscription(ctx, uid, sub.Endpoint, sub.RegistrationID); err != nil {
-					failures = append(failures, errors.New("could not retire APNs token"))
-				}
-				result.Expired++
-				break
-			}
-			if attempt+1 < maxPushProviderAttempts && shouldRetryPushProviderResponse(status, sendErr) {
-				timer := time.NewTimer(pushProviderRetryBackoff)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return result, ctx.Err()
-				case <-timer.C:
-				}
-				continue
-			}
-			// Do not log request errors: net/http embeds the secret device token URL.
-			failures = append(failures, fmt.Errorf("APNs delivery failed (HTTP %d)", status))
-			break
+		one, err := s.sendAPNs(ctx, uid, sub, input, data, s.config.BundleID, "alert", "10", time.Now().Add(time.Hour).Unix(), nativeCollapseID(n.URL+"/"+n.Tag), nil)
+		result.Accepted += one.Accepted
+		result.Expired += one.Expired
+		if err != nil {
+			failures = append(failures, err)
 		}
 	}
 	return result, errors.Join(failures...)
@@ -325,24 +275,107 @@ func (s *NativePushService) Enqueue(uid int64, n PushNotification, allowed func(
 	if !s.Enabled() || uid <= 0 {
 		return false
 	}
-	s.workers.Do(func() {
-		for range maxConcurrentPushDeliveries {
-			go func() {
-				for job := range s.queue {
-					ctx, cancel := context.WithDeadline(context.Background(), job.queuedAt.Add(pushDeliveryTimeout))
-					_, err := s.send(ctx, job.uid, job.notification, job.shouldDeliver, "")
-					cancel()
-					if err != nil {
-						log.Printf("native push: delivery uid=%d: %v", job.uid, err)
-					}
-				}
-			}()
-		}
-	})
+	s.startNativeWorkers()
 	select {
-	case s.queue <- pushDeliveryJob{uid: uid, notification: n, shouldDeliver: allowed, queuedAt: time.Now()}:
+	case s.queue <- nativeDeliveryJob{pushDeliveryJob: pushDeliveryJob{uid: uid, notification: n, shouldDeliver: allowed, queuedAt: time.Now()}}:
 		return true
 	default:
 		return false
 	}
+}
+
+func (s *NativePushService) startNativeWorkers() {
+	s.workers.Do(func() {
+		start := func(queue <-chan nativeDeliveryJob, count int) {
+			for range count {
+				go func() {
+					for job := range queue {
+						ctx, cancel := context.WithDeadline(context.Background(), job.queuedAt.Add(pushDeliveryTimeout))
+						var err error
+						if job.status != nil {
+							err = s.sendActivityStatus(ctx, job.status)
+						} else {
+							_, err = s.send(ctx, job.uid, job.notification, job.shouldDeliver, "")
+						}
+						cancel()
+						if err != nil {
+							log.Printf("native push: delivery uid=%d: %v", job.uid, err)
+						}
+					}
+				}()
+			}
+		}
+		start(s.queue, maxConcurrentPushDeliveries)
+		start(s.activityQueue, 2)
+	})
+}
+
+// sendAPNs is shared by alerts and ActivityKit; fixed hosts and the configured
+// client preserve signing, HTTP/2, redirect policy, deadlines and token retirement.
+func (s *NativePushService) sendAPNs(ctx context.Context, uid int64, sub *types.PushSubscription, input nativePushRegistration, data []byte, topic, pushType, priority string, expiration int64, collapse string, allowed func() bool) (pushDeliveryResult, error) {
+	var result pushDeliveryResult
+	bearer, err := s.bearer()
+	if err != nil {
+		return result, err
+	}
+	host := "https://api.push.apple.com"
+	if input.Environment == "sandbox" {
+		host = "https://api.sandbox.push.apple.com"
+	}
+	for attempt := 0; attempt < maxPushProviderAttempts; attempt++ {
+		if allowed != nil && !allowed() {
+			return result, nil
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, host+"/3/device/"+input.Token, bytes.NewReader(data))
+		if err != nil {
+			return result, errors.New("could not create APNs request")
+		}
+		req.Header.Set("authorization", "bearer "+bearer)
+		req.Header.Set("apns-topic", topic)
+		req.Header.Set("apns-push-type", pushType)
+		req.Header.Set("apns-priority", priority)
+		req.Header.Set("apns-expiration", fmt.Sprint(expiration))
+		req.Header.Set("apns-collapse-id", collapse)
+		req.Header.Set("content-type", "application/json")
+		response, sendErr := s.client.Do(req)
+		status, reason := 0, ""
+		if response != nil {
+			status = response.StatusCode
+			var detail struct {
+				Reason string `json:"reason"`
+			}
+			_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&detail)
+			_ = response.Body.Close()
+			reason = detail.Reason
+		}
+		if sendErr == nil && status == 200 {
+			result.Accepted++
+			return result, nil
+		}
+		if sendErr == nil && (status == 410 || status == 400 && (reason == "BadDeviceToken" || reason == "DeviceTokenNotForTopic")) {
+			result.Expired++
+			var retireErr error
+			if strings.HasPrefix(sub.Endpoint, activityPushPrefix) && s.surfaces != nil {
+				retireErr = s.surfaces.deleteVersion(ctx, sub)
+			} else {
+				retireErr = s.store.DeletePushSubscription(ctx, uid, sub.Endpoint, sub.RegistrationID)
+			}
+			if retireErr != nil {
+				return result, errors.New("could not retire APNs token")
+			}
+			return result, nil
+		}
+		if attempt+1 < maxPushProviderAttempts && shouldRetryPushProviderResponse(status, sendErr) {
+			timer := time.NewTimer(pushProviderRetryBackoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return result, ctx.Err()
+			case <-timer.C:
+			}
+			continue
+		}
+		return result, fmt.Errorf("APNs delivery failed (HTTP %d)", status)
+	}
+	return result, nil
 }
