@@ -48,6 +48,13 @@ worker_offline: 发布者这边没有任何 worker 在线。这是发布者那�
 
 在线判断**按账号过滤**：claim 用的是 per-user 凭据（`cwk_` / worker 券），
 只能领自己名下应用的 run，所以别人的 worker 对你这单毫无意义。
+> **worker 券不受内测白名单限制**：`POST /api/service-worker/session` 用账号登录态换券，
+> 默认对任何已登录账号开放（权限边界在 run 级：只能领自己名下应用的 run）。
+> 2026-11-05 曾误把 Agent 工具内测白名单（`CATSCO_SERVICE_CATALOG_UID_WHITELIST`）
+> 套在这个接口上，结果不在名单里的账号全部 403、换不到券 —— 表现为「bot 在线但一直不干活」，
+> 线上累计 366,006 次 403 / 7 次 200。需要临时收紧时用独立开关
+> `CATSCO_SERVICE_WORKER_UID_WHITELIST`（空=不限制）。
+
 
 竞态兜底（预检通过后 worker 立刻掉线）：run 停在 `submitted` 超过 **2 分钟**
 会被 reaper 置为 `failed` / `error_text=not_picked_up`，`catsco_run_status` 会返回：
