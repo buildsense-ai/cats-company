@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,12 +100,50 @@ func ParseServiceWorkerSession(raw string) (int64, error) {
 //
 // 客户端（桌面端或 CLI）在拉起 worker 前调用一次，把返回的 token 通过环境变量
 // 交给 worker；用户界面上完全不出现这一步。
+//
+// 这里**不再**套 Agent 工具内测白名单（CATSCO_SERVICE_CATALOG_UID_WHITELIST）：
+// 那个名单是「谁能看到/发布 Agent 工具目录」的内测门，跟「谁的 bot 能接单」是两件事。
+// 2026-11-05 线上事故就是这么来的 —— 复用之后不在名单里的账号全部换不到券：
+//   该接口累计 366,006 次 403、只有 7 次 200，客户端每 2 秒重试，
+//   表现为「bot 在线但一直不干活」（用户侧看到的就是 bot 噶了）。
+// 权限边界本来就在 run 级（authorizeWorkerRun 只放自己名下应用的 run），
+// 账号级白名单在这里既不必要，也会把正常用户挡死。
 type ServiceWorkerSessionHandler struct {
 	allowed func(int64) bool
 }
 
+// serviceWorkerUIDWhitelistEnv 是 worker 券的**独立**白名单（逗号分隔；空/未配置=不限制）。
+// 留这个口子是给「平台需要临时只放几个人接单」的运维场景，默认放开。
+const serviceWorkerUIDWhitelistEnv = "CATSCO_SERVICE_WORKER_UID_WHITELIST"
+
+// ServiceWorkerAllowedUIDs 解析 worker 券白名单（空 = 不限制）。
+func ServiceWorkerAllowedUIDs() []int64 {
+	var allowed []int64
+	for _, raw := range strings.Split(os.Getenv(serviceWorkerUIDWhitelistEnv), ",") {
+		uid, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err == nil && uid > 0 {
+			allowed = append(allowed, uid)
+		}
+	}
+	return allowed
+}
+
 func NewServiceWorkerSessionHandlerFromEnv() *ServiceWorkerSessionHandler {
-	return &ServiceWorkerSessionHandler{allowed: serviceCatalogUIDAllowed}
+	allowedUIDs := ServiceWorkerAllowedUIDs()
+	if len(allowedUIDs) == 0 {
+		// 默认放开：任何已登录账号都能给自己的 bot 换券（权限在 run 级）。
+		return &ServiceWorkerSessionHandler{}
+	}
+	set := make(map[int64]struct{}, len(allowedUIDs))
+	for _, uid := range allowedUIDs {
+		set[uid] = struct{}{}
+	}
+	return &ServiceWorkerSessionHandler{
+		allowed: func(uid int64) bool {
+			_, ok := set[uid]
+			return ok
+		},
+	}
 }
 
 // SetAllowed 覆盖内测白名单判定（测试注入）。
