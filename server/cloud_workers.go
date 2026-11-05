@@ -215,11 +215,12 @@ func validatePackedTenantName(profile string, tenantName string) error {
 	if profile != types.CloudWorkerPackedShared {
 		return nil
 	}
-	if len(tenantName) > packedTenantNameMaxLen {
-		return fmt.Errorf("租户名 %q 长 %d 字符，共享集群上限 %d（对应 username 最多 49）",
-			tenantName, len(tenantName), packedTenantNameMaxLen)
+	if len(tenantName) <= packedTenantNameMaxLen {
+		return nil
 	}
-	return nil
+	// 面向用户/运营的措辞：不提容器名、incus 这些内部概念，技术细节留在调用方日志里。
+	return fmt.Errorf("用户名过长（%d 字符）：共享集群最多支持 %d 字符的用户名。请缩短用户名后重试，或改用独享 ECS 方案",
+		len(tenantName)-len("bot-"), packedTenantNameMaxLen-len("bot-"))
 }
 
 // CloudWorkerConfig configures the cloud worker control plane.

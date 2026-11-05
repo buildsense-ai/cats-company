@@ -34,6 +34,25 @@ func TestValidatePackedTenantName(t *testing.T) {
 	}
 }
 
+// 错误措辞要能直接给用户/运营看：不能出现 packed-*、incus 这类内部概念，
+// 但要报出实际长度和上限，否则运营没法解释"为什么开不了"。
+func TestValidatePackedTenantNameMessage(t *testing.T) {
+	err := validatePackedTenantName(types.CloudWorkerPackedShared, "bot-"+strings.Repeat("a", 50))
+	if err == nil {
+		t.Fatal("54 字符租户名应当被拒绝")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "用户名过长") {
+		t.Fatalf("措辞应面向用户，实际: %s", msg)
+	}
+	if !strings.Contains(msg, "50") || !strings.Contains(msg, "49") {
+		t.Fatalf("应同时报出实际长度 50 和上限 49，实际: %s", msg)
+	}
+	if strings.Contains(msg, "packed-") || strings.Contains(msg, "incus") {
+		t.Fatalf("不应暴露内部概念，实际: %s", msg)
+	}
+}
+
 // 边界必须对齐：username 49 → 租户名 53，换算出的容器名刚好 ≤ 63。
 func TestCloudWorkerTenantNameBudget(t *testing.T) {
 	if got := len(cloudWorkerTenantName(strings.Repeat("a", 49))); got != packedTenantNameMaxLen {
