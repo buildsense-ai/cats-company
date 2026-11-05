@@ -621,6 +621,7 @@ jobs:
           bash -n deploy/test/remote-deploy.sh
           python3 deploy/prod/sync-artifact-node-env_test.py
           python3 deploy/prod/sync-worker-project-env_test.py
+          python3 deploy/sync-apns-env_test.py
           python3 deploy/sync-vapid-env_test.py
           python3 deploy/sync-stt-env_test.py
           python3 deploy/sync-shimo-env_test.py
