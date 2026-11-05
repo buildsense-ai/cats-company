@@ -91,6 +91,11 @@ func (h *BotHandler) HandleRegisterBot(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username min 3, password min 6"})
 		return
 	}
+	if len(req.Username) > maxUsernameLen {
+		// username 是永久标识，没有改名入口；超长的账号在共享集群上开不出租户。
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("username max %d chars", maxUsernameLen)})
+		return
+	}
 
 	existing, err := h.db.GetUserByUsername(req.Username)
 	if err != nil {
@@ -257,6 +262,10 @@ type createBotResult struct {
 func (h *BotHandler) createBotAccount(ownerUID int64, req BotRegisterRequest) (*createBotResult, int, error) {
 	if len(req.Username) < 3 {
 		return nil, http.StatusBadRequest, fmt.Errorf("username min 3 chars")
+	}
+	if len(req.Username) > maxUsernameLen {
+		// 这条兜住所有建 bot 的路径（含 cloud-worker 开通）。
+		return nil, http.StatusBadRequest, fmt.Errorf("username max %d chars", maxUsernameLen)
 	}
 	role, validRole := normalizeBotRole(req.Role)
 	if !validRole {

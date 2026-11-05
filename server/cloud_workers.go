@@ -192,12 +192,37 @@ const (
 
 // workerUsernameRe constrains cloud worker usernames so the derived tenant
 // name stays safe to embed in URL paths and script argv.
-var workerUsernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
+// 上界与 maxUsernameLen 对齐：租户名 "bot-"+username 还要拼成 packed-<tenant>[-sb]。
+var workerUsernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,48}$`)
 var workerTenantSeparatorRe = regexp.MustCompile(`-+`)
 
 func cloudWorkerTenantName(username string) string {
 	name := workerTenantSeparatorRe.ReplaceAllString("bot-"+strings.TrimSpace(username), "-")
 	return strings.Trim(name, "-.")
+}
+
+// packedTenantNameMaxLen 是共享容器集群对租户名的硬上限。
+//
+// 容器名是 packed-<tenant>，故障切换还会建 packed-<tenant>-sb。incus 对实例名的
+// 限制是 1-63 字符（2026-11-05 在 prod-1 用 `incus init --empty` 逐档实测：63 建得出，
+// 64 直接报 "Invalid instance name: Name must be 1-63 characters long"）。
+// "packed-" 占 7 个、"-sb" 占 3 个，所以租户名最多 53 —— 也就是 username 最多 49。
+//
+// 超了不是"名字不好看"：主容器可能根本建不出来，或者建出来了但永远没有 standby。
+// 独享 ECS 用不到容器名，不受这条限制。
+const packedTenantNameMaxLen = len("bot-") + maxUsernameLen
+
+func validatePackedTenantName(profile string, tenantName string) error {
+	if profile != types.CloudWorkerPackedShared {
+		return nil
+	}
+	if len(tenantName) <= packedTenantNameMaxLen {
+		return nil
+	}
+	// 用户注册后**改不了 username**，所以不能建议"请缩短后重试"——那是个死胡同。
+	// 这条只可能命中历史遗留数据（新注册已经在入口挡掉了），走人工处理。
+	return fmt.Errorf("用户名过长（%d 字符，共享集群上限 %d）：用户名注册后不可修改，请联系管理员处理该账号，或改用独享 ECS 方案",
+		len(tenantName)-len("bot-"), packedTenantNameMaxLen-len("bot-"))
 }
 
 // CloudWorkerConfig configures the cloud worker control plane.
@@ -1787,6 +1812,24 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	}
 
 	tenantName := cloudWorkerTenantName(result.Username)
+
+	// 共享集群的租户名有硬上限（见 packedTenantNameMaxLen）。这里挡在"创建云资源"之前：
+	// 再往下就是写 tenant_name、跑 provision 脚本，等容器建不出来再回滚，
+	// 留给人看的只是一条 incus 报错。
+	if nameErr := validatePackedTenantName(deployment.Profile, tenantName); nameErr != nil {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
+		log.Printf("[cloud-worker] tenant name rejected for uid %d: %v", uid, nameErr)
+		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
+			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": nameErr.Error(),
+			"code":  "cloud_worker_tenant_name_too_long",
+		})
+		return
+	}
 
 	// 在创建任何云资源之前持久化 tenant 标识。这样无论 provision 后续怎么失败，
 	// Keep the tenant handle on the bot record so the managed worker remains
