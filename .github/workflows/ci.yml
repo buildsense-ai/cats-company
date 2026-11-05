@@ -40,6 +40,17 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      # setup-go 只缓存模块和工具链，不缓存 GOCACHE。冷启动时 race 二进制要从零
+      # 编译整棵依赖树（2~3 分钟），这是 CI 里最大的一块固定开销。GOCACHE 是内容
+      # 寻址缓存，跨 run 复用安全；key 按 job 分开，避免几个 job 互相挤占。
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-build-${{ runner.os }}-${{ github.job }}-
+
       - name: Test backend
         run: go test ./server/...
 
@@ -195,6 +206,17 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      # setup-go 只缓存模块和工具链，不缓存 GOCACHE。冷启动时 race 二进制要从零
+      # 编译整棵依赖树（2~3 分钟），这是 CI 里最大的一块固定开销。GOCACHE 是内容
+      # 寻址缓存，跨 run 复用安全；key 按 job 分开，避免几个 job 互相挤占。
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-build-${{ runner.os }}-${{ github.job }}-
+
       - name: Tune PostgreSQL for throwaway CI data
         env:
           PG_CONTAINER_ID: ${{ job.services.postgres.id }}
@@ -265,6 +287,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+
+      # setup-go 只缓存模块和工具链，不缓存 GOCACHE。冷启动时 race 二进制要从零
+      # 编译整棵依赖树（2~3 分钟），这是 CI 里最大的一块固定开销。GOCACHE 是内容
+      # 寻址缓存，跨 run 复用安全；key 按 job 分开，避免几个 job 互相挤占。
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-build-${{ runner.os }}-${{ github.job }}-
 
       # 这些契约测试对每个用例都执行完整 migration（大量 DDL/COMMIT）。
       # CI 库是纯临时的，关掉 fsync/WAL 持久化可显著缩短提交延迟，
