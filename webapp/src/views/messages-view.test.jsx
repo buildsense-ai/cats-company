@@ -10527,6 +10527,19 @@ describe('MessagesView composer draft isolation', () => {
         await act(async () => {
           await flushPromises();
         });
+        // The first load has to be the launch address: that is what tells the
+        // application who opened it. Leaving it there would be the bug — a code
+        // is single-use, so the next reload spends a dead one and the frame
+        // comes back as a guest. The frame title names the application, which
+        // is what proves this conversation is not showing a neighbour's app.
+        const launchFrame = activeGatewayFrame(container);
+        expect(launchFrame?.getAttribute('title')).toBe(apps[index].title);
+        expect(launchFrame?.getAttribute('src')).toMatch(/\/_launch\/\d+$/);
+        await act(async () => {
+          Simulate.load(launchFrame);
+          await Promise.resolve();
+        });
+        // Once identity is established the frame carries the stable address.
         expect(activeGatewayFrame(container)?.getAttribute('src'))
           .toBe(apps[index].url);
       }
@@ -10538,9 +10551,21 @@ describe('MessagesView composer draft isolation', () => {
         await act(async () => {
           await flushPromises();
         });
+        // The frame title names the application. Asserting it here is what
+        // catches "this conversation shows a neighbour's app"; the address is
+        // checked after a load because the launch address is only the first hop.
+        const frameBack = activeGatewayFrame(container);
+        expect(frameBack?.getAttribute('title')).toBe(apps[index].title);
+        await act(async () => {
+          Simulate.load(frameBack);
+          await Promise.resolve();
+        });
         expect(activeGatewayFrame(container)?.getAttribute('src'))
           .toBe(apps[index].url);
       }
+      // Whether a switch reuses the live frame is covered by "keeps the
+      // application alive across a conversation switch and back". This test is
+      // about ownership only: no conversation may render another one's app.
     });
 
     it('opens the application in a new page at its own address', async () => {
@@ -11687,6 +11712,10 @@ describe('MessagesView legacy saved annotation regressions', () => {
     await act(async () => {
       container.querySelector('.cloud-artifact-main').click();
       await Promise.resolve();
+    });
+    // Opening mints a launch code first, so the frame appears a tick later.
+    await act(async () => {
+      await flushPromises();
     });
     const frame = activeGatewayFrame(container);
     expect(frame).not.toBeNull();

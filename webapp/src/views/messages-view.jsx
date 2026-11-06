@@ -4381,9 +4381,16 @@ export default function MessagesView({
       );
       // Bound annotations never take ordinary routing (WS/REST) as fallback.
       // Re-check after every preparation await, immediately before HTTP send.
+      // An annotation send belongs to the conversation it was prepared in. The
+      // open binding alone is no longer proof of that: panels stay mounted across
+      // a conversation switch, so the binding of the conversation the user left is
+      // still alive and usable. Without this check a preparation parked on an
+      // await could carry one conversation's annotations out after the user had
+      // already moved to another one — a data leak, not a stale UI.
       if (annotationsMetadata && (!annotationSessionStillValid(annotationSendSnapshot)
         || !artifactOpenBindingUsable(annotationContextSnapshot?.openBinding)
-        || annotationContextSnapshot?.signal?.aborted)) {
+        || annotationContextSnapshot?.signal?.aborted
+        || activeTopicRef.current !== topic)) {
         throw new Error('会话绑定或登录状态已失效，请重新打开应用');
       }
       const boundPayload = annotationsMetadata ? {

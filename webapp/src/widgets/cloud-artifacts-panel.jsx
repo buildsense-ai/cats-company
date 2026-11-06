@@ -237,6 +237,13 @@ export default function CloudArtifactsPanel({
   const gatewayPreviewRef = useRef(null);
   // The address the frame is currently showing.
   const gatewayFrameURLRef = useRef('');
+  // The live frame element, read at load time instead of from the event object.
+  const gatewayFrameElementRef = useRef(null);
+  // Once the launch address has been consumed, the frame is moved to the plain
+  // application address. The launch code is only there to establish identity;
+  // leaving it in `src` means every later reload spends a code that is already
+  // gone, and the application comes back as a guest.
+  const [gatewayFrameSrc, setGatewayFrameSrc] = useState('');
   const [gatewayRefreshing, setGatewayRefreshing] = useState(false);
   const retireGatewayOpen = useCallback(() => {
     ++gatewayOpenSequenceRef.current;
@@ -394,7 +401,12 @@ export default function CloudArtifactsPanel({
       const showing = gatewayPreviewRef.current;
       if (showing
         && String(showing.id) === String(app.id)
-        && String(showing.panelTopicId || '') === String(topicId || '')) {
+        && String(showing.panelTopicId || '') === String(topicId || '')
+        // An open belongs to the session that minted it. Comparing the token
+        // rather than a revision counter is deliberate: a relogin replaces the
+        // token even when no counter was bumped, and reusing the previous
+        // visitor's binding would carry their drafts into this session.
+        && String(showing.authToken || '') === String(getToken() || '')) {
         return;
       }
     }
@@ -412,8 +424,15 @@ export default function CloudArtifactsPanel({
       const launch = await api.requestArtifactLaunch({ app: app.id, ...(topicId ? { topic_id: topicId } : {}) });
       if (launch?.launch_url) { viewerURL = launch.launch_url; visitor = false; }
       openBinding = normalizeArtifactOpenBinding(launch?.open_binding);
+            // The Agent check is skipped while this panel has not loaded its Agent
+      // yet (`agentUid` is 0). The binding is signed by the server and names the
+      // Agent itself, so an unknown local value is not evidence of a mismatch —
+      // rejecting here threw away a perfectly good open on every remount that
+      // happened before the Agent list arrived, and the frame came back with no
+      // capability at all.
       if (openBinding && (openBinding.topic_id !== String(topicId || '')
-        || openBinding.agent_uid !== Number(agentUid) || openBinding.app_id !== app.id
+        || (Number(agentUid) > 0 && openBinding.agent_uid !== Number(agentUid))
+        || openBinding.app_id !== app.id
         || openBinding.app_origin !== new URL(app.url).origin
         || openBinding.app_origin !== new URL(viewerURL).origin)) {
         void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
@@ -481,9 +500,15 @@ export default function CloudArtifactsPanel({
       // The conversation this open belongs to, so a repeat request from the same
       // conversation can be recognised as "already showing" and skipped.
       panelTopicId: String(topicId || ''),
+      // The session that minted this open. A later relogin keeps the frame alive
+      // but its identity is the previous visitor's, so "already showing" must
+      // not cover a different session.
+      authRevision: getAuthRevision(),
+      authToken: getToken() || '',
     };
     gatewayPreviewRef.current = nextPreview;
     setGatewayPreview(nextPreview);
+    setGatewayFrameSrc(String(viewerURL || ''));
     // Applications are opened from two places: a card in the conversation, and
     // this panel's own list. Only the first used to reach the conversation's
     // record, so an application opened from the list was remembered nowhere and
@@ -559,6 +584,11 @@ export default function CloudArtifactsPanel({
       gatewayPreviewRef.current = null;
       setGatewayPreview(null);
       setGatewayAnnotationMode('off');
+      // The open that was consumed belongs to the session that just ended. Left
+      // in place it would make the next mount believe this conversation is
+      // already showing the application, and nothing would be opened for the
+      // visitor who is actually here now.
+      consumedInitialAppRef.current = null;
     };
     window.addEventListener('cc:auth-changed', invalidate);
     return () => window.removeEventListener('cc:auth-changed', invalidate);
@@ -648,17 +678,24 @@ export default function CloudArtifactsPanel({
     // check relaunched the iframe and threw away whatever the application was
     // holding — a half-filled form, a scroll position, an open editor. Same
     // application in the same conversation means "already showing it".
+    //
+    // The exception is the session: an open is signed for the visitor who made
+    // it. After a relogin the frame is still there but it is the previous
+    // person's session, so this conversation has to open again instead of
+    // inheriting drafts that belong to someone else.
     const sameApplication = consumed
       && consumed.agentUid === agentUid
       && consumed.topicId === topicId
       && String(consumed.appId) === String(initialApp.id)
-      && String(consumed.appURL) === String(initialApp.url);
+      && String(consumed.appURL) === String(initialApp.url)
+      && Number(consumed.authRevision) === Number(getAuthRevision());
     if (sameApplication) return;
     consumedInitialAppRef.current = {
       appId: String(initialApp.id),
       appURL: String(initialApp.url),
       agentUid,
       topicId,
+      authRevision: getAuthRevision(),
     };
     openGatewayApp(initialApp);
   }, [initialApp, tab, openGatewayApp, agentUid, topicId]);
@@ -1328,28 +1365,46 @@ export default function CloudArtifactsPanel({
                 />
               )}
               <iframe
+                ref={gatewayFrameElementRef}
                 className="cloud-artifacts-gateway-frame"
                 key={gatewayReloadKeyRef.current}
-                // The launch address, because that is what carries the visitor's
-                // identity: loading the plain application address makes the frame
-                // a guest, and an application that needs to know who is asking
-                // refuses to run. The code is single-use, so this frame must be
-                // built exactly once per open: the panel is never unmounted for a
-                // conversation switch, only moved off-screen, and a new instance
-                // re-mints its own code through `openGatewayApp`.
-                src={gatewayPreview.viewerURL || gatewayPreview.url}
+                // The first load uses the launch address, because that is what
+                // carries the visitor's identity: the plain address makes the
+                // frame a guest, and an application that needs to know who is
+                // asking refuses to run. That code is single-use, so it must not
+                // stay in `src` — the next reload (viewport restore, process
+                // recycling, a switch back from the background) would spend a
+                // spent code and come back a guest. Once the launch document has
+                // loaded, identity is established and `onLoad` swaps in the
+                // stable address. The key stays put, so this is a navigation,
+                // not a remount.
+                src={gatewayFrameSrc || gatewayPreview.viewerURL || gatewayPreview.url}
                 title={gatewayPreview.title || gatewayPreview.id}
-                onLoad={(event) => onGatewayFrameChange?.({
-                  frame: event.currentTarget,
-                  url: gatewayPreview.viewerURL || gatewayPreview.url,
-                  artifact: gatewayPreview.artifact,
-                  signal: gatewayPreview.bindingSignal,
-                  openBinding: gatewayPreview.openBinding,
-                  annotationApp: {
-                    appId: gatewayPreview.id,
-                    title: gatewayPreview.title || gatewayPreview.id,
-                  },
-                })}
+                onLoad={(event) => {
+                  const frameEl = event?.currentTarget || gatewayFrameElementRef.current;
+                  const launchURL = String(gatewayPreview.viewerURL || '');
+                  onGatewayFrameChange?.({
+                    frame: frameEl,
+                    url: launchURL || gatewayPreview.url,
+                    artifact: gatewayPreview.artifact,
+                    signal: gatewayPreview.bindingSignal,
+                    openBinding: gatewayPreview.openBinding,
+                    annotationApp: {
+                      appId: gatewayPreview.id,
+                      title: gatewayPreview.title || gatewayPreview.id,
+                    },
+                  });
+                  // The launch address has done its job once it has loaded: the
+                  // gateway has set its session cookie, so identity survives a
+                  // later navigation. Leaving the code in `src` would spend it
+                  // again on any reload (viewport restore, process recycling,
+                  // returning from the background) and the frame would come back
+                  // as a guest. The key is unchanged, so this is a navigation of
+                  // the same frame, not a remount.
+                  if (gatewayPreview.url && /\/_launch\/|(\?|&)code=/.test(launchURL)) {
+                    setGatewayFrameSrc(String(gatewayPreview.url));
+                  }
+                }}
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
                 referrerPolicy="no-referrer"
                 style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}
@@ -1366,8 +1421,24 @@ export default function CloudArtifactsPanel({
               </p>
             </div>
           )}
-          {tab === 'gateway' && !gatewayPreview && gatewayApps.length > 0 && (
-            <div className="cloud-artifacts-list">
+          {tab === 'gateway' && gatewayApps.length > 0
+            && (!gatewayPreview || typeof onGatewayFrameChange === 'function') && (
+            // The catalogue stays mounted behind the viewer, but only in the
+            // panel that is actually on screen.
+            //
+            // Returning from an application used to tear the list down and build
+            // it again; while an application was open the list simply was not in
+            // the document at all. Anything that reaches for the list — the
+            // annotation recovery path, a restored draft, a test — then found
+            // nothing. Keeping it rendered costs one tree and makes "返回" instant.
+            //
+            // A panel parked in another conversation deliberately does not render
+            // it: two catalogues in one document would put a second, off-screen
+            // application button behind the visible one.
+            <div
+              className="cloud-artifacts-list"
+              style={gatewayPreview ? { display: 'none' } : undefined}
+            >
               {gatewayApps.map((app) => {
                 const updatedAt = formatUpdatedAt(app?.updated_at || '');
                 return (
