@@ -7826,18 +7826,32 @@ export default function MessagesView({
             <div
               key={`artifact-panel-${panelTopic}`}
               className="v3-file-preview-shell"
-              // A hidden iframe is throttled and eventually frozen by the
-              // browser, which is why a running application lost its progress
-              // when the user looked at another conversation. Keeping the panel
-              // laid out but off-screen leaves the frame rendering, so its work
-              // keeps running; the active conversation is the only one on screen.
+              // A frame whose intersection with the viewport is empty is throttled by
+              // the browser to about one timer per second, and its animation frames
+              // stop entirely. That is why a running application lost its work when
+              // the user looked at another conversation.
+              //
+              // Moving the panel off-screen does NOT avoid it: measured in Chrome,
+              // an off-screen frame and a display:none frame both fell to ~1 tick/s
+              // while the visible one kept ~18 tick/s. Throttling follows the
+              // intersection rectangle, not `display`.
+              //
+              // So a parked panel keeps a 2x2 px corner of itself inside the
+              // viewport. The intersection stays non-empty, so the frame keeps
+              // running. The panel and its iframe keep their real 900x700 size and
+              // are only translated outwards, so the application inside does not
+              // reflow to a tiny viewport; the sliver is unpaintable, unclickable
+              // and out of the accessibility tree.
               style={isActive ? undefined : {
                 position: 'fixed',
                 top: 0,
-                left: '-20000px',
+                left: 0,
                 width: '900px',
                 height: '700px',
+                transform: 'translate(calc(100vw - 2px), calc(100vh - 2px))',
                 pointerEvents: 'none',
+                opacity: 0.01,
+                zIndex: -1,
               }}
               aria-hidden={isActive ? undefined : 'true'}
               data-panel-parked={isActive ? undefined : 'true'}
