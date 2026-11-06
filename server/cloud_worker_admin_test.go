@@ -108,6 +108,37 @@ func TestCloudWorkerAdminOverviewFlagsPackedContainerMissingRepeatedly(t *testin
 	}
 }
 
+// 已删除的租户记录会在保留窗口里继续存在，而它的容器早就没了 ——
+// 把它报成"对账不符"只会淹掉真信号（上线第一天就撞上了）。
+func TestCloudWorkerAdminOverviewIgnoresDeletedPackedTenants(t *testing.T) {
+	h, store := newCloudWorkerTestHandler("")
+	h.db = &deploymentTestStore{store, map[string]types.CloudWorkerDeployment{
+		"bot-gone": {Profile: types.CloudWorkerPackedShared},
+	}}
+	store.adminRecords = []types.CloudWorkerAdminRecord{{
+		WorkerUID: 62, OwnerUID: 7, Username: "bot-gone", TenantName: "bot-gone",
+		LifecycleState: "deleted",
+	}}
+	h.statusLoaded = true
+	snapshot := time.Now()
+	h.statusUpdatedAt = snapshot
+	h.statusSnapshot = map[string]cloudInstanceInfo{"bot-gone": {Status: "missing"}}
+
+	for attempt := 1; attempt <= packedAbsenceThreshold+2; attempt++ {
+		h.statusUpdatedAt = snapshot.Add(time.Duration(attempt) * time.Minute)
+		overview, err := h.CloudWorkerAdminOverview(time.Now())
+		if err != nil {
+			t.Fatalf("overview: %v", err)
+		}
+		if drift := overview.Workers[0].DeploymentDrift; drift != "" {
+			t.Fatalf("attempt %d: deleted tenant flagged as drift: %q", attempt, drift)
+		}
+	}
+	if got := h.packedMissingStreak["bot-gone"]; got != 0 {
+		t.Fatalf("deleted tenant kept a streak: %d", got)
+	}
+}
+
 func TestCloudWorkerAdminOverviewKeepsExternalBindingUnverified(t *testing.T) {
 	h, store := newCloudWorkerTestHandler("")
 	store.adminRecords = []types.CloudWorkerAdminRecord{{
