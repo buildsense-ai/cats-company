@@ -43,6 +43,71 @@ func TestCloudWorkerAdminOverviewUsesSafeProjectionAndProviderSnapshot(t *testin
 	}
 }
 
+// The admin roster is the only place where "platform says shared container,
+// cluster disagrees" can be seen, so it has to be both visible and safe:
+// it must appear after repeated *snapshots*, and it must never rewrite the
+// record (a container being recreated looks exactly like a missing one).
+func TestCloudWorkerAdminOverviewFlagsPackedContainerMissingRepeatedly(t *testing.T) {
+	h, store := newCloudWorkerTestHandler("")
+	h.db = &deploymentTestStore{store, map[string]types.CloudWorkerDeployment{
+		"bot-shared-a": {Profile: types.CloudWorkerPackedShared},
+	}}
+	store.adminRecords = []types.CloudWorkerAdminRecord{{
+		WorkerUID: 61, OwnerUID: 7, Username: "bot-shared-a", TenantName: "bot-shared-a",
+	}}
+	h.statusLoaded = true
+	snapshot := time.Now()
+	h.statusUpdatedAt = snapshot
+	h.statusSnapshot = map[string]cloudInstanceInfo{"bot-shared-a": {Status: "missing"}}
+
+	overview := func() cloudWorkerAdminItem {
+		t.Helper()
+		got, err := h.CloudWorkerAdminOverview(time.Now())
+		if err != nil {
+			t.Fatalf("overview: %v", err)
+		}
+		if len(got.Workers) != 1 {
+			t.Fatalf("workers: %d", len(got.Workers))
+		}
+		return got.Workers[0]
+	}
+
+	// Polling the same snapshot five times is still one observation: the panel
+	// refreshes far more often than the cluster is queried.
+	for i := 0; i < 5; i++ {
+		if drift := overview().DeploymentDrift; drift != "" {
+			t.Fatalf("poll %d: drift reported from a single snapshot: %q", i, drift)
+		}
+	}
+
+	for attempt := 2; attempt <= packedAbsenceThreshold; attempt++ {
+		h.statusUpdatedAt = snapshot.Add(time.Duration(attempt) * time.Minute)
+		item := overview()
+		if attempt < packedAbsenceThreshold && item.DeploymentDrift != "" {
+			t.Fatalf("attempt %d: drift reported too early: %q", attempt, item.DeploymentDrift)
+		}
+		if attempt == packedAbsenceThreshold && item.DeploymentDrift == "" {
+			t.Fatalf("attempt %d: expected drift signal", attempt)
+		}
+		if item.DeploymentProfile != types.CloudWorkerPackedShared {
+			t.Fatalf("drift must not rewrite the recorded profile: %q", item.DeploymentProfile)
+		}
+	}
+	if got := h.packedMissingStreak["bot-shared-a"]; got != packedAbsenceThreshold {
+		t.Fatalf("streak %d", got)
+	}
+
+	// A container that comes back clears the signal immediately.
+	h.statusSnapshot = map[string]cloudInstanceInfo{"bot-shared-a": {Status: "running", Backend: "packed"}}
+	h.statusUpdatedAt = snapshot.Add(time.Hour)
+	if drift := overview().DeploymentDrift; drift != "" {
+		t.Fatalf("recovered container kept drift: %q", drift)
+	}
+	if got := h.packedMissingStreak["bot-shared-a"]; got != 0 {
+		t.Fatalf("streak after recovery %d", got)
+	}
+}
+
 func TestCloudWorkerAdminOverviewKeepsExternalBindingUnverified(t *testing.T) {
 	h, store := newCloudWorkerTestHandler("")
 	store.adminRecords = []types.CloudWorkerAdminRecord{{
