@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ type UploadObjectInfo struct {
 // Put must not return success until the supplied bytes are durably readable.
 type UploadStorage interface {
 	Remote() bool
+	LocalFallbackEnabled() bool
 	Put(ctx context.Context, key, sourcePath string, size int64, sha256Hex, contentType string) error
 	Open(ctx context.Context, key string) (io.ReadCloser, error)
 	Stat(ctx context.Context, key string) (UploadObjectInfo, error)
@@ -44,7 +46,8 @@ func NewLocalUploadStorage(baseDir string) UploadStorage {
 	return &localUploadStorage{baseDir: baseDir}
 }
 
-func (s *localUploadStorage) Remote() bool { return false }
+func (s *localUploadStorage) Remote() bool               { return false }
+func (s *localUploadStorage) LocalFallbackEnabled() bool { return false }
 
 func (s *localUploadStorage) Put(_ context.Context, key, sourcePath string, size int64, _ string, _ string) error {
 	dst, err := localUploadPath(s.baseDir, key)
@@ -115,11 +118,13 @@ type zosUploadConfig struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	SecurityToken   string
+	LocalFallback   bool
 }
 
 type zosUploadStorage struct {
-	client *minio.Client
-	bucket string
+	client        *minio.Client
+	bucket        string
+	localFallback bool
 }
 
 func NewUploadStorageFromEnv(baseDir string) (UploadStorage, error) {
@@ -130,6 +135,10 @@ func NewUploadStorageFromEnv(baseDir string) (UploadStorage, error) {
 	if backend != "zos" {
 		return nil, fmt.Errorf("unsupported CATSCO_UPLOAD_STORAGE %q (expected local or zos)", backend)
 	}
+	localFallback, err := parseLocalUploadFallback(os.Getenv("CATSCO_UPLOAD_LOCAL_FALLBACK"))
+	if err != nil {
+		return nil, err
+	}
 	return newZOSUploadStorage(zosUploadConfig{
 		Endpoint:        strings.TrimSpace(os.Getenv("CATSCO_UPLOAD_ZOS_ENDPOINT")),
 		Region:          strings.TrimSpace(os.Getenv("CATSCO_UPLOAD_ZOS_REGION")),
@@ -137,7 +146,19 @@ func NewUploadStorageFromEnv(baseDir string) (UploadStorage, error) {
 		AccessKeyID:     strings.TrimSpace(os.Getenv("CATSCO_UPLOAD_ZOS_ACCESS_KEY_ID")),
 		SecretAccessKey: strings.TrimSpace(os.Getenv("CATSCO_UPLOAD_ZOS_SECRET_ACCESS_KEY")),
 		SecurityToken:   strings.TrimSpace(os.Getenv("CATSCO_UPLOAD_ZOS_SECURITY_TOKEN")),
+		LocalFallback:   localFallback,
 	})
+}
+
+func parseLocalUploadFallback(raw string) (bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return true, nil
+	}
+	enabled, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return false, errors.New("CATSCO_UPLOAD_LOCAL_FALLBACK must be true or false")
+	}
+	return enabled, nil
 }
 
 func newZOSUploadStorage(cfg zosUploadConfig) (UploadStorage, error) {
@@ -157,7 +178,7 @@ func newZOSUploadStorage(cfg zosUploadConfig) (UploadStorage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create CTyun ZOS client: %w", err)
 	}
-	return &zosUploadStorage{client: client, bucket: cfg.Bucket}, nil
+	return &zosUploadStorage{client: client, bucket: cfg.Bucket, localFallback: cfg.LocalFallback}, nil
 }
 
 func normalizeS3Endpoint(raw string) (string, bool, error) {
@@ -171,7 +192,8 @@ func normalizeS3Endpoint(raw string) (string, bool, error) {
 	return parsed.Host, parsed.Scheme == "https", nil
 }
 
-func (s *zosUploadStorage) Remote() bool { return true }
+func (s *zosUploadStorage) Remote() bool               { return true }
+func (s *zosUploadStorage) LocalFallbackEnabled() bool { return s.localFallback }
 
 func (s *zosUploadStorage) Put(ctx context.Context, key, sourcePath string, size int64, sha256Hex, contentType string) error {
 	objectKey, err := normalizeUploadObjectKey(key)
@@ -308,7 +330,7 @@ func uploadStagingDir() string {
 	return filepath.Join(os.TempDir(), "catsco-upload-staging")
 }
 
-func saveUploadReader(ctx context.Context, storage UploadStorage, baseDir, key string, source io.Reader, maxSize int64, contentType string) (int64, string, error) {
+func saveUploadReader(ctx context.Context, storage UploadStorage, key string, source io.Reader, maxSize int64, contentType string) (int64, string, error) {
 	if source == nil {
 		return 0, "", errors.New("missing upload body")
 	}
@@ -338,10 +360,10 @@ func saveUploadReader(ctx context.Context, storage UploadStorage, baseDir, key s
 	if err := stage.Close(); err != nil {
 		return 0, "", err
 	}
-	return persistStagedUpload(ctx, storage, baseDir, key, stagePath, contentType)
+	return persistStagedUpload(ctx, storage, key, stagePath, contentType)
 }
 
-func persistStagedUpload(ctx context.Context, storage UploadStorage, baseDir, key, stagePath, contentType string) (int64, string, error) {
+func persistStagedUpload(ctx context.Context, storage UploadStorage, key, stagePath, contentType string) (int64, string, error) {
 	key, err := normalizeUploadObjectKey(key)
 	if err != nil {
 		return 0, "", err
@@ -363,36 +385,13 @@ func persistStagedUpload(ctx context.Context, storage UploadStorage, baseDir, ke
 	if storage == nil {
 		return 0, "", errors.New("upload storage is not configured")
 	}
-	if storage.Remote() {
-		if err := preserveLocalUpload(baseDir, key, stagePath, size); err != nil {
-			return 0, "", fmt.Errorf("preserve local upload before remote write: %w", err)
-		}
-	}
 	if err := storage.Put(ctx, key, stagePath, size, digest, contentType); err != nil {
 		if storage.Remote() {
-			log.Printf("[upload] ZOS failed; retained local retry copy key=%q err=%v", key, err)
+			log.Printf("[upload] ZOS upload failed; no persistent local copy retained key=%q err=%v", key, err)
 		}
 		return size, digest, err
 	}
 	return size, digest, nil
-
-}
-
-func preserveLocalUpload(baseDir, key, sourcePath string, size int64) error {
-	dst, err := localUploadPath(baseDir, key)
-	if err != nil {
-		return err
-	}
-	if err := ensureLocalUploadParent(baseDir, dst); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-	if err := ensureLocalUploadParent(baseDir, dst); err != nil {
-		return err
-	}
-	return copyFileAtomically(sourcePath, dst, size)
 }
 
 func ensureLocalUploadParent(baseDir, destinationPath string) error {
@@ -472,7 +471,7 @@ func openUploadWithLocalFallback(ctx context.Context, storage UploadStorage, bas
 		if err == nil {
 			return body, nil
 		}
-		if !storage.Remote() {
+		if !storage.Remote() || !storage.LocalFallbackEnabled() {
 			return nil, err
 		}
 		local := NewLocalUploadStorage(baseDir)
@@ -488,7 +487,7 @@ func openUploadWithLocalFallback(ctx context.Context, storage UploadStorage, bas
 func statUploadWithLocalFallback(ctx context.Context, storage UploadStorage, baseDir, key string) (UploadObjectInfo, error) {
 	if storage != nil {
 		info, err := storage.Stat(ctx, key)
-		if err == nil || !storage.Remote() {
+		if err == nil || !storage.Remote() || !storage.LocalFallbackEnabled() {
 			return info, err
 		}
 		fallback, fallbackErr := NewLocalUploadStorage(baseDir).Stat(ctx, key)
@@ -509,7 +508,7 @@ func materializeUpload(ctx context.Context, storage UploadStorage, baseDir, key 
 	if err == nil {
 		return path, cleanup, nil
 	}
-	if !storage.Remote() {
+	if !storage.Remote() || !storage.LocalFallbackEnabled() {
 		return "", func() {}, err
 	}
 	fallback, fallbackCleanup, fallbackErr := materializeUploadFrom(ctx, NewLocalUploadStorage(baseDir), key, maxSize)

@@ -103,7 +103,7 @@ func saveChannelMediaUploadFromReaderWithStorage(ctx context.Context, storage Up
 	}
 
 	fileKey := generateFileKey(storedExt)
-	storedSize, _, err := persistStagedUpload(ctx, storage, baseDir, "uploads/"+subDir+"/"+fileKey, tempPath, mimeType)
+	storedSize, _, err := persistStagedUpload(ctx, storage, "uploads/"+subDir+"/"+fileKey, tempPath, mimeType)
 	if err != nil {
 		return uploadPayload{}, err
 	}
