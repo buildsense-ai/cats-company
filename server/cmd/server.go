@@ -649,6 +649,36 @@ func main() {
 		log.Printf("relay commercial enforce sync allowlist is enabled for %d uid(s)", len(relayCommercialEnforceUIDs))
 	}
 	relayKeyHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
+	// relay key 轮换后，把该用户名下每个 bot 的 BotDefinition revision 推一格，
+	// 让 worker 下一次激活时重新物化模型配置并取到新 key。
+	// 2026-11-06 事故：rotate 之后 worker 一直用物化时缓存的旧 key，
+	// 只在模型调用时报 "模型服务暂时不稳定"，无法自愈。
+	relayKeyHandler.SetBotDefinitionToucher(func(uid int64) {
+		lister, ok := db.(interface {
+			ListBotsByOwner(int64) ([]map[string]interface{}, error)
+		})
+		if !ok {
+			return
+		}
+		bots, err := lister.ListBotsByOwner(uid)
+		if err != nil {
+			log.Printf("relay key rotated but listing bots failed uid=%d: %v", uid, err)
+			return
+		}
+		for _, bot := range bots {
+			botUID, _ := bot["id"].(int64)
+			if botUID <= 0 {
+				continue
+			}
+			record, err := botDefinitionStore.GetBotDefinition(botUID)
+			if err != nil || record == nil || record.Definition.Prompt == nil {
+				continue
+			}
+			if _, err := botDefinitionStore.UpdateBotDefinitionPrompt(botUID, -1, *record.Definition.Prompt); err != nil {
+				log.Printf("relay key rotated but definition revision bump failed bot=%d: %v", botUID, err)
+			}
+		}
+	})
 	botModelConfigHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	accountAdminHandler.SetCommercialRelayAdmin(relayAdminClient, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	// The paid plans' model sets follow the relay catalog rather than a
