@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -211,11 +212,11 @@ func TestFileAnnotationQuoteUsesBrowserUTF16AndBOM(t *testing.T) {
 	}
 	source := fileAnnotationSource{FileKey: key}
 	good := fileAnnotationTarget{Start: 0, End: 4, Quote: "你好😀", LineStart: 1, LineEnd: 1}
-	if err := uploads.verifyFileTextQuote(source, good); err != nil {
+	if err := uploads.verifyFileTextQuote(context.Background(), source, good); err != nil {
 		t.Fatalf("browser selection failed: %v", err)
 	}
 	good.Quote = "错误文本"
-	if uploads.verifyFileTextQuote(source, good) == nil {
+	if uploads.verifyFileTextQuote(context.Background(), source, good) == nil {
 		t.Fatal("mismatched quote was accepted")
 	}
 }

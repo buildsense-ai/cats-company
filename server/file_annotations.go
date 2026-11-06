@@ -1,12 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -866,7 +866,7 @@ var fileAnnotationTextExt = map[string]bool{
 // small own-upload file. Verification is attempted only when the descriptor
 // names a readable text upload within budget; anything else is validated
 // structurally and the limitation is documented.
-func (h *UploadHandler) verifyFileTextQuote(source fileAnnotationSource, target fileAnnotationTarget) error {
+func (h *UploadHandler) verifyFileTextQuote(ctx context.Context, source fileAnnotationSource, target fileAnnotationTarget) error {
 	if h == nil || source.FileKey == "" || !uploadFileNamePattern.MatchString(source.FileKey) {
 		return nil
 	}
@@ -874,11 +874,11 @@ func (h *UploadHandler) verifyFileTextQuote(source fileAnnotationSource, target 
 	if !fileAnnotationTextExt[ext] {
 		return nil
 	}
-	path := filepath.Join(h.baseDir, "files", source.FileKey)
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > fileAnnotationsMaxVerifyBytes {
+	path, cleanup, err := materializeUpload(ctx, h.storage, h.baseDir, "uploads/files/"+source.FileKey, fileAnnotationsMaxVerifyBytes)
+	if err != nil {
 		return nil
 	}
+	defer cleanup()
 	file, err := os.Open(path)
 	if err != nil {
 		return nil

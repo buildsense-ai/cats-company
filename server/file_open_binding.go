@@ -386,14 +386,14 @@ func (h *FileOpenBindingHandler) HandleAnnotations(w http.ResponseWriter, r *htt
 	}
 	for index := range document.Annotations {
 		if (document.Annotations[index].Kind == "text" || document.Annotations[index].Kind == "code") && h.uploads != nil {
-			if err := h.uploads.verifyFileTextQuote(document.Source, document.Annotations[index].Target); err != nil {
+			if err := h.uploads.verifyFileTextQuote(r.Context(), document.Source, document.Annotations[index].Target); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file_annotations_quote_invalid"})
 				return
 			}
 		}
 	}
 	validator := &ArtifactOpenBindingHandler{uploads: h.uploads}
-	blocks, err := validator.validatedScreenshotBlocks(claims.UID, request.ContentBlocks)
+	blocks, err := validator.validatedScreenshotBlocks(r.Context(), claims.UID, request.ContentBlocks)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "artifact_screenshots_invalid"})
 		return

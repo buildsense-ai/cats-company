@@ -55,10 +55,12 @@ type weixinAPI interface {
 
 // WeixinChannelHandler owns Weixin official-account QR binding and callbacks.
 type WeixinChannelHandler struct {
-	db     store.Store
-	hub    *Hub
-	config WeixinChannelConfig
-	api    weixinAPI
+	db      store.Store
+	hub     *Hub
+	config  WeixinChannelConfig
+	api     weixinAPI
+	storage UploadStorage
+	baseDir string
 }
 
 func NewWeixinChannelHandlerFromEnv(db store.Store, hub *Hub) *WeixinChannelHandler {
@@ -76,7 +78,15 @@ func NewWeixinChannelHandler(db store.Store, hub *Hub, cfg WeixinChannelConfig, 
 	if api == nil {
 		api = newWeixinAPIClient(cfg)
 	}
-	return &WeixinChannelHandler{db: db, hub: hub, config: cfg, api: api}
+	return &WeixinChannelHandler{db: db, hub: hub, config: cfg, api: api, storage: NewLocalUploadStorage(uploadDir), baseDir: uploadDir}
+}
+
+func (h *WeixinChannelHandler) SetUploadStorage(storage UploadStorage, baseDir string) {
+	if h == nil || storage == nil {
+		return
+	}
+	h.storage = storage
+	h.baseDir = baseDir
 }
 
 func (h *WeixinChannelHandler) InstallOutboundDispatcher() {
@@ -434,7 +444,7 @@ func (h *WeixinChannelHandler) handleMediaMessage(w http.ResponseWriter, ctx con
 	if media.FileName == "" {
 		media.FileName = "weixin-" + strings.ToLower(strings.TrimSpace(msg.MsgType)) + "-" + mediaID
 	}
-	file, err := saveChannelMediaUpload(uploadType, media)
+	file, err := saveChannelMediaUploadWithStorage(ctx, h.storage, h.baseDir, uploadType, media)
 	if err != nil {
 		log.Printf("save weixin media failed: %v", err)
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "保存微信图片、文件或语音失败，请稍后重试。")

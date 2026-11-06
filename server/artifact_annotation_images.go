@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -34,30 +35,17 @@ type artifactImageUploadReceipt struct {
 func (h *UploadHandler) artifactReceiptDir() string {
 	return filepath.Join(h.baseDir, ".artifact-image-receipts")
 }
-func (h *UploadHandler) rememberArtifactImageUpload(uid int64, key string) error {
+func (h *UploadHandler) rememberArtifactImageUpload(uid int64, key string, size int64, digest string) error {
 	if uid <= 0 {
 		return nil
 	} // Legacy/mobile anonymous upload remains ordinary, never owned screenshot proof.
-	file, err := os.Open(filepath.Join(h.baseDir, "images", key))
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	// Larger ordinary uploads stay compatible, but cannot become screenshot
-	// proof. Avoid a second read of a potentially 300MiB ordinary image.
-	if !info.Mode().IsRegular() || info.Size() > artifactScreenshotMaxImageBytes {
+	if size <= 0 || size > artifactScreenshotMaxImageBytes || len(digest) != sha256.Size*2 {
 		return nil
 	}
-	hash := sha256.New()
-	size, err := io.Copy(hash, file)
-	if err != nil {
-		return err
+	if _, err := hex.DecodeString(digest); err != nil {
+		return errors.New("invalid screenshot upload digest")
 	}
-	receipt := artifactImageUploadReceipt{ActorUID: uid, FileKey: key, Size: size, SHA256: hex.EncodeToString(hash.Sum(nil))}
+	receipt := artifactImageUploadReceipt{ActorUID: uid, FileKey: key, Size: size, SHA256: digest}
 	if err := os.MkdirAll(h.artifactReceiptDir(), 0700); err != nil {
 		return err
 	}
@@ -82,7 +70,7 @@ func (h *UploadHandler) rememberArtifactImageUpload(uid int64, key string) error
 
 func (h *ArtifactOpenBindingHandler) SetUploadHandler(uploads *UploadHandler) { h.uploads = uploads }
 
-func (h *UploadHandler) ownedArtifactScreenshot(uid int64, payload map[string]interface{}) (types.ContentBlock, error) {
+func (h *UploadHandler) ownedArtifactScreenshot(ctx context.Context, uid int64, payload map[string]interface{}) (types.ContentBlock, error) {
 	key, _ := payload["file_key"].(string)
 	if !uploadFileNamePattern.MatchString(key) || !oneOf(strings.ToLower(filepath.Ext(key)), ".jpg", ".jpeg") {
 		return types.ContentBlock{}, errors.New("screenshot file_key must name a JPEG image upload")
@@ -121,29 +109,17 @@ func (h *UploadHandler) ownedArtifactScreenshot(uid int64, payload map[string]in
 	if json.Unmarshal(receiptData, &receipt) != nil || receipt.ActorUID != uid || receipt.FileKey != key || receipt.Size != int64(claimedSize) {
 		return types.ContentBlock{}, errors.New("screenshot upload does not belong to actor or size mismatches")
 	}
-	path := filepath.Join(h.baseDir, "images", key)
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() != receipt.Size {
-		return types.ContentBlock{}, errors.New("screenshot file unavailable or changed")
-	}
-	root, err := filepath.EvalSymlinks(filepath.Join(h.baseDir, "images"))
+	path, cleanup, err := materializeUpload(ctx, h.storage, h.baseDir, "uploads/images/"+key, artifactScreenshotMaxImageBytes)
 	if err != nil {
-		return types.ContentBlock{}, err
+		return types.ContentBlock{}, errors.New("screenshot file unavailable")
 	}
-	real, err := filepath.EvalSymlinks(path)
+	defer cleanup()
+	file, err := os.Open(path)
 	if err != nil {
-		return types.ContentBlock{}, err
+		return types.ContentBlock{}, errors.New("screenshot file unavailable")
 	}
-	relative, err := filepath.Rel(root, real)
-	if err != nil || relative != key {
-		return types.ContentBlock{}, errors.New("screenshot escapes image storage")
-	}
-	file, err := os.Open(real)
-	if err != nil {
-		return types.ContentBlock{}, err
-	}
-	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, artifactScreenshotMaxImageBytes+1))
+	_ = file.Close()
 	if err != nil || len(data) != claimedSize {
 		return types.ContentBlock{}, errors.New("screenshot bytes exceed budget or changed")
 	}
@@ -165,7 +141,7 @@ func (h *UploadHandler) ownedArtifactScreenshot(uid int64, payload map[string]in
 
 // Canonicalize only bound annotation attachments; ordinary upload/send APIs keep
 // their historical behavior. Text-only remains explicit by omitting images.
-func (h *ArtifactOpenBindingHandler) validatedScreenshotBlocks(uid int64, blocks []types.ContentBlock) ([]types.ContentBlock, error) {
+func (h *ArtifactOpenBindingHandler) validatedScreenshotBlocks(ctx context.Context, uid int64, blocks []types.ContentBlock) ([]types.ContentBlock, error) {
 	imageCount := 0
 	for _, block := range blocks {
 		if block.Type == "image" {
@@ -186,7 +162,7 @@ func (h *ArtifactOpenBindingHandler) validatedScreenshotBlocks(uid int64, blocks
 		if block.Type != "image" || h.uploads == nil {
 			return nil, errors.New("bound attachments require owned screenshot images")
 		}
-		image, err := h.uploads.ownedArtifactScreenshot(uid, block.Payload)
+		image, err := h.uploads.ownedArtifactScreenshot(ctx, uid, block.Payload)
 		if err != nil {
 			return nil, err
 		}

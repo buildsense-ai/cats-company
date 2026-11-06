@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -221,8 +223,8 @@ func TestArtifactScreenshotRejectsForeignForgedMissingCorruptAndBudget(t *testin
 				data, _ := os.ReadFile(path)
 				data = data[:len(data)/2]
 				os.WriteFile(path, data, 0644)
-				if err := f.bindings.uploads.rememberArtifactImageUpload(7, key); err != nil {
-					t.Fatal(err)
+				digest := sha256.Sum256(data)
+				if err := f.bindings.uploads.rememberArtifactImageUpload(7, key, int64(len(data)), hex.EncodeToString(digest[:])); err != nil {
 				}
 				full.Payload["size"] = float64(len(data))
 			case "budget bytes":

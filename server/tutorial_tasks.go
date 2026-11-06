@@ -3,7 +3,6 @@ package server
 import (
 	"embed"
 	"encoding/json"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,6 +21,7 @@ var tutorialAdminAssets embed.FS
 type TutorialTaskHandler struct {
 	baseDir string
 	baseURL string
+	storage UploadStorage
 }
 
 type tutorialTaskPayload struct {
@@ -65,7 +65,13 @@ var allowedTutorialFileExts = map[string]bool{
 
 func NewTutorialTaskHandler(baseDir, baseURL string) *TutorialTaskHandler {
 	_ = os.MkdirAll(filepath.Join(baseDir, "tutorial"), 0755)
-	return &TutorialTaskHandler{baseDir: baseDir, baseURL: baseURL}
+	return &TutorialTaskHandler{baseDir: baseDir, baseURL: baseURL, storage: NewLocalUploadStorage(baseDir)}
+}
+
+func (h *TutorialTaskHandler) SetUploadStorage(storage UploadStorage) {
+	if h != nil && storage != nil {
+		h.storage = storage
+	}
 }
 
 func (h *TutorialTaskHandler) HandleTasks(w http.ResponseWriter, r *http.Request) {
@@ -162,14 +168,7 @@ func (h *TutorialTaskHandler) HandleAdminUpload(w http.ResponseWriter, r *http.R
 		return
 	}
 	name := generateFileKey(ext)
-	dstPath := filepath.Join(h.baseDir, "tutorial", name)
-	dst, err := os.Create(dstPath)
-	if err != nil {
-		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
-		return
-	}
-	defer dst.Close()
-	size, err := io.Copy(dst, file)
+	size, _, err := saveUploadReader(r.Context(), h.storage, h.baseDir, "uploads/tutorial/"+name, file, tutorialMaxUpload, normalizedUploadMimeType(ext, header.Header.Get("Content-Type")))
 	if err != nil {
 		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return
