@@ -10532,11 +10532,11 @@ describe('MessagesView composer draft isolation', () => {
         await act(async () => {
           await flushPromises();
         });
-        // The first load has to be the launch address: that is what tells the
-        // application who opened it. Leaving it there would be the bug — a code
-        // is single-use, so the next reload spends a dead one and the frame
-        // comes back as a guest. The frame title names the application, which
-        // is what proves this conversation is not showing a neighbour's app.
+        // The frame must keep the launch address: that address is what carries
+        // the visitor's identity. Navigating to the plain application address
+        // after load was tried and reverted — the app reloaded without its code
+        // and every open landed on "需要先确认身份". The title names the app,
+        // which is what proves this conversation is not showing a neighbour's.
         const launchFrame = activeGatewayFrame(container);
         expect(launchFrame?.getAttribute('title')).toBe(apps[index].title);
         expect(launchFrame?.getAttribute('src')).toMatch(/\/_launch\/\d+$/);
@@ -10544,9 +10544,9 @@ describe('MessagesView composer draft isolation', () => {
           Simulate.load(launchFrame);
           await Promise.resolve();
         });
-        // Once identity is established the frame carries the stable address.
+        // A load must not rewrite the address away from the launch code.
         expect(activeGatewayFrame(container)?.getAttribute('src'))
-          .toBe(apps[index].url);
+          .toMatch(/\/_launch\/\d+$/);
       }
 
       // Come back to each one in a different order: every conversation must
@@ -10557,8 +10557,9 @@ describe('MessagesView composer draft isolation', () => {
           await flushPromises();
         });
         // The frame title names the application. Asserting it here is what
-        // catches "this conversation shows a neighbour's app"; the address is
-        // checked after a load because the launch address is only the first hop.
+        // catches "this conversation shows a neighbour's app". The address stays
+        // on the launch code: that is what carries identity, and a load must not
+        // rewrite it away.
         const frameBack = activeGatewayFrame(container);
         expect(frameBack?.getAttribute('title')).toBe(apps[index].title);
         await act(async () => {
@@ -10566,7 +10567,7 @@ describe('MessagesView composer draft isolation', () => {
           await Promise.resolve();
         });
         expect(activeGatewayFrame(container)?.getAttribute('src'))
-          .toBe(apps[index].url);
+          .toMatch(/\/_launch\/\d+$/);
       }
       // Whether a switch reuses the live frame is covered by "keeps the
       // application alive across a conversation switch and back". This test is

@@ -239,11 +239,6 @@ export default function CloudArtifactsPanel({
   const gatewayFrameURLRef = useRef('');
   // The live frame element, read at load time instead of from the event object.
   const gatewayFrameElementRef = useRef(null);
-  // Once the launch address has been consumed, the frame is moved to the plain
-  // application address. The launch code is only there to establish identity;
-  // leaving it in `src` means every later reload spends a code that is already
-  // gone, and the application comes back as a guest.
-  const [gatewayFrameSrc, setGatewayFrameSrc] = useState('');
   const [gatewayRefreshing, setGatewayRefreshing] = useState(false);
   const retireGatewayOpen = useCallback(() => {
     ++gatewayOpenSequenceRef.current;
@@ -401,12 +396,15 @@ export default function CloudArtifactsPanel({
       const showing = gatewayPreviewRef.current;
       if (showing
         && String(showing.id) === String(app.id)
-        && String(showing.panelTopicId || '') === String(topicId || '')
-        // An open belongs to the session that minted it. Comparing the token
-        // rather than a revision counter is deliberate: a relogin replaces the
-        // token even when no counter was bumped, and reusing the previous
-        // visitor's binding would carry their drafts into this session.
-        && String(showing.authToken || '') === String(getToken() || '')) {
+        && String(showing.panelTopicId || '') === String(topicId || '')) {
+        // Same application, same conversation, frame still alive: returning to
+        // this conversation must NOT open it again. Re-opening mints a new
+        // launch code, which bumps the frame key, which reloads the iframe —
+        // that is the white flash and the lost in-app state on every switch.
+        //
+        // A relogin does not need a check here: `cc:auth-changed` clears
+        // `gatewayPreviewRef` (see the invalidate handler), so the guard cannot
+        // hold a stale session open.
         return;
       }
     }
@@ -508,7 +506,6 @@ export default function CloudArtifactsPanel({
     };
     gatewayPreviewRef.current = nextPreview;
     setGatewayPreview(nextPreview);
-    setGatewayFrameSrc(String(viewerURL || ''));
     // Applications are opened from two places: a card in the conversation, and
     // this panel's own list. Only the first used to reach the conversation's
     // record, so an application opened from the list was remembered nowhere and
@@ -1368,43 +1365,33 @@ export default function CloudArtifactsPanel({
                 ref={gatewayFrameElementRef}
                 className="cloud-artifacts-gateway-frame"
                 key={gatewayReloadKeyRef.current}
-                // The first load uses the launch address, because that is what
-                // carries the visitor's identity: the plain address makes the
-                // frame a guest, and an application that needs to know who is
-                // asking refuses to run. That code is single-use, so it must not
-                // stay in `src` — the next reload (viewport restore, process
-                // recycling, a switch back from the background) would spend a
-                // spent code and come back a guest. Once the launch document has
-                // loaded, identity is established and `onLoad` swaps in the
-                // stable address. The key stays put, so this is a navigation,
-                // not a remount.
-                src={gatewayFrameSrc || gatewayPreview.viewerURL || gatewayPreview.url}
+                // The launch address stays in `src` for the life of this frame.
+                //
+                // The launch code is what carries the visitor's identity. Loading
+                // the plain application address makes the frame a guest, and an
+                // application that needs to know who is asking refuses to run —
+                // that is exactly the "需要先确认身份 / 没有携带登录凭据" page.
+                //
+                // An earlier attempt navigated to the stable address after load,
+                // on the theory that the gateway had already set a session cookie.
+                // It had not: the navigation reloaded the app without its code, so
+                // every open landed on the identity page and the frame visibly
+                // white-flashed. Do not do that again. The frame is built once per
+                // open (`key`) and never remounted, which is what keeps a single
+                // single-use code valid for the whole session.
+                src={gatewayPreview.viewerURL || gatewayPreview.url}
                 title={gatewayPreview.title || gatewayPreview.id}
-                onLoad={(event) => {
-                  const frameEl = event?.currentTarget || gatewayFrameElementRef.current;
-                  const launchURL = String(gatewayPreview.viewerURL || '');
-                  onGatewayFrameChange?.({
-                    frame: frameEl,
-                    url: launchURL || gatewayPreview.url,
-                    artifact: gatewayPreview.artifact,
-                    signal: gatewayPreview.bindingSignal,
-                    openBinding: gatewayPreview.openBinding,
-                    annotationApp: {
-                      appId: gatewayPreview.id,
-                      title: gatewayPreview.title || gatewayPreview.id,
-                    },
-                  });
-                  // The launch address has done its job once it has loaded: the
-                  // gateway has set its session cookie, so identity survives a
-                  // later navigation. Leaving the code in `src` would spend it
-                  // again on any reload (viewport restore, process recycling,
-                  // returning from the background) and the frame would come back
-                  // as a guest. The key is unchanged, so this is a navigation of
-                  // the same frame, not a remount.
-                  if (gatewayPreview.url && /\/_launch\/|(\?|&)code=/.test(launchURL)) {
-                    setGatewayFrameSrc(String(gatewayPreview.url));
-                  }
-                }}
+                onLoad={(event) => onGatewayFrameChange?.({
+                  frame: event?.currentTarget || gatewayFrameElementRef.current,
+                  url: gatewayPreview.viewerURL || gatewayPreview.url,
+                  artifact: gatewayPreview.artifact,
+                  signal: gatewayPreview.bindingSignal,
+                  openBinding: gatewayPreview.openBinding,
+                  annotationApp: {
+                    appId: gatewayPreview.id,
+                    title: gatewayPreview.title || gatewayPreview.id,
+                  },
+                })}
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
                 referrerPolicy="no-referrer"
                 style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}
