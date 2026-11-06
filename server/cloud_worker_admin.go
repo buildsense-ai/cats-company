@@ -14,6 +14,12 @@ import (
 
 var errCloudWorkerAdminUnavailable = errors.New("cloud worker admin store unavailable")
 
+// shellSingleQuote 把一个值安全地嵌进 POSIX shell 单引号里。
+// 面板给的是让人复制到终端执行的命令，路径里带空格/引号时不能拼错。
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // CloudWorkerAdminDataStore is the intentionally narrow database projection
 // used by the internal cloud-worker roster. It must never be wired to a public
 // user route or return credentials.
@@ -262,16 +268,25 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 					if user == "" {
 						user = "root"
 					}
+					// 控制面只认 agents.key。不给 -i 的话运维得自己去翻密钥路径，
+					// 或者用默认密钥对着控制面反复被拒。
+					keyPath := strings.TrimSpace(h.packedSSHKey)
+					if keyPath == "" {
+						keyPath = "~/.ssh/agents.key"
+					}
+					keyArg := " -i " + shellSingleQuote(keyPath)
 					if jump != "" {
 						jumpUser := strings.TrimSpace(h.sshJumpUser)
 						if jumpUser == "" {
 							jumpUser = "root"
 						}
 						item.PackedSSHCommand = fmt.Sprintf(
-							"ssh -J %s@%s %s@%s 'incus exec %s -- bash'", jumpUser, jump, user, h.packedControlPlane, container)
+							"ssh -J %s@%s%s %s@%s 'incus exec %s -- bash'",
+							jumpUser, jump, keyArg, user, h.packedControlPlane, container)
 					} else {
 						item.PackedSSHCommand = fmt.Sprintf(
-							"ssh %s@%s 'incus exec %s -- bash'", user, h.packedControlPlane, container)
+							"ssh%s %s@%s 'incus exec %s -- bash'",
+							keyArg, user, h.packedControlPlane, container)
 					}
 				}
 				// Subscription billing (month vs on-demand, trial conversion)
