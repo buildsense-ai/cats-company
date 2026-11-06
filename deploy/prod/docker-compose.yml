@@ -34,6 +34,9 @@ services:
       # Comma-separated human usernames allowed to use the protected admin API.
       # Keep the real value only in the server-side prod.env.
       OC_ADMIN_USERNAMES: "${OC_ADMIN_USERNAMES:-}"
+      # 共享集群控制面：管理员面板用它拼「进租户容器」的命令。
+      # 只是拓扑提示，不参与鉴权；留空则面板不生成该命令。
+      PACKED_CONTROL_PLANE: "${PACKED_CONTROL_PLANE:-}"
       CATSCO_STT_ENABLED: "${CATSCO_STT_ENABLED:-0}"
       CATSCO_STT_PROVIDER: "${CATSCO_STT_PROVIDER:-volcengine-doubao-streaming-v2}"
       CATSCO_STT_TICKET_TTL_SECONDS: "${CATSCO_STT_TICKET_TTL_SECONDS:-45}"
