@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -130,6 +131,14 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 	}
 
 	infos, statusLoaded, statusRefreshing, statusUpdatedAt := h.cloudStatusSnapshot()
+	// 面板展示的部署形态直接来自 bot_config，而它可能在迁移/重装后与集群事实脱节
+	// （bot-live-38 就被显示成天翼云 ECS 整整一段）。这里以集群回报的 backend 为准
+	// 做一次对账，只在证据明确时改，失败不阻断列表。
+	if statusLoaded {
+		if fixed := h.reconcilePackedDeployments(records, infos); fixed > 0 {
+			log.Printf("[cloud-worker] admin overview reconciled %d deployment profile(s)", fixed)
+		}
+	}
 	overview := &cloudWorkerAdminOverview{
 		DeploymentProfiles:       h.deploymentProfileOptions(),
 		GeneratedAt:              now.UTC(),
@@ -370,13 +379,70 @@ func (h *CloudWorkerHandler) HandleAdminImport(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, map[string]interface{}{"binding": record})
 }
 
+// reconcilePackedDeployments 纠正"平台记成 ECS、集群证明是容器"的租户。
+//
+// 背景（2026-11-06）：bot-live-38 当年从 ECS 迁到共享集群时，只搬了容器，
+// 平台 bot_config.cloud_deployment 里还留着 private_nat + 一整套天翼云参数。
+// 面板据此显示"华南2·无公网IP / 天翼云实例正常"，管理员的 SSH 列是空的。
+//
+// 判据只用**集群事实**：状态快照的 backend 列（packed-status.sh 固定输出 packed）。
+// 只在证据明确时修正；反方向（记录是 packed_shared 但快照里没有）不动 ——
+// 那更可能是容器正在重建，贸然改成 ECS 会把计费带上 ECS 的续费路径。
+// 返回修正条数，供调用方记录。
+func (h *CloudWorkerHandler) reconcilePackedDeployments(
+	records []types.CloudWorkerAdminRecord,
+	infos map[string]cloudInstanceInfo,
+) int {
+	store, ok := h.db.(cloudWorkerDeploymentStore)
+	if !ok || len(records) == 0 {
+		return 0
+	}
+	fixed := 0
+	for _, record := range records {
+		tenant := record.TenantName
+		info, found := infos[tenant]
+		if !found || strings.ToLower(strings.TrimSpace(info.Backend)) != "packed" {
+			continue
+		}
+		current, err := store.GetCloudWorkerDeployment(tenant)
+		if err != nil {
+			log.Printf("[cloud-worker] reconcile skip %s: %v", tenant, err)
+			continue
+		}
+		if current != nil && current.Profile == types.CloudWorkerPackedShared {
+			continue
+		}
+		wanted, err := h.deploymentForProfile(types.CloudWorkerPackedShared)
+		if err != nil {
+			continue
+		}
+		// SetCloudWorkerDeployment 按 uid 落库（bot_config.user_id）。
+		if record.WorkerUID <= 0 {
+			log.Printf("[cloud-worker] reconcile skip %s: missing worker uid", tenant)
+			continue
+		}
+		if err := store.SetCloudWorkerDeployment(record.WorkerUID, wanted); err != nil {
+			log.Printf("[cloud-worker] reconcile write %s (uid=%d) failed: %v", tenant, record.WorkerUID, err)
+			continue
+		}
+		log.Printf("[cloud-worker] reconciled %s (uid=%d): deployment profile -> packed_shared (cluster reports backend=packed)",
+			tenant, record.WorkerUID)
+		fixed++
+	}
+	return fixed
+}
+
 // HandleAdminOverview is kept separate from the public cloud-worker routes;
 // CommercialOpsHandler performs the internal-source and service-scope checks.
+
 func (h *CloudWorkerHandler) HandleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	// 管理员每次拉列表时顺手对齐一次部署形态：面板显示的就是这一份记录，
+	// 让它跟着集群事实走，而不是等人发现"面板在撒谎"。对账在
+	// CloudWorkerAdminOverview 内部完成（那里同时拿得到 records 和状态快照）。
 	overview, err := h.CloudWorkerAdminOverview(time.Now().UTC())
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker admin store unavailable"})
