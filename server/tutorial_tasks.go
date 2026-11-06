@@ -168,7 +168,7 @@ func (h *TutorialTaskHandler) HandleAdminUpload(w http.ResponseWriter, r *http.R
 		return
 	}
 	name := generateFileKey(ext)
-	size, _, err := saveUploadReader(r.Context(), h.storage, h.baseDir, "uploads/tutorial/"+name, file, tutorialMaxUpload, normalizedUploadMimeType(ext, header.Header.Get("Content-Type")))
+	size, _, err := saveUploadReader(r.Context(), h.storage, "uploads/tutorial/"+name, file, tutorialMaxUpload, normalizedUploadMimeType(ext, header.Header.Get("Content-Type")))
 	if err != nil {
 		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return

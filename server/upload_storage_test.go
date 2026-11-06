@@ -17,18 +17,19 @@ import (
 )
 
 type memoryUploadStorage struct {
-	objects map[string][]byte
-	putErr  error
-	openErr error
-	statErr error
+	objects       map[string][]byte
+	putErr        error
+	openErr       error
+	statErr       error
+	localFallback bool
 }
 
 func newMemoryUploadStorage() *memoryUploadStorage {
-	return &memoryUploadStorage{objects: map[string][]byte{}}
+	return &memoryUploadStorage{objects: map[string][]byte{}, localFallback: true}
 }
 
-func (s *memoryUploadStorage) Remote() bool { return true }
-
+func (s *memoryUploadStorage) Remote() bool               { return true }
+func (s *memoryUploadStorage) LocalFallbackEnabled() bool { return s.localFallback }
 func (s *memoryUploadStorage) Put(_ context.Context, key, sourcePath string, size int64, wantSHA256, _ string) error {
 	if s.putErr != nil {
 		return s.putErr
@@ -99,6 +100,17 @@ func TestUploadStorageConfigurationDefaultsLocalAndRequiresZOSValues(t *testing.
 		t.Fatal("expected incomplete ZOS configuration to fail")
 	}
 }
+func TestParseLocalUploadFallbackDefaultsOnAndRejectsInvalidValues(t *testing.T) {
+	if enabled, err := parseLocalUploadFallback(""); err != nil || !enabled {
+		t.Fatalf("empty fallback setting enabled=%v err=%v, want enabled", enabled, err)
+	}
+	if enabled, err := parseLocalUploadFallback("false"); err != nil || enabled {
+		t.Fatalf("false fallback setting enabled=%v err=%v, want disabled", enabled, err)
+	}
+	if _, err := parseLocalUploadFallback("sometimes"); err == nil {
+		t.Fatal("invalid fallback setting was accepted")
+	}
+}
 
 func TestRemoteUploadReadsFallBackToLocalCopy(t *testing.T) {
 	t.Setenv("CATSCO_UPLOAD_STAGING_DIR", t.TempDir())
@@ -133,27 +145,87 @@ func TestRemoteUploadReadsFallBackToLocalCopy(t *testing.T) {
 		t.Fatalf("fallback content=%q err=%v", got, err)
 	}
 }
-
-func TestRemotePutFailureRetainsLocalCopy(t *testing.T) {
+func TestRemoteReadsDoNotFallBackWhenDisabled(t *testing.T) {
 	baseDir := t.TempDir()
-	stagePath := filepath.Join(t.TempDir(), "stage.txt")
-	want := []byte("preserved despite remote failure")
-	if err := os.WriteFile(stagePath, want, 0600); err != nil {
+	key := "uploads/files/20261106_0123456789abcdef0123456789abcdef.txt"
+	localPath, err := localUploadPath(baseDir, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localPath, []byte("legacy local copy"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	storage := newMemoryUploadStorage()
+	storage.localFallback = false
+	storage.openErr = errors.New("remote read unavailable")
+	storage.statErr = errors.New("remote stat unavailable")
+
+	if _, err := statUploadWithLocalFallback(context.Background(), storage, baseDir, key); !errors.Is(err, storage.statErr) {
+		t.Fatalf("stat error = %v, want remote error", err)
+	}
+	if _, err := openUploadWithLocalFallback(context.Background(), storage, baseDir, key); !errors.Is(err, storage.openErr) {
+		t.Fatalf("open error = %v, want remote error", err)
+	}
+	if _, _, err := materializeUpload(context.Background(), storage, baseDir, key, 1<<20); !errors.Is(err, storage.openErr) {
+		t.Fatalf("materialize error = %v, want remote error", err)
+	}
+}
+
+func TestRemotePutFailureLeavesNoPersistentCopyOrStagingFile(t *testing.T) {
+	baseDir := t.TempDir()
+	stageDir := t.TempDir()
+	t.Setenv("CATSCO_UPLOAD_STAGING_DIR", stageDir)
+	want := []byte("failed remote upload")
+	storage := newMemoryUploadStorage()
 	storage.putErr = errors.New("remote write unavailable")
 	key := "uploads/files/20261106_0123456789abcdef0123456789abcdef.txt"
-	if _, _, err := persistStagedUpload(context.Background(), storage, baseDir, key, stagePath, "text/plain"); err == nil {
+	if _, _, err := saveUploadReader(context.Background(), storage, key, bytes.NewReader(want), 1<<20, "text/plain"); err == nil {
 		t.Fatal("expected remote write failure")
 	}
 	localPath, err := localUploadPath(baseDir, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(localPath)
-	if err != nil || !bytes.Equal(got, want) {
-		t.Fatalf("retained local content=%q err=%v", got, err)
+	if _, err := os.Stat(localPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed remote upload left a persistent local copy: %v", err)
+	}
+	entries, err := os.ReadDir(stageDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("staging files after failed remote upload = %v, err=%v", entries, err)
+	}
+}
+
+func TestRemotePutSuccessLeavesNoPersistentCopyOrStagingFile(t *testing.T) {
+	baseDir := t.TempDir()
+	stageDir := t.TempDir()
+	t.Setenv("CATSCO_UPLOAD_STAGING_DIR", stageDir)
+	want := []byte("successful remote upload")
+	storage := newMemoryUploadStorage()
+	key := "uploads/files/20261106_0123456789abcdef0123456789abcdef.txt"
+
+	size, digest, err := saveUploadReader(context.Background(), storage, key, bytes.NewReader(want), 1<<20, "text/plain")
+	if err != nil {
+		t.Fatalf("save remote upload: %v", err)
+	}
+	if size != int64(len(want)) || storage.objects[key] == nil || !bytes.Equal(storage.objects[key], want) {
+		t.Fatalf("remote object size=%d content=%q", size, storage.objects[key])
+	}
+	if got := sha256.Sum256(want); digest != hex.EncodeToString(got[:]) {
+		t.Fatalf("digest=%q, want SHA-256 of uploaded bytes", digest)
+	}
+	localPath, err := localUploadPath(baseDir, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(localPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful remote upload left a persistent local copy: %v", err)
+	}
+	entries, err := os.ReadDir(stageDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("staging files after successful remote upload = %v, err=%v", entries, err)
 	}
 }
 
@@ -178,6 +250,8 @@ func TestLocalUploadStorageRejectsParentDirectorySymlink(t *testing.T) {
 
 func TestTutorialUploadUsesSharedStorageAndRemainsReadableAtUploadsURL(t *testing.T) {
 	baseDir := t.TempDir()
+	stageDir := t.TempDir()
+	t.Setenv("CATSCO_UPLOAD_STAGING_DIR", stageDir)
 	storage := newMemoryUploadStorage()
 	handler := NewTutorialTaskHandler(baseDir, "/uploads")
 	handler.SetUploadStorage(storage)
@@ -213,12 +287,12 @@ func TestTutorialUploadUsesSharedStorageAndRemainsReadableAtUploadsURL(t *testin
 		t.Fatalf("tutorial read status=%d body=%q", getRec.Code, getRec.Body.String())
 	}
 	localPath := filepath.Join(baseDir, "tutorial", filepath.Base(payload.File.URL))
-	localCopy, err := os.ReadFile(localPath)
-	if err != nil {
-		t.Fatalf("read retained local tutorial copy: %v", err)
+	if _, err := os.Stat(localPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remote tutorial upload left a persistent local copy: %v", err)
 	}
-	if string(localCopy) != string(storage.objects[key]) {
-		t.Fatalf("local tutorial copy = %q, remote object = %q", localCopy, storage.objects[key])
+	entries, err := os.ReadDir(stageDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("staging files after remote tutorial upload = %v, err=%v", entries, err)
 	}
 }
 

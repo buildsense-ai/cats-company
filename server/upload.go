@@ -164,10 +164,11 @@ func (r *countingReadCloser) Read(p []byte) (int, error) {
 
 // NewUploadHandler creates a new UploadHandler with local storage by default.
 func NewUploadHandler(baseDir, baseURL string) *UploadHandler {
-	os.MkdirAll(filepath.Join(baseDir, "images"), 0755)
-	os.MkdirAll(filepath.Join(baseDir, "files"), 0755)
-	os.MkdirAll(filepath.Join(baseDir, "feedback"), 0755)
-	os.MkdirAll(filepath.Join(baseDir, "tutorial"), 0755)
+	_ = os.MkdirAll(filepath.Join(baseDir, "images"), 0755)
+	_ = os.MkdirAll(filepath.Join(baseDir, "files"), 0755)
+	_ = os.MkdirAll(filepath.Join(baseDir, "feedback"), 0755)
+	_ = os.MkdirAll(filepath.Join(baseDir, "tutorial"), 0755)
+
 	return &UploadHandler{
 		baseDir:        baseDir,
 		baseURL:        baseURL,
@@ -245,7 +246,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		subDir = "feedback"
 	}
 
-	written, digest, err := saveUploadReader(r.Context(), h.storage, h.baseDir, "uploads/"+subDir+"/"+fileKey, file, int64(maxSize), mimeType)
+	written, digest, err := saveUploadReader(r.Context(), h.storage, "uploads/"+subDir+"/"+fileKey, file, int64(maxSize), mimeType)
 	if err != nil {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return
@@ -460,7 +461,7 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 	if uploadType == "image" {
 		subDir = "images"
 	}
-	written, _, err := saveUploadReader(r.Context(), h.storage, h.baseDir, "uploads/"+subDir+"/"+fileKey, file, int64(maxSize), mimeType)
+	written, _, err := saveUploadReader(r.Context(), h.storage, "uploads/"+subDir+"/"+fileKey, file, int64(maxSize), mimeType)
 	if err != nil {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return
@@ -1245,13 +1246,12 @@ func (h *UploadHandler) receiveRawUpload(
 	} else if uploadType == "feedback" {
 		subDir = "feedback"
 	}
-	destinationDir := filepath.Join(h.baseDir, subDir)
-	if err := os.MkdirAll(destinationDir, 0755); err != nil {
+	destinationDir := uploadStagingDir()
+	if err := os.MkdirAll(destinationDir, 0700); err != nil {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return uploadPayload{}, false
 	}
-
-	temp, err := os.CreateTemp(destinationDir, ".upload-*")
+	temp, err := os.CreateTemp(destinationDir, "raw-upload-*")
 	if err != nil {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return uploadPayload{}, false
@@ -1320,7 +1320,7 @@ func (h *UploadHandler) receiveRawUpload(
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return uploadPayload{}, false
 	}
-	written, digest, err := persistStagedUpload(r.Context(), h.storage, h.baseDir, "uploads/"+subDir+"/"+fileKey, tempPath, mimeType)
+	written, digest, err := persistStagedUpload(r.Context(), h.storage, "uploads/"+subDir+"/"+fileKey, tempPath, mimeType)
 	if err != nil {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return uploadPayload{}, false
