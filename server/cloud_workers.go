@@ -79,6 +79,7 @@ type CloudWorkerHandler struct {
 	sshUser            string
 	sshPort            string
 	packedControlPlane string
+	packedSSHKey       string
 	credits            CloudWorkerCreditStore
 	publicProfileJSON  string
 
@@ -266,6 +267,10 @@ type CloudWorkerConfig struct {
 	// operators SSH into to reach tenant containers (incus). Empty disables
 	// the generated packed SSH command. It is a topology hint, not a secret.
 	PackedControlPlane string
+	// PackedSSHKey is the key path operators must pass to ssh -i when entering
+	// the control plane. It is a path hint for the generated command, never
+	// key material. Empty falls back to ~/.ssh/agents.key.
+	PackedSSHKey string
 }
 
 // CloudWorkerCreditStore is optional for compatibility with focused test
@@ -400,6 +405,7 @@ func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 		StatusScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
 		SSHJumpHost:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_IP")),
 		PackedControlPlane: strings.TrimSpace(os.Getenv("PACKED_CONTROL_PLANE")),
+		PackedSSHKey:       strings.TrimSpace(os.Getenv("PACKED_SSH_KEY")),
 		SSHJumpAlias:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_ALIAS")),
 		SSHJumpPort:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_PORT")),
 		SSHJumpUser:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_USER")),
@@ -440,6 +446,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		sshStateRoot:       cfg.SSHStateRoot,
 		sshHostStateRoot:   cfg.SSHHostStateRoot,
 		packedControlPlane: cfg.PackedControlPlane,
+		packedSSHKey:       cfg.PackedSSHKey,
 		sshUser:            cfg.SSHUser,
 		sshPort:            cfg.SSHPort,
 		credits:            nil,
