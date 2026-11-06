@@ -1,0 +1,112 @@
+/* Approved account-menu layout. Scoped to these surfaces so other dialogs keep
+ * their own geometry, especially confirmations and task creation. */
+.oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) {
+  --cc-account-pad: 24px;
+  --cc-account-shadow: 0 16px 44px rgb(0 0 0 / 15%);
+  box-shadow: var(--cc-account-shadow);
+}
+html[data-theme='dark'] .oc-modal,
+html[data-liquid-variant='green'] .oc-modal {
+  --cc-account-shadow: 0 16px 44px rgb(0 0 0 / 30%);
+}
+html:root .oc-modal-overlay:has(> :is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager)) {
+  background: var(--cc-modal-backdrop);
+  backdrop-filter: blur(3px);
+}
+.oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal) .cc-settings-secondary-header {
+  min-height: 80px;
+  padding: 18px var(--cc-account-pad);
+  gap: 16px;
+}
+.oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal) .cc-settings-secondary-header-copy { gap: 4px; }
+.oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal) .cc-settings-secondary-header h3,
+.oc-modal.cc-agent-manager .cc-agent-manager-title,
+.oc-modal.oc-friend-manager-dialog .oc-collaboration-modal-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0;
+  color: var(--cc-text);
+}
+.oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal) .cc-settings-secondary-header p { font-size: 13px; line-height: 1.55; }
+.oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) :is(.cc-settings-secondary-header > button, .cc-dialog-close, .oc-modal-close) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  flex: 0 0 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-muted);
+  transition: background-color 140ms ease, color 140ms ease;
+  transform: none;
+}
+.oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) :is(.cc-settings-secondary-header > button, .cc-dialog-close, .oc-modal-close):hover { background: var(--cc-hover); color: var(--cc-text); }
+.oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) :is(.cc-settings-secondary-header > button, .cc-dialog-close, .oc-modal-close):active { background: var(--cc-pressed); transform: none; }
+.oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) :is(.cc-settings-secondary-header > button, .cc-dialog-close, .oc-modal-close) svg { width: 18px; height: 18px; stroke-width: 1.8; }
+.oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) :is(button, input, textarea, select):focus-visible { outline: 2px solid var(--cc-focus-ring, var(--cc-text-secondary)); outline-offset: 2px; }
+.cc-dialog-reading-focus:focus { outline: none; }
+
+/* Keep the title and actions visible while the feedback form scrolls. */
+.oc-modal.oc-feedback-modal { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.oc-feedback-modal > .cc-settings-secondary-header { margin: 0; }
+.oc-feedback-modal .oc-modal-body { display: grid; flex: 1 1 auto; min-height: 0; gap: 20px; margin: 0; padding: 24px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.oc-feedback-input-hint { margin: 0; color: var(--cc-text-secondary); font-size: 13px; line-height: 1.6; }
+.oc-feedback-modal .oc-feedback-footer-row { align-items: stretch; flex-direction: column; gap: 20px; }
+.oc-feedback-modal .oc-feedback-log-consent { font-size: 13px; line-height: 1.6; }
+.oc-feedback-footer-row .oc-modal-footer { align-self: flex-end; margin: 0; padding: 0; border: 0; }
+
+/* Share scrollbar material without changing unrelated page scrollbars. */
+:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) :is(.oc-modal-body, .oc-profile-editor-scroll, .catsco-connect-body, .relay-access-body, .cc-agent-manager-body, .oc-collaboration-modal-body) {
+  --cc-scrollbar-track: transparent;
+  --cc-scrollbar-inset: 0px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) ::-webkit-scrollbar { width: 6px; height: 6px; }
+:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) ::-webkit-scrollbar-track { background: transparent; }
+:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) ::-webkit-scrollbar-thumb { background: var(--cc-scrollbar-thumb); border: 0; border-radius: 6px; }
+:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) ::-webkit-scrollbar-thumb:hover { background: var(--cc-scrollbar-thumb-hover); }
+:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) ::-webkit-scrollbar-button { width: 0; height: 0; display: none; }
+
+@media (min-width: 769px) {
+  .oc-modal-overlay > .oc-modal:is(.catsco-desktop-connect-modal, .oc-feedback-modal, .oc-friend-manager-dialog, .cc-agent-manager-hub) { align-self: center; margin-block-start: 0; }
+  .relay-access-account > .relay-access-body { padding: 24px; gap: 12px; }
+  .catsco-desktop-connect-modal .catsco-connect-body { padding: 20px 24px 24px; gap: 20px; }
+  .catsco-desktop-connect-modal .catsco-connect-description { font-size: 13px; line-height: 1.65; }
+  .oc-profile-editor-scroll .oc-settings-secondary { font-size: 13px; line-height: 1.65; }
+  .oc-profile-editor-scroll > .oc-settings-section { margin-bottom: 24px; }
+  .oc-profile-editor-modal .oc-settings-avatar-block { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .oc-profile-editor-modal .oc-profile-avatar-wrap { width: 72px; height: 72px; flex: 0 0 72px; }
+  .oc-profile-editor-modal .oc-profile-hero-avatar { width: 72px !important; height: 72px !important; min-width: 72px; min-height: 72px; }
+  .oc-profile-editor-modal .oc-profile-avatar-desktop-action { margin: 0; }
+  .oc-modal.cc-agent-manager-hub { height: auto; min-height: 480px; max-height: calc(100dvh - 32px); }
+  .cc-agent-manager .cc-agent-manager-header { min-height: 64px; padding-block: 14px; }
+  .cc-agent-manager-hub .cc-agent-manager-header { padding-block: 0 18px; }
+  .oc-friend-manager-dialog .oc-collaboration-modal-header { min-height: 56px; gap: 16px; padding: 0 0 18px; }
+  .oc-friend-manager-dialog .oc-collaboration-modal-title-icon { width: 24px; height: 24px; background: transparent; color: var(--cc-muted); }
+  .oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) :is(.oc-btn, .oc-settings-small-btn) { min-height: 38px; border-radius: var(--cc-radius-md); transition: background-color 140ms ease, color 140ms ease; transform: none; }
+  .relay-access-plan-modal .enterprise-reference-purchase { margin-top: 32px; padding-top: 0; }
+  .relay-access-plan-modal .enterprise-reference-offer { padding: 36px; }
+  .relay-access-plan-modal .enterprise-reference-visual { padding: 28px; gap: 20px; }
+  .relay-access-plan-modal .enterprise-reference-workspace li { padding-block: 10px; }
+}
+.relay-access-plan-modal-body:has(#relay-access-enterprise-plan-panel) > .relay-access-plan-chooser-note { display: none; }
+.oc-modal.cc-agent-manager .cc-agent-manager-hub-body { scrollbar-gutter: auto; }
+.cc-agent-manager .cc-agent-hub-state .cc-loading-label { font-size: 13px; }
+.cc-agent-hub-load-error { min-height: 260px; font-size: 13px; }
+.cc-agent-invite-spinner { animation: cc-agent-invite-spin 1s linear infinite; }
+@keyframes cc-agent-invite-spin { to { transform: rotate(360deg); } }
+@media (max-width: 768px) {
+  .oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal) { --cc-account-pad: 16px; }
+  .oc-modal.oc-feedback-modal .oc-modal-body { padding: 20px 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-agent-invite-spinner { animation: none; }
+  .oc-modal:is(.oc-profile-editor-modal, .oc-feedback-modal, .relay-access-account, .catsco-desktop-connect-modal, .oc-friend-manager-dialog, .cc-agent-manager) :is(button, input, textarea, select) { transition: none; }
+}

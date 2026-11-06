@@ -493,12 +493,16 @@ describe('LocalAssistantBar model selector', () => {
     expect(menu.textContent).not.toContain('Agent 工具');
   });
 
-  it('opens the unified CatsCo desktop modal from the top-right desktop button', async () => {
+  it('opens computers from the single top-right computer button', async () => {
     const onDownload = vi.fn();
     await renderBar({ onDownload });
-    const button = container.querySelector('button[aria-label="打开桌面端"]');
+    const button = container.querySelector('button[aria-label="电脑"]');
     expect(button).toBeTruthy();
-    expect(button.getAttribute('title')).toBe('桌面端');
+    expect(button.getAttribute('title')).toBe('电脑');
+    expect(button.textContent).toBe('');
+    expect(button.querySelectorAll('svg')).toHaveLength(1);
+    expect(container.querySelectorAll('.cc-device-trigger')).toHaveLength(1);
+    expect(container.querySelector('.v3-desktop-action')).toBeNull();
     await act(async () => button.click());
     expect(onDownload).toHaveBeenCalledTimes(1);
   });
@@ -519,7 +523,7 @@ describe('LocalAssistantBar model selector', () => {
     expect(unavailableButton.disabled).toBe(true);
   });
 
-  it('groups mobile header actions behind a more menu while preserving both actions', async () => {
+  it('keeps computers directly available without repeating it in the mobile menu', async () => {
     const onOpenCloudArtifacts = vi.fn();
     const onDownload = vi.fn();
     const onNewTask = vi.fn();
@@ -536,7 +540,7 @@ describe('LocalAssistantBar model selector', () => {
     expect(menu).toBeTruthy();
     expect(menu.textContent).toContain('新建任务');
     expect(menu.textContent).toContain('打开产物');
-    expect(menu.textContent).toContain('下载桌面端');
+    expect(menu.textContent).not.toContain('下载桌面端');
 
     await act(async () => menu.querySelector('button[aria-label="打开产物"]').click());
     expect(document.querySelector('[aria-label="选择产物"]')).toBeNull();
@@ -544,9 +548,7 @@ describe('LocalAssistantBar model selector', () => {
     expect(onOpenCloudArtifacts).toHaveBeenCalledWith({ initialTab: 'files' });
     expect(container.querySelector('[role="menu"][aria-label="更多操作"]')).toBeNull();
 
-    await act(async () => moreButton.click());
-    const downloadItem = container.querySelector('[role="menu"] button[aria-label="下载桌面端"]');
-    await act(async () => downloadItem?.click());
+    await act(async () => container.querySelector('.cc-device-trigger').click());
     expect(onDownload).toHaveBeenCalledTimes(1);
 
     await act(async () => moreButton.click());

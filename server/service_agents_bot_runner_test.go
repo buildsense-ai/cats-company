@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -13,7 +14,7 @@ import (
 )
 
 // bot-as-tool：把一次 run 交给另一个 bot 执行。测试覆盖
-// 「解析 / 提示词提取 / 离线快速失败 / 正常收尾 / 超时 / 白名单」。
+// 「解析 / 提示词提取 / 离线快速失败 / 正常收尾 / 超时 / 跨账号派活」。
 
 type fakeBotStore struct {
 	mu sync.Mutex
@@ -26,25 +27,46 @@ type fakeBotStore struct {
 	completed  []string
 	completedR json.RawMessage
 	completedE ServiceRunEnvelope
-	failed     map[string]string
-	startCalls int
+	// completedByRun 按 run_id 留一份 envelope，供「并发时各拿各的」类断言使用。
+	completedByRun map[string]ServiceRunEnvelope
+	failed         map[string]string
+	startCalls     int
 
 	saved    []fakeBotMessage
 	saveErr  error
 	nextID   int64
 	messages []*types.Message
 	readErr  error
+	// topics 记录 CreateTopic 调用：投递前必须先建 topic（messages 有外键）。
+	topics   []string
+	topicErr error
+	// leases 记录每次 StartServiceRun 的租约秒数（由本次超时推导）。
+	leases []int
+	// activeRuns / countErr 给并发闸用：数「同一个应用还有几单在跑」。
+	activeRuns int
+	countErr   error
+	// callerActive / callerErr 给「按调用方配额」用：key 是 caller uid。
+	callerActive map[int64]int
+	callerErr    error
 }
 
 type fakeBotMessage struct {
-	topic string
-	from  int64
-	text  string
-	typ   string
+	topic    string
+	from     int64
+	text     string
+	typ      string
+	session  string
+	metadata map[string]interface{}
 }
 
 func newFakeBotStore() *fakeBotStore {
-	return &fakeBotStore{owner: 38, started: true, nextID: 100, failed: map[string]string{}}
+	return &fakeBotStore{
+		owner:          38,
+		started:        true,
+		nextID:         100,
+		failed:         map[string]string{},
+		completedByRun: map[string]ServiceRunEnvelope{},
+	}
 }
 
 func (f *fakeBotStore) StartServiceRun(_ context.Context, runID, instanceID string, leaseSeconds int) (bool, error) {
@@ -52,7 +74,30 @@ func (f *fakeBotStore) StartServiceRun(_ context.Context, runID, instanceID stri
 	defer f.mu.Unlock()
 	f.startCalls++
 	f.startedRun = append(f.startedRun, instanceID)
+	// 租约由本次 run 的超时推导（超时 + 60s），所以它同时是「这次用了哪套
+	// 执行参数」的观测口 —— 热更新测试靠它证明配置真的换了。
+	f.leases = append(f.leases, leaseSeconds)
 	return f.started, f.startErr
+}
+
+// lastLease 返回最后一次 StartServiceRun 收到的租约秒数。
+func (f *fakeBotStore) lastLease() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.leases) == 0 {
+		return 0
+	}
+	return f.leases[len(f.leases)-1]
+}
+
+// leaseFor 返回第 i 次 StartServiceRun 的租约秒数（-1 = 最后一次）。
+func (f *fakeBotStore) leaseFor(i int) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i < 0 || i >= len(f.leases) {
+		return 0
+	}
+	return f.leases[i]
 }
 
 func (f *fakeBotStore) CompleteServiceRun(_ context.Context, runID, resultID string, result, usage json.RawMessage) (bool, error) {
@@ -61,6 +106,16 @@ func (f *fakeBotStore) CompleteServiceRun(_ context.Context, runID, resultID str
 	f.completed = append(f.completed, runID)
 	f.completedR = result
 	_ = json.Unmarshal(result, &f.completedE)
+	if f.completedByRun == nil {
+		f.completedByRun = map[string]ServiceRunEnvelope{}
+	}
+	// 必须深拷贝：json.RawMessage 反序列化会复用底层数组，
+	// 否则后一个 run 的结果会把前一个 run 记下来的 envelope 一起改掉。
+	snapshot := f.completedE
+	if f.completedE.Output != nil {
+		snapshot.Output = append(json.RawMessage(nil), f.completedE.Output...)
+	}
+	f.completedByRun[runID] = snapshot
 	return true, nil
 }
 
@@ -71,16 +126,99 @@ func (f *fakeBotStore) FailServiceRun(_ context.Context, runID, errorText string
 	return nil
 }
 
+// —— 线程安全的读方法 ——
+//
+// 写入都在 mu 内（runner 跑在后台 goroutine），测试读不加锁就是数据竞态：
+// 实测并发跑时读到零值（status 空），单跑却正常 —— 正是缺 happens-before。
+
+func (f *fakeBotStore) completedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.completed)
+}
+
+func (f *fakeBotStore) failedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.failed)
+}
+
+func (f *fakeBotStore) errorText(runID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.failed[runID]
+}
+
+// errorTexts 返回失败原因的快照（多 run 断言用；不要在持锁时再调用）。
+func (f *fakeBotStore) errorTexts() map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]string, len(f.failed))
+	for runID, text := range f.failed {
+		out[runID] = text
+	}
+	return out
+}
+
+// result 返回某个 run 的结果 envelope（深拷贝，避免与后台写共享底层数组）。
+func (f *fakeBotStore) result(t *testing.T, runID string) ServiceRunEnvelope {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	env, ok := f.completedByRun[runID]
+	if !ok {
+		t.Fatalf("run %s 还没有结果", runID)
+	}
+	return env
+}
+
+// lastResult 返回最后完成的那次结果（单 run 测试用）。
+func (f *fakeBotStore) lastResult(t *testing.T) ServiceRunEnvelope {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.completed) == 0 {
+		t.Fatal("还没有完成的 run")
+	}
+	env, ok := f.completedByRun[f.completed[len(f.completed)-1]]
+	if !ok {
+		t.Fatal("找不到最后那个 run 的结果")
+	}
+	return env
+}
+
 func (f *fakeBotStore) SaveMessage(topicID string, fromUID int64, content, msgType string) (int64, error) {
+	id, _, err := f.SaveMessageWithMetadata(topicID, fromUID, content, nil, "", "", msgType, 0, "", nil)
+	return id, err
+}
+
+// CreateTopic 记录调用方要求建的 topic：生产上 messages.topic_id 有外键，
+// 不建就是 foreign key 报错（跨账号首调必炸）。
+func (f *fakeBotStore) CreateTopic(id, topicType string, ownerID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.topicErr != nil {
+		return f.topicErr
+	}
+	f.topics = append(f.topics, id)
+	return nil
+}
+
+func (f *fakeBotStore) SaveMessageWithMetadata(topicID string, fromUID int64, content string, _ []types.ContentBlock,
+	_, _, msgType string, _ int64, _ string, metadata map[string]interface{}) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.saveErr != nil {
-		return 0, f.saveErr
+		return 0, false, f.saveErr
 	}
 	f.nextID++
 	id := f.nextID
-	f.saved = append(f.saved, fakeBotMessage{topic: topicID, from: fromUID, text: content, typ: msgType})
-	return id, nil
+	record := fakeBotMessage{topic: topicID, from: fromUID, text: content, typ: msgType, metadata: metadata}
+	if raw, ok := metadata[botSessionMetadataKey].(string); ok {
+		record.session = raw
+	}
+	f.saved = append(f.saved, record)
+	return id, true, nil
 }
 
 func (f *fakeBotStore) GetMessagesSince(topicID string, sinceID int64, limit int) ([]*types.Message, error) {
@@ -98,6 +236,25 @@ func (f *fakeBotStore) GetMessagesSince(topicID string, sinceID int64, limit int
 	return out, nil
 }
 
+// GetRecentMessages 与 postgres 实现同语义：这个 topic 最近 limit 条，id 升序。
+func (f *fakeBotStore) GetRecentMessages(topicID string, limit int) ([]*types.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
+	var out []*types.Message
+	for _, msg := range f.messages {
+		if msg.TopicID == topicID {
+			out = append(out, msg)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
+
 func (f *fakeBotStore) GetBotOwner(botUID int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -108,22 +265,40 @@ func (f *fakeBotStore) GetBotOwner(botUID int64) (int64, error) {
 }
 
 func (f *fakeBotStore) pushBotReply(topic string, botUID int64, text string) {
+	f.pushBotReplyFor(topic, botUID, text, 0, "")
+}
+
+// pushBotReplyFor 推一条「带归属信息」的回复：新客户端会回填 reply_to（或回传会话 id）。
+func (f *fakeBotStore) pushBotReplyFor(topic string, botUID int64, text string, replyTo int64, sessionID string) {
+	f.pushBotMessage(topic, botUID, text, replyTo, sessionID, "")
+}
+
+// pushBotMessage 推一条 bot 消息，可指定 mode。
+// `mode=code` 是 bot 的工具调用/输出展示（skill 文件内容、shell stdout），
+// 不是给调用方的答案。
+func (f *fakeBotStore) pushBotMessage(topic string, botUID int64, text string, replyTo int64, sessionID, mode string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
-	f.messages = append(f.messages, &types.Message{
-		ID: f.nextID, TopicID: topic, FromUID: botUID, Content: text, MsgType: "text",
-	})
+	msg := &types.Message{
+		ID: f.nextID, TopicID: topic, FromUID: botUID, Content: text, MsgType: "text", ReplyTo: replyTo, Mode: mode,
+	}
+	if sessionID != "" {
+		msg.Metadata = map[string]interface{}{botSessionMetadataKey: sessionID}
+	}
+	f.messages = append(f.messages, msg)
 }
 
 type fakeBotHub struct {
 	online     bool
 	delivered  []string
+	sessions   []string
 	deliverErr bool
 }
 
-func (f *fakeBotHub) DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text string, msgID int64) bool {
+func (f *fakeBotHub) DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text string, msgID int64, botSessionID string) bool {
 	f.delivered = append(f.delivered, topicID+"|"+text)
+	f.sessions = append(f.sessions, botSessionID)
 	return !f.deliverErr
 }
 
@@ -132,11 +307,13 @@ func (f *fakeBotHub) BotRuntimeOnline(botUID int64) bool { return f.online }
 // newTestBotRunner 用短超时/短轮询构造，避免测试真的等 5 分钟。
 func newTestBotRunner(db botRunnerStore, hub botRunnerHub) *ServiceBotRunner {
 	runner := &ServiceBotRunner{
-		store:   db,
-		hub:     hub,
-		timeout: 300 * time.Millisecond,
-		poll:    5 * time.Millisecond,
-		settle:  10 * time.Millisecond,
+		store:          db,
+		hub:            hub,
+		timeout:        300 * time.Millisecond,
+		poll:           5 * time.Millisecond,
+		settle:         10 * time.Millisecond,
+		ambiguityGrace: 60 * time.Millisecond,
+		inFlight:       map[string]int{},
 	}
 	return runner
 }
@@ -228,11 +405,11 @@ func TestBotRunnerOfflineFailsFast(t *testing.T) {
 	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
 		store.ServiceRun{RunID: "run_1", SessionID: "sess_1", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
 
-	if !waitFor(t, func() bool { return len(db.failed) > 0 }, 2*time.Second) {
+	if !waitFor(t, func() bool { return db.failedCount() > 0 }, 2*time.Second) {
 		t.Fatal("run 应该被判定失败")
 	}
-	if !strings.HasPrefix(db.failed["run_1"], "bot_offline") {
-		t.Fatalf("errorText = %q, want bot_offline 前缀", db.failed["run_1"])
+	if !strings.HasPrefix(db.errorText("run_1"), "bot_offline") {
+		t.Fatalf("errorText = %q, want bot_offline 前缀", db.errorText("run_1"))
 	}
 	if len(db.saved) != 0 {
 		t.Fatal("离线时不该把消息落库")
@@ -258,16 +435,17 @@ func TestBotRunnerCompletesWithBotReply(t *testing.T) {
 	}
 	db.pushBotReply("p2p_38_982", 982, "润色好了：请大家及时修改密码。")
 
-	if !waitFor(t, func() bool { return len(db.completed) > 0 }, 3*time.Second) {
+	if !waitFor(t, func() bool { return db.completedCount() > 0 }, 3*time.Second) {
 		t.Fatalf("run 未完成；failed=%v", db.failed)
 	}
-	if db.completedE.Status != ServiceRunCompleted {
-		t.Fatalf("status = %v, want completed", db.completedE.Status)
+	env := db.lastResult(t)
+	if env.Status != ServiceRunCompleted {
+		t.Fatalf("status = %v, want completed", env.Status)
 	}
 	var output struct {
 		Text string `json:"text"`
 	}
-	if err := json.Unmarshal(db.completedE.Output, &output); err != nil {
+	if err := json.Unmarshal(env.Output, &output); err != nil {
 		t.Fatalf("output 解析失败: %v", err)
 	}
 	if !strings.Contains(output.Text, "请大家及时修改密码") {
@@ -303,13 +481,13 @@ func TestBotRunnerIgnoresNonBotAndNonText(t *testing.T) {
 	db.mu.Unlock()
 
 	// 这些都不算回复 → 应超时失败。
-	if !waitFor(t, func() bool { return len(db.failed) > 0 }, 3*time.Second) {
+	if !waitFor(t, func() bool { return db.failedCount() > 0 }, 3*time.Second) {
 		t.Fatal("应该超时失败")
 	}
-	if !strings.HasPrefix(db.failed["run_3"], "bot_timeout") {
-		t.Fatalf("errorText = %q, want bot_timeout", db.failed["run_3"])
+	if !strings.HasPrefix(db.errorText("run_3"), "bot_timeout") {
+		t.Fatalf("errorText = %q, want bot_timeout", db.errorText("run_3"))
 	}
-	if len(db.completed) != 0 {
+	if db.completedCount() != 0 {
 		t.Fatal("不该有完成结果")
 	}
 }
@@ -330,13 +508,13 @@ func TestBotRunnerJoinsMultiPartReply(t *testing.T) {
 	db.pushBotReply("p2p_38_982", 982, "第一段")
 	db.pushBotReply("p2p_38_982", 982, "第二段")
 
-	if !waitFor(t, func() bool { return len(db.completed) > 0 }, 3*time.Second) {
+	if !waitFor(t, func() bool { return db.completedCount() > 0 }, 3*time.Second) {
 		t.Fatalf("run 未完成；failed=%v", db.failed)
 	}
 	var output struct {
 		Text string `json:"text"`
 	}
-	_ = json.Unmarshal(db.completedE.Output, &output)
+	_ = json.Unmarshal(db.lastResult(t).Output, &output)
 	if output.Text != "第一段\n\n第二段" {
 		t.Fatalf("output.text = %q, want 两段拼接", output.Text)
 	}
@@ -351,47 +529,53 @@ func TestBotRunnerDeliverFailureFailsRun(t *testing.T) {
 	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
 		store.ServiceRun{RunID: "run_5", SessionID: "sess_5", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
 
-	if !waitFor(t, func() bool { return len(db.failed) > 0 }, 2*time.Second) {
+	if !waitFor(t, func() bool { return db.failedCount() > 0 }, 2*time.Second) {
 		t.Fatal("应该失败")
 	}
-	if !strings.HasPrefix(db.failed["run_5"], "bot_deliver_failed") {
-		t.Fatalf("errorText = %q", db.failed["run_5"])
+	if !strings.HasPrefix(db.errorText("run_5"), "bot_deliver_failed") {
+		t.Fatalf("errorText = %q", db.errorText("run_5"))
 	}
 }
 
-// 白名单：非白名单账号名下的 bot 不能被别人当工具调用。
-func TestBotRunnerOwnerWhitelist(t *testing.T) {
+// 跨账号调用：**runner 不做归属授权**。
+//
+// 这里是曾经出过错的地方：runner 以前另有一套「bot 的 owner 必须在白名单里」的规则，
+// 而可见性判断在 MCP invoke 里 —— 应用标了 public，别人调用仍然报 bot_not_shared。
+// 两套规则都叫「授权」，却互不同步。现在 runner 只管执行：绑定能不能被调用
+// 完全由可见性（公开/好友/自用）决定，而那是调用入口的单一职责。
+func TestBotRunnerDispatchesToBotOwnedByAnotherAccount(t *testing.T) {
 	db := newFakeBotStore()
-	db.owner = 999 // bot 属于 999，不在白名单
+	db.owner = 999 // bot 属于 999，调用方是 38
 	hub := &fakeBotHub{online: true}
 	runner := newTestBotRunner(db, hub)
-	runner.SetOwnerWhitelist([]int64{38, 2})
+	runner.timeout = 100 * time.Millisecond
 
 	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
 		store.ServiceRun{RunID: "run_6", SessionID: "sess_6", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
 
-	if !waitFor(t, func() bool { return len(db.failed) > 0 }, 2*time.Second) {
-		t.Fatal("应该拒绝")
+	if !waitFor(t, func() bool { return len(hub.delivered) > 0 }, 2*time.Second) {
+		t.Fatalf("可见性已准入的调用应该派活；failed=%v", db.errorTexts())
 	}
-	if !strings.HasPrefix(db.failed["run_6"], "bot_not_shared") {
-		t.Fatalf("errorText = %q, want bot_not_shared", db.failed["run_6"])
+	if got := db.errorText("run_6"); strings.HasPrefix(got, "bot_not_shared") {
+		t.Fatalf("runner 不应该再做归属授权（可见性已决定）：%q", got)
 	}
 }
 
-// 自己的 bot 不受白名单限制（自己的东西自己用）。
-func TestBotRunnerOwnBotAlwaysAllowed(t *testing.T) {
+// 目标 bot 被删：仍然要如实报出来。这是 runner 自己的职责（它得知道找谁）。
+func TestBotRunnerReportsMissingBot(t *testing.T) {
 	db := newFakeBotStore()
-	db.owner = 999
+	db.ownerErr = errors.New("bot not found")
 	hub := &fakeBotHub{online: true}
 	runner := newTestBotRunner(db, hub)
-	runner.SetOwnerWhitelist([]int64{38})
-	runner.timeout = 100 * time.Millisecond
 
 	runner.MaybeDispatch(context.Background(), botAgent(t, `{"runner":{"type":"bot","bot_uid":982}}`),
-		store.ServiceRun{RunID: "run_7", SessionID: "sess_7", Input: json.RawMessage(`{"text":"hi"}`)}, 999)
+		store.ServiceRun{RunID: "run_7", SessionID: "sess_7", Input: json.RawMessage(`{"text":"hi"}`)}, 38)
 
-	if !waitFor(t, func() bool { return len(hub.delivered) > 0 }, 2*time.Second) {
-		t.Fatalf("自己的 bot 应该允许投递；failed=%v", db.failed)
+	if !waitFor(t, func() bool { return db.failedCount() > 0 }, 2*time.Second) {
+		t.Fatal("目标 bot 不存在时应该失败")
+	}
+	if !strings.HasPrefix(db.errorText("run_7"), "bot_not_found") {
+		t.Fatalf("errorText = %q, want bot_not_found", db.errorText("run_7"))
 	}
 }
 

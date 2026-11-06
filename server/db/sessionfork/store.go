@@ -37,12 +37,12 @@ func (s SQLStore) query(q string) string {
 	return b.String()
 }
 
-const forkColumns = `actor_user_id, request_id, source_topic_id, target_topic_id, agent_uid, body_id, request_name, source_revision, target_revision, source_last_seq, message_id_map, state, error, created_at`
+const forkColumns = `actor_user_id, request_id, source_topic_id, target_topic_id, agent_uid, body_id, request_name, source_revision, target_revision, source_last_seq, message_id_map, state, error, created_at, source_turn_count, source_total_turns`
 
 func scanFork(row interface{ Scan(...interface{}) error }) (*types.SessionFork, error) {
 	f := &types.SessionFork{}
 	var mapping []byte
-	err := row.Scan(&f.ActorUserID, &f.RequestID, &f.SourceTopicID, &f.TargetTopicID, &f.AgentUID, &f.BodyID, &f.Name, &f.SourceRevision, &f.TargetRevision, &f.SourceLastSeq, &mapping, &f.State, &f.Error, &f.CreatedAt)
+	err := row.Scan(&f.ActorUserID, &f.RequestID, &f.SourceTopicID, &f.TargetTopicID, &f.AgentUID, &f.BodyID, &f.Name, &f.SourceRevision, &f.TargetRevision, &f.SourceLastSeq, &mapping, &f.State, &f.Error, &f.CreatedAt, &f.SourceTurnCount, &f.SourceTotalTurns)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrSessionForkNotFound
 	}
@@ -53,6 +53,79 @@ func scanFork(row interface{ Scan(...interface{}) error }) (*types.SessionFork, 
 		return nil, err
 	}
 	return f, nil
+}
+
+// countCompleteTurns returns how many user turns in the range reached an
+// assistant reply before the next user message.
+//
+// A turn opens on a message from the human participant, identified by sender
+// rather than by `role`. `role` is supplied by the client and production does
+// not write `role='user'` for human messages at all: the plain-text send path
+// stores only topic, sender, content and type, so a role-based rule counts zero
+// turns on real data. Callers must already have established that the only
+// senders are the actor and the agent, which CreateSessionFork checks.
+//
+// A trailing user message with no answer yet is not counted: the runtime holds
+// the same trailing turn and would otherwise cut one turn further than intended.
+// The runtime applies this identical state machine, so the two sides cannot
+// silently disagree about where the copy ends.
+func countCompleteTurns(messages []message, agentUID int64) int64 {
+	var turns int64
+	answered := false
+	open := false
+	for _, m := range messages {
+		if m.from != agentUID {
+			// Consecutive user messages fold into the turn already open.
+			if open && answered {
+				turns++
+			}
+			open, answered = true, false
+		} else if open {
+			// Any agent message answers the open turn. Requiring role='assistant'
+			// would drop the ~6% of agent rows written without a role, which would
+			// undercount turns here while the runtime still counted them.
+			answered = true
+		}
+	}
+	if open && answered {
+		turns++
+	}
+	return turns
+}
+
+// anchorClosesTurn reports whether the anchor is the last message of a complete
+// turn.
+//
+// The runtime cuts whole turns, so a boundary anywhere inside a turn copies less
+// history than the runtime keeps: the copy's visible messages and its model
+// context would disagree. That is reachable, not theoretical — a reply longer than
+// the 4000-character segment limit is stored as several messages, so one turn can
+// read [user, agent, agent, agent] in the cloud. An anchor on the first agent
+// segment is "answered" but not the turn's end, and accepting it truncated the copy
+// while the runtime kept the rest.
+//
+// Two conditions, both necessary:
+//
+//  1. No further agent message follows the anchor. A turn continues while the
+//     agent keeps producing, so the anchor is the turn's last message exactly when
+//     the next message is not from the agent (today that means it is the user's).
+//  2. The turn it closes actually opened on a user message. Without this a
+//     conversation whose first message is from the agent scores zero turns, and
+//     zero is indistinguishable from "unbounded" on the wire: `source_turn_count`
+//     is `omitempty`, so the runtime would read its absence as "no bound" and copy
+//     the whole transcript while the cloud copied a prefix.
+func anchorClosesTurn(all []message, anchor int, agentUID int64) bool {
+	if anchor < 0 || anchor >= len(all) {
+		return false
+	}
+	if all[anchor].from != agentUID {
+		// The anchor is a user message: its turn has no answer yet.
+		return false
+	}
+	if anchor+1 < len(all) && all[anchor+1].from == agentUID {
+		return false
+	}
+	return countCompleteTurns(all[:anchor+1], agentUID) > 0
 }
 
 func (s SQLStore) GetSessionFork(ctx context.Context, uid int64, request, topic string) (*types.SessionFork, error) {
@@ -99,7 +172,15 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	}
 	existing, err := scanFork(tx.QueryRowContext(ctx, s.query("SELECT "+forkColumns+" FROM session_forks WHERE actor_user_id = ? AND request_id = ? FOR UPDATE"), req.ActorUserID, req.RequestID))
 	if err == nil {
-		if existing.SourceTopicID != req.SourceTopicID || existing.Name != req.Name {
+		// The copy boundary is part of the request identity in both directions: a
+		// bounded retry must match the stored anchor, and an unbounded retry must
+		// not adopt a copy that was bounded. Comparing only when the retry carries
+		// an anchor would let a later unbounded retry silently return the bounded
+		// copy. SourceTurnCount is set only for bounded copies, so it identifies
+		// which kind the stored row is.
+		if existing.SourceTopicID != req.SourceTopicID || existing.Name != req.Name ||
+			(req.UntilMessageID > 0 && existing.SourceLastSeq != req.UntilMessageID) ||
+			(req.UntilMessageID == 0 && existing.SourceTurnCount > 0) {
 			return nil, store.ErrSessionForkConflict
 		}
 		return existing, tx.Commit()
@@ -119,18 +200,50 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if err = s.validateSource(ctx, tx, req.ActorUserID, req.AgentUID, req.SourceTopicID, req.BodyID); err != nil {
 		return nil, err
 	}
-	messages, err := s.readMessages(ctx, tx, req.SourceTopicID)
+	// One read serves both counts: the copied range and the whole conversation.
+	// The total is what lets a runtime that compacted its history translate a
+	// range boundary into an index inside the transcript it still holds.
+	all, err := s.readMessages(ctx, tx, req.SourceTopicID, 0)
 	if err != nil {
 		return nil, err
 	}
-	for _, m := range messages {
+	messages := all
+	anchor := -1
+	if req.UntilMessageID > 0 {
+		for index, m := range all {
+			if m.id == req.UntilMessageID {
+				anchor = index
+				break
+			}
+		}
+		// An anchor that is not in this conversation would copy nothing. Fail
+		// loudly instead of producing an empty copy the client cannot explain.
+		if anchor < 0 {
+			return nil, store.ErrSessionForkSource
+		}
+		messages = all[:anchor+1]
+	}
+	// Validate every sender in the whole conversation, not only inside the copied
+	// range: the total turn count is computed over `all`, so a third sender after
+	// the anchor would be read as the human participant and inflate the total,
+	// which would shift the cut in a compacted runtime.
+	for _, m := range all {
 		if m.from != req.ActorUserID && m.from != req.AgentUID {
 			return nil, store.ErrSessionForkForbidden
 		}
 	}
-	title := req.Name
-	if title == "" {
-		title = "\u4f1a\u8bdd\u526f\u672c"
+	// The anchor must be the last message of its turn. The runtime cuts whole
+	// turns, so a boundary inside a turn copies less history than the runtime
+	// keeps and the copy's visible messages and model context disagree. A reply
+	// longer than the 4000-character segment limit is stored as several messages,
+	// so a single turn can read [user, agent, agent, agent]: an anchor on the first
+	// agent segment is answered but is not the turn's end.
+	if req.UntilMessageID > 0 && !anchorClosesTurn(all, anchor, req.AgentUID) {
+		return nil, store.ErrSessionForkAnchor
+	}
+	title, err := s.copyTitle(ctx, tx, req)
+	if err != nil {
+		return nil, err
 	}
 	groupID, err := s.insertID(ctx, tx, `INSERT INTO "groups" (name, owner_id, group_kind) VALUES (?, ?, 'agent_task')`, title, req.ActorUserID)
 	if err != nil {
@@ -145,7 +258,34 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if err != nil {
 		return nil, err
 	}
+	// Project placement lives in its own table, so a new topic starts outside
+	// every project. Without this the copy of a project conversation would drop
+	// into the general task list, which reads as if it had been "lost" from the
+	// project it was branched off. Inherit the actor's placement for the source;
+	// an unplaced source simply yields no row, which is the existing behaviour.
+	var projectID sql.NullInt64
+	err = tx.QueryRowContext(ctx, s.query("SELECT project_id FROM project_topics WHERE owner_uid = ? AND topic_id = ?"), req.ActorUserID, req.SourceTopicID).Scan(&projectID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if projectID.Valid {
+		if _, err = tx.ExecContext(ctx, s.query("INSERT INTO project_topics (owner_uid, topic_id, project_id) VALUES (?,?,?)"), req.ActorUserID, target, projectID.Int64); err != nil {
+			return nil, err
+		}
+	}
 	f := &types.SessionFork{ActorUserID: req.ActorUserID, AgentUID: req.AgentUID, RequestID: req.RequestID, SourceTopicID: req.SourceTopicID, TargetTopicID: target, Name: req.Name, BodyID: req.BodyID, SourceRevision: revision, State: "pending", CreatedAt: time.Now().UTC(), MessageIDMap: map[string]int64{}}
+	// Only a bounded copy carries a turn count. A whole-conversation copy must
+	// leave it unset: the field means "cut the runtime transcript here", and the
+	// runtime treats a missing value as "no bound". Sending a count for a full
+	// copy would silently trim the tail of any turn the runtime had not finished.
+	if req.UntilMessageID > 0 {
+		f.SourceTurnCount = countCompleteTurns(messages, req.AgentUID)
+		// A runtime that compacted its transcript holds fewer turns than the
+		// conversation has, so the range boundary alone cannot be placed inside
+		// what it still holds. The total lets it subtract the compacted turns and
+		// branch from the retained part instead of failing the copy.
+		f.SourceTotalTurns = countCompleteTurns(all, req.AgentUID)
+	}
 	// Copy raw stored payloads, never run the message-ingestion/fanout service.
 	// client_msg_id belongs to ingress deduplication and must not be inherited.
 	for _, m := range messages {
@@ -182,7 +322,7 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if err = tx.QueryRowContext(ctx, s.query("SELECT history_revision FROM topics WHERE id = ?"), target).Scan(&f.TargetRevision); err != nil {
 		return nil, err
 	}
-	_, err = tx.ExecContext(ctx, s.query("INSERT INTO session_forks ("+forkColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), f.ActorUserID, f.RequestID, f.SourceTopicID, f.TargetTopicID, f.AgentUID, f.BodyID, f.Name, f.SourceRevision, f.TargetRevision, f.SourceLastSeq, string(mapping), f.State, "", f.CreatedAt)
+	_, err = tx.ExecContext(ctx, s.query("INSERT INTO session_forks ("+forkColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), f.ActorUserID, f.RequestID, f.SourceTopicID, f.TargetTopicID, f.AgentUID, f.BodyID, f.Name, f.SourceRevision, f.TargetRevision, f.SourceLastSeq, string(mapping), f.State, "", f.CreatedAt, f.SourceTurnCount, f.SourceTotalTurns)
 	if err != nil {
 		return nil, err
 	}
@@ -349,8 +489,15 @@ type message struct {
 	created                      time.Time
 }
 
-func (s SQLStore) readMessages(ctx context.Context, tx *sql.Tx, topic string) ([]message, error) {
-	rows, err := tx.QueryContext(ctx, s.query("SELECT id,from_uid,content,msg_type,content_blocks,mode,role,metadata,reply_to,created_at FROM messages WHERE topic_id = ? ORDER BY id"), topic)
+// readMessages returns the conversation history up to and including untilID.
+// untilID <= 0 means the whole conversation, which is the original behaviour.
+func (s SQLStore) readMessages(ctx context.Context, tx *sql.Tx, topic string, untilID int64) ([]message, error) {
+	query, args := "SELECT id,from_uid,content,msg_type,content_blocks,mode,role,metadata,reply_to,created_at FROM messages WHERE topic_id = ? ORDER BY id", []interface{}{topic}
+	if untilID > 0 {
+		query = "SELECT id,from_uid,content,msg_type,content_blocks,mode,role,metadata,reply_to,created_at FROM messages WHERE topic_id = ? AND id <= ? ORDER BY id"
+		args = append(args, untilID)
+	}
+	rows, err := tx.QueryContext(ctx, s.query(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -492,4 +639,140 @@ func (s SQLStore) ExpireSessionForks(ctx context.Context, cutoff time.Time, limi
 		return 0, err
 	}
 	return expired, nil
+}
+
+// copyTitle names a copy after its source: 「名字」(1), 「名字」(2), and so on.
+//
+// A copy is an ordinary conversation to the user, so it should read like one
+// rather than carry a generic label. The suffix keeps siblings of the same source
+// apart, and it is computed over the owner's existing topics, so no two copies of
+// the same source share a name.
+//
+// The suffix alone does not make every pair of copies tellable apart. A source
+// name may use the whole column, and the room for it shrinks by the suffix's
+// width, so the base loses its last runes when trimmed — the runes that most
+// often differ between two long names. 「周×125 甲」 and 「周×125 乙」 both become
+// 「周×125(1)」 apart from their numbers. They are still distinct rows with
+// distinct numbers, and nothing breaks, but the name no longer says where each
+// came from. Keeping both ends of a long name would preserve that, and is worth
+// doing if these ever show up in practice.
+//
+// The source name is taken whole, including any trailing "(n)": a conversation
+// the user already named 「周报(1)」 yields 「周报(1)(1)」, because guessing which
+// parenthetical is a copy marker would rewrite a name the user chose.
+func (s SQLStore) copyTitle(ctx context.Context, tx *sql.Tx, req types.SessionForkRequest) (string, error) {
+	base := strings.TrimSpace(req.Name)
+	if base == "" {
+		var sourceName sql.NullString
+		err := tx.QueryRowContext(ctx, s.query("SELECT name FROM topics WHERE id = ?"), req.SourceTopicID).Scan(&sourceName)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		base = strings.TrimSpace(sourceName.String)
+	}
+	if base == "" {
+		// A direct conversation has no topic name of its own; the agent's display
+		// name is what the user sees in the list.
+		var agentName sql.NullString
+		err := tx.QueryRowContext(ctx, s.query("SELECT display_name FROM users WHERE id = ?"), req.AgentUID).Scan(&agentName)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		base = strings.TrimSpace(agentName.String)
+	}
+	if base == "" {
+		base = "会话"
+	}
+
+	// The owner's whole set of topic names is read and filtered here rather than in
+	// SQL: `LIKE ... ESCAPE` spells its escape differently on MySQL and PostgreSQL,
+	// and a name containing % or _ would otherwise need that difference spelled
+	// correctly in each dialect. One owner has few enough topics for this.
+	rows, err := tx.QueryContext(ctx, s.query("SELECT name FROM topics WHERE owner_id = ?"), req.ActorUserID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	// Concurrent copies of the same source would race here, but the window is a
+	// single transaction and the UI allows one copy at a time. Worst case two
+	// copies share a name; no data is lost, and the name is user-editable.
+	taken := int64(0)
+	for rows.Next() {
+		var name sql.NullString
+		if err = rows.Scan(&name); err != nil {
+			return "", err
+		}
+		suffix, ok := copySuffix(base, name.String)
+		if ok && suffix > taken {
+			taken = suffix
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return "", err
+	}
+	return nextCopyTitle(base, taken+1), nil
+}
+
+// copyNameLimit is the width of groups.name and topics.name (VARCHAR(128)).
+const copyNameLimit = 128
+
+// copyTitleStem is the part of the name a suffix is appended to.
+//
+// The suffix has to fit: a source name may already use the whole column, and
+// appending "(1)" to it would overflow. MySQL runs in strict mode here, so the
+// insert would fail and the user would see a generic 500 instead of a copy. The
+// base is therefore truncated by runes, not bytes, so a multi-byte character is
+// never cut in half.
+//
+// Generation and recognition both go through this function. Reading a name back
+// with a differently-trimmed stem would make a long base look like it had no
+// earlier copies, and the next copy would collide with the first.
+func copyTitleStem(base, suffix string) string {
+	runes := []rune(base)
+	room := copyNameLimit - len([]rune(suffix))
+	if room < 0 {
+		room = 0
+	}
+	if len(runes) > room {
+		runes = runes[:room]
+	}
+	return string(runes)
+}
+
+// nextCopyTitle builds 「base(n)」, keeping the result inside the column width.
+//
+// next is the suffix to use, already resolved from the names that exist.
+func nextCopyTitle(base string, next int64) string {
+	suffix := "(" + strconv.FormatInt(next, 10) + ")"
+	return copyTitleStem(base, suffix) + suffix
+}
+
+// copySuffix reports the n in "base(n)" and whether name is one of the names
+// nextCopyTitle could have produced for this base.
+//
+// The stem is compared against the same truncation nextCopyTitle applies, not
+// against the untrimmed base: a 126-rune base is stored as 125 runes plus "(1)",
+// so requiring the literal base as a prefix would never match — every copy after
+// the first would then be named "(1)" again.
+func copySuffix(base, name string) (int64, bool) {
+	if !strings.HasSuffix(name, ")") {
+		return 0, false
+	}
+	open := strings.LastIndex(name, "(")
+	if open < 0 {
+		return 0, false
+	}
+	digits := name[open+1 : len(name)-1]
+	if digits == "" || strings.HasPrefix(digits, "+") || strings.HasPrefix(digits, "-") {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	if name[:open] != copyTitleStem(base, name[open:]) {
+		return 0, false
+	}
+	return n, true
 }

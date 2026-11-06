@@ -17,6 +17,9 @@ export default function useLoadingHandoff() {
       if (!region?.isConnected || !node.isConnected || typeof node.animate !== 'function'
         || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
       const style = getComputedStyle(node);
+      const exitDuration = Number.parseFloat(style.getPropertyValue('--cc-motion-exit')) || 140;
+      const contentDuration = Number.parseFloat(style.getPropertyValue('--cc-motion-content')) || 200;
+      const easing = style.getPropertyValue('--cc-motion-ease').trim() || 'ease-out';
       if (Number(style.opacity) < 0.05) return;
       const bounds = node.getBoundingClientRect();
       if (!bounds.width || !bounds.height) return;
@@ -39,8 +42,11 @@ export default function useLoadingHandoff() {
         const current = getComputedStyle(original);
         Object.assign(copies[index].style, {
           animation: 'none', transition: 'none', opacity: current.opacity, transform: current.transform,
+          backgroundColor: current.backgroundColor, fill: current.fill,
         });
-        copies[index].removeAttribute('id');
+        // SVG mask definitions belong to this retiring illustration. Keep their
+        // references intact after the original loader has left the document.
+        if (!original.closest('defs')) copies[index].removeAttribute('id');
         copies[index].removeAttribute('role');
         copies[index].removeAttribute('aria-live');
       });
@@ -89,16 +95,19 @@ export default function useLoadingHandoff() {
         observer.observe(document.body, { childList: true, subtree: true });
         window.addEventListener('scroll', finish, { capture: true, passive: true });
         window.addEventListener('resize', finish, { passive: true });
-        exit = layer.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 140, easing: 'ease-out', fill: 'forwards' });
+        exit = layer.animate([{ opacity: 1 }, { opacity: 0 }], { duration: exitDuration, easing, fill: 'forwards' });
         const targets = new Set([
           ...[...region.children].filter(child => !previousChildren.has(child)),
-          ...region.querySelectorAll('[data-loading-content]'),
+          // Persisted nested viewers own their entrance; a parent completion
+          // must not fade an image or preview that is already visible.
+          ...[...region.querySelectorAll('[data-loading-content]')]
+            .filter(target => target.closest('[data-loading-region]') === region),
         ]);
         for (const target of targets) {
           if ([...targets].some(parent => parent !== target && parent.contains(target))) continue;
           if (target.getBoundingClientRect().height && typeof target.animate === 'function') {
             entrances.push(target.animate([{ opacity: 0 }, { opacity: 1 }], {
-              duration: 200, easing: 'cubic-bezier(.2,.7,.2,1)',
+              duration: contentDuration, easing,
             }));
           }
         }

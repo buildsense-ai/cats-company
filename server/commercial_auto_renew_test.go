@@ -306,7 +306,7 @@ func TestCommercialAutoRenewExtendAppliesDeterministicExtension(t *testing.T) {
 	now := time.Now().UTC()
 	expiry := now.Add(5 * 24 * time.Hour)
 	newExpiry := expiry.AddDate(0, 0, 30)
-	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", PriceFen: 39900, ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
 	store := &autoRenewExtendStore{
 		summary: &types.CommercialSummary{
 			UID: 38, TotalCNY: 600,
@@ -377,7 +377,7 @@ func TestCommercialAutoRenewExtendAppliesDeterministicExtension(t *testing.T) {
 func TestCommercialAutoRenewExtendRequiresRelayEnforcement(t *testing.T) {
 	now := time.Now().UTC()
 	expiry := now.Add(5 * 24 * time.Hour)
-	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", PriceFen: 39900, ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
 	store := &autoRenewExtendStore{
 		summary: &types.CommercialSummary{
 			UID: 38, TotalCNY: 600,

@@ -1955,7 +1955,7 @@ body {
   color: var(--cc-text-secondary);
   background: var(--cc-history-panel-bg);
   box-shadow: 0 12px 28px color-mix(in srgb, #000 20%, transparent), 0 2px 6px color-mix(in srgb, #000 8%, transparent);
-  animation: cloud-artifact-filter-enter 140ms ease-out;
+  animation: cloud-artifact-filter-enter var(--cc-motion-enter) var(--cc-motion-ease);
   transform-origin: top right;
 }
 
@@ -1966,12 +1966,12 @@ body {
 @keyframes cloud-artifact-filter-enter {
   from {
     opacity: 0;
-    transform: translateY(-4px) scale(0.985);
+    transform: translateY(3px);
   }
 
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
@@ -2963,15 +2963,19 @@ body {
 }
 
 .is-spinning {
-  animation: cloud-artifact-spin 0.9s linear infinite;
+  animation: cloud-artifact-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
 }
 
 .is-publishing {
-  animation: cloud-artifact-spin 0.9s linear infinite;
+  animation: cloud-artifact-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
 }
 
 @keyframes cloud-artifact-spin {
   to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning, .is-publishing { animation: none; }
 }
 
 @media (max-width: 640px) {
@@ -3402,7 +3406,11 @@ body {
 }
 
 .catsco-spin {
-  animation: catsco-spin 0.9s linear infinite;
+  animation: catsco-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .catsco-spin { animation: none; }
 }
 
 @keyframes catsco-spin {
@@ -3765,13 +3773,13 @@ body {
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
   z-index: 8;
   transform-origin: top right;
-  animation: v3-message-action-menu-enter 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: v3-message-action-menu-enter var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 @keyframes v3-message-action-menu-enter {
   from {
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateY(3px);
   }
   to {
     opacity: 1;
@@ -4299,12 +4307,16 @@ body {
   box-shadow: 0 10px 40px rgba(0,0,0,0.5);
   padding: 8px;
   z-index: 1000;
-  animation: popoverFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: popoverFadeIn var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 @keyframes popoverFadeIn {
-  from { opacity: 0; transform: translateY(10px) scale(0.96); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-profile-popover { animation: none; }
 }
 
 .v3-popover-item {
@@ -4632,7 +4644,7 @@ button.catsco-download-action:disabled {
 }
 
 .relay-access-tool-disclosure-label svg {
-  transition: transform 160ms ease;
+  transition: transform var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .relay-access-tool-disclosure[open] .relay-access-tool-disclosure-label svg {
@@ -8956,13 +8968,13 @@ button.catsco-download-action:disabled {
 }
 
 .v3-wpi-plan-step.is-just-completed svg {
-  animation: cc-plan-step-complete 280ms ease-out;
+  animation: cc-plan-step-complete var(--cc-motion-content) var(--cc-motion-ease);
   transform-origin: center;
 }
 
 @keyframes cc-plan-step-complete {
-  from { opacity: 0.35; transform: scale(0.78); }
-  to { opacity: 1; transform: scale(1); }
+  from { opacity: 0.35; }
+  to { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

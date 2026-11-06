@@ -95,7 +95,7 @@ func TestCommercialAdjustmentPreviewProtectsUsedSharedQuota(t *testing.T) {
 func TestCommercialAdjustmentExtendPreviewAppendsOnePeriod(t *testing.T) {
 	now := time.Now().UTC()
 	currentExpiry := now.Add(10 * 24 * time.Hour)
-	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", PriceFen: 39900, ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
 	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{
 		UID: 38, TotalCNY: 600,
 		Entitlements: []*types.CommercialEntitlement{{UID: 38, PlanID: 7, PlanSlug: "catsco-personal", Source: "order", State: "active", StartsAt: now.Add(-20 * 24 * time.Hour), ExpiresAt: &currentExpiry}},
@@ -128,7 +128,7 @@ func TestCommercialAdjustmentExtendPreviewAppendsOnePeriod(t *testing.T) {
 func TestCommercialAdjustmentExtendPreviewRejectsExpiredAndUnsupportedPlans(t *testing.T) {
 	now := time.Now().UTC()
 	expired := now.Add(-time.Hour)
-	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", PriceFen: 39900, ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
 	free := &types.CommercialPlan{ID: 1, Slug: "catsco-free", Name: "Free"}
 	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{UID: 38, TotalCNY: 100, Entitlements: []*types.CommercialEntitlement{
 		{UID: 38, PlanID: 7, PlanSlug: "catsco-personal", Source: "order", State: "active", StartsAt: now.Add(-40 * 24 * time.Hour), ExpiresAt: &expired},
@@ -157,7 +157,7 @@ func TestCommercialAdjustmentExtendPreviewChainsOnNewestSegment(t *testing.T) {
 	now := time.Now().UTC()
 	currentExpiry := now.Add(10 * 24 * time.Hour)
 	extensionExpiry := currentExpiry.AddDate(0, 0, 30)
-	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", PriceFen: 39900, ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
 	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{
 		UID: 40, TotalCNY: 600,
 		Entitlements: []*types.CommercialEntitlement{
@@ -182,7 +182,7 @@ func TestCommercialAdjustmentExtendPreviewChainsOnNewestSegment(t *testing.T) {
 func TestCommercialAdjustmentExtendPreviewRejectsZeroDurationPlan(t *testing.T) {
 	now := time.Now().UTC()
 	currentExpiry := now.Add(10 * 24 * time.Hour)
-	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", DurationDays: -1}
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", PriceFen: 39900, DurationDays: -1}
 	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{
 		UID: 41, TotalCNY: 100,
 		Entitlements: []*types.CommercialEntitlement{{UID: 41, PlanID: 7, PlanSlug: "catsco-personal", Source: "operator", State: "active", StartsAt: now.Add(-time.Hour), ExpiresAt: &currentExpiry}},
@@ -199,7 +199,7 @@ func TestCommercialAdjustmentExtendPreviewRejectsZeroDurationPlan(t *testing.T) 
 func TestCommercialAdjustmentExtendApplyRequiresExpectedExpiry(t *testing.T) {
 	now := time.Now().UTC()
 	currentExpiry := now.Add(10 * 24 * time.Hour)
-	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", PriceFen: 39900, ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
 	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{
 		UID: 42, TotalCNY: 600,
 		Entitlements: []*types.CommercialEntitlement{{UID: 42, PlanID: 7, PlanSlug: "catsco-personal", Source: "order", State: "active", StartsAt: now.Add(-20 * 24 * time.Hour), ExpiresAt: &currentExpiry}},

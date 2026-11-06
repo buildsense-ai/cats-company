@@ -41,6 +41,16 @@ const statusMeta = (status) => (
   || CLOUD_STATUS_META.unknown
 );
 
+// A shared-container worker answers "missing" while its container is still
+// being created: the roster row exists (the tenant name is persisted before
+// provisioning) but the cluster has nothing to report yet. Rendering that as a
+// red "实例不存在" made every purchase look broken for the ~25 seconds the
+// provision takes, and the buyer's first instinct is to refresh or buy again.
+const displayStatus = (worker) => (isCloudWorkerPending(worker)
+  && ['missing', 'unavailable', ''].includes(String(worker?.cloud_status || '').toLowerCase())
+  ? 'provisioning'
+  : worker?.cloud_status);
+
 const cloudLifecycleHint = (status) => {
   const normalized = String(status || '').toLowerCase();
   if (['expired', 'freezing', 'frozen'].includes(normalized)) {
@@ -56,6 +66,24 @@ const cloudActionsBlocked = (status) => (
   ['shelve', 'shelved', 'expired', 'freezing', 'frozen', 'unsubscribed', 'released', 'deleted', 'missing']
     .includes(String(status || '').toLowerCase())
 );
+
+// 到期时间的展示口径：面板只把后端的 RFC3339 转成可读日期 + 剩余天数。
+// 剩余天数在 7 天内标红 —— 这是用户真正需要被提醒的时刻（续费窗口）。
+const formatExpiryDate = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+};
+
+const daysUntil = (iso) => {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.ceil((t - Date.now()) / 86400000);
+};
 
 const parseVersion = (value) => {
   const match = String(value || '').trim().replace(/^v/i, '').match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
@@ -100,6 +128,7 @@ const randomCode = () => String(Math.floor(1000 + Math.random() * 9000));
 export default function CloudWorkerPanel({
   quota,
   quotaError,
+  queue = null,
   workers = [],
   images = [],
   imagesByWorker = null,
@@ -223,7 +252,12 @@ export default function CloudWorkerPanel({
       .then(cancelReset, () => {});
   };
 
-  const quotaNote = quotaError ? (
+  const quotaNote = queue && queue.queued ? (
+    <p className="cc-cloud-quota-wait">
+      <RefreshCw size={13} /> 高峰期排队中{Number(queue.position) > 0 ? `，前面还有 ${Number(queue.position)} 位` : ''}
+      ，轮到时自动开工，无需重复提交
+    </p>
+  ) : quotaError ? (
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端状态查询失败，请稍后重试</p>
   ) : !actionAvailable('create') ? (
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端创建服务尚未配置，请联系管理员</p>
@@ -354,7 +388,8 @@ export default function CloudWorkerPanel({
               const id = worker.id || worker.uid;
               const workerKey = String(worker.tenant_name || id);
               const isFocusedWorker = workerKey === focusedWorkerKey;
-              const meta = statusMeta(worker.cloud_status);
+              const meta = statusMeta(displayStatus(worker));
+              const shownStatus = displayStatus(worker);
               const lifecycleHint = worker.trial_notice || cloudLifecycleHint(worker.cloud_status);
               const managementBlocked = cloudActionsBlocked(worker.cloud_status);
               const remoteActing = worker.cloud_operation_status === 'running';
@@ -406,12 +441,35 @@ export default function CloudWorkerPanel({
                   <div className="cc-cloud-worker-meta">
                     <span>员工连接 <b>{worker.runtime_status === 'connected'
                       ? '已连接'
-                      : worker.runtime_status === 'not_connected' ? '未连接，等待上线' : '暂未确认'}</b></span>
+                      : worker.runtime_status === 'not_connected'
+                        ? (['provisioning', 'creating'].includes(String(shownStatus || '').toLowerCase())
+                          ? '启动中，通常 1 分钟内上线'
+                          : '未连接，等待上线')
+                        : '暂未确认'}</b></span>
                     <span>应用版本 <b>{worker.app_version || '暂未读取'}</b></span>
                     <span>基础镜像 <b>{worker.cloud_version || '暂未读取'}</b></span>
+                    {worker.package_expires_at && (() => {
+                      const left = daysUntil(worker.package_expires_at);
+                      const urgent = left !== null && left <= 7;
+                      return (
+                        <span>
+                          到期时间{' '}
+                          <b style={urgent ? { color: 'var(--v3-danger, #d33)' } : undefined}>
+                            {formatExpiryDate(worker.package_expires_at)}
+                            {left !== null ? `（还剩 ${left} 天）` : ''}
+                          </b>
+                        </span>
+                      );
+                    })()}
+                    {worker.retention_days > 0 && (
+                      <span>停服后保留 <b>{worker.retention_days} 天</b></span>
+                    )}
+                    {worker.backend === 'packed' && (
+                      <span>连接方式 <b>通过平台连接（共享集群无 SSH / 无公网 IP）</b></span>
+                    )}
                     {!worker.app_version && !worker.cloud_version && !worker.cloud_image_id && (
                       <span>
-                        {['provisioning', 'creating'].includes(String(worker.cloud_status || '').toLowerCase())
+                        {['provisioning', 'creating'].includes(String(shownStatus || '').toLowerCase())
                           ? '实例创建完成后显示版本信息'
                           : '暂未读取到版本信息'}
                       </span>

@@ -1,12 +1,8 @@
 # CatsCo Login Page Override
 
-- Keep the page light, quiet, and visually connected to the homepage.
-- Use a single centered form with the CatsCo mark, clear visible labels, and one primary action.
-- Inputs and buttons must be at least 48px tall with visible keyboard focus.
-- Do not imply that authentication is connected in this visual prototype; provide clear feedback after submission.
-- Preserve the pricing handoff: only `plan=free|personal|pro` with `billing=monthly`, or `access=invite`, may appear as a compact selection summary. All other values are ignored. Keep a visible link back to pricing.
-- Show recognized plans as CatsCo Free, CatsCo Pro, and CatsCo Max so the pricing-to-login journey uses one brand vocabulary.
-- Use the inclusive visible label `邮箱` rather than requiring a `工作邮箱`, because the personal plans also serve individual users.
-- Validate fields on blur and submit, announce field errors near the relevant control, focus the first invalid field, and provide a password visibility control.
-- State plainly that the prototype does not send or save entered information. Do not imply password recovery, account creation or security guarantees that are not implemented.
-- Mobile layout uses 20px gutters and no horizontal scrolling.
+- Provide a quiet, centered account-entry card with the CatsCo mark, return-home navigation and a skip link.
+- Authentication happens in the product workspace through `appLoginUrl` and `appRegisterUrl`. The public website does not collect passwords or implement a login form.
+- Keep the existing plan, billing and source query parameters on workspace links for compatibility. Do not interpret legacy plan names as new packages or display retired package prices on this landing page; the product catalogue owns commercial details.
+- Show the compact invitation summary only for `access=invite` without plan or billing parameters. Distinguish entries from pricing with `source=pricing` and provide a link back to pricing.
+- Keep the login action primary and registration visibly available. Controls are at least 48px tall and preserve visible keyboard focus.
+- Mobile layout uses 20px gutters with no horizontal page scrolling.

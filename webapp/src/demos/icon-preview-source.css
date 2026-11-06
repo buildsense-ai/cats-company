@@ -1,0 +1,4 @@
+/* Generated from views/knowledge-wiki-view.css; scoped to this preview. */
+.ip-knowledge-spin { animation: cc-knowledge-spin var(--cc-control-spin-cycle, 900ms) linear infinite; }
+@keyframes cc-knowledge-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ip-knowledge-spin { animation: none; } }

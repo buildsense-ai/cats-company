@@ -519,40 +519,37 @@ function mediaReady(element) {
   return true;
 }
 
-// Seek a video to the exact annotated time and wait for the frame. Requires
-// a paused (or pauseable) element; the caller captures the frozen frame.
-function seekVideoFrame(element, timeSeconds, signal, timeoutMs = 5000) {
+// A seek updates currentTime before its pixels are decoded. Never seek again
+// during capture: wait for the selected frame, or reject if the user moved on.
+function waitForVideoFrame(element, timeSeconds, signal, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    const events = ['seeked', 'loadeddata', 'canplay'];
     const cleanup = () => {
       clearTimeout(timer);
-      element.removeEventListener('seeked', onSeeked);
+      events.forEach(type => element.removeEventListener(type, check));
       element.removeEventListener('error', onError);
-      if (signal) signal.removeEventListener('abort', onAbort);
+      signal?.removeEventListener('abort', onAbort);
     };
-    const done = (fn, value) => { if (settled) return; settled = true; cleanup(); fn(value); };
-    const onAbort = () => done(reject, fail('aborted', 'capture aborted'));
-    const onSeeked = () => {
+    const done = (failure) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (failure) reject(failure); else resolve();
+    };
+    const onAbort = () => done(fail('aborted', 'capture aborted'));
+    const onError = () => done(fail('unavailable', 'video frame could not be loaded'));
+    const check = () => {
+      if (signal?.aborted) { onAbort(); return; }
       if (Math.abs(Number(element.currentTime) - timeSeconds) > 0.05) {
-        done(reject, fail('bad-geometry', 'video frame is not at the annotated time'));
-        return;
-      }
-      done(resolve);
+        done(fail('stale', '视频播放位置已变化，请重新选择当前帧'));
+      } else if (!element.seeking && mediaReady(element)) done();
     };
-    const onError = () => done(reject, fail('unavailable', 'video seek failed'));
-    const timer = setTimeout(() => done(reject, fail('unavailable', 'video seek timed out')), timeoutMs);
-    if (signal) {
-      if (signal.aborted) { done(reject, fail('aborted', 'capture aborted')); return; }
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
-    element.addEventListener('seeked', onSeeked, { once: true });
+    const timer = setTimeout(() => done(fail('capture-timeout', '视频画面加载超时，请稍后重新选择当前帧')), timeoutMs);
+    events.forEach(type => element.addEventListener(type, check));
     element.addEventListener('error', onError, { once: true });
-    try {
-      if (element.pause) element.pause();
-      element.currentTime = timeSeconds;
-    } catch (error) {
-      done(reject, fail('unavailable', 'video cannot be seeked'));
-    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    check();
   });
 }
 
@@ -579,8 +576,9 @@ export function captureFileAnnotationScreenshots(element, target, options = {}) 
 
   // Videos must be captured at the exact annotated paused frame.
   if (tag === 'VIDEO' && Number.isFinite(target.time_seconds)) {
+    if (element.seeking) throw fail('unavailable', 'video is seeking; wait for the decoded frame');
     if (Math.abs(Number(element.currentTime) - target.time_seconds) > 0.05) {
-      throw fail('unavailable', 'video frame is not at the annotated time; use seekVideoFrame first');
+      throw fail('unavailable', 'video frame is not at the annotated time');
     }
   }
 
@@ -677,6 +675,14 @@ export async function captureFilePreviewScreenshots(element, kind, target, optio
     if (!box) throw fail('unavailable', 'HTML 预览不可见');
     return { ...captureFileAnnotationScreenshots(canvas, target, { ...options,
       contentBox: { ...box, bitmapWidth: canvas.width, bitmapHeight: canvas.height } }), warnings, visiblePreview: true };
+  }
+  if (kind === 'video') {
+    element?.pause?.();
+    if (element?.seeking || !mediaReady(element)) {
+      if (!element?.addEventListener) throw fail('unavailable', 'video is unavailable');
+      await waitForVideoFrame(element, target.time_seconds, options.signal, options.timeoutMs);
+    }
+    if (element?.seeking) throw fail('stale', '视频正在跳转，请等待画面就绪后重试');
   }
   if (kind !== 'text' && kind !== 'cells') return captureFileAnnotationScreenshots(element, target, options);
   const { canvas, box, selected } = await captureFilePreviewDOM(element, kind, target, options);

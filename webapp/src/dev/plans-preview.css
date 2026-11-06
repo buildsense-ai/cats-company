@@ -1,0 +1,24 @@
+body { --plans-toolbar-height: 60px; margin: 0; font-family: 'Inter Variable', 'Noto Sans SC Variable', sans-serif; background: var(--cc-bg); color: var(--cc-text); }
+.plans-preview-toolbar { position: fixed; inset: 0 0 auto; z-index: 20000; height: var(--plans-toolbar-height); box-sizing: border-box; display: flex; align-items: center; gap: 16px; padding: 10px 20px; background: var(--cc-bg); border-bottom: 1px solid var(--cc-border); font-size: 13px; }
+.plans-preview-toolbar > span { color: var(--cc-text-secondary); font-size: 12px; }
+.plans-preview-toolbar nav { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.plans-preview-toolbar button, .plans-preview-toolbar select, .plans-preview-empty button { font: inherit; color: var(--cc-text); background: var(--cc-bg); border: 1px solid var(--cc-border); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.plans-preview-toolbar button:is(:hover, :active), .plans-preview-toolbar select:hover { background: var(--cc-hover); }
+.plans-preview-toolbar :is(button, select):focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 2px; }
+.plans-preview-toolbar label { display: flex; align-items: center; gap: 6px; }
+.plans-preview-empty { padding: 100px 32px; }
+.relay-access-plan-chooser-note { max-width: 1160px; margin: 20px auto 0; color: var(--cc-muted); font-size: 12px; line-height: 22px; text-align: center; }
+.oc-modal-overlay { top: var(--plans-toolbar-height); }
+/* The payment dialog keeps its backdrop; the chooser fills the preview page. */
+.oc-modal-overlay,
+html[data-theme="liquid"][data-liquid-variant] .oc-modal-overlay { background: rgb(0 0 0 / 20%); backdrop-filter: none; -webkit-backdrop-filter: none; }
+.oc-modal-overlay:has(.relay-access-plan-overlay),
+html[data-theme="liquid"][data-liquid-variant] .oc-modal-overlay:has(.relay-access-plan-overlay) { background: transparent; }
+.oc-modal-overlay:has(.relay-access-plan-overlay) > .relay-access-modal { visibility: hidden; }
+.relay-access-plan-overlay { top: var(--plans-toolbar-height); padding: 0; background: var(--cc-bg); backdrop-filter: none; }
+@media (max-width: 650px) {
+  body { --plans-toolbar-height: 96px; }
+  .plans-preview-toolbar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+  .plans-preview-toolbar > span { display: none; }
+  .plans-preview-toolbar nav { width: 100%; margin-left: 0; }
+}

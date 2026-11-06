@@ -1033,15 +1033,18 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.mock-create-conversation-fork')).toBeNull();
   });
 
-  it('disables the pending target composer and renders provenance outside message history', async () => {
+  it('disables the pending target composer without marking the copy in the chat', async () => {
     api.getConversationFork.mockResolvedValueOnce({
       request_id: 'pending-copy', source_topic_id: 'p2p_1_2', target_topic_id: 'grp_99', state: 'pending',
     });
     await mountTopic(root, 'grp_99', { isGroup: true, groupId: 99 });
     expect(container.querySelector('textarea').disabled).toBe(true);
     expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
-    expect(container.querySelector('[role="note"]').textContent).toContain('复制自 p2p_1_2');
-    expect(container.querySelector('.v3-timeline').textContent).not.toContain('复制自');
+    // A copy reads as an ordinary conversation. The provenance record still
+    // drives the disabled composer above, but it is no longer shown as a banner:
+    // "复制自 grp_..." only surfaced an internal id the user cannot act on.
+    expect(container.querySelector('.cc-fork-provenance')).toBeNull();
+    expect(container.textContent).not.toContain('复制自');
     expect(container.textContent).toContain('暂不能发送消息');
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
@@ -7803,6 +7806,8 @@ describe('MessagesView composer draft isolation', () => {
     expect(loadingState?.getAttribute('role')).toBe('status');
     expect(loadingState?.textContent).toContain('正在读取对话');
     expect(loadingState?.querySelectorAll('.cc-history-loading-bubble')).toHaveLength(3);
+    expect(loadingState?.parentElement).toBe(container.querySelector('.v3-timeline'));
+    expect(container.querySelector('.v3-timeline-inner .cc-history-loading')).toBeNull();
     expect(container.querySelector('.v3-timeline.is-history-loading')).not.toBeNull();
     expect(container.querySelector('.v3-date-divider')).toBeNull();
 
@@ -11399,7 +11404,7 @@ describe('MessagesView gateway annotation flow', () => {
     clock.mockRestore();
   });
 
-  test('iframe Escape syncs header off and parent scroll closes the popover', async () => {
+  test('iframe Escape syncs header off and parent scroll preserves the comment', async () => {
     const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
     const connect = await followupReady(frame, page);
     await act(async () => container.querySelector('[aria-label="批注应用"]').click());
@@ -11408,8 +11413,9 @@ describe('MessagesView gateway annotation flow', () => {
       contract_version: 'catsco.gateway-annotation-bridge.v1', session_id: connect.session_id, mode: 'off', page }));
     expect(container.querySelector('[aria-label="批注应用"]').getAttribute('aria-pressed')).toBe('false');
     await followupCapture(frame, connect, page);
+    await act(async () => typeDraft(document.querySelector('.gateway-annotation-popover textarea'), '滚动后保留'));
     await act(async () => window.dispatchEvent(new Event('scroll')));
-    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    expect(document.querySelector('.gateway-annotation-popover textarea').value).toBe('滚动后保留');
   });
 
   test('rapid second selection only owns its own comment and old SDK token cannot revive capture', async () => {
@@ -11493,6 +11499,19 @@ describe('MessagesView gateway annotation flow', () => {
     expect(api.sendArtifactAnnotations.mock.calls[0][0].content_blocks[1].payload.file_key).toBe('full.jpg');
   });
 
+  test('upload failure can explicitly retry without screenshots while preserving the comment', async () => {
+    api.uploadFile.mockRejectedValueOnce(new Error('upload offline'));
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    await submitInline('保留这条建议');
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    await act(async () => document.querySelector('.gateway-annotation-screenshots input').click());
+    await submitInline('保留这条建议');
+    expect(api.uploadFile).toHaveBeenCalledTimes(1);
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].content).toBe('保留这条建议');
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].content_blocks).toBeUndefined();
+  });
+
   test('partial capture warnings render human Chinese, never raw codes', async () => {
     screenshotRequest.mockResolvedValueOnce({ ...screenshotPair(), warnings: ['cross-origin-image', 'sensitive-content-masked'] });
     const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
@@ -11519,16 +11538,41 @@ describe('MessagesView gateway annotation flow', () => {
     expect(api.sendArtifactAnnotations.mock.calls[0][0].content_blocks).toBeUndefined();
   });
 
-  test('same-path scroll invalidation closes popover and cancels in-flight capture', async () => {
+  test('same-path scroll invalidation preserves comment, blocks stale send and recovers on reselect', async () => {
     let complete;
     screenshotRequest.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
     const frame = await openGatewayAppInSidebar(); const page = { path: '/board', revision: 'r1' };
     const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    await act(async () => typeDraft(document.querySelector('.gateway-annotation-popover textarea'), '不要丢失这段建议'));
     await act(async () => sdkMessage(frame, { type: 'catsco.gateway.annotation.page.v1',
       contract_version: 'catsco.gateway-annotation-bridge.v1', session_id: connect.session_id, page }));
-    expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
+    expect(document.querySelector('.gateway-annotation-popover textarea').value).toBe('不要丢失这段建议');
+    expect(document.querySelector('.gateway-annotation-popover [role="alert"]').textContent).toContain('重新选择');
     await act(async () => { complete?.(screenshotPair()); await flushPromises(); });
+    await submitInline('不要丢失这段建议');
     expect(api.uploadFile).not.toHaveBeenCalled(); expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    await act(async () => sdkMessage(frame, { type: 'catsco.gateway.annotation.target.v1',
+      contract_version: 'catsco.gateway-annotation-bridge.v1', session_id: connect.session_id, page,
+      selection: { id: 'reselected', kind: 'region', target: {
+        rect: { x: .2, y: .3, width: .1, height: .08 }, coordinate_space: 'viewport',
+        viewport: { width: 800, height: 600, scroll_x: 0, scroll_y: 100 } } } }));
+    expect(document.querySelector('.gateway-annotation-popover textarea').value).toBe('不要丢失这段建议');
+    await submitInline('不要丢失这段建议');
+    expect(api.sendArtifactAnnotations.mock.calls[0][0].gateway_annotations.annotations[0].id).toBe('reselected');
+  });
+
+  test('IME composition shortcuts cannot send or discard a comment', async () => {
+    const frame = await openGatewayAppInSidebar(); const page = { path: '/board' };
+    const connect = await followupReady(frame, page); await followupCapture(frame, connect, page);
+    const editor = document.querySelector('.gateway-annotation-popover textarea');
+    await act(async () => {
+      typeDraft(editor, '正在输入');
+      Simulate.keyDown(editor, { key: 'Enter', metaKey: true, nativeEvent: { isComposing: true } });
+      await flushPromises();
+    });
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    await act(async () => Simulate.keyDown(editor, { key: 'Escape', nativeEvent: { isComposing: true } }));
+    expect(document.querySelector('.gateway-annotation-popover textarea').value).toBe('正在输入');
   });
 
   test('navigation while capturing drops late pixels and blocks upload', async () => {

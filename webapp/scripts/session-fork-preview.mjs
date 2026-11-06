@@ -78,17 +78,19 @@ try {
     await page.reload();
     await page.getByRole('status').filter({ hasText: '暂不能发送消息' }).waitFor();
     assert.equal(await page.locator('textarea').isDisabled(), true);
-    assert.match(await page.getByRole('note', { name: '会话来源' }).innerText(), /p2p_1_2/);
+    // A copy reads as an ordinary conversation: no 「复制自 grp_…」 banner. The
+    // provenance record still disables the composer above, and the copy's name
+    // is what tells the user where it came from.
     await page.screenshot({ path: resolve(output, `pending-${viewport.width}.png`) });
     ready = true;
     await page.waitForFunction(() => document.querySelector('textarea')?.disabled === false);
-    assert.equal(await page.getByRole('note', { name: '会话来源' }).count(), 1);
+    assert.equal(await page.getByRole('note', { name: '会话来源' }).count(), 0);
     assert.ok((await page.locator('.v3-timeline').innerText()).includes('Compare the two research directions.'));
     await page.screenshot({ path: resolve(output, `ready-${viewport.width}.png`) });
     await page.evaluate(() => localStorage.setItem('v3_last_topic:1', JSON.stringify({ topicId: 'p2p_1_2', name: 'Original research', isBot: true, friendId: 2 })));
     await page.reload();
     await page.getByRole('button', { name: '打开新会话', exact: true }).click();
-    await page.getByRole('note', { name: '会话来源' }).waitFor();
+    assert.equal(await page.getByRole('note', { name: '会话来源' }).count(), 0);
     assert.match(await page.locator('.v3-local-assistant-bar').innerText(), /Research copy/);
     if (viewport.width > 1000) assert.match(await page.locator('.v3-sidebar').innerText(), /Research copy/);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);

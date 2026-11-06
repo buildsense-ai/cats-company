@@ -52,11 +52,14 @@ func (a *Adapter) CreateSchema() error {
 		createSkillHubPublicationCaptureDeliveriesTable,
 		createSkillHubPublicationUploadDeliveriesTable,
 		createSkillHubPublicationRepairTables,
+		createSkillHubPublicationRepairModelCallsTable,
 		createSkillHubPublicationDescriptionTables,
 		createSkillHubPublicationDescriptionApplicationTable,
 		createSkillHubPublicationDescriptionAcceptanceTable,
 		createSkillHubPublicationDescriptionReleaseIntentTable,
 		createSkillHubPublicationDescriptionReleasePermitTable,
+		createSkillHubPublicationDescriptionReleaseTerminalTable,
+		createSkillHubPublicationDescriptionReconcilesTable,
 		createBotInviteCodesTable,
 		createBotSkillMutationsTable,
 		migrateBotSkillMutationsAddActivationFacts,
@@ -89,6 +92,12 @@ func (a *Adapter) CreateSchema() error {
 		// paths as dedicated ones, so the profile CHECK constraints must
 		// accept packed_shared.
 		activateCloudWorkerPackedSharedProfile,
+		// Earlier builds copied the ECS machine parameters into shared-container
+		// deployment snapshots; a packed worker has none of them.
+		stripPackedSharedMachineSettings,
+		// A paid credit must be able to wait for capacity instead of failing
+		// the purchase when a tier pool is momentarily full.
+		allowCloudWorkerCreditQueuedState,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
 		migrateCommercialRefundColumns,
@@ -96,6 +105,10 @@ func (a *Adapter) CreateSchema() error {
 		// Per-plan policy for whether the startup reconcile may add newly
 		// onboarded relay models to a plan.
 		migrateCommercialPlansAutoUpdateModels,
+		// The upgrade ladder used to be a slug allow-list in Go. It is a column
+		// now, so a package that replaces an old one joins the ladder by setting
+		// a number instead of by editing the control plane.
+		migrateCommercialPlansAddTier,
 		// The model-set migrations used to run here. Each one re-applied a
 		// literal model list on every startup, so a plan an operator edited was
 		// silently reverted on the next restart, and onboarding a model on the

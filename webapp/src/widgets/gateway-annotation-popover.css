@@ -1,15 +1,14 @@
 .cloud-artifacts-header-actions .cloud-artifacts-annotation-toggle.is-active {
   color: var(--cc-accent, #22734e);
   background: var(--cc-accent-soft, #e7f3ec);
-  box-shadow: inset 0 0 0 1px currentColor;
 }
 .gateway-annotation-target-outline {
   position: fixed;
   z-index: 1100;
   pointer-events: none;
-  border: 2px solid var(--cc-accent, #22734e);
+  border: 2px solid var(--cc-accent, #29bc95);
   border-radius: 3px;
-  background: rgb(34 115 78 / 8%);
+  background: rgb(41 188 149 / 8%);
 }
 .gateway-annotation-popover {
   position: fixed;
@@ -17,91 +16,97 @@
   box-sizing: border-box;
   max-height: calc(100dvh - 24px);
   overflow: auto;
-  padding: 14px;
-  border: 1px solid var(--cc-border, #d9e3dd);
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 16px;
   border-radius: 12px;
   background: var(--cc-panel, #fff);
-  color: var(--cc-text, #26352d);
-  box-shadow: 0 8px 24px rgb(20 40 28 / 15%);
+  color: var(--cc-text, #242426);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 22%);
   font-size: 13px;
+  line-height: 1.6;
 }
+.gateway-annotation-popover-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+.gateway-annotation-popover-heading > svg { color: var(--cc-text-secondary, #626269); }
+.gateway-annotation-popover-heading > strong { font-weight: 600; }
+.gateway-annotation-popover-heading button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-text-secondary, #626269);
+  cursor: pointer;
+}
+.gateway-annotation-popover-heading button:hover { background: var(--cc-panel-raised, #f3f3f5); color: inherit; }
 .gateway-annotation-popover-target {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-bottom: 10px;
+  margin-bottom: 9px;
+  color: var(--cc-text-secondary, #626269);
+  font-size: 12px;
+  font-weight: 500;
 }
 .gateway-annotation-popover textarea {
   display: block;
   box-sizing: border-box;
   width: 100%;
-  min-height: 90px;
+  min-height: 100px;
+  max-height: 220px;
   resize: vertical;
-  padding: 9px 10px;
-  border: 1px solid var(--cc-border, #d9e3dd);
-  border-radius: 7px;
-  background: var(--cc-panel, #fff);
+  padding: 11px 12px;
+  border: 1px solid var(--cc-border, #e5e5e8);
+  border-radius: 9px;
+  background: var(--cc-panel-raised, #f8f8fa);
   color: inherit;
+  caret-color: var(--cc-accent, #29bc95);
   font: inherit;
-}
-.gateway-annotation-popover textarea:focus-visible {
-  outline: 2px solid var(--cc-accent, #22734e);
-  outline-offset: 2px;
-}
-.gateway-annotation-popover-note {
-  margin: 10px 0;
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.6;
-  color: var(--cc-text-secondary, #627168);
 }
-.gateway-annotation-popover-error { color: var(--cc-danger-text, #a83434); }
-.gateway-annotation-popover-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.gateway-annotation-popover-actions button {
-  border: 1px solid var(--cc-border, #d9e3dd);
-  border-radius: 7px;
-  background: var(--cc-panel, #fff);
+.gateway-annotation-popover textarea::placeholder { color: var(--cc-text-secondary, #626269); }
+.gateway-annotation-popover textarea::selection { background: var(--cc-accent-soft, #dbf4ec); color: var(--cc-text, #242426); }
+.gateway-annotation-popover :is(textarea, button, input, summary):focus-visible { outline: 2px solid var(--cc-accent, #29bc95); outline-offset: 3px; }
+.gateway-annotation-popover-note { margin: 12px 0; font-size: 12px; color: var(--cc-text-secondary, #626269); }
+.gateway-annotation-popover-note summary { cursor: pointer; }
+.gateway-annotation-popover-note p { margin: 8px 0 0; line-height: 1.6; }
+.gateway-annotation-popover-error { margin: 10px 0; color: var(--cc-danger-text, #b42318); }
+.gateway-annotation-popover-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+.gateway-annotation-popover-actions button, .gateway-annotation-screenshots button {
+  min-height: 36px;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--cc-panel-raised, #f3f3f5);
   color: inherit;
-  padding: 6px 14px;
-  cursor: pointer;
   font: inherit;
+  cursor: pointer;
 }
-.gateway-annotation-popover-actions button:last-child {
-  background: var(--cc-action-bg, #454549);
-  color: var(--cc-on-action, #fff);
-  border-color: transparent;
-}
-.gateway-annotation-screenshots {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
-}
+.gateway-annotation-popover-actions button:last-child { background: var(--cc-action-bg, #242426); color: var(--cc-on-action, #fff); }
+.gateway-annotation-popover-actions button:hover:not(:disabled), .gateway-annotation-screenshots button:hover:not(:disabled) { filter: brightness(.94); }
+.gateway-annotation-popover button:disabled { opacity: .45; cursor: default; }
+.gateway-annotation-screenshots { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
 .gateway-annotation-screenshots figure { flex: 1 1 110px; margin: 0; min-width: 0; }
-.gateway-annotation-screenshots img {
-  display: block;
-  width: 100%;
-  height: 86px;
-  object-fit: contain;
-  border: 1px solid var(--cc-border, #ececef);
-  border-radius: 6px;
-  background: var(--cc-panel-raised, #f7f7f8);
-}
-.gateway-annotation-screenshots figcaption {
-  margin-top: 4px;
-  font-size: 11px;
-  color: var(--cc-text-secondary, #454549);
-}
-.gateway-annotation-screenshots label { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.gateway-annotation-screenshots img { display: block; width: 100%; height: 90px; object-fit: contain; border-radius: 6px; background: var(--cc-panel-raised, #f3f3f5); }
+.gateway-annotation-screenshots figcaption { margin-top: 4px; font-size: 11px; color: var(--cc-text-secondary, #626269); }
+.gateway-annotation-screenshots label { display: inline-flex; gap: 7px; align-items: center; font-size: 12px; color: var(--cc-text-secondary, #626269); cursor: pointer; }
+.gateway-annotation-screenshots input { width: 15px; height: 15px; margin: 0; accent-color: var(--cc-accent, #29bc95); }
 .gateway-annotation-screenshots p { margin: 0; font-size: 12px; }
 .gateway-annotation-screenshots > p, .gateway-annotation-screenshots > label { flex-basis: 100%; }
-.gateway-annotation-screenshots button {
-  border: 1px solid var(--cc-border, #ececef);
-  border-radius: 6px;
-  background: var(--cc-panel, #fff);
-  color: inherit;
-  padding: 5px 9px;
-  font: inherit;
-  cursor: pointer;
+@media (max-width: 600px) {
+  .gateway-annotation-popover { padding: 14px; }
+  .gateway-annotation-popover textarea { font-size: 16px; }
+  .gateway-annotation-popover-heading button { width: 36px; height: 36px; }
 }
-.gateway-annotation-popover-actions button:disabled { opacity: .55; cursor: default; }

@@ -31,12 +31,7 @@ func verifyHumanDescriptionConfirmationPostgres(t *testing.T, db *postgres.Adapt
 	if err != nil {
 		t.Fatal(err)
 	}
-	index := int64(0)
-	draft, err := proposePublicationDescription(ctx, db, actor, round.Lease, publicationReportFixture(in.Receipt).Validation,
-		store.SkillHubPublicationDescriptionProposal{RelativePath: "SKILL.md", Field: "description", EntryIndex: &index, Text: "Read a document and return its contents."})
-	if err != nil {
-		t.Fatal("retaining verified draft", err)
-	}
+	draft := verifyModelDescriptionRetentionPostgres(t, ctx, db, actor, round.Lease, in.Receipt)
 	cloud := &humanReportCloud{&humanCommitCloud{in: in}, func(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
 		return nil, fmt.Errorf("draft confirmation must not call Cloud")
 	}}

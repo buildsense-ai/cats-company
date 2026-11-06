@@ -1,25 +1,22 @@
+@import './motion.css';
+
 .cc-loading-state {
   --load-panel: var(--cc-bg, #fff);
-  --load-shape: color-mix(in srgb, var(--cc-text, #29292e) 9%, var(--load-panel));
-  --load-ink: color-mix(in srgb, var(--cc-text, #29292e) 38%, var(--load-panel));
+  --load-shape: color-mix(in srgb, var(--cc-text, #29292e) 8%, var(--load-panel));
+  --load-ink: color-mix(in srgb, var(--cc-text, #29292e) 36%, var(--load-panel));
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 14px;
   min-width: 0;
   min-height: 220px;
   padding: 28px 16px;
   color: var(--cc-text-secondary, #62626c);
   text-align: center;
-  animation: cc-load-reveal 180ms 160ms ease-out both;
+  animation: cc-loading-reveal var(--cc-motion-enter) var(--cc-loading-reveal-delay) var(--cc-motion-ease) both;
 }
 .cc-loading-state *, .cc-loading-state *::before, .cc-loading-state *::after { box-sizing: border-box; }
-html[data-theme="dark"] .cc-loading-state,
-html[data-theme="liquid"][data-liquid-variant="green"] .cc-loading-state {
-  --load-shape: color-mix(in srgb, var(--cc-text) 14%, var(--load-panel));
-  --load-ink: color-mix(in srgb, var(--cc-text) 56%, var(--load-panel));
-}
 .cc-loading-motion { display: grid; place-items: center; flex: 0 0 80px; width: 164px; height: 80px; color: var(--load-ink); }
 .cc-loading-label { font-size: 12px; line-height: 20px; }
 .cc-loading-copy { max-width: 360px; font-size: 12px; line-height: 20px; margin-top: -8px; }
@@ -27,60 +24,58 @@ html[data-theme="liquid"][data-liquid-variant="green"] .cc-loading-state {
 .cc-loading-state.is-compact .cc-loading-motion { flex-basis: 64px; height: 64px; }
 .cc-secondary-view-loading { width: 100%; height: 100%; min-height: 220px; }
 .cc-load-modules { position: relative; width: 78px; height: 72px; }
-.cc-load-module { position: absolute; display: flex; align-items: center; justify-content: center; gap: 3px; width: 32px; height: 32px; border-radius: 6px; background: var(--load-shape); animation: cc-load-module-place 3.8s infinite both; }
-.cc-load-module i { width: 4px; height: 12px; border-radius: 2px; background: var(--load-ink); opacity: .7; }
+.cc-load-module { position: absolute; display: flex; align-items: center; justify-content: center; gap: 3px; width: 32px; height: 32px; border-radius: 7px; background: var(--load-shape); animation: cc-loading-assemble var(--cc-loading-cycle) infinite both; }
+.cc-load-module i { width: 4px; height: 12px; border-radius: 2px; background: var(--load-ink); transform-origin: center bottom; animation: cc-loading-write var(--cc-loading-cycle) infinite both; animation-delay: inherit; }
 .cc-load-module i:last-child { height: 8px; }
-.cc-load-module.piece-0 { left: 3px; top: 3px; --x: -4px; --y: -3px; }
-.cc-load-module.piece-1 { right: 3px; top: 3px; --x: 4px; --y: -3px; animation-delay: .3s; }
-.cc-load-module.piece-2 { right: 3px; bottom: 1px; --x: 4px; --y: 3px; animation-delay: .6s; }
-.cc-load-module.piece-3 { left: 3px; bottom: 1px; --x: -4px; --y: 3px; animation-delay: .9s; }
-.cc-load-window-stack { position: relative; width: 104px; height: 78px; }
-.cc-load-stack-sheet { position: absolute; display: block; width: 76px; height: 54px; overflow: hidden; border: 1.5px solid var(--load-ink); border-radius: 6px; background: var(--load-panel); animation: cc-load-stack-settle 4.2s infinite both; }
-.cc-load-stack-sheet.sheet-0 { left: 0; top: 0; --dx: -4px; --dy: -3px; }
-.cc-load-stack-sheet.sheet-1 { left: 13px; top: 12px; --dx: 0px; --dy: 3px; animation-delay: .35s; }
-.cc-load-stack-sheet.sheet-2 { left: 26px; top: 24px; --dx: 4px; --dy: 5px; animation-delay: .7s; }
-.cc-load-stack-bar { display: flex; align-items: center; gap: 3px; height: 12px; padding-left: 6px; border-bottom: 1px solid var(--load-ink); }
-.cc-load-stack-bar i { width: 2px; height: 2px; border-radius: 50%; background: var(--load-ink); }
-.cc-load-stack-content { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
-.cc-load-stack-content i { height: 4px; width: 44px; border-radius: 2px; background: var(--load-shape); }
-.cc-load-stack-content i:last-child { width: 28px; }
-.cc-load-document { position: relative; display: flex; flex-direction: column; gap: 7px; width: 56px; height: 72px; border: 2px solid var(--load-ink); border-radius: 5px; padding: 22px 10px 10px; }
-.cc-load-document-fold { position: absolute; top: -2px; right: -2px; width: 16px; height: 16px; background: var(--load-panel); border-left: 2px solid var(--load-ink); border-bottom: 2px solid var(--load-ink); border-bottom-left-radius: 4px; }
-.cc-load-document i { flex: 0 0 3px; width: 30px; height: 3px; border-radius: 2px; background: var(--load-ink); transform-origin: left; animation: cc-load-write-line 3.8s infinite both; }
-.cc-load-document i:nth-of-type(2) { animation-delay: .25s; }
-.cc-load-document i:nth-of-type(3) { animation-delay: .5s; }
-.cc-load-document i:nth-of-type(4) { width: 20px; animation-delay: .75s; }
-.cc-load-picture { display: grid; grid-template-columns: repeat(3, 24px); grid-template-rows: repeat(2, 24px); gap: 4px; padding: 6px; border: 1px solid var(--load-ink); border-radius: 5px; }
-.cc-load-picture span { border-radius: 3px; background: var(--load-shape); animation: cc-load-content-appear 3.8s infinite both; }
-.cc-load-picture span:nth-child(2) { animation-delay: .15s; }
-.cc-load-picture span:nth-child(3) { animation-delay: .3s; }
-.cc-load-picture span:nth-child(4) { animation-delay: .45s; }
-.cc-load-picture span:nth-child(5) { animation-delay: .6s; }
-.cc-load-picture span:nth-child(6) { animation-delay: .75s; }
+.cc-load-module.piece-0 { left: 3px; top: 3px; }
+.cc-load-module.piece-1 { right: 3px; top: 3px; animation-delay: var(--cc-loading-stagger); }
+.cc-load-module.piece-2 { right: 3px; bottom: 1px; animation-delay: calc(2 * var(--cc-loading-stagger)); }
+.cc-load-module.piece-3 { left: 3px; bottom: 1px; animation-delay: calc(3 * var(--cc-loading-stagger)); }
+.cc-load-window-stack { display: block; overflow: visible; width: 104px; height: 78px; }
+/* Opaque faces keep rear window details from showing through the next layer. */
+.cc-load-stack-sheet { fill: var(--cc-loading-layer-face); animation: cc-loading-layer-assemble var(--cc-loading-cycle) infinite both; }
+.cc-load-stack-sheet.sheet-0 { --cc-loading-layer-face: color-mix(in srgb, var(--cc-text, #29292e) 6%, var(--load-panel)); --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text, #29292e) 2%, var(--load-panel)); }
+.cc-load-stack-sheet.sheet-1 { --cc-loading-layer-face: color-mix(in srgb, var(--cc-text, #29292e) 10%, var(--load-panel)); --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text, #29292e) 3%, var(--load-panel)); }
+.cc-load-stack-sheet.sheet-2 { --cc-loading-layer-face: color-mix(in srgb, var(--cc-text, #29292e) 14%, var(--load-panel)); --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text, #29292e) 4%, var(--load-panel)); }
+.cc-load-stack-bar, .cc-load-stack-content { fill: var(--load-ink); }
+.cc-load-document { position: relative; display: flex; flex-direction: column; gap: 7px; width: 56px; height: 72px; border: 0; border-radius: 7px; padding: 22px 10px 10px; background: var(--load-shape); clip-path: polygon(0 0, 42px 0, 100% 14px, 100% 100%, 0 100%); animation: cc-loading-assemble var(--cc-loading-cycle) infinite both; }
+.cc-load-document-fold { position: absolute; top: 0; right: 0; width: 14px; height: 14px; background: var(--load-ink); opacity: .15; clip-path: polygon(0 0, 100% 100%, 0 100%); border-bottom-left-radius: 5px; }
+.cc-load-document i { flex: 0 0 3px; width: 30px; height: 3px; border-radius: 2px; background: var(--load-ink); transform-origin: left; animation: cc-loading-write var(--cc-loading-cycle) infinite both; }
+.cc-load-document i:nth-of-type(2) { animation-delay: var(--cc-loading-stagger); }
+.cc-load-document i:nth-of-type(3) { animation-delay: calc(2 * var(--cc-loading-stagger)); }
+.cc-load-document i:nth-of-type(4) { width: 20px; animation-delay: calc(3 * var(--cc-loading-stagger)); }
+.cc-load-picture { display: grid; grid-template-columns: repeat(3, 24px); grid-template-rows: repeat(2, 24px); gap: 4px; padding: 6px; border: 0; border-radius: 7px; }
+.cc-load-picture span { border-radius: 5px; background: var(--load-shape); animation: cc-loading-assemble var(--cc-loading-cycle) infinite both; }
+.cc-load-picture span:nth-child(2) { animation-delay: var(--cc-loading-stagger); }
+.cc-load-picture span:nth-child(3) { animation-delay: calc(2 * var(--cc-loading-stagger)); }
+.cc-load-picture span:nth-child(4) { animation-delay: var(--cc-loading-stagger); }
+.cc-load-picture span:nth-child(5) { animation-delay: calc(2 * var(--cc-loading-stagger)); }
+.cc-load-picture span:nth-child(6) { animation-delay: calc(3 * var(--cc-loading-stagger)); }
 .cc-load-connection { display: flex; align-items: center; gap: 13px; }
-.cc-load-endpoint { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 7px; background: var(--load-shape); }
+.cc-load-endpoint { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 7px; background: var(--load-shape); animation: cc-loading-assemble var(--cc-loading-cycle) infinite both; }
 .cc-load-connection-dots { display: flex; gap: 7px; }
-.cc-load-connection-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--load-ink); animation: cc-load-connect-dot 2.4s infinite ease-in-out; }
-.cc-load-connection-dots i:nth-child(2) { animation-delay: .24s; }
-.cc-load-connection-dots i:nth-child(3) { animation-delay: .48s; }
-.cc-load-computer { animation: cc-load-endpoint-receive 2.4s .7s infinite ease-in-out; }
-.cc-load-task-lines { display: flex; flex-direction: column; gap: 11px; width: 106px; }
-.cc-load-task-lines span { display: flex; align-items: center; gap: 7px; height: 13px; animation: cc-load-content-appear 3.8s infinite both; }
-.cc-load-task-lines span:nth-child(2) { animation-delay: .3s; }
-.cc-load-task-lines span:nth-child(3) { animation-delay: .6s; }
-.cc-load-task-lines i { width: 11px; height: 11px; border: 1px solid var(--load-ink); border-radius: 3px; }
-.cc-load-task-lines b { width: 50px; height: 4px; border-radius: 2px; background: var(--load-shape); }
-.cc-load-task-lines b:last-child { margin-left: auto; width: 17px; background: var(--load-ink); opacity: .4; }
+.cc-load-connection-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--load-ink); animation: cc-load-connect-dot var(--cc-loading-cycle) infinite; }
+.cc-load-connection-dots i:nth-child(2) { animation-delay: var(--cc-loading-stagger); }
+.cc-load-connection-dots i:nth-child(3) { animation-delay: calc(2 * var(--cc-loading-stagger)); }
+.cc-load-computer { animation-delay: calc(2 * var(--cc-loading-stagger)); }
+.cc-load-task-lines { display: flex; flex-direction: column; gap: 5px; width: 106px; }
+.cc-load-task-lines span { display: flex; align-items: center; gap: 7px; height: 18px; padding: 4px 6px; border-radius: 5px; background: var(--load-shape); animation: cc-loading-assemble var(--cc-loading-cycle) infinite both; }
+.cc-load-task-lines span:nth-child(2) { animation-delay: var(--cc-loading-stagger); }
+.cc-load-task-lines span:nth-child(3) { animation-delay: calc(2 * var(--cc-loading-stagger)); }
+.cc-load-task-lines i { width: 7px; height: 7px; border: 0; background: var(--load-ink); border-radius: 2px; opacity: .55; }
+.cc-load-task-lines b { width: 44px; height: 3px; border-radius: 2px; background: var(--load-ink); transform-origin: left center; animation: cc-loading-write var(--cc-loading-cycle) infinite both; animation-delay: inherit; }
+.cc-load-task-lines b:last-child { margin-left: auto; width: 12px; opacity: .4; }
+.cc-load-agents { display: flex; align-items: center; justify-content: center; gap: 10px; width: 112px; height: 44px; }
+.cc-load-agent-mark { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 9px; background: var(--load-shape); color: var(--load-ink); }
+.cc-load-agent-dots { display: flex; align-items: center; gap: 4px; height: 12px; }
+.cc-load-agent-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--load-ink); opacity: .26; animation: cc-load-agent-dot 1.2s ease-in-out infinite; }
+.cc-load-agent-dots i:nth-child(2) { animation-delay: .16s; }
+.cc-load-agent-dots i:nth-child(3) { animation-delay: .32s; }
+@keyframes cc-load-agent-dot { 0%, 60%, 100% { opacity: .26; } 30% { opacity: .84; } }
 .image-viewport .cc-loading-state { --load-panel: var(--image-viewer-surface); --load-shape: #38383f; --load-ink: #92929f; color: #d1d5db; }
 .image-viewport-loading { position: absolute; inset: 0; pointer-events: none; }
 .catsco-connect-motion.cc-loading-state { min-height: 100px; padding: 10px; }
-@keyframes cc-load-reveal { from { opacity: 0; } to { opacity: 1; } }
-@keyframes cc-load-module-place { 0%, 8%, 100% { opacity: .4; transform: translate(var(--x), var(--y)); } 28%, 72% { opacity: 1; transform: translate(0, 0); } }
-@keyframes cc-load-stack-settle { 0%, 8%, 100% { opacity: .45; transform: translate(var(--dx), var(--dy)); } 30%, 72% { opacity: 1; transform: translate(0, 0); } }
-@keyframes cc-load-content-appear { 0%, 12%, 100% { opacity: .15; transform: translateY(2px); } 32%, 73% { opacity: 1; transform: translateY(0); } }
-@keyframes cc-load-write-line { 0%, 10%, 100% { opacity: .15; transform: scaleX(.3); } 30%, 70% { opacity: .8; transform: scaleX(1); } }
-@keyframes cc-load-connect-dot { 0%, 65%, 100% { opacity: .2; } 25%, 40% { opacity: 1; } }
-@keyframes cc-load-endpoint-receive { 0%, 70%, 100% { opacity: .45; } 30%, 45% { opacity: 1; } }
+@keyframes cc-load-connect-dot { 0%, 5%, 90%, 100% { opacity: .15; } 19%, 68% { opacity: .8; } }
 @media (prefers-reduced-motion: reduce) {
   .cc-loading-state, .cc-loading-state * { animation: none !important; }
   .cc-loading-handoff { display: none; }

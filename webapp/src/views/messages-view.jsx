@@ -13,7 +13,7 @@ import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag
 import ChatComposer from '../widgets/chat-composer';
 import HistoryLoadingState from '../widgets/history-loading-state';
 import { ConversationForkNotice } from '../widgets/conversation-fork';
-import { canForkConversation, forkComposerNotice } from '../utils/conversation-fork';
+import { canForkConversation, forkAnchorIsMidTurn, forkAnchorMessageId, forkComposerNotice } from '../utils/conversation-fork';
 import PublicationRepairPanel from '../widgets/skillhub-publication-repair-panel';
 import { useConversationFork } from '../utils/use-conversation-fork';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
@@ -1898,15 +1898,13 @@ export default function MessagesView({
       setGatewayAnnotationCapabilityNote('标注桥未连接，请等待应用加载完成后重试');
       return;
     }
+    if (mode === 'select' && inlineAnnotationCaptureRef.current) {
+      setGatewayAnnotationCapabilityNote('请先完成或取消当前批注');
+      return;
+    }
     const accepted = gatewayAnnotationHostRef.current?.setMode?.(mode) || false;
     if (!accepted) {
       setGatewayAnnotationCapabilityNote('应用未连接标注桥，无法标注');
-      return;
-    }
-    if (mode === 'select' && gatewayAnnotationCapture) {
-      // Re-entering select with a pending popover would silently drop that
-      // selection; ask the user to finish or cancel it first.
-      setGatewayAnnotationCapabilityNote('请先完成或取消当前批注');
       return;
     }
     if (mode === 'select') { inlineAnnotationCaptureRef.current = null; setGatewayAnnotationCapture(null); }
@@ -1929,7 +1927,7 @@ export default function MessagesView({
     const open = capture.openBinding;
     if (inlineAnnotationCaptureRef.current !== capture || !gatewayAnnotationMountedRef.current
       || capture.authRevision !== getAuthRevision() || capture.token !== getToken()
-      || capture.signal?.aborted || !artifactOpenBindingUsable(open)
+      || capture.invalidated || capture.signal?.aborted || !artifactOpenBindingUsable(open)
       || gatewayAnnotationClosedOpensRef.current.has(open?.open_ref)
       || current?.openBinding?.open_ref !== open.open_ref
       || current.frame !== capture.frame || !capture.frame?.isConnected
@@ -2438,6 +2436,10 @@ export default function MessagesView({
           authRevision: getAuthRevision(), token: getToken(),
           openBinding: { ...binding.openBinding },
           ...selection,
+          // Keep the user's text when adjusting a target in this same frame
+          // session. A different open/session starts with an empty comment.
+          body: inlineAnnotationCaptureRef.current?.identity?.sessionToken === String(host.sessionToken || '')
+            ? inlineAnnotationCaptureRef.current.body || '' : '',
           target: JSON.parse(JSON.stringify(selection.target)),
           page: page ? { ...page } : null,
           // Identity certificate: the capture is only confirmable while the
@@ -2469,8 +2471,18 @@ export default function MessagesView({
         }
       },
       onPageChange: (page) => {
-        inlineAnnotationCaptureRef.current = null;
-        setGatewayAnnotationCapture(null);
+        const capture = inlineAnnotationCaptureRef.current;
+        if (capture && capture.page?.path === page.path
+          && (capture.page?.revision || '') === (page.revision || '')) {
+          // Scroll/resize void geometry and screenshots, but not the user's
+          // writing. Keep the editor until they select a fresh target.
+          const invalidated = { ...capture, invalidated: true };
+          inlineAnnotationCaptureRef.current = invalidated;
+          setGatewayAnnotationCapture(invalidated);
+        } else {
+          inlineAnnotationCaptureRef.current = null;
+          setGatewayAnnotationCapture(null);
+        }
         gatewayAnnotationApplyFramePage(page);
       },
       onUnavailable: (binding, reason) => {
@@ -5486,8 +5498,8 @@ export default function MessagesView({
     topic, userId: user.uid, agents: availableAgents,
     group: String(groupInfo?.id) === String(groupId) ? groupInfo : null, members,
   });
-  const createConversationFork = useCallback(() => {
-    void conversationFork.create({ newRequest: true });
+  const createConversationFork = useCallback((untilMessageId = 0) => {
+    void conversationFork.create({ newRequest: true, untilMessageId });
   }, [conversationFork.create]);
   const groupAgentUID = parseUid(groupAgent?.uid || groupAgent?.id);
   const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
@@ -7207,6 +7219,7 @@ export default function MessagesView({
                 </button>
               </header>
             )}
+            {!historyLoaded && <HistoryLoadingState />}
             <div className="v3-timeline-inner" data-loading-content="">
               {conversationShareMode && (
                 <section className="cc-conversation-share-toolbar" aria-label="对话分享图选择">
@@ -7243,10 +7256,6 @@ export default function MessagesView({
               {historyLoaded && <div className="v3-date-divider">
                 <span>聊天记录</span>
               </div>}
-
-        {!historyLoaded && (
-          <HistoryLoadingState />
-        )}
 
         {historyLoaded && historyError && messages.length === 0 && (
           <div className="v3-history-state" role="alert">
@@ -7353,6 +7362,11 @@ export default function MessagesView({
           const candidate = conversationShareCandidateByMessage.get(group.message);
           const selectable = conversationShareMode && Boolean(candidate);
           const selected = selectable && conversationShareSelectedKeys.includes(candidate.key);
+          // A copy stops at a turn's end. When the reply this row belongs to is
+          // still producing, the menu says so up front instead of letting the
+          // click reach the server and come back refused.
+          const forkAnchorId = forkAnchorMessageId(group);
+          const forkMidTurn = forkAnchorIsMidTurn(messages, forkAnchorId, groupAgentUID);
           return (
             <div
               key={group.renderKey}
@@ -7401,6 +7415,8 @@ export default function MessagesView({
                   : undefined}
                 onCreateConversationFork={forkEligible && !conversationShareMode ? createConversationFork : undefined}
                 conversationForkDisabled={conversationFork.busy || conversationFork.operation?.state === 'pending'}
+                conversationForkAnchorId={forkAnchorId}
+                conversationForkMidTurn={forkMidTurn}
                 showThinking={showThinking}
                 isConsecutive={showThinking || liquidConversation
                   ? group.isConsecutive

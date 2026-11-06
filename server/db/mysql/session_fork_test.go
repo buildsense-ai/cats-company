@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	sqldriver "database/sql/driver"
 	"errors"
 	"fmt"
 	"os"
@@ -12,10 +13,42 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	driver "github.com/go-sql-driver/mysql"
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
-var sessionForkColumns = []string{"actor_user_id", "request_id", "source_topic_id", "target_topic_id", "agent_uid", "body_id", "request_name", "source_revision", "target_revision", "source_last_seq", "message_id_map", "state", "error", "created_at"}
+var sessionForkColumns = []string{"actor_user_id", "request_id", "source_topic_id", "target_topic_id", "agent_uid", "body_id", "request_name", "source_revision", "target_revision", "source_last_seq", "message_id_map", "state", "error", "created_at", "source_turn_count", "source_total_turns"}
+
+// expectCopyTitle registers the lookups copyTitle performs when the request
+// carries no name: the source topic's name, then the agent's display name as the
+// fallback for a direct conversation (which has no topic name of its own), then
+// the owner's existing topic names to find a free suffix.
+//
+// It deliberately does not compute the expected title. Working the answer out
+// here as well as in copyTitle is how the column-width bug got through: the
+// helper and the code under test shared the same blind spot, and a literal in
+// the test is the only thing that cannot agree with a bug.
+func expectCopyTitle(mock sqlmock.Sqlmock, sourceTopic, sourceName string, agent, owner int64, agentName string, existing ...string) {
+	sourceRow := sqlmock.NewRows([]string{"name"})
+	if sourceName != "" {
+		sourceRow.AddRow(sourceName)
+	}
+	mock.ExpectQuery("SELECT name FROM topics WHERE id =").WithArgs(sourceTopic).WillReturnRows(sourceRow)
+	// A named source short-circuits the agent fallback. The owner scan below always
+	// runs, because the suffix is chosen against the copies that already exist.
+	if sourceName == "" {
+		agentRow := sqlmock.NewRows([]string{"display_name"})
+		if agentName != "" {
+			agentRow.AddRow(agentName)
+		}
+		mock.ExpectQuery("SELECT display_name FROM users WHERE id =").WithArgs(agent).WillReturnRows(agentRow)
+	}
+	rows := sqlmock.NewRows([]string{"name"})
+	for _, name := range existing {
+		rows.AddRow(name)
+	}
+	mock.ExpectQuery("SELECT name FROM topics WHERE owner_id =").WithArgs(owner).WillReturnRows(rows)
+}
 
 func TestSessionForkMySQLCloneTransaction(t *testing.T) {
 	for _, failCopy := range []bool{false, true} {
@@ -34,9 +67,13 @@ func TestSessionForkMySQLCloneTransaction(t *testing.T) {
 			mock.ExpectQuery("SELECT history_revision, fork_state FROM topics").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"history_revision", "fork_state"}).AddRow(2, ""))
 			mock.ExpectQuery("SELECT b.owner_id,b.body_id,u.account_type,u.state FROM bot_config").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"owner_id", "body_id", "account_type", "state"}).AddRow(7, "body", "bot", 0))
 			mock.ExpectQuery("SELECT id,from_uid,content,msg_type,content_blocks,mode,role,metadata,reply_to,created_at FROM messages").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).AddRow(10, 7, "file", "file", `[{"type":"file","payload":{"url":"/uploads/files/report.pdf"}}]`, "normal", "user", `{"custom":"keep"}`, nil, stamp).AddRow(11, 9, "answer", "text", nil, "normal", "assistant", nil, 10, stamp))
-			mock.ExpectExec("INSERT INTO `groups`").WithArgs("\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
+			// A direct conversation has no topic name, so the copy takes the agent's.
+			expectCopyTitle(mock, "p2p_7_9", "", 9, 7, "CatsCo")
+			title := "CatsCo(1)"
+			mock.ExpectExec("INSERT INTO `groups`").WithArgs(title, int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
 			mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
-			mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", "\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", title, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectQuery("SELECT project_id FROM project_topics").WithArgs(int64(7), "p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"project_id"}))
 			copyExpectation := mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(7), "file", "file", `[{"type":"file","payload":{"url":"/uploads/files/report.pdf"}}]`, "normal", "user", `{"custom":"keep"}`, stamp)
 			if failCopy {
 				copyExpectation.WillReturnError(errors.New("copy failure"))
@@ -47,7 +84,7 @@ func TestSessionForkMySQLCloneTransaction(t *testing.T) {
 				mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(nil, `{"custom":"keep"}`, int64(100)).WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(int64(100), nil, int64(101)).WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectQuery("SELECT history_revision FROM topics").WithArgs("grp_20").WillReturnRows(sqlmock.NewRows([]string{"history_revision"}).AddRow(4))
-				mock.ExpectExec("INSERT INTO session_forks").WithArgs(int64(7), "one", "p2p_7_9", "grp_20", int64(9), "body", "", int64(2), int64(4), int64(11), `{"10":100,"11":101}`, "pending", "", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("INSERT INTO session_forks").WithArgs(int64(7), "one", "p2p_7_9", "grp_20", int64(9), "body", "", int64(2), int64(4), int64(11), `{"10":100,"11":101}`, "pending", "", sqlmock.AnyArg(), int64(0), int64(0)).WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("UPDATE topics SET fork_state = 'pending'").WithArgs("grp_20").WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectCommit()
 			}
@@ -66,6 +103,176 @@ func TestSessionForkMySQLCloneTransaction(t *testing.T) {
 	}
 }
 
+func TestSessionForkMySQLCloneIsBoundedByAnchor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a := &Adapter{db: db}
+	ctx := context.Background()
+	stamp := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT account_type FROM users").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"account_type"}).AddRow("human"))
+	mock.ExpectQuery("SELECT .* FROM session_forks WHERE actor_user_id").WithArgs(int64(7), "cut").WillReturnRows(sqlmock.NewRows(sessionForkColumns))
+	mock.ExpectQuery("SELECT history_revision, fork_state FROM topics").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"history_revision", "fork_state"}).AddRow(6, ""))
+	mock.ExpectQuery("SELECT b.owner_id,b.body_id,u.account_type,u.state FROM bot_config").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"owner_id", "body_id", "account_type", "state"}).AddRow(7, "body", "bot", 0))
+	// The whole conversation is read once, because the total turn count is needed
+	// too; the anchor bounds what gets copied, enforced below by the slice.
+	mock.ExpectQuery("SELECT .* FROM messages WHERE topic_id").WithArgs("p2p_7_9").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).
+			AddRow(9, 7, "first", "text", nil, "normal", "user", nil, nil, stamp).
+			AddRow(10, 9, "first answer", "text", nil, "normal", "assistant", nil, 9, stamp).
+			AddRow(11, 7, "second", "text", nil, "normal", "user", nil, nil, stamp).
+			AddRow(12, 9, "second answer", "text", nil, "normal", "assistant", nil, 11, stamp))
+	// The source is named and one copy already exists, so the name has to come from
+	// the source's own row and skip past the copy that is already there. Passing a
+	// literal title would let the helper and copyTitle agree on a wrong answer.
+	expectCopyTitle(mock, "p2p_7_9", "周报", 9, 7, "", "周报(1)")
+	title := "周报(2)"
+	mock.ExpectExec("INSERT INTO `groups`").WithArgs(title, int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
+	mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", title, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT project_id FROM project_topics").WithArgs(int64(7), "p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"project_id"}))
+	mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(7), "first", "text", nil, "normal", "user", nil, stamp).WillReturnResult(sqlmock.NewResult(100, 1))
+	mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(9), "first answer", "text", nil, "normal", "assistant", nil, stamp).WillReturnResult(sqlmock.NewResult(101, 1))
+	mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(nil, nil, int64(100)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(int64(100), nil, int64(101)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT history_revision FROM topics").WithArgs("grp_20").WillReturnRows(sqlmock.NewRows([]string{"history_revision"}).AddRow(2))
+	mock.ExpectExec("INSERT INTO session_forks").WithArgs(int64(7), "cut", "p2p_7_9", "grp_20", int64(9), "body", "", int64(6), int64(2), int64(10), `{"10":101,"9":100}`, "pending", "", sqlmock.AnyArg(), int64(1), int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE topics SET fork_state = 'pending'").WithArgs("grp_20").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	got, err := a.CreateSessionFork(ctx, types.SessionForkRequest{RequestID: "cut", SourceTopicID: "p2p_7_9", ActorUserID: 7, AgentUID: 9, BodyID: "body", UntilMessageID: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The recorded boundary is the anchor, so the runtime copies the same range.
+	if got.SourceLastSeq != 10 || len(got.MessageIDMap) != 2 || got.MessageIDMap["11"] != 0 {
+		t.Fatalf("bounded clone %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionForkMySQLCloneInheritsProjectPlacement(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	stamp := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT account_type FROM users").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"account_type"}).AddRow("human"))
+	mock.ExpectQuery("SELECT .* FROM session_forks WHERE actor_user_id").WithArgs(int64(7), "proj").WillReturnRows(sqlmock.NewRows(sessionForkColumns))
+	mock.ExpectQuery("SELECT history_revision, fork_state FROM topics").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"history_revision", "fork_state"}).AddRow(3, ""))
+	mock.ExpectQuery("SELECT b.owner_id,b.body_id,u.account_type,u.state FROM bot_config").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"owner_id", "body_id", "account_type", "state"}).AddRow(7, "body", "bot", 0))
+	mock.ExpectQuery("SELECT .* FROM messages WHERE topic_id").WithArgs("p2p_7_9").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).
+			AddRow(9, 7, "asked", "text", nil, "normal", "user", nil, nil, stamp).
+			AddRow(10, 9, "answered", "text", nil, "normal", "assistant", nil, 9, stamp))
+	expectCopyTitle(mock, "p2p_7_9", "", 9, 7, "CatsCo")
+	title := "CatsCo(1)"
+	mock.ExpectExec("INSERT INTO `groups`").WithArgs(title, int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
+	mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", title, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	// The source sits in project 42, so the copy must land there instead of the
+	// general task list the user would otherwise have to search.
+	mock.ExpectQuery("SELECT project_id FROM project_topics").WithArgs(int64(7), "p2p_7_9").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow(42))
+	mock.ExpectExec("INSERT INTO project_topics").WithArgs(int64(7), "grp_20", int64(42)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(7), "asked", "text", nil, "normal", "user", nil, stamp).WillReturnResult(sqlmock.NewResult(100, 1))
+	mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(9), "answered", "text", nil, "normal", "assistant", nil, stamp).WillReturnResult(sqlmock.NewResult(101, 1))
+	mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(nil, nil, int64(100)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(int64(100), nil, int64(101)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT history_revision FROM topics").WithArgs("grp_20").WillReturnRows(sqlmock.NewRows([]string{"history_revision"}).AddRow(2))
+	mock.ExpectExec("INSERT INTO session_forks").WithArgs(int64(7), "proj", "p2p_7_9", "grp_20", int64(9), "body", "", int64(3), int64(2), int64(10), `{"10":101,"9":100}`, "pending", "", sqlmock.AnyArg(), int64(0), int64(0)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE topics SET fork_state = 'pending'").WithArgs("grp_20").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	got, err := (&Adapter{db: db}).CreateSessionFork(context.Background(), types.SessionForkRequest{RequestID: "proj", SourceTopicID: "p2p_7_9", ActorUserID: 7, AgentUID: 9, BodyID: "body"})
+	if err != nil || got.TargetTopicID != "grp_20" {
+		t.Fatalf("clone %#v %v", got, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionForkMySQLAnchorOutsideSourceFailsClosed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT account_type FROM users").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"account_type"}).AddRow("human"))
+	mock.ExpectQuery("SELECT .* FROM session_forks WHERE actor_user_id").WithArgs(int64(7), "bad").WillReturnRows(sqlmock.NewRows(sessionForkColumns))
+	mock.ExpectQuery("SELECT history_revision, fork_state FROM topics").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"history_revision", "fork_state"}).AddRow(6, ""))
+	mock.ExpectQuery("SELECT b.owner_id,b.body_id,u.account_type,u.state FROM bot_config").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"owner_id", "body_id", "account_type", "state"}).AddRow(7, "body", "bot", 0))
+	// The anchor does not exist in this conversation at all.
+	mock.ExpectQuery("SELECT .* FROM messages WHERE topic_id").WithArgs("p2p_7_9").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).
+			AddRow(9, 7, "first", "text", nil, "normal", "user", nil, nil, time.Now()))
+	mock.ExpectRollback()
+	got, err := (&Adapter{db: db}).CreateSessionFork(context.Background(), types.SessionForkRequest{RequestID: "bad", SourceTopicID: "p2p_7_9", ActorUserID: 7, AgentUID: 9, BodyID: "body", UntilMessageID: 99})
+	if !errors.Is(err, store.ErrSessionForkSource) || got != nil {
+		t.Fatalf("anchor outside source must fail closed: %#v %v", got, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionForkMySQLAnchorMustCloseATurn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rows [][]sqldriver.Value
+	}{{
+		// The anchor is the user message that starts the next turn, so the copied
+		// range would end mid-turn.
+		name: "anchor opens a new turn",
+		rows: [][]sqldriver.Value{
+			{9, 7, "first", "text", nil, "normal", "user", nil, nil, time.Now()},
+			{10, 9, "first answer", "text", nil, "normal", "assistant", nil, 9, time.Now()},
+			{11, 7, "second", "text", nil, "normal", "user", nil, nil, time.Now()},
+		},
+	}, {
+		// The anchor stops between a question and its answer.
+		name: "anchor stops before the answer",
+		rows: [][]sqldriver.Value{
+			{9, 7, "first", "text", nil, "normal", "user", nil, nil, time.Now()},
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			anchor := int64(tc.rows[len(tc.rows)-1][0].(int))
+			mock.ExpectBegin()
+			mock.ExpectQuery("SELECT account_type FROM users").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"account_type"}).AddRow("human"))
+			mock.ExpectQuery("SELECT .* FROM session_forks WHERE actor_user_id").WithArgs(int64(7), "mid").WillReturnRows(sqlmock.NewRows(sessionForkColumns))
+			mock.ExpectQuery("SELECT history_revision, fork_state FROM topics").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"history_revision", "fork_state"}).AddRow(6, ""))
+			mock.ExpectQuery("SELECT b.owner_id,b.body_id,u.account_type,u.state FROM bot_config").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"owner_id", "body_id", "account_type", "state"}).AddRow(7, "body", "bot", 0))
+			mock.ExpectQuery("SELECT .* FROM messages WHERE topic_id").WithArgs("p2p_7_9").
+				WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).AddRows(tc.rows...))
+			mock.ExpectRollback()
+			got, err := (&Adapter{db: db}).CreateSessionFork(context.Background(), types.SessionForkRequest{RequestID: "mid", SourceTopicID: "p2p_7_9", ActorUserID: 7, AgentUID: 9, BodyID: "body", UntilMessageID: anchor})
+			// The runtime cuts at a turn boundary, so accepting this would make the
+			// copy's visible history and its model context disagree. The failure is
+			// reported as its own reason, because the user can act on it by
+			// picking the end of the reply instead of reloading the conversation.
+			if !errors.Is(err, store.ErrSessionForkAnchor) || got != nil {
+				t.Fatalf("anchor inside a turn must fail closed: %#v %v", got, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestSessionForkMySQLTerminalCompletionPrecedesSourceCheck(t *testing.T) {
 	for _, state := range []string{"ready", "failed"} {
 		t.Run(state, func(t *testing.T) {
@@ -75,7 +282,7 @@ func TestSessionForkMySQLTerminalCompletionPrecedesSourceCheck(t *testing.T) {
 			}
 			defer db.Close()
 			mock.ExpectBegin()
-			mock.ExpectQuery("SELECT .* FROM session_forks WHERE agent_uid").WithArgs(int64(9), "grp_20", "one").WillReturnRows(sqlmock.NewRows(sessionForkColumns).AddRow(7, "one", "p2p_7_9", "grp_20", 9, "body", "", 2, 4, 11, `{"10":100,"11":101}`, state, "", time.Now()))
+			mock.ExpectQuery("SELECT .* FROM session_forks WHERE agent_uid").WithArgs(int64(9), "grp_20", "one").WillReturnRows(sqlmock.NewRows(sessionForkColumns).AddRow(7, "one", "p2p_7_9", "grp_20", 9, "body", "", 2, 4, 11, `{"10":100,"11":101}`, state, "", time.Now(), int64(1), int64(1)))
 			mock.ExpectCommit()
 			got, err := (&Adapter{db: db}).CompleteSessionFork(context.Background(), 9, types.SessionForkCompletion{RequestID: "one", TargetTopicID: "grp_20", State: "ready", BodyID: "changed"})
 			if err != nil || got.State != state {
@@ -109,7 +316,7 @@ func TestSessionForkMySQLCancelIsTerminalWins(t *testing.T) {
 			}
 			mock.ExpectBegin()
 			mock.ExpectQuery("SELECT .* FROM session_forks WHERE actor_user_id").WithArgs(int64(7), "one").
-				WillReturnRows(sqlmock.NewRows(sessionForkColumns).AddRow(7, "one", "p2p_7_9", "grp_20", 9, "body", "", 2, 4, 11, `{}`, tc.state, initial, time.Now()))
+				WillReturnRows(sqlmock.NewRows(sessionForkColumns).AddRow(7, "one", "p2p_7_9", "grp_20", 9, "body", "", 2, 4, 11, `{}`, tc.state, initial, time.Now(), int64(1), int64(1)))
 			if tc.expectWrites {
 				mock.ExpectExec("UPDATE session_forks SET state = ").WithArgs("failed", types.SessionForkErrorCancelled, int64(7), "one").WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("UPDATE topics SET fork_state").WithArgs("failed", "grp_20").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -153,19 +360,38 @@ func TestSessionForkMySQLExpiryCountsOnlyRowsItMoved(t *testing.T) {
 }
 
 func TestSessionForkMySQLMigrationMatchesStartup(t *testing.T) {
-	raw, err := os.ReadFile("../migrations/mysql/000041_session_forks.up.sql")
-	if err != nil {
-		t.Fatal(err)
+	// The startup schema runs on every boot and is the concatenation of the fork
+	// migrations; each numbered migration runs once. Comparing the pair keeps a
+	// new column from landing on one side only.
+	var combined strings.Builder
+	for _, name := range []string{"000041_session_forks", "000063_session_fork_turn_count"} {
+		raw, err := os.ReadFile("../migrations/mysql/" + name + ".up.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		combined.WriteString(string(raw))
+		combined.WriteString("\n")
 	}
 	for _, eol := range []string{"\n", "\r\n"} {
 		t.Run(fmt.Sprintf("EOL=%q", eol), func(t *testing.T) {
-			migration := strings.ReplaceAll(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n", eol)
+			migration := strings.ReplaceAll(strings.ReplaceAll(combined.String(), "\r\n", "\n"), "\n", eol)
 			for _, statement := range sessionForkSchema {
 				if !strings.Contains(strings.ReplaceAll(migration, "\r\n", "\n"), strings.ReplaceAll(statement, "\r\n", "\n")) {
 					t.Fatalf("startup statement absent from migration: %s", statement)
 				}
 			}
 		})
+	}
+}
+
+// A migration that cannot be rolled back is not a migration.
+func TestSessionForkTurnCountMigrationIsReversible(t *testing.T) {
+	down, err := os.ReadFile("../migrations/mysql/000063_session_fork_turn_count.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(down), "DROP COLUMN source_turn_count") {
+		t.Fatalf("down migration does not remove the column: %s", down)
 	}
 }
 

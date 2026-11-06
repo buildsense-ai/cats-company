@@ -1254,10 +1254,10 @@ describe('CatsCo shell styling', () => {
     ];
 
     expect(liquidSidebar).toContain('background: linear-gradient(180deg');
-    expect(liquidSection).toContain('background: rgb(249, 251, 255);');
+    expect(liquidSection).toContain('--cc-sidebar-section-bg: rgb(249, 251, 255);');
     expect(liquidActive).toContain('background: rgba(73, 86, 168, 0.12);');
     expect(greenSidebar).toContain('background: linear-gradient(180deg, #151b19 0%, #111714 58%, #0f1513 100%);');
-    expect(greenSection).toContain('background: rgb(18, 24, 22);');
+    expect(greenSection).toContain('--cc-sidebar-section-bg: rgb(18, 24, 22);');
     expect(greenActive).toContain('background: rgba(255, 255, 255, 0.09);');
     expect(statuses.every(Boolean)).toBe(true);
     expect(darkStatuses.every(Boolean)).toBe(true);
@@ -1332,12 +1332,15 @@ describe('CatsCo shell styling', () => {
     expect(stickyRule).toContain('position: sticky;');
     expect(stickyRule).toContain('z-index: 12;');
     expect(stickyRule).toContain('border-radius: 0;');
-    expect(stickyRule).toContain('background: var(--cc-bg);');
-    expect(stickyRule).toContain(
-      '0 calc(-1 * var(--cc-sidebar-row-gap)) 0 0 var(--cc-bg),',
-    );
-    expect(stickyRule).toContain(
-      '0 var(--cc-sidebar-row-gap) 0 0 var(--cc-bg);',
+    expect(stickyRule).toContain('--cc-sidebar-section-bg: var(--cc-bg);');
+    expect(stickyRule).toContain('background: var(--cc-sidebar-section-bg);');
+    const coverRule = ruleFor('.v3-chat-list > .cc-top-level-section::before');
+    expect(coverRule).toContain('position: absolute;');
+    expect(coverRule).toContain('z-index: -1;');
+    expect(coverRule).toContain('pointer-events: none;');
+    expect(coverRule).toContain('background: var(--cc-sidebar-section-bg);');
+    expect(coverRule).toContain(
+      'inset: calc(-1 * var(--cc-sidebar-section-cover-top) - 1px) 0 calc(-1 * var(--cc-sidebar-row-gap) - 1px);',
     );
     expect(ruleFor('.v3-chat-list')).toContain('--cc-sidebar-group-gap: 12px;');
     expect(ruleFor('.v3-chat-list')).toContain('--cc-sidebar-list-padding-top: 8px;');
@@ -1345,10 +1348,13 @@ describe('CatsCo shell styling', () => {
     expect(sectionGapRule).toContain(
       'margin-top: calc(var(--cc-sidebar-group-gap) - var(--cc-sidebar-row-gap)) !important;',
     );
+    expect(sectionGapRule).toContain(
+      '--cc-sidebar-section-cover-top: calc(var(--cc-sidebar-group-gap) - var(--cc-sidebar-row-gap));',
+    );
     expect(contactsRule).toContain('top: var(--cc-sidebar-row-gap);');
     expect(contactsRule).toContain('z-index: 14;');
     expect(contactsRule).toContain(
-      '0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 var(--cc-bg),',
+      '--cc-sidebar-section-cover-top: calc(var(--cc-sidebar-list-padding-top) + var(--cc-sidebar-row-gap));',
     );
     expect(compactProjectsRule).toContain(
       'top: calc( var(--cc-sidebar-row-height) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) );',
@@ -1361,15 +1367,9 @@ describe('CatsCo shell styling', () => {
     const liquidStickyRule = ruleFor(
       'html[data-theme="liquid"] .v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section)',
     );
-    expect(liquidStickyRule).toContain('background: rgb(249, 251, 255);');
+    expect(liquidStickyRule).toContain('--cc-sidebar-section-bg: rgb(249, 251, 255);');
     expect(liquidStickyRule).not.toContain('rgba(249, 251, 255, 0.96)');
 
-    const liquidContactsRule = ruleFor(
-      'html[data-theme="liquid"] .v3-chat-list > .cc-contacts-section',
-    );
-    expect(liquidContactsRule).toContain(
-      '0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 rgb(249, 251, 255),',
-    );
   });
 
   it('uses the project row geometry for every sidebar hierarchy level', () => {
@@ -1630,7 +1630,7 @@ describe('CatsCo shell styling', () => {
     expect(dotRule).not.toContain('box-shadow:');
     expect(runningRule).toContain('inset: 0;');
     expect(runningRule).toContain('justify-content: center;');
-    expect(spinnerRule).toContain('animation: catsco-spin 0.9s linear infinite;');
+    expect(spinnerRule).toContain('animation: catsco-spin var(--cc-control-spin-cycle, 900ms) linear infinite;');
     expect(spinnerRule).not.toContain('filter:');
     expect(ruleFor('.cc-compact-task-status.completed')).toContain('color: var(--cc-success-text);');
     expect(ruleFor('.cc-compact-task-status.failed')).toContain('color: var(--cc-danger);');
@@ -1978,7 +1978,7 @@ describe('CatsCo shell styling', () => {
     const dialogRule = ruleFor('.oc-modal.cc-confirm-dialog');
     const cancelRule = ruleFor('.cc-confirm-cancel');
     const submitRule = ruleFor('.cc-confirm-submit');
-    const liquidDialogRule = ruleFor('html[data-theme="liquid"] .cc-confirm-dialog');
+    const liquidDialogRule = ruleFor('html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-confirm-dialog');
 
     expect(overlayRule).toContain('background: rgba(0, 0, 0, 0.72);');
     expect(dialogRule).toContain('width: min(420px, calc(100vw - 32px));');
@@ -2167,27 +2167,33 @@ describe('CatsCo shell styling', () => {
     expect(detailBodyRule).toContain('overscroll-behavior: contain;');
   });
 
-  it('keeps every assistant-manager tab stable and lets the hub grid use the remaining height', () => {
+  it('keeps assistant-manager tabs stable while the hub body owns scrolling', () => {
     const managerRule = ruleFor('.oc-modal.cc-agent-manager');
     const bodyRule = ruleFor('.cc-agent-manager-body');
     const hubBodyRule = ruleFor('.cc-agent-manager-body.cc-agent-manager-hub-body');
     const hubRule = ruleFor('.cc-agent-hub');
     const constrainedHubRule = ruleFor('.cc-agent-manager-hub-body .cc-agent-hub');
     const hubGridRule = ruleFor('.cc-agent-hub-grid');
+    const managerGridRule = ruleFor('.cc-agent-manager-hub .cc-agent-hub-grid');
 
     expect(managerRule).toContain('display: flex;');
     expect(managerRule).toContain('height: min(760px, calc(100vh - 32px));');
     expect(bodyRule).toContain('flex: 1 1 auto;');
     expect(bodyRule).toContain('min-height: 0;');
-    expect(hubBodyRule).toContain('overflow: hidden;');
+    expect(hubBodyRule).toContain('overflow-y: auto;');
+    expect(hubBodyRule).not.toContain('overflow: hidden;');
     expect(hubRule).toContain('display: flex;');
     expect(hubRule).toContain('flex-direction: column;');
     expect(hubRule).toContain('min-height: 0;');
     expect(hubRule).not.toContain('height: 100%;');
-    expect(constrainedHubRule).toContain('height: 100%;');
+    expect(constrainedHubRule).toContain('height: auto;');
+    expect(constrainedHubRule).toContain('flex: 1 0 auto;');
     expect(hubGridRule).toContain('flex: 1 1 auto;');
     expect(hubGridRule).toContain('overflow-y: auto;');
     expect(hubGridRule).toContain('max-height: 100%;');
+    expect(managerGridRule).toContain('flex: 0 0 auto;');
+    expect(managerGridRule).toContain('max-height: none;');
+    expect(managerGridRule).toContain('overflow: visible;');
     expect(ruleFor('.cc-agent-overview-stats strong'))
       .toContain('font-variant-numeric: tabular-nums;');
     expect(css).not.toContain('.cc-agent-usage-guide');

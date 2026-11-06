@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Bookmark, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, Maximize2, Minimize2, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
+import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, Maximize2, Minimize2, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
 import { EXECUTION_LABELS, useLiquidConversation } from '../utils/liquid-conversation';
 import { FadingMarkdown, FadingText, LiquidReplySurface, useReplyReveal } from './liquid-reply-motion';
@@ -20,6 +20,7 @@ import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet
 import MobilePdfPreview from './mobile-pdf-preview';
 import HTMLFilePreview from './html-file-preview';
 import FileAnnotationEditor from './file-annotation-editor';
+import VideoFilePreview from './video-file-preview';
 import ImageViewport from './image-viewport';
 import LoadingState from './loading-state';
 import FileAnnotationCard from './file-annotation-card';
@@ -792,7 +793,7 @@ function WorkingToolStep({ item, orphan = false }) {
           aria-controls={resultID}
           onClick={() => setOpen((current) => !current)}
         >
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />
           <Terminal size={14} className="v3-wpi-icon" />
           <span className="v3-wpi-tool-name">{name}</span>
           {!orphan && (
@@ -856,9 +857,7 @@ function SubAgentWorkingGroup({ item }) {
         aria-controls={stepsID}
         onClick={() => setOpen(!open)}
       >
-        {open
-          ? <ChevronDown size={13} aria-hidden="true" />
-          : <ChevronRight size={13} aria-hidden="true" />}
+        <ChevronRight size={13} className="cc-disclosure-chevron" aria-hidden="true" />
         <span className="v3-wpi-subagent-name">{item.name}</span>
         {item.agentType && <span className="v3-wpi-subagent-type">{item.agentType}</span>}
         <span className={`v3-wpi-subagent-status ${item.status || 'running'}`}>{status}</span>
@@ -956,7 +955,7 @@ function WorkingProcess({ blocks, complete: completeOverride = false, stopped = 
 
   const statusContent = (
     <>
-      {hasDetails && (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
+      {hasDetails && <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />}
       <span className="v3-working-label">{statusLabel}</span>
       <span className="v3-working-summary">{summary}</span>
       {hasDetails && <span className="cc-working-details-label">执行详情</span>}
@@ -1118,7 +1117,7 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
   const liquidConversation = useLiquidConversation();
   const [replyRevealing, setReplyRevealing] = useState(false);
   const softStream = liquidConversation && !isSelf && Boolean(message._streaming) && !message._stopped
@@ -1342,7 +1341,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     if (conversationForkDisabled) return;
     setMoreActionsOpen(false);
     moreActionsTriggerRef.current?.focus({ preventScroll: true });
-    onCreateConversationFork?.();
+    onCreateConversationFork?.(conversationForkAnchorId);
   };
 
   useEffect(() => {
@@ -1529,8 +1528,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
               type="button"
             >
               {copyState === 'copied'
-                ? <Check size={20} className="cc-copy-success-icon" aria-hidden="true" />
-                : <Copy size={17} />}
+                ? <Check size={15} className="cc-copy-success-icon" aria-hidden="true" />
+                : <Copy size={15} />}
             </button>
             {onRegenerate && (
               <button
@@ -1608,15 +1607,24 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       <ImageDown size={15} aria-hidden="true" />
                       <span>制作分享图</span>
                     </button>}
-                    {onCreateConversationFork && <button
-                      type="button"
-                      role="menuitem"
-                      disabled={conversationForkDisabled}
-                      onClick={handleCreateConversationForkClick}
-                    >
-                      <Copy size={15} aria-hidden="true" />
-                      <span>复制对话</span>
-                    </button>}
+                    {onCreateConversationFork && <>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={conversationForkDisabled || conversationForkAnchorId <= 0 || conversationForkMidTurn}
+                        title={conversationForkMidTurn ? '这一轮回复还在进行，等结束后就能从这里复制' : undefined}
+                        onClick={handleCreateConversationForkClick}
+                      >
+                        <Copy size={15} aria-hidden="true" />
+                        <span>复制对话</span>
+                      </button>
+                      {/* Saying why beats a greyed-out row: the entry is not
+                          broken, it is waiting for the reply to finish. The
+                          sentence gives the one action that works — come back. */}
+                      {conversationForkMidTurn && <p className="cc-fork-help" role="note">
+                        这一轮回复还在进行，等它结束后就能从这里复制。
+                      </p>}
+                    </>}
                   </div>
                 )}
               </div>
@@ -1648,6 +1656,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.onCreateConversationShare === nextProps.onCreateConversationShare &&
     prevProps.onCreateConversationFork === nextProps.onCreateConversationFork &&
     prevProps.conversationForkDisabled === nextProps.conversationForkDisabled &&
+    prevProps.conversationForkMidTurn === nextProps.conversationForkMidTurn &&
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.executionState === nextProps.executionState &&
     prevProps.executionNote === nextProps.executionNote &&
@@ -3396,7 +3405,7 @@ export function FilePreviewPanel({
       />
       <aside
         ref={panelRef}
-        className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isImage || isPdf || isSpreadsheet ? 'wide' : ''}`}
+        className={`v3-file-preview-panel ${fileAnnotationMode ? 'is-file-annotating' : ''} ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isImage || isPdf || isSpreadsheet ? 'wide' : ''}`}
         role={shouldUseSheetMode ? 'dialog' : undefined}
         aria-modal={shouldUseSheetMode || undefined}
         aria-label="文件预览"
@@ -3566,13 +3575,8 @@ export function FilePreviewPanel({
               </div>
             )
           ) : isVideo ? (
-            <div className="v3-file-preview-image">
-              <video src={fetchableMediaURL(url)} data-file-annotation-surface="video"
-                controls={!fileAnnotationMode} playsInline preload="metadata"
-                aria-label={file.name || '视频预览'}
-                onError={() => setImageError(true)} />
-              {imageError && <p role="alert">视频加载失败，请下载原文件查看。</p>}
-            </div>
+            <VideoFilePreview key={url} src={fetchableMediaURL(url)}
+              label={file.name || '视频预览'} annotating={fileAnnotationMode} />
           ) : isPdf ? (
             shouldUseSheetMode || fileAnnotationMode || isWebKitPdfPreview() ? (
               <MobilePdfPreview url={fetchableMediaURL(url)} annotationMode={fileAnnotationMode} />

@@ -31,6 +31,8 @@ import {
   Zap,
 } from 'lucide-react';
 import Avatar from './avatar';
+import LoadingState from './loading-state';
+import { restoreDialogFocus } from '../utils/use-dialog-behavior';
 import QRCode from './qr-code';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
@@ -90,6 +92,10 @@ const cloudWorkerCreateMessage = (e) => {
       return '云端实例供给失败，可能有残留实例待清理，可在列表中删除';
     case 'cloud_worker_operation_busy':
       return '另一项云员工操作正在执行，请等待完成后再创建';
+    case 'cloud_worker_capacity_queued':
+      // Paid and parked: this is a wait, not a failure, so it must not be
+      // rendered as “创建失败” (the buyer would try again and queue twice).
+      return '当前套餐共享机已满，你已进入排队；轮到时自动开工，无需重复提交';
     case 'cloud_worker_invalid_username':
     case 'cloud_worker_create_failed':
     default:
@@ -560,11 +566,14 @@ export default function AgentStoreModal({
   onOpenAgentChat,
   user,
   onBotsChanged,
+  returnFocusRef,
 }) {
   const feedback = useFeedback();
   const [bots, setBots] = useState([]);
   const [rosterFilter, setRosterFilter] = useState('all');
   const [loading, setLoading] = useState(true);
+  const [rosterError, setRosterError] = useState(false);
+  const rosterRequestRef = useRef(0);
   const [tab, setTab] = useState('hub'); // 'hub', 'create', 'manage'
   const [hubCloudView, setHubCloudView] = useState(false); // hub tab: show cloud manage panel instead of the roster
   const rosterTabsRef = useRef(null);
@@ -616,7 +625,9 @@ export default function AgentStoreModal({
   const [copiedField, setCopiedField] = useState('');
   const [generatingInviteCode, setGeneratingInviteCode] = useState(null);
   const [generatedInviteCodes, setGeneratedInviteCodes] = useState({});
+  const [inviteReadStates, setInviteReadStates] = useState({});
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
+  const [cloudQueue, setCloudQueue] = useState(null); // {queued,position,retry_after_seconds} when a paid slot is waiting for capacity
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
   const [cloudImages, setCloudImages] = useState([]);
   const [cloudImagesByWorker, setCloudImagesByWorker] = useState(null); // available worker image versions from the control plane meta
@@ -868,6 +879,7 @@ export default function AgentStoreModal({
       setHubCloudView(true);
     }
     loadBots();
+    return () => { rosterRequestRef.current += 1; };
   }, [initialAgentId, initialCloudWorker]);
 
   const cloudWorkerCatalogKey = cloudWorkers.map(worker => worker.tenant_name || '').sort().join('|');
@@ -1105,11 +1117,11 @@ export default function AgentStoreModal({
   useEffect(() => {
     dialogOpenerRef.current = document.activeElement;
     const frame = window.requestAnimationFrame(() => {
-      dialogRef.current?.querySelector('button:not(:disabled)')?.focus();
+      dialogRef.current?.querySelector('#cc-agent-manager-title')?.focus({ preventScroll: true });
     });
     return () => {
       window.cancelAnimationFrame(frame);
-      if (dialogOpenerRef.current instanceof HTMLElement) dialogOpenerRef.current.focus();
+      restoreDialogFocus(dialogOpenerRef.current, returnFocusRef);
     };
   }, []);
 
@@ -1141,7 +1153,7 @@ export default function AgentStoreModal({
       if (focusable.length === 0) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
+      if (event.shiftKey && (document.activeElement === first || document.activeElement?.id === 'cc-agent-manager-title')) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -1156,13 +1168,33 @@ export default function AgentStoreModal({
     return () => document.removeEventListener('keydown', handleDialogKeyDown);
   }, [entryBot, requestLeave, skillDetail, skillPickerOpen]);
 
+  const loadBotInviteCode = async (botId, requestId = rosterRequestRef.current) => {
+    setInviteReadStates((previous) => ({ ...previous, [botId]: 'loading' }));
+    try {
+      const invite = await api.getBotInviteCode(botId);
+      if (requestId !== rosterRequestRef.current) return;
+      setGeneratedInviteCodes((previous) => {
+        const next = { ...previous };
+        if (invite?.code) next[botId] = invite.code;
+        else delete next[botId];
+        return next;
+      });
+      setInviteReadStates((previous) => ({ ...previous, [botId]: 'ready' }));
+    } catch {
+      if (requestId !== rosterRequestRef.current) return;
+      setInviteReadStates((previous) => ({ ...previous, [botId]: 'error' }));
+    }
+  };
+
   const loadBots = async ({ silent = false } = {}) => {
+    const requestId = ++rosterRequestRef.current;
     const cloudRequest = api.getCloudWorkers
       ? api.getCloudWorkers().then((data) => ({ data })).catch((requestError) => ({ requestError }))
       : Promise.resolve({ data: {} });
     let manageableBots = null;
     try {
       if (!silent) setLoading(true);
+      setRosterError(false);
       const [botsRes, agentsRes, friendsRes] = await Promise.all([
         api.getMyBots().catch((err) => {
           throw err;
@@ -1170,27 +1202,20 @@ export default function AgentStoreModal({
         api.getAgents ? api.getAgents().catch(() => ({})) : Promise.resolve({}),
         api.getFriends ? api.getFriends().catch(() => ({})) : Promise.resolve({}),
       ]);
+      if (requestId !== rosterRequestRef.current) return;
       manageableBots = mergeManageableBots(
         botsRes.bots || [],
         agentsRes.agents || [],
         friendsRes.friends || [],
       );
-      // Core assistant data is entirely local to CatsCompany and should render
-      // without waiting for cloud-provider reconciliation.
+      // The roster must not wait for per-assistant invite codes or provider
+      // reconciliation. A slow optional request should only affect its own row.
       setBots(manageableBots);
       if (api.getBotInviteCode) {
-        const inviteEntries = await Promise.all(manageableBots.filter(isOwnedBot).map(async (bot) => {
+        manageableBots.filter(isOwnedBot).forEach((bot) => {
           const botId = bot?.id || bot?.uid;
-          if (!botId) return null;
-          try {
-            const invite = await api.getBotInviteCode(botId);
-            return invite?.code ? [String(botId), invite.code] : null;
-          } catch {
-            return null;
-          }
-        }));
-        const currentCodes = Object.fromEntries(inviteEntries.filter(Boolean));
-        setGeneratedInviteCodes(currentCodes);
+          if (botId) void loadBotInviteCode(botId, requestId);
+        });
       }
 
       if (
@@ -1210,13 +1235,16 @@ export default function AgentStoreModal({
         }
       }
     } catch (e) {
+      if (requestId !== rosterRequestRef.current) return;
+      setRosterError(true);
       console.error('Load bots error:', e);
     } finally {
-      if (!silent) setLoading(false);
+      if (requestId === rosterRequestRef.current) setLoading(false);
     }
 
     if (!manageableBots) return;
     const { data: cloudRes = {}, requestError } = await cloudRequest;
+    if (requestId !== rosterRequestRef.current) return;
     if (requestError) {
       setCloudQuotaError(true);
       return;
@@ -1225,6 +1253,9 @@ export default function AgentStoreModal({
     // disabled" (quota.enabled === false) so the UI does not mislead.
     setCloudQuotaError(!cloudRes.quota && !cloudRes.workers);
     setCloudQuota(cloudRes.quota || null);
+    // A queued credit has no worker yet, so it must travel separately: without
+    // it the panel shows an unused quota and the buyer clicks create again.
+    setCloudQueue(cloudRes.queue || null);
     // Enrich provider-only facts after the roster is already visible. Online
     // presence and the application version continue to come from CatsCompany.
     setBots((current) => mergeCloudWorkerFacts(current, cloudRes.workers || []));
@@ -1251,6 +1282,7 @@ export default function AgentStoreModal({
         if (!active) return;
         setCloudQuotaError(false);
         setCloudQuota(cloudRes?.quota || null);
+        setCloudQueue(cloudRes?.queue || null);
         setBots((current) => mergeCloudWorkerFacts(current, cloudRes?.workers || []));
         const running = (cloudRes?.workers || []).find((worker) => worker?.operation_status === 'running');
         if (running?.tenant_name) {
@@ -1347,6 +1379,18 @@ export default function AgentStoreModal({
         visibility: 'public',
       };
 
+      // A full shared fleet answers 202 with no bot: the paid slot is queued and
+      // starts on its own once a peer is destroyed. Rendering the success screen
+      // here would hand out a bot that does not exist, and re-submitting would
+      // queue a second machine.
+      if (isManaged && result?.code === 'cloud_worker_capacity_queued') {
+        await loadBots({ silent: true }).catch(() => {});
+        if (onBotsChanged) onBotsChanged();
+        feedback.notify({ tone: 'info', message: cloudWorkerCreateMessage({ data: result }) });
+        setTab('create');
+        return;
+      }
+
       // [CRITICAL HANDSHAKE]: Automatically force a bidirectional subscription so the bot 
       // instantly appears in both sides' Contact lists, avoiding ghost P2P topics.
       if (!isManaged && fullResult.api_key && user?.uid) {
@@ -1410,6 +1454,14 @@ export default function AgentStoreModal({
     try {
       setError('');
       const created = await api.createCloudWorker({ username, display_name: trimmed });
+      // 202 = the tier pool is full and the paid slot is queued. There is no bot
+      // yet, so the roster upsert and the "已创建" toast would both be lies.
+      if (created?.code === 'cloud_worker_capacity_queued') {
+        await loadBots({ silent: true }).catch(() => {});
+        if (onBotsChanged) onBotsChanged();
+        feedback.notify({ tone: 'info', message: cloudWorkerCreateMessage({ data: created }) });
+        return;
+      }
       // Show the new worker immediately (panel roster + chat banner) instead
       // of waiting for the next roster refresh; the cloud panel keeps polling
       // it until the runtime reports connected.
@@ -1425,6 +1477,14 @@ export default function AgentStoreModal({
     } catch (e) {
       // 按后端错误码区分提示；具体技术原因（如云资源配额）只进后端日志
       const message = cloudWorkerCreateMessage(e);
+      if (e?.data?.code === 'cloud_worker_capacity_queued') {
+        // Paid and queued, not failed: keep it out of the red error slot so the
+        // buyer does not queue a second machine by clicking create again.
+        await loadBots({ silent: true }).catch(() => {});
+        if (onBotsChanged) onBotsChanged();
+        feedback.notify({ tone: 'info', message });
+        return;
+      }
       setError(message);
       throw new Error(message);
     }
@@ -1442,7 +1502,7 @@ export default function AgentStoreModal({
 
   const handleGenerateBotInviteCode = async (bot, { regenerate = false } = {}) => {
     const botId = bot?.id || bot?.uid;
-    if (!botId) return;
+    if (!botId || inviteReadStates[botId] === 'loading' || inviteReadStates[botId] === 'error') return;
     const existingCode = generatedInviteCodes[botId];
     if (existingCode && !regenerate) {
       await handleCopy(`invite_${botId}`, existingCode);
@@ -1729,7 +1789,7 @@ export default function AgentStoreModal({
         <div className="oc-modal-header cc-agent-manager-header">
           <div className="cc-agent-manager-nav">
             {(tab === 'manage' || tab === 'create') && <button type="button" className="cc-agent-manager-header-action" aria-label="返回助手列表" disabled={manageSaving || isSubmitting} onClick={() => requestLeave('hub')}><ArrowLeft size={16} aria-hidden="true" /></button>}
-            <h3 id="cc-agent-manager-title" className="cc-agent-manager-title">
+            <h3 id="cc-agent-manager-title" tabIndex={-1} className="cc-agent-manager-title cc-dialog-reading-focus">
               {tab !== 'create' && <Bot size={22} strokeWidth={1.8} />}
               <span>{tab === 'manage' && editingBot ? <><span className="cc-agent-title-context">管理助手</span><span className="cc-agent-title-separator"> · </span><span className="cc-agent-title-name" title={editingBot.newDisplayName || editingBot.display_name}>{editingBot.newDisplayName || editingBot.display_name}</span></> : tab === 'create' ? '创建 AI 助手' : 'AI 助手管理'}</span>
             </h3>
@@ -1765,6 +1825,7 @@ export default function AgentStoreModal({
                 <CloudWorkerPanel
                   quota={cloudQuota}
                   quotaError={cloudQuotaError}
+                  queue={cloudQueue}
                   workers={cloudWorkers}
                   images={cloudImages}
                   imagesByWorker={cloudImagesByWorker}
@@ -1781,9 +1842,16 @@ export default function AgentStoreModal({
                 />
               </div>
             ) : (
-            <div className="cc-agent-hub">
+            <div className="cc-agent-hub" data-loading-region aria-busy={loading}>
               {loading ? (
-                <div className="cc-agent-hub-state">加载中...</div>
+                <LoadingState className="cc-agent-hub-state" kind="agents" label="正在加载助手" ellipsis={false} />
+              ) : rosterError && bots.length === 0 ? (
+                <div className="cc-agent-hub-state cc-agent-hub-load-error" role="status">
+                  <span>助手列表暂时加载失败</span>
+                  <button type="button" className="oc-btn oc-btn-default" onClick={() => loadBots()}>
+                    <RefreshCw size={14} aria-hidden="true" />重新加载
+                  </button>
+                </div>
               ) : bots.length === 0 ? (
                 <div className="cc-agent-hub-empty">
                   <button type="button" className="oc-btn cc-agent-empty-action" aria-label="创建新助手" title="创建新助手" onClick={openCreateTab}><Plus size={40} strokeWidth={1.5} aria-hidden="true" /></button>
@@ -1833,6 +1901,9 @@ export default function AgentStoreModal({
                       const botId = bot.id || bot.uid;
                       const owned = isOwnedBot(bot);
                       const inviteCode = generatedInviteCodes[botId];
+                      const inviteReadState = inviteReadStates[botId];
+                      const invitePending = inviteReadState === 'loading';
+                      const inviteReadFailed = inviteReadState === 'error';
                       const inviteCodeCopied = copiedField === `invite_${botId}`;
                       return (
                       <div key={botId} className="v3-agent-card" style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', padding: 16, borderRadius: 12 }}>
@@ -1866,12 +1937,14 @@ export default function AgentStoreModal({
                             <button
                               type="button"
                               className={`oc-btn oc-btn-default cc-agent-card-action cc-agent-card-invite-code${inviteCode ? '' : ' cc-agent-card-generate'}`}
-                              onClick={() => handleGenerateBotInviteCode(bot)}
-                              disabled={generatingInviteCode === botId}
-                              aria-label={inviteCode ? `复制邀请码 ${inviteCode}` : '生成邀请码'}
-                              title={inviteCodeCopied ? '邀请码已复制' : (inviteCode ? '复制当前机器人邀请码' : '生成邀请码')}
+                              onClick={() => inviteReadFailed ? loadBotInviteCode(botId) : handleGenerateBotInviteCode(bot)}
+                              disabled={invitePending || generatingInviteCode === botId}
+                              aria-label={invitePending ? '正在读取邀请码' : inviteReadFailed ? '重试读取邀请码' : inviteCode ? `复制邀请码 ${inviteCode}` : '生成邀请码'}
+                              title={invitePending ? '正在读取邀请码' : inviteReadFailed ? '读取失败，点击重试' : inviteCodeCopied ? '邀请码已复制' : (inviteCode ? '复制当前机器人邀请码' : '生成邀请码')}
                             >
-                              {inviteCode ? (
+                              {invitePending ? (
+                                <><LoaderCircle className="cc-agent-invite-spinner" size={14} aria-hidden="true" />读取中</>
+                              ) : inviteReadFailed ? '重试读取' : inviteCode ? (
                                 <>
                                   <span className="cc-agent-card-invite-value">{inviteCode}</span>
                                   {generatingInviteCode === botId
@@ -1897,7 +1970,7 @@ export default function AgentStoreModal({
                                   });
                                   if (confirmed) handleGenerateBotInviteCode(bot, { regenerate: true });
                                 }}
-                                disabled={generatingInviteCode === botId}
+                                disabled={invitePending || inviteReadFailed || generatingInviteCode === botId}
                                 title="使旧邀请码失效并重新生成"
                               >
                                 重新生成
@@ -1984,6 +2057,7 @@ export default function AgentStoreModal({
               <CloudWorkerPanel
                 quota={cloudQuota}
                 quotaError={cloudQuotaError}
+                queue={cloudQueue}
                 workers={cloudWorkers}
                 images={cloudImages}
                   imagesByWorker={cloudImagesByWorker}

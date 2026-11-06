@@ -370,6 +370,31 @@ func TestBotDefinitionServiceAgentsUpdateAndNormalize(t *testing.T) {
 	}
 }
 
+func TestBotDefinitionServiceAgentsReadbackPreservesDefaultsAndEmpty(t *testing.T) {
+	db := &botDefinitionTestStore{owners: map[int64]int64{43: 7}}
+	models := &botModelConfigTestStore{owners: db.owners, models: map[int64]*types.BotModelConfig{}}
+	handler := NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models))
+	for _, refs := range [][]string{nil, {}, {"codex", "claude"}} {
+		record := &types.BotDefinitionRecord{
+			Definition: types.BotDefinition{Schema: types.BotDefinitionSchema, BotID: "43", Model: types.BotDefinitionModel{Kind: "local"}, ServiceAgents: refs},
+			Exists:     true,
+		}
+		response, err := handler.definitionResponse(7, 43, record, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		definition := response["definition"].(map[string]interface{})
+		got, present := definition["serviceAgents"]
+		if refs == nil {
+			if present {
+				t.Fatal("account defaults became an explicit override")
+			}
+		} else if !present || !reflect.DeepEqual(got, refs) {
+			t.Fatalf("serviceAgents readback=%#v, want %#v", got, refs)
+		}
+	}
+}
+
 func TestBotDefinitionPromptRequiresRevisionAndNormalizesWhitespaceBackup(t *testing.T) {
 	db := &botDefinitionTestStore{
 		owners: map[int64]int64{43: 7},

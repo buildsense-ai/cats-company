@@ -1209,23 +1209,22 @@ describe('ChatListView sidebar sections', () => {
     expect(api.disbandGroup).toHaveBeenCalledWith(88);
   });
 
-  it('copies a friend Agent task from the sidebar and opens its independent history', async () => {
+  it('omits conversation copying and provenance from the task menu', async () => {
     api.getConversations.mockResolvedValue({ conversations: [{
       id: 'grp_88', group_id: 88, name: 'Shared Cloud Task', is_group: true,
       is_agent_task: true, has_bot: true, member_count: 2, agent_ids: [42],
     }] });
     api.getAgents.mockResolvedValue({ agents: [{ uid: 42, relation: 'friend', is_online: true }] });
-    api.forkConversation.mockImplementation(async payload => ({ ...payload, target_topic_id: 'grp_99', state: 'ready' }));
+    api.getConversationFork.mockResolvedValue({ source_topic_id: 'grp_77', target_topic_id: 'grp_88', state: 'ready' });
     await mount();
     await act(async () => Simulate.click(document.querySelector('[aria-label="Shared Cloud Task 更多操作"]')));
-    const action = document.querySelector('[aria-label="复制为新会话 Shared Cloud Task"]');
-    expect(action).toBeTruthy();
-    expect(action.disabled).toBe(false);
-    await act(async () => Simulate.click(action));
-    expect(api.forkConversation).toHaveBeenCalledWith(expect.objectContaining({ source_topic_id: 'grp_88' }), expect.anything());
-    expect(api.createGroup).not.toHaveBeenCalled();
-    await act(async () => Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('打开新会话')).click());
-    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'grp_99', isAgentTask: true }));
+    const menu = document.querySelector('[aria-label="Shared Cloud Task 任务操作"]');
+    expect(menu).toBeTruthy();
+    expect(menu.textContent).not.toContain('复制为新会话');
+    expect(menu.textContent).not.toContain('复制自');
+    expect(menu.querySelector('[aria-label="修改任务名称 Shared Cloud Task"]')).toBeTruthy();
+    expect(menu.querySelector('[aria-label="加入项目 Shared Cloud Task"]')).toBeTruthy();
+    expect(api.getConversationFork).not.toHaveBeenCalled();
   });
 
   it('does not offer sidebar copying for a multi-participant task', async () => {
@@ -1981,6 +1980,124 @@ describe('ChatListView sidebar sections', () => {
     expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
   });
 
+  it.each([false, true])('replaces a premature completion with newer live tool activity (compact=%s)', async (compact) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-20T04:00:04Z'));
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Continuing task', is_bot: true, latest_seq: 10,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'step-run', state: 'completed', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount({ compact });
+    if (compact) await act(async () => Simulate.click(container.querySelector('[aria-label="历史任务"]')));
+    expect(document.querySelector('[aria-label="任务已完成"]')).toBeTruthy();
+    await act(async () => wsHandler({ data: {
+      topic: task.id, from: 'usr42', seq: 11, type: 'tool_use',
+      content: { name: 'exec', input: {} }, metadata: { run_id: 'continuing-run' }, created_at: '2026-07-20T04:00:01Z',
+    } }));
+    const spinner = document.querySelector('[aria-label="任务进行中"] svg');
+    expect(spinner).toBeTruthy();
+    expect(document.querySelector('[aria-label="任务已完成"]')).toBeNull();
+    await act(async () => wsHandler({ data: {
+      topic: task.id, from: 'usr42', seq: 12, type: 'tool_result', content: 'step result',
+      metadata: { run_id: 'continuing-run' }, created_at: '2026-07-20T04:00:01.500Z',
+    } }));
+    expect(document.querySelector('[aria-label="任务进行中"] svg')).toBe(spinner);
+    // Neither an unchanged snapshot nor a late receipt for the old run ends
+    // the new, directly observed execution.
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await act(async () => wsHandler({ task_status: { ...task.task_status, updated_at: '2026-07-20T04:00:02Z' } }));
+    expect(document.querySelector('[aria-label="任务进行中"] svg')).toBe(spinner);
+    await act(async () => wsHandler({ task_status: {
+      ...task.task_status, run_id: 'continuing-run', updated_at: '2026-07-20T04:00:03Z',
+    } }));
+    expect(document.querySelector('[aria-label="任务进行中"]')).toBeNull();
+    expect(document.querySelector('[aria-label="任务已完成"]')).toBeTruthy();
+  });
+
+  it.each(['tool_use', 'thinking', 'process', 'json content', 'json blocks'])('recognizes newer %s steps after completion for the same run', async (kind) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-20T04:00:04Z'));
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Continued steps', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'same-run', state: 'completed', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount();
+    await act(async () => wsHandler({ data: {
+      topic: task.id, from: 'usr42', seq: 11, created_at: '2026-07-20T04:00:01Z',
+      type: 'text', content: kind === 'json content' ? JSON.stringify({ type: 'tool_use', input: {} }) : 'working',
+      content_blocks: kind === 'process' ? [{ type: 'assistant_text' }] : kind === 'json blocks' ? JSON.stringify([{ type: 'tool_use' }]) : kind === 'json content' ? undefined : [{ type: kind }],
+      metadata: { run_id: 'same-run' },
+    } }));
+    expect(container.querySelector('.cc-task-row-status.running svg')).toBeTruthy();
+    await act(async () => wsHandler({ task_status: { ...task.task_status, updated_at: '2026-07-20T04:00:02Z' } }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+  });
+
+  it.each(['old sequence', 'old timestamp', 'reply', 'human', 'missing timestamp', 'late final tool result'])('does not restart completed tasks for %s messages', async (kind) => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Finished task', is_bot: true, latest_seq: 10,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'finished', state: 'completed', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount();
+    await act(async () => wsHandler({ data: {
+      topic: task.id, from: kind === 'human' ? 'usr7' : 'usr42', seq: kind === 'old sequence' ? 10 : 11,
+      type: kind === 'reply' ? 'text' : kind === 'late final tool result' ? 'tool_result' : 'tool_use', content: 'done', metadata: { run_id: 'finished' },
+      ...(kind !== 'missing timestamp' ? { created_at: kind === 'old timestamp' ? '2026-07-20T03:59:59Z' : '2026-07-20T04:00:01Z' } : {}),
+    } }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+  });
+
+  it('settles continued work from its source receipt when the aggregate switches to another run', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-20T04:00:04Z'));
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Multiple runs', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'a', state: 'completed', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount();
+    await act(async () => wsHandler({ data: {
+      topic: task.id, from: 'usr42', seq: 11, type: 'thinking', content: 'working', metadata: { run_id: 'a' }, created_at: '2026-07-20T04:00:01Z',
+    } }));
+    await act(async () => wsHandler({
+      task_status: { ...task.task_status, run_id: 'b', state: 'running', updated_at: '2026-07-20T04:00:02Z' },
+      task_status_source: { ...task.task_status, updated_at: '2026-07-20T04:00:02Z' },
+    }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeTruthy();
+    await act(async () => wsHandler({ task_status: { ...task.task_status, run_id: 'b', updated_at: '2026-07-20T04:00:03Z' } }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+  });
+
+  it('preserves live steps against an earlier-requested snapshot and rejects repeated step sequences', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-20T04:00:04Z'));
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Live step race', is_bot: true, latest_seq: 10,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'a', state: 'completed', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount();
+    let finish;
+    api.getConversations.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    const step = { topic: task.id, from: 'usr42', seq_id: 11, type: 'tool_use', metadata: { run_id: 'a' }, created_at: '2026-07-20T04:00:01Z' };
+    await act(async () => wsHandler({ data: step }));
+    await act(async () => finish({ conversations: [{ ...task, task_status: { ...task.task_status, updated_at: '2026-07-20T04:00:02Z' } }] }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeTruthy();
+    await act(async () => wsHandler({ task_status: { ...task.task_status, updated_at: '2026-07-20T04:00:03Z' } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    // An older replay must not lower the remembered sequence watermark.
+    await act(async () => wsHandler({ data: { ...step, seq_id: 9 } }));
+    await act(async () => wsHandler({ data: { ...step, created_at: '2026-07-20T04:00:04Z' } }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+  });
+
   it('shows an unread completion dot for a completed background task and restores time after opening it', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
@@ -2105,11 +2222,12 @@ describe('ChatListView sidebar sections', () => {
     api.getConversations.mockResolvedValue({ conversations: [task] });
     await mount({ compact });
     if (compact) await act(async () => Simulate.click(container.querySelector('[aria-label="历史任务"]')));
-    expect(document.querySelector('[aria-label="任务进行中"] svg')).toBeTruthy();
+    const spinner = document.querySelector('[aria-label="任务进行中"] svg');
+    expect(spinner).toBeTruthy();
     await act(async () => wsHandler({ task_status: { ...task.task_status, state: 'waiting', updated_at: '2026-07-20T04:01:00Z' } }));
-    expect(document.querySelector('[aria-label="任务等待中"] svg')).toBeTruthy();
+    expect(document.querySelector('[aria-label="任务等待中"] svg')).toBe(spinner);
     await act(async () => wsHandler({ task_status: { ...task.task_status, updated_at: '2026-07-20T04:02:00Z' } }));
-    expect(document.querySelector('[aria-label="任务进行中"] svg')).toBeTruthy();
+    expect(document.querySelector('[aria-label="任务进行中"] svg')).toBe(spinner);
   });
 
   it.each(['completed', null])('does not let an in-flight refresh replace a live spinner with %s', async (state) => {
@@ -2150,6 +2268,50 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => wsHandler({ task_status: { ...task.task_status, updated_at: '2026-07-20T04:01:00Z' } }));
     await act(async () => finishRefresh({ conversations: [{ ...task, task_status: { ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:03:00Z' } }] }));
     expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+  });
+
+  it.each([false, true])('keeps current work when a later refresh returns an older completed run (compact=%s)', async (compact) => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Still working', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'active-run', state: 'running', updated_at: '2026-07-20T04:02:00Z' },
+    };
+    api.getConversations.mockResolvedValueOnce({ conversations: [task] });
+    await mount({ compact });
+    if (compact) await act(async () => Simulate.click(container.querySelector('[aria-label="历史任务"]')));
+    const spinner = document.querySelector('[aria-label="任务进行中"] svg');
+    api.getConversations.mockResolvedValueOnce({ conversations: [{ ...task, task_status: {
+      ...task.task_status, run_id: 'previous-run', state: 'completed', updated_at: '2026-07-20T04:01:00Z',
+    } }] });
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(document.querySelector('[aria-label="任务进行中"] svg')).toBe(spinner);
+    expect(document.querySelector('[aria-label="任务已完成"]')).toBeNull();
+    await act(async () => wsHandler({ task_status: {
+      ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:03:00Z',
+    } }));
+    expect(document.querySelector('[aria-label="任务进行中"]')).toBeNull();
+    expect(document.querySelector('[aria-label="任务已完成"]')).toBeTruthy();
+  });
+
+  it.each(['websocket', 'refresh'])('rejects an older completion within the same millisecond from %s', async (source) => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Precise status', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'new-run', state: 'running', updated_at: '2026-07-20T04:02:00.123456Z' },
+    };
+    api.getConversations.mockResolvedValueOnce({ conversations: [task] });
+    await mount();
+    const oldStatus = { ...task.task_status, run_id: 'old-run', state: 'completed', updated_at: '2026-07-20T04:02:00.123455Z' };
+    if (source === 'websocket') {
+      await act(async () => wsHandler({ task_status: oldStatus }));
+    } else {
+      api.getConversations.mockResolvedValueOnce({ conversations: [{ ...task, task_status: oldStatus }] });
+      await act(async () => window.dispatchEvent(new Event('focus')));
+    }
+    expect(container.querySelector('.cc-task-row-status.running svg')).toBeTruthy();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+    await act(async () => wsHandler({ task_status: {
+      ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:02:00.123457Z',
+    } }));
     expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
   });
 
@@ -2436,6 +2598,32 @@ describe('ChatListView sidebar sections', () => {
     expect(task.textContent).not.toContain('不应继续显示');
   });
 
+  it('rechecks expiry after the status changes and accepts a renewed running lease', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-20T04:00:00Z'));
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Lease task', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'lease-run', state: 'running', updated_at: '2026-07-20T04:00:00Z', expires_at: '2026-07-20T04:00:01Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount();
+    expect(container.querySelector('.cc-task-row-status.running')).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(1100));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    await act(async () => wsHandler({ task_status: {
+      ...task.task_status, updated_at: '2026-07-20T04:00:02Z', expires_at: '2026-07-20T04:00:01.500Z',
+    } }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+    await act(async () => wsHandler({ task_status: {
+      ...task.task_status, updated_at: '2026-07-20T04:00:02.100Z', expires_at: '2026-07-20T04:00:05Z',
+    } }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+  });
+
   it('opens global search from the compact sidebar search icon', async () => {
     await mount({ compact: true });
 
@@ -2683,7 +2871,7 @@ describe('ChatListView sidebar sections', () => {
     expect(document.querySelector('.cc-chat-action-menu')).toBeFalsy();
   });
 
-  it.each([620, 480])('keeps all eight project task actions reachable in a %ipx-high viewport', async (height) => {
+  it.each([620, 480])('keeps all project task actions reachable in a %ipx-high viewport', async (height) => {
     const viewportHeight = window.innerHeight;
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: height });
     api.getConversations.mockResolvedValue({ conversations: [{
@@ -2706,7 +2894,7 @@ describe('ChatListView sidebar sections', () => {
       await act(async () => Simulate.click(trigger));
       const menu = document.querySelector('.cc-sidebar-floating-menu');
       const items = menu.querySelectorAll('[role="menuitem"]');
-      expect(items).toHaveLength(8);
+      expect(items).toHaveLength(7);
       expect(menu.parentElement).toBe(document.body);
       expect(container.querySelector('.cc-chat-action-menu')).toBeNull();
       expect(menu.style.position).toBe('fixed');
@@ -2716,8 +2904,8 @@ describe('ChatListView sidebar sections', () => {
       expect(parseFloat(menu.style.top)).toBeGreaterThanOrEqual(8);
       expect(parseFloat(menu.style.top) + renderedHeight).toBeLessThanOrEqual(height - 8);
       await act(async () => Simulate.keyDown(items[0], { key: 'End' }));
-      expect(document.activeElement).toBe(items[7]);
-      await act(async () => Simulate.keyDown(items[7], { key: 'Escape' }));
+      expect(document.activeElement).toBe(items[6]);
+      await act(async () => Simulate.keyDown(items[6], { key: 'Escape' }));
       expect(document.querySelector('.cc-sidebar-floating-menu')).toBeNull();
       expect(document.activeElement).toBe(trigger);
     } finally {

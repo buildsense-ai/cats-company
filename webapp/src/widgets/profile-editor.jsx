@@ -11,6 +11,7 @@ import useDialogBehavior from '../utils/use-dialog-behavior';
 import {
   ArrowLeft,
   BellRing,
+  BookOpen,
   BrainCircuit,
   Check,
   ChevronRight,
@@ -61,6 +62,7 @@ export default function ProfileEditor({
   onOpenFeedback,
   onOpenDownload,
   onOpenDesktopConnect,
+  onOpenOnboardingGuide,
   onOpenAgentManager,
   onAddAssistant,
   onLogout,
@@ -86,7 +88,7 @@ export default function ProfileEditor({
   const userUID = user?.uid || user?.id || '';
   const currentThemeLabel = THEME_OPTIONS.find(({ id }) => id === theme)?.label || '浅色';
 
-  useDialogBehavior(modalRef, { onClose, returnFocusRef });
+  useDialogBehavior(modalRef, { onClose, returnFocusRef, initialFocus: 'heading' });
 
   useEffect(() => {
     if (window.matchMedia?.('(max-width: 768px)').matches) {
@@ -201,7 +203,7 @@ export default function ProfileEditor({
       >
         <div className="oc-profile-editor-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3 id="profile-editor-dialog-title">设置与资料</h3>
+            <h3 id="profile-editor-dialog-title" tabIndex={-1} className="cc-dialog-reading-focus">设置与资料</h3>
             <p id="profile-editor-dialog-description">资料需保存，外观与使用偏好即时生效。</p>
           </div>
           <button
@@ -282,10 +284,17 @@ export default function ProfileEditor({
               </div>
             </section>
 
-            {(onOpenDesktopConnect || onOpenDownload || onOpenFeedback) && (
+            {(onOpenDesktopConnect || onOpenDownload || onOpenFeedback || onOpenOnboardingGuide) && (
               <section className="oc-profile-mobile-home-section" aria-labelledby="mobile-settings-support-title">
                 <h4 id="mobile-settings-support-title">连接与支持</h4>
                 <div className="oc-profile-mobile-home-card">
+                  {onOpenOnboardingGuide && (
+                    <button type="button" onClick={() => openMobileDestination(onOpenOnboardingGuide)}>
+                      <span className="oc-profile-mobile-home-icon" aria-hidden="true"><BookOpen size={24} /></span>
+                      <span>新手指引</span>
+                      <ChevronRight size={21} aria-hidden="true" />
+                    </button>
+                  )}
                   {onOpenDesktopConnect && (
                     <button type="button" onClick={() => openMobileDestination(onOpenDesktopConnect)}>
                       <span className="oc-profile-mobile-home-icon" aria-hidden="true"><Laptop size={24} /></span>

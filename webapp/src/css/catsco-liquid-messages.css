@@ -112,7 +112,7 @@ html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message-text.cc
 }
 
 html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-reply-new-text {
-  animation: cc-reply-text-arrive 170ms linear both;
+  animation: cc-reply-text-arrive var(--cc-motion-enter) var(--cc-motion-ease) both;
 }
 
 @keyframes cc-reply-text-arrive {

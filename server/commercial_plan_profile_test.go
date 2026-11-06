@@ -22,13 +22,22 @@ func TestResolvePlanDeploymentProfileKeepsExistingOnAbsentField(t *testing.T) {
 	}
 }
 
+// A new plan starts on the shared container fleet.
+//
+// The column default is private_nat, so "no fleet named" used to mean "buy a
+// dedicated ECS instance per buyer" — roughly six times the per-seat
+// infrastructure cost of a shared slot, with no error and nothing in the console
+// to notice. The two mistakes are not symmetric: a buyer who expected a
+// dedicated machine files a ticket, while a fleet of accidentally dedicated
+// machines is just a bill. Dedicated capacity stays available by asking for it
+// explicitly.
 func TestResolvePlanDeploymentProfileDefaultsForNewPlan(t *testing.T) {
 	got, err := resolvePlanDeploymentProfile(nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != types.CloudWorkerPrivateNAT {
-		t.Fatalf("new plan without a fleet must default to the dedicated instance: got %q", got)
+	if got != types.CloudWorkerPackedShared {
+		t.Fatalf("new plan without a fleet must default to the shared fleet: got %q", got)
 	}
 }
 

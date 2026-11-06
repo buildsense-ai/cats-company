@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 async function listen(server) {
@@ -34,7 +35,7 @@ test('demo forwards annotated JSON once and serves the documented parent origin'
   const gatewayPort = await availablePort();
   const directory = await mkdtemp(join(tmpdir(), 'catsco-annotation-demo-'));
   const logPath = join(directory, 'sends.jsonl');
-  const child = spawn(process.execPath, [new URL('./local-gateway-annotations-demo.mjs', import.meta.url).pathname], {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./local-gateway-annotations-demo.mjs', import.meta.url))], {
     env: {
       ...process.env,
       GATEWAY_ANNOTATIONS_PLATFORM_PORT: String(platformPort),
@@ -85,6 +86,10 @@ test('demo forwards annotated JSON once and serves the documented parent origin'
     assert.ok(fixture.includes('src="/_catsco/runtime/annotations-v1.js"'));
     assert.ok(!fixture.includes('CatsCoAnnotations.create'));
     assert.ok(!fixture.includes('__CATSCO_HOST_ORIGIN__'));
+    const renderer = await fetch(`http://127.0.0.1:${gatewayPort}/_catsco/runtime/html2canvas-pro-1.6.7.min.js`);
+    assert.equal(renderer.status, 200);
+    assert.match(renderer.headers.get('content-type'), /javascript/);
+    assert.equal(await renderer.text(), await readFile(new URL('../webapp/public/catsco-runtime/html2canvas-pro-1.6.7.min.js', import.meta.url), 'utf8'));
     const base = `http://127.0.0.1:${platformPort}`;
     const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer demo-a' };
     const launch = async topic => (await (await fetch(`${base}/api/artifacts/launch`, {

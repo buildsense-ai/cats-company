@@ -204,6 +204,8 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
   const [hasLoaded, setHasLoaded] = useState(() => Boolean(cachedView?.hasLoaded));
   const [showLoadingMotion, setShowLoadingMotion] = useState(false);
   const [failedAgentUIDs, setFailedAgentUIDs] = useState([]);
+  const [resolvedAgentCount, setResolvedAgentCount] = useState(0);
+  const [loadingAgentCount, setLoadingAgentCount] = useState(0);
   const [error, setError] = useState('');
   const [selectedApp, setSelectedApp] = useState(null);
   const [openingID, setOpeningID] = useState('');
@@ -293,6 +295,8 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
     setLoading(true);
     setError('');
     setFailedAgentUIDs([]);
+    setResolvedAgentCount(0);
+    setLoadingAgentCount(0);
     try {
       const result = await api.getMyBots();
       if (requestID !== appsRequestRef.current) return;
@@ -301,41 +305,57 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
       accessible.sort((left, right) => agentTitle(left).localeCompare(agentTitle(right), 'zh-CN'));
       setAgents(accessible);
       setSelectedAgentUID((current) => accessible.some((agent) => agentUID(agent) === current) ? current : '');
-      const results = await Promise.allSettled(accessible.map(async (agent) => ({
-        agent,
-        apps: normalizeApps(await api.listArtifactApps(agentUID(agent))),
-      })));
-      if (requestID !== appsRequestRef.current) return;
-      const nextApps = [];
-      const failed = [];
-      const retainFailed = new Set();
-      results.forEach((result, index) => {
-        if (result.status === 'rejected') {
+      setLoadingAgentCount(accessible.length);
+      const accessibleUIDs = new Set(accessible.map(agentUID));
+      // Remove cards for Agents that are no longer accessible as soon as the
+      // fresh roster arrives. Cards for still-loading Agents remain visible.
+      setApps((previous) => previous.filter((app) => accessibleUIDs.has(agentUID(app.sourceAgent))));
+      const loadedUIDs = new Set();
+      const failed = new Set();
+      const replaceAgentApps = (agent, result) => {
+        const uid = agentUID(agent);
+        const seen = new Set();
+        const nextApps = normalizeApps(result).filter(isNewApplication).flatMap((app) => {
+          const key = String(app?.id || app?.url || '');
+          if (!key || seen.has(key)) return [];
+          seen.add(key);
+          return [{ ...app, sourceAgent: agent }];
+        });
+        setApps((previous) => [
+          ...previous.filter((app) => agentUID(app.sourceAgent) !== uid),
+          ...nextApps,
+        ].sort((left, right) => appTimestamp(right) - appTimestamp(left)
+          || appTitle(left).localeCompare(appTitle(right), 'zh-CN')));
+      };
+      const loadAgentApps = async (agent) => {
+        const uid = agentUID(agent);
+        try {
+          const response = await api.listArtifactApps(uid);
+          if (requestID !== appsRequestRef.current) return;
+          replaceAgentApps(agent, response);
+        } catch (reason) {
+          if (requestID !== appsRequestRef.current) return;
           // Agents that only expose the legacy Artifact catalog do not have a
           // new application list. Keep them out of the new page quietly.
-          if (isLegacyApplicationCatalogUnavailable(result.reason)) return;
-          const uid = agentUID(accessible[index]);
-          failed.push(uid);
-          if (![401, 403].includes(Number(result.reason?.status))) retainFailed.add(uid);
-          return;
+          if (isLegacyApplicationCatalogUnavailable(reason)) {
+            setApps((previous) => previous.filter((app) => agentUID(app.sourceAgent) !== uid));
+          } else {
+            failed.add(uid);
+          }
+          if ([401, 403].includes(Number(reason?.status))) {
+            setApps((previous) => previous.filter((app) => agentUID(app.sourceAgent) !== uid));
+          }
+        } finally {
+          if (requestID === appsRequestRef.current) {
+            loadedUIDs.add(uid);
+            setResolvedAgentCount(loadedUIDs.size);
+            setLoadingAgentCount(Math.max(0, accessible.length - loadedUIDs.size));
+            setFailedAgentUIDs([...failed]);
+          }
         }
-        const { agent, apps: agentApps } = result.value;
-        const seen = new Set();
-        agentApps.filter(isNewApplication).forEach((app) => {
-          const key = String(app?.id || app?.url || '');
-          if (!key || seen.has(key)) return;
-          seen.add(key);
-          nextApps.push({ ...app, sourceAgent: agent });
-        });
-      });
-      // A transient failure must not erase a previously loaded Agent's cards.
-      // Successful empty responses and Agents removed from the roster still
-      // clear their old entries, so this cannot retain revoked catalogues.
-      setApps((previous) => [
-        ...nextApps,
-        ...previous.filter((app) => retainFailed.has(agentUID(app.sourceAgent))),
-      ]);
-      setFailedAgentUIDs(failed);
+      };
+      await Promise.all(accessible.map(loadAgentApps));
+      if (requestID !== appsRequestRef.current) return;
     } catch (error) {
       if (requestID !== appsRequestRef.current) return;
       if ([401, 403].includes(Number(error?.status))) {
@@ -343,6 +363,8 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
         setApps([]);
         setSelectedAgentUID('');
       }
+      setResolvedAgentCount(0);
+      setLoadingAgentCount(0);
       setError('Agent 列表暂时无法加载，请稍后重试。');
     } finally {
       if (requestID === appsRequestRef.current) {
@@ -380,6 +402,9 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
           : '部分 Agent 的应用加载失败，已保留可用的应用。'
         : '共享应用暂时无法加载，请重试。')
       : '');
+  const loadingSummary = loading && loadingAgentCount > 0
+    ? `已加载 ${resolvedAgentCount} 个 Agent，正在读取 ${loadingAgentCount} 个`
+    : '';
 
   const { requestDetach, dialog: detachDialog } = useDetachSessionConfirm();
 
@@ -484,8 +509,9 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
         </div>
       </div>
 
-      {loading && <span className="cc-apps-loading-announcement" role="status">正在加载共享应用…</span>}
-      {loading && !hasLoaded && <div className="cc-apps-initial-loading">{showLoadingMotion && <LoadingState kind="apps" label="正在读取应用" announce={false} />}</div>}
+      {loading && <span className="cc-apps-loading-announcement" role="status">{loadingSummary || '正在加载共享应用…'}</span>}
+      {loading && loadingSummary && <div className="cc-apps-loading-progress" aria-hidden="true">{loadingSummary}</div>}
+      {loading && !hasLoaded && resolvedAgentCount === 0 && <div className="cc-apps-initial-loading">{showLoadingMotion && <LoadingState kind="apps" label="正在读取应用" announce={false} />}</div>}
       {!loading && listError && <div className="cc-apps-state is-error" role="alert"><span>{listError}</span><button type="button" onClick={loadApps}>重试</button></div>}
       {!loading && !listError && visibleApps.length === 0 && <div className="cc-apps-state is-empty"><AppWindow size={24} aria-hidden="true" /><strong>{emptyTitle}</strong><span>{emptyCopy}</span></div>}
       {visibleApps.length > 0 && (

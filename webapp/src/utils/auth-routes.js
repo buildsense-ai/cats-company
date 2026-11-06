@@ -143,6 +143,15 @@ export function navigateBrowserPath(path, { replace = false } = {}) {
   const browserWindow = globalThis.window;
   if (!browserWindow?.history || !browserWindow.location) return false;
   const destination = safeRelativeBrowserPath(path);
+  // artifact-auth.html is a static handshake document. Pushing it through the
+  // SPA history leaves React mounted and renders the normal workspace route;
+  // a real document navigation is required to execute the handshake script.
+  if (isStaticArtifactAuthPath(destination)) {
+    const navigate = replace ? browserWindow.location.replace : browserWindow.location.assign;
+    if (typeof navigate !== 'function') return false;
+    navigate.call(browserWindow.location, destination);
+    return true;
+  }
   const current = relativePathFromLocation(browserWindow.location);
   if (destination === current) return false;
   browserWindow.history[replace ? 'replaceState' : 'pushState'](null, '', destination);
@@ -153,4 +162,8 @@ export function navigateBrowserPath(path, { replace = false } = {}) {
       : new Event('popstate'),
   );
   return true;
+}
+
+export function isStaticArtifactAuthPath(path) {
+  return new URL(safeRelativeBrowserPath(path), ROUTE_ORIGIN).pathname === '/artifact-auth.html';
 }

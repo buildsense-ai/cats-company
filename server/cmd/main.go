@@ -11,12 +11,13 @@ import (
 
 // Config holds the server configuration.
 type Config struct {
-	Listen    string        `json:"listen"`
-	GRPCPort  string        `json:"grpc_port"`
-	Database  DBConfig      `json:"database"`
-	WebSocket WSConfig      `json:"websocket"`
-	Static    StaticConfig  `json:"static"`
-	Runtime   RuntimeConfig `json:"runtime"`
+	Listen              string                    `json:"listen"`
+	GRPCPort            string                    `json:"grpc_port"`
+	Database            DBConfig                  `json:"database"`
+	WebSocket           WSConfig                  `json:"websocket"`
+	Static              StaticConfig              `json:"static"`
+	Runtime             RuntimeConfig             `json:"runtime"`
+	DeviceAuthorization DeviceAuthorizationConfig `json:"device_authorization"`
 }
 
 type DBConfig struct {
@@ -40,6 +41,16 @@ type RuntimeConfig struct {
 	Store          string `json:"store"`
 	RedisURL       string `json:"redis_url"`
 	RedisKeyPrefix string `json:"redis_key_prefix"`
+	RequireDurable bool   `json:"require_durable"`
+}
+
+// Independent of Runtime: selecting Redis here must not select Redis routing,
+// body leases, attention, pairing or pending RPC storage.
+type DeviceAuthorizationConfig struct {
+	Store          string `json:"store"`
+	RedisURL       string `json:"redis_url"`
+	RedisKeyPrefix string `json:"redis_key_prefix"`
+	RequireDurable bool   `json:"require_durable"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -86,6 +97,16 @@ func applyEnvOverrides(cfg *Config) {
 	applyEnvString("OC_RUNTIME_STORE", &cfg.Runtime.Store)
 	applyEnvString("OC_REDIS_URL", &cfg.Runtime.RedisURL)
 	applyEnvString("OC_REDIS_KEY_PREFIX", &cfg.Runtime.RedisKeyPrefix)
+	if raw := strings.TrimSpace(os.Getenv("OC_RUNTIME_REQUIRE_DURABLE")); raw != "" {
+		// Invalid nonempty values must not accidentally disable this safety gate.
+		cfg.Runtime.RequireDurable = raw != "0" && !strings.EqualFold(raw, "false")
+	}
+	applyEnvString("OC_DEVICE_AUTH_STORE", &cfg.DeviceAuthorization.Store)
+	applyEnvString("OC_DEVICE_AUTH_REDIS_URL", &cfg.DeviceAuthorization.RedisURL)
+	applyEnvString("OC_DEVICE_AUTH_REDIS_KEY_PREFIX", &cfg.DeviceAuthorization.RedisKeyPrefix)
+	if raw := strings.TrimSpace(os.Getenv("OC_DEVICE_AUTH_REQUIRE_DURABLE")); raw != "" {
+		cfg.DeviceAuthorization.RequireDurable = raw != "0" && !strings.EqualFold(raw, "false")
+	}
 }
 
 func applyEnvInt(name string, target *int) {

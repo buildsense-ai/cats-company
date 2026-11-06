@@ -35,5 +35,6 @@
 .cc-knowledge-wiki-state.error { color: var(--v3-text-name, #f5f5f5); text-align: center; }
 .cc-knowledge-wiki-state.error p { color: var(--v3-text-muted, #a0a0a0); margin: 8px 0; }
 .cc-knowledge-wiki-empty { color: var(--v3-text-muted, #a0a0a0); }
-.spin { animation: cc-knowledge-spin 1s linear infinite; }
+.spin { animation: cc-knowledge-spin var(--cc-control-spin-cycle, 900ms) linear infinite; }
 @keyframes cc-knowledge-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }

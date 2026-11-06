@@ -233,7 +233,7 @@
   color: var(--cc-error-text, #b42318);
 }
 
-.cc-spin { animation: cc-search-spin 0.9s linear infinite; }
+.cc-spin { animation: cc-search-spin var(--cc-control-spin-cycle, 900ms) linear infinite; }
 @keyframes cc-search-spin { to { transform: rotate(360deg); } }
 
 .cc-global-search-result {

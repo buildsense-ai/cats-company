@@ -14,6 +14,11 @@
 # 凭据：CTYUN_AK/CTYUN_SK（ctyun-cli 环境变量或 ~/.ctyun-cli.yaml）
 # 云环境：CTYUN_WORKER_REGION_ID / CTYUN_WORKER_PROJECT_ID（实例所在项目）/
 #         CTYUN_IMAGE_PROJECT_ID（bake 镜像所在项目，必须显式配置）
+#
+# 多地域：一个部署可能横跨两个地域（早期实例建在 CTYUN_WORKER_REGION_ID，后来的
+# 迁移实例把目标地域写进了自己的 deployment.json）。只查环境变量那一个地域，会把
+# 另一批在线实例全部报告为缺席，而控制面把"没有这一行"当作 missing。
+# 所以查询集合 = 环境变量地域 ∪ 每个租户 snapshot 里记录的地域。
 set -Eeuo pipefail
 
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
@@ -114,54 +119,100 @@ ctyun() {
   printf '%s' "$raw"
 }
 
+# --- 0. 需要查询的 (region, project) 集合 ---
+# 默认地域来自环境变量；每个租户的 deployment.json 记录着它**创建时**的地域
+# （迁移过的实例只在这里留痕）。两者取并集，两批机器都能查到。
+#
+# 只信任形状合法的值：region/project 都必须是 [A-Za-z0-9_-]（天翼云的 projectID
+# 是十六进制串，不能按数字校验，否则会被 "修正" 成 0 从而查错项目）。
+# 软链接一律跳过：deployment.json 是安全边界上的输入，不让它指向任意文件。
+declare -a REGION_PAIRS=()
+_seen_region_pairs=" "
+add_region_pair() {
+  local r="${1:-}" p="${2:-0}"
+  [[ -n "$r" ]] || return 0
+  [[ "$r" =~ ^[A-Za-z0-9_-]+$ ]] || return 0
+  [[ "$p" =~ ^[A-Za-z0-9_-]+$ ]] || p=0
+  case "$_seen_region_pairs" in *" $r:$p "*) return 0 ;; esac
+  _seen_region_pairs="$_seen_region_pairs$r:$p "
+  REGION_PAIRS+=("$r:$p")
+}
+
+add_region_pair "$REGION_ID" "$PROJECT_ID"
+while IFS=$'\t' read -r _snap_region _snap_project; do
+  add_region_pair "$_snap_region" "$_snap_project"
+done < <(
+  for _f in "$STATE_ROOT"/*/deployment.json; do
+    [[ -f "$_f" && ! -L "$_f" ]] || continue
+    jq -r '[.env.CTYUN_WORKER_REGION_ID // "", .env.CTYUN_WORKER_PROJECT_ID // "0"] | @tsv' \
+      "$_f" 2>/dev/null || true
+  done | sort -u
+)
+
+if (( ${#REGION_PAIRS[@]} == 0 )); then
+  echo "error: CTYUN_WORKER_REGION_ID is required" >&2
+  exit 2
+fi
+
 # --- 1. 拉取全部 worker 实例（instanceName 以 worker- 开头） ---
 # ListEcsInstances 支持分页；按名称过滤后仍可能跨页，翻页到 totalPage。
+#
+# 查询的地域来自 step 0：环境变量 + 每个租户 deployment.json。任一地域查询失败
+# 都整体失败（fail-closed）——控制面把缺席当成 missing，容忍部分失败会让一次
+# 地域抖动把在线机器标成不存在，进而触发错误的容量判断。
 instance_rows=""
-page=1
-max_pages=20
-while :; do
-  resp="$(ctyun ecs ListEcsInstances \
-    --regionID "$REGION_ID" \
-    --projectID "$PROJECT_ID" \
-    --pageNo "$page" \
-    --pageSize 100)"
-  instance_rows="${instance_rows}$(jq -r '
-    .returnObj.results[]?
-    | select(.instanceName | startswith("worker-"))
-    | [
-        .instanceName,
-        (.instanceStatus // ""),
-        (.image.imageID // ""),
-        (.fixedIPList[0] // .privateIP // ""),
-        (.floatingIP // .publicIP // "")
-      ]
-    | @tsv
-  ' <<<"$resp" 2>/dev/null | tr -d '\r' || true)"
-  instance_rows+=$'\n'
+for _pair in "${REGION_PAIRS[@]}"; do
+  query_region="${_pair%%:*}"
+  query_project="${_pair##*:}"
+  page=1
+  max_pages=20
+  while :; do
+    resp="$(ctyun ecs ListEcsInstances \
+      --regionID "$query_region" \
+      --projectID "$query_project" \
+      --pageNo "$page" \
+      --pageSize 100)"
+    instance_rows="${instance_rows}$(jq -r '
+      .returnObj.results[]?
+      | select(.instanceName | startswith("worker-"))
+      | [
+          .instanceName,
+          (.instanceStatus // ""),
+          (.image.imageID // ""),
+          (.fixedIPList[0] // .privateIP // ""),
+          (.floatingIP // .publicIP // "")
+        ]
+      | @tsv
+    ' <<<"$resp" 2>/dev/null | tr -d '\r' || true)"
+    instance_rows+=$'\n'
 
-  total_page="$(jq -r '.returnObj.totalPage // 1' <<<"$resp")"
-  page=$((page + 1))
-  if [[ $page -gt $((max_pages + 1)) ]]; then
-    echo "error: instance pagination exceeded $max_pages pages" >&2
-    exit 1
-  fi
-  if [[ $page -gt "$total_page" ]]; then
-    break
-  fi
+    total_page="$(jq -r '.returnObj.totalPage // 1' <<<"$resp")"
+    page=$((page + 1))
+    if [[ $page -gt $((max_pages + 1)) ]]; then
+      echo "error: instance pagination exceeded $max_pages pages (region $query_region)" >&2
+      exit 1
+    fi
+    if [[ $page -gt "$total_page" ]]; then
+      break
+    fi
+  done
 done
 
 # --- 2. bake 镜像 imageID → version 映射 ---
 # list-worker-images.sh 输出 TSV：imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status
+# 每个地域各查一次：实例可能建在镜像所在地域之外，imageID 只有在同一地域的
+# 镜像列表里才查得到，否则版本列会整片变空。
 LIST_IMAGES_CMD="$(command -v list-worker-images.sh || true)"
 [[ -n "$LIST_IMAGES_CMD" ]] || LIST_IMAGES_CMD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/list-worker-images.sh"
-remaining="$(remaining_budget || true)"
-if [[ -n "$remaining" ]]; then
-  RAW_IMAGES="$(timeout -s TERM -k 5 "${remaining}s" "$LIST_IMAGES_CMD" 2>/dev/null || true)"
-else
-  RAW_IMAGES=""
-fi
-TRIMMED_IMAGES="$(printf '%s' "$RAW_IMAGES" | tr -d '\r' || true)"
-version_map="$(printf '%s' "$TRIMMED_IMAGES" | awk -F'\t' '{ print $1 "\t" $3 }' || true)"
+version_map=""
+for _pair in "${REGION_PAIRS[@]}"; do
+  remaining="$(remaining_budget || true)"
+  [[ -n "$remaining" ]] || break
+  RAW_IMAGES="$(CTYUN_WORKER_REGION_ID="${_pair%%:*}" CTYUN_WORKER_PROJECT_ID="${_pair##*:}" \
+    timeout -s TERM -k 5 "${remaining}s" "$LIST_IMAGES_CMD" 2>/dev/null || true)"
+  TRIMMED_IMAGES="$(printf '%s' "$RAW_IMAGES" | tr -d '\r' || true)"
+  version_map="${version_map}$(printf '%s' "$TRIMMED_IMAGES" | awk -F'\t' 'NF { print $1 "\t" $3 }' || true)"$'\n'
+done
 
 # --- 3. 关联版本并输出 TSV ---
 # bash 逐行处理（awk 对行尾连续空字段的行为在不同实现间不一致，

@@ -206,6 +206,16 @@ the confirmed application. A newer connection generation on
 the same body/installation is allowed before dispatch; changing the route during
 the operation fails closed. The original entry and capture are never rewritten.
 
+Repair-model source checks use a separate
+`Hub.publicationRepairTaskSourceVerifier(actor)` port. This path does not use a
+DescriptionApplication as repair authority: before dispatch and after each
+Runtime response it calls `GetSkillHubPublicationRepairExecutionTask` with the
+exact task lease, requires the task to remain current and unfinished, and
+compares the full task snapshot. The task's original receipt/entry and capture
+must still match the routed Runtime source. A completed, expired, reclaimed or
+otherwise changed lease fails closed. This verifier is currently an internal
+port only; no repair worker/model provider is registered or enabled.
+
 This lane is not round-1-only. It proves that the **original live source** still
 matches that original receipt in every round. Repair produces independent
 private candidates; it does not overwrite the live source. The current draft's
@@ -239,8 +249,8 @@ missing record. CatsCo then rechecks the current application/entry, full retaine
 capture, socket, route and capability before returning success. Proof remains
 point-in-time; later state transitions must check again.
 
-There are eight bounded service slots, one in-flight check per application and
-a 25-second outer deadline. Sending is nonblocking; queue pressure returns busy
+There are eight bounded service slots, one in-flight check per publication
+entry and a 25-second outer deadline. Sending is nonblocking; queue pressure returns busy
 without disconnecting the Bot. The WebSocket result callback only compares
 registered-client facts and bounded scalar evidence, then queues one result.
 Database reads run in the waiting service goroutine. Wrong sockets cannot consume
@@ -249,8 +259,9 @@ the result; duplicates and late results cannot replace it. Only correctly bound
 are retryable busy responses; source/security/malformed failures remain closed.
 Upstream error messages are never forwarded.
 
-Verification includes coordinator-port composition, changed authority/capture,
-wrong socket, duplicate/late result, cancellation including the last fence,
+Verification includes coordinator-port composition, changed application or
+task/lease authority/capture, wrong socket, duplicate/late result, cancellation
+including the last fence,
 backpressure, database blocking, caller snapshot isolation and legal reconnect.
 Store-valid round-2/3 applications cover prepared/completed checks, forged capture
 replies and caller evidence that is not retained by the authoritative application.
@@ -259,7 +270,11 @@ XiaoBa merge `062c7cf1b11fa49fdc44466c1cbfe80b041d11c4` and runs real Runtime
 handler/storage checks for normal/malformed metadata, restart, changed/removed
 source, disabled capability, owner switch, transient Bot switch, missing capture
 and mismatched receipt, plus rounds 2/3 with unchanged or changed original source.
-All three suites and thirteen subcases must pass. The runner fails on any skip
+The task/lease suite proves a current unfinished task against the real Runtime,
+then removes the original source and requires a later task check to fail. The
+coordinator-fence suite checks the live Runtime source around dispatch; removing
+it after dispatch grant must fail before the synthetic provider is invoked.
+All five suites and fifteen subcases must pass. The runner fails on any skip
 or missing case and is a required CI dependency. These are real cross-repository handler contracts with
 synthetic CatsCo authority/store and socket; not deployed or paid-model E2E.
 

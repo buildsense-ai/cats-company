@@ -63,10 +63,20 @@ func (h *ConversationHandler) HandleFork(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, 400, map[string]string{"error": "invalid_request"})
 		return
 	}
+	// A negative anchor is meaningless and would read as "no bound" after
+	// normalisation, so reject it instead of copying the whole conversation.
+	if req.UntilMessageID < 0 {
+		writeJSON(w, 400, map[string]string{"error": "invalid_request"})
+		return
+	}
 	// Lookup precedes online/source checks: a lost successful response stays successful.
 	existing, err := db.GetSessionFork(r.Context(), uid, req.RequestID, "")
 	if err == nil {
-		if existing.SourceTopicID != req.SourceTopicID || existing.Name != req.Name {
+		// Bidirectional, matching the store: a bounded retry must match the stored
+		// anchor, and an unbounded retry must not adopt a copy that was bounded.
+		if existing.SourceTopicID != req.SourceTopicID || existing.Name != req.Name ||
+			(req.UntilMessageID > 0 && existing.SourceLastSeq != req.UntilMessageID) ||
+			(req.UntilMessageID == 0 && existing.SourceTurnCount > 0) {
 			writeSessionFork(w, nil, store.ErrSessionForkConflict)
 			return
 		}
@@ -208,6 +218,8 @@ func writeSessionFork(w http.ResponseWriter, f *types.SessionFork, err error) {
 		code, text = 404, err.Error()
 	case errors.Is(err, store.ErrSessionForkForbidden):
 		code, text = 403, err.Error()
+	case errors.Is(err, store.ErrSessionForkAnchor):
+		code, text = 409, err.Error()
 	case errors.Is(err, store.ErrSessionForkConflict), errors.Is(err, store.ErrSessionForkSource):
 		code, text = 409, err.Error()
 	}

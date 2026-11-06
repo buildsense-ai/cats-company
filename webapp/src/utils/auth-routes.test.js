@@ -6,6 +6,7 @@ import {
   isNameOnboardingPathname,
   nameOnboardingPathForNext,
   isAuthenticationPathname,
+  isStaticArtifactAuthPath,
   loginPathForLocation,
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
@@ -115,5 +116,33 @@ describe('authentication routes', () => {
     expect(window.location.pathname).toBe('/');
 
     window.history.replaceState(null, '', initial || '/');
+  });
+
+  it('recognizes the static artifact handshake as a document navigation', () => {
+    expect(isStaticArtifactAuthPath('/artifact-auth.html?app=yunzhun-customer-view')).toBe(true);
+    expect(isStaticArtifactAuthPath('/artifact-auth.html')).toBe(true);
+    expect(isStaticArtifactAuthPath('/')).toBe(false);
+  });
+
+  it('uses a real document navigation for the static artifact handshake', () => {
+    const fakeWindow = {
+      history: {},
+      location: {
+        pathname: '/',
+        search: '',
+        hash: '',
+        assign: vi.fn(),
+        replace: vi.fn(),
+      },
+    };
+    vi.stubGlobal('window', fakeWindow);
+
+    expect(navigateBrowserPath('/artifact-auth.html?app=yunzhun-customer-view')).toBe(true);
+    expect(fakeWindow.location.assign).toHaveBeenCalledWith('/artifact-auth.html?app=yunzhun-customer-view');
+    expect(fakeWindow.location.replace).not.toHaveBeenCalled();
+
+    expect(navigateBrowserPath('/artifact-auth.html?app=yunzhun-customer-view', { replace: true })).toBe(true);
+    expect(fakeWindow.location.replace).toHaveBeenCalledWith('/artifact-auth.html?app=yunzhun-customer-view');
+    vi.unstubAllGlobals();
   });
 });

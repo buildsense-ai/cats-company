@@ -108,6 +108,12 @@ type CommercialPaymentHandlerOptions struct {
 	// RenewCloudWorkers: provisioning takes minutes and must never delay or
 	// roll back a confirmed payment.
 	EnsureCloudWorker func(uid int64)
+	// SyncCloudWorkerPlan runs after an official paid plan is fulfilled and the
+	// package carries a shared-fleet tier. Fulfilment only extends the paid
+	// window; without this hook the container keeps the resources of the tier
+	// it was created with, so an upgrade pays for nothing. Asynchronous and
+	// best-effort, like the other two hooks.
+	SyncCloudWorkerPlan func(uid int64, tier string)
 }
 
 type CommercialPaymentHandler struct {
@@ -121,8 +127,12 @@ type CommercialPaymentHandler struct {
 	syncer            *CommercialRelaySyncer
 	renewCloudWorkers func(uid int64) *types.CloudWorkerRenewReport
 	ensureCloudWorker func(uid int64)
-	queryMu           sync.Mutex
-	nextQueries       map[string]time.Time
+	// syncCloudWorkerPlan pushes the package's shared-fleet tier to the packed
+	// container so an upgrade actually buys more memory/CPU/disk. Optional;
+	// nil keeps tier changes as a database-only fact (old behaviour).
+	syncCloudWorkerPlan func(uid int64, tier string)
+	queryMu             sync.Mutex
+	nextQueries         map[string]time.Time
 }
 
 const (
@@ -139,17 +149,18 @@ type commercialPaymentChannel struct {
 
 func NewCommercialPaymentHandler(store CommercialPaymentStore, opts CommercialPaymentHandlerOptions) *CommercialPaymentHandler {
 	h := &CommercialPaymentHandler{
-		store:             store,
-		publicEnabled:     opts.PublicEnabled,
-		testUIDs:          copyCommercialUIDSet(opts.TestUIDs),
-		testPayments:      copyCommercialUIDSet(opts.TestPayments),
-		trialPlanSlug:     strings.TrimSpace(opts.TrialPlanSlug),
-		providers:         map[string]CommercialPaymentProvider{},
-		saleChannels:      map[string]bool{},
-		syncer:            opts.Syncer,
-		renewCloudWorkers: opts.RenewCloudWorkers,
-		ensureCloudWorker: opts.EnsureCloudWorker,
-		nextQueries:       map[string]time.Time{},
+		store:               store,
+		publicEnabled:       opts.PublicEnabled,
+		testUIDs:            copyCommercialUIDSet(opts.TestUIDs),
+		testPayments:        copyCommercialUIDSet(opts.TestPayments),
+		trialPlanSlug:       strings.TrimSpace(opts.TrialPlanSlug),
+		providers:           map[string]CommercialPaymentProvider{},
+		saleChannels:        map[string]bool{},
+		syncer:              opts.Syncer,
+		renewCloudWorkers:   opts.RenewCloudWorkers,
+		ensureCloudWorker:   opts.EnsureCloudWorker,
+		syncCloudWorkerPlan: opts.SyncCloudWorkerPlan,
+		nextQueries:         map[string]time.Time{},
 	}
 	for _, provider := range opts.Providers {
 		if provider == nil || strings.TrimSpace(provider.Channel()) == "" {
@@ -195,10 +206,11 @@ func (h *CommercialPaymentHandler) fulfillCommercialOrder(orderNo string, confir
 	if err != nil || !changed || fulfilled == nil {
 		return fulfilled, changed, err
 	}
-	if strings.EqualFold(fulfilled.PlanSlug, "catsco-personal") || strings.EqualFold(fulfilled.PlanSlug, "catsco-pro") {
-		// Payment and the database lifecycle extension are already committed.
-		// Provider renewal remains asynchronous so a Tianyi failure never makes
-		// an Alipay callback fail or rolls back the paid entitlement.
+	if fulfilled.PlanIncludesWorker {
+		// The plan buys a cloud worker; fulfilment has already minted or extended
+		// the entitlement and (inside the same transaction) the provisioning
+		// credit. Both hooks are asynchronous so a Tianyi failure never makes an
+		// Alipay callback fail or rolls back the paid entitlement.
 		if h.renewCloudWorkers != nil {
 			go h.renewCloudWorkers(fulfilled.UID)
 		}
@@ -208,8 +220,53 @@ func (h *CommercialPaymentHandler) fulfillCommercialOrder(orderNo string, confir
 			// worker so renewals and upgrades stay untouched.
 			go h.ensureCloudWorker(fulfilled.UID)
 		}
+		if h.syncCloudWorkerPlan != nil {
+			// An upgrade changes the package tier; fulfilment only extended the
+			// paid window, so the container keeps the resources of the tier it
+			// was created with unless we push the new one. The adapter is
+			// idempotent (an unchanged tier answers "noop"), and the call is
+			// asynchronous for the same reason as the hooks above.
+			if tier := h.cloudWorkerTierForOrder(fulfilled); tier != "" {
+				go h.syncCloudWorkerPlan(fulfilled.UID, tier)
+			}
+		}
 	}
 	return fulfilled, changed, nil
+}
+
+// cloudWorkerTierForOrder resolves the shared-fleet tier the fulfilled order
+// bought. Fulfilment does not carry the tier on the order row, so this reads the
+// plan the order was placed for and falls back to the account's current
+// entitlement (an operator change_plan does not create an order).
+func (h *CommercialPaymentHandler) cloudWorkerTierForOrder(order *types.CommercialOrder) string {
+	if h == nil || h.store == nil || order == nil {
+		return ""
+	}
+	summary, err := h.store.GetCommercialSummary(order.UID)
+	if err != nil || summary == nil {
+		log.Printf("commercial payment: plan tier lookup failed uid=%d order=%s: %v", order.UID, order.OrderNo, err)
+		return ""
+	}
+	if tier := planRuntimeTier(summary.Plans, order.PlanID); tier != "" {
+		return tier
+	}
+	if summary.CurrentEntitlement != nil {
+		return planRuntimeTier(summary.Plans, summary.CurrentEntitlement.PlanID)
+	}
+	return ""
+}
+
+// planRuntimeTier returns the shared-fleet tier of the plan with the given id.
+func planRuntimeTier(plans []*types.CommercialPlan, planID int64) string {
+	if planID <= 0 {
+		return ""
+	}
+	for _, plan := range plans {
+		if plan != nil && plan.ID == planID {
+			return strings.TrimSpace(plan.CloudWorkerRuntimePlan)
+		}
+	}
+	return ""
 }
 
 // ReconcileCommercialOrders performs one bounded payment recovery pass and

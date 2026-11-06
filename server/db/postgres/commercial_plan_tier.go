@@ -8,6 +8,10 @@ import (
 )
 
 const (
+	// Slugs that still carry behaviour of their own. The ladder no longer lives
+	// here: `plan_tier` does. These remain because they name specific packages
+	// the code treats specially (the free baseline, the legacy custom row, and
+	// the two retired packages whose test fixtures still populate them).
 	commercialPersonalPlanSlug = "catsco-personal"
 	commercialProPlanSlug      = "catsco-pro"
 	commercialFreePlanSlug     = "catsco-free"
@@ -21,16 +25,17 @@ const (
 // validation now happens once, in the server package, before the store is
 // called.
 
-func commercialOfficialPlanTier(slug string) int {
-	switch strings.TrimSpace(slug) {
-	case commercialPersonalPlanSlug:
-		return 1
-	case commercialProPlanSlug:
-		return 2
-	default:
-		return 0
-	}
-}
+// commercialOfficialPlanTiers used to live here as a hard-coded slug→rung table.
+// It is gone: the rung is a column on the plan (`plan_tier`), so a package that
+// replaces an old one joins the ladder by setting a number rather than by
+// editing Go. The same slug-keyed shape had already caused trouble in three
+// other places (machine inclusion, fleet, runtime tier); keeping an allow-list
+// here meant a renamed package silently lost its upgrade/refuse-to-buy-down
+// behaviour, and a new package could never join.
+//
+// The rung is ordinal and never displayed. 0 means "not on the ladder" — free,
+// internal and legacy packages.
+var errCommercialPlanTierUnknown = fmt.Errorf("commercial plan is not on the upgrade ladder")
 
 func lockCommercialOfficialPlanTier(tx *sql.Tx, uid int64) error {
 	_, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("commercial_plan_tier:%d", uid))
@@ -42,25 +47,25 @@ func lockCommercialOfficialPlanTier(tx *sql.Tx, uid int64) error {
 
 func activeCommercialOfficialPlanTier(tx *sql.Tx, uid int64, now time.Time) (int, error) {
 	rows, err := tx.Query(`
-		SELECT p.slug
+		SELECT p.plan_tier
 		FROM commercial_entitlements e
 		JOIN commercial_plans p ON p.id = e.plan_id
 		WHERE e.uid = $1 AND e.state = 'active'
 		  AND e.starts_at <= $2
 		  AND (e.expires_at IS NULL OR e.expires_at > $2)
-		  AND p.slug IN ($3, $4)
-		FOR UPDATE OF e`, uid, now, commercialPersonalPlanSlug, commercialProPlanSlug)
+		  AND p.plan_tier > 0
+		FOR UPDATE OF e`, uid, now)
 	if err != nil {
 		return 0, fmt.Errorf("load active commercial plan tier: %w", err)
 	}
 	defer rows.Close()
 	highest := 0
 	for rows.Next() {
-		var slug string
-		if err := rows.Scan(&slug); err != nil {
+		var tier int
+		if err := rows.Scan(&tier); err != nil {
 			return 0, fmt.Errorf("scan active commercial plan tier: %w", err)
 		}
-		if tier := commercialOfficialPlanTier(slug); tier > highest {
+		if tier > highest {
 			highest = tier
 		}
 	}
@@ -70,8 +75,44 @@ func activeCommercialOfficialPlanTier(tx *sql.Tx, uid int64, now time.Time) (int
 	return highest, nil
 }
 
+// planTierForPlanID reads the rung of one plan. A row that vanished, or a plan
+// outside the ladder, reports 0 — which every caller treats as "no upgrade
+// rules apply", the same answer the old slug table gave for an unknown slug.
+func planTierForPlanID(tx *sql.Tx, planID int64) (int, error) {
+	var tier int
+	err := tx.QueryRow(`SELECT plan_tier FROM commercial_plans WHERE id = $1`, planID).Scan(&tier)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read commercial plan tier: %w", err)
+	}
+	return tier, nil
+}
+
+// planTierForSlug is the slug-addressed form, for entry points that arrive with
+// a slug (a checkout request naming the package) rather than an id.
+func planTierForSlug(tx *sql.Tx, slug string) (int, error) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return 0, nil
+	}
+	var tier int
+	err := tx.QueryRow(`SELECT plan_tier FROM commercial_plans WHERE slug = $1`, slug).Scan(&tier)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read commercial plan tier: %w", err)
+	}
+	return tier, nil
+}
+
 func validateCommercialOfficialPlanPurchase(tx *sql.Tx, uid int64, targetSlug string, now time.Time) error {
-	targetTier := commercialOfficialPlanTier(targetSlug)
+	targetTier, err := planTierForSlug(tx, targetSlug)
+	if err != nil {
+		return err
+	}
 	if targetTier == 0 {
 		return nil
 	}
@@ -94,7 +135,11 @@ func validateCommercialOfficialPlanPurchase(tx *sql.Tx, uid int64, targetSlug st
 }
 
 func validateCommercialOfficialOpenOrder(tx *sql.Tx, uid, targetPlanID int64, channel, targetSlug string, now time.Time) error {
-	if commercialOfficialPlanTier(targetSlug) == 0 {
+	targetTier, err := planTierForSlug(tx, targetSlug)
+	if err != nil {
+		return err
+	}
+	if targetTier == 0 {
 		return nil
 	}
 	var conflictExists bool
@@ -105,9 +150,9 @@ func validateCommercialOfficialOpenOrder(tx *sql.Tx, uid, targetPlanID int64, ch
 			JOIN commercial_plans p ON p.id = o.plan_id
 			WHERE o.uid = $1 AND o.status IN ('created','pending')
 			  AND (o.expires_at IS NULL OR o.expires_at > $2)
-			  AND p.slug IN ($3, $4)
-			  AND (o.plan_id <> $5 OR o.channel <> $6)
-		)`, uid, now, commercialPersonalPlanSlug, commercialProPlanSlug, targetPlanID, strings.TrimSpace(channel)).Scan(&conflictExists); err != nil {
+			  AND p.plan_tier > 0
+			  AND (o.plan_id <> $3 OR o.channel <> $4)
+		)`, uid, now, targetPlanID, strings.TrimSpace(channel)).Scan(&conflictExists); err != nil {
 		return fmt.Errorf("check open commercial plan orders: %w", err)
 	}
 	if conflictExists {
@@ -128,8 +173,8 @@ func validateNoOpenCommercialOfficialOrder(tx *sql.Tx, uid int64, now time.Time)
 			JOIN commercial_plans p ON p.id = o.plan_id
 			WHERE o.uid = $1 AND o.status IN ('created','pending')
 			  AND (o.expires_at IS NULL OR o.expires_at > $2)
-			  AND p.slug IN ($3, $4)
-		)`, uid, now, commercialPersonalPlanSlug, commercialProPlanSlug).Scan(&exists); err != nil {
+			  AND p.plan_tier > 0
+		)`, uid, now).Scan(&exists); err != nil {
 		return fmt.Errorf("check open commercial plan orders: %w", err)
 	}
 	if exists {
@@ -139,7 +184,10 @@ func validateNoOpenCommercialOfficialOrder(tx *sql.Tx, uid int64, now time.Time)
 }
 
 func activateCommercialOfficialPlan(tx *sql.Tx, uid int64, targetSlug string, now time.Time) error {
-	targetTier := commercialOfficialPlanTier(targetSlug)
+	targetTier, err := planTierForSlug(tx, targetSlug)
+	if err != nil {
+		return err
+	}
 	if targetTier == 0 {
 		return nil
 	}
@@ -163,8 +211,12 @@ func activateCommercialOfficialPlan(tx *sql.Tx, uid int64, targetSlug string, no
 		return err
 	}
 	if activeTier > 0 {
-		for _, slug := range commercialOfficialPlanSlugsBelow(targetTier) {
-			if err := revokeCommercialPlanTier(tx, uid, slug, targetSlug, now); err != nil {
+		below, err := commercialPlanIDsBelow(tx, targetTier)
+		if err != nil {
+			return err
+		}
+		for _, planID := range below {
+			if err := revokeCommercialPlanTier(tx, uid, planID, targetSlug, now); err != nil {
 				return err
 			}
 		}
@@ -229,14 +281,39 @@ func revokeCommercialFreeBaseline(tx *sql.Tx, uid int64, targetSlug string, now 
 	return nil
 }
 
-func commercialOfficialPlanSlugsBelow(targetTier int) []string {
-	if targetTier > 1 {
-		return []string{commercialPersonalPlanSlug}
+// commercialPlanIDsBelow lists the plans a purchase supersedes.
+//
+// Derived from the `plan_tier` column rather than a Go table so a new entry
+// package cannot keep handing out a credit that the upgrade was supposed to
+// replace. It reads ids, not slugs: a slug is how a buyer addresses a package,
+// not what the package is.
+func commercialPlanIDsBelow(tx *sql.Tx, targetTier int) ([]int64, error) {
+	if targetTier <= 0 {
+		return nil, nil
 	}
-	return nil
+	rows, err := tx.Query(`
+		SELECT id FROM commercial_plans
+		WHERE plan_tier > 0 AND plan_tier < $1
+		ORDER BY plan_tier, id`, targetTier)
+	if err != nil {
+		return nil, fmt.Errorf("list superseded commercial plans: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan superseded commercial plan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read superseded commercial plans: %w", err)
+	}
+	return ids, nil
 }
 
-func revokeCommercialPlanTier(tx *sql.Tx, uid int64, slug, targetSlug string, now time.Time) error {
+func revokeCommercialPlanTier(tx *sql.Tx, uid int64, planID int64, targetSlug string, now time.Time) error {
 	// A paid tier grants one cloud-worker creation credit per order. When a
 	// lower tier is superseded by an immediate upgrade, its still-available
 	// credit must not remain usable alongside the new tier's credit. Credits
@@ -249,38 +326,34 @@ func revokeCommercialPlanTier(tx *sql.Tx, uid int64, slug, targetSlug string, no
 		  AND (c.entitlement_id IN (
 			SELECT e.id
 			FROM commercial_entitlements e
-			JOIN commercial_plans p ON p.id = e.plan_id
 			WHERE e.uid = $1 AND e.source IN ('order', 'invite') AND e.state = 'active'
 			  AND e.starts_at <= $2 AND (e.expires_at IS NULL OR e.expires_at > $2)
-			  AND p.slug = $3
+			  AND e.plan_id = $3
 		  ) OR c.source_ref IN (
 			SELECT 'order:' || e.source_ref
 			FROM commercial_entitlements e
-			JOIN commercial_plans p ON p.id = e.plan_id
 			WHERE e.uid = $1 AND e.source = 'order' AND e.state = 'active'
 			  AND e.starts_at <= $2 AND (e.expires_at IS NULL OR e.expires_at > $2)
-			  AND p.slug = $3
-		  ))`, uid, now, slug); err != nil {
+			  AND e.plan_id = $3
+		  ))`, uid, now, planID); err != nil {
 		return fmt.Errorf("revoke superseded cloud worker credit: %w", err)
 	}
 	if _, err := tx.Exec(`
 		UPDATE commercial_entitlements e
 		SET state = 'revoked',
 		    expires_at = LEAST(COALESCE(e.expires_at, $2), $2)
-		FROM commercial_plans p
-		WHERE e.plan_id = p.id AND e.uid = $1 AND e.state = 'active'
+		WHERE e.uid = $1 AND e.state = 'active'
 		  AND e.starts_at <= $2 AND (e.expires_at IS NULL OR e.expires_at > $2)
-		  AND p.slug = $3`, uid, now, slug); err != nil {
+		  AND e.plan_id = $3`, uid, now, planID); err != nil {
 		return fmt.Errorf("revoke superseded commercial entitlement: %w", err)
 	}
 
 	rows, err := tx.Query(`
 		SELECT g.id, g.model, g.amount_cny
 		FROM commercial_quota_grants g
-		JOIN commercial_plans p ON p.id = g.plan_id
-		WHERE g.uid = $1 AND g.revoked_at IS NULL AND p.slug = $2
+		WHERE g.uid = $1 AND g.revoked_at IS NULL AND g.plan_id = $2
 		  AND g.grant_type IN ('order', 'invite')
-		FOR UPDATE OF g`, uid, slug)
+		FOR UPDATE OF g`, uid, planID)
 	if err != nil {
 		return fmt.Errorf("lock superseded commercial quota grants: %w", err)
 	}
@@ -315,9 +388,8 @@ func revokeCommercialPlanTier(tx *sql.Tx, uid int64, slug, targetSlug string, no
 	if _, err := tx.Exec(`
 		UPDATE commercial_quota_grants g
 		SET revoked_at = $3, expires_at = LEAST(COALESCE(g.expires_at, $3), $3)
-		FROM commercial_plans p
-		WHERE g.plan_id = p.id AND g.uid = $1 AND p.slug = $2 AND g.revoked_at IS NULL
-		  AND g.grant_type IN ('order', 'invite')`, uid, slug, now); err != nil {
+		WHERE g.uid = $1 AND g.plan_id = $2 AND g.revoked_at IS NULL
+		  AND g.grant_type IN ('order', 'invite')`, uid, planID, now); err != nil {
 		return fmt.Errorf("revoke superseded commercial quota grants: %w", err)
 	}
 	return nil

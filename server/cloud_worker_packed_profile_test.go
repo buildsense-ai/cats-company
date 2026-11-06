@@ -84,3 +84,35 @@ func TestPackedSharedRequiresNoPublicProfileConfig(t *testing.T) {
 		t.Fatalf("packed_shared must not depend on the public profile: %v", err)
 	}
 }
+
+// 共享机的调度归集群，机器参数（地域/规格/VPC/子网/安全组/跳板）只属于独享实例。
+// 老实现把账号级的 CTYUN_* 全量拷进共享机部署记录，于是 bot_config.cloud_deployment
+// 里躺着一份"并不存在的机器"，后台总览和导出都得再特判一次把它抹掉。
+func TestPackedSharedDeploymentCarriesNoMachineSettings(t *testing.T) {
+	for _, key := range []string{
+		"CTYUN_WORKER_REGION_ID", "CTYUN_WORKER_PROJECT_ID", "CTYUN_IMAGE_PROJECT_ID",
+		"CTYUN_WORKER_AZ_NAME", "CTYUN_WORKER_FLAVOR_ID", "CTYUN_WORKER_VPC_ID",
+		"CTYUN_WORKER_SUBNET_ID", "CTYUN_WORKER_SECURITY_GROUP_ID",
+		"CTYUN_WORKER_BILLING_MODE", "CTYUN_WORKER_CYCLE_COUNT",
+		"CTYUN_JUMP_IP", "CTYUN_JUMP_PORT", "CTYUN_JUMP_USER", "CTYUN_JUMP_KEY",
+	} {
+		t.Setenv(key, "should-not-leak")
+	}
+	h := &CloudWorkerHandler{}
+	deployment, err := h.deploymentForProfile(types.CloudWorkerPackedShared)
+	if err != nil {
+		t.Fatalf("packed_shared profile rejected: %v", err)
+	}
+	for key, value := range deployment.Env {
+		switch key {
+		case "CATSCO_WORKER_BACKEND", "CTYUN_WORKER_EXT_IP", "CATSCO_WORKER_HTTP_BASE_URL", "CATSCO_WORKER_SERVER_URL":
+			continue
+		}
+		if value != "" {
+			t.Fatalf("shared deployment leaked machine setting %s=%q", key, value)
+		}
+	}
+	if got := deployment.Env["CATSCO_WORKER_BACKEND"]; got != "packed" {
+		t.Fatalf("backend = %q", got)
+	}
+}

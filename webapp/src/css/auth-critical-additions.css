@@ -1,10 +1,4 @@
 /* Auth-entry-only rules that have no workspace equivalent. */
-.oc-auth-logo .catsco-brand-mark {
-  width: 48px;
-  height: 22px;
-  flex: 0 0 auto;
-}
-
 @media (max-width: 640px) {
   .oc-auth-logo {
     width: 100%;
@@ -23,15 +17,6 @@
   font-size: 13px;
 }
 
-.cc-workspace-loading-indicator {
-  width: 16px;
-  height: 16px;
-  border: 2px solid var(--cc-border-strong);
-  border-top-color: var(--cc-accent);
-  border-radius: 50%;
-  animation: cc-workspace-loading-spin 720ms linear infinite;
-}
-
 .cc-workspace-loading-error {
   flex-direction: column;
   text-align: center;
@@ -45,12 +30,4 @@
   width: auto;
   min-width: 120px;
   margin-top: 0;
-}
-
-@keyframes cc-workspace-loading-spin {
-  to { transform: rotate(360deg); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .cc-workspace-loading-indicator { animation: none; }
 }

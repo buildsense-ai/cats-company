@@ -81,10 +81,10 @@
 .artifact-fullscreen-viewer-spinner {
   width: 22px;
   height: 22px;
-  border: 2px solid #d8dcda;
-  border-top-color: #16855b;
+  border: 2px solid color-mix(in srgb, var(--cc-text-secondary, #747b78) 20%, transparent);
+  border-top-color: var(--cc-text-secondary, #747b78);
   border-radius: 50%;
-  animation: artifact-fullscreen-viewer-spin 700ms linear infinite;
+  animation: artifact-fullscreen-viewer-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
 }
 
 @keyframes artifact-fullscreen-viewer-spin {

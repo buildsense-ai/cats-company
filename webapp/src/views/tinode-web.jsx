@@ -24,7 +24,7 @@ import AgentSettingsMenu from '../widgets/agent-settings-menu';
 import FeedbackModal from '../widgets/feedback-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import { hasRoutableDesktopDevice } from '../widgets/catsco-desktop-shared';
-import RelayAccessModal from '../widgets/relay-access-modal';
+import RelayAccessModal from '../widgets/plans/catsco-plans-modal';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import StandaloneCloudArtifactsPanel from '../widgets/standalone-cloud-artifacts-panel';
 import ArtifactQuickPicker from '../widgets/artifact-quick-picker';
@@ -115,7 +115,7 @@ import {
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
-import { AppWindow, Cloud, Download, Frown, KeyRound, Laptop, MoreHorizontal, Package, Plus, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { AppWindow, BookOpen, Cloud, Frown, KeyRound, Laptop, MoreHorizontal, Package, Plus, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import './workspace-styles';
 import CloudArtifactsPreview from '../dev/cloud-artifacts-preview';
 
@@ -534,6 +534,7 @@ function TinodeWebApp({ location }) {
   const [desktopModalMode, setDesktopModalMode] = useState('connect');
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
+  const [openRelayPlanChooser, setOpenRelayPlanChooser] = useState(false);
   const [relayLinkHandled, setRelayLinkHandled] = useState(false);
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
@@ -544,6 +545,7 @@ function TinodeWebApp({ location }) {
     && activeView !== 'apps'
     && !downloadLinkPending
     && !showDesktopConnectModal
+    && !showRelayModal
     && !showWorkspaceOnboardingReplay
     && !workspaceOnboardingDismissedInSession
     && (showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
@@ -554,7 +556,7 @@ function TinodeWebApp({ location }) {
       })));
 
   const openDesktopModal = useCallback((mode = 'connect') => {
-    setDesktopModalMode(mode === 'download' ? 'download' : 'connect');
+    setDesktopModalMode(mode === 'download' ? 'download' : mode === 'computers' ? 'computers' : 'connect');
     setShowDesktopConnectModal(true);
   }, []);
 
@@ -567,12 +569,15 @@ function TinodeWebApp({ location }) {
     // A manual replay owns the onboarding slot for the rest of this session.
     // This prevents a preview/automatic card from resurfacing after it is closed.
     setWorkspaceOnboardingDismissedInSession(true);
+    setShowProfilePopover(false);
+    setShowProfileEditor(false);
     closeDesktopConnectModal();
     setShowWorkspaceOnboardingReplay(true);
   }, [closeDesktopConnectModal]);
 
   const closeRelayModal = useCallback(() => {
     setShowRelayModal(false);
+    setOpenRelayPlanChooser(false);
     setRelayLinkHandled(true);
   }, []);
 
@@ -1685,7 +1690,7 @@ function TinodeWebApp({ location }) {
       agentModelState={displayedAgentModel}
       activeAgent={displayedActiveAgent}
       currentModelName={currentModelName}
-      onDownload={() => openDesktopModal('download')}
+      onDownload={() => openDesktopModal('computers')}
       onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
       topicId={activeTopicId}
       title={activeTopic?.name || taskDraftTitle(taskDraft || persistedTaskContext)}
@@ -1759,6 +1764,7 @@ function TinodeWebApp({ location }) {
         
         <div className="cc-sidebar-content-shell">
           <SidebarContent
+            dialogReturnFocusRef={profileTriggerRef}
             activeTopic={visibleTopicId || null}
             onSelectTopic={(topic) => {
               setTaskDraft(null);
@@ -1834,6 +1840,9 @@ function TinodeWebApp({ location }) {
           >
             <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
               <Frown size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 意见反馈
+            </button>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={openWorkspaceOnboardingReplay}>
+              <BookOpen size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 新手指引
             </button>
             <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); openDesktopModal('connect'); }}>
               <Laptop size={16} style={{marginRight: 10}} /> CatsCo 桌面端
@@ -1997,6 +2006,7 @@ function TinodeWebApp({ location }) {
           onOpenFeedback={() => setShowFeedbackModal(true)}
           onOpenDownload={() => openDesktopModal('download')}
           onOpenDesktopConnect={() => openDesktopModal('connect')}
+          onOpenOnboardingGuide={openWorkspaceOnboardingReplay}
           onOpenAgentManager={() => window.dispatchEvent(new Event('cc:open-agent-manager'))}
           onAddAssistant={() => window.dispatchEvent(new Event('cc:open-add-assistant'))}
           onLogout={handleLogout}
@@ -2004,17 +2014,19 @@ function TinodeWebApp({ location }) {
       )}
 
       {showFeedbackModal && (
-        <FeedbackModal user={user} onClose={() => setShowFeedbackModal(false)} />
+        <FeedbackModal user={user} returnFocusRef={profileTriggerRef} onClose={() => setShowFeedbackModal(false)} />
       )}
 
       {showDesktopConnectModal && (
         <DesktopConnectModal
+          returnFocusRef={profileTriggerRef}
           userId={user.uid}
           onClose={closeDesktopConnectModal}
-          onConnected={handleDesktopConnected}
+          onConnected={desktopModalMode === 'computers' ? () => window.dispatchEvent(new Event('cc:devices-changed')) : handleDesktopConnected}
           onStatusChange={(status) => setLocalAgentStatus(status)}
-          onOpenOnboardingGuide={openWorkspaceOnboardingReplay}
           initialMode={desktopModalMode}
+          topicId={desktopModalMode === 'computers' ? activeTopicId : ''}
+          activeAgent={desktopModalMode === 'computers' ? displayedActiveAgent : null}
         />
       )}
 
@@ -2024,8 +2036,8 @@ function TinodeWebApp({ location }) {
             userId={user.uid}
             visible
             onDismiss={() => setWorkspaceOnboardingDismissedInSession(true)}
-            onDownloadDashboard={() => openDesktopModal('download')}
-            dashboardDownloadOpen={showDesktopConnectModal}
+            onChoosePlan={() => { setOpenRelayPlanChooser(true); setShowRelayModal(true); }}
+            secondaryModalOpen={showDesktopConnectModal || showRelayModal}
           />
         </Suspense>
       )}
@@ -2039,13 +2051,16 @@ function TinodeWebApp({ location }) {
               setWorkspaceOnboardingDismissedInSession(true);
               setShowWorkspaceOnboardingReplay(false);
             }}
-            onDownloadDashboard={() => openDesktopModal('download')}
+            onChoosePlan={() => { setOpenRelayPlanChooser(true); setShowRelayModal(true); }}
+            secondaryModalOpen={showDesktopConnectModal || showRelayModal}
           />
         </Suspense>
       )}
 
       {showRelayModal && (
         <RelayAccessModal
+          returnFocusRef={profileTriggerRef}
+          initialPlanChooserOpen={openRelayPlanChooser}
           initialPlanSlug={new URLSearchParams(search).get('plan') || ''}
           onClose={closeRelayModal}
         />
@@ -2182,7 +2197,9 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
         </div>
       )}
       <div className="v3-shell-actions">
-        <ConversationDevicePicker topicId={topicId} activeAgent={activeAgent} />
+        {topicId && (activeAgent?.uid || activeAgent?.id || topicId.startsWith('grp_'))
+          ? <ConversationDevicePicker topicId={topicId} activeAgent={activeAgent} onOpen={onDownload} />
+          : <button type="button" className="v3-action-btn cc-device-trigger" onClick={onDownload} aria-label="电脑" title="电脑"><Laptop size={16} aria-hidden="true" /></button>}
         {conversationActions}
         {onOpenServiceAgents && (
           <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenServiceAgents} aria-label="Agent 工具" title="Agent 工具（定制 Agent 工具集）">
@@ -2200,9 +2217,6 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
           topicId={topicId}
           onSelect={onOpenCloudArtifacts}
         />
-        <button type="button" className="v3-action-btn v3-desktop-action v3-shell-action-desktop" onClick={onDownload} aria-label="打开桌面端" title="桌面端">
-          <Laptop size={17} />
-        </button>
         <div ref={mobileActionsRef} className="v3-mobile-actions">
           <button
             ref={mobileActionsTriggerRef}
@@ -2241,10 +2255,6 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
               )}
               <ArtifactQuickPicker mobile agentUid={activeAgent?.uid || activeAgent?.id} topicId={topicId}
                 onSelect={onOpenCloudArtifacts} onChoose={closeMobileActions} />
-              <button type="button" role="menuitem" aria-label="下载桌面端" onClick={() => { closeMobileActions(); onDownload?.(); }}>
-                <Download size={16} aria-hidden="true" />
-                <span>下载桌面端</span>
-              </button>
             </div>
           )}
         </div>
@@ -2320,6 +2330,7 @@ function NoActiveTask({
 }
 
 function SidebarContent({
+  dialogReturnFocusRef,
   activeTopic,
   onSelectTopic,
   onOpenSearch,
@@ -2335,6 +2346,7 @@ function SidebarContent({
 }) {
   return (
     <ChatListView
+      dialogReturnFocusRef={dialogReturnFocusRef}
       activeTopic={activeTopic}
       onSelectTopic={onSelectTopic}
       onOpenSearch={onOpenSearch}

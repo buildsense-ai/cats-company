@@ -1,4 +1,5 @@
-import { Apple, Laptop, Monitor } from 'lucide-react';
+import { Laptop, Monitor } from 'lucide-react';
+import AppleBrand from './apple-brand-icon';
 
 export const FALLBACK_RELEASE_VERSION = '1.4.1';
 const TOS_BASE_URL = 'https://github-release.tos-cn-guangzhou.volces.com/update';
@@ -16,7 +17,7 @@ const DOWNLOAD_OPTION_DEFS = [
     key: 'mac-arm',
     title: 'macOS Apple Silicon',
     description: '适用于 M 系列芯片 Mac',
-    icon: Apple,
+    icon: AppleBrand,
     hrefForVersion: (version) => `${TOS_BASE_URL}/macos-arm64/CatsCo-${version}-mac-arm64.dmg`,
     meta: 'arm64',
   },
@@ -24,7 +25,7 @@ const DOWNLOAD_OPTION_DEFS = [
     key: 'mac-intel',
     title: 'macOS Intel',
     description: '适用于 Intel 芯片 Mac',
-    icon: Apple,
+    icon: AppleBrand,
     hrefForVersion: (version) => `${TOS_BASE_URL}/macos-x64/CatsCo-${version}-mac-x64.dmg`,
     meta: 'x64',
   },

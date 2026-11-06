@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -12,6 +13,12 @@ import (
 )
 
 var errCloudWorkerAdminUnavailable = errors.New("cloud worker admin store unavailable")
+
+// shellSingleQuote 把一个值安全地嵌进 POSIX shell 单引号里。
+// 面板给的是让人复制到终端执行的命令，路径里带空格/引号时不能拼错。
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
 
 // CloudWorkerAdminDataStore is the intentionally narrow database projection
 // used by the internal cloud-worker roster. It must never be wired to a public
@@ -80,6 +87,11 @@ type cloudWorkerAdminItem struct {
 	SSHHostJumpKey     string     `json:"ssh_host_jump_key,omitempty"`
 	SSHStateRoot       string     `json:"ssh_state_root,omitempty"`
 	SSHHostStateRoot   string     `json:"ssh_host_state_root,omitempty"`
+	// 共享集群的接入信息。集群租户没有独占实例、没有公网 IP、也没有租户密钥，
+	// 但运维仍然要能进容器排障 —— 这里直接给出拼好的命令，面板只负责展示和复制。
+	PackedContainer    string     `json:"packed_container,omitempty"`
+	PackedControlPlane string     `json:"packed_control_plane,omitempty"`
+	PackedSSHCommand   string     `json:"packed_ssh_command,omitempty"`
 	ManagementMode     string     `json:"management_mode,omitempty"`
 	LifecycleMode      string     `json:"lifecycle_mode,omitempty"`
 	BindingSource      string     `json:"binding_source,omitempty"`
@@ -244,6 +256,44 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 				item.InstanceID, item.InstanceName = "", ""
 				item.SSHKeyPath, item.SSHExecutionHost = "", ""
 				item.SSHJumpHost, item.SSHJumpAlias, item.SSHJumpKey, item.SSHHostJumpKey = "", "", "", ""
+				// 但"没有 ECS 实例"不等于"运维无路可进"。容器在共享集群里，
+				// 运维是从控制面 incus exec 进去的 —— 把这条命令直接给出来，
+				// 否则面板上这一格是空的，排障时只能到处翻文档。
+				item.PackedContainer = "packed-" + record.TenantName
+				item.PackedControlPlane = h.packedControlPlane
+				if h.packedControlPlane != "" {
+					container := item.PackedContainer
+					jump := strings.TrimSpace(h.sshJumpHost)
+					user := strings.TrimSpace(h.sshUser)
+					if user == "" {
+						user = "root"
+					}
+					// 控制面只认 agents.key。不给 -i 的话运维得自己去翻密钥路径，
+					// 或者用默认密钥对着控制面反复被拒。
+					keyPath := strings.TrimSpace(h.packedSSHKey)
+					if keyPath == "" {
+						keyPath = "~/.ssh/agents.key"
+					}
+					keyArg := " -i " + shellSingleQuote(keyPath)
+					if jump != "" {
+						jumpUser := strings.TrimSpace(h.sshJumpUser)
+						if jumpUser == "" {
+							jumpUser = "root"
+						}
+						item.PackedSSHCommand = fmt.Sprintf(
+							"ssh -J %s@%s%s %s@%s 'incus exec %s -- bash'",
+							jumpUser, jump, keyArg, user, h.packedControlPlane, container)
+					} else {
+						item.PackedSSHCommand = fmt.Sprintf(
+							"ssh%s %s@%s 'incus exec %s -- bash'",
+							keyArg, user, h.packedControlPlane, container)
+					}
+				}
+				// Subscription billing (month vs on-demand, trial conversion)
+				// belongs to the ECS fleet. The shared fleet is billed by the
+				// package, so surfacing these would look like a pending task
+				// that can never be completed.
+				item.BillingMode, item.ConversionPending, item.BillingAction = "", false, ""
 			}
 		}
 		overview.StatusCounts[providerStatus]++

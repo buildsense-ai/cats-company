@@ -40,6 +40,11 @@ services:
       OC_DB_CONN_MAX_LIFETIME: "${OC_DB_CONN_MAX_LIFETIME:-}"
       OC_DB_CONN_MAX_IDLE_TIME: "${OC_DB_CONN_MAX_IDLE_TIME:-}"
       OC_RUNTIME_STORE: "${OC_RUNTIME_STORE:-}"
+      OC_RUNTIME_REQUIRE_DURABLE: "${OC_RUNTIME_REQUIRE_DURABLE:-false}"
+      OC_DEVICE_AUTH_STORE: "${OC_DEVICE_AUTH_STORE:-}"
+      OC_DEVICE_AUTH_REQUIRE_DURABLE: "${OC_DEVICE_AUTH_REQUIRE_DURABLE:-false}"
+      OC_DEVICE_AUTH_REDIS_URL: "${OC_DEVICE_AUTH_REDIS_URL:-}"
+      OC_DEVICE_AUTH_REDIS_KEY_PREFIX: "${OC_DEVICE_AUTH_REDIS_KEY_PREFIX:-}"
       OC_REDIS_URL: "${OC_REDIS_URL:-}"
       OC_REDIS_KEY_PREFIX: "${OC_REDIS_KEY_PREFIX:-}"
       CATSCO_NODE_ID: "${CATSCO_NODE_ID:-}"
@@ -74,6 +79,10 @@ services:
       VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-}"
       VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
       VAPID_SUBJECT: "${VAPID_SUBJECT:-}"
+      APNS_TEAM_ID: "${APNS_TEAM_ID:-}"
+      APNS_KEY_ID: "${APNS_KEY_ID:-}"
+      APNS_BUNDLE_ID: "${APNS_BUNDLE_ID:-cc.catsco.ios}"
+      APNS_KEY_FILE: "${APNS_KEY_FILE:-}"
       CATSCO_PUSH_RELAY_URL: "${CATSCO_PUSH_RELAY_URL:-}"
       CATSCO_PUSH_RELAY_TOKEN: "${CATSCO_PUSH_RELAY_TOKEN:-}"
       CATSCO_DEVICE_CONNECTOR_VERSION: "${CATSCO_DEVICE_CONNECTOR_VERSION:-}"
@@ -235,6 +244,11 @@ services:
       CATS_ALIPAY_RETURN_URL: "${CATS_ALIPAY_RETURN_URL:-}"
       APP_ENV: test
       TZ: Asia/Shanghai
+      # Same host-level guard as prod, sized for the test stack: a bounded
+      # restart here instead of starving the box the two stacks share.
+      GOMEMLIMIT: "${TEST_SERVER_GOMEMLIMIT:-1GiB}"
+      # Same opt-in diagnostics listener as prod; empty keeps it off.
+      CATS_DIAGNOSTICS_ADDR: "${CATS_DIAGNOSTICS_ADDR:-}"
     ports:
       - "${TEST_API_BIND_HOST:-127.0.0.1}:${TEST_API_HOST_PORT:-16061}:6061"
       - "${TEST_GRPC_BIND_HOST:-127.0.0.1}:${TEST_GRPC_HOST_PORT:-16062}:6062"
@@ -246,6 +260,10 @@ services:
       - "${TEST_STACK_ROOT}/data/catsco-worker:${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          memory: "${TEST_SERVER_MEMORY:-2g}"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:6061/health"]
       # Poll fast while the process boots: the default 15s cadence made a

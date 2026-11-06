@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -44,6 +45,8 @@ type ServiceAgentPublishHandler struct {
 	notifier  serviceAgentCatalogNotifier
 	// botProfiles：runner.type=bot 时用 bot 自己的描述当工具标签（可选能力）。
 	botProfiles ServiceBotProfileReader
+	// botOwners：校验 runner.bot_uid 归属（把别人的 bot 挂成自己的工具是安全问题）。
+	botOwners ServiceBotOwnerReader
 }
 
 // ServiceBotProfileReader 读 bot 自身资料。bot-as-tool 的「标签」默认取
@@ -56,6 +59,53 @@ type ServiceBotProfileReader interface {
 // SetBotProfiles 注入 bot 资料读取器（线上由主库适配器实现）。
 func (h *ServiceAgentPublishHandler) SetBotProfiles(reader ServiceBotProfileReader) {
 	h.botProfiles = reader
+}
+
+// ServiceBotOwnerReader 读 bot 归属，用来校验「上架的 bot 是你自己的」。
+// 与 botProfiles 分开：读描述是可选的美化，读归属是安全校验，注入情况要能分辨。
+type ServiceBotOwnerReader interface {
+	GetBotOwner(botUID int64) (int64, error)
+}
+
+// SetBotOwners 注入 bot 归属读取器（线上由主库适配器实现）。
+//
+// 未注入时不阻断发布（测试/裁剪部署），但线上装配必须注入 —— 否则「把别人的 bot
+// 包装成自己的工具上架」这条路是敞开的。
+func (h *ServiceAgentPublishHandler) SetBotOwners(reader ServiceBotOwnerReader) {
+	h.botOwners = reader
+}
+
+// validateBotRunnerDefinition 校验 bot-as-tool 发布的两条硬规则，返回错误码与说明。
+//
+//  1. runner.bot_uid 必须是发布者自己的 bot。以前只校验「bot 存在」，于是任何人都能把
+//     别人的 bot 挂成自己的工具：调用方以为在用那个 bot 的服务，实际是发布者在替它接单、
+//     蹭它的算力，甚至还能继承 bot 的社交可见性（见 serviceAgentViewerResolver）。
+//  2. bot 型应用不能按 token 计价。token 用量产生在 bot 那一侧，平台拿不到
+//     （CompleteServiceRun 的 usage 传 nil），按 token 计价会一直算成 0 元：发布者以为
+//     在收费，实际全程免费。要看时长用 second，要按次用 run。
+func (h *ServiceAgentPublishHandler) validateBotRunnerDefinition(uid int64, definition json.RawMessage) (string, string) {
+	botUID, isBot := ParseBotRunnerBotUID(definition)
+	if !isBot {
+		return "", ""
+	}
+	if pricing := ParseServiceAgentPricing(definition); pricing != nil && pricing.Unit == ServicePricingUnitToken {
+		return "invalid_pricing_for_bot", "bot 型应用不能用 unit=token 计价：token 用量在 bot 那一侧产生，平台取不到，只会一直算 0 元。请改用 unit=run（按次）或 unit=second（按时长）"
+	}
+	if h.botOwners == nil {
+		return "", ""
+	}
+	owner, err := h.botOwners.GetBotOwner(botUID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "bot_not_found", fmt.Sprintf("definition.runner.bot_uid=%d 指向的 bot 不存在", botUID)
+		}
+		// 存储抖动不该把一次正常发布挡掉，但也不能当成校验通过：如实报可重试。
+		return "bot_owner_unavailable", "暂时无法确认这个 bot 的归属，请稍后重试"
+	}
+	if owner != uid {
+		return "bot_not_owned", "definition.runner.bot_uid 只能是自己的 bot：把别人的 bot 包装成工具上架，等于替对方接单"
+	}
+	return "", ""
 }
 
 // fillDescriptionFromBot 用 bot 自己的描述补上 definition.description。
@@ -213,9 +263,9 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 	if visibility == "" {
 		visibility = store.ServiceAgentVisibilityPublic
 	}
-	if visibility != store.ServiceAgentVisibilityPublic && visibility != store.ServiceAgentVisibilityPrivate {
+	if !serviceAgentVisibilityValid(visibility) {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "invalid_visibility", "detail": "visibility 只能是 public / private",
+			"error": "invalid_visibility", "detail": "visibility 只能是 " + serviceAgentVisibilityAccepted(),
 		})
 		return
 	}
@@ -243,6 +293,15 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "bundle_required"})
 		return
 	}
+	// 包体必须是合法 JSON：它会原样进 service_agent_versions.package_json（jsonb）。
+	// 不校验就交给数据库报错 —— 调用方拿到的是 500 publish_unavailable，完全看不出是自己传错了。
+	if !json.Valid(bundle) {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
+			"error":  "invalid_bundle",
+			"detail": "bundle 必须是 JSON（内容寻址的包清单，例如 {\"schema\":\"catsco.service-agent.external.v1\",\"files\":[]}）",
+		})
+		return
+	}
 	// 入参 schema 与包通道（agent.json）同一套校验规则（对象 / 顶层 type / 8 KiB）。
 	// 先报格式错误再报内容缺失：让调用方一次改对，而不是先补描述再撞 schema。
 	if normalized, err := normalizeServiceAgentDefinition(req.Definition); err != nil {
@@ -253,9 +312,20 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 	} else if len(normalized) > 0 {
 		req.Definition = normalized
 	}
-	// 公开应用必须写描述：调用方是另一个 Agent，它看不到包内容、也没有主 Agent 的上下文，
-	// description 是它判断「这个工具做什么、什么情况下该用」的唯一依据。
-	// 没有描述 = 分享出去也没人会用（线上真实症状：bot 反复说「看不到调用入口」）。
+	// bot-as-tool 的两条硬规则先判（归属 + 计价）：它们决定「这次上架的到底是谁在干活」，
+	// 比描述缺失严重得多，所以排在自动补描述之前。
+	if code, detail := h.validateBotRunnerDefinition(uid, req.Definition); code != "" {
+		status := http.StatusBadRequest
+		if code == "bot_owner_unavailable" {
+			status = http.StatusServiceUnavailable
+		}
+		writeServiceJSON(w, status, map[string]any{"error": code, "detail": detail})
+		return
+	}
+	// 分享给别人（公开 / 好友）就必须写描述：调用方是另一个 Agent，它看不到包内容、
+	// 也没有主 Agent 的上下文，description 是它判断「这个工具做什么、什么情况下该用」
+	// 的唯一依据。没有描述 = 分享出去也没人会用（线上真实症状：bot 反复说「看不到调用入口」）。
+	// 「自用」不强制：只有自己用，写不写不影响别人。
 	// 放在包校验之后：结构错误（缺包/坏 base64）先报，不然用户会被描述报错带偏。
 	//
 	// bot-as-tool 例外：把 bot 分享成工具时，标签本来就该是 bot 自己的自我介绍，
@@ -273,10 +343,10 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		})
 		return
 	}
-	if visibility == store.ServiceAgentVisibilityPublic && description == "" {
+	if serviceAgentVisibilityShared(visibility) && description == "" {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
 			"error":  "description_required",
-			"detail": "公开应用必须写 description：说明它做什么、什么情况下该用（调用方 Agent 只能看到这段文字）",
+			"detail": serviceAgentVisibilityLabel(visibility) + "应用必须写 description：说明它做什么、什么情况下该用（调用方 Agent 只能看到这段文字）",
 		})
 		return
 	}
@@ -368,6 +438,64 @@ func (h *ServiceAgentPublishHandler) HandleUnpublish(w http.ResponseWriter, r *h
 		h.notifier.NotifyCatalogChanged()
 	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"slug": slug, "state": "inactive"})
+}
+
+// HandlePurge DELETE /api/service-agents/{slug}/purge
+//
+// 彻底删除一个**已下架**的应用：agent、全部版本、全部会话、全部 run（事件/回执/检查点
+// 走级联）。**账本 service_run_ledger 保留** —— 它是账务凭证，删了就没法对账。
+//
+// 为什么要求先收回：一条 DELETE 就抹掉还在被调用的应用太危险。先下架、看一眼、
+// 再删；而下架这一步是可逆的（重新发布同一 slug 即恢复），给用户留一次反悔。
+func (h *ServiceAgentPublishHandler) HandlePurge(w http.ResponseWriter, r *http.Request) {
+	uid := UIDFromContext(r.Context())
+	if uid == 0 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if h.allowed != nil && !h.allowed(uid) {
+		writeServiceJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+		return
+	}
+	slug := strings.TrimSpace(r.PathValue("slug"))
+	if !serviceAgentSlugRe.MatchString(slug) {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_slug"})
+		return
+	}
+	result, err := h.store.PurgeServiceAgent(r.Context(), slug, uid)
+	switch {
+	case errors.Is(err, store.ErrServiceAgentNotFound):
+		writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "agent_not_found"})
+		return
+	case errors.Is(err, store.ErrServiceAgentOwnedByOther), errors.Is(err, store.ErrServiceAgentInternalReserved):
+		writeServiceJSON(w, http.StatusForbidden, map[string]any{
+			"error": "not_owner", "detail": "只有发布者本人能删除该应用",
+		})
+		return
+	case errors.Is(err, store.ErrServiceAgentNotInactive):
+		writeServiceJSON(w, http.StatusConflict, map[string]any{
+			"error": "agent_active", "detail": "先收回（下架）再彻底删除",
+		})
+		return
+	case errors.Is(err, store.ErrServiceAgentRunsPending):
+		writeServiceJSON(w, http.StatusConflict, map[string]any{
+			"error": "runs_pending", "detail": "还有正在运行的任务，等它结束再删",
+		})
+		return
+	case err != nil:
+		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "purge_unavailable"})
+		return
+	}
+	if h.notifier != nil {
+		h.notifier.NotifyCatalogChanged()
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{
+		"slug":     result.Slug,
+		"purged":   true,
+		"versions": result.Versions,
+		"sessions": result.Sessions,
+		"runs":     result.Runs,
+	})
 }
 
 // decodeServiceAgentBundle 解 base64（兼容 data URL 前缀），并做基本大小/格式校验。

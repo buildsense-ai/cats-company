@@ -72,7 +72,15 @@ func (h *AccountAdminHandler) HandleCloudWorkerCredits(w http.ResponseWriter, r 
 	var granted int
 	var err error
 	billing, valid := types.NormalizeCloudWorkerBilling(req.BillingMode)
-	if !valid || (billing == types.CloudWorkerOnDemand && expiresAt == nil) {
+	if !valid {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "on-demand trial requires a valid billing mode and future expiry"})
+		return
+	}
+	// Shared containers have no cloud subscription; collapse the machine
+	// billing dimension so a granted crop credit cannot carry an on-demand
+	// flag into the ECS-only expiry path.
+	billing = types.CloudWorkerBillingForProfile(profile, billing)
+	if billing == types.CloudWorkerOnDemand && expiresAt == nil {
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "on-demand trial requires a valid billing mode and future expiry"})
 		return
 	}

@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/openchat/openchat/server/store"
@@ -51,38 +52,99 @@ type CloudWorkerHandler struct {
 	quota map[int64]int
 
 	// Executable scripts invoked for heavy cloud operations (empty = disabled).
-	provisionScript   string
-	resetScript       string
-	renewScript       string
-	updateScript      string
-	rollbackScript    string
-	destroyScript     string
-	expireScript      string
-	imagesScript      string
-	releasesScript    string
-	statusScript      string
-	sshJumpHost       string
-	sshJumpAlias      string
-	sshJumpPort       string
-	sshJumpUser       string
-	sshJumpKey        string
-	sshHostJumpKey    string
-	sshStateRoot      string
-	sshHostStateRoot  string
-	sshUser           string
-	sshPort           string
-	credits           CloudWorkerCreditStore
-	publicProfileJSON string
+	provisionScript string
+	resetScript     string
+	renewScript     string
+	// changePlanScript pushes a package tier change (light/standard/pro/heavy) to
+	// the packed container. Empty = tier changes stay a database-only fact.
+	changePlanScript string
+	// billingScript is optional: an empty value falls back to the historical
+	// location next to renewScript and then to the image's ops directory.
+	billingScript      string
+	updateScript       string
+	rollbackScript     string
+	destroyScript      string
+	expireScript       string
+	imagesScript       string
+	releasesScript     string
+	statusScript       string
+	sshJumpHost        string
+	sshJumpAlias       string
+	sshJumpPort        string
+	sshJumpUser        string
+	sshJumpKey         string
+	sshHostJumpKey     string
+	sshStateRoot       string
+	sshHostStateRoot   string
+	sshUser            string
+	sshPort            string
+	packedControlPlane string
+	packedSSHKey       string
+	credits            CloudWorkerCreditStore
+	publicProfileJSON  string
 
 	scriptTimeout time.Duration
 
-	// opMu serializes all cloud operations (create / update / rollback / reset /
-	// delete). These are low-frequency, long-running, paid-instance actions;
-	// a global lock keeps quota checks atomic and prevents a single user from
-	// piling up concurrent script processes.
-	opMu        sync.Mutex
+	// opLocks serializes cloud operations (create / update / rollback / reset /
+	// delete) per owner, not globally.
+	//
+	// These actions are low-frequency and long-running (a provision takes about
+	// 25 seconds), so a single process-wide mutex meant one buyer's provision
+	// rejected every other buyer with "another operation is already running".
+	// At peak that is not a wait, it is an outage: only one person could buy per
+	// half minute, and everyone else got a conflict. What actually needs to be
+	// atomic is one owner's quota check plus create, which is what a per-owner
+	// lock gives. Two different owners provisioning in parallel is safe: they get
+	// different tenants and different containers, and the shared-fleet slot
+	// decision is made on the cluster side.
+	opLocksMu sync.Mutex
+	opLocks   map[int64]*sync.Mutex
+
+	// sweepMu keeps the periodic expiry sweep from overlapping itself. It is not
+	// an owner operation gate: the sweep works on existing lifecycles and is
+	// protected by database claims, which is what makes it safe next to a
+	// concurrent create.
+	sweepMu     sync.Mutex
 	operationMu sync.Mutex
 	operations  map[string]cloudWorkerOperation
+
+	// orphanRetryBlocked backs off accounts whose paid credit could not be
+	// turned into a worker (see retryOrphanedCloudWorkerCredits). Sweeps run
+	// every minute, so without this a permanently broken account would spend a
+	// create attempt — and log a failure — on every tick. Process-local on
+	// purpose: a restart retries once, which is what we want after a deploy.
+	orphanMu           sync.Mutex
+	orphanRetryBlocked map[int64]time.Time
+
+	// orphanSweepInactiveOnce reports, once, why the orphan-credit backstop is
+	// not running. Two things disable it and neither is visible from the
+	// outside: the credit store not implementing the query (a wiring change, or
+	// a deployment whose adapter predates it) and an unconfigured provision
+	// script. Both used to be a bare `return`.
+	orphanSweepInactiveOnce sync.Once
+
+	// sweepInactiveOnce / queueSweepInactiveOnce do the same for the two other
+	// background loops: the expiry sweep (needs a destroy script and a lifecycle
+	// store) and the capacity-queue retry (needs a provision script and a queue
+	// store). All three used to fail closed and silent.
+	sweepInactiveOnce      sync.Once
+	queueSweepInactiveOnce sync.Once
+
+	// idleSweeps counts consecutive expiry sweeps that found nothing due, so the
+	// loop can emit a low-frequency heartbeat. Guarded by sweepMu:
+	// sweepExpiredWorkersLocked only ever runs with the gate held.
+	//
+	// Why this exists: a healthy sweeper with nothing due used to return before
+	// its only log line, so production showed zero `[cloud-worker]` output for
+	// hours. "Idle" and "wedged" then look identical from the outside — which is
+	// exactly the ambiguity that cost a full investigation round on 2026-11-03,
+	// where an empty sweep was mistaken for a broken one. One line every ten
+	// minutes (144/day) makes an absence of output meaningful again.
+	idleSweeps int
+
+	// orphanSweepActive records that the backstop actually reached the store at
+	// least once, so /health-style checks can tell "running" from "silently off".
+	orphanSweepActive atomic.Bool
 
 	// Cloud provider reads take seconds and must never sit on the HTTP request
 	// path. Requests read the latest completed snapshot while one background
@@ -132,12 +194,37 @@ const (
 
 // workerUsernameRe constrains cloud worker usernames so the derived tenant
 // name stays safe to embed in URL paths and script argv.
-var workerUsernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
+// 上界与 maxUsernameLen 对齐：租户名 "bot-"+username 还要拼成 packed-<tenant>[-sb]。
+var workerUsernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,48}$`)
 var workerTenantSeparatorRe = regexp.MustCompile(`-+`)
 
 func cloudWorkerTenantName(username string) string {
 	name := workerTenantSeparatorRe.ReplaceAllString("bot-"+strings.TrimSpace(username), "-")
 	return strings.Trim(name, "-.")
+}
+
+// packedTenantNameMaxLen 是共享容器集群对租户名的硬上限。
+//
+// 容器名是 packed-<tenant>，故障切换还会建 packed-<tenant>-sb。incus 对实例名的
+// 限制是 1-63 字符（2026-11-05 在 prod-1 用 `incus init --empty` 逐档实测：63 建得出，
+// 64 直接报 "Invalid instance name: Name must be 1-63 characters long"）。
+// "packed-" 占 7 个、"-sb" 占 3 个，所以租户名最多 53 —— 也就是 username 最多 49。
+//
+// 超了不是"名字不好看"：主容器可能根本建不出来，或者建出来了但永远没有 standby。
+// 独享 ECS 用不到容器名，不受这条限制。
+const packedTenantNameMaxLen = len("bot-") + maxUsernameLen
+
+func validatePackedTenantName(profile string, tenantName string) error {
+	if profile != types.CloudWorkerPackedShared {
+		return nil
+	}
+	if len(tenantName) <= packedTenantNameMaxLen {
+		return nil
+	}
+	// 用户注册后**改不了 username**，所以不能建议"请缩短后重试"——那是个死胡同。
+	// 这条只可能命中历史遗留数据（新注册已经在入口挡掉了），走人工处理。
+	return fmt.Errorf("用户名过长（%d 字符，共享集群上限 %d）：用户名注册后不可修改，请联系管理员处理该账号，或改用独享 ECS 方案",
+		len(tenantName)-len("bot-"), packedTenantNameMaxLen-len("bot-"))
 }
 
 // CloudWorkerConfig configures the cloud worker control plane.
@@ -147,18 +234,27 @@ type CloudWorkerConfig struct {
 	ProvisionScript   string // CATSCO_WORKER_PROVISION_SCRIPT
 	ResetScript       string // CATSCO_WORKER_RESET_SCRIPT
 	RenewScript       string // CATSCO_WORKER_RENEW_SCRIPT
-	UpdateScript      string // CATSCO_WORKER_UPDATE_SCRIPT
-	RollbackScript    string // CATSCO_WORKER_ROLLBACK_SCRIPT
-	DestroyScript     string // CATSCO_WORKER_DESTROY_SCRIPT
-	ExpireScript      string // CATSCO_WORKER_EXPIRE_SCRIPT (optional; stops a packed worker at package expiry)
-	ImagesScript      string // CATSCO_WORKER_IMAGES_SCRIPT
-	ReleasesScript    string // CATSCO_WORKER_RELEASES_SCRIPT
-	StatusScript      string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
-	SSHJumpHost       string
-	SSHJumpAlias      string
-	SSHJumpPort       string
-	SSHJumpUser       string
-	SSHJumpKey        string
+	// ChangePlanScript is CATSCO_WORKER_CHANGE_PLAN_SCRIPT. Optional: when set, an
+	// upgrade that changes the package's shared-fleet tier is pushed to the
+	// container (memory/swap/disk limits) instead of only extending the paid
+	// window. Empty disables the tier sync entirely.
+	ChangePlanScript string // CATSCO_WORKER_CHANGE_PLAN_SCRIPT
+	// BillingScript is CATSCO_WORKER_BILLING_SCRIPT. Optional: the trial
+	// conversion/suspend script normally sits in the image's ops directory, and
+	// leaving this empty keeps that default without hard-coding it in callers.
+	BillingScript  string // CATSCO_WORKER_BILLING_SCRIPT
+	UpdateScript   string // CATSCO_WORKER_UPDATE_SCRIPT
+	RollbackScript string // CATSCO_WORKER_ROLLBACK_SCRIPT
+	DestroyScript  string // CATSCO_WORKER_DESTROY_SCRIPT
+	ExpireScript   string // CATSCO_WORKER_EXPIRE_SCRIPT (optional; stops a packed worker at package expiry)
+	ImagesScript   string // CATSCO_WORKER_IMAGES_SCRIPT
+	ReleasesScript string // CATSCO_WORKER_RELEASES_SCRIPT
+	StatusScript   string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
+	SSHJumpHost    string
+	SSHJumpAlias   string
+	SSHJumpPort    string
+	SSHJumpUser    string
+	SSHJumpKey     string
 	// SSHHostJumpKey and SSHHostStateRoot are paths as seen from the
 	// cats-ctyun host, where copied admin commands are executed. They must
 	// never contain key material itself.
@@ -167,6 +263,14 @@ type CloudWorkerConfig struct {
 	SSHHostStateRoot string
 	SSHUser          string
 	SSHPort          string
+	// PackedControlPlane is the shared-cluster control-plane host that
+	// operators SSH into to reach tenant containers (incus). Empty disables
+	// the generated packed SSH command. It is a topology hint, not a secret.
+	PackedControlPlane string
+	// PackedSSHKey is the key path operators must pass to ssh -i when entering
+	// the control plane. It is a path hint for the generated command, never
+	// key material. Empty falls back to ~/.ssh/agents.key.
+	PackedSSHKey string
 }
 
 // CloudWorkerCreditStore is optional for compatibility with focused test
@@ -181,6 +285,64 @@ type CloudWorkerCreditStore interface {
 	MarkCloudWorkerLifecyclePending(id int64, deleteAfter time.Time) error
 	ClaimCloudWorkerLifecycleDeletion(id int64) (bool, error)
 	MarkCloudWorkerLifecycleDeleted(id int64, errText string) error
+}
+
+// cloudWorkerQueueStore parks a paid credit that could not be provisioned
+// because the package tier's shared fleet had no free slot, and reports the
+// queue so the console can show a wait instead of an error.
+//
+// Kept separate from CloudWorkerCreditStore so focused test stores keep
+// compiling; a store that cannot queue simply falls back to releasing the
+// credit, which the buyer can spend again after capacity returns.
+type cloudWorkerQueueStore interface {
+	QueueCloudWorkerCredit(uid int64, reservation string) (bool, error)
+	CloudWorkerQueuePosition(uid int64) (int, error)
+	ListQueuedCloudWorkerCredits(minAge time.Duration, limit int) ([]types.CloudWorkerQueuedCredit, error)
+	ClaimQueuedCloudWorkerCredit(uid int64) (bool, error)
+}
+
+// cloudWorkerQueueRetrySeconds is how long a queued buyer is told to wait
+// before the console re-checks. It matches the capacity sweep interval: a slot
+// that frees up is picked up within about a minute, so a shorter hint would
+// only produce pointless polling.
+const cloudWorkerQueueRetrySeconds = 60
+
+// cloudWorkerQueueMinAge keeps the sweep from retrying the same credit inside
+// back-to-back sweeps. A tier that just filled up needs a release (a destroy or
+// an expiry) before it has room again, and that takes far longer than one tick.
+const cloudWorkerQueueMinAge = 45 * time.Second
+
+// cloudWorkerCapacityFull reports whether a failed provision was caused by an
+// exhausted tier pool rather than by a broken machine.
+//
+// The packed adapter exits with 75 for this case so the distinction survives
+// the shell boundary; the message check keeps older adapters (which die with a
+// generic code) from being reported to buyers as an infrastructure failure.
+func cloudWorkerCapacityFull(err error, output string) bool {
+	if err == nil {
+		return false
+	}
+	var exitErr interface{ ExitCode() int }
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 75 {
+		return true
+	}
+	return strings.Contains(output, "is full on every member") || strings.Contains(output, "cluster placement failed")
+}
+
+// cloudWorkerQueuePosition reports this owner's place in the capacity queue,
+// or -1 when nothing is queued. It is best-effort: a store without queue
+// support simply reports "not queued".
+func (h *CloudWorkerHandler) cloudWorkerQueuePosition(uid int64) int {
+	queuer, ok := h.credits.(cloudWorkerQueueStore)
+	if !ok || uid <= 0 {
+		return -1
+	}
+	position, err := queuer.CloudWorkerQueuePosition(uid)
+	if err != nil {
+		log.Printf("[cloud-worker] queue position uid=%d failed: %v", uid, err)
+		return -1
+	}
+	return position
 }
 
 // CloudWorkerLifecycleExtender is the per-instance form used when the
@@ -227,61 +389,69 @@ const cloudWorkerExpiryGraceDays = 15
 // CloudWorkerConfigFromEnv reads configuration from the environment.
 func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 	return CloudWorkerConfig{
-		PublicProfileJSON: os.Getenv("CATSCO_WORKER_PUBLIC_PROFILE_JSON"),
-		CreateQuota:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_CREATE_QUOTA")),
-		ProvisionScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
-		ResetScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
-		RenewScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
-		UpdateScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
-		RollbackScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
-		DestroyScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
-		ExpireScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_EXPIRE_SCRIPT")),
-		ImagesScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
-		ReleasesScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_RELEASES_SCRIPT")),
-		StatusScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
-		SSHJumpHost:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_IP")),
-		SSHJumpAlias:      strings.TrimSpace(os.Getenv("CTYUN_JUMP_ALIAS")),
-		SSHJumpPort:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_PORT")),
-		SSHJumpUser:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_USER")),
-		SSHJumpKey:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_KEY")),
-		SSHHostJumpKey:    strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_JUMP_KEY")),
-		SSHStateRoot:      strings.TrimSpace(os.Getenv("CTYUN_WORKER_STATE_ROOT")),
-		SSHHostStateRoot:  strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_STATE_ROOT")),
-		SSHUser:           strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_USER")),
-		SSHPort:           strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_PORT")),
+		PublicProfileJSON:  os.Getenv("CATSCO_WORKER_PUBLIC_PROFILE_JSON"),
+		CreateQuota:        strings.TrimSpace(os.Getenv("CATSCO_WORKER_CREATE_QUOTA")),
+		ProvisionScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
+		ResetScript:        strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
+		RenewScript:        strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
+		ChangePlanScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_CHANGE_PLAN_SCRIPT")),
+		BillingScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_BILLING_SCRIPT")),
+		UpdateScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
+		RollbackScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
+		DestroyScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
+		ExpireScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_EXPIRE_SCRIPT")),
+		ImagesScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
+		ReleasesScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_RELEASES_SCRIPT")),
+		StatusScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
+		SSHJumpHost:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_IP")),
+		PackedControlPlane: strings.TrimSpace(os.Getenv("PACKED_CONTROL_PLANE")),
+		PackedSSHKey:       strings.TrimSpace(os.Getenv("PACKED_SSH_KEY")),
+		SSHJumpAlias:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_ALIAS")),
+		SSHJumpPort:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_PORT")),
+		SSHJumpUser:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_USER")),
+		SSHJumpKey:         strings.TrimSpace(os.Getenv("CTYUN_JUMP_KEY")),
+		SSHHostJumpKey:     strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_JUMP_KEY")),
+		SSHStateRoot:       strings.TrimSpace(os.Getenv("CTYUN_WORKER_STATE_ROOT")),
+		SSHHostStateRoot:   strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_STATE_ROOT")),
+		SSHUser:            strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_USER")),
+		SSHPort:            strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_PORT")),
 	}
 }
 
 // NewCloudWorkerHandler creates a CloudWorkerHandler.
 func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConfig) *CloudWorkerHandler {
 	handler := &CloudWorkerHandler{
-		publicProfileJSON: cfg.PublicProfileJSON,
-		db:                db,
-		bots:              bots,
-		quota:             parseWorkerCreateQuota(cfg.CreateQuota),
-		provisionScript:   cfg.ProvisionScript,
-		resetScript:       cfg.ResetScript,
-		renewScript:       cfg.RenewScript,
-		updateScript:      cfg.UpdateScript,
-		rollbackScript:    cfg.RollbackScript,
-		destroyScript:     cfg.DestroyScript,
-		expireScript:      cfg.ExpireScript,
-		imagesScript:      cfg.ImagesScript,
-		releasesScript:    cfg.ReleasesScript,
-		statusScript:      cfg.StatusScript,
-		sshJumpHost:       cfg.SSHJumpHost,
-		sshJumpAlias:      cfg.SSHJumpAlias,
-		sshJumpPort:       cfg.SSHJumpPort,
-		sshJumpUser:       cfg.SSHJumpUser,
-		sshJumpKey:        cfg.SSHJumpKey,
-		sshHostJumpKey:    cfg.SSHHostJumpKey,
-		sshStateRoot:      cfg.SSHStateRoot,
-		sshHostStateRoot:  cfg.SSHHostStateRoot,
-		sshUser:           cfg.SSHUser,
-		sshPort:           cfg.SSHPort,
-		credits:           nil,
-		scriptTimeout:     10 * time.Minute,
-		operations:        make(map[string]cloudWorkerOperation),
+		publicProfileJSON:  cfg.PublicProfileJSON,
+		db:                 db,
+		bots:               bots,
+		quota:              parseWorkerCreateQuota(cfg.CreateQuota),
+		provisionScript:    cfg.ProvisionScript,
+		resetScript:        cfg.ResetScript,
+		renewScript:        cfg.RenewScript,
+		changePlanScript:   cfg.ChangePlanScript,
+		billingScript:      cfg.BillingScript,
+		updateScript:       cfg.UpdateScript,
+		rollbackScript:     cfg.RollbackScript,
+		destroyScript:      cfg.DestroyScript,
+		expireScript:       cfg.ExpireScript,
+		imagesScript:       cfg.ImagesScript,
+		releasesScript:     cfg.ReleasesScript,
+		statusScript:       cfg.StatusScript,
+		sshJumpHost:        cfg.SSHJumpHost,
+		sshJumpAlias:       cfg.SSHJumpAlias,
+		sshJumpPort:        cfg.SSHJumpPort,
+		sshJumpUser:        cfg.SSHJumpUser,
+		sshJumpKey:         cfg.SSHJumpKey,
+		sshHostJumpKey:     cfg.SSHHostJumpKey,
+		sshStateRoot:       cfg.SSHStateRoot,
+		sshHostStateRoot:   cfg.SSHHostStateRoot,
+		packedControlPlane: cfg.PackedControlPlane,
+		packedSSHKey:       cfg.PackedSSHKey,
+		sshUser:            cfg.SSHUser,
+		sshPort:            cfg.SSHPort,
+		credits:            nil,
+		scriptTimeout:      10 * time.Minute,
+		operations:         make(map[string]cloudWorkerOperation),
 	}
 	if credits, ok := db.(CloudWorkerCreditStore); ok {
 		handler.credits = credits
@@ -345,16 +515,45 @@ func (h *CloudWorkerHandler) cloudWorkerOperation(id string) (cloudWorkerOperati
 	return op, true
 }
 
-func (h *CloudWorkerHandler) tryBeginOperation(w http.ResponseWriter) bool {
-	if h.opMu.TryLock() {
-		return true
+// ownerOperationLock returns the mutex guarding one owner's cloud operations.
+//
+// Entries are never deleted: an owner only gets one when they have a cloud
+// worker, so the map is bounded by the number of buyers rather than by traffic.
+func (h *CloudWorkerHandler) ownerOperationLock(uid int64) *sync.Mutex {
+	h.opLocksMu.Lock()
+	defer h.opLocksMu.Unlock()
+	if h.opLocks == nil {
+		h.opLocks = make(map[int64]*sync.Mutex)
+	}
+	lock, ok := h.opLocks[uid]
+	if !ok {
+		lock = &sync.Mutex{}
+		h.opLocks[uid] = lock
+	}
+	return lock
+}
+
+// lockOwnerOperation blocks until this owner's cloud operation gate is free.
+// The returned mutex must be unlocked by the caller.
+func (h *CloudWorkerHandler) lockOwnerOperation(uid int64) *sync.Mutex {
+	lock := h.ownerOperationLock(uid)
+	lock.Lock()
+	return lock
+}
+
+// tryBeginOperation takes this owner's cloud operation gate without waiting.
+// It returns the locked mutex on success; the caller must unlock it.
+func (h *CloudWorkerHandler) tryBeginOperation(w http.ResponseWriter, uid int64) (*sync.Mutex, bool) {
+	lock := h.ownerOperationLock(uid)
+	if lock.TryLock() {
+		return lock, true
 	}
 	w.Header().Set("Retry-After", "15")
 	writeJSON(w, http.StatusConflict, map[string]string{
-		"error": "another cloud worker operation is already running",
+		"error": "another cloud worker operation is already running for this account",
 		"code":  "cloud_worker_operation_busy",
 	})
-	return false
+	return nil, false
 }
 
 // parseWorkerCreateQuota parses "CATSCO_WORKER_CREATE_QUOTA" of the form
@@ -379,12 +578,18 @@ func parseWorkerCreateQuota(raw string) map[int64]int {
 }
 
 // cloudWorkerSummary is a roster item for a cloud-managed virtual employee.
+//
+// There is deliberately no `status` key. It used to be a constant "unknown",
+// which is worse than absent: every consumer's `worker.status || fallback` was
+// dead code, and a client could not tell "we never checked" from "we checked
+// and cannot tell". The authoritative fields are RuntimeStatus (did the
+// worker's own runtime connect?) and, on create, deployment_status
+// (provisioned/running).
 type cloudWorkerSummary struct {
 	UID           int64  `json:"uid"`
 	Username      string `json:"username"`
 	DisplayName   string `json:"display_name"`
 	TenantName    string `json:"tenant_name"`
-	Status        string `json:"status"`
 	RuntimeStatus string `json:"runtime_status"`
 	Version       string `json:"version,omitempty"`
 	ImageID       string `json:"image_id,omitempty"`
@@ -401,11 +606,21 @@ type cloudWorkerSummary struct {
 	UpdateAvailable bool   `json:"update_available,omitempty"`
 	// Backend is "packed" for the shared-container fleet and empty for a
 	// dedicated ECS instance, so clients can label the two distinctly.
-	Backend string `json:"backend,omitempty"`
+	Backend         string `json:"backend,omitempty"`
 	OperationID     string `json:"operation_id,omitempty"`
 	OperationAction string `json:"operation_action,omitempty"`
 	OperationStatus string `json:"operation_status,omitempty"`
 	TrialNotice     string `json:"trial_notice,omitempty"`
+	// 到期与保留期（来自 cloud_worker_lifecycles）。
+	//
+	// 共享集群的租户没有公网 IP、也没有 SSH —— 面板上真正要回答的问题是
+	// "这台员工还能用多久"和"停服后数据保留几天"。这两个值平台本来就算好了，
+	// 之前只拿来生成 TrialNotice，没往下传给前端。
+	PackageExpiresAt string `json:"package_expires_at,omitempty"`
+	DeleteAfter      string `json:"delete_after,omitempty"`
+	RetentionDays    int    `json:"retention_days,omitempty"`
+	LifecycleState   string `json:"lifecycle_state,omitempty"`
+	BillingMode      string `json:"billing_mode,omitempty"`
 }
 
 // cloudWorkerOperation is a short-lived, in-memory record for a long-running
@@ -451,7 +666,6 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 		}
 		w := cloudWorkerSummary{
 			TenantName: tenantName,
-			Status:     "unknown",
 		}
 		if id, ok := b["id"].(int64); ok {
 			w.UID = id
@@ -470,6 +684,17 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 		w.RuntimeStatus = h.cloudWorkerRuntimeStatus(uid, w.UID)
 		if lifecycle, ok := lifecycleByTenant[tenantName]; ok {
 			w.TrialNotice = trialNotice(lifecycle, time.Now().UTC())
+			// 到期/保留期是用户侧最常问的两个数，直接把事实传下去，
+			// 不在前端重算（重算必然与生命周期状态脱节）。
+			if !lifecycle.PackageExpiresAt.IsZero() {
+				w.PackageExpiresAt = lifecycle.PackageExpiresAt.UTC().Format(time.RFC3339)
+			}
+			if !lifecycle.DeleteAfter.IsZero() {
+				w.DeleteAfter = lifecycle.DeleteAfter.UTC().Format(time.RFC3339)
+			}
+			w.RetentionDays = lifecycle.RetentionDays
+			w.LifecycleState = lifecycle.State
+			w.BillingMode = lifecycle.BillingMode
 		}
 		workers = append(workers, w)
 	}
@@ -597,6 +822,18 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 			"used":      used,
 			"remaining": remaining,
 		},
+	}
+	// A paid credit waiting for a slot is invisible in "workers" (no machine
+	// exists yet), so the console needs its own signal. Without it the buyer
+	// sees an enabled quota with no worker and clicks create again, which only
+	// adds a second queue entry. -1 means nothing is queued; 0 means this buyer
+	// is first in line, which still has to be reported.
+	if position := h.cloudWorkerQueuePosition(uid); position >= 0 {
+		response["queue"] = map[string]interface{}{
+			"queued":              true,
+			"position":            position,
+			"retry_after_seconds": cloudWorkerQueueRetrySeconds,
+		}
 	}
 	if statusLoaded {
 		response["status_cached_at"] = statusUpdatedAt.UTC().Format(time.RFC3339Nano)
@@ -950,13 +1187,13 @@ func (w *discardResponseWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// AutoProvisionForOwner provisions the paid cloud instance for a buyer who has
-// just purchased an official plan (399/799) and does not own a cloud worker
-// yet. It is wired to the commercial payment fulfillment hook via
-// CommercialPaymentHandlerOptions.EnsureCloudWorker and always runs off the
-// payment path. The heavy lifting is delegated to HandleCreate so the
-// automatic and manual flows share validation, credit reservation, rollback
-// and the auto-friend handshake.
+// AutoProvisionForOwner provisions the paid instances owed to a buyer who has
+// just purchased a plan or redeemed an invite. It is wired to the commercial
+// payment fulfillment hook via
+// CommercialPaymentHandlerOptions.EnsureCloudWorker and to invite redemption,
+// and always runs off the payment path. The heavy lifting is delegated to
+// HandleCreate so the automatic and manual flows share validation, credit
+// reservation, rollback and the auto-friend handshake.
 func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -972,27 +1209,76 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 		log.Printf("[cloud-worker] auto provisioning skipped uid=%d: provision script not configured", uid)
 		return
 	}
-	workers, err := h.cloudWorkersOfOwner(uid)
+	// One worker per unspent credit: an invite code (or an operator grant) may
+	// carry several credits, which is how a single account ends up owning
+	// several bots. A renewal does not mint a credit (see
+	// cloudWorkerSurvivesRenewal), so a monthly renewal cannot turn into a
+	// second machine.
+	//
+	// The budget is snapshotted once: every successful create consumes exactly
+	// one credit (or one static slot), so decrementing locally is what keeps the
+	// loop from re-reading a roster that may lag behind the create.
+	budget, err := h.autoProvisionBudget(uid)
 	if err != nil {
 		log.Printf("[cloud-worker] auto provisioning check uid=%d failed: %v", uid, err)
 		return
 	}
-	if len(workers) > 0 {
-		// Renewals, upgrades and re-purchases keep the existing instance; only
-		// a first purchase without any worker provisions automatically.
-		return
+	if budget > autoProvisionMaxPerRun {
+		// Bound a single run: a mis-issued batch must never spawn an unbounded
+		// fleet unattended. The rest stays spendable for the next call.
+		log.Printf("[cloud-worker] auto provisioning uid=%d has %d credits, capping this run at %d", uid, budget, autoProvisionMaxPerRun)
+		budget = autoProvisionMaxPerRun
 	}
-	// Match HandleCreate's admission check: either a durable credit from the
-	// purchase or a static rollout quota enables provisioning. The concrete
-	// reservation stays inside HandleCreate.
-	staticTotal := h.quota[uid]
-	if _, available := h.creditInfo(uid); staticTotal <= 0 && available <= 0 {
-		return
+	for created := 0; created < budget; created++ {
+		status, body := h.provisionAutoWorker(uid)
+		switch {
+		case status >= 200 && status < 300:
+			continue
+		case status == http.StatusForbidden:
+			// The credit was spent or expired between the budget check and the
+			// create, so there is nothing left to spend this run.
+			return
+		case status == http.StatusConflict:
+			log.Printf("[cloud-worker] auto provisioning busy uid=%d, leaving the remaining credits for the next run", uid)
+			return
+		default:
+			log.Printf("[cloud-worker] CRITICAL auto provisioning failed uid=%d status=%d body=%s", uid, status, truncateWorkerOutput(body))
+			return
+		}
 	}
+}
+
+// autoProvisionBudget reports how many workers this hook may create right now.
+//
+// Credits are the only instruction to create: one unspent credit buys exactly
+// one worker, so a redemption carrying three credits provisions three bots.
+//
+// The static rollout quota (CATSCO_WORKER_CREATE_QUOTA) is an upper bound, not
+// an instruction. Treating it as a budget would drain the whole allowance on the
+// first purchase — an operator account with `=10` would get nine extra machines
+// the moment it redeemed a single-credit invite. It therefore only applies the
+// legacy "first worker" behaviour: with no credits and no worker yet, provision
+// one.
+func (h *CloudWorkerHandler) autoProvisionBudget(uid int64) (int, error) {
+	workers, err := h.cloudWorkersOfOwner(uid)
+	if err != nil {
+		return 0, err
+	}
+	if _, available := h.creditInfo(uid); available > 0 {
+		return available, nil
+	}
+	if len(workers) == 0 && h.quota[uid] > 0 {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+// provisionAutoWorker runs one auto-provisioned create, retrying only while a
+// different operation holds the owner's lock.
+func (h *CloudWorkerHandler) provisionAutoWorker(uid int64) (int, string) {
 	username, err := autoCloudWorkerUsername(uid)
 	if err != nil {
-		log.Printf("[cloud-worker] auto provisioning uid=%d: %v", uid, err)
-		return
+		return http.StatusInternalServerError, err.Error()
 	}
 	payload, err := json.Marshal(BotRegisterRequest{
 		Username:    username,
@@ -1000,22 +1286,20 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 		Role:        "general",
 	})
 	if err != nil {
-		log.Printf("[cloud-worker] auto provisioning uid=%d: encode request: %v", uid, err)
-		return
+		return http.StatusInternalServerError, err.Error()
 	}
 	for attempt := 1; attempt <= autoProvisionMaxAttempts; attempt++ {
 		// The request body is consumed by HandleCreate; rebuild it per attempt.
 		req, err := http.NewRequest(http.MethodPost, "/api/cloud-workers", strings.NewReader(string(payload)))
 		if err != nil {
-			log.Printf("[cloud-worker] auto provisioning uid=%d: build request: %v", uid, err)
-			return
+			return http.StatusInternalServerError, err.Error()
 		}
 		req = req.WithContext(context.WithValue(context.Background(), uidKey, uid))
 		recorder := &discardResponseWriter{}
 		h.HandleCreate(recorder, req)
 		if recorder.status >= 200 && recorder.status < 300 {
 			log.Printf("[cloud-worker] auto provisioning started uid=%d username=%s", uid, username)
-			return
+			return recorder.status, ""
 		}
 		if recorder.status == http.StatusConflict && attempt < autoProvisionMaxAttempts {
 			// An in-flight cloud operation (a manual create/update/reset or a
@@ -1027,13 +1311,17 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 			time.Sleep(autoProvisionRetryDelay(attempt))
 			continue
 		}
-		log.Printf("[cloud-worker] CRITICAL auto provisioning failed uid=%d status=%d body=%s", uid, recorder.status, truncateWorkerOutput(recorder.body.String()))
-		return
+		return recorder.status, recorder.body.String()
 	}
+	return http.StatusConflict, "auto provisioning retries exhausted"
 }
 
-// autoProvisionMaxAttempts bounds the 409 retries of AutoProvisionForOwner.
+// autoProvisionMaxAttempts bounds the 409 retries of one auto-provisioned create.
 const autoProvisionMaxAttempts = 3
+
+// autoProvisionMaxPerRun bounds how many workers one EnsureCloudWorker call may
+// create. Credits stay spendable, so a larger batch is picked up on the next call.
+const autoProvisionMaxPerRun = 5
 
 // autoProvisionRetryDelay is a variable so tests can compress the backoff.
 var autoProvisionRetryDelay = func(attempt int) time.Duration {
@@ -1086,8 +1374,8 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewRep
 	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
 		return nil
 	}
-	h.opMu.Lock()
-	defer h.opMu.Unlock()
+	opLock := h.lockOwnerOperation(uid)
+	defer opLock.Unlock()
 	lifecycleStore, ok := h.credits.(interface {
 		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
 	})
@@ -1111,6 +1399,77 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewRep
 	return report
 }
 
+// ApplyPlanToOwner pushes a package tier change to every packed worker the owner
+// still runs.
+//
+// Background: an upgrade used to be a database-only fact. Fulfilment extended
+// the entitlement, the quota grants and the paid window, then called the renew
+// script — which only resumes a suspended container and rewrites its expiry.
+// The container kept the memory, CPU and disk of the tier it was created with,
+// so a customer who paid for a bigger package never received the resources.
+// runtimePlan was read once at provision time and never again.
+//
+// The adapter (CATSCO_WORKER_CHANGE_PLAN_SCRIPT) is idempotent: a tenant already
+// on the tier answers "noop" without being touched, which is why this is safe to
+// run after every fulfilment, including first purchases.
+//
+// Failures are logged and never propagated: the payment is already settled, and
+// a failed tier push must not look like a failed order.
+func (h *CloudWorkerHandler) ApplyPlanToOwner(uid int64, tier string) {
+	tier = strings.TrimSpace(tier)
+	if h == nil || uid <= 0 || h.changePlanScript == "" || tier == "" {
+		return
+	}
+	lifecycleStore, ok := h.credits.(interface {
+		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
+	})
+	if !ok {
+		log.Printf("[cloud-worker] plan sync: lifecycle store unavailable uid=%d tier=%s", uid, tier)
+		return
+	}
+	lifecycles, err := lifecycleStore.ListCloudWorkerLifecycles(uid)
+	if err != nil {
+		log.Printf("[cloud-worker] plan sync list uid=%d tier=%s failed: %v", uid, tier, err)
+		return
+	}
+	for _, lifecycle := range lifecycles {
+		if lifecycle.State == "delete_running" || lifecycle.State == "deleted" ||
+			strings.TrimSpace(lifecycle.TenantName) == "" {
+			continue
+		}
+		out, runErr := h.runScript(h.changePlanScript, "--name", lifecycle.TenantName, "--plan", tier)
+		if runErr != nil {
+			log.Printf("[cloud-worker] plan sync tenant=%s uid=%d tier=%s failed: %v",
+				lifecycle.TenantName, uid, tier, runErr)
+			continue
+		}
+		log.Printf("[cloud-worker] plan sync tenant=%s uid=%d tier=%s result=%s",
+			lifecycle.TenantName, uid, tier, strings.TrimSpace(string(out)))
+	}
+}
+
+// cloudWorkerRenewArgs builds the provider renewal invocation for one lifecycle.
+//
+// One renewal event buys exactly one more paid month, so the increment is pinned
+// rather than inherited from a deployment snapshot that may record a multi-month
+// creation purchase.
+//
+// The expiry is forwarded because a packed container has no cloud subscription:
+// the deployment adapter cannot derive a new expiry from a subscription cycle and
+// used to fall back to a hard-coded +30 days, silently handing a 7-day package
+// three extra weeks. The account's paid window is the authoritative value.
+//
+// It is only forwarded when it actually extends the row — a stale entitlement
+// must never pull an already-paid window backwards. When the store cannot report
+// a package expiry (manual perpetual grants) the adapter keeps its own fallback.
+func (h *CloudWorkerHandler) cloudWorkerRenewArgs(uid int64, lifecycle CloudWorkerLifecycle) []string {
+	args := []string{"--name", lifecycle.TenantName, "--cycle-count", "1"}
+	if paidUntil := h.cloudWorkerPaidUntil(uid, nil); !paidUntil.IsZero() && lifecycle.PackageExpiresAt.Before(paidUntil) {
+		args = append(args, "--expires-at", paidUntil.UTC().Format(time.RFC3339))
+	}
+	return args
+}
+
 // renewOneCloudWorker runs the provider renewal for a single lifecycle and
 // reports the outcome; it never creates a replacement instance.
 func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorkerLifecycle) types.CloudWorkerRenewOutcome {
@@ -1127,7 +1486,7 @@ func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorke
 	// One renewal event buys exactly one more paid month. A tenant's
 	// deployment snapshot can record a multi-month creation purchase, so
 	// pin the monthly step explicitly instead of inheriting that count.
-	out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName, "--cycle-count", "1")
+	out, err := h.runScript(h.renewScript, h.cloudWorkerRenewArgs(uid, lifecycle)...)
 	if err != nil {
 		item.Status = types.CloudWorkerRenewFailed
 		item.Message = err.Error()
@@ -1156,11 +1515,17 @@ func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorke
 		return item
 	}
 	expiresAt := result.ExpiresAt
+	graceDays := cloudWorkerExpiryGraceDays
+	if lifecycle.RetentionDays > 0 {
+		// Keep the window the purchased package scheduled; a renewal must not
+		// silently stretch a 7-day package's retention to the legacy 15 days.
+		graceDays = lifecycle.RetentionDays
+	}
 	var extendErr error
 	if extender, ok := h.credits.(CloudWorkerLifecycleExtender); ok {
-		extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, cloudWorkerExpiryGraceDays)
+		extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, graceDays)
 	} else {
-		extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, cloudWorkerExpiryGraceDays)
+		extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, graceDays)
 	}
 	if extendErr != nil {
 		item.Message = "已续订；平台记录同步失败：" + extendErr.Error()
@@ -1213,6 +1578,19 @@ func (h *CloudWorkerHandler) cloudWorkerPaidUntil(ownerUID int64, creditExpiresA
 		return value.UTC()
 	}
 	return time.Time{}
+}
+
+// cloudWorkerProvisionExpiryArgs turns the paid window into the deployment
+// script argument that records it on the cluster. Shared-fleet tenants
+// otherwise look "never expiring" cluster-side until their first renewal, so
+// nothing reaps them when the platform scheduler stops (the cluster's
+// packed-retention.sh is that fallback). Dedicated ECS workers are reaped by
+// the provider subscription and carry no package expiry.
+func cloudWorkerProvisionExpiryArgs(profile string, paidUntil time.Time) []string {
+	if profile != types.CloudWorkerPackedShared || paidUntil.IsZero() {
+		return nil
+	}
+	return []string{"--expires-at", paidUntil.UTC().Format(time.RFC3339)}
 }
 
 // cloudWorkerProvisionCycles converts a paid window into whole prepaid months
@@ -1326,13 +1704,15 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// All paid-instance operations are serialized so the quota check and the
-	// bot creation stay atomic and no single user can pile up concurrent
-	// script processes.
-	if !h.tryBeginOperation(w) {
+	// All paid-instance operations of one account are serialized so the quota
+	// check and the bot creation stay atomic and no single user can pile up
+	// concurrent script processes. The gate is per owner: a global one meant one
+	// buyer's 25-second provision rejected everybody else at peak.
+	opLock, ok := h.tryBeginOperation(w, uid)
+	if !ok {
 		return
 	}
-	defer h.opMu.Unlock()
+	defer opLock.Unlock()
 
 	// Parse and validate the request before reserving a paid credit. Invalid
 	// requests must never make a user's entitlement appear consumed/reserved.
@@ -1383,6 +1763,13 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	reservation := fmt.Sprintf("create-%d-%d", uid, time.Now().UnixNano())
 	reservedCredit := false
 	var creditExpiresAt *time.Time
+	// retentionDays comes from the purchased plan's credit (7-day package → 3
+	// days, longer → 7 days); 0 keeps the fleet-wide default.
+	retentionDays := 0
+	// runtimePlan is the shared-fleet slot size bought by the package. Empty
+	// keeps the fleet default, which is what operator-issued and pre-existing
+	// credits carry.
+	runtimePlan := ""
 	profile := types.CloudWorkerPrivateNAT
 	billing := types.CloudWorkerMonthly
 	requestedProfile, _ := r.Context().Value(cloudWorkerProfileContextKey{}).(string)
@@ -1397,6 +1784,8 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		if reserved {
 			profile, billing = selected.Profile, selected.BillingMode
 			creditExpiresAt = selected.ExpiresAt
+			retentionDays = selected.RetentionDays
+			runtimePlan = selected.RuntimePlan
 		}
 	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 		selected, reserved, reserveErr := profiled.ReserveCloudWorkerProfileCredit(uid, reservation, requestedProfile)
@@ -1424,7 +1813,11 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	deployment, deploymentErr := h.deploymentForProfile(profile)
-	if deploymentErr == nil {
+	if deploymentErr == nil && deployment.Profile != types.CloudWorkerPackedShared {
+		// Machine-level billing belongs to the dedicated ECS fleet: that script
+		// buys a subscription and pre-pays whole monthly cycles. A packed worker
+		// runs in an already-owned container, so emitting these variables would
+		// only invite someone to read them as a real billing decision.
 		deployment.Env["CTYUN_WORKER_BILLING_MODE"] = billing
 		if billing == types.CloudWorkerMonthly {
 			// Tianyi prepaid instances are sold in whole monthly cycles. Prepay
@@ -1454,6 +1847,24 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	}
 
 	tenantName := cloudWorkerTenantName(result.Username)
+
+	// 共享集群的租户名有硬上限（见 packedTenantNameMaxLen）。这里挡在"创建云资源"之前：
+	// 再往下就是写 tenant_name、跑 provision 脚本，等容器建不出来再回滚，
+	// 留给人看的只是一条 incus 报错。
+	if nameErr := validatePackedTenantName(deployment.Profile, tenantName); nameErr != nil {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
+		log.Printf("[cloud-worker] tenant name rejected for uid %d: %v", uid, nameErr)
+		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
+			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": nameErr.Error(),
+			"code":  "cloud_worker_tenant_name_too_long",
+		})
+		return
+	}
 
 	// 在创建任何云资源之前持久化 tenant 标识。这样无论 provision 后续怎么失败，
 	// Keep the tenant handle on the bot record so the managed worker remains
@@ -1551,17 +1962,63 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer cleanupCredentialFile()
-	provOut, err := h.runScript(h.provisionScript,
+	provisionArgs := []string{
 		"--name", tenantName,
 		"--body-id", officialBodyID,
 		"--credential-file", credentialFile,
 		"--bot-uid", strconv.FormatInt(result.UID, 10),
 		"--user-uid", strconv.FormatInt(uid, 10),
 		"--user-name", creator.Username,
-		"--user-display", creator.DisplayName)
+		"--user-display", creator.DisplayName,
+	}
+	// Only the shared container fleet has runtime tiers. A dedicated ECS
+	// instance's size comes from the provider flavor, so passing a packed tier
+	// there would be meaningless at best.
+	if deployment.Profile == types.CloudWorkerPackedShared && runtimePlan != "" {
+		provisionArgs = append(provisionArgs, "--plan", runtimePlan)
+	}
+	provisionArgs = append(provisionArgs, cloudWorkerProvisionExpiryArgs(deployment.Profile, h.cloudWorkerPaidUntil(uid, creditExpiresAt))...)
+	provOut, err := h.runScript(h.provisionScript, provisionArgs...)
 	if err != nil {
 		// 脚本的具体失败原因（如云资源配额不足）只写入服务器日志，不回显给前端。
 		log.Printf("[cloud-worker] provision %s failed: %v; output=%s", tenantName, err, truncateWorkerOutput(provOut))
+		// A full tier pool is not a failure: the buyer paid for a slot that is
+		// momentarily taken. Placement happens before any container exists, so
+		// there is nothing to clean up — park the credit and let the capacity
+		// sweep retry it. Treating this like any other provision error would
+		// either destroy a paid order or leave the buyer with an error page on
+		// the busiest day of the month.
+		if cloudWorkerCapacityFull(err, provOut) {
+			queued := false
+			if reservedCredit {
+				if queuer, ok := h.credits.(cloudWorkerQueueStore); ok {
+					if ok, queueErr := queuer.QueueCloudWorkerCredit(uid, reservation); queueErr != nil {
+						log.Printf("[cloud-worker] queue credit uid=%d failed: %v", uid, queueErr)
+					} else {
+						queued = ok
+					}
+				}
+				if !queued {
+					// Keep the credit spendable rather than silently losing it; the
+					// buyer can retry manually and the sweep re-evaluates capacity.
+					_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+				}
+			}
+			if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
+				log.Printf("[cloud-worker] rollback delete for queued uid %d failed: %v", result.UID, rollbackErr)
+			}
+			position := h.cloudWorkerQueuePosition(uid)
+			log.Printf("[cloud-worker] tier capacity full uid=%d tier=%s queued=%v position=%d", uid, runtimePlan, queued, position)
+			writeJSON(w, http.StatusAccepted, map[string]interface{}{
+				"error":               "this package's shared fleet is full right now; your machine is queued and starts automatically",
+				"code":                "cloud_worker_capacity_queued",
+				"queued":              queued,
+				"queue_position":      position,
+				"tier":                runtimePlan,
+				"retry_after_seconds": cloudWorkerQueueRetrySeconds,
+			})
+			return
+		}
 		// The provision script may have created the cloud instance before
 		// failing on a later step. Try to destroy any partially created
 		// instance so we do not leave a still-billed orphan behind (the
@@ -1642,7 +2099,13 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if reservedCredit {
-		if err := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, cloudWorkerExpiryGraceDays); err != nil {
+		// Use the purchased package's retention window; only credits that predate
+		// the column fall back to the fleet default.
+		graceDays := retentionDays
+		if graceDays <= 0 {
+			graceDays = cloudWorkerExpiryGraceDays
+		}
+		if err := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, graceDays); err != nil {
 			log.Printf("[cloud-worker] commit credit for uid %d failed: %v", uid, err)
 			// A refund can revoke a reserved credit while the provider operation is
 			// still running. In that specific case the instance must not survive a
@@ -1726,21 +2189,163 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 // afterwards: a renewal cannot revive a destroy that is already running, so
 // the credit granted by that payment is spent on a replacement instance.
 func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
-	if !h.opMu.TryLock() {
+	if !h.sweepMu.TryLock() {
 		return
 	}
 	rebuildOwners := h.sweepExpiredWorkersLocked(now)
-	h.opMu.Unlock()
+	h.sweepMu.Unlock()
 	// Rebuilding provisions a new worker through HandleCreate, which takes the
 	// same gate: it must run after the sweep has released it.
 	for _, uid := range rebuildOwners {
 		h.restoreCloudWorkerAfterDeletion(uid)
 	}
+	h.retryQueuedCloudWorkers()
+	h.retryOrphanedCloudWorkerCredits()
+}
+
+// cloudWorkerOrphanCreditMinAge is how long a paid credit may sit untouched
+// before the sweep picks it up. The payment path provisions in seconds, so a
+// credit this old means the goroutine never ran (process restart, panic, or a
+// redeploy in the window between commit and create).
+const cloudWorkerOrphanCreditMinAge = 10 * time.Minute
+
+// cloudWorkerIdleSweepLogEvery is how many consecutively empty expiry sweeps
+// pass between idle heartbeat lines. The sweep ticks once a minute, so ten
+// means one line every ten minutes: enough that a silent log is evidence of a
+// wedged loop, sparse enough to stay out of the way of real events.
+const cloudWorkerIdleSweepLogEvery = 10
+
+// cloudWorkerOrphanRetryBackoff keeps a permanently broken account from
+// spending a create attempt every sweep tick. It is process-local on purpose:
+// a restart simply retries once, which is the desired behaviour.
+const cloudWorkerOrphanRetryBackoff = 15 * time.Minute
+
+// retryOrphanedCloudWorkerCredits is the backstop for "payment committed, then
+// the provisioning goroutine died".
+//
+// Credits are minted inside the fulfilment transaction and provisioning runs on
+// a bare `go` call, so nothing re-drives it if the process goes away in that
+// window. Without this sweep the buyer's package was fully paid and fully
+// entitled but no machine ever appeared, and the only symptom was a support
+// ticket.
+//
+// Only paid sources are considered (see ListOrphanedCloudWorkerCredits) and the
+// owner's operation lock is still honoured by HandleCreate, so a concurrent
+// manual create just makes this a no-op.
+func (h *CloudWorkerHandler) retryOrphanedCloudWorkerCredits() {
+	store, ok := h.credits.(interface {
+		ListOrphanedCloudWorkerCredits(time.Duration, int) ([]int64, error)
+	})
+	if !ok || h.provisionScript == "" {
+		// Say why, exactly once per reason. A silent type-assertion failure is
+		// the failure mode this whole backstop exists to remove: the sweep would
+		// be dead and every signal we have would still look healthy.
+		h.logOrphanSweepInactive(!ok, h.provisionScript == "")
+		return
+	}
+	h.orphanSweepActive.Store(true)
+	uids, err := store.ListOrphanedCloudWorkerCredits(cloudWorkerOrphanCreditMinAge, 5)
+	if err != nil {
+		log.Printf("[cloud-worker] orphaned credit sweep failed: %v", err)
+		return
+	}
+	now := time.Now()
+	for _, uid := range uids {
+		h.orphanMu.Lock()
+		until, blocked := h.orphanRetryBlocked[uid]
+		h.orphanMu.Unlock()
+		if blocked && now.Before(until) {
+			continue
+		}
+		log.Printf("[cloud-worker] recovering paid worker with an unspent credit uid=%d (the payment hook never completed)", uid)
+		before, beforeErr := h.cloudWorkersOfOwner(uid)
+		h.AutoProvisionForOwner(uid)
+		after, afterErr := h.cloudWorkersOfOwner(uid)
+		if beforeErr != nil || afterErr != nil {
+			// The roster read failed, so we cannot tell whether anything
+			// happened. Do not back off on a guess; the next sweep retries.
+			continue
+		}
+		h.orphanMu.Lock()
+		if h.orphanRetryBlocked == nil {
+			h.orphanRetryBlocked = map[int64]time.Time{}
+		}
+		if len(after) <= len(before) {
+			// No worker appeared, so this attempt achieved nothing. Back off
+			// instead of retrying on every tick; the log above already makes the
+			// account visible to an operator.
+			h.orphanRetryBlocked[uid] = now.Add(cloudWorkerOrphanRetryBackoff)
+			h.orphanMu.Unlock()
+			log.Printf("[cloud-worker] orphaned credit recovery made no progress uid=%d workers=%d", uid, len(after))
+		} else {
+			delete(h.orphanRetryBlocked, uid)
+			h.orphanMu.Unlock()
+			log.Printf("[cloud-worker] orphaned credit recovered uid=%d workers=%d", uid, len(after))
+		}
+	}
+}
+
+// logOrphanSweepInactive explains, once, why the orphan-credit backstop cannot
+// run. Kept separate from the caller so the reason list stays in one place.
+func (h *CloudWorkerHandler) logOrphanSweepInactive(storeUnsupported, noProvisionScript bool) {
+	h.orphanSweepInactiveOnce.Do(func() {
+		switch {
+		case noProvisionScript:
+			log.Printf("[cloud-worker] orphaned credit backstop is OFF: CATSCO_WORKER_PROVISION_SCRIPT is not configured, so a credit whose payment hook died can never be recovered automatically")
+		case storeUnsupported:
+			log.Printf("[cloud-worker] orphaned credit backstop is OFF: the credit store does not implement ListOrphanedCloudWorkerCredits (adapter older than the sweep?)")
+		}
+	})
+}
+
+// retryQueuedCloudWorkers retries buyers whose paid credit was parked because
+// their package tier had no free slot.
+//
+// Runs after the sweep released the operation gate, because retrying goes
+// through HandleCreate, which takes the same gate. Each credit is flipped back
+// to 'available' first so the normal reserve/create path applies unchanged; if
+// the pool is still full the create parks it again, which is why the claim is
+// safe to repeat every sweep.
+func (h *CloudWorkerHandler) retryQueuedCloudWorkers() {
+	queuer, ok := h.credits.(cloudWorkerQueueStore)
+	if !ok || h.provisionScript == "" {
+		h.logQueueSweepInactive(!ok, h.provisionScript == "")
+		return
+	}
+	queued, err := queuer.ListQueuedCloudWorkerCredits(cloudWorkerQueueMinAge, 10)
+	if err != nil {
+		log.Printf("[cloud-worker] queued credit sweep failed: %v", err)
+		return
+	}
+	for _, item := range queued {
+		claimed, claimErr := queuer.ClaimQueuedCloudWorkerCredit(item.UID)
+		if claimErr != nil {
+			log.Printf("[cloud-worker] queued credit claim uid=%d failed: %v", item.UID, claimErr)
+			continue
+		}
+		if !claimed {
+			continue
+		}
+		log.Printf("[cloud-worker] retrying queued worker uid=%d tier=%s queued_at=%s", item.UID, item.Tier, item.QueuedAt.UTC().Format(time.RFC3339))
+		h.AutoProvisionForOwner(item.UID)
+	}
+}
+
+// logQueueSweepInactive explains, once, why the capacity-queue retry cannot run.
+func (h *CloudWorkerHandler) logQueueSweepInactive(storeUnsupported, noProvisionScript bool) {
+	h.queueSweepInactiveOnce.Do(func() {
+		switch {
+		case noProvisionScript:
+			log.Printf("[cloud-worker] capacity-queue retry is OFF: CATSCO_WORKER_PROVISION_SCRIPT is not configured, so a buyer queued at peak would stay queued forever")
+		case storeUnsupported:
+			log.Printf("[cloud-worker] capacity-queue retry is OFF: the credit store does not implement ListQueuedCloudWorkerCredits")
+		}
+	})
 }
 
 // sweepExpiredWorkersLocked performs the lifecycle transitions documented on
 // SweepExpiredWorkers and returns the owners that need a replacement worker.
-// The caller owns h.opMu.
+// The caller owns the sweep gate.
 func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 	started := time.Now()
 	store, ok := h.credits.(interface {
@@ -1751,21 +2356,54 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 		MarkCloudWorkerLifecycleDeleted(int64, string) error
 	})
 	if !ok || h.destroyScript == "" {
+		// Two silent reasons, and both disable the whole expiry chain:
+		// no lifecycle store (wiring drift / older adapter) or no destroy script.
+		// A silent return here means expired packages are never archived and never
+		// destroyed — the customer keeps a free machine, and nothing in the logs
+		// says why. This is exactly the "config looks right, behaviour is wrong"
+		// shape that a bare `return` hides, so say it once.
+		h.sweepInactiveOnce.Do(func() {
+			switch {
+			case h.destroyScript == "":
+				log.Printf("[cloud-worker] lifecycle sweep is OFF: CATSCO_WORKER_DESTROY_SCRIPT is not configured, so expired packages are never archived or destroyed")
+			case !ok:
+				log.Printf("[cloud-worker] lifecycle sweep is OFF: the credit store does not implement the lifecycle surface (ListCloudWorkerLifecycleDue and friends)")
+			}
+		})
 		return nil
 	}
 	items, err := store.ListCloudWorkerLifecycleDue(now, 100)
 	if err != nil {
 		log.Printf("[cloud-worker] lifecycle sweep list failed: %v", err)
+		h.idleSweeps = 0
 		return nil
 	}
 	if len(items) == 0 {
+		// An empty sweep is the normal steady state, but it must not be
+		// indistinguishable from a sweep that never ran. Heartbeat on the first
+		// empty tick after startup/activity (so a restart proves liveness) and
+		// then every cloudWorkerIdleSweepLogEvery ticks.
+		h.idleSweeps++
+		if (h.idleSweeps-1)%cloudWorkerIdleSweepLogEvery == 0 {
+			log.Printf("[cloud-worker] lifecycle sweep idle: nothing due (consecutive_empty=%d, duration=%s)",
+				h.idleSweeps, time.Since(started).Round(time.Millisecond))
+		}
 		return nil
 	}
+	h.idleSweeps = 0
 	markedPending, claimedCount, deleted, failed, awaitingRecycle := 0, 0, 0, 0, 0
 	var rebuildOwners []int64
 	queuedRebuild := map[int64]bool{}
 	for _, item := range items {
-		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") {
+		// The on-demand branch exists to drive ECS subscription billing:
+		// convert a trial into a paid month, or suspend it at trial expiry.
+		// A packed worker has no subscription, and billing-worker.sh lives only
+		// on the ECS script path — routing it here fails every sweep and
+		// `continue`s past the normal expire/archive step, so the worker would
+		// never expire at all. Treat shared containers as plain package
+		// lifecycles and keep billing_mode collapsed to month at the boundaries.
+		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") &&
+			!h.tenantRunsOnPackedShared(item.TenantName) {
 			action := "suspend"
 			if item.ConversionPending {
 				action = "convert"
@@ -1781,7 +2419,16 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 			// for the grace window. If it fails, leave the row active so the
 			// next sweep retries instead of silently skipping the pause.
 			if h.expireScript != "" {
-				out, err := h.runScript(h.expireScript, "--name", item.TenantName)
+				// Hand the plan's own retention window to the deployment hook.
+				// The cluster keeps its own suspended.json deadline and a fallback
+				// reaper reads it; if it disagrees with delete_after the reaper
+				// either destroys while the platform still expects data to exist
+				// or leaves the instance around long after the platform removed it.
+				expireArgs := []string{"--name", item.TenantName}
+				if item.RetentionDays > 0 {
+					expireArgs = append(expireArgs, "--grace-days", strconv.Itoa(item.RetentionDays))
+				}
+				out, err := h.runScript(h.expireScript, expireArgs...)
 				if err != nil {
 					failed++
 					log.Printf("[cloud-worker] lifecycle expire-suspend %s failed: %s", item.TenantName, truncateWorkerOutput(destroyErrorDetail(err, out)))
@@ -1857,7 +2504,8 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 //
 // An available credit is the only ticket accepted here: the shared rollout
 // quota is a one-time grant and must never silently mint a new free instance
-// on every expiry. Runs outside h.opMu because HandleCreate acquires it.
+// on every expiry. Runs outside the sweep gate because HandleCreate acquires the
+// owner's operation lock.
 func (h *CloudWorkerHandler) restoreCloudWorkerAfterDeletion(uid int64) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -2062,7 +2710,8 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	if !h.tryBeginOperation(w) {
+	opLock, ok := h.tryBeginOperation(w, uid)
+	if !ok {
 		if cleanupCredentialFile != nil {
 			cleanupCredentialFile()
 		}
@@ -2073,7 +2722,7 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	// polling contract; the repaired Nginx route gives legacy requests enough
 	// time to finish instead of failing at the generic 60-second timeout.
 	if r.URL.Query().Get("async") != "1" {
-		defer h.opMu.Unlock()
+		defer opLock.Unlock()
 		if cleanupCredentialFile != nil {
 			defer cleanupCredentialFile()
 		}
@@ -2092,7 +2741,7 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	}
 	operationID, idErr := newCloudWorkerOperationID()
 	if idErr != nil {
-		h.opMu.Unlock()
+		opLock.Unlock()
 		if cleanupCredentialFile != nil {
 			cleanupCredentialFile()
 		}
@@ -2129,10 +2778,10 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 			h.requestCloudStatusRefresh(true)
 			h.finishCloudWorkerOperation(operationID, "succeeded", "")
 		}
-		// Publish the terminal state before releasing the global gate. This
+		// Publish the terminal state before releasing the gate. This
 		// avoids a small race where a subsequent action is accepted while the
 		// previous operation is still reported as running by the roster.
-		h.opMu.Unlock()
+		opLock.Unlock()
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"status": "pending", "action": action, "operation_id": operationID,

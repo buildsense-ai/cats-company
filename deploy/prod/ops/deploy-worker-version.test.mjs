@@ -319,3 +319,20 @@ test("deploy-worker-version: corrupted shared cache is downloaded again", () => 
   assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
   assert.equal(readState(sb).artifactDownloads, 2);
 });
+
+test("deploy-worker-version: prunes the artifact cache to the newest 3 versions", () => {
+  const sb = setupSandbox({ localRelease: false });
+  // 预置三个历史版本目录，模拟长期运行后堆积的缓存
+  for (const v of ["1.4.6", "1.4.7", "1.4.8"]) {
+    const d = path.join(sb.cacheDir, v);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, "placeholder"), "x");
+  }
+  const r = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  const left = fs
+    .readdirSync(sb.cacheDir)
+    .filter((n) => fs.statSync(path.join(sb.cacheDir, n)).isDirectory())
+    .sort();
+  assert.deepEqual(left, ["1.4.7", "1.4.8", "1.4.9"], "旧版本应被回收: " + JSON.stringify(left));
+});

@@ -1539,8 +1539,8 @@ export default function CloudArtifactsPanel({
   );
 }
 
-function GatewayAnnotationPopover({ capture, onSubmit, onScreenshot, onCancel }) {
-  const [body, setBody] = useState('');
+export function GatewayAnnotationPopover({ capture, onSubmit, onScreenshot, onCancel }) {
+  const [body, setBody] = useState(capture.body || '');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [position, setPosition] = useState(null);
@@ -1555,6 +1555,11 @@ function GatewayAnnotationPopover({ capture, onSubmit, onScreenshot, onCancel })
     screenshotControllerRef.current?.abort();
     const controller = new AbortController();
     screenshotControllerRef.current = controller;
+    if (capture.invalidated) {
+      setScreenshot(null); setScreenshotState('stale'); setTextOnly(false);
+      setScreenshotError('应用位置已变化，评论已保留。请在应用中重新选择目标。');
+      return;
+    }
     setScreenshotState('capturing'); setScreenshotError(''); setScreenshot(null); setTextOnly(false);
     try {
       if (typeof onScreenshot !== 'function') throw new Error('截图组件未就绪，请重试');
@@ -1572,10 +1577,20 @@ function GatewayAnnotationPopover({ capture, onSubmit, onScreenshot, onCancel })
   const sendingRef = useRef(false);
   useEffect(() => {
     activeRef.current = true;
-    inputRef.current?.focus();
+    inputRef.current?.focus({ preventScroll: true });
     return () => { activeRef.current = false; screenshotControllerRef.current?.abort(); };
   }, []);
-  useEffect(() => { void captureScreenshot(); }, [captureScreenshot]);
+  useEffect(() => {
+    // StrictMode rehearses effects before committing. Do not start a renderer
+    // job for that discarded effect: it cannot be synchronously aborted.
+    let disposed = false;
+    queueMicrotask(() => { if (!disposed) void captureScreenshot(); });
+    return () => {
+      disposed = true;
+      screenshotGenerationRef.current += 1;
+      screenshotControllerRef.current?.abort();
+    };
+  }, [captureScreenshot]);
   useLayoutEffect(() => {
     const measure = () => {
       const frame = capture.frame;
@@ -1588,7 +1603,7 @@ function GatewayAnnotationPopover({ capture, onSubmit, onScreenshot, onCancel })
         width: rect.width * bounds.width,
         height: rect.height * bounds.height,
       } : null;
-      const width = Math.min(320, Math.max(160, window.innerWidth - 24));
+      const width = Math.min(360, Math.max(160, window.innerWidth - 24));
       const height = popupRef.current?.offsetHeight || 260;
       const anchorX = target?.left ?? bounds.left + 12;
       const below = target ? target.top + target.height + 8 : bounds.top + 12;
@@ -1603,7 +1618,7 @@ function GatewayAnnotationPopover({ capture, onSubmit, onScreenshot, onCancel })
     if (popupRef.current) observer?.observe(popupRef.current);
     window.addEventListener('resize', measure);
     const scrolled = event => {
-      if (!(event.target instanceof Node) || !popupRef.current?.contains(event.target)) onCancel?.();
+      if (!(event.target instanceof Node) || !popupRef.current?.contains(event.target)) measure();
     };
     window.addEventListener('scroll', scrolled, true);
     return () => { observer?.disconnect(); window.removeEventListener('resize', measure);
@@ -1611,7 +1626,7 @@ function GatewayAnnotationPopover({ capture, onSubmit, onScreenshot, onCancel })
   }, [capture, onCancel]);
   const submit = async () => {
     const comment = body.trim();
-    if (!comment || comment.length > 2000 || sendingRef.current || screenshotState === 'capturing'
+    if (capture.invalidated || !comment || Array.from(comment).length > 2000 || sendingRef.current || screenshotState === 'capturing'
       || (!textOnly && screenshotState !== 'ready')) return;
     sendingRef.current = true;
     setPending(true); setError('');
@@ -1627,20 +1642,31 @@ function GatewayAnnotationPopover({ capture, onSubmit, onScreenshot, onCancel })
   const targetSummary = capture.target?.element_id ? `#${capture.target.element_id}`
     : capture.target?.text || capture.target?.selector || '所选区域（仅位置参考）';
   return createPortal(<>
-    {position?.target && <div className="gateway-annotation-target-outline" aria-hidden="true"
+    {!capture.invalidated && position?.target && <div className="gateway-annotation-target-outline" aria-hidden="true"
       style={{ left: position.target.left, top: position.target.top,
         width: position.target.width, height: position.target.height }} />}
     <section ref={popupRef} className="gateway-annotation-popover" role="dialog" aria-label="应用批注"
       style={position ? { left: position.left, top: position.top, width: position.width } : { visibility: 'hidden' }}
       onKeyDown={event => {
+        if (event.nativeEvent.isComposing || event.isComposing || event.keyCode === 229) {
+          event.stopPropagation();
+          return;
+        }
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCancel?.(); }
         else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
           event.preventDefault(); void submit();
         }
       }}>
+      <header className="gateway-annotation-popover-heading">
+        <Pencil size={16} aria-hidden="true" /><strong>添加批注</strong>
+        <button type="button" aria-label="取消批注" title="取消批注" onClick={onCancel}><X size={17} /></button>
+      </header>
       <strong className="gateway-annotation-popover-target" title={targetSummary}>{targetSummary}</strong>
       <textarea ref={inputRef} aria-label="批注内容" placeholder="写下修改建议…" value={body}
-        disabled={pending} onChange={event => setBody(event.currentTarget.value)} />
+        disabled={pending} onChange={event => {
+          capture.body = event.currentTarget.value;
+          setBody(capture.body);
+        }} />
       <div className="gateway-annotation-screenshots" aria-label="批注截图">
         {screenshotState === 'capturing' && <p role="status">正在捕获应用视口与选区…</p>}
         {screenshotState === 'ready' && screenshot?.screenshots.map(image => (
@@ -1649,20 +1675,30 @@ function GatewayAnnotationPopover({ capture, onSubmit, onScreenshot, onCancel })
             <figcaption>{image.role === 'full' ? '应用视口' : '选区及周边'}</figcaption>
           </figure>
         ))}
+        {screenshotState === 'stale' && <p className="gateway-annotation-popover-error" role="alert">{screenshotError}</p>}
         {screenshotState === 'failed' && <>
           <p className="gateway-annotation-popover-error" role="alert">{screenshotError}</p>
           <button type="button" onClick={() => void captureScreenshot()} disabled={pending}>重新捕获截图</button>
-          <label><input type="checkbox" checked={textOnly} disabled={pending}
-            onChange={event => setTextOnly(event.currentTarget.checked)} />仅发送评论和定位，不含截图</label>
         </>}
+        {!capture.invalidated && <label><input type="checkbox" checked={textOnly} disabled={pending}
+          onChange={event => {
+            if (event.currentTarget.checked) {
+              screenshotGenerationRef.current += 1;
+              screenshotControllerRef.current?.abort();
+              setTextOnly(true); setScreenshot(null); setScreenshotState('skipped');
+            } else void captureScreenshot();
+          }} />仅发送评论和定位，不含截图</label>}
         {screenshot?.warnings?.length > 0 && <p role="status">部分视觉证据：{screenshot.warnings.join('；')}</p>}
       </div>
-      <p className="gateway-annotation-popover-note">发送至原会话：评论、应用、页面与目标信息{ textOnly ? '，不含截图。' : '，附应用当前视口和选区截图。' }只截应用，不含聊天或其他窗口；视频或跨域内容可能无法完整捕获。</p>
-      {body.length > 2000 && <p role="alert">评论最多 2000 字，请缩短后发送。</p>}
+      <details className="gateway-annotation-popover-note">
+        <summary>发送至原会话 · {textOnly ? '仅文字与定位' : '附应用与选区截图'}</summary>
+        <p>包含评论、应用、页面和目标信息。截图仅包含应用；视频或跨域内容可能无法完整捕获。</p>
+      </details>
+      {Array.from(body.trim()).length > 2000 && <p role="alert">评论最多 2000 字，请缩短后发送。</p>}
       {error && <p className="gateway-annotation-popover-error" role="alert">{error}</p>}
       <div className="gateway-annotation-popover-actions">
         <button type="button" onClick={onCancel}>取消</button>
-        <button type="button" disabled={pending || !body.trim() || body.length > 2000 || screenshotState === 'capturing'
+        <button type="button" disabled={capture.invalidated || pending || !body.trim() || Array.from(body.trim()).length > 2000 || screenshotState === 'capturing'
           || (!textOnly && screenshotState !== 'ready')}
           onClick={() => void submit()}>{pending ? '发送中…' : '发送'}</button>
       </div>

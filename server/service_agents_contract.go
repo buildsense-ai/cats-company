@@ -44,15 +44,33 @@ type ServiceRunUsage struct {
 	CostCNY float64 `json:"cost_cny"`
 }
 
+// ServiceRunAttachment 是 run 产出的一个文件/图片附件。
+//
+// 为什么要有它，而不是只把文件压成一行文字：bot 把结果写成文件发出来时，
+// 「有附件」这件事必须能被调用方**程序化**地处理（重新发出去、存起来、渲染成
+// 下载卡片），压成文字就只剩一句人话，调用方只能照抄给用户看。
+//
+// URL 是**绝对地址**：相对路径对调用方毫无意义（它不知道平台域名），而对
+// 人类用户来说，绝对地址才会被渲染成可点的链接 —— 否则那份文件在对话里
+// 等于不存在。
+type ServiceRunAttachment struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	Size int64  `json:"size,omitempty"`
+	// Kind 是 file / image（图片在客户端会按图片渲染，不要当普通文件下载）。
+	Kind string `json:"kind,omitempty"`
+}
+
 type ServiceRunEnvelope struct {
-	ContractVersion string           `json:"contract_version"`
-	RunID           string           `json:"run_id"`
-	SessionID       string           `json:"session_id"`
-	Status          ServiceRunState  `json:"status"`
-	Output          json.RawMessage  `json:"output,omitempty"`
-	Files           []string         `json:"files,omitempty"`
-	Usage           *ServiceRunUsage `json:"usage,omitempty"`
-	Error           string           `json:"error,omitempty"`
+	ContractVersion string                 `json:"contract_version"`
+	RunID           string                 `json:"run_id"`
+	SessionID       string                 `json:"session_id"`
+	Status          ServiceRunState        `json:"status"`
+	Output          json.RawMessage        `json:"output,omitempty"`
+	Files           []string               `json:"files,omitempty"`
+	Attachments     []ServiceRunAttachment `json:"attachments,omitempty"`
+	Usage           *ServiceRunUsage       `json:"usage,omitempty"`
+	Error           string                 `json:"error,omitempty"`
 }
 
 type ServiceRunEvent struct {

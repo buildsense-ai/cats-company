@@ -2,33 +2,10 @@ import '../styles/pages/login.css'
 import { appLoginUrl, appRegisterUrl } from '../site-links'
 import { BrandMark, Icon } from './Icons'
 
-type SelectedContext =
-  | { kind: 'plan'; plan: string; price: string; fromPricing: boolean }
-  | { kind: 'invite'; label: string; fromPricing: boolean }
-
-const planDetails: Record<string, { name: string; price: string }> = {
-  free: { name: 'CatsCo Free', price: '免费' },
-  personal: { name: 'CatsCo Pro', price: '¥399/月' },
-  pro: { name: 'CatsCo Max', price: '¥799/月' },
-}
-
-function getSelectedPlan(): SelectedContext | null {
-  const params = new URLSearchParams(window.location.search)
-  const plan = params.get('plan') ?? ''
-  const billing = params.get('billing') ?? ''
-  const access = params.get('access') ?? ''
-  const fromPricing = params.get('source') === 'pricing'
-
-  if (access === 'invite' && !plan && !billing) {
-    return { kind: 'invite', label: '内测邀请码准入', fromPricing }
-  }
-  if (!planDetails[plan] || billing !== 'monthly') return null
-  return { kind: 'plan', plan: planDetails[plan].name, price: planDetails[plan].price, fromPricing }
-}
-
 export function LoginPage() {
-  const selectedPlan = getSelectedPlan()
   const params = new URLSearchParams(window.location.search)
+  const showInvitation = params.get('access') === 'invite' && !params.get('plan') && !params.get('billing')
+  const fromPricing = params.get('source') === 'pricing'
   const loginHref = appLoginUrl({
     plan: params.get('plan') || undefined,
     billing: params.get('billing') || undefined,
@@ -63,16 +40,12 @@ export function LoginPage() {
             <p className="login-description">登录和注册由 CatsCo 工作台安全处理，完成后即可回到真实工作空间。</p>
           </div>
 
-          {selectedPlan && (
-            <div className="login-plan" aria-label={selectedPlan.fromPricing ? '从定价页带入的选择' : '已识别的登录入口'}>
+          {showInvitation && (
+            <div className="login-plan" aria-label={fromPricing ? '从定价页带入的选择' : '已识别的登录入口'}>
               <span className="login-plan-icon"><Icon name="check" className="h-4 w-4" /></span>
               <span>
-                <small>{selectedPlan.fromPricing ? '已从定价页带入' : '已识别入口'}</small>
-                <strong>
-                  {selectedPlan.kind === 'plan'
-                    ? <>{selectedPlan.plan} <em>{selectedPlan.price}</em></>
-                    : selectedPlan.label}
-                </strong>
+                <small>{fromPricing ? '已从定价页带入' : '已识别入口'}</small>
+                <strong>内测邀请码准入</strong>
               </span>
               <a href="/pricing">修改</a>
             </div>

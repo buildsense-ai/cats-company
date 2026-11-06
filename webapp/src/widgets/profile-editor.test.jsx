@@ -45,6 +45,19 @@ describe('ProfileEditor appearance settings', () => {
     });
   }
 
+  it('starts at the heading and keeps both Tab directions inside the dialog', async () => {
+    await renderEditor();
+    const heading = container.querySelector('#profile-editor-dialog-title');
+    const close = container.querySelector('.oc-profile-editor-close');
+    const save = container.querySelector('.oc-profile-editor-actions .oc-btn-primary');
+    expect(document.activeElement).toBe(heading);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(close);
+    heading.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(save);
+  });
+
   it('shows four explicit themes and selects an available theme', async () => {
     const onThemeChange = vi.fn();
     await renderEditor({ onThemeChange });
@@ -147,6 +160,18 @@ describe('ProfileEditor appearance settings', () => {
       .find((button) => button.textContent.includes('意见反馈'));
     await act(async () => Simulate.click(feedback));
     expect(onOpenFeedback).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the onboarding guide from mobile settings and closes settings first', async () => {
+    const onOpenOnboardingGuide = vi.fn();
+    const onClose = vi.fn();
+    await renderEditor({ onOpenOnboardingGuide, onClose });
+    const guide = [...container.querySelectorAll('.oc-profile-mobile-home button')].find(button => button.textContent.includes('新手指引'));
+    expect(guide).toBeTruthy();
+    await act(async () => Simulate.click(guide));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onOpenOnboardingGuide).toHaveBeenCalledTimes(1);
+    expect(onClose.mock.invocationCallOrder[0]).toBeLessThan(onOpenOnboardingGuide.mock.invocationCallOrder[0]);
   });
 
   it('opens password verification instead of selecting a locked liquid theme', async () => {

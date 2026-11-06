@@ -75,8 +75,8 @@ func TestDurableSelectionSurvivesRegistryAndRuntimeRestart(t *testing.T) {
 		t.Fatal("old ephemeral grant survived restart")
 	}
 	newGrants := after.grantsForDevices(7, "grp_1", "group", 42, "cloud", []UserDevice{a})
-	if len(newGrants) != 1 || newGrants[0].ExpiresAt-newGrants[0].CreatedAt > defaultDeviceGrantTTL.Milliseconds() {
-		t.Fatal("durable selection extended execution authority")
+	if len(newGrants) != 1 || !newGrants[0].Permanent || newGrants[0].ExpiresAt != permanentDeviceGrantExpiresAt {
+		t.Fatal("durable selection did not issue a permanent device authorization")
 	}
 	if _, err := after.confirmDeviceSelection(7, session, "b", "user_confirmation", first.Revision); err != nil {
 		t.Fatal(err)

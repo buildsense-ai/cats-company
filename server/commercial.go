@@ -93,6 +93,19 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 	// Which fleet a plan buys is an internal capacity decision; the public
 	// catalog only advertises quotas and prices.
 	copy.CloudWorkerDeploymentProfile = ""
+	// The runtime tier is capacity too: a buyer who cached "pro" would expect a
+	// bigger slot after an operator retuned the plan.
+	copy.CloudWorkerRuntimePlan = ""
+	// Retention windows are an internal capacity/cost decision.
+	copy.CloudWorkerRetentionDays = 0
+	// Whether a package mints a machine is a capacity decision too. The public
+	// page advertises what the package contains in its own copy; exposing this
+	// flag would let a buyer cache it and expect a machine after an edit.
+	copy.CloudWorkerIncluded = false
+	// PlanTier stays: it describes the buyer's own upgrade path (which card is
+	// "续费", which refuses a downgrade, which shows "升级至"), and it carries no
+	// price or cost information. The webapp used to keep its own slug→rung table,
+	// which meant renaming a package silently dropped all three behaviours.
 	return &copy
 }
 
@@ -100,6 +113,24 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 // request omits the field: the plan editor does not round-trip every column, so
 // an absent value must not silently move already-sold plans back onto dedicated
 // instances. An explicit value, including an empty string, is honoured.
+// resolvePlanIncludesWorker keeps a plan's machine-inclusion decision when the
+// admin request omits the field.
+//
+// The plan editor does not round-trip every column, so an absent field must not
+// be read as false: that would strip the machine from a package that is already
+// on sale, and the next buyer would pay for tokens alone. The same reason the
+// fleet assignment is resolved this way.
+func resolvePlanIncludesWorker(existing *types.CommercialPlan, requested *bool) bool {
+	if requested != nil {
+		return *requested
+	}
+	if existing != nil {
+		return existing.CloudWorkerIncluded
+	}
+	// A brand new plan is token-only until an operator says otherwise.
+	return false
+}
+
 func resolvePlanDeploymentProfile(existing *types.CommercialPlan, requested *string) (string, error) {
 	if requested != nil {
 		profile, ok := types.NormalizeCloudWorkerProfile(strings.TrimSpace(*requested))
@@ -113,7 +144,44 @@ func resolvePlanDeploymentProfile(existing *types.CommercialPlan, requested *str
 			return profile, nil
 		}
 	}
-	return types.CloudWorkerPrivateNAT, nil
+	// A brand-new plan with no fleet named runs on the shared container cluster.
+	//
+	// The column default is private_nat, so leaving this to the schema means a
+	// new package silently buys a dedicated ECS instance per buyer — roughly six
+	// times the per-seat infrastructure cost of a shared slot, with no error and
+	// nothing in the console to notice. The two failure modes are not symmetric:
+	// under-delivering a dedicated machine is a visible support ticket, while
+	// over-provisioning dedicated machines is a silent bill.
+	//
+	// An enterprise package that really wants a dedicated instance still says so
+	// explicitly, and existing plans keep the profile already stored on their row.
+	return types.CloudWorkerPackedShared, nil
+}
+
+// resolvePlanRuntimePlan keeps a plan's shared-fleet slot size when the admin
+// request omits the field, for the same reason as the fleet assignment: the
+// editor does not round-trip every column, and an absent field must not resize
+// slots that are already on sale.
+//
+// An empty value is a real answer, not a missing one: it means "whatever the
+// fleet defaults to", which is what every package created before this field
+// existed is already delivering.
+func resolvePlanRuntimePlan(existing *types.CommercialPlan, requested *string) (string, error) {
+	if requested != nil {
+		plan, ok := types.NormalizeCloudWorkerRuntimePlan(strings.TrimSpace(*requested))
+		if !ok {
+			return "", fmt.Errorf("unsupported cloud worker runtime plan")
+		}
+		return plan, nil
+	}
+	if existing != nil {
+		plan, ok := types.NormalizeCloudWorkerRuntimePlan(existing.CloudWorkerRuntimePlan)
+		if !ok {
+			return "", fmt.Errorf("stored cloud worker runtime plan is invalid")
+		}
+		return plan, nil
+	}
+	return "", nil
 }
 
 func commercialUsageSummaryForUser(summary *types.CommercialSummary) *commercialUserSummary {
@@ -1084,9 +1152,21 @@ var commercialCodePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{3,63}$
 // becomes sellable with no control-plane change. Only the plan identities stay
 // pinned, because "this slug is an official paid plan" is a business fact, not
 // a model fact.
+//
+// The retired ¥399 / ¥799 line stays listed so editing one still cannot invent
+// a model or move its total. The current line must be listed too, otherwise the
+// protection would only cover the first package of the line — which is how
+// `catsco-standard`, `catsco-advanced` and `catsco-team` shipped unguarded.
 var commercialOfficialPaidPlanSlugs = map[string]struct{}{
-	"catsco-personal": {},
-	"catsco-pro":      {},
+	// Current packages (prices 59 / 99 / 159 / 599).
+	"catsco-basic":    {},
+	"catsco-standard": {},
+	"catsco-advanced": {},
+	"catsco-team":     {},
+	// Retired packages still held by their buyers.
+	"catsco-personal":     {},
+	"catsco-pro":          {},
+	"catsco-team-monthly": {},
 }
 
 // IsCommercialOfficialPaidPlanSlug reports whether a slug is one of the plans
@@ -1303,6 +1383,19 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			// Pointer so an absent field keeps the plan's current fleet
 			// instead of decoding to "" and landing on private_nat.
 			CloudWorkerDeploymentProfile *string `json:"cloud_worker_deployment_profile"`
+			// Empty keeps the fleet default; the editor sends "light"/"standard"/
+			// "pro"/"heavy" to pin a slot size. Pointer for the same reason as the
+			// fleet: an editor that does not know the field must not clear it.
+			CloudWorkerRuntimePlan *string `json:"cloud_worker_runtime_plan"`
+			// 0 keeps the derived window (7d→3, longer→7); a positive value pins it.
+			CloudWorkerRetentionDays int `json:"cloud_worker_retention_days"`
+			// Pointer so an absent field keeps the plan's current setting instead of
+			// decoding to false and silently stripping the machine from a package
+			// that is already on sale.
+			CloudWorkerIncluded *bool `json:"cloud_worker_included"`
+			// Rung on the upgrade ladder; 0 (or absent) keeps it off the ladder.
+			// A pointer distinguishes "leave it alone" from "take it off".
+			PlanTier *int `json:"plan_tier"`
 			// Pointer so an absent field keeps the plan's current setting
 			// instead of decoding to false and silently pinning the plan.
 			AutoUpdateModels *bool `json:"auto_update_models"`
@@ -1354,14 +1447,27 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			return
 		}
 		modelBudgets := parseCommercialBudgets(req.ModelBudgets)
-		billing, validBilling := types.NormalizeCloudWorkerBilling(req.CloudWorkerBillingMode)
-		if !validBilling || (billing == types.CloudWorkerOnDemand && req.SaleState != "hidden") {
-			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "按量试用仅可用于隐藏的内部套餐"})
-			return
-		}
 		existingPlan := h.commercialPlanForSave(store, req.Slug)
 		if err := h.validateOfficialPaidPlanSave(req.Slug, modelBudgets, existingPlan); err != nil {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		deploymentProfile, err := resolvePlanDeploymentProfile(existingPlan, req.CloudWorkerDeploymentProfile)
+		if err != nil {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		billing, validBilling := types.NormalizeCloudWorkerBilling(req.CloudWorkerBillingMode)
+		if !validBilling {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker billing mode"})
+			return
+		}
+		// A shared container has no cloud subscription to buy: the package window
+		// is the only billing dimension. Collapse the field before the trial-only
+		// rule so packed plans never carry an on-demand flag into the ECS path.
+		billing = types.CloudWorkerBillingForProfile(deploymentProfile, billing)
+		if billing == types.CloudWorkerOnDemand && req.SaleState != "hidden" {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "按量试用仅可用于隐藏的内部套餐"})
 			return
 		}
 		// An absent auto_update_models keeps the plan's current setting; a new
@@ -1373,28 +1479,51 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 		if req.AutoUpdateModels != nil {
 			autoUpdateModels = *req.AutoUpdateModels
 		}
-		deploymentProfile, err := resolvePlanDeploymentProfile(existingPlan, req.CloudWorkerDeploymentProfile)
-		if err != nil {
-			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		if req.CloudWorkerRetentionDays < 0 || req.CloudWorkerRetentionDays > 90 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "cloud worker retention days must be within 0-90"})
+			return
+		}
+		// An absent flag keeps the plan's current setting; a new plan defaults to
+		// token-only, matching the column default. Making the operator say it
+		// explicitly is deliberate: accidentally minting machines is expensive,
+		// accidentally not minting them is a support ticket.
+		cloudWorkerIncluded := resolvePlanIncludesWorker(existingPlan, req.CloudWorkerIncluded)
+		planTier := 0
+		if existingPlan != nil {
+			planTier = existingPlan.PlanTier
+		}
+		if req.PlanTier != nil {
+			if *req.PlanTier < 0 {
+				writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "plan tier must be non-negative"})
+				return
+			}
+			planTier = *req.PlanTier
+		}
+		runtimePlan, runtimePlanErr := resolvePlanRuntimePlan(existingPlan, req.CloudWorkerRuntimePlan)
+		if runtimePlanErr != nil {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported cloud worker runtime plan"})
 			return
 		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
-			Slug:                   req.Slug,
-			Name:                   req.Name,
-			Description:            req.Description,
-			PriceFen:               req.PriceFen,
-			Currency:               req.Currency,
-			SaleState:              req.SaleState,
-			PurchaseLimit:          req.PurchaseLimit,
-			MonthlyBudget:          req.MonthlyBudget,
-			RealCostCNY:            req.RealCostCNY,
-			ModelBudgets:           modelBudgets,
-			InternalQuotaTokens:    req.InternalQuota,
-			TokenQuota:             req.TokenQuota,
-			TokenQuotaDuration:     req.TokenQuotaDuration,
-			CloudWorkerBillingMode: req.CloudWorkerBillingMode,
-			// Fleet assignment follows the same absent-means-keep rule.
+			Slug:                         req.Slug,
+			Name:                         req.Name,
+			Description:                  req.Description,
+			PriceFen:                     req.PriceFen,
+			Currency:                     req.Currency,
+			SaleState:                    req.SaleState,
+			PurchaseLimit:                req.PurchaseLimit,
+			MonthlyBudget:                req.MonthlyBudget,
+			RealCostCNY:                  req.RealCostCNY,
+			ModelBudgets:                 modelBudgets,
+			InternalQuotaTokens:          req.InternalQuota,
+			TokenQuota:                   req.TokenQuota,
+			TokenQuotaDuration:           req.TokenQuotaDuration,
+			CloudWorkerBillingMode:       billing,
 			CloudWorkerDeploymentProfile: deploymentProfile,
+			CloudWorkerRetentionDays:     req.CloudWorkerRetentionDays,
+			CloudWorkerIncluded:          cloudWorkerIncluded,
+			PlanTier:                     planTier,
+			CloudWorkerRuntimePlan:       runtimePlan,
 			DurationDays:                 req.DurationDays,
 			State:                        req.State,
 			SortOrder:                    req.SortOrder,
@@ -1431,7 +1560,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			PlanID                 int64  `json:"plan_id"`
 			MaxRedemptions         int    `json:"max_redemptions"`
 			Count                  int    `json:"count"`
-			CloudWorkerCredits     int    `json:"cloud_worker_credits"`
+			CloudWorkerCredits     *int   `json:"cloud_worker_credits"`
 			CloudWorkerProfile     string `json:"cloud_worker_profile"`
 			CloudWorkerBillingMode string `json:"cloud_worker_billing_mode"`
 			State                  int    `json:"state"`
@@ -1469,7 +1598,16 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported invite state"})
 			return
 		}
-		if req.CloudWorkerCredits < 0 || req.CloudWorkerCredits > 100 {
+		// A nil count means "inherit from the bound plan"; an explicit 0 means a
+		// token-only invite. The old `int` field collapsed those two into 0, so a
+		// ¥59/¥99/¥159/¥599 package could be handed out by an invite that forgot
+		// to set the count and the buyer got no machine at all — silently, because
+		// the redemption itself succeeded.
+		credits, creditsInherit := 0, req.CloudWorkerCredits == nil
+		if req.CloudWorkerCredits != nil {
+			credits = *req.CloudWorkerCredits
+		}
+		if credits < 0 || credits > 100 {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "cloud_worker_credits must be between 0 and 100"})
 			return
 		}
@@ -1483,26 +1621,34 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			expiresAt = &parsed
 		}
 		profile, valid := types.NormalizeCloudWorkerProfile(req.CloudWorkerProfile)
-		if req.CloudWorkerBillingMode != "" {
-			if _, ok := types.NormalizeCloudWorkerBilling(req.CloudWorkerBillingMode); !ok {
-				writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker billing mode"})
-				return
-			}
-		}
 		if !valid {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker profile"})
 			return
 		}
+		// Empty means "inherit from the bound plan", so it must stay empty here;
+		// the store re-derives and collapses it once the profile is resolved.
+		billing := strings.TrimSpace(req.CloudWorkerBillingMode)
+		if billing != "" {
+			normalized, ok := types.NormalizeCloudWorkerBilling(billing)
+			if !ok {
+				writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker billing mode"})
+				return
+			}
+			// Shared containers have no cloud subscription; keep the invite free of
+			// a machine-billing dimension that the create path would ignore anyway.
+			billing = types.CloudWorkerBillingForProfile(profile, normalized)
+		}
 		createRequest := &types.CommercialInviteCode{
-			CreateOnly:             req.CreateOnly,
-			PlanID:                 req.PlanID,
-			MaxRedemptions:         req.MaxRedemptions,
-			CloudWorkerCredits:     req.CloudWorkerCredits,
-			CloudWorkerProfile:     profile,
-			CloudWorkerBillingMode: req.CloudWorkerBillingMode,
-			State:                  req.State,
-			ExpiresAt:              expiresAt,
-			Note:                   req.Note,
+			CreateOnly:                req.CreateOnly,
+			PlanID:                    req.PlanID,
+			MaxRedemptions:            req.MaxRedemptions,
+			CloudWorkerCredits:        credits,
+			CloudWorkerCreditsInherit: creditsInherit,
+			CloudWorkerProfile:        profile,
+			CloudWorkerBillingMode:    billing,
+			State:                     req.State,
+			ExpiresAt:                 expiresAt,
+			Note:                      req.Note,
 		}
 		codes := make([]string, 0, count)
 		var id int64

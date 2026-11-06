@@ -198,18 +198,9 @@ html[data-theme="liquid"][data-liquid-variant="green"] .v3-sidebar {
 }
 
 html[data-theme="liquid"][data-liquid-variant="green"] .v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section) {
-  background: rgb(18, 24, 22);
-  box-shadow:
-    0 calc(-1 * var(--cc-sidebar-row-gap)) 0 0 rgb(18, 24, 22),
-    0 var(--cc-sidebar-row-gap) 0 0 rgb(18, 24, 22);
+  --cc-sidebar-section-bg: rgb(18, 24, 22);
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
-}
-
-html[data-theme="liquid"][data-liquid-variant="green"] .v3-chat-list > .cc-contacts-section {
-  box-shadow:
-    0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 rgb(18, 24, 22),
-    0 var(--cc-sidebar-row-gap) 0 0 rgb(18, 24, 22);
 }
 
 html[data-theme="liquid"][data-liquid-variant="green"] .v3-profile-footer {

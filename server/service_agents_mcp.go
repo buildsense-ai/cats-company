@@ -28,11 +28,13 @@ import (
 // notifications/tools/list_changed；客户端亦可随时重查 tools/list（刷新兜底）。
 type ServiceAgentsMCPHandler struct {
 	store     store.ServiceAgentStore
-	bots      ServiceAgentBotIdentity // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
-	external  *ServiceExternalRunner  // 外部执行后端（runner.type=http；可选）
-	botRunner *ServiceBotRunner       // bot-as-tool（runner.type=bot；可选）
-	balance   *ServiceBalanceChecker  // 计费预检（可选；未设置=跳过，调用面单测不受影响）
-	syncWait  time.Duration           // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
+	bots      ServiceAgentBotIdentity    // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
+	external  *ServiceExternalRunner     // 外部执行后端（runner.type=http；可选）
+	botRunner *ServiceBotRunner          // bot-as-tool（runner.type=bot；可选）
+	balance   *ServiceBalanceChecker     // 计费预检（可选；未设置=跳过，调用面单测不受影响）
+	friends   serviceAgentFriendReader   // 好友判定源（friends 级可见性；可选）
+	loops     *serviceAgentCallLoopGuard // 两跳回环（A→B→A）判定；进程内
+	syncWait  time.Duration              // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
 	http      *mcp.StreamableHTTPHandler
 
 	// liveMu/liveServers 跟踪每账号的在线 MCP 会话 server（getServer 每新会话调用一次，
@@ -44,7 +46,21 @@ type ServiceAgentsMCPHandler struct {
 const (
 	serviceRunAsyncContractVersion  = "catsco.service-run-async.v1"
 	serviceRunResultContractVersion = "catsco.service-run-result.v1"
+	// 文本摘要里正文的截断长度（字符）。摘要不是交付通道，完整正文在
+	// structuredContent.output.text —— 这里只保证「模型看 content 也能看到结果」。
+	serviceRunSummaryLimit = 2000
 	maxServiceSyncWait              = 45 * time.Second
+	// 同步等待时的轮询退避区间：快任务 20ms 起，慢任务逐步放到 200ms。
+	// 固定 10ms 在 45 秒窗口里是 4500 轮 × 2 条 SQL，对结果毫无增益。
+	minServiceRunPollInterval = 20 * time.Millisecond
+	maxServiceRunPollInterval = 200 * time.Millisecond
+	// 空闲 MCP 会话的存活上限。客户端从不发 DELETE（2026-11-03 当日 POST 91k、
+	// GET 30k、DELETE 0），而每个会话都钉住一个 *mcp.Server（全套工具 JSON
+	// schema 约 44KB）和一条阻塞在 SSE Read 的 goroutine。不设上限就是每天
+	// 约 1.3GB 的单调增长 —— 11-01 那次 anon-rss 5.2GB 的整机 OOM 就是它。
+	serviceMCPSessionIdleTimeout = 60 * time.Minute
+	// liveServers 回收间隔：SDK 关掉空闲会话后，server 实例要靠这里摘掉。
+	serviceMCPReapInterval = 10 * time.Minute
 )
 
 var errServiceRunNotOwned = errors.New("service run not owned by caller")
@@ -52,11 +68,15 @@ var errServiceRunNotOwned = errors.New("service run not owned by caller")
 func NewServiceAgentsMCPHandler(st store.ServiceAgentStore) *ServiceAgentsMCPHandler {
 	h := &ServiceAgentsMCPHandler{
 		store:       st,
+		loops:       newServiceAgentCallLoopGuard(serviceAgentCallLoopWindow),
 		liveServers: map[int64]map[*mcp.Server]map[string]struct{}{},
 	}
+	// SessionTimeout 必须大于 0：SDK 的零值语义是「空闲会话永不关闭」，而那正是
+	// 会话与 server 实例无界累积的原因。计时器按最后一次 HTTP 请求重置，所以
+	// 一次连续工作的 agent 不会被误杀。
 	h.http = mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return h.buildServer(UIDFromContext(r.Context()))
-	}, nil)
+	}, &mcp.StreamableHTTPOptions{SessionTimeout: serviceMCPSessionIdleTimeout})
 	return h
 }
 
@@ -90,6 +110,18 @@ func (h *ServiceAgentsMCPHandler) SetExternalRunner(runner *ServiceExternalRunne
 // 所以装配层要保证生产环境一定注入了它。
 func (h *ServiceAgentsMCPHandler) SetBotRunner(runner *ServiceBotRunner) {
 	h.botRunner = runner
+	if runner != nil {
+		// 回环判定需要在 run 收尾时摘掉「谁在等谁」那条边（见 releaseRun）。
+		// 用同一个实例，而不是各持一份：两边看的必须是同一张表，否则
+		// 「记了一条边、收尾却摘不到」会让判定永久偏严。
+		runner.loops = h.loops
+	}
+}
+
+// SetFriendReader 注入好友判定源（friends 级可见性用）。
+// 未注入时 friends 级应用只对发布者自己可见 —— 少接一条线不会变成公开。
+func (h *ServiceAgentsMCPHandler) SetFriendReader(friends serviceAgentFriendReader) {
+	h.friends = friends
 }
 
 func (h *ServiceAgentsMCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -113,21 +145,22 @@ func (h *ServiceAgentsMCPHandler) visibleServiceAgents(ctx context.Context, call
 	if err != nil {
 		log.Printf("service mcp list hidden agents uid=%d: %v", callerUID, err)
 		// 只跳过「个人屏蔽」这一层过滤（它只是聚焦设置）；可见性过滤必须照旧执行。
-		return serviceAgentsVisibleOnly(agents, callerUID, nil)
+		return h.serviceAgentsVisibleOnly(agents, callerUID, nil)
 	}
 	hidden := make(map[int64]struct{}, len(hiddenIDs))
 	for _, id := range hiddenIDs {
 		hidden[id] = struct{}{}
 	}
-	return serviceAgentsVisibleOnly(agents, callerUID, hidden)
+	return h.serviceAgentsVisibleOnly(agents, callerUID, hidden)
 }
 
 // serviceAgentsVisibleOnly 按可见性（+ 可选个人屏蔽集）过滤 agent 清单。
-func serviceAgentsVisibleOnly(agents []store.ServiceAgentDescriptor, callerUID int64, hidden map[int64]struct{}) []store.ServiceAgentDescriptor {
+func (h *ServiceAgentsMCPHandler) serviceAgentsVisibleOnly(agents []store.ServiceAgentDescriptor, callerUID int64, hidden map[int64]struct{}) []store.ServiceAgentDescriptor {
+	// 可见性按访问者求值（friends 级需要好友关系）；同一请求内同一发布者最多查一次。
+	resolver := newServiceAgentViewerResolverWithBots(h.friends, botOwnerReaderOf(h.store), callerUID)
 	visible := make([]store.ServiceAgentDescriptor, 0, len(agents))
 	for _, agent := range agents {
-		// 可见性（设计 L2）：private 只对 owner 本人可见，不进别人的 tools/list。
-		if !store.ServiceAgentVisibleTo(agent, callerUID) {
+		if !resolver.allows(agent) {
 			continue
 		}
 		if _, blocked := hidden[agent.ID]; blocked {
@@ -138,7 +171,26 @@ func serviceAgentsVisibleOnly(agents []store.ServiceAgentDescriptor, callerUID i
 	return visible
 }
 
+// cachedServer 返回该账号当前在册的 server（若有）。
+//
+// SDK 的 StreamableHTTPHandler 会**每个 HTTP 请求**调用一次 getServer 回调（协议
+// 版本协商一次、建会话一次），文档明确允许同一 server 被多次返回。原先每请求都
+// new 一个 *mcp.Server 并登记进 liveServers：2026-11-03 当天 POST 91k + GET 30k，
+// 等于每天造十几万个实例（每个约 44KB 工具 schema），并且永不释放 —— 这就是
+// 11-01 那次 anon-rss 5.2GB 整机 OOM 的来源。改为按 uid 复用后，实例数等于
+// 活跃调用账号数。
+func (h *ServiceAgentsMCPHandler) cachedServer(callerUID int64) *mcp.Server {
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	for srv := range h.liveServers[callerUID] {
+		return srv
+	}
+	return nil
+}
 func (h *ServiceAgentsMCPHandler) buildServer(callerUID int64) *mcp.Server {
+	if srv := h.cachedServer(callerUID); srv != nil {
+		return srv
+	}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "catsco-agents", Version: "0.1.0"}, &mcp.ServerOptions{
 		// 目录与订阅：工具清单会随账号清单变化动态调整（list_changed 通知）。
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{ListChanged: true}},
@@ -150,8 +202,33 @@ func (h *ServiceAgentsMCPHandler) buildServer(callerUID int64) *mcp.Server {
 	}
 	h.addRunStatusTool(srv, callerUID)
 	registered["catsco_run_status"] = struct{}{}
+	// 自分享：只有「调用者本身就是 bot、且它的 owner 在内测白名单里」才挂。
+	// 人的工具面里不该出现这个工具（面板上有），否则模型会拿着它去做本该人点的事。
+	if h.canSelfShare(callerUID) {
+		h.addSelfShareTool(context.Background(), srv, callerUID)
+		registered[serviceShareSelfToolName] = struct{}{}
+	}
 	h.registerLiveServer(callerUID, srv, registered)
 	return srv
+}
+
+// canSelfShare 是「能不能自分享」的注册期判定：与 handleShareSelf 里的校验同源，
+// 避免工具出现在不该出现的地方（人看到了只会误用）。
+func (h *ServiceAgentsMCPHandler) canSelfShare(callerUID int64) bool {
+	_, ok := h.selfShareOwner(callerUID)
+	return ok
+}
+
+// isServiceSystemTool 判断是不是平台自带工具（不属于任何 agent）。
+//
+// 这类工具在「清单重算」时必须原样保留：它们不对应目录里的条目，混进删除列表就会被
+// 当成「已下架」摘掉，而 SDK 只在客户端重新 list 时才回来。
+func isServiceSystemTool(name string) bool {
+	switch name {
+	case "catsco_run_status", serviceShareSelfToolName:
+		return true
+	}
+	return false
 }
 
 func (h *ServiceAgentsMCPHandler) registerLiveServer(callerUID int64, srv *mcp.Server, tools map[string]struct{}) {
@@ -185,7 +262,10 @@ func (h *ServiceAgentsMCPHandler) NotifySubscriptionChanged(callerUID int64) {
 		}
 		removeNames := make([]string, 0)
 		for name := range tools {
-			if name == "catsco_run_status" {
+			// 平台自带工具不属于任何 agent：清单重算不能把它们当「已下架」摘掉。
+			// 漏掉的后果很实在：bot 自分享成功会立刻触发清单重算，分享工具被移除后
+			// 它就再也没法收回或再分享 —— 线上实测正是这么炸的。
+			if isServiceSystemTool(name) {
 				continue
 			}
 			if _, ok := desired[name]; !ok {
@@ -232,6 +312,71 @@ func serviceMCPHasLiveSessions(srv *mcp.Server) bool {
 	return false
 }
 
+// StartLiveServerReaper 定期把已经没有任何会话的 server 从 liveServers 摘掉。
+//
+// SessionTimeout 只负责关闭空闲会话；server 实例仍然留在注册表里，要等「清单
+// 变更」才会被清理 —— 而清单变更可能几天不发生，进程就只能看着它涨。这里按
+// 会话存活与否回收，让 *mcp.Server（每条约 44KB 工具 schema）真正可被 GC。
+func (h *ServiceAgentsMCPHandler) StartLiveServerReaper(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = serviceMCPReapInterval
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.reapLiveServers()
+			}
+		}
+	}()
+}
+
+// reapLiveServers 丢弃没有在线会话的 server，并清掉随之空掉的账号桶。
+// Sessions() 内部有自己的锁，所以只在增删注册表的瞬间持 liveMu。
+func (h *ServiceAgentsMCPHandler) reapLiveServers() int {
+	type entry struct {
+		uid int64
+		srv *mcp.Server
+	}
+
+	h.liveMu.Lock()
+	candidates := make([]entry, 0, len(h.liveServers))
+	for uid, servers := range h.liveServers {
+		for srv := range servers {
+			candidates = append(candidates, entry{uid: uid, srv: srv})
+		}
+	}
+	h.liveMu.Unlock()
+
+	dead := make([]entry, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !serviceMCPHasLiveSessions(candidate.srv) {
+			dead = append(dead, candidate)
+		}
+	}
+	if len(dead) == 0 {
+		return 0
+	}
+
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	for _, candidate := range dead {
+		servers, ok := h.liveServers[candidate.uid]
+		if !ok {
+			continue
+		}
+		delete(servers, candidate.srv)
+		if len(servers) == 0 {
+			delete(h.liveServers, candidate.uid)
+		}
+	}
+	return len(dead)
+}
+
 // isAgentHiddenFor 判断 agent 是否被该账号屏蔽（清单移除）。
 func (h *ServiceAgentsMCPHandler) isAgentHiddenFor(ctx context.Context, callerUID, agentID int64) (bool, error) {
 	hiddenIDs, err := h.store.ListHiddenServiceAgentIDs(ctx, callerUID)
@@ -251,6 +396,64 @@ type serviceInvokeToolArgs struct {
 	SessionID   string `json:"session_id,omitempty" jsonschema:"续聊会话 id；不传=新会话"`
 	ClientToken string `json:"client_token,omitempty" jsonschema:"幂等键（同会话同 token 重发返回同一 run）"`
 	BotUID      int64  `json:"bot_uid,omitempty" jsonschema:"调用方 bot 身份（可选）；传了就按该 bot 归属校验并写入会话"`
+
+	// Ignored 记录客户端传了但我们不认识的参数名。
+	//
+	// 标准反序列化会把未知字段默默丢掉 —— 而「session」写成「session」/「sessionId」
+	// 是极易发生的错：受理响应的文本里原来渲染的是 `session=<id>`，请求参数却叫
+	// `session_id`，客户端照着响应里的名字回传就被静默忽略，于是「追问」变成了
+	// 开一个全新会话，上下文全丢，而且没有任何提示。这里只提示、不拒绝。
+	Ignored []string `json:"-"`
+}
+
+// ignoredServiceInvokeArgs 是参数名里允许出现的全部键。
+var ignoredServiceInvokeArgs = map[string]struct{}{
+	"input": {}, "session_id": {}, "client_token": {}, "bot_uid": {},
+}
+
+// UnmarshalJSON 在标准解析之外额外记下未知参数名，供受理响应提示。
+func (a *serviceInvokeToolArgs) UnmarshalJSON(data []byte) error {
+	type plain serviceInvokeToolArgs
+	var parsed plain
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	*a = serviceInvokeToolArgs(parsed)
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return nil // 不是对象：按上面已解析的结果走
+	}
+	for key := range all {
+		if _, ok := ignoredServiceInvokeArgs[key]; !ok {
+			a.Ignored = append(a.Ignored, key)
+		}
+	}
+	sortStrings(a.Ignored)
+	return nil
+}
+
+// serviceArgsNote 把「被忽略的参数」翻成一句给调用方模型看的提示。
+// 按名字给出正确写法：绝大多数情况就是拼错了或照着响应文本回传。
+func serviceArgsNote(ignored []string) string {
+	if len(ignored) == 0 {
+		return ""
+	}
+	hints := make([]string, 0, len(ignored))
+	for _, name := range ignored {
+		// 大小写、下划线、连字符都不敏感：session / sessionId / session-id 要指到同一处。
+		normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.TrimSpace(name)))
+		switch normalized {
+		case "session", "sessionid", "sid":
+			hints = append(hints, name+"（续聊要用 session_id）")
+		case "token", "clienttoken", "idempotencykey":
+			hints = append(hints, name+"（幂等键要用 client_token）")
+		case "bot", "botid", "botuid":
+			hints = append(hints, name+"（调用方 bot 身份要用 bot_uid）")
+		default:
+			hints = append(hints, name)
+		}
+	}
+	return "（注意：这些参数没被识别，已忽略 —— " + strings.Join(hints, "、") + "）"
 }
 
 func (h *ServiceAgentsMCPHandler) addAgentTool(srv *mcp.Server, agent store.ServiceAgentDescriptor, callerUID int64) {
@@ -292,16 +495,35 @@ func (h *ServiceAgentsMCPHandler) addAgentTool(srv *mcp.Server, agent store.Serv
 // 描述只放「模型做决定需要的信息」：这个应用干什么、什么时候该用/不该用。
 // slug/版本是平台实现细节，对模型是噪音，不放进描述（之前写成
 // "名字（CatsCo 定制应用，slug=…，版本 v…）"，等于什么都没说）。
+//
+// bot 型应用额外补一段文件交付说明：这是**工具契约**的一部分，不是某一单的内容。
+// 调用方模型靠描述决定怎么下单、怎么理解结果 —— 不知道这两件事，就会把对方那句
+// 「报告已生成在 /tmp/x.pdf」当成交付成功转告用户，也不会在下单时提「请用 send_file」。
 func serviceAgentToolDescription(agent store.ServiceAgentDescriptor) string {
-	if description := strings.TrimSpace(agent.Description); description != "" {
-		return description
+	base := strings.TrimSpace(agent.Description)
+	if base == "" {
+		// 没写描述：明说信息不足，别让模型凭名字瞎猜（也提示调用方先把需求原文传进去）。
+		base = fmt.Sprintf(
+			"%s（作者未说明这个应用能做什么；建议只在用户明确点名 catsco_%s 时调用，并把需求原文放入 input）",
+			agent.Name, agent.Slug,
+		)
 	}
-	// 没写描述：明说信息不足，别让模型凭名字瞎猜（也提示调用方先把需求原文传进去）。
-	return fmt.Sprintf(
-		"%s（作者未说明这个应用能做什么；建议只在用户明确点名 catsco_%s 时调用，并把需求原文放入 input）",
-		agent.Name, agent.Slug,
-	)
+	if _, isBotRunner := ParseBotRunnerBotUID(json.RawMessage(agent.DefinitionJSON)); !isBotRunner {
+		return base
+	}
+	return base + "\n\n" + serviceAgentFileDeliveryNote
 }
+
+// serviceAgentFileDeliveryNote 说明这个应用怎么交出文件。
+//
+// 为什么必须说：bot 型应用是**另一个 Agent 在另一台机器上跑**，它有自己的磁盘。
+// 模型很容易把结果写成「文件已生成：/tmp/report.pdf」—— 在它自己的对话里看着合理，
+// 但调用方只能拿到这段文字，文件还留在对方机器上，两边都看不出发生过什么。
+//
+// 两头都要说清：下单时（要文件就明确要求对方发）、收货时（attachments 是产物链接）。
+const serviceAgentFileDeliveryNote = "文件交付：这是另一个 Agent 在它自己的机器上执行，它只能通过 send_file 把文件真正交出来。" +
+	"需要在结果里拿到文件或图片时，请在 input 里明确要求它用 send_file 发送 —— 只让它写路径的话，文件留在那台机器上，你取不到。" +
+	"结果里的 attachments 是可下载的产物绝对地址，请原样转给用户，不要改写或省略。"
 
 // composeServiceAgentToolSchema 把作者给的 input schema 包进完整的工具参数 schema。
 //
@@ -341,8 +563,29 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if callerUID == 0 {
 		return serviceToolError("unauthorized"), nil, nil
 	}
-	// 可见性准入：private agent 即便被猜到 slug 也不能调用（tools/list 里也不会出现）。
-	if !store.ServiceAgentVisibleTo(agent, callerUID) {
+	// 可见性准入：不可见的 agent（自用 / 好友级但非好友）即便被猜到 slug 也不能调用
+	// （tools/list 里也不会出现）。
+	//
+	// 用**当前**归属与级别判定，不用工具闭包里的会话快照：发布者把应用从「好友」
+	// 改成「自用」之后，已在线的会话必须立刻失去调用权。拿快照判定的话，改设置
+	// 不生效 —— 那是安全上最不能接受的一种「不生效」（用户以为收回了，实际没有）。
+	current := agent
+	if reader, ok := h.store.(serviceAgentAccessReader); ok {
+		owner, visibility, definition, err := reader.GetServiceAgentAccess(ctx, agent.Slug)
+		if err != nil {
+			if errors.Is(err, store.ErrServiceAgentNotFound) {
+				return serviceToolError("agent_not_found: 该应用已被发布者收回"), nil, nil
+			}
+			return serviceToolError("service_unavailable: 应用状态校验失败，请稍后重试"), nil, nil
+		}
+		current.OwnerUID = owner
+		current.Visibility = visibility
+		// definition 也要当前值：改派给另一个 bot 之后，该算新 bot 的好友。
+		if len(definition) > 0 {
+			current.DefinitionJSON = string(definition)
+		}
+	}
+	if !newServiceAgentViewerResolverWithBots(h.friends, botOwnerReaderOf(h.store), callerUID).allows(current) {
 		return serviceToolError("agent_not_found"), nil, nil
 	}
 	// 上架状态实时校验：这条兜底覆盖「list_changed 尚未送达客户端」的窗口期
@@ -359,6 +602,35 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	botUID, botErr := h.resolveBotScope(ctx, callerUID, args.BotUID, agent.Slug)
 	if botErr != nil {
 		return botErr, nil, nil
+	}
+	// 自己调自己：直接拒，不给「想一想」的机会。
+	//
+	// 这不是理论风险。把杰克分享成 catsco_jack-*，描述写着「把一段话交给杰克处理」，
+	// 杰克自己的工具列表里就会看到它 —— 它完全有理由认为「交给杰克」就是调这个工具，
+	// 于是调用自己：一轮几分钟、烧满额度，直到超时。而它从描述上看不出这是它自己。
+	callOrigin := serviceAgentCallLoopOrigin(callerUID, botUID)
+	targetBotUID, isBotRunner := ParseBotRunnerBotUID(json.RawMessage(current.DefinitionJSON))
+	if isBotRunner {
+		// 两种调用方身份都要判，缺一条就漏一条：
+		//   - bot_uid 显式声明（XiaoBa 的 tool bridge 会带）；
+		//   - callerUID 本身就是那个 bot（bot 用自己凭证调 MCP 时就是这个样子，
+		//     而那正是最容易踩、也最容易被漏掉的一条）。
+		if (botUID != 0 && botUID == targetBotUID) || callerUID == targetBotUID {
+			return serviceToolError(
+				"agent_self_call: 这个应用就是你自己在执行，不要调用自己。请直接用自己的能力完成" +
+					"用户的要求（该做的判断、该跑的活都在你这边），不要把这个任务转回来"), nil, nil
+		}
+		// 回环：这个任务正在被交回委托链上的某一环（两跳、三跳、到顶都算）。
+		//
+		// 这条拦不住就会一直转下去，而且**不会超时**：bot 型应用是异步的，调用方
+		// 几十毫秒就拿到句柄返回，5 分钟超时只兜「对方不吭声」，兜不住「对方很勤快
+		// 地和你互推」。唯一的止损点是额度烧完 —— 那太晚了。
+		//
+		// 判定依据是「谁在等谁」的全图，不是单条方向：旧版只记最近一次方向，所以
+		// A→B→C→A 这种三跳以上的环每一条边都新鲜、方向也不重复，全部放行。
+		if chain := h.loops.cycleFor(callOrigin, targetBotUID); len(chain) > 0 {
+			return serviceToolError(serviceAgentCallLoopText(len(chain))), nil, nil
+		}
 	}
 	if h.balance != nil {
 		if err := h.balance.Check(ctx, callerUID); err != nil {
@@ -389,6 +661,32 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if err != nil || len(input) == 0 || string(input) == "null" {
 		input = json.RawMessage(`{}`)
 	}
+	// 入参体检（在建 run 之前）：input_schema 以前只用来对客户端宣告，服务端从不校验。
+	// 传错字段名的调用因此会「受理成功」，然后 bot 收到一段纯 JSON 噪音或者干等到
+	// bot_empty_input —— 用户白等几十秒、额度照烧，还不知道是自己传错了。
+	if problem := serviceAgentInputProblem(agent.InputSchema, input); problem != "" {
+		return serviceToolError(problem), nil, nil
+	}
+	// bot 型应用：先确认目标 bot 还在、还在线，否则一受理就是一次注定失败的 run。
+	//
+	// 顺序很重要：先判「在不在」再判「在不在线」。反过来的话，应用指向一个已被
+	// 删除的 bot 时会报「不在线」，用户被引导去「把 bot 启动起来」—— 而正确的
+	// 处置是让发布者重新选一个 bot。错的方向比不说更糟。
+	//
+	// worker 型早就有这层预检，bot 型之前漏了 —— 调用方看到的是「受理成功 →
+	// 几秒后 failed」，白等一轮还得再查原因。
+	if isBotRunner && h.botRunner != nil {
+		if !h.botRunner.BotExists(targetBotUID) {
+			return serviceToolError(
+				"bot_not_found: 这个应用指向的 bot 已经不存在了（可能被删除或换掉了）。" +
+					"这是发布者那一侧的配置问题，重试不会变好 —— 请把这条原因转告用户：让对方在「Agent 工具」里重新选一个 bot。"), nil, nil
+		}
+		if !h.botRunner.BotOnline(targetBotUID) {
+			return serviceToolError(
+				"bot_offline: 执行这个应用的小八现在不在线，派过去也没人接单。" +
+					"请让发布者那边（或你自己）把对应的小八启动并登录后再试。这是执行环境的问题，不是调用参数的问题。"), nil, nil
+		}
+	}
 	session, err := h.resolveSession(ctx, agent, callerUID, botUID, args.SessionID)
 	if err != nil {
 		if errors.Is(err, errServiceRunNotOwned) || errors.Is(err, store.ErrServiceSessionNotFound) {
@@ -411,16 +709,26 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	if !reused {
 		// 外部执行后端（runner.type=http）：异步转发到用户 endpoint，结果写成 result 事件；
 		// 平台自带执行（codex）不声张，照旧由 worker claim。
-		h.external.MaybeDispatch(ctx, agent, run, callerUID, botUID)
+		//
+		// 传 current 不传 agent：current 带的是刚读到的归属与 definition。派发侧要拿它校验
+		// 「这个 bot 是不是应用主人的」，用会话快照的话 owner 为 0 → 校验被跳过。
+		h.external.MaybeDispatch(ctx, current, run, callerUID, botUID)
 		// bot-as-tool（runner.type=bot）：把 input 发给另一个 bot，等它回话后写回结果。
-		h.botRunner.MaybeDispatch(ctx, agent, run, callerUID)
+		h.botRunner.MaybeDispatch(ctx, current, run, callerUID)
 	}
 	// bot 回合是分钟级的（上下文压缩 + 多轮推理），同步等只会把主 Agent 卡住，
 	// 所以这里直接返回运行句柄：调用方拿 run_id 自己去问 catsco_run_status，或等回执。
-	if _, isBot := ParseBotRunnerBotUID(json.RawMessage(agent.DefinitionJSON)); isBot {
-		return h.serviceRunHandleResult(session.SessionID, run), nil, nil
+	if isBotRunner {
+		// 记下这次委托方向：被人反向调回来时就是靠它认出来的。
+		// 绑定 run id 是为了在 run 收尾时能精确摘掉这条边 —— 否则正常交付过的
+		// 协作会在窗口内一直参与判定，变成误拦。
+		h.loops.record(callOrigin, targetBotUID, run.RunID)
+		// 句柄必须同时给 structuredContent（第二返回值）：调用方工具桥靠它解析
+		// status/run_id 去自动轮询；只给文本的话，客户端只能把「还在跑」当结果转给用户。
+		handleResult, handleEnv := h.serviceRunHandleResult(session.SessionID, run, serviceArgsNote(args.Ignored))
+		return handleResult, handleEnv, nil
 	}
-	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds)
+	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds, serviceArgsNote(args.Ignored))
 }
 
 // resolveBotScope 校验可选的 bot 身份，返回要写进会话的 callerBotUID（0=账号级）。
@@ -436,7 +744,13 @@ func (h *ServiceAgentsMCPHandler) resolveBotScope(ctx context.Context, callerUID
 	if err != nil {
 		return 0, serviceToolError("bot_not_found: 指定的 bot 不存在或已删除")
 	}
-	if owner != callerUID {
+	// 两种合法身份，缺一条就断掉一整类调用方：
+	//   1. 账号代自己的 bot 调用 —— owner == callerUID（人在自己的会话里用 bot 身份）；
+	//   2. bot 用**自己的**凭证调用 —— callerUID == botUID（bot 运行时就是这样连 MCP 的）。
+	// 少了第 2 条，「agent 找 agent 干活」整条链路走不通：调用方 bot 一调就拿到 bot_not_owned
+	// （本地模拟实测：bot 1619 调好友分享的应用，87ms 被拒）。
+	// 这不是放权：一个 token 只能替自己申报身份，替不了别的 bot。
+	if owner != callerUID && callerUID != botUID {
 		return 0, serviceToolError("bot_not_owned: 该 bot 不属于当前账号")
 	}
 	definition, err := h.bots.GetBotDefinition(botUID)
@@ -488,19 +802,29 @@ func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent stor
 // serviceRunHandleResult 立即返回运行句柄（不等终态）。
 // 给「天生慢」的执行后端用：干等只会把调用它的主 Agent 卡住，
 // 而它拿到的句柄足够自己决定是去干别的还是去轮询。
-func (h *ServiceAgentsMCPHandler) serviceRunHandleResult(sessionID string, run store.ServiceRun) *mcp.CallToolResult {
-	envelope := ServiceRunEnvelope{
+//
+// 同时把 envelope 作为第二个返回值交给调用方去填 structuredContent —— 这不是可选项：
+// 调用方的工具桥（XiaoBa 的 mcp-tool-bridge）只认 structuredContent 里的 status/run_id，
+// 文本只用来兜底展示。以前这里返回 nil，于是 bot 型的异步句柄在客户端永远解析不出来，
+// 自动轮询根本不启动，模型最后看到的就是一句「run=… status=running」当答案。
+func (h *ServiceAgentsMCPHandler) serviceRunHandleResult(sessionID string, run store.ServiceRun, notes ...string) (*mcp.CallToolResult, ServiceRunEnvelope) {
+	// 已经终态就如实报终态：调用方是拿这个 status 决定「要不要继续等」的，
+	// 明明已经跑完还让它再轮询一轮，只是多一次无意义的等待。
+	if terminal, env := serviceRunTerminalEnvelope(run); terminal {
+		return serviceRunToolResult(env, notes...), env
+	}
+	handle := ServiceRunEnvelope{
 		ContractVersion: serviceRunAsyncContractVersion,
 		RunID:           run.RunID,
 		SessionID:       sessionID,
 		Status:          ServiceRunRunning,
 	}
-	return serviceRunToolResult(envelope)
+	return serviceRunToolResult(handle, notes...), handle
 }
 
-func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string, run store.ServiceRun, thresholdSeconds int) (*mcp.CallToolResult, any, error) {
+func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string, run store.ServiceRun, thresholdSeconds int, notes ...string) (*mcp.CallToolResult, any, error) {
 	if terminal, env := serviceRunTerminalEnvelope(run); terminal {
-		return serviceRunToolResult(env), env, nil
+		return serviceRunToolResult(env, notes...), env, nil
 	}
 	wait := h.syncWait
 	if wait <= 0 {
@@ -509,6 +833,8 @@ func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string
 			wait = maxServiceSyncWait
 		}
 	}
+	// interval 是轮询间隔：从 20ms 起步，指数退避到 maxServiceRunPollInterval。
+	interval := minServiceRunPollInterval
 	deadline := time.Now().Add(wait)
 	for {
 		events, err := h.store.ListServiceRunEvents(ctx, run.RunID, 0, 100)
@@ -519,13 +845,13 @@ func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string
 				}
 				var env ServiceRunEnvelope
 				if json.Unmarshal(ev.Payload, &env) == nil {
-					return serviceRunToolResult(env), env, nil
+					return serviceRunToolResult(env, notes...), env, nil
 				}
 			}
 		}
 		if current, err := h.store.GetServiceRun(ctx, run.RunID); err == nil {
 			if terminal, env := serviceRunTerminalEnvelope(current); terminal {
-				return serviceRunToolResult(env), env, nil
+				return serviceRunToolResult(env, notes...), env, nil
 			}
 		}
 		if time.Now().After(deadline) {
@@ -534,7 +860,15 @@ func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string
 		select {
 		case <-ctx.Done():
 			wait = 0
-		case <-time.After(10 * time.Millisecond):
+		case <-time.After(interval):
+			// 退避：开头密一点（快任务别多等），逐步拉长到上限。固定 10ms 在 45 秒
+			// 窗口里要查 4500 轮、每轮两条 SQL —— 没人需要这个精度，库却要付全款。
+			if interval < maxServiceRunPollInterval {
+				interval *= 2
+				if interval > maxServiceRunPollInterval {
+					interval = maxServiceRunPollInterval
+				}
+			}
 		}
 		if wait == 0 {
 			break
@@ -546,7 +880,7 @@ func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string
 		SessionID:       sessionID,
 		Status:          ServiceRunRunning,
 	}
-	return serviceRunToolResult(handle), handle, nil
+	return serviceRunToolResult(handle, notes...), handle, nil
 }
 
 func serviceRunTerminalEnvelope(run store.ServiceRun) (bool, ServiceRunEnvelope) {
@@ -586,7 +920,20 @@ func serviceRunTerminalEnvelope(run store.ServiceRun) (bool, ServiceRunEnvelope)
 // 只能原样复述「失败了」，用户拿不到任何可行动信息。
 func serviceRunErrorText(run store.ServiceRun) string {
 	code := strings.TrimSpace(run.ErrorText)
-	switch code {
+	if code == "" {
+		return "run terminated"
+	}
+	// 按「冒号前的短码」匹配，不是整串相等。
+	//
+	// 执行器写进库的往往已经带了一句说明（生产实测：`no_command: 该应用没有声明本机
+	// 执行命令`、`bot_offline: 目标 bot 当前不在线`）。以前这里用整串相等 switch，
+	// 于是下面这几条**写得最用心的可行动文案**从来没被用上过 —— 用户看到的是原始
+	// 短码，不知道该找谁、要不要重试。
+	head := code
+	if i := strings.Index(code, ":"); i > 0 {
+		head = strings.TrimSpace(code[:i])
+	}
+	switch head {
 	case "not_picked_up":
 		// 预检通过后 worker 掉线，或根本没起来：责任在发布者那一侧，重试无用。
 		return "not_picked_up: 发布者那边一直没有 worker 认领这个任务（执行环境不在线）。这是发布者那一侧的问题，与调用参数无关——重试不会变好，请把这条原因转告用户：在跑这个应用的那台机器上（电脑或云服务器）启动小八并登录。"
@@ -594,11 +941,18 @@ func serviceRunErrorText(run store.ServiceRun) string {
 		return "no_command: 这个应用没有声明执行命令（runner.command）。请转告发布者：在「Agent 工具」里编辑该应用，补一条执行命令。"
 	case "worker_offline":
 		return "worker_offline: 发布者那边没有在线的 worker。请转告发布者在跑这个应用的那台机器上启动小八并登录。"
+	case "bot_runner_lost":
+		// 平台在 bot 回合中途重启/崩溃：这条 run 已经没有执行方，也无法从消息里可靠地认领
+		// （可能已回复、也可能没回），所以如实判失败。重试会开一个新的 bot 会话，可以安全重来。
+		return "bot_runner_lost: 执行这条任务的平台进程在 bot 回合中途中断了，这次结果无法恢复。这不是调用参数的问题，也不会自己变好；请重新发起一次（会开一个新的 bot 会话）。"
 	}
-	if code != "" {
-		return code + ": run terminated"
+	// 已经是「code: 一句人话」的形态就不再加尾巴。bot_offline / bot_timeout /
+	// bot_empty_input 这些失败原因自带说明，拼上 ": run terminated" 只会读成
+	// 两句黏在一起的话（"…等它上线后再试: run terminated"）。
+	if strings.Contains(code, ": ") {
+		return code
 	}
-	return "run terminated"
+	return code + ": run terminated"
 }
 
 type serviceRunStatusArgs struct {
@@ -634,14 +988,35 @@ func (h *ServiceAgentsMCPHandler) addRunStatusTool(srv *mcp.Server, callerUID in
 	})
 }
 
-func serviceRunToolResult(env ServiceRunEnvelope) *mcp.CallToolResult {
-	text := fmt.Sprintf("run=%s session=%s status=%s", env.RunID, env.SessionID, env.Status)
+func serviceRunToolResult(env ServiceRunEnvelope, notes ...string) *mcp.CallToolResult {
+	// 用 session_id 而不是 session：请求参数就叫 session_id，响应里换个叫法会让
+	// 客户端「照着返回值回传」时被静默忽略（追问变新会话）。
+	text := fmt.Sprintf("run=%s session_id=%s status=%s", env.RunID, env.SessionID, env.Status)
 	if env.Error != "" {
 		text += " error=" + env.Error
 	}
 	if env.Status == ServiceRunAwaitingInput {
 		// 返问：把问题直接带进文本摘要，调用方 LLM 无需解析 structuredContent 即可续聊。
 		text += " question=" + serviceAwaitQuestionText(env) + "（补充=以同一 session_id 再次调用）"
+	}
+	// 正文必须进文本摘要：调用方（模型、第三方客户端，连我们自己写的探针都是）
+	// 常常只把 content 喂给模型看，只看到 status=completed 会以为「完成了但没有结果」。
+	// structuredContent 仍然保留完整正文，这里给一段（超长截断）的正文。
+	if out := serviceRunOutputText(env); out != "" {
+		text += " output=" + truncateForSummary(out, serviceRunSummaryLimit)
+	}
+	// 附件必须进文本摘要，不能只躺在 structuredContent 里。
+	//
+	// 调用方多半只把 content 喂给模型看（structuredContent 是给程序用的），
+	// 所以只放在结构体里 = 模型完全不知道有产物文件，回给用户的就只剩一段文字，
+	// 而文件还在那儿谁也拿不到 —— 那正是「发了文件但用户收不到」的形态。
+	for _, a := range env.Attachments {
+		text += " " + a.note()
+	}
+	for _, note := range notes {
+		if note != "" {
+			text += " " + note
+		}
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
@@ -657,9 +1032,59 @@ func serviceAwaitQuestionText(env ServiceRunEnvelope) string {
 	return parsed.Question
 }
 
+// serviceRunOutputText 从 envelope 的 output 里取正文（展示用）。
+func serviceRunOutputText(env ServiceRunEnvelope) string {
+	if len(env.Output) == 0 {
+		return ""
+	}
+	var parsed struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(env.Output, &parsed); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Text)
+}
+
+// truncateForSummary 按「字」截断（中文按 rune 算），超长时留一句可操作的提示。
+func truncateForSummary(text string, limit int) string {
+	if limit <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…（正文过长已截断，完整内容见 structuredContent.output.text）"
+}
+
 func serviceToolError(message string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: message}},
 	}
+}
+
+// serviceAgentCallLoopText 是对模型的回环说明。
+//
+// 按链长分三种说法，因为模型需要的结论不同：
+//   - 两跳（对方刚交给我，我又交回去）：说清「这是它刚给我的」，模型才知道该自己干；
+//   - 三跳以上：模型往往看不出自己在这条链的哪一段，所以要明说「这件事已经转了几手」，
+//     否则它只会换个应用再试一次 —— 那还是同一个环；
+//   - 超过追溯上限：连具体是哪一环都懒得指出了，直接说「链已经太长了」。
+//
+// 三种都必须给出下一步（自己干 / 告诉用户办不了），只说「检测到循环」等于没说。
+func serviceAgentCallLoopText(chainLength int) string {
+	const tail = "请自己动手完成（该做的判断、该跑的活都在你这边），或者直接告诉用户这件事你办不了。"
+	if chainLength <= 2 {
+		return "agent_call_loop: 对方刚刚把这个任务交给了你，现在你又要交回去，这样两边都做不成。" + tail
+	}
+	if chainLength > serviceAgentCallMaxHops {
+		return fmt.Sprintf(
+			"agent_call_loop: 这件事已经在协作链上转了 %d 手以上，长得已经没有意义了 —— "+
+				"每一手都是一次完整的、分钟级的回合，继续传下去谁也做不完。换个应用重试没有用。", chainLength-1) + tail
+	}
+	return fmt.Sprintf(
+		"agent_call_loop: 这件事已经在这条协作链上转了 %d 手，现在又要交回链上游的某一环 —— "+
+			"继续传下去只会绕圈，谁也做不完。换个应用重试是同一个环，没有用。", chainLength-1) + tail
 }

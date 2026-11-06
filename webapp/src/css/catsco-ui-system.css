@@ -816,7 +816,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-compact-task-status.running svg {
-  animation: catsco-spin 0.9s linear infinite;
+  animation: catsco-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
 }
 
 .cc-compact-task-status.completed {
@@ -1766,29 +1766,13 @@ html[data-theme="liquid"] .catsco-brand-mark {
   text-align: left;
 }
 
-/* Give the primary destinations a quiet, crafted response without moving
-   their shared row geometry. The icon settles into a small hover posture
-   instead of looping through a playful bounce. */
+/* Primary destinations share a stationary, neutral hover response. */
 .cc-sidebar-primary > svg:first-child,
 .cc-compact-new-chat > svg:first-child {
   flex: 0 0 auto;
   transform-box: fill-box;
   transform-origin: center;
-  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    color 180ms ease;
-}
-
-.cc-sidebar-new-task-entry:is(:hover, :focus-visible) > svg:first-child,
-.cc-compact-new-chat:is(:hover, :focus-visible) > svg:first-child {
-  transform: translateY(-1px) rotate(90deg) scale(1.05);
-}
-
-.cc-sidebar-skillhub-entry:is(:hover, :focus-visible) > svg:first-child {
-  transform: translateY(-1px) rotate(-3deg) scale(1.07);
-}
-
-.cc-sidebar-apps-entry:is(:hover, :focus-visible) > svg:first-child {
-  transform: translateY(-1px) rotate(3deg) scale(1.07);
+  transition: color var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2037,25 +2021,34 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section) {
+  --cc-sidebar-section-bg: var(--cc-bg);
+  --cc-sidebar-section-cover-top: var(--cc-sidebar-row-gap);
   position: sticky;
   z-index: 12;
   border-radius: 0;
-  background: var(--cc-bg);
-  box-shadow:
-    0 calc(-1 * var(--cc-sidebar-row-gap)) 0 0 var(--cc-bg),
-    0 var(--cc-sidebar-row-gap) 0 0 var(--cc-bg);
+  background: var(--cc-sidebar-section-bg);
+}
+
+/* Paint the spacing with the sticky title, including a pixel of overlap so
+   fractional scroll/zoom positions cannot expose the rows underneath. */
+.v3-chat-list > .cc-top-level-section::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: calc(-1 * var(--cc-sidebar-section-cover-top) - 1px) 0 calc(-1 * var(--cc-sidebar-row-gap) - 1px);
+  background: var(--cc-sidebar-section-bg);
+  pointer-events: none;
 }
 
 .v3-chat-list > .cc-section-after-expanded-content {
+  --cc-sidebar-section-cover-top: calc(var(--cc-sidebar-group-gap) - var(--cc-sidebar-row-gap));
   margin-top: calc(var(--cc-sidebar-group-gap) - var(--cc-sidebar-row-gap)) !important;
 }
 
 .v3-chat-list > .cc-contacts-section {
+  --cc-sidebar-section-cover-top: calc(var(--cc-sidebar-list-padding-top) + var(--cc-sidebar-row-gap));
   top: var(--cc-sidebar-row-gap);
   z-index: 14;
-  box-shadow:
-    0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 var(--cc-bg),
-    0 var(--cc-sidebar-row-gap) 0 0 var(--cc-bg);
 }
 
 .v3-chat-list > .cc-project-section {
@@ -2115,11 +2108,15 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-section-toggle svg:last-of-type {
-  transition: transform 140ms ease;
+  transition: transform var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .cc-section-toggle[aria-expanded="true"] svg:last-of-type {
   transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-section-toggle svg:last-of-type { transition: none; }
 }
 
 .cc-section-unread-dot,
@@ -2865,7 +2862,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-task-row-status.running svg {
-  animation: catsco-spin 0.9s linear infinite;
+  animation: catsco-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
 }
 
 .cc-task-row-status.completed {
@@ -3332,7 +3329,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
     overscroll-behavior: contain;
     transform: translateY(var(--v3-preview-drag-offset, 0));
     transition: transform 180ms cubic-bezier(0.22, 0.9, 0.32, 1);
-    animation: v3-file-preview-sheet-enter 260ms cubic-bezier(0.22, 0.9, 0.32, 1) both;
+    animation: v3-file-preview-sheet-enter var(--cc-motion-enter) var(--cc-motion-ease) both;
   }
 
   .v3-file-preview-panel.is-dragging {
@@ -3382,11 +3379,11 @@ html[data-theme="liquid"] .catsco-brand-mark {
   @keyframes v3-file-preview-sheet-enter {
     from {
       opacity: 0;
-      transform: translateY(36px) scale(0.985);
+      transform: translateY(calc(var(--v3-preview-drag-offset, 0px) + 3px));
     }
     to {
       opacity: 1;
-      transform: translateY(var(--v3-preview-drag-offset, 0)) scale(1);
+      transform: translateY(var(--v3-preview-drag-offset, 0));
     }
   }
 
@@ -4282,8 +4279,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-message-footer .v3-action-btn svg.cc-copy-success-icon {
-  width: 20px;
-  height: 20px;
+  animation: cc-control-feedback var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .v3-message-footer .v3-action-btn:hover:not(:disabled) {
@@ -4751,7 +4747,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-agent-picker-button[aria-expanded="true"] { background: var(--cc-hover); color: var(--cc-text); }
 .v3-agent-picker-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v3-agent-picker-icon { display: none; }
-.v3-agent-picker-chevron { flex: 0 0 auto; transition: transform 140ms ease; }
+.v3-agent-picker-chevron { flex: 0 0 auto; transition: transform var(--cc-motion-enter) var(--cc-motion-ease); }
 .v3-agent-picker-button[aria-expanded="true"] .v3-agent-picker-chevron { transform: rotate(180deg); }
 .v3-agent-picker-menu,
 .v3-attachment-menu {
@@ -4794,9 +4790,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-send.stop:hover:not(:disabled) { background: var(--cc-danger); }
 .v3-send.stop.is-stopping { background: var(--cc-danger); color: #fff; opacity: 1; }
 .cc-copy-success-icon { color: var(--cc-accent); }
-.cc-stop-spinner { animation: cc-message-regenerate-spin 0.9s linear infinite; }
+.cc-stop-spinner { animation: catsco-spin var(--cc-control-spin-cycle, 900ms) linear infinite; }
 @media (prefers-reduced-motion: reduce) {
   .cc-stop-spinner { animation: none; }
+  .v3-message-footer .v3-regenerate-action.is-pending svg { animation: none; }
+  .v3-message-footer .v3-action-btn svg.cc-copy-success-icon { animation: none; }
+  .v3-agent-picker-chevron { transition: none; }
   .cloud-artifacts-tab-indicator { transition: none; }
 }
 .v3-send:disabled { background: var(--cc-accent); color: rgba(255, 255, 255, .92); opacity: .38; }
@@ -5051,7 +5050,7 @@ html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
   text-align: center;
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
   pointer-events: auto;
-  animation: cc-toast-enter 160ms ease-out;
+  animation: cc-toast-enter var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .cc-confirm-symbol {
@@ -5118,7 +5117,7 @@ html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
   box-shadow:
     0 28px 72px rgba(0, 0, 0, 0.42),
     0 8px 24px rgba(0, 0, 0, 0.18) !important;
-  animation: cc-confirm-enter 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: cc-confirm-enter var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .cc-confirm-copy {
@@ -5226,8 +5225,8 @@ html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
 }
 
 @keyframes cc-confirm-enter {
-  from { opacity: 0; transform: translateY(8px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .cc-inline-feedback {
@@ -5272,13 +5271,13 @@ html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
 }
 
 @keyframes cc-toast-enter {
-  from { opacity: 0; transform: translate3d(0, -6px, 0); }
+  from { opacity: 0; transform: translate3d(0, -3px, 0); }
   to { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .cc-toast { animation: none; }
-  .cc-confirm-dialog { animation: none; }
+  .oc-modal.cc-confirm-dialog { animation: none; }
 }
 
 @media (max-width: 640px) {
@@ -5314,7 +5313,7 @@ html[data-theme="liquid"] .cc-toast {
   to { opacity: 1; transform: translateX(-50%); }
 }
 
-html[data-theme="liquid"] .cc-confirm-dialog {
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-confirm-dialog {
   border-color: rgba(112, 119, 139, 0.22) !important;
   background: rgba(255, 255, 255, 0.96) !important;
   box-shadow:
@@ -7519,17 +7518,68 @@ html[data-theme] .cc-agent-manager .cc-agent-hub-empty .cc-agent-empty-action:fo
 }
 
 .cc-agent-manager-body.cc-agent-manager-hub-body {
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* The body owns scrolling, including wheel gestures between cards and in the
+ * right gutter. The header remains outside this scroll container. */
+.oc-modal.cc-agent-manager.cc-agent-manager-hub {
+  --cc-agent-hub-right-inset: 44px;
+  padding-right: 0;
+}
+
+.cc-agent-manager-hub .cc-agent-manager-header {
+  padding-right: var(--cc-agent-hub-right-inset);
+}
+
+.cc-agent-manager-hub .cc-agent-manager-header::after {
+  right: var(--cc-agent-hub-right-inset);
+}
+
+.cc-agent-manager-hub .cc-agent-manager-body {
+  padding-right: 0;
+}
+
+.cc-agent-manager-hub .cc-agent-roster-toolbar {
+  padding-right: var(--cc-agent-hub-right-inset);
+}
+
+.cc-agent-manager-hub .cc-agent-cloud-manage-entry {
+  margin-right: var(--cc-agent-hub-right-inset);
+}
+
+.cc-agent-manager-hub .cc-agent-hub-grid {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  max-height: none;
+  padding-right: var(--cc-agent-hub-right-inset);
+  overflow: visible;
 }
 
 .cc-agent-manager-hub-body .cc-agent-hub {
-  height: 100%;
+  flex: 1 0 auto;
+  height: auto;
+  min-height: 0;
 }
 
 .cc-agent-manager-hub-body .cc-agent-hub-state,
 .cc-agent-manager-hub-body .cc-agent-hub-empty {
   flex: 1 1 auto;
   min-height: 0;
+}
+.cc-agent-manager-hub-body .cc-agent-hub-state.cc-loading-state {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 var(--cc-agent-hub-right-inset, 44px) 0 0;
+  gap: 12px;
+}
+.cc-agent-manager-hub-body .cc-agent-hub-state .cc-loading-motion {
+  flex: 0 0 44px;
+  width: 112px;
+  height: 44px;
 }
 
 .cc-agent-manage-form,
@@ -7683,7 +7733,7 @@ html[data-theme] .cc-agent-manager .cc-agent-hub-empty .cc-agent-empty-action:fo
 
 .cc-agent-manage-section-chevron {
   color: var(--cc-muted);
-  transition: transform 170ms ease, color 170ms ease;
+  transition: transform var(--cc-motion-enter) var(--cc-motion-ease), color var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .cc-agent-manage-section.is-open .cc-agent-manage-section-chevron {
@@ -7694,7 +7744,7 @@ html[data-theme] .cc-agent-manager .cc-agent-hub-empty .cc-agent-empty-action:fo
 .cc-agent-manage-section-body {
   padding: 14px 14px 16px;
   border-top: 1px solid var(--cc-border);
-  animation: cc-agent-manage-section-in 170ms ease-out;
+  animation: cc-agent-manage-section-in var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .cc-agent-manage-section.is-tab > .cc-agent-manage-section-body {
@@ -8320,7 +8370,7 @@ html[data-theme] .cc-agent-manager .cc-agent-hub-empty .cc-agent-empty-action:fo
 }
 
 .cc-agent-save-spinner {
-  animation: cc-agent-save-spin 800ms linear infinite;
+  animation: cc-agent-save-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
 }
 
 @keyframes cc-agent-save-spin {
@@ -9981,8 +10031,11 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-cloud-create-hint { margin: 0; font-size: 12px; color: var(--v3-text-muted); }
 .cc-cloud-create-error { margin: 0; display: flex; align-items: flex-start; gap: 5px; font-size: 12px; color: var(--v3-text-danger, #e5484d); background: color-mix(in srgb, #e5484d 7%, transparent); border: 1px solid color-mix(in srgb, #e5484d 35%, transparent); border-radius: 7px; padding: 8px 10px; line-height: 1.5; }
 .cc-cloud-create-error svg { flex: none; margin-top: 1px; }
-.cc-spin { animation: cc-spin 1s linear infinite; }
+.cc-spin { animation: cc-spin var(--cc-control-spin-cycle, 900ms) linear infinite; }
 @keyframes cc-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .cc-spin { animation: none; }
+}
 
 /* ===== Cloud-managed manage view (hub tab entry) ===== */
 .cc-agent-cloud-manage { display: grid; gap: 14px; }
@@ -11324,18 +11377,9 @@ html[data-theme="liquid"] .v3-sidebar {
 }
 
 html[data-theme="liquid"] .v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section) {
-  background: rgb(249, 251, 255);
-  box-shadow:
-    0 calc(-1 * var(--cc-sidebar-row-gap)) 0 0 rgb(249, 251, 255),
-    0 var(--cc-sidebar-row-gap) 0 0 rgb(249, 251, 255);
+  --cc-sidebar-section-bg: rgb(249, 251, 255);
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
-}
-
-html[data-theme="liquid"] .v3-chat-list > .cc-contacts-section {
-  box-shadow:
-    0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 rgb(249, 251, 255),
-    0 var(--cc-sidebar-row-gap) 0 0 rgb(249, 251, 255);
 }
 
 html[data-theme="liquid"] .v3-profile-footer {
@@ -11609,8 +11653,8 @@ html[data-theme="liquid"] .v3-chat-item.active {
 @media (max-width: 520px) {
   .cc-agent-manager-hub-body .cc-agent-card-invite-row { gap: 8px; }
   .cc-agent-manager-hub-body .cc-agent-card-invite-value { font-size: 13px; letter-spacing: 0; }
-  .oc-modal.cc-agent-manager.cc-agent-manager-hub { padding: 16px; }
-  .cc-agent-manager-hub .cc-agent-manager-header { padding: 0 0 12px; }
+  .oc-modal.cc-agent-manager.cc-agent-manager-hub { --cc-agent-hub-right-inset: 16px; padding: 16px 0 16px 16px; }
+  .cc-agent-manager-hub .cc-agent-manager-header { padding: 0 var(--cc-agent-hub-right-inset) 12px 0; }
   .cc-agent-manager-hub .cc-agent-manager-body { padding: 12px 0 0; }
   .cc-agent-manager-hub .cc-agent-manager-title { font-size: 14px; gap: 6px; white-space: nowrap; }
   .cc-agent-manager-hub .cc-agent-manager-title > svg { width: 18px; }
@@ -12892,19 +12936,19 @@ html[data-theme="liquid"] .v3-message .v3-attachment-icon {
 }
 
 .catsco-pwa-download-notice {
-  animation: cc-download-notice-enter 160ms ease-out;
+  animation: cc-download-notice-enter var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .cc-download-notice-icon { flex-shrink: 0; color: var(--cc-accent); }
 .is-error > .cc-download-notice-icon { color: var(--cc-danger); }
-.cc-download-notice-icon.is-spinning { animation: cc-message-regenerate-spin 0.9s linear infinite; }
+.cc-download-notice-icon.is-spinning { color: var(--cc-text-secondary); animation: catsco-spin var(--cc-control-spin-cycle, 900ms) linear infinite; }
 .cc-download-notice-message { display: grid; gap: 2px; flex: 1; min-width: 0; }
 .cc-download-notice-filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cc-text-secondary); font-size: 11px; }
 .cc-download-notice-actions { display: flex; flex-wrap: wrap; gap: 12px; order: 1; width: 100%; padding-left: 25px; }
 .catsco-pwa-download-notice button { flex-shrink: 0; }
 
 @keyframes cc-download-notice-enter {
-  from { opacity: 0; transform: translateY(4px); }
+  from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }
 }
 

@@ -13,6 +13,10 @@ var (
 	ErrSessionForkConflict  = errors.New("session_fork_request_conflict")
 	ErrSessionForkForbidden = errors.New("session_fork_forbidden")
 	ErrSessionForkSource    = errors.New("session_fork_source_unavailable")
+	// ErrSessionForkAnchor separates "this point is not a turn's end" from
+	// "this conversation changed": the user can act on the first one by picking
+	// a different spot, while the second needs a reload.
+	ErrSessionForkAnchor = errors.New("session_fork_anchor_not_turn_end")
 )
 
 type SessionForkStore interface {

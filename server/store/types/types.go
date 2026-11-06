@@ -66,16 +66,31 @@ type CommercialPlan struct {
 	// minted by this plan buys: private_nat/public_ip spin up a dedicated ECS
 	// instance, packed_shared places the worker inside the shared container
 	// cluster. Empty falls back to the column default (private_nat).
-	CloudWorkerDeploymentProfile string  `json:"cloud_worker_deployment_profile,omitempty"`
-	ID                           int64   `json:"id"`
-	Slug                         string  `json:"slug"`
-	Name                         string  `json:"name"`
-	Description                  string  `json:"description,omitempty"`
-	PriceFen                     int64   `json:"price_fen"`
-	Currency                     string  `json:"currency"`
-	SaleState                    string  `json:"sale_state"`
-	PurchaseLimit                int     `json:"purchase_limit"`
-	MonthlyBudget                float64 `json:"monthly_budget_cny,omitempty"`
+	CloudWorkerDeploymentProfile string `json:"cloud_worker_deployment_profile,omitempty"`
+	// CloudWorkerRetentionDays overrides how long a worker's data survives
+	// package expiry (0 = derive from DurationDays: ≤7d→3, longer→7).
+	CloudWorkerRetentionDays int `json:"cloud_worker_retention_days,omitempty"`
+	// CloudWorkerIncluded says whether this package buys a cloud worker at all.
+	// It replaces the slug allow-list that used to gate fulfilment, so a new
+	// package needs a data change rather than a code change.
+	CloudWorkerIncluded bool `json:"cloud_worker_included"`
+	// PlanTier is the package's rung on the upgrade ladder (ordinal, never
+	// displayed). 0 means "not on the ladder": free, internal and legacy
+	// packages. The public catalog does expose it — it describes the buyer's own
+	// upgrade path and carries no pricing information.
+	PlanTier int `json:"plan_tier"`
+	// CloudWorkerRuntimePlan is the shared-fleet slot size this package buys
+	// (light/standard/pro/heavy). Empty means "the fleet default".
+	CloudWorkerRuntimePlan string  `json:"cloud_worker_runtime_plan,omitempty"`
+	ID                     int64   `json:"id"`
+	Slug                   string  `json:"slug"`
+	Name                   string  `json:"name"`
+	Description            string  `json:"description,omitempty"`
+	PriceFen               int64   `json:"price_fen"`
+	Currency               string  `json:"currency"`
+	SaleState              string  `json:"sale_state"`
+	PurchaseLimit          int     `json:"purchase_limit"`
+	MonthlyBudget          float64 `json:"monthly_budget_cny,omitempty"`
 	// RealCostCNY is the real upstream cost budget behind this plan's points.
 	// Quota conversion uses points / real_cost_cny when set; 0 keeps the
 	// built-in official anchor (or the relay default for custom plans).
@@ -130,6 +145,11 @@ type CommercialOrder struct {
 	LastError         string             `json:"-"`
 	CreatedAt         time.Time          `json:"created_at"`
 	UpdatedAt         time.Time          `json:"updated_at"`
+	// PlanIncludesWorker is filled in by fulfilment from the plan row. It is
+	// deliberately not a column: it is a one-shot signal for the post-commit
+	// hooks (renew/ensure) and must not be read back as a historic fact, since
+	// the plan can be edited after an order is fulfilled.
+	PlanIncludesWorker bool `json:"-"`
 }
 
 // CommercialPaymentConfirmation is the normalized, verified result emitted by
@@ -186,24 +206,30 @@ type CommercialManagedRelayBudget struct {
 
 // CommercialInviteCode grants a plan entitlement when redeemed by a user.
 type CommercialInviteCode struct {
-	CloudWorkerBillingMode string     `json:"cloud_worker_billing_mode"`
-	CreateOnly             bool       `json:"-"`
-	ID                     int64      `json:"id"`
-	Code                   string     `json:"code"`
-	PlanID                 int64      `json:"plan_id"`
-	PlanSlug               string     `json:"plan_slug,omitempty"`
-	PlanName               string     `json:"plan_name,omitempty"`
-	MaxRedemptions         int        `json:"max_redemptions"`
-	RedeemedCount          int        `json:"redeemed_count"`
-	RedeemerUIDs           []int64    `json:"redeemer_uids"`
-	CloudWorkerCredits     int        `json:"cloud_worker_credits"`
-	CloudWorkerProfile     string     `json:"cloud_worker_profile"`
-	State                  int        `json:"state"`
-	ExpiresAt              *time.Time `json:"expires_at,omitempty"`
-	Note                   string     `json:"note,omitempty"`
-	CreatedByUID           int64      `json:"created_by_uid,omitempty"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	CloudWorkerBillingMode string  `json:"cloud_worker_billing_mode"`
+	CreateOnly             bool    `json:"-"`
+	ID                     int64   `json:"id"`
+	Code                   string  `json:"code"`
+	PlanID                 int64   `json:"plan_id"`
+	PlanSlug               string  `json:"plan_slug,omitempty"`
+	PlanName               string  `json:"plan_name,omitempty"`
+	MaxRedemptions         int     `json:"max_redemptions"`
+	RedeemedCount          int     `json:"redeemed_count"`
+	RedeemerUIDs           []int64 `json:"redeemer_uids"`
+	CloudWorkerCredits     int     `json:"cloud_worker_credits"`
+	// CloudWorkerCreditsInherit says the caller did not choose a credit count,
+	// so the store should derive it from the bound plan (see
+	// CreateCommercialInviteCode). It is not serialized: on the wire an absent
+	// `cloud_worker_credits` already means "inherit", while an explicit 0 means
+	// "token-only invite" and must stay a deliberate choice.
+	CloudWorkerCreditsInherit bool       `json:"-"`
+	CloudWorkerProfile        string     `json:"cloud_worker_profile"`
+	State                     int        `json:"state"`
+	ExpiresAt                 *time.Time `json:"expires_at,omitempty"`
+	Note                      string     `json:"note,omitempty"`
+	CreatedByUID              int64      `json:"created_by_uid,omitempty"`
+	CreatedAt                 time.Time  `json:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at"`
 }
 
 // CommercialEntitlement is a user's active or historical package assignment.
@@ -372,13 +398,34 @@ type CloudWorkerLifecycle struct {
 	BillingMode       string
 	ConversionPending bool
 	BillingAction     string
-	ID                int64
-	WorkerUID         int64
-	OwnerUID          int64
-	TenantName        string
-	PackageExpiresAt  time.Time
-	DeleteAfter       time.Time
-	State             string
+	// BillingActionStartedAt is when the in-flight billing action was claimed.
+	// A claim older than the store's stale window may be reconciled or replaced,
+	// so readers must not treat BillingAction alone as "still running".
+	BillingActionStartedAt time.Time
+	ID                     int64
+	WorkerUID              int64
+	OwnerUID               int64
+	TenantName             string
+	PackageExpiresAt       time.Time
+	DeleteAfter            time.Time
+	// RetentionDays is the window this row was created with; a renewal must
+	// reuse it instead of falling back to the global default.
+	RetentionDays int
+	State         string
+}
+
+// CloudWorkerQueuedCredit is one paid credit waiting for shared-fleet capacity.
+//
+// A pooled tier has a fixed number of tenants per node, so a burst of purchases
+// can legitimately arrive while every slot is taken. The buyer already paid and
+// asked for a machine, so the request has to survive the wait; dropping it back
+// to a generic "available" credit would either lose the request (the buyer never
+// clicks again) or mint an unwanted worker for a credit they deliberately left
+// unspent.
+type CloudWorkerQueuedCredit struct {
+	UID      int64
+	Tier     string
+	QueuedAt time.Time
 }
 
 // Cloud worker renewal outcome statuses reported by RenewForOwner.

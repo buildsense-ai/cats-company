@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Cloud, Download, Laptop, Loader2, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
+import { AlertCircle, Check, CheckCircle2, ChevronDown, ChevronUp, Cloud, Download, Laptop, Loader2, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import PwaDownloadLink from './pwa-download-link';
 import LoadingState from './loading-state';
+import useDialogBehavior from '../utils/use-dialog-behavior';
+import ConversationDevicePicker from './conversation-device-picker';
 import {
   FALLBACK_RELEASE_VERSION,
   auditDescription,
@@ -77,13 +79,18 @@ function openDesktopDeepLink(href) {
   link.remove();
 }
 
-export default function DesktopConnectModal({ userId, onClose, onConnected, onStatusChange, onOpenOnboardingGuide, initialMode = 'connect' }) {
+export default function DesktopConnectModal({ userId, onClose, onConnected, onStatusChange, initialMode = 'connect', topicId = '', activeAgent = null, returnFocusRef }) {
+  const computersMode = initialMode === 'computers';
+  const hasConversationSelection = Boolean(topicId && (activeAgent?.uid || activeAgent?.id || topicId.startsWith('grp_')));
+  const modalRef = useRef(null);
+  useDialogBehavior(modalRef, { onClose, returnFocusRef, initialFocus: 'heading' });
   const [state, setState] = useState('idle');
   const [error, setError] = useState('');
   const [showDownloads, setShowDownloads] = useState(initialMode === 'download');
   const [showAdvancedDownloads, setShowAdvancedDownloads] = useState(false);
   const [devices, setDevices] = useState([]);
   const [devicesLoaded, setDevicesLoaded] = useState(false);
+  const [devicesError, setDevicesError] = useState('');
   const [audit, setAudit] = useState([]);
   const [preferredDesktopDeviceId, setPreferredDesktopDeviceId] = useState(() => readPreferredDesktopDeviceId(userId));
   const [selectingDesktopDevice, setSelectingDesktopDevice] = useState(false);
@@ -106,6 +113,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
   );
 
   const loadDevices = useCallback(async () => {
+    setDevicesError('');
     try {
       const deviceResp = await api.getDevices();
       const nextDevices = deviceResp?.devices || [];
@@ -114,6 +122,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
       return nextDevices;
     } catch (err) {
       console.warn('Failed to load CatsCo device state:', err);
+      setDevicesError('暂时无法读取电脑，请重试。');
       setDevicesLoaded(true);
       return null;
     }
@@ -132,10 +141,10 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
 
   useEffect(() => {
     loadDevices();
-    loadAudit();
+    if (!computersMode) loadAudit();
     const refreshTimer = window.setInterval(loadDevices, 5000);
     return () => window.clearInterval(refreshTimer);
-  }, [loadAudit, loadDevices]);
+  }, [computersMode, loadAudit, loadDevices]);
 
   useEffect(() => () => {
     launchCleanupRef.current?.();
@@ -397,7 +406,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
     const isPreferred = isDesktop && device.deviceId === preferredDesktopDeviceId;
     const DeviceIcon = role === 'server' ? Cloud : Monitor;
     return (
-      <div key={device.deviceId} className={`catsco-download-card catsco-device-card${isPreferred ? ' is-preferred' : ''}`}>
+      <div key={device.deviceId} className={`${computersMode ? '' : 'catsco-download-card '}catsco-device-card${isPreferred ? ' is-preferred' : ''}`}>
         <span className="catsco-download-icon">
           <DeviceIcon size={20} />
         </span>
@@ -409,13 +418,6 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
             </span>
           </span>
           <span className="catsco-download-desc">{deviceStatusLabel(device)}</span>
-          {(device.capabilities || []).length > 0 && (
-            <span className="catsco-device-capabilities" aria-label="设备能力">
-              {device.capabilities.map((capability, index) => (
-                <span key={`${capability}-${index}`}>{capability}</span>
-              ))}
-            </span>
-          )}
         </span>
         <span className="catsco-device-actions">
           {isDesktop && (selectingDesktopDevice || !preferredDesktopDevice) && (
@@ -488,7 +490,9 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
   return (
     <div className="oc-modal-overlay catsco-desktop-connect-overlay" onClick={onClose}>
       <div
-        className="oc-modal catsco-download-modal catsco-desktop-connect-modal cc-settings-secondary-surface"
+        ref={modalRef}
+        tabIndex={-1}
+        className={`oc-modal catsco-download-modal catsco-desktop-connect-modal cc-settings-secondary-surface${computersMode ? ' is-computers' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="catsco-desktop-modal-title"
@@ -496,8 +500,8 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
       >
         <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3 id="catsco-desktop-modal-title">CatsCo 桌面端</h3>
-            <p>连接电脑、查看设备，或下载当前版本。</p>
+            <h3 id="catsco-desktop-modal-title" tabIndex={-1} className="cc-dialog-reading-focus">{computersMode ? '电脑' : 'CatsCo 桌面端'}</h3>
+            {!computersMode && <p>连接电脑、查看设备，或下载当前版本。</p>}
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
             <X size={18} />
@@ -505,22 +509,9 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
         </div>
 
         <div data-loading-region="" className="catsco-connect-body">
-          <section className="catsco-onboarding-replay" aria-labelledby="catsco-onboarding-replay-title">
-            <button
-              type="button"
-              className="catsco-connect-summary catsco-onboarding-replay-card"
-              onClick={onOpenOnboardingGuide}
-            >
-              <BookOpen size={20} aria-hidden="true" />
-              <span className="catsco-connect-copy">
-                <span className="catsco-connect-title-row"><strong id="catsco-onboarding-replay-title">新手指引</strong></span>
-                <span className="catsco-connect-description">重新查看添加助手和激活本地助手的步骤。</span>
-              </span>
-              <ChevronRight size={18} aria-hidden="true" />
-            </button>
-          </section>
+          {computersMode && hasConversationSelection && <ConversationDevicePicker topicId={topicId} activeAgent={activeAgent} embedded />}
 
-          <div className="catsco-connect-summary">
+          {(!computersMode || busy || state === 'selection' || selectingDesktopDevice) && <div className="catsco-connect-summary">
             {connectionReady ? <CheckCircle2 size={20} color="#0BA36D" /> : <Laptop size={20} />}
             <div className="catsco-connect-copy">
               <div className="catsco-connect-title-row">
@@ -558,7 +549,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
                 </button>
               )}
             </div>
-          </div>
+          </div>}
 
           {state === 'waiting_download' && (
             <div className="catsco-connect-hint">
@@ -571,16 +562,34 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
 
           {state === 'connected' && connectionReady && (
             <div className="catsco-connect-feedback is-success">
-              已连接到本地 CatsCo 桌面助手，正在为你打开对话。
+              {computersMode ? hasConversationSelection ? '电脑已连接，可在上方选择使用。' : '电脑已连接。' : '已连接到本地 CatsCo 桌面助手，正在为你打开对话。'}
             </div>
           )}
 
           {busy && !connectionReady && <LoadingState kind="connect" className="catsco-connect-motion" label="正在连接电脑" compact />}
 
+          {computersMode && !hasConversationSelection && (
+            <div className="cc-computer-list-region" data-loading-region="" aria-busy={!devicesLoaded}>
+              {!devicesLoaded
+                ? <LoadingState kind="connect" className="cc-computer-list-loading" label="正在读取电脑" compact />
+                : <div data-loading-content="">
+                  {renderDeviceSection('我的电脑', desktopDevices, 'desktop', desktopSectionRef)}
+                  {!desktopDevices.length && !devicesError && <p className="cc-device-note">还没有连接电脑。</p>}
+                  {devicesError && <div className="cc-device-note" role="alert">
+                    <p>{devicesError}</p>
+                    <button type="button" className="oc-btn oc-btn-default" onClick={() => {
+                      if (!devices.length) setDevicesLoaded(false);
+                      void loadDevices();
+                    }}>重新读取电脑</button>
+                  </div>}
+                </div>}
+            </div>
+          )}
+
           <div className="catsco-connect-actions">
-            <button className="oc-btn oc-btn-primary" type="button" onClick={startConnect} disabled={busy}>
+            <button className={`oc-btn ${computersMode ? 'oc-btn-default' : 'oc-btn-primary'}`} type="button" onClick={startConnect} disabled={busy}>
               {busy && <Loader2 className="catsco-spin" size={16} />}
-              {busy ? '等待连接...' : connectionReady ? '重新打开本机' : '打开 CatsCo 桌面端'}
+              {busy ? '等待连接...' : computersMode ? '连接本机' : connectionReady ? '重新打开本机' : '打开 CatsCo 桌面端'}
             </button>
 
             <button
@@ -615,11 +624,11 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
             </div>
           )}
 
-          {renderDeviceSection('本地桌面设备', desktopDevices, 'desktop', desktopSectionRef)}
-          {renderDeviceSection('云端运行环境', cloudDevices, 'server')}
-          {renderDeviceSection('其他设备', otherDevices, 'unknown')}
+          {!computersMode && renderDeviceSection('本地桌面设备', desktopDevices, 'desktop', desktopSectionRef)}
+          {!computersMode && renderDeviceSection('云端运行环境', cloudDevices, 'server')}
+          {!computersMode && renderDeviceSection('其他设备', otherDevices, 'unknown')}
 
-          {hasAudit && (
+          {!computersMode && hasAudit && (
             <div className="catsco-audit-section">
               <div className="catsco-section-heading">
                 <h4 className="catsco-download-section-title">最近活动</h4>

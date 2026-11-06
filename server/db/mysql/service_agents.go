@@ -77,6 +77,33 @@ func (a *Adapter) GetServiceAgentBySlug(ctx context.Context, slug string) (int64
 	return id, name, version, threshold, nil
 }
 
+// GetServiceAgentAccess 取当前归属、可见性与 definition（调用准入用）。
+//
+// 为什么要单独一条查询：工具闭包里的 descriptor 是建立 MCP 会话时的快照，
+// 用快照判定可见性会让「改成自用」对已连接的调用方失效。definition 一并返回，
+// 是为了让「分享给好友」按**当前**执行 bot 求值（改派之后该算新 bot 的好友）。
+func (a *Adapter) GetServiceAgentAccess(ctx context.Context, slug string) (int64, string, json.RawMessage, error) {
+	var (
+		ownerUID   int64
+		visibility string
+		definition []byte
+	)
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COALESCE(a.owner_uid, 0), COALESCE(a.visibility, ''), COALESCE(CAST(v.definition_json AS CHAR), '{}')
+		FROM service_agents a
+		JOIN service_agent_versions v ON v.agent_id = a.id
+		WHERE a.slug = ? AND a.state = 'active'
+		ORDER BY v.version DESC
+		LIMIT 1`, slug).Scan(&ownerUID, &visibility, &definition)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", nil, store.ErrServiceAgentNotFound
+	}
+	if err != nil {
+		return 0, "", nil, fmt.Errorf("get service agent access: %w", err)
+	}
+	return ownerUID, visibility, json.RawMessage(definition), nil
+}
+
 func (a *Adapter) CreateServiceSession(ctx context.Context, agentID, definitionRev, callerUID, callerBotUID int64, assetsHash string) (string, error) {
 	sessionID, err := newMySQLServiceEntityID("sess_")
 	if err != nil {
@@ -116,6 +143,41 @@ func (a *Adapter) GetServiceRun(ctx context.Context, runID string) (store.Servic
 		return store.ServiceRun{}, fmt.Errorf("get service run: %w", err)
 	}
 	return run, nil
+}
+
+// CountActiveServiceRunsForAgent 数同一个应用还有几单在跑（bot 并发闸用）。
+// 语义与 postgres 版一致：只走 runs → sessions，state 含 submitted（已受理也占位），
+// excludeRunID 排除调用方自己这一单。
+func (a *Adapter) CountActiveServiceRunsForAgent(ctx context.Context, agentID int64, excludeRunID string) (int, error) {
+	var n int
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM service_runs r
+		JOIN service_sessions s ON s.session_id = r.session_id
+		WHERE s.agent_id = ?
+		  AND r.state = 'running'
+		  AND r.run_id <> ?`, agentID, excludeRunID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active service runs for agent: %w", err)
+	}
+	return n, nil
+}
+
+// CountActiveServiceRunsForAgentCaller 语义与 postgres 版一致，只多一个 caller 条件。
+func (a *Adapter) CountActiveServiceRunsForAgentCaller(ctx context.Context, agentID, callerUID int64, excludeRunID string) (int, error) {
+	var n int
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM service_runs r
+		JOIN service_sessions s ON s.session_id = r.session_id
+		WHERE s.agent_id = ?
+		  AND s.caller_uid = ?
+		  AND r.state = 'running'
+		  AND r.run_id <> ?`, agentID, callerUID, excludeRunID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active service runs for agent caller: %w", err)
+	}
+	return n, nil
 }
 
 func (a *Adapter) CreateServiceRunIdempotent(ctx context.Context, sessionID, clientToken string, input json.RawMessage) (store.ServiceRun, bool, error) {
@@ -249,39 +311,31 @@ func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 与 PostgreSQL 侧同一套约束：只有 codex / worker 这类「外部执行」的 run 允许被认领。
+	// bot / http / mcp 由平台自己执行，被 worker 抢走只会落到 no_command 上。
+	predicate := "COALESCE(JSON_UNQUOTE(JSON_EXTRACT(v.definition_json, '$.runner.type')), 'codex') IN ('codex','worker')"
 	query := `
-		SELECT run_id FROM service_runs
-		WHERE state IN ('submitted','orphaned')
-		ORDER BY created_at
-		LIMIT ?
-		FOR UPDATE SKIP LOCKED`
-	queryArgs := []any{limit}
-	if ownerUID > 0 {
-		// per-user 凭据：只领自己名下应用的 run（平台 internal 应用不在此列）。
-		query = `
-			SELECT r.run_id
-			FROM service_runs r
-			JOIN service_sessions s ON s.session_id = r.session_id
-			JOIN service_agents a ON a.id = s.agent_id
-			WHERE r.state IN ('submitted','orphaned')
-			  AND a.owner_kind = 'user' AND a.owner_uid = ?
-			ORDER BY r.created_at
-			LIMIT ?
-			FOR UPDATE SKIP LOCKED`
-		queryArgs = []any{ownerUID, limit}
-	} else if len(slugs) > 0 {
-		// 按 agent slug 过滤：worker 只领自己声明的应用（FIND_IN_SET 兼容 MySQL 5.7）。
-		query = `
 		SELECT r.run_id
 		FROM service_runs r
 		JOIN service_sessions s ON s.session_id = r.session_id
 		JOIN service_agents a ON a.id = s.agent_id
-		WHERE r.state IN ('submitted','orphaned') AND FIND_IN_SET(a.slug, ?) > 0
+		LEFT JOIN service_agent_versions v ON v.agent_id = s.agent_id AND v.version = s.definition_rev
+		WHERE r.state IN ('submitted','orphaned') AND ` + predicate
+	condArgs := []any{}
+	if ownerUID > 0 {
+		// per-user 凭据：只领自己名下应用的 run（平台 internal 应用不在此列）。
+		query += ` AND a.owner_kind = 'user' AND a.owner_uid = ?`
+		condArgs = append(condArgs, ownerUID)
+	} else if len(slugs) > 0 {
+		// 按 agent slug 过滤：worker 只领自己声明的应用（FIND_IN_SET 兼容 MySQL 5.7）。
+		query += ` AND FIND_IN_SET(a.slug, ?) > 0`
+		condArgs = append(condArgs, strings.Join(slugs, ","))
+	}
+	query += `
 		ORDER BY r.created_at
 		LIMIT ?
 		FOR UPDATE SKIP LOCKED`
-		queryArgs = []any{strings.Join(slugs, ","), limit}
-	}
+	queryArgs := append(condArgs, limit)
 	rows, err := tx.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("select claimable service runs: %w", err)
@@ -361,7 +415,7 @@ func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit
 
 func (a *Adapter) RenewServiceLease(ctx context.Context, runID, instanceID string) (bool, error) {
 	res, err := a.db.ExecContext(ctx, `
-		UPDATE service_runs SET lease_expires_at = DATE_ADD(NOW(6), INTERVAL 30 SECOND)
+		UPDATE service_runs SET lease_expires_at = DATE_ADD(NOW(6), INTERVAL 120 SECOND)
 		WHERE run_id = ? AND state = 'running' AND instance_id = ?`, runID, instanceID)
 	if err != nil {
 		return false, fmt.Errorf("renew service lease: %w", err)
@@ -606,7 +660,8 @@ func (a *Adapter) FailServiceRun(ctx context.Context, runID, errorText string, r
 	if err != nil {
 		return fmt.Errorf("lock service run for fail: %w", err)
 	}
-	if state != "running" {
+	// 与 postgres 版一致：submitted（还没人领）也能直接落终态。
+	if state != "running" && state != "submitted" {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit failed service run noop: %w", err)
 		}
@@ -641,29 +696,50 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 租约过期的 running：可被认领的执行方（codex/worker）继续「接管」，次数耗尽转终态失败。
+	//
+	// bot 型 run 例外：没有人能接管它（claim 只认 codex/worker），attempts 永远不会增长，
+	// 留在 orphaned 就是永久悬挂——调用方轮询一辈子也等不到结论。所以直接判终态失败，
+	// 并给出明确原因；重试会开一个新的 bot 会话，可以安全重来。
 	rows, err := tx.QueryContext(ctx, `
-		SELECT run_id, session_id, attempts FROM service_runs
-		WHERE state = 'running' AND lease_expires_at < NOW(6)
-		FOR UPDATE`)
+		SELECT r.run_id, r.session_id, r.attempts,
+		       COALESCE(JSON_UNQUOTE(JSON_EXTRACT(v.definition_json, '$.runner.type')), 'codex')
+		FROM service_runs r
+		JOIN service_sessions s ON s.session_id = r.session_id
+		JOIN service_agents a ON a.id = s.agent_id
+		LEFT JOIN service_agent_versions v ON v.agent_id = s.agent_id AND v.version = s.definition_rev
+		WHERE r.state = 'running' AND r.lease_expires_at < NOW(6)
+		FOR UPDATE OF r`)
 	if err != nil {
 		return 0, fmt.Errorf("reap service runs query: %w", err)
 	}
 	type reapedRun struct {
 		runID     string
 		sessionID string
-		failed    bool
+		state     string
+		errorText string
 	}
 	var reaped []reapedRun
 	for rows.Next() {
 		var (
-			r        reapedRun
-			attempts int
+			r          reapedRun
+			attempts   int
+			runnerType string
 		)
-		if err := rows.Scan(&r.runID, &r.sessionID, &attempts); err != nil {
+		if err := rows.Scan(&r.runID, &r.sessionID, &attempts, &runnerType); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan reaped service run: %w", err)
 		}
-		r.failed = attempts >= 3
+		switch {
+		case runnerType == "bot":
+			r.state = "failed"
+			r.errorText = "bot_runner_lost"
+		case attempts >= 3:
+			r.state = "failed"
+			r.errorText = "lease_expired_attempts"
+		default:
+			r.state = "orphaned"
+		}
 		reaped = append(reaped, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -677,21 +753,23 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 		}
 		return 0, nil
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE service_runs SET
-			state = CASE WHEN attempts >= 3 THEN 'failed' ELSE 'orphaned' END,
-			error_text = CASE WHEN attempts >= 3 THEN 'lease_expired_attempts' ELSE error_text END,
-			instance_id = ''
-		WHERE state = 'running' AND lease_expires_at < NOW(6)`); err != nil {
-		return 0, fmt.Errorf("reap service runs: %w", err)
-	}
 	for _, r := range reaped {
-		if !r.failed {
-			continue
+		if r.errorText != "" {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE service_runs SET state = ?, error_text = ?, instance_id = '' WHERE run_id = ?`,
+				r.state, r.errorText, r.runID); err != nil {
+				return 0, fmt.Errorf("reap service runs: %w", err)
+			}
+		} else if _, err := tx.ExecContext(ctx, `
+			UPDATE service_runs SET state = ?, instance_id = '' WHERE run_id = ?`,
+			r.state, r.runID); err != nil {
+			return 0, fmt.Errorf("reap service runs: %w", err)
 		}
-		// 接管次数耗尽 → 终态失败：回执入箱（orphaned 中间态不产生回执）。
-		if err := insertServiceRunReceiptTx(ctx, tx, r.runID, r.sessionID, "failed", "", "lease_expired_attempts"); err != nil {
-			return 0, err
+		if r.state == "failed" {
+			// 终态失败：回执入箱（orphaned 中间态不产生回执）。
+			if err := insertServiceRunReceiptTx(ctx, tx, r.runID, r.sessionID, "failed", "", r.errorText); err != nil {
+				return 0, err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {

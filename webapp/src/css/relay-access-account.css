@@ -1,0 +1,623 @@
+/* Approved account overview layout. Shared tokens own themes and control states. */
+.oc-modal.relay-access-account {
+  width: min(1080px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  padding: 0;
+  overflow: hidden;
+}
+
+.relay-access-account > .relay-access-header.cc-settings-secondary-header {
+  margin: 0;
+  padding: 20px 32px 18px;
+}
+
+.relay-access-account .relay-access-header h3 {
+  font-size: 20px;
+  font-weight: var(--cc-font-weight-semibold);
+}
+
+.relay-access-account .cc-settings-secondary-header-copy {
+  gap: 6px;
+}
+
+.relay-access-account .relay-access-header p,
+.relay-access-account .oc-settings-secondary {
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.relay-access-account > .relay-access-body {
+  flex: 1 1 auto;
+  width: 100%;
+  margin: 0;
+  padding: 26px 32px 20px;
+  gap: 12px;
+  scrollbar-gutter: stable;
+}
+
+.relay-access-account .relay-access-account-loading {
+  min-height: min(440px, 55dvh);
+  justify-content: center;
+}
+
+.relay-access-account .relay-access-commerce {
+  gap: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.relay-access-account .relay-access-section-head {
+  align-items: center;
+  margin-bottom: 19px;
+}
+
+.relay-access-account .relay-access-title {
+  margin-bottom: 5px;
+  color: var(--cc-text);
+  font-size: 15px;
+  font-weight: var(--cc-font-weight-semibold);
+  line-height: 1.5;
+}
+
+.relay-access-account .relay-access-state {
+  gap: 6px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-medium);
+  white-space: nowrap;
+}
+
+.relay-access-account .relay-access-state::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.relay-access-account .relay-access-current-quota {
+  gap: 0;
+  padding: 22px 24px 17px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-panel-raised);
+}
+
+.relay-access-account .relay-access-current-quota-head {
+  align-items: center;
+  flex-direction: row;
+  gap: 20px;
+}
+
+.relay-access-account .relay-access-current-quota-heading > span {
+  color: var(--cc-muted);
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-regular);
+  letter-spacing: normal;
+}
+
+.relay-access-account .relay-access-current-quota-reading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 15px;
+  margin-top: 8px;
+}
+
+.relay-access-account .relay-access-current-quota-reading strong {
+  margin: 0;
+  color: var(--cc-text);
+  font-size: 30px;
+  font-weight: var(--cc-font-weight-semibold);
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+}
+
+.relay-access-account .relay-access-current-quota-reading small {
+  margin-left: 4px;
+  font-size: 18px;
+  font-weight: var(--cc-font-weight-medium);
+  letter-spacing: normal;
+}
+
+.relay-access-account .relay-access-current-quota:is(.inactive, .loading, .custom) .relay-access-current-quota-reading strong {
+  font-size: 18px;
+  line-height: 1.5;
+  letter-spacing: normal;
+}
+
+.relay-access-account .relay-access-current-quota-reading em {
+  color: var(--cc-muted);
+  font-size: 13px;
+  font-style: normal;
+  line-height: 1.5;
+}
+
+.relay-access-account .relay-access-current-quota-actions {
+  max-width: none;
+}
+
+.relay-access-account .relay-access-upgrade-button {
+  min-height: 42px;
+  padding: 0 20px;
+  background: var(--cc-action-bg);
+  color: var(--cc-on-action);
+  font-size: 13px;
+  font-weight: var(--cc-font-weight-semibold);
+}
+
+.relay-access-account .relay-access-upgrade-button:hover {
+  background: var(--cc-action-bg-hover);
+}
+
+.relay-access-account .relay-access-upgrade-button:active {
+  background: var(--cc-action-bg-hover);
+}
+
+.relay-access-account .relay-access-quota-bar {
+  height: 4px;
+  margin-top: 20px;
+  background: var(--cc-border-strong);
+}
+
+.relay-access-account .relay-access-current-quota-cycle {
+  margin-top: 12px;
+  padding: 0;
+  border: 0;
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.relay-access-account .relay-access-current-quota.warning {
+  border-color: color-mix(in srgb, var(--cc-warning-text) 30%, var(--cc-border));
+}
+
+.relay-access-account .relay-access-current-quota.danger {
+  border-color: color-mix(in srgb, var(--cc-danger) 35%, var(--cc-border));
+}
+
+.relay-access-account .relay-access-current-quota.warning .relay-access-current-quota-reading strong {
+  color: var(--cc-warning-text);
+}
+
+.relay-access-account .relay-access-current-quota.danger .relay-access-current-quota-reading strong {
+  color: var(--cc-danger-text);
+}
+
+.relay-access-account .relay-access-billing-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin: 24px 0 8px;
+}
+
+.relay-access-account .relay-access-billing-tabs {
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 100%;
+  gap: 3px;
+  background: var(--cc-control-surface);
+  border-radius: 9px;
+}
+
+.relay-access-account .relay-access-billing-tabs > button {
+  min-height: 36px;
+  padding: 0 16px;
+  font-weight: var(--cc-font-weight-medium);
+}
+
+.relay-access-account .relay-access-billing-tabs > button.active {
+  background: var(--cc-panel);
+  color: var(--cc-text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
+}
+
+.relay-access-account .relay-access-order-filters {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 4px;
+  overflow: visible;
+}
+
+.relay-access-account .relay-access-order-filters button.active {
+  background: transparent;
+  color: var(--cc-text);
+}
+
+.relay-access-account .relay-access-order-list {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.relay-access-account .relay-access-package-row {
+  padding: 14px 0;
+  border: 0;
+  border-bottom: 1px solid var(--cc-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.relay-access-account .relay-access-package-row strong {
+  font-weight: var(--cc-font-weight-medium);
+}
+
+.relay-access-account .relay-access-order-row {
+  border-bottom: 1px solid var(--cc-border);
+}
+
+.relay-access-account .relay-access-order-row:last-child {
+  border-bottom: 0;
+}
+
+.relay-access-account .relay-access-order-summary {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  min-height: 88px;
+  gap: 14px;
+  width: 100%;
+  padding: 18px 16px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 160ms ease;
+}
+
+.relay-access-account .relay-access-order-summary:hover {
+  background: var(--cc-hover);
+}
+
+.relay-access-account .relay-access-order-summary:active,
+.relay-access-account .relay-access-order-row.expanded .relay-access-order-summary {
+  background: var(--cc-selected);
+}
+
+.relay-access-account .relay-access-order-summary > svg {
+  justify-self: center;
+  width: 18px;
+  height: 18px;
+  color: var(--cc-muted);
+}
+
+.relay-access-account .relay-access-order-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 8px;
+}
+
+.relay-access-account .relay-access-order-summary:focus-visible,
+.relay-access-account .relay-access-order-id > button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
+}
+
+.relay-access-account .relay-access-order-chevron {
+  transition: transform 160ms ease;
+}
+
+.relay-access-account .relay-access-order-summary[aria-expanded="true"] .relay-access-order-chevron {
+  transform: rotate(180deg);
+}
+
+.relay-access-account .relay-access-order-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.relay-access-account .relay-access-order-heading strong {
+  color: var(--cc-text);
+  font-size: 15px;
+  font-weight: var(--cc-font-weight-semibold);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.relay-access-account .relay-access-order-list .relay-access-order-heading em {
+  display: inline-flex;
+  margin: 0;
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-regular);
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.relay-access-account .relay-access-order-meta {
+  display: flex;
+  min-width: 0;
+  gap: 14px;
+  margin-top: 0;
+  color: var(--cc-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.relay-access-account .relay-access-order-details {
+  margin: 0 16px 14px 54px;
+  padding: 14px 0 0;
+  border: 0;
+  border-top: 1px solid var(--cc-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.relay-access-account .relay-access-order-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 20px;
+}
+
+.relay-access-account .relay-access-order-detail-meta > span {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--cc-muted);
+  font-size: 12px;
+}
+
+.relay-access-account .relay-access-order-detail-meta > span > span {
+  flex: 0 0 auto;
+}
+
+.relay-access-account .relay-access-order-detail-meta .relay-access-order-id {
+  grid-column: 1 / -1;
+  overflow: visible;
+  white-space: normal;
+}
+
+.relay-access-account .relay-access-order-detail-meta strong {
+  min-width: 0;
+  color: var(--cc-text);
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.relay-access-account .relay-access-order-id > button {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-muted);
+  cursor: pointer;
+}
+
+.relay-access-account .relay-access-order-details .relay-access-checkout-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 0;
+}
+
+.relay-access-account .relay-access-order-meta > span:first-child {
+  flex: 0 0 auto;
+}
+
+.relay-access-account .relay-access-order-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-access-account .relay-access-order-list .relay-access-order-amount {
+  grid-column: auto;
+  justify-self: end;
+}
+
+.relay-access-account .relay-access-order-amount strong {
+  color: var(--cc-text);
+  font-size: 16px;
+  font-weight: var(--cc-font-weight-semibold);
+}
+
+.relay-access-account .relay-access-developer-sections {
+  border-top-color: var(--cc-border);
+}
+
+.relay-access-account .relay-access-tool-disclosure > summary {
+  min-height: 80px;
+  padding: 16px 0;
+  gap: 12px;
+}
+
+.relay-access-account .relay-access-tool-disclosure > summary > span:first-child {
+  gap: 12px;
+}
+
+.relay-access-account .relay-access-tool-disclosure > summary > span:first-child > svg {
+  width: 24px;
+  height: 18px;
+}
+
+.relay-access-account .relay-access-tool-disclosure > summary strong {
+  font-size: 15px;
+  font-weight: var(--cc-font-weight-semibold);
+  line-height: 1.5;
+}
+
+.relay-access-account .relay-access-tool-disclosure > summary em {
+  margin-top: 5px;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: normal;
+}
+
+.relay-access-account .relay-access-key-panel.relay-access-tool-disclosure-content {
+  border-top: 0;
+  padding: 0 0 18px 17px;
+}
+
+.relay-access-account .relay-access-key-meta {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  padding: 17px 0;
+  border: 1px solid var(--cc-border);
+  border-radius: 10px;
+}
+
+.relay-access-account .relay-access-key-meta > div {
+  padding: 0 18px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.relay-access-account .relay-access-key-meta > div + div {
+  border-left: 1px solid var(--cc-border);
+}
+
+.relay-access-account .relay-access-key-meta span {
+  margin-bottom: 7px;
+  font-size: 12px;
+}
+
+.relay-access-account .relay-access-key-meta strong {
+  font-size: 13px;
+  font-weight: var(--cc-font-weight-regular);
+  line-height: 1.5;
+}
+
+.relay-access-account .relay-access-key-actions {
+  --cc-secondary-action-bg: transparent;
+  --cc-secondary-action-bg-hover: var(--cc-hover);
+  --cc-secondary-action-bg-active: var(--cc-pressed);
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.relay-access-account .relay-access-key-actions button {
+  min-height: 38px;
+  font-size: 13px;
+  font-weight: var(--cc-font-weight-medium);
+}
+
+.relay-access-account .relay-access-key-copy-action {
+  --cc-secondary-action-bg: var(--cc-control-surface);
+}
+
+@media (max-width: 640px) {
+  .relay-access-account > .relay-access-header.cc-settings-secondary-header {
+    margin: 0;
+    padding: 18px 20px 16px;
+  }
+
+  .relay-access-account > .relay-access-body {
+    padding: 22px 20px calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .relay-access-account .relay-access-section-head {
+    display: flex;
+    align-items: flex-start;
+  }
+
+  .relay-access-account .relay-access-current-quota {
+    padding: 18px;
+  }
+
+  .relay-access-account .relay-access-current-quota-head {
+    gap: 12px;
+  }
+
+  .relay-access-account .relay-access-current-quota-reading {
+    display: grid;
+    gap: 8px;
+  }
+
+  .relay-access-account .relay-access-current-quota-reading strong {
+    font-size: 28px;
+  }
+
+  .relay-access-account .relay-access-current-quota-cycle {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .relay-access-account .relay-access-upgrade-button {
+    padding-inline: 14px;
+    min-height: 44px;
+  }
+
+  .relay-access-account .relay-access-billing-tabs > button,
+  .relay-access-account .relay-access-order-filters button,
+  .relay-access-account .relay-access-key-actions button {
+    min-height: 44px;
+  }
+
+  .relay-access-account .relay-access-billing-tabs > button {
+    padding-inline: 12px;
+  }
+
+  .relay-access-account .relay-access-order-meta {
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .relay-access-account .relay-access-order-summary {
+    grid-template-columns: 22px minmax(0, 1fr) auto 14px;
+    gap: 8px;
+    min-height: 84px;
+    padding: 16px 12px;
+  }
+
+  .relay-access-account .relay-access-order-details {
+    margin: 0 12px 14px 42px;
+  }
+
+  .relay-access-account .relay-access-order-detail-meta {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .relay-access-account .relay-access-order-details .relay-access-checkout-actions > div {
+    flex-wrap: wrap;
+  }
+
+  .relay-access-account .relay-access-key-panel.relay-access-tool-disclosure-content {
+    padding-left: 0;
+  }
+
+  .relay-access-account .relay-access-key-meta {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 2px 16px;
+  }
+
+  .relay-access-account .relay-access-key-meta > div {
+    padding: 12px 0;
+  }
+
+  .relay-access-account .relay-access-key-meta > div + div {
+    border-left: 0;
+    border-top: 1px solid var(--cc-border);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .relay-access-account .relay-access-order-summary,
+  .relay-access-account .relay-access-order-chevron {
+    transition: none;
+  }
+}

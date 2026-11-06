@@ -20,6 +20,7 @@ type repairSourceTestStore struct {
 	*publicationWorkspaceTestStore
 	guard       sync.Mutex
 	app         store.SkillHubPublicationDescriptionApplication
+	task        store.SkillHubPublicationRepairTask
 	capture     store.SkillHubPublicationCaptureRecord
 	denied      bool
 	missing     bool
@@ -28,6 +29,20 @@ type repairSourceTestStore struct {
 	onRead      func(int) error
 	onConfig    func(int)
 	configs     int
+}
+
+func (s *repairSourceTestStore) GetSkillHubPublicationRepairExecutionTask(ctx context.Context, actor int64, lease store.SkillHubPublicationRepairLease) (*store.SkillHubPublicationRepairTask, error) {
+	s.guard.Lock()
+	task := snapshotPublicationRepairTask(s.task)
+	denied := actor != 7 || !validPublicationRepairSourceTask(task, lease) || !samePublicationRepairModelLease(task.Rounds[len(task.Rounds)-1].Lease, lease)
+	s.guard.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if denied {
+		return nil, store.ErrSkillHubPublicationStale
+	}
+	return &task, nil
 }
 
 func (s *repairSourceTestStore) GetBotConfig(uid int64) (*types.BotConfig, error) {
@@ -97,9 +112,13 @@ func (s *repairSourceTestStore) GetSkillHubPublicationEntry(ctx context.Context,
 }
 
 func repairSourceApplication(t *testing.T, app store.SkillHubPublicationDescriptionApplication) store.SkillHubPublicationDescriptionApplication {
+	return repairSourceApplicationForEntryID(t, app, publicationReadTestID)
+}
+
+func repairSourceApplicationForEntryID(t *testing.T, app store.SkillHubPublicationDescriptionApplication, entryID string) store.SkillHubPublicationDescriptionApplication {
 	t.Helper()
 	app = snapshotPublicationDescriptionApplication(app)
-	app.Input.Receipt.Query.EntryID = publicationReadTestID
+	app.Input.Receipt.Query.EntryID = entryID
 	task := store.SkillHubPublicationRepairInput{Receipt: app.Input.Receipt, TopicID: "grp_123", Evidence: app.Input.Draft.Evidence}
 	var err error
 	app.Input.Draft.TaskIdentityHash, err = task.IdentityHash()
@@ -195,6 +214,24 @@ func repairSourceApplicationAtRound(t *testing.T, input store.SkillHubPublicatio
 	return app
 }
 
+func repairSourceTask(t *testing.T, app store.SkillHubPublicationDescriptionApplication) store.SkillHubPublicationRepairTask {
+	t.Helper()
+	in := store.SkillHubPublicationRepairInput{Receipt: app.Input.Receipt, TopicID: "grp_123", Evidence: app.Input.Draft.Evidence}
+	hash, err := in.IdentityHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := store.SkillHubPublicationRepairTask{ID: "pubrepair_" + strings.Repeat("d", 32), Input: in, IdentityHash: hash, CreatedAt: time.Now().Add(-time.Second)}
+	round := store.SkillHubPublicationRepairRoundInput{RequestID: "repair-source-active", Evidence: in.Evidence}
+	lease := store.SkillHubPublicationRepairLease{EntryID: in.Receipt.Query.EntryID, TaskID: task.ID, Round: 1, Input: round,
+		WorkerID: "repair-source-worker", Token: strings.Repeat("e", 32), Generation: 1, Until: time.Now().Add(time.Minute)}
+	if err := lease.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	task.Rounds = []store.SkillHubPublicationRepairRound{{Lease: lease}}
+	return task
+}
+
 func newRepairSourceFixture(t *testing.T) (*publicationWorkspaceFixture, *repairSourceTestStore) {
 	t.Helper()
 	var s *repairSourceTestStore
@@ -221,6 +258,7 @@ func newRepairSourceFixture(t *testing.T) (*publicationWorkspaceFixture, *repair
 	}
 	fixture, _ := applicationTestFixture(t)
 	s.app = repairSourceApplication(t, *fixture.app)
+	s.task = repairSourceTask(t, s.app)
 	q := s.app.Input.Receipt.Query
 	s.capture = store.SkillHubPublicationCaptureRecord{CapturedAt: time.Now(), Input: store.SkillHubPublicationCaptureInput{EntryID: publicationReadTestID,
 		Binding:  store.SkillHubPublicationDeliveryBinding{ActorUID: 7, BotUID: 42, Source: source, NodeID: f.h.nodeID, ConnectionID: f.runtime.connectionID},
@@ -236,6 +274,15 @@ func startRepairSourceCall(t *testing.T, f *publicationWorkspaceFixture, ctx con
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- f.h.publicationDescriptionSourceVerifier(7)(ctx, app) }()
+	return receiveRepairSourceCall(t, f, done), done
+}
+
+func startRepairTaskSourceCall(t *testing.T, f *publicationWorkspaceFixture, ctx context.Context, task store.SkillHubPublicationRepairTask) (*MsgThinToolRPC, <-chan error) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		done <- f.h.publicationRepairTaskSourceVerifier(7)(ctx, task, task.Rounds[len(task.Rounds)-1].Lease)
+	}()
 	return receiveRepairSourceCall(t, f, done), done
 }
 
@@ -868,5 +915,49 @@ func TestSkillHubPublicationRepairSourceTransportCoordinatorPorts(t *testing.T) 
 			}
 			assertRepairSourceIdle(t, f)
 		})
+	}
+}
+
+func TestPublicationRepairTaskSourceVerificationUsesLiveLeaseAuthority(t *testing.T) {
+	f, s := newRepairSourceFixture(t)
+	task := snapshotPublicationRepairTask(s.task)
+	lease := task.Rounds[0].Lease
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, done := startRepairTaskSourceCall(t, f, ctx, task)
+	if req.Payload["entry_id"] != lease.EntryID || req.Payload["bot_uid"] != "42" {
+		t.Fatal("Runtime request was not bound to the original publication entry and Bot")
+	}
+	f.h.handleThinToolRPCResult(f.runtime, repairSourceReply(req))
+	if err := waitRepairSource(t, done); err != nil {
+		t.Fatal("valid live task source was rejected", err)
+	}
+	deliveryAckStatus(t, f.runtime, http.StatusOK)
+	assertRepairSourceIdle(t, f)
+
+	// Revoke the unfinished lease after dispatch. A Runtime reply alone must not
+	// preserve authority from the task snapshot used to start verification.
+	req, done = startRepairTaskSourceCall(t, f, ctx, task)
+	s.guard.Lock()
+	s.task.Rounds[0].Result = &store.SkillHubPublicationRepairResult{Outcome: "waiting_confirmation", Evidence: lease.Input.Evidence}
+	s.guard.Unlock()
+	f.h.handleThinToolRPCResult(f.runtime, repairSourceReply(req))
+	if err := waitRepairSource(t, done); !errors.Is(err, store.ErrSkillHubPublicationStale) {
+		t.Fatal("completed/revoked lease retained Runtime source authority", err)
+	}
+	deliveryAckStatus(t, f.runtime, http.StatusConflict)
+	assertRepairSourceIdle(t, f)
+}
+
+func TestPublicationRepairTaskSourceVerificationRejectsInvalidLeaseBeforeRuntimeRead(t *testing.T) {
+	f, s := newRepairSourceFixture(t)
+	task := snapshotPublicationRepairTask(s.task)
+	lease := task.Rounds[0].Lease
+	lease.Generation++
+	if err := f.h.verifyPublicationRepairTaskSource(context.Background(), 7, task, lease); !errors.Is(err, store.ErrSkillHubPublicationInvalid) {
+		t.Fatal("mismatched task and lease accepted", err)
+	}
+	if len(f.runtime.send) != 0 {
+		t.Fatal("invalid task lease reached Runtime")
 	}
 }

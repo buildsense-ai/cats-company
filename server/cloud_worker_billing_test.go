@@ -99,3 +99,92 @@ func TestCloudWorkerBillingConversionRequiresConfirmedAutoRenewDisable(t *testin
 		})
 	}
 }
+
+// The packed adapter directory carries route.sh and the routed verbs, but not
+// billing-worker.sh. Repointing renew at it therefore moved the billing-script
+// lookup to a directory that never has the file, and every trial conversion or
+// expiry suspend failed with "no such file or directory" — a paid customer's
+// trial could not be converted and an expired trial kept billing on demand.
+//
+// These cases pin the resolution order that makes that impossible: explicit
+// config, then next to renew (the pre-adapter layout), then the image's ops
+// directory.
+func TestResolveCloudWorkerBillingScriptPrefersExplicitConfig(t *testing.T) {
+	configured := filepath.Join(t.TempDir(), "explicit.sh")
+	got, err := resolveCloudWorkerBillingScript(configured, "/nowhere/renew.sh", "/nowhere/ops")
+	if err != nil || got != configured {
+		t.Fatalf("explicit config not honoured: got=%q err=%v", got, err)
+	}
+}
+
+func TestResolveCloudWorkerBillingScriptUsesRenewDirectoryWhenPresent(t *testing.T) {
+	root := t.TempDir()
+	next := filepath.Join(root, "billing-worker.sh")
+	if err := os.WriteFile(next, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	ops := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ops, "billing-worker.sh"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveCloudWorkerBillingScript("", filepath.Join(root, "renew.sh"), ops)
+	if err != nil || got != next {
+		t.Fatalf("renew directory must win over ops: got=%q err=%v", got, err)
+	}
+}
+
+// This is the layout production actually has today: renew lives in the packed
+// adapter directory with no billing script beside it, and the image provides it
+// under the ops directory.
+func TestResolveCloudWorkerBillingScriptFallsBackToOpsDirectory(t *testing.T) {
+	packed := t.TempDir()
+	ops := t.TempDir()
+	want := filepath.Join(ops, "billing-worker.sh")
+	if err := os.WriteFile(want, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveCloudWorkerBillingScript("", filepath.Join(packed, "renew.sh"), ops)
+	if err != nil || got != want {
+		t.Fatalf("ops fallback not used: got=%q err=%v", got, err)
+	}
+}
+
+func TestResolveCloudWorkerBillingScriptNamesEveryCandidateWhenMissing(t *testing.T) {
+	packed := t.TempDir()
+	ops := t.TempDir()
+	_, err := resolveCloudWorkerBillingScript("", filepath.Join(packed, "renew.sh"), ops)
+	if err == nil {
+		t.Fatal("missing script must be an error, not a silent skip")
+	}
+	for _, want := range []string{
+		filepath.Join(packed, "billing-worker.sh"),
+		filepath.Join(ops, "billing-worker.sh"),
+		"CATSCO_WORKER_BILLING_SCRIPT",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must name %q so an operator can fix it, got: %v", want, err)
+		}
+	}
+}
+
+// A missing script must release the claim: nothing reached the provider, so the
+// next sweep or payment has to be able to retry instead of waiting out the
+// 30-minute claim window.
+func TestCloudWorkerBillingMissingScriptReleasesClaim(t *testing.T) {
+	h, _ := newCloudWorkerTestHandler("")
+	stub := &billingLifecycleStub{claim: true}
+	h.credits = stub
+	packed := t.TempDir()
+	h.renewScript = filepath.Join(packed, "renew.sh")
+	t.Setenv("CATSCO_WORKER_BILLING_SCRIPT", "")
+	err := h.runBillingAction(types.CloudWorkerLifecycle{ID: 1, TenantName: "bot-trial"}, "convert", false)
+	if err == nil {
+		t.Fatal("missing billing script must fail")
+	}
+	if stub.completed {
+		t.Fatal("a failed run must be recorded as an error, not a success")
+	}
+	if !strings.Contains(stub.errorText, "billing script") {
+		t.Fatalf("claim was not released with the reason: %q", stub.errorText)
+	}
+}

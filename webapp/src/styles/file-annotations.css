@@ -1,286 +1,105 @@
-/* File preview annotations. Scoped to the file preview panel. */
-
+/* Annotation tools stay below the preview, so writing never covers the media. */
+@media (min-width: 1025px) { .v3-file-preview-panel { position: relative; } }
 .file-annotation-editor {
-  flex: 0 0 auto;
-  color: var(--cc-text, #1f1f1f);
-  background: var(--cc-panel, #fff);
+  flex: 0 0 auto; max-height: 54dvh; min-height: 0; overflow: auto;
+  color: var(--cc-text, #242426); background: var(--cc-panel, #fff);
+  border-top: 1px solid var(--cc-border, #e5e5e8); font-size: 13px;
+  overscroll-behavior: contain; scrollbar-width: thin;
 }
-
-.file-annotation-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--cc-border, #ececef);
-  background: var(--cc-panel-raised, #f7f7f8);
-}
-
-.file-annotation-toolbar-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--cc-text-secondary, #454549);
-}
-
-.file-annotation-modes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.file-annotation-mode {
-  border: 1px solid var(--cc-border, #ececef);
-  border-radius: 7px;
-  background: var(--cc-panel, #fff);
-  color: var(--cc-text, #1f1f1f);
-  padding: 5px 11px;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.file-annotation-mode.is-active {
-  background: var(--cc-action-bg, #454549);
-  border-color: transparent;
-  color: var(--cc-on-action, #fff);
-}
-
-.file-annotation-mode:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.file-annotation-hint {
-  flex-basis: 100%;
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--cc-text-secondary, #454549);
-}
-
-.file-annotation-hint.is-error { color: var(--cc-danger-text, #b42318); }
-
-/* The media surface owns the pointer while a region mode is active. */
+/* Reserve the HTML composer before selection so its iframe viewport stays fixed. */
+.file-annotation-editor[data-kind="html"]:not([data-mode="off"]) { height: 54dvh; }
+.file-annotation-empty { display: flex; min-height: 180px; padding: 20px; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--cc-text-secondary, #626269); text-align: center; }
+.file-annotation-empty strong { color: var(--cc-text, #242426); font-size: 14px; }
+.file-annotation-empty p { margin: 0; line-height: 1.6; }
+.file-annotation-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; }
+.file-annotation-toolbar-title { display: inline-flex; align-items: center; gap: 7px; margin-right: auto; font-size: 14px; }
+.file-annotation-toolbar-title > svg { color: var(--cc-text-secondary, #626269); }
+.file-annotation-count { color: var(--cc-text-secondary, #626269); font-size: 12px; font-variant-numeric: tabular-nums; }
+.file-annotation-modes { display: flex; gap: 3px; padding: 3px; border-radius: 9px; background: var(--cc-panel-raised, #f3f3f5); }
+.file-annotation-mode { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 5px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--cc-text-secondary, #626269); font: inherit; font-size: 12px; cursor: pointer; }
+.file-annotation-mode.is-active { background: var(--cc-panel, #fff); color: var(--cc-text, #242426); box-shadow: 0 1px 3px rgb(0 0 0 / 10%); }
+.file-annotation-mode:hover:not(:disabled) { color: var(--cc-text, #242426); }
+.file-annotation-hint { flex-basis: 100%; margin: 0; font-size: 12px; line-height: 1.6; color: var(--cc-text-secondary, #626269); }
+.file-annotation-hint.is-error, .file-annotation-editor .is-error, .file-annotation-popover-error, .file-annotation-error { color: var(--cc-danger-text, #b42318); }
+.file-annotation-error { margin: 8px 16px; line-height: 1.6; }
+.file-annotation-editor button, .file-annotation-video button { -webkit-tap-highlight-color: transparent; }
+.file-annotation-editor button:focus-visible, .file-annotation-video button:focus-visible, .file-annotation-video input:focus-visible { outline: 2px solid var(--cc-accent, #29bc95); outline-offset: 3px; }
+.file-annotation-editor button:disabled, .file-annotation-video button:disabled { opacity: .45; cursor: default; }
+.file-annotation-icon-button { display: inline-grid; place-items: center; flex: 0 0 auto; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--cc-text-secondary, #626269); cursor: pointer; }
+.file-annotation-icon-button:hover:not(:disabled) { color: var(--cc-text, #242426); background: var(--cc-panel-raised, #f3f3f5); }
 [data-file-annotation-surface] { touch-action: manipulation; }
-[data-file-annotation-mode="region"] [data-file-annotation-surface],
-[data-file-annotation-mode="cells"] [data-file-annotation-surface] {
-  cursor: crosshair;
-  touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.file-annotation-region-outline {
-  position: absolute;
-  z-index: 5;
-  pointer-events: none;
-  border: 2px solid #ef4444;
-  border-radius: 2px;
-  background: rgb(239 68 68 / 10%);
-}
-
-.file-annotation-popover {
-  position: absolute;
-  z-index: 40;
-  box-sizing: border-box;
-  width: min(320px, calc(100% - 24px));
-  max-height: calc(100dvh - 24px);
-  overflow: auto;
-  padding: 12px;
-  border: 1px solid var(--cc-border, #ececef);
-  border-radius: 10px;
-  background: var(--cc-panel, #fff);
-  color: var(--cc-text, #1f1f1f);
-  box-shadow: 0 8px 24px rgb(20 40 28 / 15%);
-  font-size: 13px;
-}
-
-.file-annotation-popover-target {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-bottom: 8px;
-  font-weight: 600;
-}
-
-.file-annotation-popover textarea {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 76px;
-  resize: vertical;
-  padding: 8px 9px;
-  border: 1px solid var(--cc-border, #ececef);
-  border-radius: 7px;
-  background: var(--cc-panel, #fff);
-  color: inherit;
-  font: inherit;
-}
-
-.file-annotation-popover textarea:focus-visible {
-  outline: 2px solid var(--cc-accent, #29bc95);
-  outline-offset: 2px;
-}
-
-.file-annotation-popover-note {
-  margin: 8px 0 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--cc-text-secondary, #454549);
-}
-
-.file-annotation-popover-error { color: var(--cc-danger-text, #b42318); }
-.file-annotation-popover-error p { margin: 8px 0; }
-.file-annotation-retry {
-  min-height: 36px;
-  padding: 5px 10px;
-  border: 1px solid var(--cc-border, #ececef);
-  border-radius: 7px;
-  background: var(--cc-panel, #fff);
-  color: var(--cc-text, #1f1f1f);
-  font: inherit;
-  cursor: pointer;
-}
-.file-annotation-retry:focus-visible { outline: 2px solid var(--cc-accent, #29bc95); outline-offset: 2px; }
-.file-annotation-retry:disabled { opacity: 0.55; cursor: default; }
-
-.file-annotation-popover-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.file-annotation-popover-actions button {
-  border: 1px solid var(--cc-border, #ececef);
-  border-radius: 7px;
-  background: var(--cc-panel, #fff);
-  color: inherit;
-  padding: 5px 13px;
-  font: inherit;
-  cursor: pointer;
-}
-
-.file-annotation-popover-actions button:last-child {
-  background: var(--cc-action-bg, #454549);
-  border-color: transparent;
-  color: var(--cc-on-action, #fff);
-}
-
-.file-annotation-popover-actions button:disabled { opacity: 0.55; cursor: default; }
-
-.file-annotation-drafts {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 100px;
-  overflow-y: auto;
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-top: 1px solid var(--cc-border, #ececef);
-}
-
-.file-annotation-draft {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-
-.file-annotation-draft-label {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-annotation-draft button {
-  border: 0;
-  background: transparent;
-  color: var(--cc-text-secondary, #454549);
-  cursor: pointer;
-  font: inherit;
-  padding: 2px 4px;
-}
-
-.file-annotation-draft button:hover { color: var(--cc-text, #1f1f1f); }
-
-.file-annotation-send-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  padding: 0 10px 10px;
-}
-
-.file-annotation-send-bar button {
-  min-height: 36px;
-  padding: 6px 12px;
-  border: 1px solid var(--cc-border, #ececef);
-  border-radius: 7px;
-  color: var(--cc-text, #1f1f1f);
-  background: var(--cc-panel, #fff);
-  font: inherit;
-  cursor: pointer;
-}
-
-.file-annotation-send-bar button:last-child {
-  color: var(--cc-on-action, #fff);
-  background: var(--cc-action-bg, #454549);
-}
-
-.file-annotation-send-bar button:disabled { opacity: .55; cursor: default; }
-
+[data-file-annotation-mode="region"] [data-file-annotation-surface], [data-file-annotation-mode="cells"] [data-file-annotation-surface] { cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
+.file-annotation-region-outline { position: absolute; z-index: 5; pointer-events: none; border: 2px solid var(--cc-accent, #29bc95); border-radius: 2px; background: rgb(41 188 149 / 8%); }
+.file-annotation-popover { box-sizing: border-box; padding: 0 16px 14px; background: var(--cc-panel, #fff); color: inherit; }
+.file-annotation-composer-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.file-annotation-popover-target { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cc-text-secondary, #626269); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.file-annotation-popover textarea { display: block; box-sizing: border-box; width: 100%; min-height: 84px; max-height: 180px; resize: vertical; padding: 11px 12px; border: 1px solid var(--cc-border, #e5e5e8); border-radius: 9px; background: var(--cc-panel-raised, #f8f8fa); color: inherit; font: inherit; font-size: 14px; line-height: 1.6; caret-color: var(--cc-accent, #29bc95); }
+.file-annotation-popover textarea::placeholder { color: var(--cc-text-secondary, #626269); }
+.file-annotation-popover textarea:focus-visible { outline: 2px solid var(--cc-accent, #29bc95); outline-offset: 2px; }
+.file-annotation-popover textarea::selection { background: var(--cc-accent-soft, #dbf4ec); color: var(--cc-text, #242426); }
+.file-annotation-popover-error { margin: 10px 0; font-size: 13px; line-height: 1.6; }
+.file-annotation-popover-error p { margin: 0 0 8px; }
+.file-annotation-retry { min-height: 32px; padding: 5px 10px; border: 1px solid var(--cc-border, #e5e5e8); border-radius: 7px; background: var(--cc-panel, #fff); color: var(--cc-text, #242426); font: inherit; cursor: pointer; }
+.file-annotation-screenshots { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.file-annotation-screenshots figure { margin: 0; min-width: 0; }
+.file-annotation-screenshots img { display: block; width: 100%; height: 80px; object-fit: contain; border-radius: 6px; background: var(--cc-panel-raised, #f3f3f5); }
+.file-annotation-screenshots figcaption { margin-top: 4px; color: var(--cc-text-secondary, #626269); font-size: 11px; }
+.file-annotation-screenshots p { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--cc-text-secondary, #626269); }
+.file-annotation-capture-pending { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.file-annotation-capture-pending > span { height: 60px; border-radius: 6px; background: var(--cc-panel-raised, #f3f3f5); }
+.file-annotation-capture-pending p { grid-column: 1 / -1; margin: 0; color: var(--cc-text-secondary, #626269); font-size: 12px; }
+.file-annotation-composer-options { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; color: var(--cc-text-secondary, #626269); font-size: 12px; font-variant-numeric: tabular-nums; }
+.file-annotation-text-only { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.file-annotation-text-only input { width: 15px; height: 15px; margin: 0; accent-color: var(--cc-accent, #29bc95); }
+.file-annotation-popover-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.file-annotation-shortcut { margin-right: auto; color: var(--cc-text-secondary, #626269); font-size: 11px; }
+.file-annotation-popover-actions button, .file-annotation-send-bar button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 7px 12px; border: 0; border-radius: 8px; color: inherit; background: var(--cc-panel-raised, #f3f3f5); font: inherit; cursor: pointer; }
+.file-annotation-popover-actions button:last-child, .file-annotation-send-bar button:last-child { background: var(--cc-action-bg, #242426); color: var(--cc-on-action, #fff); }
+.file-annotation-popover-actions button:hover:not(:disabled), .file-annotation-send-bar button:hover:not(:disabled) { filter: brightness(.94); }
+.file-annotation-drafts { display: flex; flex-direction: column; max-height: 160px; overflow: auto; padding: 0 16px; }
+.file-annotation-draft { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--cc-border, #e5e5e8); }
+.file-annotation-draft-thumbnail { flex: 0 0 auto; width: 44px; height: 36px; border-radius: 5px; object-fit: cover; background: var(--cc-panel-raised, #f3f3f5); }
+.file-annotation-draft-content { flex: 1; min-width: 0; }
+.file-annotation-draft-content small { display: block; margin-bottom: 3px; color: var(--cc-text-secondary, #626269); font-size: 11px; font-variant-numeric: tabular-nums; }
+.file-annotation-draft-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.file-annotation-send-bar { display: flex; align-items: center; gap: 8px; padding: 12px 16px 6px; }
 .file-annotation-send-bar .spacer { flex: 1; }
-
-.file-annotation-text-only {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--cc-text-secondary, #454549);
+.file-annotation-send-bar .file-annotation-clear { color: var(--cc-text-secondary, #626269); background: transparent; padding-left: 0; }
+.file-annotation-destination { margin: 0; padding: 4px 16px 12px; color: var(--cc-text-secondary, #626269); font-size: 11px; }
+/* Dedicated video transport remains usable while frame selection is active. */
+.file-annotation-video { display: flex; flex: 1; height: 100%; box-sizing: border-box; min-width: 0; min-height: 0; flex-direction: column; background: #101012; }
+.file-annotation-video-stage { position: relative; display: flex; flex: 1; min-height: 0; align-items: center; justify-content: center; overflow: hidden; }
+.file-annotation-video-stage video { display: block; width: 100%; height: 100%; max-height: 100%; min-height: 0; object-fit: contain; }
+.file-annotation-video-status { position: absolute; bottom: 12px; padding: 5px 9px; border-radius: 6px; background: #242426; color: #f4f4f5; font-size: 12px; pointer-events: none; }
+.file-annotation-video-transport { flex: 0 0 auto; padding: 6px 12px 10px; background: var(--cc-panel, #fff); color: var(--cc-text, #242426); }
+.file-annotation-video-timeline input { display: block; width: 100%; height: 24px; margin: 0; cursor: pointer; accent-color: var(--cc-accent, #29bc95); }
+.file-annotation-video-buttons { display: flex; align-items: center; gap: 5px; }
+.file-annotation-video-buttons button { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.file-annotation-video-buttons button:hover:not(:disabled) { background: var(--cc-panel-raised, #f3f3f5); }
+.file-annotation-video-time { margin-left: 6px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.file-annotation-video-time strong { font-weight: 500; }
+.file-annotation-video-time > span, .file-annotation-video-help { color: var(--cc-text-secondary, #626269); }
+.file-annotation-video-help { margin-left: auto; font-size: 11px; }
+.file-annotation-video-error { padding: 8px 12px; margin: 0; color: var(--cc-danger-text, #b42318); background: var(--cc-panel, #fff); font-size: 13px; }
+@media (max-width: 1024px) {
+  .v3-file-preview-panel.is-file-annotating {
+    height: calc(100dvh - max(20px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom)));
+    max-height: calc(100dvh - max(20px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom)));
+  }
+}
+@media (max-width: 600px) {
+  .file-annotation-editor { max-height: 52dvh; }
+  .file-annotation-toolbar { gap: 7px; padding: 10px 12px; }
+  .file-annotation-popover { padding: 0 12px 12px; }
+  .file-annotation-popover textarea { font-size: 16px; }
+  .file-annotation-shortcut, .file-annotation-video-help { display: none; }
+  .file-annotation-icon-button, .file-annotation-video-buttons button { width: 36px; height: 36px; }
+  .file-annotation-drafts { padding: 0 12px; }
 }
 
-.file-annotation-screenshots {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.file-annotation-screenshots figure { flex: 1 1 100px; margin: 0; min-width: 0; }
-
-.file-annotation-screenshots img {
-  display: block;
-  width: 100%;
-  height: 72px;
-  object-fit: contain;
-  border: 1px solid var(--cc-border, #ececef);
-  border-radius: 6px;
-  background: var(--cc-panel-raised, #f7f7f8);
-}
-
-.file-annotation-screenshots figcaption {
-  margin-top: 3px;
-  font-size: 11px;
-  color: var(--cc-text-secondary, #454549);
-}
-
-.file-annotation-screenshots p { flex-basis: 100%; margin: 0; font-size: 12px; }
-
-.file-annotation-screenshots button {
-  border: 1px solid var(--cc-border, #ececef);
-  border-radius: 6px;
-  background: var(--cc-panel, #fff);
-  color: inherit;
-  padding: 4px 9px;
-  font: inherit;
-  cursor: pointer;
+@media (max-height: 600px) {
+  .file-annotation-editor { max-height: 42dvh; }
+  .file-annotation-screenshots img { height: 48px; }
 }
 
 /* The canvas reader also runs on desktop while PDF annotation is active. */

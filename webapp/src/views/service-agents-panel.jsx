@@ -36,6 +36,8 @@ export default function ServiceAgentsPanel({ onClose }) {
   // 自述建议：应用自己建议的对外描述，等人确认。丢弃是逐行进行中。
   const [dismissingIntro, setDismissingIntro] = useState(() => new Set());
   const [notice, setNotice] = useState(null);
+  // 目录搜索：应用一多（同事分享的 + 自己的）就靠名称/描述找。纯前端过滤，不发请求。
+  const [query, setQuery] = useState('');
   const [form, setForm] = useState({
     // 分享哪个 bot：被分享出去的是 bot 本身。
     //
@@ -59,11 +61,20 @@ export default function ServiceAgentsPanel({ onClose }) {
     setLoading(true);
     setError('');
     try {
-      const [catalogData, botsData] = await Promise.all([
+      const [catalogData, mineData, botsData] = await Promise.all([
         api.getServiceAgentsCatalog(),
+        typeof api.getMyServiceAgents === 'function'
+          ? Promise.resolve(api.getMyServiceAgents()).catch(() => null)
+          : Promise.resolve(null),
         typeof api.getMyBots === 'function' ? api.getMyBots().catch(() => null) : Promise.resolve(null),
       ]);
-      setAgents(Array.isArray(catalogData?.agents) ? catalogData.agents : []);
+      const catalogAgents = Array.isArray(catalogData?.agents) ? catalogData.agents : [];
+      // 已下架的应用不会出现在目录里（这是对的），但本人必须还能看到 —— 否则
+      // 「收回」之后就既不能重新上架，也没法彻底删除。
+      const catalogSlugs = new Set(catalogAgents.map((item) => item.slug));
+      const retiredAgents = (Array.isArray(mineData?.agents) ? mineData.agents : [])
+        .filter((item) => item && item.slug && item.state && item.state !== 'active' && !catalogSlugs.has(item.slug));
+      setAgents([...catalogAgents, ...retiredAgents]);
       const rawBots = botsData?.bots ?? botsData?.agents ?? botsData;
       setBots(Array.isArray(rawBots) ? rawBots : []);
     } catch (err) {
@@ -180,14 +191,15 @@ export default function ServiceAgentsPanel({ onClose }) {
     const name = form.name.trim();
     const slug = form.slug.trim();
     const description = form.description.trim();
-    if (!name) { setPublishError('请填写应用名称'); return; }
-    if (form.visibility === 'public' && !description) {
-      // 公开分享却不写描述：别人（另一个 Agent）只看到名字，等于不知道能不能用。
-      setPublishError('公开应用必须写「能做什么」：调用你的是另一个 Agent，它只能靠这段文字判断要不要用');
+    if (!name) { setPublishError('请填写工具名称'); return; }
+    if ((form.visibility === 'public' || form.visibility === 'friends') && !description) {
+      // 分享给别人（公开或好友）却不写描述：别人（另一个 Agent）只看到名字，
+      // 等于不知道能不能用。「仅自己」不强制 —— 写不写都不影响别人。
+      setPublishError('要说清楚「它能做什么」：调用它的是另一个 Agent，只能靠这段文字判断要不要用');
       return;
     }
     if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(slug)) {
-      setPublishError('调用名只能用小写字母/数字/中划线，2~64 位');
+      setPublishError('工具名只能用小写字母/数字/中划线，2~64 位');
       return;
     }
     if (!lockedRunner && !Number(form.botUid)) {
@@ -236,7 +248,7 @@ export default function ServiceAgentsPanel({ onClose }) {
       setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', price: '', priceUnit: 'token', botUid: '' });
       await load();
     } catch (err) {
-      setPublishError(err?.message || '发布失败，请稍后重试。');
+      setPublishError(err?.message || '创建失败，请稍后重试。');
     } finally {
       setPublishing(false);
     }
@@ -268,7 +280,9 @@ export default function ServiceAgentsPanel({ onClose }) {
       description: suggested || agent.description || '',
       slug: agent.slug,
       slugTouched: true,
-      visibility: agent.visibility === 'private' ? 'private' : 'public',
+      visibility: agent.visibility === 'friends'
+        ? 'friends'
+        : (agent.visibility === 'private' ? 'private' : 'public'),
       price: typeof priceValue === 'number' && priceValue > 0 ? String(priceValue) : '',
       priceUnit,
       botUid: shareBot ? String(runner.bot_uid) : '',
@@ -293,6 +307,29 @@ export default function ServiceAgentsPanel({ onClose }) {
       setDismissingIntro((prev) => {
         const next = new Set(prev);
         next.delete(slug);
+        return next;
+      });
+    }
+  }, []);
+
+  // 彻底删除（仅限已下架的应用）：会删掉版本、会话与运行记录，账本保留。
+  const purgeAgent = useCallback(async (agent) => {
+    if (!agent?.slug) return;
+    const label = agent.name || agent.slug;
+    if (!window.confirm(`彻底删除「${label}」？\n\n会连同它的全部版本、会话与运行记录一起删除，无法恢复；账本会保留用于对账。`)) {
+      return;
+    }
+    setUnpublishing((prev) => new Set(prev).add(agent.slug));
+    setError('');
+    try {
+      await api.purgeServiceAgent(agent.slug);
+      setAgents((prev) => prev.filter((item) => item.slug !== agent.slug));
+    } catch (err) {
+      setError(err?.message || '彻底删除失败，请稍后重试。');
+    } finally {
+      setUnpublishing((prev) => {
+        const next = new Set(prev);
+        next.delete(agent.slug);
         return next;
       });
     }
@@ -324,9 +361,9 @@ export default function ServiceAgentsPanel({ onClose }) {
         setAgents((prev) => prev.filter((item) => item.slug !== slug));
         setNotice({ slug, name: agent?.name || slug, alreadyGone: true });
       } else if (err?.status === 403) {
-        setError('只有发布者本人能收回该应用。');
+        setError('只有发布者本人能停止分享该工具。');
       } else {
-        setError(err?.message || '收回失败，请稍后重试。');
+        setError(err?.message || '停止分享失败，请稍后重试。');
       }
     } finally {
       setUnpublishing((prev) => {
@@ -348,6 +385,43 @@ export default function ServiceAgentsPanel({ onClose }) {
     }
   }, []);
 
+  // 搜索：名称 / 调用名 / 描述任一命中即保留（描述里往往写着使用场景，最常被拿来搜）。
+  const keyword = query.trim().toLowerCase();
+  const visibleAgents = keyword
+    ? agents.filter((agent) => [agent.name, agent.slug, agent.description]
+      .filter(Boolean)
+      .some((field) => String(field).toLowerCase().includes(keyword)))
+    : agents;
+
+  // 「谁在干」：执行方类型决定别人的期待（要不要等、离线会不会失败、能不能动本机）。
+  const runnerLabelOf = (agent) => {
+    switch (agent?.runner_kind) {
+      case 'bot':
+        return '另一个 bot 在处理';
+      case 'worker':
+        return '在作者自己的电脑上跑';
+      case 'http':
+      case 'mcp':
+        return '平台直连作者的服务';
+      default:
+        return '';
+    }
+  };
+
+  // 「要传什么」：把作者声明的 schema 压成一行，别再让调用方从散文里猜字段名。
+  // 只列字段名 + 必填标记，描述放 title —— 列表里空间宝贵。
+  const inputSummaryOf = (agent) => {
+    const schema = agent?.input_schema;
+    const props = schema && typeof schema === 'object' ? schema.properties : null;
+    if (!props || typeof props !== 'object') return '';
+    const names = Object.keys(props);
+    if (names.length === 0) return '';
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    const shown = names.slice(0, 3).map((name) => (required.includes(name) ? `${name}*` : name));
+    const more = names.length > 3 ? ` 等 ${names.length} 个` : '';
+    return `要传：${shown.join('、')}${more}`;
+  };
+
   return (
     <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
         <span className="v3-service-agents-title">
@@ -368,11 +442,12 @@ export default function ServiceAgentsPanel({ onClose }) {
               if (next && !editingSlug) setPublishResult(null);
               if (!next) resetPublishForm();
             }}
-            aria-label="发布应用"
-            title="发布应用（把自己的 agent 上架成工具）"
-            className={showPublish ? 'is-active' : undefined}
+            aria-label="把 bot 变成工具"
+            title="把你的 bot 变成别的 Agent 能直接调用的工具"
+            className={showPublish ? 'is-primary-action is-active' : 'is-primary-action'}
           >
             <Plus size={16} />
+            <span>把 bot 变成工具</span>
           </button>
           <button
             type="button"
@@ -389,17 +464,33 @@ export default function ServiceAgentsPanel({ onClose }) {
         </div>
       </div>
       {showPublish ? (
-        <form
-          className="v3-service-agents-publish"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!publishing) submitPublish();
-          }}
-        >
-          <div className="v3-service-agents-publish-title">{editingSlug ? '编辑应用' : '发布应用'}</div>
+        <div className="v3-service-agents-publish-view">
+          <div className="v3-service-agents-publish-head">
+            <div className="v3-service-agents-publish-title">{editingSlug ? '编辑工具' : '把 bot 变成工具'}</div>
+            <button
+              type="button"
+              className="v3-service-agents-publish-back"
+              onClick={() => {
+                setShowPublish(false);
+                setPublishError('');
+              }}
+            >
+              返回列表
+            </button>
+          </div>
+          <form
+            className="v3-service-agents-publish"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!publishing) submitPublish();
+            }}
+          >
+          <p className="v3-service-agents-publish-lead">
+            把你调教好的 bot 变成别的 Agent 能直接调用的工具，随时可以停止分享。
+          </p>
           {lockedRunner ? null : (
             <label className="v3-service-agents-field">
-              <span>分享哪个 bot</span>
+              <span>用哪个 bot 干活</span>
               <select
                 value={form.botUid}
                 onChange={(event) => {
@@ -426,12 +517,12 @@ export default function ServiceAgentsPanel({ onClose }) {
               <span className="v3-service-agents-field-hint">
                 {bots.length === 0
                   ? '你还没有 bot。先在「我的机器人」里创建一个 —— 你调教好的 bot 就是能接活的那个。'
-                  : '别人调的是这个 bot 本身：它用自己的判断力干活。它在线（开着）时才接活，不在线会立刻报「不在线」。'}
+                  : '它在线时才接活；不在线会立刻报错，不会让你白等。'}
               </span>
             </label>
           )}
           <label className="v3-service-agents-field">
-            <span>名称</span>
+            <span>工具名称</span>
             <input
               value={form.name}
               onChange={(event) => updateForm({ name: event.target.value })}
@@ -440,7 +531,7 @@ export default function ServiceAgentsPanel({ onClose }) {
             />
           </label>
           <label className="v3-service-agents-field">
-            <span>能做什么（公开应用必填）</span>
+            <span>它能做什么（别人只凭这段判断要不要用）</span>
             <textarea
               value={form.description}
               onChange={(event) => updateForm({ description: event.target.value })}
@@ -448,12 +539,11 @@ export default function ServiceAgentsPanel({ onClose }) {
               rows={4}
             />
             <span className="v3-service-agents-field-hint">
-              调用你的是另一个 Agent，它看不到你的内容、也没有你的对话上下文，
-              只能靠这段文字判断要不要用。写清：做什么 / 什么情况下该用 / 不该用 / 参数怎么填。
+              调用你的是另一个 Agent：写清做什么、什么时候用、参数怎么填。
             </span>
           </label>
           <label className="v3-service-agents-field">
-            <span>调用名（工具名 catsco_&lt;调用名&gt;）</span>
+            <span>工具名（对外叫 catsco_&lt;工具名&gt;）</span>
             <input
               value={form.slug}
               onChange={(event) => updateForm({ slug: event.target.value })}
@@ -463,15 +553,15 @@ export default function ServiceAgentsPanel({ onClose }) {
             />
             <span className="v3-service-agents-field-hint">
               {editingSlug
-                ? '调用名是分享出去的名字，编辑时不能改（改了就是另一个应用）。'
+                ? '工具名是对外暴露的名字，编辑时不能改（改了就是另一个工具）。'
                 : `你的 bot 里就这样叫它：catsco_${form.slug || 'my-agent'}`}
             </span>
           </label>
           <details className="v3-service-agents-advanced">
             <summary className="v3-service-agents-advanced-head">
-              更多设置（默认：公开 · 在我的环境跑 · 免费分享）
+              更多设置（默认：公开 · 在我的环境跑 · 免费）
             </summary>            <div className="v3-service-agents-field">
-              <span>可见性</span>
+              <span>谁可以用</span>
               <div className="v3-service-agents-choices">
                 <label>
                   <input
@@ -480,7 +570,16 @@ export default function ServiceAgentsPanel({ onClose }) {
                     checked={form.visibility === 'private'}
                     onChange={() => updateForm({ visibility: 'private' })}
                   />
-                  仅自己
+                  只有我和我的 bot
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="visibility"
+                    checked={form.visibility === 'friends'}
+                    onChange={() => updateForm({ visibility: 'friends' })}
+                  />
+                  好友（只有我的好友能看到、能调）
                 </label>
                 <label>
                   <input
@@ -489,7 +588,7 @@ export default function ServiceAgentsPanel({ onClose }) {
                     checked={form.visibility === 'public'}
                     onChange={() => updateForm({ visibility: 'public' })}
                   />
-                  公开（别人也能调用）
+                  公开（谁都能找到、能调）
                 </label>
               </div>
             </div>
@@ -497,18 +596,18 @@ export default function ServiceAgentsPanel({ onClose }) {
               {/* 面板只提供「分享 bot」这一种方式。历史上还有 http/mcp（要公网地址）
                   与 worker（要用户自己写命令模板）—— 两条路都要求用户懂工程细节，
                   而且调教好的 bot 本来就能干那些活。后端仍保留它们，老应用原样保存。 */}
-              <span>怎么接活</span>
+              <span>谁来干活</span>
               {lockedRunner ? (
                 <div className="v3-service-agents-locked" role="status">
                   {lockedRunner.type === 'worker' ? (
                     <>
-                      这个应用用的是旧方式：在你自己的环境里跑一条固定命令
+                      这个工具用的是旧方式：在你自己的环境里跑一条固定命令
                       （{lockedRunner.command || '未填命令'}）。面板已不再提供这种方式；
                       本次保存只改名称/说明/价格，执行方式保持原样。
                     </>
                   ) : (
                     <>
-                      这个应用用的是「平台直连
+                      这个工具用的是「平台直连
                       {lockedRunner.type === 'mcp' ? ' MCP ' : ' HTTP '}
                       服务」（{lockedRunner.url}）。这种接入方式需要公网可达地址，面板已不再提供；
                       本次保存只改名称/说明/价格，连接方式保持原样。
@@ -523,7 +622,7 @@ export default function ServiceAgentsPanel({ onClose }) {
               )}
             </div>
             <div className="v3-service-agents-field">
-              <span>计费方式（留空=免费分享）</span>
+              <span>收费（留空就是不收费）</span>
               <div className="v3-service-agents-choices">
                 <label>
                   <input
@@ -563,7 +662,9 @@ export default function ServiceAgentsPanel({ onClose }) {
           {publishError ? <div className="v3-service-agents-error" role="alert">{publishError}</div> : null}
           <div className="v3-service-agents-publish-actions">
             <button type="submit" className="is-primary" disabled={publishing}>
-              {publishing ? '发布中…' : '发布'}
+              {publishing
+                ? (editingSlug ? '保存中…' : '创建中…')
+                : (editingSlug ? '保存修改' : '创建工具')}
             </button>
             <button
               type="button"
@@ -576,19 +677,25 @@ export default function ServiceAgentsPanel({ onClose }) {
               取消
             </button>
           </div>
-        </form>
-      ) : null}
+          </form>
+        </div>
+      ) : (
+        <>
       {publishResult ? (
         <div className="v3-service-agents-published" role="status">
           <div>
-            已发布 <code>catsco_{publishResult.slug}</code>
-            {publishResult.visibility === 'public' ? ' · 公开，别人也能调用' : ' · 仅自己可用'}
+            已创建工具 <code>catsco_{publishResult.slug}</code>
+            {publishResult.visibility === 'public'
+              ? ' · 公开，谁都能找到并调用'
+              : publishResult.visibility === 'friends'
+                ? ' · 仅好友可见，他们能在目录里找到并加进清单'
+                : ' · 只有我和我的 bot 能调'}
           </div>
           {publishResult.runner === 'worker' ? (
             <div className="v3-service-agents-published-hint">
               <div>
-                这个应用还在用旧方式（在你自己的环境里跑固定命令）。面板已不再提供这种方式；
-                想换成分享 bot，重新发布时选一个 bot 即可。
+                这个工具还在用旧方式（在你自己的环境里跑固定命令）。面板已不再提供这种方式；
+                想改成用 bot 干活，重新创建时选一个 bot 即可。
               </div>
             </div>
           ) : null}
@@ -617,13 +724,13 @@ export default function ServiceAgentsPanel({ onClose }) {
         <div className="v3-service-agents-notice" role="status">
           <div className="v3-service-agents-notice-body">
             <div className="v3-service-agents-notice-title">
-              已收回 <code title={`catsco_${notice.slug}`}>catsco_{notice.slug}</code>
+              已停止分享 <code title={`catsco_${notice.slug}`}>catsco_{notice.slug}</code>
             </div>
             <div className="v3-service-agents-notice-hint">
               {notice.alreadyGone
-                ? '该应用此前已不在目录中。'
+                ? '该工具此前已不在目录中。'
                 : '别人的工具列表里会立即消失，旧名字再调用会失败（unknown tool）。'}
-              重新发布同一调用名即可恢复分享。
+              重新创建同一工具名即可恢复分享。
             </div>
           </div>
           <button type="button" onClick={() => setNotice(null)}>知道了</button>
@@ -661,10 +768,22 @@ export default function ServiceAgentsPanel({ onClose }) {
       </div>
       <p className="v3-service-agents-hint">
         {scopeBotUid
-          ? '为这个 Agent 配置可调用的工具；未配置过时默认全部可见，保存后按清单裁剪（只影响该 Agent）。'
-          : 'CatsCo 定制 Agent（以工具形式接入）。添加的会出现在你的账号工具集中；删除的将被移除，调用也会被拒绝。'}
+          ? '只影响这个 Agent：没配置过时全部可见，改完按清单裁剪。'
+          : '这些工具会出现在你所有 Agent 的工具集里；移出后调用会被拒绝。'}
       </p>
       {scopeBotUid && scopeLoading ? <div className="v3-service-agents-empty">读取该 Agent 的工具清单…</div> : null}
+      {!loading && agents.length > 1 ? (
+        <div className="v3-service-agents-search">
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索工具（名称或用途）"
+            aria-label="搜索工具"
+            spellCheck={false}
+          />
+        </div>
+      ) : null}
       {error && (
         <div className="v3-service-agents-error" role="alert">
           <AlertTriangle size={14} aria-hidden="true" />
@@ -691,10 +810,10 @@ export default function ServiceAgentsPanel({ onClose }) {
           <span className="v3-service-agents-placeholder-icon" aria-hidden="true">
             <Sparkles size={22} />
           </span>
-          <p className="v3-service-agents-placeholder-title">还没有可用的 Agent 工具</p>
+          <p className="v3-service-agents-placeholder-title">还没有可用的工具</p>
           <p className="v3-service-agents-placeholder-text">
-            点右上角 ＋ 把你电脑上的 agent 上架，它就会以 <code>catsco_&lt;名字&gt;</code>
-            出现，你的 bot 直接就能调用。
+            点右上角「把 bot 变成工具」，选一个你调教好的 bot，它就会以
+            <code>catsco_&lt;工具名&gt;</code> 出现在这里 —— 你的 bot 直接就能调用。
           </p>
           <button
             type="button"
@@ -702,16 +821,30 @@ export default function ServiceAgentsPanel({ onClose }) {
             onClick={() => { setShowPublish(true); setPublishError(''); }}
           >
             <Plus size={14} />
-            发布我的 agent
+            把 bot 变成工具
           </button>
           <button type="button" className="v3-service-agents-placeholder-action" onClick={load} disabled={loading}>
             <RefreshCw size={14} />
             刷新目录
           </button>
         </div>
+      ) : (visibleAgents.length === 0 ? (
+        <div className="v3-service-agents-placeholder" role="status">
+          <p className="v3-service-agents-placeholder-title">没有匹配的工具</p>
+          <p className="v3-service-agents-placeholder-text">
+            换个关键词试试，或者清空搜索看全部。
+          </p>
+          <button
+            type="button"
+            className="v3-service-agents-placeholder-action"
+            onClick={() => setQuery('')}
+          >
+            清空搜索
+          </button>
+        </div>
       ) : (
         <ul className="v3-service-agents-list">
-          {agents.map((agent) => {
+          {visibleAgents.map((agent) => {
             const busy = pending.has(agent.slug)
               || unpublishing.has(agent.slug)
               || dismissingIntro.has(agent.slug)
@@ -726,15 +859,27 @@ export default function ServiceAgentsPanel({ onClose }) {
               : !accountHidden;
             const hidden = !selected;
             const toggle = scopeBotUid ? toggleBotAgent : toggleSubscription;
+            const runnerLabel = runnerLabelOf(agent);
+            // 已下架（只在「我的应用」里出现）：目录里没有它，本人还能重新上架或彻底删除。
+            const retired = Boolean(agent.state && agent.state !== 'active');
+            const inputSummary = inputSummaryOf(agent);
+            // 自己分享的不写「某某分享」：那是我自己，写上去只是噪音。
+            const showSharer = Boolean(agent.owner_name) && !agent.mine;
             return (
               <li key={agent.slug} className={`v3-service-agent-row${hidden ? ' is-hidden' : ''}`}>
                 <div className="v3-service-agent-info">
                   <div className="v3-service-agent-name">
                     {agent.name || agent.slug}
                     <span className="v3-service-agent-version">v{agent.version}</span>
+                    {retired ? (
+                      <span className="v3-service-agent-badge is-retired">已停用</span>
+                    ) : null}
                     {agent.mine ? <span className="v3-service-agent-badge">我的</span> : null}
                     {agent.visibility === 'private' ? (
                       <span className="v3-service-agent-badge is-private">私有</span>
+                    ) : null}
+                    {agent.visibility === 'friends' ? (
+                      <span className="v3-service-agent-badge is-friends">好友</span>
                     ) : null}
                   </div>
                   <div className="v3-service-agent-slug">catsco_{agent.slug}</div>
@@ -758,7 +903,7 @@ export default function ServiceAgentsPanel({ onClose }) {
                     // 应用自己建议的对外描述。写这段的是模型，所以只建议 ——
                     // 点「用它」会把内容填进编辑表单，人再确认发布。
                     <div className="v3-service-agent-intro">
-                      <div className="v3-service-agent-intro-label">这个应用建议这样介绍自己</div>
+                      <div className="v3-service-agent-intro-label">这个工具建议这样介绍自己</div>
                       <div className="v3-service-agent-intro-text" title={agent.self_intro.description}>
                         {agent.self_intro.description}
                       </div>
@@ -788,8 +933,56 @@ export default function ServiceAgentsPanel({ onClose }) {
                   {scopeBotUid && accountHidden ? (
                     <div className="v3-service-agent-note">账号清单中已移除</div>
                   ) : null}
+                  {/* 「谁分享的 / 要传什么 / 谁在干」——别人判断该不该用，全靠这三行。
+                      只有名字 + 一段描述时，陌生人只能凭感觉；好友看到名字就敢试。
+                      三样都没有（老应用）就整块不渲染，别留一条空行占地方。 */}
+                  {showSharer || runnerLabel || inputSummary ? (
+                    <div className="v3-service-agent-meta">
+                      {showSharer ? (
+                        <span className="v3-service-agent-meta-item" title="分享这个工具的人">
+                          {agent.owner_name} 分享
+                        </span>
+                      ) : null}
+                      {runnerLabel ? (
+                        <span className="v3-service-agent-meta-item" title="谁在执行这个工具">
+                          {runnerLabel}
+                        </span>
+                      ) : null}
+                      {inputSummary ? (
+                        <span
+                          className="v3-service-agent-meta-item is-input"
+                          title="调用时要传的字段（调用方 Agent 也是照这个填）"
+                        >
+                          {inputSummary}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="v3-service-agent-actions">
+                  {retired ? (
+                    <>
+                      <button
+                        type="button"
+                        className="v3-service-agent-edit"
+                        disabled={busy}
+                        onClick={() => startEdit(agent)}
+                        title="恢复：打开表单确认后重新创建（同一工具名即恢复）"
+                      >
+                        恢复工具
+                      </button>
+                      <button
+                        type="button"
+                        className="v3-service-agent-unpublish is-confirm"
+                        disabled={unpublishing.has(agent.slug)}
+                        onClick={() => purgeAgent(agent)}
+                        title="彻底删除：连同版本、会话与运行记录一起删（账本保留用于对账）"
+                      >
+                        {unpublishing.has(agent.slug) ? '删除中…' : '彻底删除'}
+                      </button>
+                    </>
+                  ) : (
+                  <>
                   {agent.mine ? (
                     <button
                       type="button"
@@ -797,7 +990,7 @@ export default function ServiceAgentsPanel({ onClose }) {
                       disabled={busy}
                       onClick={() => startEdit(agent)}
                       aria-label={`编辑${agent.name || agent.slug}`}
-                      title="编辑描述/执行方式后重新发布"
+                      title="编辑描述/执行方式后重新保存"
                     >
                       <Pencil size={15} />
                       <span>编辑</span>
@@ -811,9 +1004,9 @@ export default function ServiceAgentsPanel({ onClose }) {
                           className="v3-service-agent-unpublish is-confirm"
                           disabled={unpublishing.has(agent.slug)}
                           onClick={() => submitUnpublish(agent)}
-                          title="确认从目录下架该应用"
+                          title="确认从目录撤下该工具"
                         >
-                          {unpublishing.has(agent.slug) ? '收回中…' : '确认收回'}
+                          {unpublishing.has(agent.slug) ? '正在停止…' : '确认停止'}
                         </button>
                         <button
                           type="button"
@@ -830,11 +1023,11 @@ export default function ServiceAgentsPanel({ onClose }) {
                         className="v3-service-agent-unpublish"
                         disabled={busy}
                         onClick={() => setUnpublishTarget(agent.slug)}
-                        aria-label={`收回${agent.name || agent.slug}的分享`}
-                        title="收回分享：下架后别人就调不到了（重新发布同一调用名即可恢复）"
+                        aria-label={`停止分享${agent.name || agent.slug}`}
+                        title="停止分享：从目录撤下来，别人就调不到了（重新创建同一工具名即可恢复）"
                       >
                         <Undo2 size={15} />
-                        <span>收回</span>
+                        <span>停止分享</span>
                       </button>
                     )
                   ) : null}
@@ -853,13 +1046,16 @@ export default function ServiceAgentsPanel({ onClose }) {
                     }
                   >
                     {hidden ? <Plus size={15} /> : <X size={15} />}
-                    <span>{hidden ? '添加' : '删除'}</span>
+                    <span>{hidden ? '添加' : '移出清单'}</span>
                   </button>
+                  </>)}
                 </div>
               </li>
             );
           })}
         </ul>
+      ))}
+        </>
       )}
     </aside>
   );

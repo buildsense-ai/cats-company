@@ -178,3 +178,47 @@ func TestServiceWorkerSessionHandler(t *testing.T) {
 		t.Fatalf("not whitelisted = %d, want 403", rec.Code)
 	}
 }
+
+// 2026-11-05 事故回归：worker 券不能被 Agent 工具内测白名单挡住。
+//
+// 当时 HandleCreate 复用了 serviceCatalogUIDAllowed，线上白名单只有 38/2/275/236，
+// 于是所有其他账号都换不到券：该接口累计 366,006 次 403、只有 7 次 200，
+// 客户端每 2 秒重试，用户侧看到的就是「bot 在线但一直不干活」。
+func TestWorkerSessionNotGatedByCatalogWhitelist(t *testing.T) {
+	SetJWTSecret("worker-session-catalog-gate")
+	t.Cleanup(func() { SetJWTSecret("") })
+	t.Setenv("CATSCO_SERVICE_CATALOG_UID_WHITELIST", "38,2,275,236")
+	t.Setenv(serviceWorkerUIDWhitelistEnv, "")
+
+	h := NewServiceWorkerSessionHandlerFromEnv()
+	req := httptest.NewRequest(http.MethodPost, "/api/service-worker/session", strings.NewReader(""))
+	req = req.WithContext(contextWithClaims(req.Context(), &JWTClaims{UID: 1619}))
+	rec := httptest.NewRecorder()
+	h.HandleCreate(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("catalog 内测白名单不该影响 worker 券：%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// 需要临时收紧接单范围时，用 worker 券自己的白名单（默认放开）。
+func TestWorkerSessionHonoursDedicatedWhitelist(t *testing.T) {
+	SetJWTSecret("worker-session-dedicated-gate")
+	t.Cleanup(func() { SetJWTSecret("") })
+	t.Setenv("CATSCO_SERVICE_CATALOG_UID_WHITELIST", "")
+	t.Setenv(serviceWorkerUIDWhitelistEnv, "7, 8")
+
+	h := NewServiceWorkerSessionHandlerFromEnv()
+	cases := []struct {
+		uid  int64
+		want int
+	}{{7, http.StatusOK}, {8, http.StatusOK}, {9, http.StatusForbidden}}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/api/service-worker/session", strings.NewReader(""))
+		req = req.WithContext(contextWithClaims(req.Context(), &JWTClaims{UID: tc.uid}))
+		rec := httptest.NewRecorder()
+		h.HandleCreate(rec, req)
+		if rec.Code != tc.want {
+			t.Fatalf("uid=%d = %d, want %d", tc.uid, rec.Code, tc.want)
+		}
+	}
+}

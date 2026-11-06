@@ -159,7 +159,7 @@
 }
 
 .oc-notification-test .oc-spin {
-  animation: oc-notification-spin 800ms linear infinite;
+  animation: oc-notification-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

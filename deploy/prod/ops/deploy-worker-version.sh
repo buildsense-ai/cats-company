@@ -63,6 +63,9 @@ ARTIFACT_PREFIX="${ARTIFACT_PREFIX%/}"
 ARTIFACT_REGION="${CATSCO_WORKER_ARTIFACT_REGION:-cn-guangzhou}"
 ARTIFACT_ENDPOINT="${CATSCO_WORKER_ARTIFACT_ENDPOINT:-https://tos-cn-guangzhou.volces.com}"
 ARTIFACT_CACHE_ROOT="${CATSCO_WORKER_ARTIFACT_CACHE_DIR:-$STATE_ROOT/.artifacts}"
+# 缓存回收：每版 artifact ~127MB，旧版不删会无上限增长（2026-11-03 实测 1.9G/4 版）。
+# 只保留最新 N 个版本，当前正在安装的版本永不删；≤0 表示关闭回收。
+ARTIFACT_CACHE_KEEP="${CATSCO_WORKER_ARTIFACT_CACHE_KEEP:-3}"
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIST_RELEASES_CMD="${CATSCO_WORKER_RELEASES_SCRIPT:-$OPS_DIR/list-worker-releases.sh}"
 
@@ -263,3 +266,17 @@ timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
 record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
 jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
   '{status:"updated",instance_name:$name,version:$version,commit:$commit}'
+
+# ---- 缓存回收（成功路径才做；失败时保留现场便于排查）----
+# 每版 artifact ~127MB，旧版不删会无上限增长（2026-11-03 实测 1.9G / 4 版）。
+if [[ "${ARTIFACT_CACHE_KEEP:-0}" =~ ^[1-9][0-9]*$ ]] && [[ -d "$ARTIFACT_CACHE_ROOT" ]]; then
+  while IFS= read -r stale; do
+    [[ -n "$stale" ]] || continue
+    [[ "$stale" == "$VERSION" ]] && continue
+    rm -rf -- "${ARTIFACT_CACHE_ROOT:?}/$stale" 2>/dev/null || true
+  done < <(
+    find "$ARTIFACT_CACHE_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null \
+      | grep -E '^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$' \
+      | sort -V | head -n -"$ARTIFACT_CACHE_KEEP" || true
+  )
+fi

@@ -476,3 +476,96 @@ func TestHandleLoginAllowsExistingUserWithoutEmail(t *testing.T) {
 		t.Fatalf("unexpected login response: %#v", payload)
 	}
 }
+
+// 长邮箱是常态（企业邮箱 local part 20-30 字符很常见，理论上限 64）。
+// 不填 username 时用户名由 email 推导，必须照常注册成功 —— 只是名字被截到
+// maxUsernameLen 以内，不能因此报错或写进超长的名字。
+func TestHandleRegisterAcceptsLongEmailLocalPart(t *testing.T) {
+	cases := []struct {
+		email string
+		code  string
+	}{
+		{"zhangsan.li@company.example.com", "613204"},
+		{"alexander.hernandez.rodriguez@enterprise.example.com", "613205"},
+		{strings.Repeat("a", 60) + "@example.com", "613206"},
+		{strings.Repeat("b", 64) + "@example.com", "613207"}, // RFC 的 local part 上限
+	}
+	for _, tc := range cases {
+		db := newUserRegistrationTestStore()
+		deleteVerificationCode(tc.email, verificationPurposeRegister)
+		t.Cleanup(func() { deleteVerificationCode(tc.email, verificationPurposeRegister) })
+		storeVerificationCode(tc.email, tc.code, time.Now().Add(time.Minute).Unix(), verificationPurposeRegister)
+
+		rec := performUserRequest(t, NewUserHandler(db).HandleRegister, map[string]string{
+			"email":    tc.email,
+			"password": "secret123",
+			"code":     tc.code,
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("email=%q (local %d chars) status = %d, want 200; body=%s",
+				tc.email, len(strings.SplitN(tc.email, "@", 2)[0]), rec.Code, rec.Body.String())
+		}
+		if len(db.createdUsers) != 1 {
+			t.Fatalf("email=%q created users = %d, want 1", tc.email, len(db.createdUsers))
+		}
+		got := db.createdUsers[0].Username
+		if got == "" || len(got) > maxUsernameLen {
+			t.Fatalf("email=%q generated username = %q (len %d), want 1..%d",
+				tc.email, got, len(got), maxUsernameLen)
+		}
+		// 生成的名字必须落在现有用户名规则内（小写 + 数字 + _ -），便于后续拼容器名。
+		if strings.ContainsAny(got, "@ .+") {
+			t.Fatalf("email=%q generated username = %q 含非法字符", tc.email, got)
+		}
+	}
+}
+
+// username 是永久标识（没有改名入口），超长的必须在注册这一刻挡掉。
+func TestHandleRegisterRejectsOverlongUsername(t *testing.T) {
+	db := newUserRegistrationTestStore()
+	email := "overlong-username@example.com"
+	code := "552311"
+	deleteVerificationCode(email, verificationPurposeRegister)
+	t.Cleanup(func() { deleteVerificationCode(email, verificationPurposeRegister) })
+	storeVerificationCode(email, code, time.Now().Add(time.Minute).Unix(), verificationPurposeRegister)
+
+	rec := performUserRequest(t, NewUserHandler(db).HandleRegister, map[string]string{
+		"email":    email,
+		"username": strings.Repeat("a", maxUsernameLen+1),
+		"password": "secret123",
+		"code":     code,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.createdUsers) != 0 {
+		t.Fatalf("created %d users with overlong username", len(db.createdUsers))
+	}
+	if got := responseError(t, rec); !strings.Contains(got, "username max") {
+		t.Fatalf("error = %q, want it to mention the username limit", got)
+	}
+}
+
+// 边界正上方：正好 maxUsernameLen 应当放行。
+func TestHandleRegisterAcceptsUsernameAtLimit(t *testing.T) {
+	db := newUserRegistrationTestStore()
+	email := "at-limit@example.com"
+	code := "552312"
+	deleteVerificationCode(email, verificationPurposeRegister)
+	t.Cleanup(func() { deleteVerificationCode(email, verificationPurposeRegister) })
+	storeVerificationCode(email, code, time.Now().Add(time.Minute).Unix(), verificationPurposeRegister)
+
+	atLimit := strings.Repeat("a", maxUsernameLen)
+	rec := performUserRequest(t, NewUserHandler(db).HandleRegister, map[string]string{
+		"email":    email,
+		"username": atLimit,
+		"password": "secret123",
+		"code":     code,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if db.createdUsers[0].Username != atLimit {
+		t.Fatalf("username = %q, want %q", db.createdUsers[0].Username, atLimit)
+	}
+}

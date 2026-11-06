@@ -25,7 +25,7 @@ export const siteRoutes: SiteRoute[] = [
     page: 'pricing',
     path: '/pricing',
     title: '定价 — CatsCo',
-    description: '比较 CatsCo Free、Pro、Max 与 Business Start，选择适合个人工作强度或企业启动范围的方案。',
+    description: '比较 CatsCo 基础版、个人版、专业版、团队版与 Business Start，选择适合个人工作、团队协作或企业落地的方案。',
   },
   {
     page: 'login',

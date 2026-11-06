@@ -27,6 +27,7 @@ import { clearPersistedComposerDrafts } from './utils/composer-draft-storage';
 import { clearStoredUserProfile, readStoredUserProfile } from './utils/user-profile';
 import { startPwaInstallLifecycle } from './utils/pwa-install';
 import './css/auth-critical.css';
+import './css/motion.css';
 import './css/catsco-focus-policy.css';
 import './css/catsco-input-states.css';
 

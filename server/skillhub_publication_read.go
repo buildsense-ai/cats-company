@@ -35,6 +35,9 @@ type SkillHubPublicationReadHandler struct {
 	workspaceDurablePublishUIEnabled   bool
 	workspaceDurableHumanCommitEnabled bool
 	cancellationEnabled                bool
+	descriptionReleaseHistoryEnabled   bool
+	descriptionConfirmationUIEnabled   bool
+	repairAdmissionUIEnabled           bool
 }
 
 func NewSkillHubPublicationReadHandler(db store.Store, enabled bool) *SkillHubPublicationReadHandler {
@@ -64,6 +67,26 @@ func NewSkillHubPublicationReadHandlerFromEnv(db store.Store) *SkillHubPublicati
 	h.workspaceDurableHumanCommitEnabled = h.workspaceDurableEntriesEnabled && (v == "1" || strings.EqualFold(v, "true"))
 	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_CANCELLATION_ENABLED"))
 	h.cancellationEnabled = h.enabled && (v == "1" || strings.EqualFold(v, "true"))
+	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_HISTORY_ENABLED"))
+	h.descriptionReleaseHistoryEnabled = h.enabled && (v == "1" || strings.EqualFold(v, "true"))
+	_, repairs := db.(store.SkillHubPublicationRepairStore)
+	_, descriptions := db.(store.SkillHubPublicationRepairDescriptionStore)
+	flag := func(name string) bool {
+		value := strings.TrimSpace(os.Getenv(name))
+		return value == "1" || strings.EqualFold(value, "true")
+	}
+	// UI discovery is not authority: the human handler independently checks its
+	// gates, peer readiness and current private-task ownership on GET and POST.
+	h.descriptionConfirmationUIEnabled = h.enabled && h.entries != nil && repairs && descriptions &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED") &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_ENABLED") &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_CONFIRMATION_UI_ENABLED")
+	_, commitReader := db.(store.SkillHubPublicationCommitContextReader)
+	_, commitStore := db.(store.SkillHubPublicationCommitStore)
+	h.repairAdmissionUIEnabled = h.enabled && h.entries != nil && repairs && commitReader && commitStore &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED") &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_ENABLED") &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_UI_ENABLED")
 	return h
 }
 
@@ -133,6 +156,7 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	sourceStatus := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/source-status")
 	captureStatus := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/capture-status")
 	cloudStatus := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/cloud-status")
+	descriptionReleaseHistory := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/description-release-history")
 	cancelEntry := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/cancel")
 	if sourceStatus {
 		id = strings.TrimSuffix(id, "/source-status")
@@ -142,6 +166,9 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	}
 	if cloudStatus {
 		id = strings.TrimSuffix(id, "/cloud-status")
+	}
+	if descriptionReleaseHistory {
+		id = strings.TrimSuffix(id, "/description-release-history")
 	}
 	if cancelEntry {
 		id = strings.TrimSuffix(id, "/cancel")
@@ -157,6 +184,10 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 		return
 	}
 	method := http.MethodGet
+	if descriptionReleaseHistory && (!h.enabled || !h.descriptionReleaseHistoryEnabled) {
+		skillHubPublicationReadError(w, http.StatusNotFound, "publication.not_found")
+		return
+	}
 	if cancelEntry {
 		if !h.enabled || !h.cancellationEnabled {
 			skillHubPublicationReadError(w, http.StatusNotFound, "publication.not_found")
@@ -184,12 +215,16 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 		_, captureStatusSupported := h.db.(store.SkillHubPublicationCaptureStatusReader)
 		_, cloudStatusSupported := h.db.(store.SkillHubPublicationCloudStatusReader)
 		_, cancelSupported := h.db.(store.SkillHubPublicationCancellationStore)
+		_, historySupported := h.db.(store.SkillHubPublicationDescriptionReleaseTerminalReader)
 		writeSkillHubPublicationJSON(w, http.StatusOK, map[string]any{
 			"schemaVersion": 1, "entryReadsEnabled": h.enabled && h.entries != nil,
-			"sourceStatusReadsEnabled":  h.enabled && h.entries != nil && sourceStatusSupported,
-			"captureStatusReadsEnabled": h.enabled && h.entries != nil && captureStatusSupported,
-			"cloudStatusReadsEnabled":   h.enabled && h.entries != nil && cloudStatusSupported,
-			"workspaceCreateEnabled":    h.workspaceEntriesEnabled, "chatCreateEnabled": false,
+			"sourceStatusReadsEnabled":              h.enabled && h.entries != nil && sourceStatusSupported,
+			"captureStatusReadsEnabled":             h.enabled && h.entries != nil && captureStatusSupported,
+			"cloudStatusReadsEnabled":               h.enabled && h.entries != nil && cloudStatusSupported,
+			"descriptionReleaseHistoryReadsEnabled": h.enabled && h.entries != nil && h.descriptionReleaseHistoryEnabled && historySupported,
+			"descriptionConfirmationUiEnabled":      h.descriptionConfirmationUIEnabled,
+			"repairTaskAdmissionUiEnabled":          h.repairAdmissionUIEnabled,
+			"workspaceCreateEnabled":                h.workspaceEntriesEnabled, "chatCreateEnabled": false,
 			"workspaceDurableCreateEnabled":      h.workspaceDurableEntriesEnabled,
 			"workspaceDurablePublishUiEnabled":   h.workspaceDurablePublishUIEnabled,
 			"workspaceDurableHumanCommitEnabled": h.workspaceDurableHumanCommitEnabled,
@@ -207,7 +242,7 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 		return
 	}
 	pollKey := path
-	if sourceStatus || cloudStatus || captureStatus {
+	if sourceStatus || cloudStatus || captureStatus || descriptionReleaseHistory {
 		pollKey = skillHubPublicationPrefix + "/entries/" + id
 	}
 	if !h.limits.allow(HTTPRateLimitConfig{Name: "publication_reads_entry", Limit: 12, Window: time.Minute, Burst: 3}, actor+":"+pollKey) {
@@ -266,6 +301,10 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	}
 	if cloudStatus {
 		h.readCloudStatus(w, ctx, claims.UID, entry.ID)
+		return
+	}
+	if descriptionReleaseHistory {
+		h.readDescriptionReleaseHistory(w, ctx, claims.UID, entry.ID)
 		return
 	}
 	if cancelEntry {

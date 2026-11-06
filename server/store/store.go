@@ -60,6 +60,34 @@ type PushSubscriptionStore interface {
 	DeletePushSubscriptionsByRegistrationID(ctx context.Context, uid int64, registrationID string) error
 }
 
+// PushSubscriptionVersionStore fences durable background-surface deliveries across replicas.
+type PushSubscriptionVersionStore interface {
+	// ReplacePushSubscription inserts only when absent, or replaces the exact
+	// observed version. It never transfers ownership or evicts another row.
+	ReplacePushSubscription(ctx context.Context, row, previous *types.PushSubscription, limit int) (bool, error)
+	CompareAndSwapPushSubscriptionAuth(ctx context.Context, uid int64, endpoint, registrationID, metadata, oldAuth, newAuth string) (bool, error)
+	CompareAndSwapPushSubscriptionMetadata(ctx context.Context, uid int64, endpoint, registrationID, oldMetadata, newMetadata, auth string) (bool, error)
+	DeletePushSubscriptionVersion(ctx context.Context, uid int64, endpoint, registrationID, metadata, auth string) error
+}
+
+// NativeSurfaceStore provides cancellable, read-only background authorization
+// and exact ledger reads without changing the broader Web store APIs.
+type NativeSurfaceStore interface {
+	NativeSurfaceReader() NativeSurfaceReader
+}
+
+type NativeSurfaceReader interface {
+	User(context.Context, int64) (*types.User, error)
+	GroupAccess(context.Context, int64, int64) (managed, member bool, err error)
+	Recipients(context.Context, int64) ([]int64, error)
+	PeerAccess(context.Context, int64, int64) (bool, error)
+	// TaskRun reads the registered run's latest receipt. The ledger does not
+	// persist proven cross-run start order, so other rows cannot retire it.
+	TaskRun(context.Context, string, int64, string) (*types.ConversationTaskStatus, error)
+	CurrentTask(context.Context, string) (*types.ConversationTaskStatus, error)
+	Title(context.Context, int64, string, int64, int64) (string, error)
+}
+
 // ConversationNotificationPreferenceStore persists a user's decision to mute
 // browser notifications for individual conversations. A missing row means the
 // conversation follows the account's normal device-level notification setting.

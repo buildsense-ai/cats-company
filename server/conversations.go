@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sort"
@@ -55,18 +56,23 @@ func (h *ConversationHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 // HandleList handles GET /api/conversations
 func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request) {
-	uid := UIDFromContext(r.Context())
+	conversations, err := h.listConversations(r.Context(), UIDFromContext(r.Context()), false)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"conversations": conversations})
+}
 
+func (h *ConversationHandler) listConversations(ctx context.Context, uid int64, surface bool) ([]*types.ConversationSummary, error) {
 	friends, err := h.db.GetFriends(uid)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to get friends"})
-		return
+		return nil, errors.New("failed to get friends")
 	}
 
 	groups, err := h.db.GetUserGroups(uid)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to get groups"})
-		return
+		return nil, errors.New("failed to get groups")
 	}
 
 	ownedBots, err := h.db.ListBotsByOwner(uid)
@@ -96,13 +102,15 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		topicIDs = append(topicIDs, "grp_"+formatInt64(group.ID))
 	}
 
-	latestByTopic, err := h.db.GetLatestMessagesForTopics(topicIDs)
+	latestByTopic := map[string]*types.Message{}
+	if !surface {
+		latestByTopic, err = h.db.GetLatestMessagesForTopics(topicIDs)
+	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load latest messages"})
-		return
+		return nil, errors.New("failed to load latest messages")
 	}
 	taskStatusByTopic := h.taskStatusesForTopics(topicIDs)
-	mutedTopics := h.loadMutedConversationTopics(r.Context(), uid, topicIDs)
+	mutedTopics := h.loadMutedConversationTopics(ctx, uid, topicIDs)
 
 	conversations := make([]*types.ConversationSummary, 0, len(topicIDs))
 	for _, friend := range friends {
@@ -149,7 +157,10 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 
 	sort.SliceStable(conversations, conversationLess(conversations))
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"conversations": conversations})
+	if surface {
+		conversations = h.publicSurfaceConversations(uid, conversations)
+	}
+	return conversations, nil
 }
 
 func (h *ConversationHandler) taskStatusesForTopics(topicIDs []string) map[string]*types.ConversationTaskStatus {

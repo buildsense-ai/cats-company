@@ -52,6 +52,10 @@ func TestSkillHubPublicationCommitCloudContract(t *testing.T) {
 }
 
 func runPublicationCommitContract(t *testing.T, cloud bool) {
+	runPublicationCommitContractScenario(t, cloud, false)
+}
+
+func runPublicationCommitContractScenario(t *testing.T, cloud, releaseHistory bool) {
 	t.Helper()
 	dsn, root := os.Getenv("CATS_PG_TEST_DSN"), os.Getenv("SKILLHUB_COMMIT_CONTRACT_ROOT")
 	if dsn == "" || (cloud && root == "") {
@@ -287,6 +291,13 @@ func runPublicationCommitContract(t *testing.T, cloud bool) {
 		}
 	}
 	first, stopped := seed("permit-first"), seed("cancel-first")
+	if releaseHistory {
+		in := first.input(issuer, audience)
+		verifyHumanRepairContextPostgres(t, a, in, actor)
+		verifyHumanRepairAdmissionPostgres(t, a, in, actor)
+		verifyDescriptionReleaseHistoryPostgres(t, a, scoped, in, actor, bot, open)
+		return
+	}
 	expectError(first, false, "conflict")
 	var count int
 	if err := scoped.QueryRow("SELECT count(*) FROM skillhub_publication_commit_intents").Scan(&count); err != nil || count != 0 {

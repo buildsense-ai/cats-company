@@ -31,17 +31,18 @@ export default function PublicationRepairPanel({ userUid, topic, isGroup, groupI
       const response = await api.getGroupInfo(groupId);
       if (!current()) return;
       const group = response?.group;
-      const bots = (Array.isArray(response?.members) ? response.members : [])
-        .filter(member => member.is_bot === true);
+      const members = Array.isArray(response?.members) ? response.members : [];
+      const bots = members.filter(member => member.is_bot === true);
       if (String(group?.id) !== String(groupId) || group.kind !== 'agent_task'
         || String(group.owner_id) !== String(userUid)
-        || bots.length !== 1 || String(bots[0].user_id) !== hint.botUid) {
+        || members.length !== 2 || bots.length !== 1 || String(bots[0].user_id) !== hint.botUid
+        || !members.some(member => member.is_bot !== true && String(member.user_id) === String(userUid))) {
         throw new Error('task mismatch');
       }
       const context = await api.getSkillHubPublicationRepairContext(hint.entryRequestId);
       if (!current()) return;
       const { report } = normalizePublicationRepairContext(context, hint.entryRequestId, hint.botUid);
-      setState({ scope, token, revision, report });
+      setState({ scope, token, revision, report, repairConversation: { botUid: hint.botUid, topicId: topic } });
     } catch {
       if (current()) setState({ scope, token, revision,
         error: '无法读取此修复报告，请确认当前仍拥有该 Bot，或回到运行工作区重新读取报告。' });
@@ -66,7 +67,7 @@ export default function PublicationRepairPanel({ userUid, topic, isGroup, groupI
       <div>
         <strong>Skill 发布修复</strong>
         <p role={state.error ? 'alert' : 'status'}>{state.error || (state.loading
-          ? '正在复核当前 Bot 与发布报告…' : '发布拒绝报告已关联到此对话。当前仅供查看，尚未启动自动修复。')}</p>
+          ? '正在复核当前 Bot 与发布报告…' : '发布拒绝报告已关联到此对话，尚未启动自动修复。')}</p>
       </div>
       <button ref={buttonRef} type='button' disabled={state.loading} onClick={() => {
         setOpen(true);
@@ -74,6 +75,7 @@ export default function PublicationRepairPanel({ userUid, topic, isGroup, groupI
       }}><RefreshCw size={14} aria-hidden='true' />{state.error ? '重新读取' : '查看发布报告'}</button>
     </section>
     {open && <PublicationReportDialog report={state.report || state} returnFocusRef={buttonRef}
+      repairConversation={state.repairConversation}
       onRetry={load} onClose={() => setOpen(false)} />}
   </>;
 }

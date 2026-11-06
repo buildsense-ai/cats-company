@@ -18,7 +18,7 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
   const scope = `${userId}:${topic}`;
   const owner = useMemo(() => {
     const key = `cc:conversation-fork:${scope}`;
-    return { key, payload: storedPayload(key, topic), active: true, busy: false, refreshRequested: false, targetRevision: 0 };
+    return { key, payload: storedPayload(key, topic), active: true, busy: false, refreshRequested: false, targetRevision: 0, lastAnchor: 0 };
   }, [scope, topic]);
   const current = useRef(owner);
   current.current = owner;
@@ -80,7 +80,15 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
       const result = await api.getConversationFork({ requestId: owner.payload.request_id }, requestOptions);
       acceptSource(normalizeForkRecord(result, { requestId: owner.payload.request_id, sourceTopic: topic }));
     } catch (error) {
-      if (isCurrent()) setSource(state => ({ ...(state?.owner === owner ? state : {}), owner, error: error.message || '无法确认复制结果，请重试。', busy: false }));
+      if (isCurrent()) setSource(state => ({
+        ...(state?.owner === owner ? state : {}), owner,
+        error: error.message || '无法确认复制结果，请重试。',
+        // Set from this failure, not carried over: a previous create may have
+        // been rejected with a 4xx, and a network failure here would then be
+        // reported as a rejection.
+        errorStatus: Number(error?.status) || 0,
+        busy: false,
+      }));
     } finally {
       owner.busy = false;
       if (owner.refreshRequested && isCurrent()) {
@@ -132,16 +140,61 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
     return () => clearTimeout(timer);
   }, [checkTarget, targetState]);
 
-  const create = useCallback(async ({ newRequest = false } = {}) => {
+  const create = useCallback(async ({ newRequest = false, untilMessageId } = {}) => {
     if (owner.busy || !isCurrent()) return;
     // The header and sidebar are two controls for the same operation. Reuse
     // an unseen request instead of allocating a competing copy from stale UI.
     owner.payload = storedPayload(owner.key, topic) || owner.payload;
-    if (!newRequest && ['ready', 'failed'].includes(operation?.state)) return;
-    if (newRequest && operation && !['ready', 'failed'].includes(operation.state)) return;
-    if (!owner.payload || (newRequest && operation?.request_id === owner.payload.request_id && ['ready', 'failed'].includes(operation?.state))) {
+    // The anchor is part of the request's identity: the server compares it
+    // against the stored one and answers 409 on a mismatch. Reusing a payload
+    // whose anchor differs would therefore either fail again with the same
+    // reason or — worse — drop the anchor entirely and copy the whole
+    // conversation while the user believes they picked a point.
+    //
+    // A 4xx never creates a server-side record, so a payload that was written
+    // before the request left stays dangling. It would be picked up as an
+    // identity by any later click, so it has to go when the request failed
+    // that way.
+    //
+    // Three cases, and the difference matters:
+    //
+    //   undefined — a retry of this copy. It inherits the anchor this copy was
+    //               made with, from memory or from the stored payload, because
+    //               the user is retrying the same thing.
+    //   0         — an explicit "copy everything" request from the header or
+    //               the sidebar. Those entry points never had a point.
+    //   > 0       — a point picked on a message.
+    //
+    // The retry case has to read the stored payload too: the anchor lives in
+    // memory only until the page is reloaded, and after a reload the stored
+    // payload is the only place it is left.
+    const explicit = Number.isSafeInteger(untilMessageId) && untilMessageId > 0 ? untilMessageId : 0;
+    // Both explicit forms have to be recorded, including the unbounded one.
+    // Writing only `> 0` left the previous point in place, so a later retry
+    // inherited it: copy from a message, then copy everything, then retry — and
+    // the retry silently came back bounded to the old point.
+    if (untilMessageId !== undefined) owner.lastAnchor = explicit;
+    const anchor = untilMessageId === undefined
+      ? (Number(owner.lastAnchor || 0) || Number(owner.payload?.until_message_id || 0))
+      : explicit;
+    const storedAnchor = Number(owner.payload?.until_message_id || 0);
+    const anchorChanged = Boolean(owner.payload) && storedAnchor !== anchor;
+    // A different anchor is a different copy, so it has to go through even
+    // while another copy of this conversation is still pending: the user is
+    // answering the mistake they just made, not asking for that copy again.
+    if (anchorChanged) {
       owner.payload = { source_topic_id: topic, request_id: crypto.randomUUID() };
+      if (anchor > 0) owner.payload.until_message_id = anchor;
       writeStorageValue(owner.key, JSON.stringify(owner.payload));
+    } else {
+      if (!newRequest && ['ready', 'failed'].includes(operation?.state)) return;
+      if (newRequest && operation && !['ready', 'failed'].includes(operation.state)) return;
+      if (!owner.payload
+        || (newRequest && operation?.request_id === owner.payload.request_id && ['ready', 'failed'].includes(operation?.state))) {
+        owner.payload = { source_topic_id: topic, request_id: crypto.randomUUID() };
+        if (anchor > 0) owner.payload.until_message_id = anchor;
+        writeStorageValue(owner.key, JSON.stringify(owner.payload));
+      }
     }
     owner.busy = true;
     window.dispatchEvent(new CustomEvent(forkChangedEvent, { detail: { key: owner.key, owner } }));
@@ -150,7 +203,20 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
       const result = await api.forkConversation(owner.payload, requestOptions);
       acceptSource(normalizeForkRecord(result, { requestId: owner.payload.request_id, sourceTopic: topic }));
     } catch (error) {
-      if (isCurrent()) setSource(state => ({ ...state, owner, busy: false, error: error.message || '复制请求未确认，请重试。' }));
+      // A 4xx never creates a server-side record: the request was rejected, so
+      // no session fork exists to be found later. The payload was written
+      // before the request left, which would leave a request id that no server
+      // knows about — and the next click would reuse it as its identity, so the
+      // same rejection would repeat with no way out. Drop it.
+      if (error?.status >= 400 && error?.status < 500 && owner.payload) {
+        removeStorageValue(owner.key);
+        owner.payload = null;
+      }
+      if (isCurrent()) setSource(state => ({
+        ...state, owner, busy: false,
+        error: error.message || '复制请求未确认，请重试。',
+        errorStatus: Number(error?.status) || 0,
+      }));
     } finally {
       owner.busy = false;
       window.dispatchEvent(new CustomEvent(forkChangedEvent, { detail: { key: owner.key, owner } }));
@@ -210,7 +276,7 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
   }, [isCurrent, onActivateTopic, operation, owner]);
 
   return {
-    operation, error: sourceState.error || '', busy: sourceState.busy || false,
+    operation, error: sourceState.error || '', errorStatus: sourceState.errorStatus || 0, busy: sourceState.busy || false,
     provenance: targetState.record || null, targetError: targetState.error || '',
     checking: needsTargetCheck && (!targetState.checked || targetState.checking),
     blocked: Boolean(blocked), create, open, cancel, checkTarget,

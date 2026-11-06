@@ -24,8 +24,9 @@ func publicationReportFixture(r store.SkillHubPublicationCloudReceipt) *Publicat
 }
 
 func TestSkillHubPublicationCommitClientReportStrictTransport(t *testing.T) {
-	for _, mode := range []string{"success", "large_valid", "passed", "wrong_receipt", "wrong_candidate", "duplicate_report", "duplicate_issue", "duplicate_location",
+	for _, mode := range []string{"success", "automatic_name", "large_valid", "passed", "wrong_receipt", "wrong_candidate", "duplicate_report", "duplicate_issue", "duplicate_location",
 		"private_field", "private_path", "empty_location_field", "automatic_description", "null", "wrong_type", "wrong_schema", "unknown_coverage", "unknown_action", "lost_rejection",
+		"automatic_wrong_code", "automatic_wrong_category", "automatic_wrong_category_package_safety", "automatic_nonblocking", "automatic_wrong_field", "automatic_wrong_path_skill_json", "automatic_wrong_path_empty",
 		"too_many_issues", "issue_budget", "report_budget", "transport_budget", "redirect", "encoding", "no_cache", "lost_reply", "outage"} {
 		t.Run(mode, func(t *testing.T) {
 			expected := cancellationTestLease("https://hub.example").Receipt
@@ -45,6 +46,38 @@ func TestSkillHubPublicationCommitClientReportStrictTransport(t *testing.T) {
 				w.Header().Set("Cache-Control", "no-store")
 				out := publicationReportFixture(expected)
 				switch mode {
+				case "automatic_name":
+					entryIndex := int64(0)
+					out.Validation.Issues[0] = automaticNameReportIssue(&entryIndex)
+				case "automatic_wrong_code":
+					issue := automaticNameReportIssue(nil)
+					issue.Code = "metadata.name_invalid"
+					out.Validation.Issues[0] = issue
+				case "automatic_wrong_category":
+					issue := automaticNameReportIssue(nil)
+					issue.Category = "compatibility"
+					out.Validation.Issues[0] = issue
+				case "automatic_wrong_category_package_safety":
+					issue := automaticNameReportIssue(nil)
+					issue.Category = "package_safety"
+					out.Validation.Issues[0] = issue
+				case "automatic_nonblocking":
+					issue := automaticNameReportIssue(nil)
+					issue.Blocking = false
+					out.Validation.Issues[0] = issue
+					out.Validation.Truncated = true
+				case "automatic_wrong_field":
+					issue := automaticNameReportIssue(nil)
+					issue.Location.Field = "description"
+					out.Validation.Issues[0] = issue
+				case "automatic_wrong_path_skill_json":
+					issue := automaticNameReportIssue(nil)
+					issue.Location.RelativePath = "skill.json"
+					out.Validation.Issues[0] = issue
+				case "automatic_wrong_path_empty":
+					issue := automaticNameReportIssue(nil)
+					issue.Location.RelativePath = ""
+					out.Validation.Issues[0] = issue
 				case "large_valid", "report_budget":
 					i := out.Validation.Issues[0]
 					i.Message = strings.Repeat("x", 900)
@@ -127,7 +160,7 @@ func TestSkillHubPublicationCommitClientReportStrictTransport(t *testing.T) {
 				t.Fatal(err)
 			}
 			out, err := c.Report(context.Background(), expected)
-			success := mode == "success" || mode == "large_valid" || mode == "passed"
+			success := mode == "success" || mode == "automatic_name" || mode == "large_valid" || mode == "passed"
 			if success != (err == nil) {
 				t.Fatalf("success=%v err=%v", success, err)
 			}
@@ -136,6 +169,12 @@ func TestSkillHubPublicationCommitClientReportStrictTransport(t *testing.T) {
 			}
 		})
 	}
+}
+
+func automaticNameReportIssue(entryIndex *int64) PublicationValidationIssue {
+	return PublicationValidationIssue{Code: "metadata.name_whitespace", Category: "format", Blocking: true,
+		Location: PublicationValidationLocation{EntryIndex: entryIndex, RelativePath: "SKILL.md", Field: "name"},
+		Message:  "入口 name 不能包含首尾空白。", RepairPolicy: "automatic"}
 }
 
 type humanReportCloud struct {

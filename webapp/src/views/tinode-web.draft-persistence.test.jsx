@@ -119,7 +119,7 @@ vi.mock('./messages-view', () => ({
     mocks.messageProps = props;
     const { composerDraftStore, topic } = props;
     return (
-    <textarea
+    <>{props.topBar}<textarea
       className="v3-composer-input"
       aria-label="消息草稿"
       data-topic={topic}
@@ -130,7 +130,7 @@ vi.mock('./messages-view', () => ({
         else composerDraftStore.inputDrafts.delete(topic);
         composerDraftStore.persist?.();
       }}
-    />
+    /></>
     );
   },
 }));
@@ -171,18 +171,17 @@ vi.mock('../widgets/empty-task-composer', () => {
 });
 vi.mock('../widgets/catsco-download-modal', () => ({ default: () => null }));
 vi.mock('../widgets/desktop-connect-modal', () => ({
-  default: ({ initialMode, onClose, onConnected, onOpenOnboardingGuide }) => (
+  default: ({ initialMode, onClose, onConnected }) => (
     <section data-testid="desktop-connect-modal" data-mode={initialMode}>
       <button type="button" onClick={onClose}>关闭桌面端</button>
       <button type="button" onClick={() => onConnected({})}>桌面端连接成功</button>
-      <button type="button" onClick={onOpenOnboardingGuide}>新手指引</button>
     </section>
   ),
 }));
 vi.mock('../widgets/feedback-modal', () => ({ default: () => null }));
 vi.mock('../widgets/relay-access-modal', () => ({
-  default: ({ onClose }) => (
-    <section data-testid="relay-access-modal">
+  default: ({ onClose, initialPlanChooserOpen = false }) => (
+    <section data-testid="relay-access-modal" data-plan-chooser={String(initialPlanChooserOpen)}>
       <button type="button" onClick={onClose}>关闭套餐与权益</button>
     </section>
   ),
@@ -208,25 +207,19 @@ async function selectTestConversation() {
   });
 }
 
-async function openOnboardingReplayFromDesktopEntry() {
-  await selectTestConversation();
-  await vi.waitFor(() => expect(container.querySelector('[aria-label="消息草稿"][data-topic="p2p_1_2"]')).not.toBeNull());
+async function openOnboardingFromSettings() {
+  const desktop = container.querySelector('[data-testid="desktop-connect-modal"]');
+  if (desktop) await act(async () => desktop.querySelector('button').click());
   const profileTrigger = container.querySelector('[aria-label="cats，打开个人菜单"]');
   await act(async () => profileTrigger.click());
-  const desktopEntry = [...document.querySelectorAll('[role="menuitem"]')]
-    .find((item) => item.textContent.includes('CatsCo 桌面端'));
-  await act(async () => desktopEntry.click());
+  const guide = [...document.querySelectorAll('[role="menuitem"]')].find(item => item.textContent.trim() === '新手指引');
+  await act(async () => guide.click());
+}
 
-  const desktopModal = await vi.waitFor(() => {
-    const modal = container.querySelector('[data-testid="desktop-connect-modal"]');
-    expect(modal).not.toBeNull();
-    return modal;
-  });
-  await act(async () => {
-    [...desktopModal.querySelectorAll('button')]
-      .find((button) => button.textContent === '新手指引').click();
-  });
-
+async function openOnboardingReplayFromSettingsEntry() {
+  await selectTestConversation();
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="消息草稿"][data-topic="p2p_1_2"]')).not.toBeNull());
+  await openOnboardingFromSettings();
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
   expect(container.querySelector('[aria-label="消息草稿"][data-topic="p2p_1_2"]')).not.toBeNull();
 }
@@ -287,6 +280,17 @@ test('only marks the displayed conversation active and retains each tool browse 
     await selectTestConversation();
   }
   expect(mocks.appsViewStateRef).not.toBe(mocks.skillHubViewStateRef);
+});
+
+test('opens the combined computer panel without changing the conversation when a desktop connects', async () => {
+  await act(async () => renderWorkspace());
+  await selectTestConversation();
+  await act(async () => container.querySelector('.cc-device-trigger').click());
+  const panel = container.querySelector('[data-testid="desktop-connect-modal"]');
+  expect(panel.dataset.mode).toBe('computers');
+  await act(async () => [...panel.querySelectorAll('button')].find(button => button.textContent === '桌面端连接成功').click());
+  expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBe(panel);
+  expect(container.querySelector('nav').dataset.visibleTopic).toBe('p2p_1_2');
 });
 
 test.each([
@@ -430,7 +434,7 @@ test('restores empty-workspace composer focus after automatic onboarding closes'
   expect(document.activeElement).toBe(composer);
 });
 
-test('does not repeat onboarding after its local download handoff closes', async () => {
+test('does not repeat onboarding after its plan chooser handoff closes', async () => {
   setCachedUser('2026-09-18T00:00:01Z');
 
   await act(async () => {
@@ -440,17 +444,17 @@ test('does not repeat onboarding after its local download handoff closes', async
   });
 
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
-  const downloadButton = [...document.querySelectorAll('button')]
-    .find((button) => button.textContent.includes('下载桌面端'));
+  const planButton = [...document.querySelectorAll('button')]
+    .find((button) => button.textContent.includes('查看套餐'));
   await act(async () => {
-    downloadButton.click();
+    planButton.click();
   });
 
-  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('download'));
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="relay-access-modal"]')?.dataset.planChooser).toBe('true'));
   expect(localStorage.getItem(workspaceOnboardingStorageKey(1))).toBe('dismissed');
 
   await act(async () => {
-    container.querySelector('[data-testid="desktop-connect-modal"] button').click();
+    container.querySelector('[data-testid="relay-access-modal"] button').click();
   });
   expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
 });
@@ -507,7 +511,7 @@ test('shows automatic onboarding after a download deep link connects a desktop w
   await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
 });
 
-test('opens the same onboarding card from the DesktopConnectModal New User Guide entry', async () => {
+test('opens the same onboarding card from the bottom-left settings entry', async () => {
   setCachedUser('2026-09-18T00:00:01Z');
 
   await act(async () => {
@@ -518,10 +522,7 @@ test('opens the same onboarding card from the DesktopConnectModal New User Guide
 
   const desktopModal = container.querySelector('[data-testid="desktop-connect-modal"]');
   expect(desktopModal).not.toBeNull();
-  await act(async () => {
-    [...desktopModal.querySelectorAll('button')]
-      .find((button) => button.textContent === '新手指引').click();
-  });
+  await openOnboardingFromSettings();
 
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
   await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
@@ -550,10 +551,7 @@ test('keeps exactly one onboarding card when replaying the local onboarding prev
     return modal;
   });
   expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
-  await act(async () => {
-    [...desktopModal.querySelectorAll('button')]
-      .find((button) => button.textContent === '新手指引').click();
-  });
+  await openOnboardingFromSettings();
 
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
   await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
@@ -563,10 +561,10 @@ test('keeps exactly one onboarding card when replaying the local onboarding prev
   expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
 });
 
-test('replays onboarding from the computer entry over an active conversation and redeems invites', async () => {
+test('replays onboarding from the settings entry over an active conversation and redeems invites', async () => {
   setCachedUser('2026-09-17T23:59:59Z');
   await act(async () => renderWorkspace());
-  await openOnboardingReplayFromDesktopEntry();
+  await openOnboardingReplayFromSettingsEntry();
 
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
   expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1);
@@ -591,7 +589,7 @@ test('replays onboarding from the computer entry over an active conversation and
 test.each(['Escape', 'close button'])('restores active conversation composer focus when replay onboarding closes via %s', async (method) => {
   setCachedUser('2026-09-17T23:59:59Z');
   await act(async () => renderWorkspace());
-  await openOnboardingReplayFromDesktopEntry();
+  await openOnboardingReplayFromSettingsEntry();
   const composer = container.querySelector('[aria-label="消息草稿"]');
   expect(composer).not.toBeNull();
 
@@ -626,10 +624,7 @@ test('restores SkillHub entry focus when onboarding replay closes over SkillHub'
     expect(modal).not.toBeNull();
     return modal;
   });
-  await act(async () => {
-    [...desktopModal.querySelectorAll('button')]
-      .find((button) => button.textContent === '新手指引').click();
-  });
+  await openOnboardingFromSettings();
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
 
   await act(async () => {
@@ -642,17 +637,17 @@ test('restores SkillHub entry focus when onboarding replay closes over SkillHub'
   expect(document.activeElement).toBe(skillHubEntry);
 });
 
-test('replays onboarding from the computer entry over an active conversation and hands off download', async () => {
+test('replays onboarding from the settings entry over an active conversation and opens the plan chooser', async () => {
   setCachedUser('2026-09-17T23:59:59Z');
   await act(async () => renderWorkspace());
-  await openOnboardingReplayFromDesktopEntry();
+  await openOnboardingReplayFromSettingsEntry();
 
   await act(async () => {
     [...document.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('下载桌面端')).click();
+      .find((button) => button.textContent.includes('查看套餐')).click();
   });
 
-  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('download'));
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="relay-access-modal"]')?.dataset.planChooser).toBe('true'));
   expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
   expect(localStorage.getItem(workspaceOnboardingStorageKey(1))).toBe('dismissed');
 });

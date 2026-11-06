@@ -235,6 +235,11 @@ func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
 	// idempotent, and reject a stale preview expiry.
 	personalPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: "catsco-personal", Name: "Personal", DurationDays: 30,
+		// Extension eligibility is "this package is sold for money", so the
+		// fixture must carry a price. A zero price means free/internal, which the
+		// operator console cannot extend.
+		PriceFen:            39900,
+		CloudWorkerIncluded: true,
 		ModelBudgets: map[string]float64{
 			"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100,
 			"glm-5.3-flash": 2100, "gpt-5.6-terra": 2100,
@@ -741,8 +746,16 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	if refundWorkerConversion {
 		t.Fatal("refunded trial is still scheduled for conversion")
 	}
-	if time.Until(refundWorkerDeleteAfter) > time.Minute || refundWorkerExpiry.After(time.Now().UTC().Add(time.Minute)) {
-		t.Fatalf("refunded worker not scheduled for cleanup: state=%s expiry=%v delete_after=%v", refundWorkerState, refundWorkerExpiry, refundWorkerDeleteAfter)
+	// The paid window is over, so the worker expires now — but it must stay
+	// parked for the retention window instead of being erased in the next
+	// sweep tick (a mistaken refund or a support follow-up needs that room).
+	if refundWorkerExpiry.After(time.Now().UTC().Add(time.Minute)) {
+		t.Fatalf("refunded worker still reports paid time: expiry=%v", refundWorkerExpiry)
+	}
+	wantDeleteAfter := refundWorkerExpiry.Add(commercialRefundMinRetentionDays * 24 * time.Hour)
+	if diff := refundWorkerDeleteAfter.Sub(wantDeleteAfter); diff > time.Minute || diff < -time.Minute {
+		t.Fatalf("refunded worker retention mismatch: delete_after=%v want≈%v (state=%s)",
+			refundWorkerDeleteAfter, wantDeleteAfter, refundWorkerState)
 	}
 	var revokedGrants, reversalEntries int
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE grant_type = 'order' AND source_ref = $1 AND revoked_at IS NOT NULL`, created.OrderNo).Scan(&revokedGrants); err != nil {
@@ -827,14 +840,28 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	t.Helper()
 	personalID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialPersonalPlanSlug, Name: "个人版", PriceFen: 39900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100, "glm-5.3-flash": 2100, "gpt-5.6-terra": 2100, "gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100}, DurationDays: 30,
+		// The official packages sit on the upgrade ladder, so the fixture has to
+		// carry a rung. Without it both plans are off-ladder and the "upgrade"
+		// below is treated as a separate purchase.
+		PlanTier: 2,
+		// Whether a package mints a machine is data, not a slug check. The two
+		// official packages happen to include one; a new plan defaults to false.
+		CloudWorkerIncluded: true,
+		ModelBudgets:        map[string]float64{"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100, "glm-5.3-flash": 2100, "gpt-5.6-terra": 2100, "gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create personal plan: %v", err)
 	}
 	proID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialProPlanSlug, Name: "专业版", PriceFen: 79900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-flash": 6300, "glm-5.3-flash": 6300, "gpt-5.6-terra": 6300, "gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300, "chatgpt-image-latest": 300}, DurationDays: 30,
+		PlanTier:            3,
+		CloudWorkerIncluded: true,
+		// The slot size and retention window travel with the credit, so the
+		// fixture must pin them: leaving them empty would exercise the fleet
+		// default and never prove the plan's values survive fulfilment.
+		CloudWorkerRuntimePlan:   types.CloudWorkerRuntimePro,
+		CloudWorkerRetentionDays: 15,
+		ModelBudgets:             map[string]float64{"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-flash": 6300, "glm-5.3-flash": 6300, "gpt-5.6-terra": 6300, "gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300, "chatgpt-image-latest": 300}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create pro plan: %v", err)
@@ -895,6 +922,25 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	var availableCredits int
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid = $1 AND state = 'available' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, paidUID).Scan(&availableCredits); err != nil || availableCredits != 1 {
 		t.Fatalf("immediate upgrade should leave exactly one available cloud-worker credit: count=%d err=%v", availableCredits, err)
+	}
+	// The upgrade credit must describe the package that was paid for. The slot
+	// size and retention window are read from the plan inside the fulfilment
+	// transaction and copied onto the credit, because a credit can outlive the
+	// plan row: a retired package is archived while paid credits stay spendable.
+	// Without this assertion a plan that sold "pro" could silently provision a
+	// default-sized slot and a shorter retention than the copy promised.
+	var creditRuntimePlan string
+	var creditRetentionDays int
+	if err := db.db.QueryRow(`
+		SELECT runtime_plan, retention_days FROM cloud_worker_credits
+		WHERE uid = $1 AND source_ref = $2`, paidUID, "order:"+proOrder.OrderNo).Scan(&creditRuntimePlan, &creditRetentionDays); err != nil {
+		t.Fatalf("read upgrade credit slot: %v", err)
+	}
+	if creditRuntimePlan != types.CloudWorkerRuntimePro {
+		t.Fatalf("upgrade credit slot=%q want %q", creditRuntimePlan, types.CloudWorkerRuntimePro)
+	}
+	if creditRetentionDays != 15 {
+		t.Fatalf("upgrade credit retention=%d want 15", creditRetentionDays)
 	}
 	personalRenewal, err := db.CreateCommercialOrder(&types.CommercialOrder{
 		OrderNo: "CCTIERPROREPEAT", UID: paidUID, PlanID: proID, Channel: "test",
@@ -1049,6 +1095,21 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	}
 	if revokedPersonal != 1 || reservedPersonal != 1 || availablePro != 1 {
 		t.Fatalf("invite upgrade credit states mismatch: revoked_personal=%d reserved_personal=%d available_pro=%d", revokedPersonal, reservedPersonal, availablePro)
+	}
+	// The invite path used to insert the credit by hand without the slot column.
+	// Every invite-funded shared worker then fell back to the fleet default, so a
+	// ¥159 package delivered the same container as a ¥59 one. The order path has
+	// had this assertion since the column landed; the invite path needs its own,
+	// because it does not go through grantCloudWorkerCredit.
+	var inviteCreditRuntimePlan string
+	if err := db.db.QueryRow(`
+		SELECT c.runtime_plan FROM cloud_worker_credits c
+		JOIN commercial_entitlements e ON e.id = c.entitlement_id
+		WHERE e.uid = $1 AND e.source_ref = $2 AND c.state = 'available'`, inviteUID, proInvite.Code).Scan(&inviteCreditRuntimePlan); err != nil {
+		t.Fatalf("load invite credit slot: %v", err)
+	}
+	if inviteCreditRuntimePlan != types.CloudWorkerRuntimePro {
+		t.Fatalf("invite credit slot=%q want %q", inviteCreditRuntimePlan, types.CloudWorkerRuntimePro)
 	}
 	if _, err := db.db.Exec(`UPDATE cloud_worker_credits SET reserved_at = CURRENT_TIMESTAMP - INTERVAL '30 minutes' WHERE entitlement_id = $1 AND state = 'reserved'`, personalEntitlementID); err != nil {
 		t.Fatalf("age personal invite reservation: %v", err)

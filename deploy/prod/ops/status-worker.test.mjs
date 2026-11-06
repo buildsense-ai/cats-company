@@ -40,8 +40,10 @@ const args = process.argv.slice(2);
 if (args[0] === "ecs" && args[1] === "ListEcsInstances") {
   const pageNo = parseInt(args[args.indexOf("--pageNo") + 1] || "1", 10);
   const pageSize = parseInt(args[args.indexOf("--pageSize") + 1] || "100", 10);
+  const region = args[args.indexOf("--regionID") + 1] || "";
   const state = JSON.parse(fs.readFileSync(process.env.FAKE_STATE, "utf8"));
-  const list = state.instances || [];
+  // Per-region inventories let a test prove that a second region is queried.
+  const list = (state.regions && state.regions[region]) || state.instances || [];
   const start = (pageNo - 1) * pageSize;
   const totalPage = Math.ceil(list.length / pageSize);
   process.stdout.write(JSON.stringify({
@@ -106,7 +108,7 @@ function writeShell(bin, name, body) {
   fs.chmodSync(p, 0o755);
 }
 
-function runScript(t, { env = {}, fakeState = {}, appVersions = {}, remoteVersions = {}, ctyunBody = FAKE_CTYUN } = {}) {
+function runScript(t, { env = {}, fakeState = {}, appVersions = {}, remoteVersions = {}, deployments = {}, ctyunBody = FAKE_CTYUN } = {}) {
   const tmp = fs.mkdtempSync(path.join(fs.realpathSync(path.join(__dirname, "..")), "status-test-"));
   fs.writeFileSync(path.join(tmp, "package.json"), '{"type":"module"}');
   if (t) t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -123,6 +125,24 @@ function runScript(t, { env = {}, fakeState = {}, appVersions = {}, remoteVersio
     const tenantDir = path.join(stateRoot, tenant);
     fs.mkdirSync(tenantDir);
     fs.writeFileSync(path.join(tenantDir, "app_version"), `${version}\n`);
+  }
+  // deployment.json snapshots pin the region a worker was CREATED in. A fleet
+  // can span two regions (early workers on the env default, later ones
+  // elsewhere), so status must read these or it reports live machines as
+  // missing.
+  for (const [tenant, snapshot] of Object.entries(deployments)) {
+    const tenantDir = path.join(stateRoot, tenant);
+    fs.mkdirSync(tenantDir, { recursive: true });
+    const body = typeof snapshot === "string"
+      ? snapshot
+      : JSON.stringify({
+          profile: snapshot.profile || "public_ip",
+          env: {
+            CTYUN_WORKER_REGION_ID: snapshot.region,
+            CTYUN_WORKER_PROJECT_ID: snapshot.project ?? "0",
+          },
+        });
+    fs.writeFileSync(path.join(tenantDir, "deployment.json"), body);
   }
   for (const instance of fakeState.instances || []) {
     const ip = env.CTYUN_WORKER_EXT_IP === "1" ? instance.floatingIP : (instance.fixedIPList?.[0] || "");
@@ -235,4 +255,48 @@ test("status-worker: instance without imageID omits trailing empty columns", (t)
   assert.equal(line.split("\t")[0], "worker-noid");
   assert.equal(line.split("\t")[1], "running");
   assert.ok(line.split("\t").length <= 5);
+});
+
+test("status-worker: queries every region a tenant snapshot pins", (t) => {
+  // Production reality (2026-11-03): four workers live in the env-default region
+  // and nine were created in a second region. Querying only the default made the
+  // control plane show the nine as missing, which reads as "machine gone".
+  const r = runScript(t, {
+    fakeState: {
+      regions: {
+        "200000002530": [inst("worker-legacy", "running", "img-running-1")],
+        "200000004421": [inst("worker-migrated", "running", "img-old-2")],
+      },
+    },
+    deployments: { "bot-migrated": { region: "200000004421", project: "637cfbd046df" } },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const names = r.stdout.trim().split("\n").filter(Boolean).map(l => l.split("\t")[0]).sort();
+  assert.deepEqual(names, ["worker-legacy", "worker-migrated"]);
+});
+
+test("status-worker: a snapshot pinned to the default region does not duplicate it", (t) => {
+  const r = runScript(t, {
+    fakeState: { regions: { "200000002530": [inst("worker-solo", "running", "img-running-1")] } },
+    deployments: { "bot-solo": { region: "200000002530", project: "0" } },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const lines = r.stdout.trim().split("\n").filter(Boolean);
+  assert.equal(lines.length, 1, "the same region must not be queried twice");
+});
+
+test("status-worker: ignores a malformed or hostile deployment snapshot", (t) => {
+  // deployment.json is input on a trust boundary. A corrupt file must not crash
+  // the snapshot, and a path-like region must not be forwarded to the CLI.
+  const r = runScript(t, {
+    fakeState: { regions: { "200000002530": [inst("worker-ok", "running", "img-running-1")] } },
+    deployments: {
+      "bot-broken": "{not json",
+      "bot-hostile": { region: "../../etc/passwd", project: "0" },
+      "bot-empty": { region: "", project: "0" },
+    },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const names = r.stdout.trim().split("\n").filter(Boolean).map(l => l.split("\t")[0]);
+  assert.deepEqual(names, ["worker-ok"]);
 });

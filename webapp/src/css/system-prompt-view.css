@@ -433,7 +433,7 @@
 
 .cc-system-prompt-page .cc-inline-feedback { margin-bottom: 18px; }
 
-.spin { animation: cc-system-prompt-spin 900ms linear infinite; }
+.spin { animation: cc-system-prompt-spin var(--cc-control-spin-cycle, 900ms) linear infinite; }
 @keyframes cc-system-prompt-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 760px) {

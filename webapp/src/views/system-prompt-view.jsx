@@ -13,6 +13,7 @@ import {
   Save,
 } from 'lucide-react';
 import { api } from '../api';
+import LoadingState from '../widgets/loading-state';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { getStorage } from '../utils/storage-access';
 import '../css/system-prompt-view.css';
@@ -572,7 +573,7 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
 
   return (
     <main className="cc-system-prompt-page">
-      <div className="cc-system-prompt-shell">
+      <div className="cc-system-prompt-shell" data-loading-region="">
         <header className="cc-system-prompt-header">
           <div>
             <span className="cc-system-prompt-kicker"><FileText size={14} /> Agent 配置</span>
@@ -604,8 +605,8 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
         )}
 
         {loadingBots || loadingPrompt ? (
-          <div className="cc-system-prompt-loading" role="status">
-            <LoaderCircle className="spin" size={20} /> 正在读取系统提示词
+          <div className="cc-system-prompt-loading">
+            <LoadingState kind="document" label="正在读取系统提示词" />
           </div>
         ) : bots.length === 0 ? (
           <section className="cc-system-prompt-empty">

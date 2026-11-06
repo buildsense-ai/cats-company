@@ -57,7 +57,7 @@
 .v3-model-menu-chevron {
   flex: 0 0 auto;
   color: var(--cc-muted);
-  transition: transform 140ms ease;
+  transition: transform var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .v3-model-status-button[aria-expanded='true'] .v3-model-menu-chevron {
@@ -66,8 +66,8 @@
 
 .v3-model-switch-spinner {
   flex: 0 0 auto;
-  color: var(--cc-accent);
-  animation: v3-model-spin 850ms linear infinite;
+  color: var(--cc-text-secondary);
+  animation: v3-model-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
 }
 
 @keyframes v3-model-spin {
@@ -181,18 +181,12 @@
 .v3-model-reasoning-item:hover,
 .v3-model-reasoning-item:focus-visible {
   outline: none;
-  background: color-mix(in srgb, var(--cc-accent) 9%, transparent);
+  background: var(--cc-batch-hover-bg);
 }
 
 .v3-model-menu-item.selected,
 .v3-model-reasoning-item.selected {
   color: var(--cc-accent-text);
-  background: transparent;
-}
-
-.v3-model-menu-item.selected:hover,
-.v3-model-reasoning-item.selected:hover {
-  background: var(--cc-hover);
 }
 
 .v3-model-menu-item:disabled,
@@ -381,7 +375,7 @@
   color: var(--cc-text);
   box-shadow: 0 12px 30px color-mix(in srgb, #000 22%, transparent), 0 2px 8px color-mix(in srgb, #000 10%, transparent);
   transform-origin: top center;
-  animation: cc-select-menu-in 120ms ease-out;
+  animation: cc-select-menu-in var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .v3-custom-model-select-options.is-top {
@@ -389,7 +383,7 @@
 }
 
 @keyframes cc-select-menu-in {
-  from { opacity: 0; transform: translateY(-2px); }
+  from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
@@ -467,7 +461,7 @@
 .v3-custom-model-select-chevron {
   flex: 0 0 auto;
   color: var(--cc-muted);
-  transition: color 140ms ease, transform 140ms ease;
+  transition: color var(--cc-motion-enter) var(--cc-motion-ease), transform var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .v3-custom-model-select-trigger[aria-expanded='true'] .v3-custom-model-select-chevron {
@@ -479,6 +473,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .v3-model-switch-spinner { animation: none; }
+  .v3-model-menu-chevron { transition: none; }
   .v3-custom-model-select-options {
     animation: none;
   }
@@ -1142,6 +1138,29 @@
   margin: 12px 14px 0;
 }
 
+/* 目录搜索：应用多了才出现，只有一两个时不占地方。 */
+.v3-service-agents-search {
+  flex: 0 0 auto;
+  margin: 10px 14px 0;
+}
+
+.v3-service-agents-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid var(--cc-border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--cc-surface, #fff);
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.v3-service-agents-search input:focus {
+  outline: 2px solid rgba(59, 130, 246, 0.35);
+  outline-offset: 1px;
+}
+
 .v3-service-agents-scope-label {
   font-size: 11px;
   font-weight: 600;
@@ -1216,19 +1235,95 @@
   color: #93c5fd;
 }
 
-.v3-service-agents-publish {
+/* 「把 bot 变成工具」是面板主操作，光一个 ＋ 没人知道点了会发生什么：带文字，并且
+   在展开表单时保持高亮，让人看清「再点一次就是收起」。 */
+.v3-service-agents-header-actions button.is-primary-action {
+  width: auto;
   flex: 0 0 auto;
+  padding: 0 8px 0 6px;
+  gap: 3px;
+  background: rgba(59, 130, 246, 0.16);
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.v3-service-agents-header-actions button.is-primary-action:hover {
+  background: rgba(59, 130, 246, 0.26);
+}
+
+/* 主按钮带文字之后，窄面板里必须让按钮先占位、标题让位：
+   否则标题把按钮挤出可视区，等于又回到「看不见入口」。 */
+.v3-service-agents-header {
+  gap: 8px;
+}
+
+.v3-service-agents-header .v3-service-agents-title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.v3-service-agents-header-actions {
+  flex: 0 0 auto;
+}
+/* 表单开头一句话说明「这一步到底在做什么」，术语（工具/调用）解释清楚。 */
+.v3-service-agents-publish-lead {
+  margin: 0;
+  color: var(--cc-muted, #6b7280);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.v3-service-agents-publish-view {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin: 0;
-  padding: 12px 14px 14px;
+}
+
+/* 表单自己占一屏：标题与「返回列表」钉顶、字段区滚动、按钮钉底。
+   和工具列表互斥，不再共用一个滚动条（那正是「挤在一起」的根源）。 */
+.v3-service-agents-publish-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
-  background: rgba(148, 163, 184, 0.06);
+}
+
+.v3-service-agents-publish-back {
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-muted, #6b7280);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.v3-service-agents-publish-back:hover {
+  background: rgba(148, 163, 184, 0.16);
+  color: inherit;
+}
+
+.v3-service-agents-publish {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 14px;
 }
 
 .v3-service-agents-publish-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -1346,9 +1441,14 @@
 }
 
 .v3-service-agents-publish-actions {
+  position: sticky;
+  bottom: 0;
   display: flex;
   gap: 8px;
-  margin-top: 2px;
+  margin: 0 -14px -14px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
+  background: var(--v3-bg-sidebar, var(--cc-bg, #fff));
 }
 
 .v3-service-agents-publish-actions button {
@@ -1445,8 +1545,9 @@
 
 .v3-service-agent-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   padding: 10px;
   border-radius: 10px;
 }
@@ -1462,19 +1563,23 @@
 }
 
 .v3-service-agent-info {
-  flex: 1 1 auto;
+  /* 低于 220px 就让操作按钮整行下移：面板是 min(420px, 86vw)，
+     三个按钮吃掉一半宽度后，文字只剩一条缝。 */
+  flex: 1 1 220px;
   min-width: 0;
 }
 
 .v3-service-agent-name {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 6px;
+  gap: 2px 6px;
   font-size: 13px;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 名字长、徽标多时换行，而不是被 ellipsis 吃掉：
+     「我的」「私有」这类标签一旦被截，用户根本看不出这行是什么。 */
+  white-space: normal;
+  overflow: visible;
 }
 
 .v3-service-agent-version {
@@ -1531,13 +1636,22 @@
 /* ---- 收回分享（下架）---- */
 
 .v3-service-agent-actions {
-  flex: 0 0 auto;
+  /* 独占一行：编辑 / 停止分享 / 移出清单 三个按钮不再和名字、描述抢宽度 ——
+     窄面板里那一挤，名字和描述会被压成一条细缝，读起来很乱。 */
+  flex: 1 0 100%;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  margin-left: 0;
+  padding-top: 2px;
 }
 
-/* 工具描述：调用方 Agent 就是靠这段文字决定要不要用，所以要露出来。 */
+.v3-service-agent-edit,
+.v3-service-agent-unpublish,
+.v3-service-agent-toggle {
+  white-space: nowrap;
+}
 .v3-service-agent-desc {
   margin-top: 3px;
   font-size: 11px;
@@ -1760,8 +1874,14 @@
   text-align: center;
 }
 
+.v3-service-agents-header-actions button.is-spinning { animation: none; }
+
 .v3-service-agents-header-actions button.is-spinning svg {
-  animation: v3-service-agents-spin 0.9s linear infinite;
+  animation: v3-service-agents-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-service-agents-header-actions button.is-spinning svg { animation: none; }
 }
 
 @keyframes v3-service-agents-spin {
@@ -1934,4 +2054,40 @@
 .v3-service-agent-badge.is-private {
   background: rgba(148, 163, 184, 0.2);
   color: var(--cc-muted, #6b7280);
+}
+
+/* 已下架：目录里看不到，只有本人在「Agent 工具」里能看到（可重新上架或彻底删除）。 */
+.v3-service-agent-badge.is-retired {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}
+
+/* 好友级：介于「公开（蓝）」和「私有（灰）」之间的存在感 ——
+   它是分享出去的，但只给认识的人，视觉上不该和公开一样醒目。 */
+.v3-service-agent-badge.is-friends {
+  background: rgba(16, 185, 129, 0.16);
+  color: #059669;
+}
+
+/* 「谁分享的 / 谁在干 / 要传什么」：一行小字，别人据此决定要不要用。
+   信息量比徽标大，所以压低存在感 —— 它是辅助判断，不是主角。 */
+.v3-service-agent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--cc-muted, #6b7280);
+}
+
+.v3-service-agent-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 入参最实用（不知道要填什么就没法调），给它一点点强调。 */
+.v3-service-agent-meta-item.is-input {
+  color: #2563eb;
 }

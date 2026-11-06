@@ -38,7 +38,9 @@ type fakeServiceAgentStore struct {
 	inactive             map[string]bool                     // slug → 已下架（SetServiceAgentState）
 	autoCompleteAfter    time.Duration
 	autoAwaitAfter       time.Duration // 到点把 run 收尾为 awaiting_input（返问同步路径测试用）
-	nextID               int64
+	// usersByID 是发布者显示名的来源（目录「谁分享的」用）。
+	usersByID map[int64]*types.User
+	nextID    int64
 }
 
 // fakePackageVersion 模拟 service_agent_versions 的一行（内容寻址 hash + 版本号）。
@@ -111,6 +113,19 @@ func (f *fakeServiceAgentStore) GetServiceAgentPackage(_ context.Context, packag
 		return nil, store.ErrServicePackageNotFound
 	}
 	return bundle, nil
+}
+
+// GetUsersByIDs 模拟真实 adapter 的批量用户查询（目录「谁分享的」用）。
+func (f *fakeServiceAgentStore) GetUsersByIDs(ids []int64) (map[int64]*types.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[int64]*types.User, len(ids))
+	for _, id := range ids {
+		if user, ok := f.usersByID[id]; ok {
+			out[id] = user
+		}
+	}
+	return out, nil
 }
 
 // ClaimServiceAgentOwnership 内存实现：不存在则建；owner 不同按 internal / 他人占用区分。
@@ -1258,5 +1273,199 @@ func TestServiceAgentsMCPBotSessionIsolation(t *testing.T) {
 	}
 	if !account.IsError || !strings.Contains(mcpToolErrorText(account), "session_not_found_or_not_owned") {
 		t.Fatalf("account-level continuation of a bot session should be rejected: %s", mcpToolErrorText(account))
+	}
+}
+
+// bot 用**自己的**凭证调 MCP（callerUID == bot_uid）不该被判成「不是这个 bot 的拥有者」。
+//
+// 本地模拟实测过：调用方 bot 一调就 87ms 拿到 bot_not_owned，「agent 找 agent 干活」整条走不通。
+func TestServiceAgentBotCallsWithItsOwnIdentity(t *testing.T) {
+	const botUID int64 = 7001
+	st := newFakeServiceAgentStore()
+	st.autoCompleteAfter = 5 * time.Millisecond
+	handler := NewServiceAgentsMCPHandler(st)
+	handler.SetBotIdentity(newFakeBotIdentity(botUID, 38, nil))
+	ts := httptest.NewServer(mcpAuthStub(botUID, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+
+	call, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "catsco_hello",
+		Arguments: map[string]any{"input": map[string]any{"q": 1}, "bot_uid": botUID},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if call.IsError {
+		t.Fatalf("bot 用自己身份调用不该被拒: %+v", call.Content)
+	}
+}
+
+// 放行的只有「自己」：拿别人的 bot_uid 仍然要拒。
+func TestServiceAgentRejectsClaimingAnotherBot(t *testing.T) {
+	const botUID int64 = 7001
+	st := newFakeServiceAgentStore()
+	handler := NewServiceAgentsMCPHandler(st)
+	handler.SetBotIdentity(newFakeBotIdentity(botUID, 38, nil))
+	ts := httptest.NewServer(mcpAuthStub(9999, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+
+	call, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "catsco_hello",
+		Arguments: map[string]any{"input": map[string]any{"q": 1}, "bot_uid": botUID},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if !call.IsError {
+		t.Fatal("拿别人的 bot_uid 必须被拒（放行的只是自己）")
+	}
+}
+
+// liveServerCount / liveUIDBucketExists / hasLiveSessionsForUID 都走 liveMu：
+// 生产里 HTTP 处理协程会并发写这张表，测试读它必须同样持锁（-race 会抓）。
+func liveServerCount(h *ServiceAgentsMCPHandler, uid int64) int {
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	return len(h.liveServers[uid])
+}
+
+func liveUIDBucketExists(h *ServiceAgentsMCPHandler, uid int64) bool {
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	_, ok := h.liveServers[uid]
+	return ok
+}
+
+func hasLiveSessionsForUID(h *ServiceAgentsMCPHandler, uid int64) bool {
+	h.liveMu.Lock()
+	servers := make([]*mcp.Server, 0, len(h.liveServers[uid]))
+	for srv := range h.liveServers[uid] {
+		servers = append(servers, srv)
+	}
+	h.liveMu.Unlock()
+	for _, srv := range servers {
+		if serviceMCPHasLiveSessions(srv) {
+			return true
+		}
+	}
+	return false
+}
+
+// 2026-11-03 生产实测：当日 POST /api/mcp 91k、GET 30k、DELETE 0 —— 客户端从不
+// 关闭会话，而每个会话都钉住一个 *mcp.Server（约 44KB 工具 schema）和一条阻塞在
+// SSE Read 的 goroutine。SessionTimeout 负责关空闲会话，reaper 负责把随之失效的
+// server 摘出注册表；没有 reaper 就要等下一次清单变更才释放。
+func TestReapLiveServersDropsServersWithoutSessions(t *testing.T) {
+	handler := NewServiceAgentsMCPHandler(newFakeServiceAgentStore())
+	orphan := mcp.NewServer(&mcp.Implementation{Name: "orphan", Version: "0.1.0"}, nil)
+	handler.registerLiveServer(11, orphan, map[string]struct{}{"catsco_run_status": {}})
+
+	if dropped := handler.reapLiveServers(); dropped != 1 {
+		t.Fatalf("reaped %d servers, want 1", dropped)
+	}
+	if liveUIDBucketExists(handler, 11) {
+		t.Fatal("empty uid bucket must be dropped from liveServers")
+	}
+}
+
+func TestReapLiveServersKeepsServerWithLiveSession(t *testing.T) {
+	handler := NewServiceAgentsMCPHandler(newFakeServiceAgentStore())
+	ts := httptest.NewServer(mcpAuthStub(7, http.HandlerFunc(handler.ServeHTTP)))
+	t.Cleanup(ts.Close)
+
+	session := newMCPSession(t, ts.URL)
+	if got := liveServerCount(handler, 7); got != 1 {
+		t.Fatalf("live servers after connect = %d, want 1", got)
+	}
+	if dropped := handler.reapLiveServers(); dropped != 0 {
+		t.Fatalf("reaped %d servers that still had a session, want 0", dropped)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for hasLiveSessionsForUID(handler, 7) {
+		if time.Now().After(deadline) {
+			t.Fatal("server side never noticed the closed session")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if dropped := handler.reapLiveServers(); dropped != 1 {
+		t.Fatalf("reaped %d servers after the client closed, want 1", dropped)
+	}
+	if liveUIDBucketExists(handler, 7) {
+		t.Fatal("empty uid bucket must be dropped from liveServers")
+	}
+}
+
+// getServer 是每请求一次的回调（协议协商一次 + 建会话一次）。必须复用同一个
+// *mcp.Server，否则每个请求都造一个带全套工具 schema 的实例。
+func TestMCPServerReusedPerCaller(t *testing.T) {
+	handler := NewServiceAgentsMCPHandler(newFakeServiceAgentStore())
+	tsA := httptest.NewServer(mcpAuthStub(7, http.HandlerFunc(handler.ServeHTTP)))
+	t.Cleanup(tsA.Close)
+
+	newMCPSession(t, tsA.URL)
+	newMCPSession(t, tsA.URL)
+	if got := liveServerCount(handler, 7); got != 1 {
+		t.Fatalf("live servers for one caller = %d, want 1 (per-request builds leak)", got)
+	}
+
+	// 另一个调用者有自己的实例：工具清单按账号可见性生成，不能串。
+	tsB := httptest.NewServer(mcpAuthStub(8, http.HandlerFunc(handler.ServeHTTP)))
+	t.Cleanup(tsB.Close)
+	newMCPSession(t, tsB.URL)
+	if got := liveServerCount(handler, 8); got != 1 {
+		t.Fatalf("live servers for second caller = %d, want 1", got)
+	}
+}
+
+// 结果正文必须进文本摘要：调用方（模型、第三方客户端，连我们自己写的探针都是）
+// 常常只读 content，只看 status=completed 会以为「完成了但没有结果」。
+func TestRunToolResultSummaryCarriesOutputText(t *testing.T) {
+	env := ServiceRunEnvelope{
+		ContractVersion: serviceRunResultContractVersion,
+		RunID:           "run_1",
+		SessionID:       "sess_1",
+		Status:          ServiceRunCompleted,
+		Output:          json.RawMessage(`{"text":"能。你这次调用刚到，我这边直接收到并应答了。"}`),
+	}
+	text := serviceRunToolResult(env).Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "能。你这次调用刚到") {
+		t.Fatalf("文本摘要缺正文：%q", text)
+	}
+	if !strings.Contains(text, "status=completed") || !strings.Contains(text, "run=run_1") {
+		t.Fatalf("机器可读前缀被破坏：%q", text)
+	}
+}
+
+func TestRunToolResultSummaryTruncatesLongOutput(t *testing.T) {
+	long := strings.Repeat("字", serviceRunSummaryLimit+50)
+	env := ServiceRunEnvelope{
+		RunID: "run_1", SessionID: "sess_1", Status: ServiceRunCompleted,
+		Output: json.RawMessage(`{"text":"` + long + `"}`),
+	}
+	text := serviceRunToolResult(env).Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "已截断") {
+		t.Fatalf("超长正文应当留截断提示：%q", text[:120])
+	}
+	if got := strings.Count(text, "字"); got > serviceRunSummaryLimit+10 {
+		t.Fatalf("截断失效，正文 %d 字", got)
+	}
+}
+
+func TestRunToolResultSummaryWithoutOutputUnchanged(t *testing.T) {
+	// 只有句柄（running）或失败没有正文时，摘要格式保持不变（老客户端解析不受影响）。
+	env := ServiceRunEnvelope{RunID: "run_1", SessionID: "sess_1", Status: ServiceRunRunning}
+	text := serviceRunToolResult(env).Content[0].(*mcp.TextContent).Text
+	if strings.Contains(text, "output=") {
+		t.Fatalf("没有正文时不该出现 output：%q", text)
+	}
+	if text != "run=run_1 session_id=sess_1 status=running" {
+		t.Fatalf("摘要格式变了：%q", text)
 	}
 }

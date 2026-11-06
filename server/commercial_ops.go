@@ -174,6 +174,14 @@ func (h *CommercialOpsHandler) HandleCloudWorkerProvision(w http.ResponseWriter,
 		return
 	}
 	targetRef := commercialOpsTargetRef(r)
+	// Opening a second instance on an account that already owns a worker is a
+	// different operator decision from the first provision, and the two used to
+	// be indistinguishable in the audit trail. Label it explicitly instead of
+	// leaving operators to guess why one account holds several machines.
+	action := "cloud_worker.provision"
+	if commercialOpsRequestBool(r, "additional") {
+		action = "cloud_worker.provision_additional"
+	}
 	tracked := &commercialOpsResponseWriter{ResponseWriter: w}
 	h.cloudWorkerProvisioner.HandleAdminProvision(tracked, withCommercialOpsService(r, service))
 	if h.store != nil {
@@ -182,9 +190,9 @@ func (h *CommercialOpsHandler) HandleCloudWorkerProvision(w http.ResponseWriter,
 			status = http.StatusOK
 		}
 		if err := h.store.RecordCommercialOperatorEvent(&types.CommercialOperatorEvent{
-			Service: service.Slug, Action: "cloud_worker.provision", TargetType: "cloud_worker", TargetRef: targetRef, StatusCode: status,
+			Service: service.Slug, Action: action, TargetType: "cloud_worker", TargetRef: targetRef, StatusCode: status,
 		}); err != nil {
-			log.Printf("failed to record commercial operator event service=%s action=cloud_worker.provision: %v", service.Slug, err)
+			log.Printf("failed to record commercial operator event service=%s action=%s: %v", service.Slug, action, err)
 		}
 	}
 }
@@ -262,6 +270,13 @@ func (h *CommercialOpsHandler) HandleCloudWorkerBilling(w http.ResponseWriter, r
 		return
 	}
 	target := commercialOpsTargetRef(r)
+	// A renewal buys a provider subscription cycle, so it is audited on its own
+	// action name. Everything else keeps the existing billing label so the
+	// historical trail stays intact.
+	billingAction := "cloud_worker.billing"
+	if commercialOpsRequestString(r, "action") == "renew" {
+		billingAction = "cloud_worker.renew"
+	}
 	tracked := &commercialOpsResponseWriter{ResponseWriter: w}
 	handler.HandleAdminBilling(tracked, withCommercialOpsService(r, service))
 	status := tracked.status
@@ -269,7 +284,7 @@ func (h *CommercialOpsHandler) HandleCloudWorkerBilling(w http.ResponseWriter, r
 		status = http.StatusOK
 	}
 	if h.store != nil {
-		if err := h.store.RecordCommercialOperatorEvent(&types.CommercialOperatorEvent{Service: service.Slug, Action: "cloud_worker.billing", TargetType: "cloud_worker", TargetRef: target, StatusCode: status}); err != nil {
+		if err := h.store.RecordCommercialOperatorEvent(&types.CommercialOperatorEvent{Service: service.Slug, Action: billingAction, TargetType: "cloud_worker", TargetRef: target, StatusCode: status}); err != nil {
 			log.Printf("failed to record cloud billing event: %v", err)
 		}
 	}
@@ -386,6 +401,50 @@ func commercialOpsTargetRef(r *http.Request) string {
 		}
 	}
 	return ""
+}
+
+// commercialOpsRequestField previews one top-level field from a JSON body
+// without consuming it, so the audit trail can name the operator's actual
+// decision while the real handler still decodes the same bytes. A missing,
+// malformed or oversized body reports "absent": these previews only label an
+// event and never change what the action does.
+func commercialOpsRequestField(r *http.Request, key string) (interface{}, bool) {
+	if r == nil || r.Body == nil || key == "" {
+		return nil, false
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, commercialOpsBodyLimit+1))
+	// Restore the body first: whether or not the preview succeeds, the real
+	// handler must still see every byte.
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(raw), r.Body))
+	if err != nil || len(raw) > commercialOpsBodyLimit {
+		return nil, false
+	}
+	var body map[string]interface{}
+	if json.Unmarshal(raw, &body) != nil {
+		return nil, false
+	}
+	value, ok := body[key]
+	return value, ok
+}
+
+// commercialOpsRequestBool reads a boolean flag such as "additional".
+func commercialOpsRequestBool(r *http.Request, key string) bool {
+	value, ok := commercialOpsRequestField(r, key)
+	if !ok {
+		return false
+	}
+	flag, _ := value.(bool)
+	return flag
+}
+
+// commercialOpsRequestString reads a string field such as "action".
+func commercialOpsRequestString(r *http.Request, key string) string {
+	value, ok := commercialOpsRequestField(r, key)
+	if !ok {
+		return ""
+	}
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
 }
 
 func toCommercialOpsString(value interface{}) string {

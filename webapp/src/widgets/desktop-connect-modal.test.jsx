@@ -1,7 +1,7 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { Simulate } from 'react-dom/test-utils';
 import DesktopConnectModal, { resolveConnectedDesktopDevice } from './desktop-connect-modal';
-import WorkspaceOnboardingCard from './workspace-onboarding-card';
 
 vi.mock('../api', () => ({
   api: {
@@ -12,7 +12,12 @@ vi.mock('../api', () => ({
     getDevices: vi.fn(),
     getDeviceAudit: vi.fn(),
     unlinkDevice: vi.fn(),
+    getConversationDevice: vi.fn(),
+    confirmConversationDevice: vi.fn(),
   },
+  getToken: () => 'test-session',
+  getAuthRevision: () => 1,
+  isCurrentAuthSession: () => true,
   getApiBaseURL: vi.fn(() => 'https://app.catsco.cc'),
   getWebSocketURL: vi.fn(() => 'wss://app.catsco.cc/v0/channels'),
 }));
@@ -32,6 +37,8 @@ describe('DesktopConnectModal', () => {
     api.getDevices.mockResolvedValue({ devices: [] });
     api.getDeviceAudit.mockResolvedValue({ events: [] });
     api.unlinkDevice.mockReset();
+    api.getConversationDevice.mockReset();
+    api.confirmConversationDevice.mockReset();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -68,66 +75,167 @@ describe('DesktopConnectModal', () => {
     expect(moreDownloads.lastElementChild?.tagName).toBe('svg');
   });
 
-  test('offers a compact New User Guide card that opens the shared onboarding card', async () => {
-    const onOpenOnboardingGuide = vi.fn();
-    await act(async () => {
-      root.render(<DesktopConnectModal userId="38" onClose={vi.fn()} onOpenOnboardingGuide={onOpenOnboardingGuide} />);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    const guide = [...container.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('新手指引'));
-    expect(guide).not.toBeNull();
-    expect(guide.textContent).toContain('重新查看添加助手和激活本地助手的步骤。');
-    expect(container.querySelector('#catsco-assistant-invite')).toBeNull();
-
-    await act(async () => {
-      guide.click();
-    });
-    expect(onOpenOnboardingGuide).toHaveBeenCalledTimes(1);
+  test.each(['connect', 'download', 'computers'])('contains keyboard focus and handles Escape in %s mode', async initialMode => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const onClose = vi.fn();
+    await act(async () => root.render(<DesktopConnectModal initialMode={initialMode} onClose={onClose} />));
+    const heading = container.querySelector('h3');
+    expect(document.activeElement).toBe(heading);
+    expect(opener.closest('[inert]')).not.toBeNull();
+    const buttons = [...container.querySelectorAll('button')].filter(button => !button.disabled && !button.closest('[hidden]'));
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', cancelable: true })));
+    expect(document.activeElement).toBe(buttons[0]);
+    buttons[0].focus();
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, cancelable: true })));
+    expect(document.activeElement).toBe(buttons.at(-1));
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true })));
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })));
+    expect(onClose).toHaveBeenCalledOnce();
+    await act(async () => root.render(null));
+    expect(document.activeElement).toBe(opener);
+    expect(opener.hasAttribute('inert')).toBe(false);
+    opener.remove();
   });
 
-  test('hands off from the real guide card to exactly one shared onboarding card', async () => {
-    function ReplayHarness() {
-      const [desktopOpen, setDesktopOpen] = React.useState(true);
-      const [onboardingOpen, setOnboardingOpen] = React.useState(false);
-      return (
-        <>
-          {desktopOpen && (
-            <DesktopConnectModal
-              userId="38"
-              onClose={() => setDesktopOpen(false)}
-              onOpenOnboardingGuide={() => {
-                setDesktopOpen(false);
-                setOnboardingOpen(true);
-              }}
-            />
-          )}
-          {onboardingOpen && (
-            <WorkspaceOnboardingCard
-              userId="38"
-              visible
-              onDismiss={() => setOnboardingOpen(false)}
-            />
-          )}
-        </>
-      );
-    }
+  test.each([true, false])('restores a live opener or the stable account trigger (opener removed: %s)', async removeOpener => {
+    const opener = document.createElement('button');
+    const fallback = document.createElement('button');
+    document.body.append(opener, fallback);
+    opener.focus();
+    await act(async () => root.render(<DesktopConnectModal onClose={vi.fn()} returnFocusRef={{ current: fallback }} />));
+    if (removeOpener) opener.remove();
+    await act(async () => root.render(null));
+    expect(document.activeElement).toBe(removeOpener ? fallback : opener);
+    opener.remove();
+    fallback.remove();
+  });
 
+  test.each(['connect', 'computers'])('keeps the guide out of the %s computer panel', async initialMode => {
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode={initialMode} onClose={vi.fn()} />));
+    expect(container.textContent).not.toContain('新手指引');
+  });
+
+  test('shows conversation selection, connection and downloads in one computer panel', async () => {
+    const devices = [{ deviceId: 'office', displayName: '办公电脑', runtimeRole: 'desktop', routable: true }];
+    api.getDevices.mockResolvedValue({ devices });
+    api.getConversationDevice.mockResolvedValue({ status: 'selected', selected_device_id: 'office', revision: 'r1', agent_name: '工作助手', devices });
+    const onClose = vi.fn();
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" topicId="p2p_38_42" activeAgent={{ uid: 42 }} onClose={onClose} />));
+    expect(container.querySelectorAll('[role=dialog]')).toHaveLength(1);
+    expect(container.querySelectorAll('h3')).toHaveLength(1);
+    expect(container.querySelector('h3').textContent).toBe('电脑');
+    expect(container.querySelectorAll('.cc-device-option')).toHaveLength(1);
+    expect(container.querySelector('.catsco-device-card')).toBeNull();
+    expect(container.querySelector('.catsco-onboarding-replay')).toBeNull();
+    expect(container.textContent).not.toContain('云端运行环境');
+    expect(container.textContent).not.toContain('最近活动');
+    expect(container.textContent).toContain('连接本机');
+    expect(api.confirmConversationDevice).not.toHaveBeenCalled();
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '下载桌面端').click());
+    expect(container.querySelector('.catsco-download-card-primary')).not.toBeNull();
+    expect(container.querySelectorAll('[role=dialog]')).toHaveLength(1);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['p2p_38_42', 'grp_38'])('keeps one conversation device list during multi-desktop connection and reselection (%s)', async topicId => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const devices = [
+      { deviceId: 'office', displayName: '办公电脑', runtimeRole: 'desktop', routable: true },
+      { deviceId: 'home', displayName: '家里电脑', runtimeRole: 'desktop', routable: true },
+    ];
+    api.getDevices.mockResolvedValue({ devices });
+    const snapshot = { status: 'selected', selected_device_id: 'office', revision: 'r1', devices };
+    api.getConversationDevice.mockResolvedValue(snapshot);
+    api.confirmConversationDevice.mockResolvedValue({ ...snapshot, selected_device_id: 'home', revision: 'r2' });
+    api.createDesktopConnectSession.mockResolvedValue({ code: 'legacy-code' });
+    api.getDesktopConnectStatus.mockResolvedValue({ state: 'claimed' });
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" topicId={topicId} activeAgent={{ uid: 42 }} onClose={vi.fn()} />));
+    const expectSingleList = () => {
+      expect(container.querySelectorAll('[role="group"][aria-label="我的电脑"]')).toHaveLength(1);
+      expect(container.querySelectorAll('.cc-device-option')).toHaveLength(2);
+      expect(container.querySelector('.catsco-device-card')).toBeNull();
+      expect(container.querySelector('[aria-label^="设为本机"]')).toBeNull();
+    };
+    expectSingleList();
     await act(async () => {
-      root.render(<ReplayHarness />);
-      await Promise.resolve();
-      await Promise.resolve();
+      container.querySelector('.catsco-connect-actions button').click();
+      await vi.advanceTimersByTimeAsync(2000);
     });
-    const modal = container.querySelector('[role="dialog"][aria-labelledby="catsco-desktop-modal-title"]');
-    expect(modal).not.toBeNull();
-    const guide = [...modal.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('新手指引'));
-    await act(async () => guide.click());
+    expect(container.textContent).toContain('选择本机桌面设备');
+    expectSingleList();
+    await act(async () => Simulate.change(container.querySelector('input[value="home"]')));
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '使用这台电脑').click());
+    expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith(topicId, 42, 'home', 'r1');
+    expect(container.querySelector('input[value="home"]').checked).toBe(true);
+    expectSingleList();
 
-    expect(container.querySelector('[role="dialog"][aria-labelledby="catsco-desktop-modal-title"]')).toBeNull();
-    await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
+    // A remembered browser-local computer must not introduce a second list
+    // when the user reopens its selection flow alongside a conversation.
+    await act(async () => root.unmount());
+    window.localStorage.setItem('catsco_preferred_desktop_device:v1:38', 'office');
+    root = createRoot(container);
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" topicId={topicId} activeAgent={{ uid: 42 }} onClose={vi.fn()} />));
+    await act(async () => container.querySelector('.catsco-connect-actions button').click());
+    await act(async () => container.querySelector('.catsco-connect-reselect').click());
+    expectSingleList();
+  });
+
+  test('places computers above the actions without exposing tool capabilities', async () => {
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'office-pc', displayName: 'Office PC', runtimeRole: 'desktop', routable: true,
+      capabilities: ['read_file', 'execute_shell'],
+    }] });
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" onClose={vi.fn()} />));
+    const devices = container.querySelector('.catsco-device-section');
+    const actions = container.querySelector('.catsco-connect-actions');
+    expect(devices.textContent).toContain('我的电脑');
+    expect(devices.textContent).toContain('Office PC');
+    expect(devices.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('[aria-label="设备能力"]')).toBeNull();
+    expect(container.textContent).not.toContain('read_file');
+    expect(container.textContent).not.toContain('execute_shell');
+    expect(devices.querySelector('[aria-label="解绑设备 Office PC"]')).not.toBeNull();
+  });
+
+  test('loads computers before showing a list or empty state and preserves it during refresh', async () => {
+    vi.useFakeTimers();
+    let finish;
+    api.getDevices.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" onClose={vi.fn()} />));
+    expect(container.querySelector('.cc-computer-list-region [data-loading-kind="connect"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('还没有连接电脑');
+    expect(container.querySelector('.catsco-device-card')).toBeNull();
+    const snapshot = { devices: [{ deviceId: 'office', displayName: 'Office PC', runtimeRole: 'desktop', routable: true }] };
+    await act(async () => finish(snapshot));
+    expect(container.querySelector('.cc-computer-list-region [data-loading-kind]')).toBeNull();
+    expect(container.querySelector('.catsco-device-card').textContent).toContain('Office PC');
+    let refresh;
+    api.getDevices.mockImplementationOnce(() => new Promise(resolve => { refresh = resolve; }));
+    await act(async () => vi.advanceTimersByTime(5000));
+    expect(container.querySelector('.catsco-device-card').textContent).toContain('Office PC');
+    expect(container.querySelector('.cc-computer-list-region [data-loading-kind]')).toBeNull();
+    await act(async () => refresh(snapshot));
+  });
+
+  test('offers retry after a failed initial read and shows empty only after a successful response', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    api.getDevices.mockRejectedValueOnce(new Error('offline'));
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" onClose={vi.fn()} />));
+    expect(container.querySelector('[role="alert"]').textContent).toContain('暂时无法读取电脑');
+    expect(container.textContent).not.toContain('还没有连接电脑');
+    let finish;
+    api.getDevices.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '重新读取电脑').click());
+    expect(container.querySelector('.cc-computer-list-region [data-loading-kind="connect"]')).not.toBeNull();
+    await act(async () => finish({ devices: [] }));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain('还没有连接电脑');
+    expect(container.querySelector('.cc-computer-list-region [data-loading-kind]')).toBeNull();
   });
 
   test('keeps connected device management in the unified modal', async () => {

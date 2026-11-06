@@ -421,6 +421,7 @@ func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, rep
 		if err != nil {
 			return nil, err
 		}
+		notifySavedMessage(topicID, duplicate)
 		return &savedMessageResult{ID: id, Duplicate: duplicate}, nil
 	}
 	if payload.ClientMsgID != "" {
@@ -428,6 +429,7 @@ func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, rep
 		if err != nil {
 			return nil, err
 		}
+		notifySavedMessage(topicID, duplicate)
 		return &savedMessageResult{ID: id, Duplicate: duplicate}, nil
 	}
 
@@ -449,7 +451,20 @@ func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, rep
 	if err != nil {
 		return nil, err
 	}
+	notifySavedMessage(topicID, false)
 	return &savedMessageResult{ID: id}, nil
+}
+
+// notifySavedMessage 唤醒在同一 topic 上等回复的 bot runner。
+//
+// 放在落库成功之后、返回之前：等的一方是先订阅再查库，所以「先查一次」和
+// 「等通知」之间不存在漏窗口 —— 通知只可能让那次查询来得更早，不会让它丢失。
+// 幂等重发命中（duplicate）不算新消息，没有可等的新内容，不唤醒。
+func notifySavedMessage(topicID string, duplicate bool) {
+	if duplicate {
+		return
+	}
+	NotifyMessageArrived(topicID)
 }
 
 func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, payload *normalizedMessagePayload, msgID int64, exclude *Client) bool {
@@ -462,6 +477,9 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	}
 	if h.isTaskStatusPublisher(uid) {
 		h.agentPush.resetVisibleTailAtWorkingBoundary(uid, dataMsg)
+		if h.nativeAgentPush != nil {
+			h.nativeAgentPush.resetVisibleTailAtWorkingBoundary(uid, dataMsg)
+		}
 	}
 
 	if isGroupTopic(topicID) {
@@ -680,7 +698,11 @@ func (h *Hub) DeliverShimoLoginResume(resume ShimoLoginResume) bool {
 //
 // 只有平台内部的 runner 会调它：权限（是不是自己的 bot / 有没有开放分享）
 // 已经在嵌入之前判过，这里不再重复鉴权。
-func (h *Hub) DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text string, msgID int64) bool {
+//
+// botSessionID 是「这次调用属于哪个会话」（run 的 service session id）。
+// **必须随推送一起发**：bot 收的是 WS 实时消息，不会去轮询消息表 ——
+// 只把它写进库而漏了推送，bot 就只能按 topic 分会话，上下文会串。
+func (h *Hub) DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text string, msgID int64, botSessionID string) bool {
 	if h == nil || callerUID <= 0 || botUID <= 0 || msgID <= 0 {
 		return false
 	}
@@ -690,17 +712,22 @@ func (h *Hub) DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text str
 	if len(h.getClients(botUID)) == 0 {
 		return false
 	}
+	botCallMetadata := map[string]interface{}{
+		// 让 bot 侧能分辨「这是另一个 Agent 通过工具调用发来的」，
+		// 从而按「有人派活」而不是「主人闲聊」来处理。
+		"catsco_bot_call":   true,
+		"catsco_caller_uid": callerUID,
+	}
+	if sessionID := strings.TrimSpace(botSessionID); sessionID != "" {
+		// 键名与落库时一致：bot 侧据此算会话身份，一次调用一个会话。
+		botCallMetadata[botSessionMetadataKey] = sessionID
+	}
 	payload := &normalizedMessagePayload{
 		StoredContent:  text,
 		DisplayContent: text,
 		StoredType:     "text",
 		DisplayType:    "text",
-		Metadata: map[string]interface{}{
-			// 让 bot 侧能分辨「这是另一个 Agent 通过工具调用发来的」，
-			// 从而按「有人派活」而不是「主人闲聊」来处理。
-			"catsco_bot_call":   true,
-			"catsco_caller_uid": callerUID,
-		},
+		Metadata:       botCallMetadata,
 	}
 	message := h.messageForRecipient(callerUID, botUID, topicID, 0, payload, msgID)
 	if message == nil || message.Data == nil {
@@ -1247,6 +1274,12 @@ func topicTypeForID(topicID string) string {
 const (
 	defaultAgentContextHistoryLimit = 100
 	maxAgentContextHistoryLimit     = 200
+	// maxMessageHistoryLimit bounds one REST history page. Without it a client
+	// asking for limit=100000 pulls that many rows, message bodies included,
+	// into the heap and then copies them again into the JSON payload.
+	// 2026-11-01: the server process reached anon-rss 5.2GB and the host
+	// OOM-killed it.
+	maxMessageHistoryLimit = 200
 )
 
 type latestMessagesBeforeStore interface {
@@ -1327,6 +1360,9 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 
 	if limit <= 0 {
 		limit = 50
+	}
+	if limit > maxMessageHistoryLimit {
+		limit = maxMessageHistoryLimit
 	}
 
 	var rawMsgs []*types.Message

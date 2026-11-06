@@ -132,22 +132,24 @@ func (w *ServiceRunLedgerWriter) buildEntry(run store.ServiceRunBillable) store.
 //   - 免费（未定价）→ free
 //   - 平台自带执行（codex）→ 调用方额度已在 relay 模型调用时实时扣除（这是真实模型成本，
 //     自己不自己调都得付，所以不参与下面的 self_call 豁免）
-//   - 外部执行后端（http/mcp/worker）→ 金额计入调用方「待扣」，由结算器调 relay 代扣；
-//     但若调用方就是 owner（自己调自己）→ self_call：同账号左右口袋，不代扣
+//   - 外部执行后端（http/mcp/worker）和 bot-as-tool（bot）→ 金额计入调用方「待扣」，
+//     由结算器调 relay 代扣；bot 型必须算：它的模型开销走 bot 自己的额度，调用方这边平台收不到；
+//     若调用方就是 owner（自己调自己）→ self_call：同账号左右口袋，不代扣
 func resolveBillingState(run store.ServiceRunBillable, grossMicros int64) string {
 	if grossMicros <= 0 {
 		return store.ServiceBillingFree
 	}
 	switch run.RunnerType {
-	case "http", "mcp", "worker":
+	case "http", "mcp", "worker", "bot":
 		// 自己调自己：payer 与 payee 是同一个账号，代扣只是把钱从自己的额度里扣走，
 		// 而 owner 出款通道还没实现 → 净损失一次，所以只记账不扣费。
 		// internal agent 不算（payee=平台，钱真的要从调用方收到平台）。
 		if run.OwnerKind != store.ServiceAgentOwnerInternal && run.OwnerUID > 0 && run.CallerUID == run.OwnerUID {
 			return store.ServiceBillingSelfCall
 		}
-		// 外部执行后端自报用量 / 用户自己的 worker 认领执行：平台侧原本扣不到，
-		// 一律记「待扣」，由结算器调 relay 代扣。
+		// 外部执行后端自报用量 / 用户自己的 worker 认领执行 / bot-as-tool 的 bot 回合：
+		// 平台侧原本扣不到（bot 的模型开销记在它自己的 owner 名下），一律记「待扣」，
+		// 由结算器调 relay 代扣。
 		return store.ServiceBillingPendingCredit
 	default:
 		return store.ServiceBillingSettledPlatform

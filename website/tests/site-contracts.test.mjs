@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { personalPlanOffers, teamPlanOffer } from '../../webapp/src/widgets/plans/plan-offers.js'
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 
@@ -45,7 +46,7 @@ test('public routes have unique metadata and page contracts', async () => {
   assert.ok(routes.includes("pathname.replace(/\\/{2,}/g, '/')"))
   assert.match(routes, /'页面未找到 — CatsCo'/)
   assert.match(routes, /robots\.content = 'noindex, follow'/)
-  assert.match(routes, /CatsCo Free、Pro、Max 与 Business Start/)
+  assert.match(routes, /CatsCo 基础版、个人版、专业版、团队版与 Business Start/)
   assert.doesNotMatch(routes, /path: '\/enterprise'/)
   const app = await read('src/App.tsx')
   const main = await read('src/main.tsx')
@@ -98,16 +99,17 @@ test('home and pricing conversion copy follows current page briefs', async () =>
   assert.match(footer, /从下一项任务开始，让 CatsCo 帮你持续推进并交付成果。/)
   assert.doesNotMatch(footer, /准备好拥有你的第一个AI员工了吗？/)
   assert.doesNotMatch(footer, /从一个目标开始，让 CatsCo 持续推进，并将完成的成果带回给你。/)
-  for (const label of ['PERSONAL PLANS', 'BUSINESS SERVICE', 'CORE SERVICE SCOPE', 'EARLY ACCESS', 'PLAN COMPARISON']) {
+  for (const label of ['EARLY ACCESS', 'PLAN COMPARISON']) {
     assert.match(pricing, new RegExp(`>${label}<`))
   }
   assert.doesNotMatch(footer, /企业版/)
   assert.match(footer, /href: GITHUB_URL/)
   assert.match(header, /href=\{GITHUB_URL\}/)
   assert.match(siteLinks, /GITHUB_URL = 'https:\/\/github\.com\/buildsense-ai'/)
-  assert.match(pricing, /queryPlan: 'free'/)
-  assert.match(pricing, /queryPlan: 'personal'/)
-  assert.match(pricing, /queryPlan: 'pro'/)
+  assert.match(pricing, /slug: 'catsco-basic'/)
+  assert.match(pricing, /slug: 'catsco-standard'/)
+  assert.match(pricing, /slug: 'catsco-advanced'/)
+  assert.match(pricing, /slug: 'catsco-team'/)
   assert.match(pricing, /service=business-start|service: 'business-start'/)
   assert.match(login, /appLoginUrl/)
   assert.match(login, /公开官网不会接收或保存密码/)
@@ -119,7 +121,7 @@ test('home and pricing conversion copy follows current page briefs', async () =>
       const homeState = homeCss.match(new RegExp(`body:has\\(main > \\.hero-section\\) \\.site-header \\.${action}${state} \\{([^}]+)\\}`))
       const pricingState = pricingCss.match(new RegExp(`\\.min-h-screen:has\\(\\.pricing-page\\) > \\.site-header \\.${action}${state} \\{([^}]+)\\}`))
       assert.ok(homeState && pricingState)
-      assert.equal(homeState[1].trim(), pricingState[1].trim())
+      assert.equal(homeState[1].replace(/\r\n/g, '\n').trim(), pricingState[1].replace(/\r\n/g, '\n').trim())
     }
   }
   assert.equal((homeCss.match(/background: #2b2b2b;/g) || []).length, 3)
@@ -231,13 +233,47 @@ test('source avoids known interaction regressions', async () => {
   assert.match(footerStyles, /--final-footer-muted: rgba\(255, 255, 255, 0\.5\);/)
   assert.match(footerStyles, /\.final-footer-brand > span \{[^}]*color: var\(--final-footer-muted\);/s)
   assert.match(footerStyles, /\.final-footer-copyright \{[^}]*color: var\(--final-footer-muted\);/s)
-  assert.match(pricingStyles, /\.pricing-card \{[^}]*border: 1px solid transparent;/s)
-  assert.doesNotMatch(pricingStyles, /\.pricing-card\.is-(?:free|personal|pro) \{[^}]*border-color:/s)
-  assert.match(pricingStyles, /\.pricing-card\.is-free:hover \{[^}]*border-color: #616161;/s)
-  assert.match(pricingStyles, /\.pricing-card\.is-pro:hover \{[^}]*border-color: var\(--pricing-accent\);/s)
-  assert.match(pricingStyles, /\.pricing-business \{[^}]*border: 1px solid transparent;/s)
-  assert.match(pricingStyles, /\.pricing-business:hover,[^{]+\.pricing-business:focus-within \{[^}]*border-color: var\(--pricing-accent\);/s)
-  assert.match(pricingStyles, /\.pricing-access \{[^}]*border: 1px solid transparent;/s)
-  assert.match(pricingStyles, /\.pricing-access:hover,[^{]+\.pricing-access:focus-within \{[^}]*border-color: #616161;/s)
+  assert.match(pricingStyles, /grid-template-rows: subgrid;/)
+  assert.match(pricingStyles, /background: #292929; color: #cecece;/)
+  const pricing = await read('src/components/PricingPage.tsx')
+  assert.match(pricing, /href=\{appUrl\('\/', \{ open: 'relay', plan: plan\.slug, source: 'pricing' \}\)\}/)
+  assert.match(pricing, /href=\{appUrl\('\/', \{ open: 'relay', plan: teamPlan\.slug, source: 'pricing' \}\)\}/)
+  assert.doesNotMatch(pricing, /暂未开放购买|<dialog|setSelectedPlan/)
+  assert.doesNotMatch(pricing, /fetch\(|createCommercialOrder|createPayment/)
   assert.match(responsive, /@media \(prefers-reduced-motion: reduce\)/)
+})
+
+test('website draft prices match the platform offer source', async () => {
+  const pricing = await read('src/components/PricingPage.tsx')
+  // Read the explicit draft object headers, like the other source contracts.
+  // Missing, duplicate or reformatted offers fail the count check below.
+  const offers = [...pricing.matchAll(/slug: '([^']+)',\s+name: '[^']+',\s+kicker: '[^']+',\s+price: (\d+)/g)]
+  const prices = new Map(offers.map(([, slug, price]) => [slug, Number(price) * 100]))
+  assert.equal(offers.length, prices.size, 'Website offer slugs must be unique')
+  const platformOffers = [...personalPlanOffers, teamPlanOffer]
+  assert.equal(prices.size, 4, 'Check all four website package prices')
+  assert.equal(prices.size, platformOffers.length)
+  for (const offer of platformOffers) {
+    assert.equal(prices.get(offer.slug), offer.price_fen, `Draft price drift for ${offer.slug}`)
+  }
+})
+
+test('login landing page retains invitation context without retired pricing', async () => {
+  const login = await read('src/components/LoginPage.tsx')
+  assert.doesNotMatch(login, /CatsCo Free|CatsCo Pro|CatsCo Max|399|799|planDetails/)
+  assert.match(login, /内测邀请码准入/)
+})
+
+test('workspace purchase links preserve the selected package through authentication', async () => {
+  const { authenticationRedirectPath } = await import('../../webapp/src/utils/auth-routes.js')
+  for (const { slug } of [...personalPlanOffers, teamPlanOffer]) {
+    const search = new URLSearchParams({ open: 'relay', plan: slug, source: 'pricing' }).toString()
+    const loginPath = authenticationRedirectPath({ authenticated: false, location: { pathname: '/', search: `?${search}` } })
+    assert.equal(new URL(loginPath, 'https://app.catsco.cn').pathname, '/login')
+    const resumed = authenticationRedirectPath({ authenticated: true, location: { pathname: '/login', search: new URL(loginPath, 'https://app.catsco.cn').search } })
+    assert.equal(resumed, `/?${search}`)
+  }
+  const workspace = await readFile(new URL('../../webapp/src/views/tinode-web.jsx', import.meta.url), 'utf8')
+  assert.match(workspace, /requestedOpen === 'relay'\) setShowRelayModal\(true\)/)
+  assert.match(workspace, /initialPlanSlug=\{new URLSearchParams\(search\)\.get\('plan'\)/)
 })

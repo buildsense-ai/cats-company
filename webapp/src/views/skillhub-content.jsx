@@ -86,9 +86,9 @@ export default function SkillHubContent(props) {
     onChangeSection: (value) => navigate ? navigate(() => props.onChangeSection(value)) : props.onChangeSection(value),
   };
   const {
-    actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
-    isReadOnly, loadingDefinition, onChangeSection, onToggleUpdates, saving, selectedAgentName,
-    selectedAgentRelation, selectedUpdateCount, selectedUpdateStatus, skillAction, updatesOnly,
+    actionNotice, activeSection, definition, definitionError, isLocalEnabled,
+    loadingDefinition, onToggleUpdates, saving,
+    selectedUpdateCount, selectedUpdateStatus, skillAction, updatesOnly,
   } = props;
   // A friend Bot is metadata-only. Keep this guard in the rendering boundary
   // as well as in the Agent-switch handler so stale UI state can never expose
@@ -108,7 +108,6 @@ export default function SkillHubContent(props) {
           <AgentContext {...guardedProps} />
         </header>
         {definitionError && <div className='cc-skillhub-alert error' role='alert'>{definitionError}</div>}
-        {runtimeRouteError && <div className='cc-skillhub-alert error' role='alert'>{runtimeRouteError}</div>}
         {actionNotice && <div className='cc-skillhub-alert success' role='status'>{actionNotice}</div>}
         {visibleSection === 'custom' ? <CustomSkills {...categorizedProps} /> : (
           <>
@@ -124,10 +123,10 @@ export default function SkillHubContent(props) {
               onLanguageChange={changeLanguage}
             />
             <SkillCategoryFilters value={category} onChange={setCategory} showOther={category === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other')} />
-            {(loadingDefinition || saving) && (
+            {saving && !loadingDefinition && (
               <div className='cc-skillhub-progress' role='status'>
                 <RefreshCw className='is-spinning' size={14} aria-hidden='true' />
-                {loadingDefinition ? `正在更新${selectedAgentName ? ` Agent“${selectedAgentName}”` : '当前 Agent'}的能力…` : skillAction?.type === 'remove' ? '正在移除能力…' : skillAction?.update ? '正在更新能力…' : '正在添加能力…'}
+                {skillAction?.type === 'remove' ? '正在移除能力…' : skillAction?.update ? '正在更新能力…' : '正在添加能力…'}
               </div>
             )}
             {visibleSection === 'added' ? <AddedSkills key={props.selectedBotUID} {...categorizedProps} /> : <Catalogue key={props.selectedBotUID} {...categorizedProps} />}
@@ -1021,8 +1020,10 @@ function CustomSkills(props) {
       )}
       {localNotice && <div className='cc-skillhub-alert success' role='status'>{localNotice}</div>}
       {localSkillsError && <div className='cc-skillhub-alert error' role='alert'>{localSkillsError}</div>}
-      {loadingLocalSkills ? (
+      {loadingDevices || loadingLocalSkills ? (
         <LoadingState kind='skills' label='正在读取工作区能力' copy='正在同步当前 Agent 对应的 XiaoBa 运行工作区。' />
+      ) : runtimeRouteError ? (
+        <EmptyState status icon={<Info size={21} />} title={runtimeRouteError} copy='点击上方“刷新”，重新检查运行环境。' />
       ) : localSkills.length === 0 ? (
         <EmptyState icon={<Wrench size={21} />} title='还没有自定义能力' copy='在 XiaoBa 中创建 Skill 后，回到这里刷新。' />
       ) : <CustomGrid {...props} />}

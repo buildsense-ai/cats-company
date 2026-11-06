@@ -7,12 +7,12 @@ import AddFriend from '../widgets/add-friend';
 import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
-import { ConversationForkMenuItem } from '../widgets/conversation-fork';
 import Avatar from '../widgets/avatar';
 import LoadingState from '../widgets/loading-state';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
+import { isConversationProcessMessage } from '../utils/liquid-conversation';
 import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, TextCursorInput, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, LoaderCircle, Folder, FolderOpen, FolderPlus, ListChecks } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
@@ -26,6 +26,8 @@ const PINNED_GROUPS_STORAGE_PREFIX = 'cc_pinned_groups_v1';
 const PINNED_HISTORY_STORAGE_PREFIX = 'cc_pinned_history_v1';
 const HIDDEN_HISTORY_STORAGE_PREFIX = 'cc_hidden_history_v1';
 const TASK_STATUS_DISMISSED_STORAGE_PREFIX = 'cc_task_status_dismissed_v1';
+// Match the runtime receipt's maximum active lease; silence never implies success.
+const LIVE_TASK_PROGRESS_TTL_MS = 6 * 60 * 60 * 1000;
 const FRIEND_SYNC_STORAGE_PREFIX = 'cc_friend_sync_v1';
 
 export function shouldAutoCollapseSidebarSection({
@@ -356,6 +358,7 @@ export default function ChatListView({
   onOpenSkillHub,
   onOpenCloudArtifacts,
   newTaskRequest = 0,
+  dialogReturnFocusRef,
 }) {
   const feedback = useFeedback();
   const [chats, setChats] = useState([]);
@@ -572,7 +575,8 @@ export default function ChatListView({
   useEffect(() => {
     if (!activeTopic || !pageVisible || document.visibilityState === 'hidden') return;
     const activeChat = chats.find((chat) => chat.id === activeTopic);
-    if (activeChat?.taskStatus) rememberDismissedTaskStatus(activeTopic, activeChat.taskStatus);
+    const status = resolvedSidebarTaskStatus(activeChat);
+    if (status) rememberDismissedTaskStatus(activeTopic, status);
   }, [activeTopic, chats, pageVisible]);
 
   useEffect(() => {
@@ -953,7 +957,7 @@ export default function ChatListView({
       if (msg?._type === 'ws_open') refreshConversations();
       if (msg.data) {
         const topicId = msg.data.topic;
-        const seq = msg.data.seq;
+        const seq = msg.data.seq_id || msg.data.seq;
         const senderUid = numericUid(msg.data.from_uid ?? msg.data.from);
         const currentChat = chatsRef.current.find((chat) => chat.id === topicId);
         const isKnownFriend = currentChat
@@ -975,12 +979,17 @@ export default function ChatListView({
         setChats((prev) => {
           const idx = prev.findIndex((c) => c.id === topicId);
           if (idx !== -1) {
+            const taskProgress = sidebarTaskProgressFromMessage(prev[idx], msg.data, isKnownAgent);
+            if (taskProgress !== prev[idx].taskProgress && taskProgress) {
+              taskStatusVersionsRef.current.set(topicId, (taskStatusVersionsRef.current.get(topicId) || 0) + 1);
+            }
             const updated = {
               ...prev[idx],
+              taskProgress,
               preview: summarizeMessage({ content: msg.data.content }),
               time: formatSidebarTime(Date.now()),
               lastTimeMs: Date.now(),
-              seq,
+              seq: Math.max(Number(prev[idx].seq || 0), Number(seq || 0)),
             };
             return [updated, ...prev.filter((c) => c.id !== topicId)];
           }
@@ -1001,10 +1010,14 @@ export default function ChatListView({
             if (topicId.startsWith('grp_') || topicId.startsWith('p2p_')) loadAll();
             return previous;
           }
-          const currentUpdatedAtMs = taskStatusUpdatedMs(previous[index].taskStatus);
-          if (currentUpdatedAtMs && updatedAtMs < currentUpdatedAtMs) return previous;
+          const currentStatus = previous[index].taskStatus;
+          const taskProgress = settleSidebarTaskProgress(previous[index].taskProgress, msg.task_status_source || taskStatus);
+          const retainCurrentStatus = () => taskProgress === previous[index].taskProgress ? previous
+            : previous.map((chat, itemIndex) => itemIndex === index ? { ...chat, taskProgress } : chat);
+          if (taskStatusUpdatedMs(currentStatus) && taskStatusUpdatedMs(taskStatus)
+            && compareTaskStatusUpdated(taskStatus, currentStatus) < 0) return retainCurrentStatus();
           if (isSameTaskRun(previous[index].taskStatus, taskStatus)
-            && isDismissibleTaskStatus(previous[index].taskStatus) && !isDismissibleTaskStatus(taskStatus)) return previous;
+            && isDismissibleTaskStatus(previous[index].taskStatus) && !isDismissibleTaskStatus(taskStatus)) return retainCurrentStatus();
 
           // Rejected/replayed events must not invalidate a newer REST result.
           taskStatusVersionsRef.current.set(topicId, (taskStatusVersionsRef.current.get(topicId) || 0) + 1);
@@ -1012,6 +1025,7 @@ export default function ChatListView({
           const updated = {
             ...previous[index],
             taskStatus,
+            taskProgress,
             time: formatSidebarTime(updatedAtMs),
             lastTimeMs: Math.max(updatedAtMs, previous[index].lastTimeMs || 0),
           };
@@ -2507,20 +2521,8 @@ export default function ChatListView({
     );
   };
 
-  const renderConversationForkMenuItem = (chat) => {
-    // Sidebar summaries determine discoverability; the server verifies exact
-    // membership and existing Agent access again inside the copy transaction.
-    const candidate = chat.isGroup
-      ? chat.memberCount === 2 && (chat.hasBot || chat.isAgentTask)
-      : chat.isBot;
-    if (!candidate) return null;
-    return <ConversationForkMenuItem key={`${user.uid}:${chat.id}`} topic={chat.id}
-      userId={user.uid} name={chat.name} onActivateTopic={value => {
-        setOpenChatMenuKey('');
-        onSelectTopic(value);
-      }} />;
-  };
-
+  // The sidebar intentionally omits conversation-copy and provenance entries.
+  // Message-level copying and its shared status/API handling remain available.
   const renderTaskCopy = (chat, fallback = null, kindLabel = '') => (
     <div className="cc-chat-row-copy">
       {editingHistoryTopicId === chat.id ? (
@@ -2580,9 +2582,9 @@ export default function ChatListView({
   };
 
   const taskStatusForDisplay = (chat) => (
-    pageVisible && activeTopic === chat.id && normalizeTaskStatus(chat.taskStatus)?.state === 'completed'
+    pageVisible && activeTopic === chat.id && resolvedSidebarTaskStatus(chat)?.state === 'completed'
       ? null
-      : visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)
+      : visibleTaskStatus(resolvedSidebarTaskStatus(chat), dismissedTaskStatuses, chat.id)
   );
 
   const renderTaskSelectionControl = (chat) => {
@@ -2695,7 +2697,6 @@ export default function ChatListView({
               <TextCursorInput size={14} aria-hidden="true" />
               <span>修改任务名称</span>
             </button>
-            {renderConversationForkMenuItem(chat)}
             <button
               type="button"
               role="menuitem"
@@ -2848,7 +2849,6 @@ export default function ChatListView({
                 <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
                 <span>{isPinned ? '取消置顶群聊' : '置顶群聊'}</span>
               </button>
-              {renderConversationForkMenuItem(chat)}
               {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
                 <Smartphone size={14} />
@@ -3011,7 +3011,6 @@ export default function ChatListView({
                 <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
                 <span>{isPinned ? '取消置顶群组' : '置顶群组'}</span>
               </button>
-              {renderConversationForkMenuItem(chat)}
               {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
                 <Smartphone size={14} />
@@ -4152,11 +4151,12 @@ export default function ChatListView({
         document.body,
       )}
       {showAddFriend && createPortal(
-        <AddFriend currentUser={user} initialFocus={addFriendInitialFocus} onClose={() => setShowAddFriend(false)} onSent={() => loadAll()} />,
+        <AddFriend currentUser={user} returnFocusRef={dialogReturnFocusRef} initialFocus={addFriendInitialFocus} onClose={() => setShowAddFriend(false)} onSent={() => loadAll()} />,
         document.body,
       )}
       {showAgentStore && createPortal(
         <AgentStoreModal
+          returnFocusRef={dialogReturnFocusRef}
           initialAgentId={agentStoreInitialAgentId}
           initialCloudWorker={agentStoreInitialCloudWorker}
           onOpenAgentChat={(agent) => {
@@ -4310,7 +4310,10 @@ function removeSetValue(previous, value) {
 
 function useUnexpiredTaskStatus(status) {
   const expiresAtMs = taskStatusExpiresMs(status);
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [, setNowMs] = useState(() => Date.now());
+  // Re-evaluate on every render: a renewed lease can arrive after the previous
+  // lease's timer fired, and an already-expired replacement schedules no timer.
+  const nowMs = Date.now();
 
   useEffect(() => {
     if (!expiresAtMs || expiresAtMs <= Date.now()) return undefined;
@@ -4427,6 +4430,63 @@ function normalizeTaskStatus(status) {
   };
 }
 
+function sidebarTaskProgressFromMessage(chat, message, knownAgent) {
+  const previous = chat.taskProgress || null;
+  const sender = numericUid(message.from_uid ?? message.from);
+  const statusSender = numericUid(chat.taskStatus?.source_uid);
+  if (!sender || (!knownAgent && !(chat.isBot && sender === numericUid(chat.friendId)) && sender !== statusSender)) return previous;
+  const seq = Number(message.seq_id || message.seq || 0);
+  if (seq && seq <= Number(chat.seq || 0)) return previous;
+  // Arrival order is not execution order: only timestamped, new live progress
+  // can contradict a completion. History and delayed tool results cannot.
+  const timestamp = message.created_at || message.ts;
+  const timeMs = toTimeMs(timestamp);
+  if (!timeMs) return previous;
+  let content = message.content;
+  if (typeof content === 'string' && content.trim().startsWith('{')) {
+    try { content = JSON.parse(content); } catch { /* Plain text is not progress. */ }
+  }
+  let blocks = message.content_blocks || (Array.isArray(content) ? content : content?.content_blocks || content?.contentBlocks);
+  if (typeof blocks === 'string') {
+    try { blocks = JSON.parse(blocks); } catch { blocks = []; }
+  }
+  // A late final tool result alone is not proof of another execution step.
+  // Results may extend observed work, but only thinking/tool calls start it.
+  const workingTypes = previous || ['running', 'waiting'].includes(chat.taskStatus?.state)
+    ? ['thinking', 'tool_use', 'tool_result'] : ['thinking', 'tool_use'];
+  const isProgress = [message.type, message.msg_type, content?.type].some(type => workingTypes.includes(type))
+    || (Array.isArray(blocks) && blocks.some(block => workingTypes.includes(block?.type)))
+    || isConversationProcessMessage({ ...message, content_blocks: blocks })
+    || (typeof content === 'string' && content.trim().startsWith('AI文本:'));
+  if (!isProgress) return previous;
+  const progress = {
+    topic_id: chat.id, source_uid: sender,
+    run_id: String(message.metadata?.run_id || message.metadata?.runId || ''),
+    state: 'running', updated_at: typeof timestamp === 'string' ? timestamp : new Date(timeMs).toISOString(),
+    expires_at: new Date(timeMs + LIVE_TASK_PROGRESS_TTL_MS).toISOString(),
+  };
+  if (previous && compareTaskStatusUpdated(progress, previous) <= 0) return previous;
+  if (isDismissibleTaskStatus(chat.taskStatus) && compareTaskStatusUpdated(progress, chat.taskStatus) <= 0) return previous;
+  return progress;
+}
+
+function settleSidebarTaskProgress(progress, receipt) {
+  if (!progress || !isDismissibleTaskStatus(receipt)) return progress;
+  if (receipt.topic_id && receipt.topic_id !== progress.topic_id) return progress;
+  if (numericUid(receipt.source_uid) !== numericUid(progress.source_uid)) return progress;
+  if (receipt.run_id && progress.run_id && String(receipt.run_id) !== progress.run_id) return progress;
+  return compareTaskStatusUpdated(receipt, progress) >= 0 ? null : progress;
+}
+
+function resolvedSidebarTaskStatus(chat) {
+  const status = normalizeTaskStatus(chat?.taskStatus);
+  if (['running', 'waiting'].includes(status?.state)
+    && compareTaskStatusUpdated(status, chat?.taskProgress) >= 0) return status;
+  // Keep transport receipts intact; newer execution evidence only changes the
+  // displayed state until a matching terminal receipt confirms it has ended.
+  return settleSidebarTaskProgress(chat?.taskProgress, status) || status;
+}
+
 function isDismissibleTaskStatus(status) {
   return ['completed', 'failed', 'cancelled', 'stale'].includes(normalizeTaskStatus(status)?.state);
 }
@@ -4479,12 +4539,21 @@ function reconcileConversationTaskStatuses(incoming, previous, requestedVersions
     // including when the response contains no task status at all.
     const receivedLiveUpdate = (currentVersions.get(chat.id) || 0) !== (requestedVersions?.get(chat.id) || 0);
     const sameRun = isSameTaskRun(current.taskStatus, chat.taskStatus);
-    const olderStatus = sameRun && taskStatusUpdatedMs(chat.taskStatus) < taskStatusUpdatedMs(current.taskStatus);
+    // These are topic aggregate revisions, including when the selected run
+    // changes. A stale snapshot from another run must not replace live work.
+    const olderStatus = chat.taskStatus && current.taskStatus
+      && compareTaskStatusUpdated(chat.taskStatus, current.taskStatus) < 0;
     const reopensFinishedRun = sameRun && isDismissibleTaskStatus(current.taskStatus) && !isDismissibleTaskStatus(chat.taskStatus);
-    if (!receivedLiveUpdate && !olderStatus && !reopensFinishedRun) return chat;
+    if (!receivedLiveUpdate && !olderStatus && !reopensFinishedRun) return {
+      ...chat,
+      seq: Math.max(Number(chat.seq || 0), Number(current.seq || 0)),
+      taskProgress: settleSidebarTaskProgress(current.taskProgress, chat.taskStatus),
+    };
     return {
       ...chat,
       taskStatus: current.taskStatus,
+      taskProgress: current.taskProgress,
+      seq: Math.max(Number(chat.seq || 0), Number(current.seq || 0)),
       lastTimeMs: Math.max(chat.lastTimeMs || 0, current.lastTimeMs || 0),
     };
   });
@@ -4492,6 +4561,16 @@ function reconcileConversationTaskStatuses(incoming, previous, requestedVersions
 
 function taskStatusUpdatedMs(status) {
   return toTimeMs(status?.updated_at || status?.updatedAt);
+}
+
+function compareTaskStatusUpdated(left, right) {
+  const milliseconds = taskStatusUpdatedMs(left) - taskStatusUpdatedMs(right);
+  if (milliseconds) return milliseconds;
+  // PostgreSQL aggregate revisions can differ by a microsecond. Date parsing
+  // truncates those digits, which otherwise lets an older terminal event win.
+  const fraction = (status) => String(status?.updated_at || status?.updatedAt || '')
+    .match(/\.(\d+)(?:Z|[+-]\d{2}:?\d{2})$/i)?.[1]?.slice(3, 9).padEnd(6, '0') || '000000';
+  return fraction(left).localeCompare(fraction(right));
 }
 
 function taskStatusExpiresMs(status) {

@@ -77,6 +77,33 @@ func (a *Adapter) GetServiceAgentBySlug(ctx context.Context, slug string) (int64
 	return id, name, version, threshold, nil
 }
 
+// GetServiceAgentAccess 取当前归属、可见性与 definition（调用准入用）。
+//
+// 为什么要单独一条查询：工具闭包里的 descriptor 是建立 MCP 会话时的快照，
+// 用快照判定可见性会让「改成自用」对已连接的调用方失效。definition 一并返回，
+// 是为了让「分享给好友」按**当前**执行 bot 求值（改派之后该算新 bot 的好友）。
+func (a *Adapter) GetServiceAgentAccess(ctx context.Context, slug string) (int64, string, json.RawMessage, error) {
+	var (
+		ownerUID   int64
+		visibility string
+		definition []byte
+	)
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COALESCE(a.owner_uid, 0), COALESCE(a.visibility, ''), COALESCE(v.definition_json::text, '{}')
+		FROM service_agents a
+		JOIN service_agent_versions v ON v.agent_id = a.id
+		WHERE a.slug = $1 AND a.state = 'active'
+		ORDER BY v.version DESC
+		LIMIT 1`, slug).Scan(&ownerUID, &visibility, &definition)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", nil, store.ErrServiceAgentNotFound
+	}
+	if err != nil {
+		return 0, "", nil, fmt.Errorf("get service agent access: %w", err)
+	}
+	return ownerUID, visibility, json.RawMessage(definition), nil
+}
+
 func (a *Adapter) CreateServiceSession(ctx context.Context, agentID, definitionRev, callerUID, callerBotUID int64, assetsHash string) (string, error) {
 	sessionID, err := newServiceEntityID("sess_")
 	if err != nil {
@@ -116,6 +143,48 @@ func (a *Adapter) GetServiceRun(ctx context.Context, runID string) (store.Servic
 		return store.ServiceRun{}, fmt.Errorf("get service run: %w", err)
 	}
 	return run, nil
+}
+
+// CountActiveServiceRunsForAgent 数同一个应用还有几单在跑（bot 并发闸用）。
+//
+// 只走 runs → sessions 两张表：agent_id 在 sessions 上，runs 上有 session_id 外键，
+// 不需要碰 definition 的 JSON。excludeRunID 排除自己 —— 调用方已经把这一单抢下来了，
+// 它当然算在「在跑」里。
+//
+// state 用 IN ('submitted','running')：submitted 是「已受理、还没被谁抢」，同样占着并发的位。
+func (a *Adapter) CountActiveServiceRunsForAgent(ctx context.Context, agentID int64, excludeRunID string) (int, error) {
+	var n int
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM service_runs r
+		JOIN service_sessions s ON s.session_id = r.session_id
+		WHERE s.agent_id = $1
+		  AND r.state = 'running'
+		  AND r.run_id <> $2`, agentID, excludeRunID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active service runs for agent: %w", err)
+	}
+	return n, nil
+}
+
+// CountActiveServiceRunsForAgentCaller 数「同一个调用方」在这个应用上还有几单在跑。
+//
+// 与上面那个只差一个 caller 条件：sessions.caller_uid 是「谁发起的」。一个应用被
+// 多方共用时，16 个总名额不该被先到的那一方全吃 —— 那是「工具忙」而不是「你忙」。
+func (a *Adapter) CountActiveServiceRunsForAgentCaller(ctx context.Context, agentID, callerUID int64, excludeRunID string) (int, error) {
+	var n int
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM service_runs r
+		JOIN service_sessions s ON s.session_id = r.session_id
+		WHERE s.agent_id = $1
+		  AND s.caller_uid = $2
+		  AND r.state = 'running'
+		  AND r.run_id <> $3`, agentID, callerUID, excludeRunID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count active service runs for agent caller: %w", err)
+	}
+	return n, nil
 }
 
 func (a *Adapter) CreateServiceRunIdempotent(ctx context.Context, sessionID, clientToken string, input json.RawMessage) (store.ServiceRun, bool, error) {
@@ -251,39 +320,41 @@ func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 只有「外部执行」类型的 run 允许被 worker 认领。
+	//
+	// bot / http / mcp 是平台侧自己执行的（service_agents_bot_runner.go、service_agents_external.go）：
+	// bot 型在 tools/call 里就已经返回句柄并由平台派活，http/mcp 由平台反调对端。
+	// 一旦被 worker 抢走，run 会落到一个没有 runner.command 的执行器上，最终以 no_command 失败，
+	// 而真正的执行方（平台）再也等不到它 —— 所以必须在 SQL 层面挡住。
+	//
+	// 取的是会话钉定版本（service_sessions.definition_rev）里的 runner.type，与派活时看到的一致；
+	// 版本行缺失时按 codex 兜底，保持历史行为。
+	const claimableRunnerPredicate = `COALESCE(v.definition_json->'runner'->>'type', 'codex') IN ('codex','worker')`
 	query := `
-		SELECT r.run_id FROM service_runs r
-		WHERE r.state IN ('submitted','orphaned')
-		ORDER BY r.created_at
-		FOR UPDATE SKIP LOCKED
-		LIMIT $1`
-	args := []any{limit}
-	if ownerUID > 0 {
-		// per-user 凭据：只领自己名下应用的 run（平台 internal 应用不在此列）。
-		query = `
-			SELECT r.run_id
-			FROM service_runs r
-			JOIN service_sessions s ON s.session_id = r.session_id
-			JOIN service_agents a ON a.id = s.agent_id
-			WHERE r.state IN ('submitted','orphaned')
-			  AND a.owner_kind = 'user' AND a.owner_uid = $2
-			ORDER BY r.created_at
-			FOR UPDATE SKIP LOCKED
-			LIMIT $1`
-		args = append(args, ownerUID)
-	} else if len(slugs) > 0 {
-		// 按 agent slug 过滤：join 会话 → 应用；worker 只领自己声明的应用。
-		query = `
 		SELECT r.run_id
 		FROM service_runs r
 		JOIN service_sessions s ON s.session_id = r.session_id
 		JOIN service_agents a ON a.id = s.agent_id
-		WHERE r.state IN ('submitted','orphaned') AND a.slug = ANY($2)
-		ORDER BY r.created_at
-		FOR UPDATE SKIP LOCKED
-		LIMIT $1`
+		LEFT JOIN service_agent_versions v ON v.agent_id = s.agent_id AND v.version = s.definition_rev
+		WHERE r.state IN ('submitted','orphaned')
+		  AND ` + claimableRunnerPredicate
+	args := []any{limit}
+	if ownerUID > 0 {
+		// per-user 凭据：只领自己名下应用的 run（平台 internal 应用不在此列）。
+		query += `
+		  AND a.owner_kind = 'user' AND a.owner_uid = $2`
+		args = append(args, ownerUID)
+	} else if len(slugs) > 0 {
+		// 按 agent slug 过滤：join 会话 → 应用；worker 只领自己声明的应用。
+		query += `
+		  AND a.slug = ANY($2)`
 		args = append(args, slugs)
 	}
+	// 锁只加在 service_runs 上：JOIN 进来的会话/应用/版本行不该被认领锁住。
+	query += `
+		ORDER BY r.created_at
+		FOR UPDATE OF r SKIP LOCKED
+		LIMIT $1`
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("select claimable service runs: %w", err)
@@ -351,7 +422,7 @@ func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit
 
 func (a *Adapter) RenewServiceLease(ctx context.Context, runID, instanceID string) (bool, error) {
 	res, err := a.db.ExecContext(ctx, `
-		UPDATE service_runs SET lease_expires_at = now() + interval '30 seconds'
+		UPDATE service_runs SET lease_expires_at = now() + interval '120 seconds'
 		WHERE run_id = $1 AND state = 'running' AND instance_id = $2`, runID, instanceID)
 	if err != nil {
 		return false, fmt.Errorf("renew service lease: %w", err)
@@ -596,7 +667,10 @@ func (a *Adapter) FailServiceRun(ctx context.Context, runID, errorText string, r
 	if err != nil {
 		return fmt.Errorf("lock service run for fail: %w", err)
 	}
-	if state != "running" {
+	// running 之外还接受 submitted：准入闸排在占位之前，被闸拒掉的那一单还没人领，
+	// 没有执行方会跟它抢，直接落终态才是如实的（否则它会一直 submitted，被 reaper
+	// 两分钟后当成「没人领」收走，调用方看到的是 orphaned 而不是可重试的失败）。
+	if state != "running" && state != "submitted" {
 		// 宽容处理（幂等）：已终态/已接管 → 无操作。
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit failed service run noop: %w", err)
@@ -632,14 +706,28 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// ① 租约过期的 running：尝试接管，次数耗尽转终态失败。
+	// ① 租约过期的 running：可被认领的执行方（codex/worker）继续「接管」，次数耗尽转终态失败。
+	//
+	//    bot 型 run 例外：没有人能接管它（claim 只认 codex/worker），attempts 永远不会增长，
+	//    留在 orphaned 就是永久悬挂——调用方轮询一辈子也等不到结论。所以直接判终态失败，
+	//    并给出明确原因；重试会开一个新的 bot 会话，可以安全重来。
 	rows, err := tx.QueryContext(ctx, `
-		UPDATE service_runs SET
-			state = CASE WHEN attempts >= 3 THEN 'failed' ELSE 'orphaned' END,
-			error_text = CASE WHEN attempts >= 3 THEN 'lease_expired_attempts' ELSE error_text END,
+		UPDATE service_runs r SET
+			state = CASE
+				WHEN COALESCE(v.definition_json->'runner'->>'type', 'codex') = 'bot' THEN 'failed'
+				WHEN r.attempts >= 3 THEN 'failed'
+				ELSE 'orphaned' END,
+			error_text = CASE
+				WHEN COALESCE(v.definition_json->'runner'->>'type', 'codex') = 'bot' THEN 'bot_runner_lost'
+				WHEN r.attempts >= 3 THEN 'lease_expired_attempts'
+				ELSE r.error_text END,
 			instance_id = ''
-		WHERE state = 'running' AND lease_expires_at < now()
-		RETURNING run_id, session_id, state`)
+		FROM service_sessions s
+		JOIN service_agents a ON a.id = s.agent_id
+		LEFT JOIN service_agent_versions v ON v.agent_id = s.agent_id AND v.version = s.definition_rev
+		WHERE r.session_id = s.session_id
+		  AND r.state = 'running' AND r.lease_expires_at < now()
+		RETURNING r.run_id, r.session_id, r.state, COALESCE(r.error_text, '')`)
 	if err != nil {
 		return 0, fmt.Errorf("reap service runs: %w", err)
 	}
@@ -647,11 +735,12 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 		runID     string
 		sessionID string
 		state     string
+		errorText string
 	}
 	var reaped []reapedRun
 	for rows.Next() {
 		var r reapedRun
-		if err := rows.Scan(&r.runID, &r.sessionID, &r.state); err != nil {
+		if err := rows.Scan(&r.runID, &r.sessionID, &r.state, &r.errorText); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan reaped service run: %w", err)
 		}
@@ -666,8 +755,8 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 		if r.state != "failed" {
 			continue
 		}
-		// 接管次数耗尽 → 终态失败：回执入箱（与 orphaned 中间态区分）。
-		if err := insertServiceRunReceiptTx(ctx, tx, r.runID, r.sessionID, "failed", "", "lease_expired_attempts"); err != nil {
+		// 终态失败：回执入箱（与 orphaned 中间态区分）。
+		if err := insertServiceRunReceiptTx(ctx, tx, r.runID, r.sessionID, "failed", "", r.errorText); err != nil {
 			return 0, err
 		}
 	}

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDownUp, BookOpen, CloudOff, LoaderCircle, RotateCcw, Search, X } from 'lucide-react';
 import { api, connectWS, disconnectWS, requestSkillHubDeviceTool } from '../api';
+import LoadingState from '../widgets/loading-state';
 import './knowledge-wiki-view.css';
 
 // Mirror the entry-gate normalization from utils/auth-routes so the router and
@@ -214,14 +215,14 @@ export default function KnowledgeWikiView({ location = window.location } = {}) {
     [data.items, sortDesc],
   );
   return (
-    <main className="cc-knowledge-wiki" aria-busy={state.status === 'loading'}>
+    <main className="cc-knowledge-wiki" data-loading-region="" aria-busy={state.status === 'loading'}>
       <header className="cc-knowledge-wiki-header">
         <div className="cc-knowledge-wiki-title">
           <BookOpen size={22} aria-hidden="true" />
           <div><h1>{data.agent_name || '知识库 Wiki'}</h1><span>只读查看 · Agent {agentUid || '未知'}</span></div>
         </div>
       </header>
-      {state.status === 'loading' && <div className="cc-knowledge-wiki-state"><LoaderCircle className="spin" size={22} aria-hidden="true" /> 正在读取知识库目录…</div>}
+      {state.status === 'loading' && <div className="cc-knowledge-wiki-state"><LoadingState kind="document" label="正在读取知识库目录" /></div>}
       {state.status === 'error' && <div className="cc-knowledge-wiki-state error"><CloudOff size={22} aria-hidden="true" /><div><strong>当前无法读取最新知识</strong><p>{state.error}</p><small>不会用空列表代替离线或无权限状态。</small></div></div>}
       {state.status === 'ready' && (
         <section className="cc-knowledge-wiki-content" aria-label="知识库概览">

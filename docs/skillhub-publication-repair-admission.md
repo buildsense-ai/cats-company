@@ -1,7 +1,8 @@
 # Human publication repair admission
 
 This adds trustworthy admission to the existing three-round repair ledger. It is
-not an execution endpoint, and the browser handoff has not been wired to it yet.
+not an execution endpoint. The linked repair-conversation browser handoff below
+now consumes its safe read and explicit registration contracts.
 No model, candidate write, ordinary file/shell/Skill tool, system prompt or
 publication authorization changes in this step.
 
@@ -69,12 +70,69 @@ Admission alone does not approve a description, make a format issue automatic,
 spend a round, start a worker, call a paid model or publish anything.
 [Exact human draft confirmation](skillhub-publication-description-confirmation.md)
 is separately retained; it still does not execute or resume a repair. Restricted
-execution with durable model-call reconciliation and browser/original-chat
-continuation remain subsequent work. The runtime must
+execution and browser/original-chat continuation remain subsequent work. The
+internal [model-call journal](skillhub-publication-repair-model-call.md) retains
+one immutable dispatch fence and optional private text result per round, but
+does not register or invoke an executor/provider. The runtime must
 still recheck the precise retained source before any repair; this API's stored
 report is not permission to read or edit live files.
 
 ## Verification
+
+### Linked repair-conversation registration
+
+The existing same-Bot repair-conversation report dialog can explicitly register
+that conversation with this ledger. It first reads schema-v1 capabilities and
+requires `repairTaskAdmissionUiEnabled: true`, independently default-off via
+`CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_UI_ENABLED`. Discovery also requires
+reads, human-commit and repair-admission gates plus entry, repair, commit-context
+and commit-store adapters. This capability is only discovery; it does not replace
+the human endpoint's independent gates, peer readiness or live authority checks.
+Production configuration is unchanged. No executor, task event or model call is
+registered by enabling this UI.
+
+The conversation panel checks group ID/kind/owner and exactly the original human
+and one original Bot before handing disposable Bot/topic references to the
+shared report dialog. The server remains authoritative: references, membership
+read by the browser and displayed reports grant no repair or file access. The
+workspace report without an already-linked conversation shows no registration
+section and issues no repair-task request; its existing new-conversation action
+is unchanged. The browser never creates/disbands a group as part of registration.
+
+After explicit capability opt-in, GET recovers the safe retained task. Only the
+exact `404 publication.repair_not_found` permits showing a registration button;
+generic 404, authority errors and transport/shape failures remain uncertain.
+The button sends only schemaVersion/topicId to the existing POST after a human
+click, with a synchronous double-click latch. No candidate/report/issue digests,
+text, worker ID, lease or generic automatic-repair assertion is submitted.
+
+Strict projection binds entry/Bot and validates task/topic identifiers, allowed
+ledger states, coherent 0..3 spent rounds and the exact three-round limit with
+`automaticRepairEnabled:false`. Existing tasks preserve their task ID, state and
+spent rounds. A task retained for another conversation is shown as already bound;
+there is no rebind, reset or additional POST action. A POST replay can return an
+existing task with spent rounds; the UI does not treat this as a fresh zero-round
+task. A passed validation checkpoint is not publication success; a running ledger
+checkpoint is not proof that an executor is still alive.
+
+Uncertain POST results expose only explicit GET recovery, never automatic retry,
+fallback or replacement task creation. A lost committed reply can therefore
+recover the same task without resetting the budget. Errors use static text, not
+raw upstream details. No polling or new browser persistence is added. GET plus
+capability/JSON consumption has a 15-second deadline and seven-second header
+timeouts; explicit POST has a 60-second header and 65-second whole-JSON deadline,
+allowing the existing handler's 55-second Cloud-report budget. Auth, entry, Bot,
+topic changes and unmount abort/discard late responses. Browser cancellation
+does not promise to undo a committed server-side registration; GET is recovery.
+
+Unit tests cover all discovery-gate combinations, strict scope/state projection,
+explicit click/double-click, lost-response GET recovery, existing rounds, other
+topic binding, errors, deadlines and lifecycle races. Integration with the real
+report-dialog and conversation panel preserves the original rejection report.
+Local Chromium checks load real dialog/CSS with synthetic ports and block real
+API/model requests. They are not production or paid-model E2E acceptance. The
+existing mandatory JWT/HTTPS/PostgreSQL contract below verifies actual admission
+commit, response loss, reconstruction and zero-round recovery.
 
 Unit tests cover human authentication, strict request decoding, default-off and
 unsupported stores, rate/concurrency limits, private projection, report binding,

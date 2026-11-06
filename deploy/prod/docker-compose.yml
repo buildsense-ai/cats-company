@@ -10,6 +10,11 @@ services:
       OC_DB_CONN_MAX_LIFETIME: "${OC_DB_CONN_MAX_LIFETIME:-}"
       OC_DB_CONN_MAX_IDLE_TIME: "${OC_DB_CONN_MAX_IDLE_TIME:-}"
       OC_RUNTIME_STORE: "${OC_RUNTIME_STORE:-}"
+      OC_RUNTIME_REQUIRE_DURABLE: "${OC_RUNTIME_REQUIRE_DURABLE:-false}"
+      OC_DEVICE_AUTH_STORE: "${OC_DEVICE_AUTH_STORE:-}"
+      OC_DEVICE_AUTH_REQUIRE_DURABLE: "${OC_DEVICE_AUTH_REQUIRE_DURABLE:-false}"
+      OC_DEVICE_AUTH_REDIS_URL: "${OC_DEVICE_AUTH_REDIS_URL:-}"
+      OC_DEVICE_AUTH_REDIS_KEY_PREFIX: "${OC_DEVICE_AUTH_REDIS_KEY_PREFIX:-}"
       OC_REDIS_URL: "${OC_REDIS_URL:-}"
       OC_REDIS_KEY_PREFIX: "${OC_REDIS_KEY_PREFIX:-}"
       CATSCO_NODE_ID: "${CATSCO_NODE_ID:-}"
@@ -29,6 +34,9 @@ services:
       # Comma-separated human usernames allowed to use the protected admin API.
       # Keep the real value only in the server-side prod.env.
       OC_ADMIN_USERNAMES: "${OC_ADMIN_USERNAMES:-}"
+      # 共享集群控制面：管理员面板用它拼「进租户容器」的命令。
+      # 只是拓扑提示，不参与鉴权；留空则面板不生成该命令。
+      PACKED_CONTROL_PLANE: "${PACKED_CONTROL_PLANE:-}"
       CATSCO_STT_ENABLED: "${CATSCO_STT_ENABLED:-0}"
       CATSCO_STT_PROVIDER: "${CATSCO_STT_PROVIDER:-volcengine-doubao-streaming-v2}"
       CATSCO_STT_TICKET_TTL_SECONDS: "${CATSCO_STT_TICKET_TTL_SECONDS:-45}"
@@ -46,6 +54,10 @@ services:
       VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-}"
       VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
       VAPID_SUBJECT: "${VAPID_SUBJECT:-}"
+      APNS_TEAM_ID: "${APNS_TEAM_ID:-}"
+      APNS_KEY_ID: "${APNS_KEY_ID:-}"
+      APNS_BUNDLE_ID: "${APNS_BUNDLE_ID:-cc.catsco.ios}"
+      APNS_KEY_FILE: "${APNS_KEY_FILE:-}"
       CATSCO_PUSH_RELAY_URL: "${CATSCO_PUSH_RELAY_URL:-}"
       CATSCO_PUSH_RELAY_TOKEN: "${CATSCO_PUSH_RELAY_TOKEN:-}"
       CATSCO_DEVICE_CONNECTOR_VERSION: "${CATSCO_DEVICE_CONNECTOR_VERSION:-}"
@@ -201,6 +213,7 @@ services:
       CATSCO_WORKER_DESTROY_SCRIPT: "${CATSCO_WORKER_DESTROY_SCRIPT:-}"
       CATSCO_WORKER_RESET_SCRIPT: "${CATSCO_WORKER_RESET_SCRIPT:-}"
       CATSCO_WORKER_RENEW_SCRIPT: "${CATSCO_WORKER_RENEW_SCRIPT:-}"
+      CATSCO_WORKER_CHANGE_PLAN_SCRIPT: "${CATSCO_WORKER_CHANGE_PLAN_SCRIPT:-}"
       CATSCO_WORKER_UPDATE_SCRIPT: "${CATSCO_WORKER_UPDATE_SCRIPT:-}"
       CATSCO_WORKER_UPDATER_SCRIPT: "${CATSCO_WORKER_UPDATER_SCRIPT:-}"
       CATSCO_WORKER_ROLLBACK_SCRIPT: "${CATSCO_WORKER_ROLLBACK_SCRIPT:-}"
@@ -270,6 +283,15 @@ services:
       CATS_ALIPAY_RETURN_URL: "${CATS_ALIPAY_RETURN_URL:-}"
       APP_ENV: production
       TZ: Asia/Shanghai
+      # Cap the Go heap so a runaway live set degrades into GC pressure (and, at
+      # the container limit below, a bounded restart) instead of a host-wide OOM
+      # kill. 2026-11-01: anon-rss reached 5.2GB on this 7.5GB host and the
+      # kernel killed the process, which drops every websocket on the box.
+      GOMEMLIMIT: "${PROD_SERVER_GOMEMLIMIT:-3GiB}"
+      # Off by default. Set to 127.0.0.1:6063 to expose /debug/pprof on the
+      # container's loopback; no host port is published, so read it with
+      # `docker exec ... wget -qO- http://127.0.0.1:6063/debug/pprof/heap`.
+      CATS_DIAGNOSTICS_ADDR: "${CATS_DIAGNOSTICS_ADDR:-}"
     ports:
       - "${PROD_API_BIND_HOST:-127.0.0.1}:${PROD_API_HOST_PORT:-26061}:6061"
       - "${PROD_GRPC_BIND_HOST:-127.0.0.1}:${PROD_GRPC_HOST_PORT:-26062}:6062"
@@ -287,6 +309,13 @@ services:
       - "${PROD_STACK_ROOT}/data/catsco-worker:${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Hard ceiling for the container: above the observed steady state (~2.8GB
+    # after half a day of traffic) so normal load never touches it, low enough
+    # that one runaway instance restarts itself instead of starving the host.
+    deploy:
+      resources:
+        limits:
+          memory: "${PROD_SERVER_MEMORY:-4g}"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:6061/health"]
       # Poll fast while the process boots: the default 15s cadence made a
@@ -399,6 +428,23 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+    networks:
+      - prodnet
+
+  # Opt-in only. This is not a cache: preserve the bind mount across rollouts.
+  # No host port; only trusted services on prodnet may access it.
+  runtime-redis:
+    image: redis:7.4-alpine
+    profiles: ["runtime-redis"]
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - "${PROD_RUNTIME_REDIS_ROOT:-/srv/catscompany-prod/data/runtime-redis}:/data"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
     networks:
       - prodnet
 

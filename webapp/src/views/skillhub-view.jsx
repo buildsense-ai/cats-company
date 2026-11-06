@@ -1481,13 +1481,13 @@ export default function SkillHubView({
         setLocalNotice('');
         setLocalSkillsError('');
         if (route.kind === 'server-upgrade-required') {
-          setRuntimeRouteError('当前 Agent 已在服务器运行，但该服务器 XiaoBa 版本尚不支持远程 SkillHub 工作区。为避免切换本地 XiaoBa，已停止操作；请升级服务器 XiaoBa 后刷新。');
+          setRuntimeRouteError('当前助手的服务器需要升级，暂时无法读取工作区。');
         } else if (route.kind === 'server-offline') {
-          setRuntimeRouteError('当前 Agent 已绑定服务器 Runtime，但服务器暂时离线或正在重连。为避免切换本地 XiaoBa，已停止操作；待服务器恢复后刷新。');
+          setRuntimeRouteError('当前助手的服务器暂未连接。');
         } else if (route.kind === 'binding-unavailable') {
-          setRuntimeRouteError('暂时无法确认当前 Agent 的运行环境绑定。为避免误切换，已停止操作；请稍后刷新。');
+          setRuntimeRouteError('暂时无法确认当前助手的运行环境。');
         } else {
-          setRuntimeRouteError('当前 Agent 已绑定其他 XiaoBa Runtime，但该运行环境暂时不可达。为避免改变现有绑定，已停止切换本地 XiaoBa。');
+          setRuntimeRouteError('当前助手的运行环境暂未连接。');
         }
       } else {
         setRuntimeRouteError('');

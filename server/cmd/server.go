@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
@@ -252,11 +253,62 @@ func useRedisRuntime(cfg RuntimeConfig) bool {
 	return store == "redis" || (store == "" && strings.TrimSpace(cfg.RedisURL) != "")
 }
 
+func validateRuntimeConfig(cfg RuntimeConfig) error {
+	store := strings.ToLower(strings.TrimSpace(cfg.Store))
+	if store != "" && store != "memory" && store != "redis" {
+		return fmt.Errorf("unsupported runtime store (expected memory or redis)")
+	}
+	if cfg.RequireDurable && !useRedisRuntime(cfg) {
+		return fmt.Errorf("durable runtime required: configure redis runtime; process-local device grants are lost on restart")
+	}
+	if useRedisRuntime(cfg) && strings.TrimSpace(cfg.RedisURL) == "" {
+		return fmt.Errorf("redis runtime URL is required")
+	}
+	return nil
+}
+
+func runtimeConfigurationWarning(cfg RuntimeConfig) string {
+	if !useRedisRuntime(cfg) && strings.TrimSpace(cfg.RedisURL) != "" {
+		return "explicit memory runtime ignores shared runtime Redis URL; independent device authorization settings are separate"
+	}
+	return ""
+}
+
 func openRedisRuntimeState(ctx context.Context, cfg RuntimeConfig) (*server.RedisRuntimeState, error) {
 	return server.NewRedisRuntimeState(ctx, server.RedisRuntimeOptions{
 		URL:       cfg.RedisURL,
 		KeyPrefix: cfg.RedisKeyPrefix,
 	})
+}
+
+// startDiagnosticsServer exposes the Go runtime profiles on loopback when
+// CATS_DIAGNOSTICS_ADDR is set (for example 127.0.0.1:6063). It stays off by
+// default because these endpoints are unauthenticated: the listener is loopback
+// only and is read with docker exec or an SSH tunnel. Without it a slow heap
+// regression can only be guessed at from RSS (2026-11-01: the process reached
+// anon-rss 5.2GB and the host OOM-killed it with no profile to inspect).
+func startDiagnosticsServer() {
+	addr := strings.TrimSpace(os.Getenv("CATS_DIAGNOSTICS_ADDR"))
+	if addr == "" {
+		return
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	diagnostics := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		log.Printf("diagnostics endpoints listening on %s", addr)
+		if err := diagnostics.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("diagnostics server stopped: %v", err)
+		}
+	}()
 }
 
 func main() {
@@ -274,6 +326,16 @@ func main() {
 	if err := configureJWTSecret(); err != nil {
 		log.Fatal(err)
 	}
+	if err := validateRuntimeConfig(cfg.Runtime); err != nil {
+		log.Fatalf("runtime configuration invalid: %v", err)
+	}
+	if err := validateDeviceAuthorizationConfig(cfg.Runtime, cfg.DeviceAuthorization); err != nil {
+		log.Fatalf("device authorization configuration invalid: %v", err)
+	}
+	if warning := runtimeConfigurationWarning(cfg.Runtime); warning != "" {
+		log.Printf("WARNING: %s", warning)
+	}
+	startDiagnosticsServer()
 
 	// Initialize database
 	db, dbDriver, err := openStore(cfg.Database)
@@ -297,6 +359,7 @@ func main() {
 	rateLimiter := server.NewRateLimiter(server.DefaultRateLimits())
 	httpLimiter := server.NewHTTPRateLimiter()
 	var redisRuntime *server.RedisRuntimeState
+	var deviceAuthorization *server.RedisDeviceAuthorizationStore
 	if useRedisRuntime(cfg.Runtime) {
 		redisRuntime, err = openRedisRuntimeState(context.Background(), cfg.Runtime)
 		if err != nil {
@@ -304,10 +367,30 @@ func main() {
 		}
 		defer redisRuntime.Close()
 		log.Printf("runtime state initialized: mode=redis")
+	} else if useRedisDeviceAuthorization(cfg.DeviceAuthorization) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		deviceAuthorization, err = server.NewRedisDeviceAuthorizationStore(ctx, server.RedisDeviceAuthorizationOptions{
+			URL: cfg.DeviceAuthorization.RedisURL, KeyPrefix: cfg.DeviceAuthorization.RedisKeyPrefix,
+		})
+		cancel()
+		if err != nil {
+			log.Fatalf("device authorization initialization failed: %v", err)
+		}
+		defer deviceAuthorization.Close()
+		log.Printf("runtime state initialized: mode=memory; device_authorization=redis (grants and revocations only)")
+	} else {
+		log.Printf("WARNING: runtime state initialized: mode=memory; device_authorization=memory; active device grants and logout watermarks will not survive a server restart")
 	}
-	hub := server.NewHub(db, rateLimiter)
+	var hub *server.Hub
 	if redisRuntime != nil {
 		hub = server.NewHubWithRuntime(db, rateLimiter, redisRuntime, envString("CATSCO_NODE_ID"))
+	} else if deviceAuthorization != nil {
+		hub, err = server.NewHubWithDeviceAuthorization(db, rateLimiter, deviceAuthorization)
+		if err != nil {
+			log.Fatalf("device authorization hub initialization failed: %v", err)
+		}
+	} else {
+		hub = server.NewHub(db, rateLimiter)
 	}
 	go hub.Run()
 	publicationCtx, stopPublicationDelivery := context.WithCancel(context.Background())
@@ -319,6 +402,8 @@ func main() {
 	defer stopUploadDispatch()
 	stopCommitDispatch := server.StartSkillHubPublicationCommitDispatch(publicationCtx, db)
 	defer stopCommitDispatch()
+	stopDescriptionReconcile := server.StartSkillHubPublicationDescriptionReconcile(publicationCtx, db)
+	defer stopDescriptionReconcile()
 
 	server.SetBotStats(hub.BotStats())
 
@@ -464,6 +549,12 @@ func main() {
 	msgHandler := server.NewMessageHandler(db, hub)
 	pushSubscriptionStore, _ := db.(store.PushSubscriptionStore)
 	pushNotificationService := server.NewPushNotificationService(pushSubscriptionStore)
+	nativePushService := server.NewNativePushService(pushSubscriptionStore)
+	hub.SetNativePushService(nativePushService)
+	nativeSurfaceHandler := server.NewNativeSurfaceHandler(nativePushService, db, hub, agentHandler, conversationHandler)
+	if err := nativePushService.ConfigError(); err != nil {
+		log.Printf("native push disabled: %v", err)
+	}
 	hub.SetPushNotificationService(pushNotificationService)
 	if pushNotificationService.Enabled() {
 		log.Printf("web push notifications are enabled")
@@ -670,6 +761,10 @@ func main() {
 		Syncer:            commercialRelaySyncer,
 		RenewCloudWorkers: cloudWorkerHandler.RenewForOwner,
 		EnsureCloudWorker: cloudWorkerHandler.AutoProvisionForOwner,
+		// An upgrade changes the shared-fleet tier; fulfilment only extends the
+		// paid window, so the container must be told about the new tier or the
+		// customer pays for resources they never get.
+		SyncCloudWorkerPlan: cloudWorkerHandler.ApplyPlanToOwner,
 	})
 	commercialPaymentHandler.StartReconciliation(commercialServiceCtx, 5*time.Minute)
 	accountAdminHandler.SetCommercialPaymentHandler(commercialPaymentHandler)
@@ -903,6 +998,12 @@ func main() {
 	mux.HandleFunc("/api/artifact-runtime", jwtAuthWithDB(artifactRuntimeHandler.HandleUser))
 	mux.HandleFunc("/api/stt/sessions", jwtAuthWithDB(sttHandler.HandleSession))
 	mux.HandleFunc("/api/stt/realtime", sttHandler.HandleRealtime)
+	mux.HandleFunc("/api/push/ios/config", jwtAuthWithDB(nativePushService.HandleStatus))
+	mux.HandleFunc("/api/push/ios/registrations", chainHTTP(nativePushService.HandleRegistration, jwtAuthWithDB, pushSubscriptionUserLimit))
+	mux.HandleFunc("/api/push/ios/activities", chainHTTP(nativeSurfaceHandler.HandleActivities, jwtAuthWithDB, pushSubscriptionUserLimit))
+	mux.HandleFunc("/api/push/ios/surfaces", chainHTTP(nativeSurfaceHandler.HandleSurfaces, jwtAuthWithDB, pushSubscriptionUserLimit))
+	mux.HandleFunc("/api/push/ios/snapshot", nativeSurfaceHandler.HandleSnapshot)
+	mux.HandleFunc("/api/push/ios/test", chainHTTP(nativePushService.HandleTest, jwtAuthWithDB, pushTestUserLimit))
 	mux.HandleFunc("/api/push/config", pushNotificationService.HandleStatus)
 	mux.HandleFunc("/api/push/subscriptions", chainHTTP(
 		pushNotificationService.HandleSubscription,
@@ -947,6 +1048,17 @@ func main() {
 	// orchestration (both PG and MySQL adapters do).
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
+		// 会话与 server 实例的回收：SessionTimeout 关掉空闲会话，reaper 再把没有
+		// 会话的 server 摘出注册表（否则要等下一次清单变更才释放）。
+		serviceAgentsMCPHandler.StartLiveServerReaper(context.Background(), 0)
+		// 三级可见性（公开/好友/自用）里的「好友」需要一个关系源；
+		// 未注入时 friends 级应用只对发布者自己可见（fail-closed，不会变成公开）。
+		if friendReader, ok := db.(server.ServiceAgentFriendReader); ok {
+			serviceAgentsMCPHandler.SetFriendReader(friendReader)
+		}
+		// 好友关系变了 → 在线 MCP 会话要重算工具集（list_changed）：
+		// 「好友可见」的应用增删都发生在好友关系变化的那一刻，不推就只等到重连才生效。
+		friendHandler.SetCatalogNotifier(serviceAgentsMCPHandler)
 		balanceChecker := server.NewServiceBalanceCheckerFromEnv()
 		// 待扣金额（外部 runner 已跑但还没结算的部分）也要算进已用额度，
 		// 否则没结算前调用方可以绕过预算反复调。
@@ -968,9 +1080,8 @@ func main() {
 		// 需要消息读写 + 推送，所以传完整 store（不是 ServiceAgentStore 子集）；
 		// 缺能力时构造结果为 nil，该能力自动关闭（老部署/测试替身不受影响）。
 		if botRunner := server.NewServiceBotRunner(db, hub); botRunner != nil {
-			// 先只对白名单账号名下的 bot 开放：这个功能会让 bot 变成「别人能调的服务」，
-			// 一上线就全平台可见风险太大。
-			botRunner.SetOwnerWhitelist(server.ServiceCatalogAllowedUIDs())
+			// 谁能调这个应用由可见性（公开/好友/自用）决定，runner 只管执行 ——
+			// 不再单独限制 bot 归属：两套授权规则会互生矛盾。
 			serviceAgentsMCPHandler.SetBotRunner(botRunner)
 		}
 		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
@@ -979,8 +1090,13 @@ func main() {
 		// 内测门（2026-10-16）：仅白名单 uid（CATSCO_SERVICE_CATALOG_UID_WHITELIST）可用。
 		catalogHandler := server.NewServiceAgentCatalogHandlerFromEnv(serviceAgentStore)
 		catalogHandler.SetSubscriptionNotifier(serviceAgentsMCPHandler)
+		if friendReader, ok := db.(server.ServiceAgentFriendReader); ok {
+			catalogHandler.SetFriendReader(friendReader)
+		}
 		mux.HandleFunc("GET /api/service-agents/catalog/access", jwtAuthWithDB(catalogHandler.HandleAccess))
 		mux.HandleFunc("GET /api/service-agents/catalog", jwtAuthWithDB(catalogHandler.HandleCatalog))
+		// 「我的应用」：含已下架，只有本人看得到（目录接口仍只列 active）。
+		mux.HandleFunc("GET /api/service-agents/mine", jwtAuthWithDB(catalogHandler.HandleMine))
 		mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleAdd))
 		mux.HandleFunc("DELETE /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleRemove))
 		// 自述建议：只有「丢弃」这一个动作。采纳 = 面板预填编辑表单 + 人点发布，
@@ -993,11 +1109,18 @@ func main() {
 		if botProfiles, ok := db.(server.ServiceBotProfileReader); ok {
 			publishHandler.SetBotProfiles(botProfiles)
 		}
+		// bot-as-tool 安全闸：runner.bot_uid 必须是自己名下的 bot。
+		// 线上装配必须走到这一行 —— 少了它，「把别人的 bot 包装成自己的工具上架」就是敞开的。
+		if botOwners, ok := db.(server.ServiceBotOwnerReader); ok {
+			publishHandler.SetBotOwners(botOwners)
+		}
 		// 下架/上架都会改变目录可见性 → 让在线 MCP 会话立即收到 list_changed。
 		publishHandler.SetCatalogNotifier(serviceAgentsMCPHandler)
 		mux.HandleFunc("POST /api/service-agents/publish", jwtAuthWithDB(publishHandler.HandlePublish))
 		// 收回分享（下架）：只有发布者本人能操作；重新发布同一 slug 即重新上架。
 		mux.HandleFunc("DELETE /api/service-agents/{slug}", jwtAuthWithDB(publishHandler.HandleUnpublish))
+		// 彻底删除：只对「已下架」的应用开放（先收回再删，留一次反悔）。
+		mux.HandleFunc("DELETE /api/service-agents/{slug}/purge", jwtAuthWithDB(publishHandler.HandlePurge))
 		// Orchestration internal API for runtime instances (design §4.3; instances
 		// reach it over the shared VPC). Authn = per-instance bearer token
 		// (CATS_SERVICE_INSTANCE_TOKEN); service tokens are minted on claim with

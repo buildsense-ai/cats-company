@@ -127,6 +127,9 @@ type ServiceAgentDescriptor struct {
 	OwnerKind  string
 	OwnerUID   int64
 	Visibility string
+	// State 只有「我的应用」接口会填（active / inactive / archived）。
+	// 目录接口只返回 active，所以那边恒为空。
+	State string
 	// 工具契约（调用方 Agent 判断「何时用、怎么传参」的唯一依据）。
 	// Description 来自作者 manifest，原样下发；InputSchema 是 input 字段的 JSON Schema 文本
 	// （空串 = 作者未声明，平台退回通用参数写法）。
@@ -150,7 +153,8 @@ const (
 	ServiceAgentOwnerInternal = "internal"
 	ServiceAgentOwnerUser     = "user"
 
-	ServiceAgentVisibilityPublic  = "public"  // 目录可见，任何人可加/可调
+	ServiceAgentVisibilityPublic  = "public" // 目录可见，任何人可加/可调
+	ServiceAgentVisibilityFriends = "friends"
 	ServiceAgentVisibilityPrivate = "private" // 仅 owner 自己可见可调（不出现在别人的目录）
 )
 
@@ -159,15 +163,68 @@ var (
 	ErrServiceAgentOwnedByOther = errors.New("service agent owned by another owner")
 	// ErrServiceAgentInternalReserved 表示用户试图抢占平台内部 agent 的 slug。
 	ErrServiceAgentInternalReserved = errors.New("service agent slug reserved for internal publishing")
+	// ErrServiceAgentNotInactive 表示应用还在架；彻底删除要求先收回（下架）。
+	ErrServiceAgentNotInactive = errors.New("service agent is still active; unpublish it first")
+	// ErrServiceAgentRunsPending 表示还有正在跑的任务，等它结束再删。
+	ErrServiceAgentRunsPending = errors.New("service agent has running or submitted runs")
 )
 
-// ServiceAgentVisibleTo 判断 agent 是否对调用者可见（目录过滤 + 调用准入共用）。
-// public 对所有人可见；其余（private）仅对 owner 本人可见。
-func ServiceAgentVisibleTo(agent ServiceAgentDescriptor, callerUID int64) bool {
-	if agent.Visibility == "" || agent.Visibility == ServiceAgentVisibilityPublic {
+// ServiceAgentPurgeResult 是彻底删除的产物统计（给接口回话，也方便人核对删了什么）。
+type ServiceAgentPurgeResult struct {
+	Slug     string
+	Versions int64
+	Sessions int64
+	Runs     int64
+}
+
+// ServiceAgentViewer 是「谁在看」——可见性要按访问者求值。
+//
+// 为什么不是一个裸 uid：friends 级要判断好友关系，而那是请求期的一次查询，
+// 纯函数拿不到。把**结论**（FriendOfOwner / FriendOfBot）带进来，判定本身仍是纯函数 ——
+// 目录过滤、tools/list、调用准入三处才能共用同一条规则，而不是各写一套
+// （历史上 bot-as-tool 就因为另写了一套「bot 的 owner 必须在白名单里」而互相打架）。
+type ServiceAgentViewer struct {
+	UID int64
+	// FriendOfOwner 表示 UID 与该 agent 的发布者是好友。
+	FriendOfOwner bool
+	// FriendOfBot 表示 UID 与这个 agent 的执行 bot 是好友（runner.type=bot 才有）。
+	//
+	// 为什么 bot 的好友也算：分享出去的是「这个 bot 本人」，它交好的人本来就在
+	// 它的联系人里。只认发布者的好友会让一支 bot 自己的社交圈白建 —— 别人是
+	// 冲着这个 bot 来的，不是冲着坐在电脑前那个人。
+	FriendOfBot bool
+	// BotOfOwner 表示访问者本身是**发布者的 bot**。
+	//
+	// 为什么要有这一档：bot-as-tool 的调用方永远是另一个 bot，而 bot 在平台里是
+	// 独立 uid。只认「发布者本人」会得到一个荒谬的结果 —— 你给自己建的私有工具，
+	// 你自己的 bot 在对话里根本看不见（实测：owner 38 的 bot 1619 / 982 的
+	// tools/list 里只有系统工具）。bot 是主人在平台上的代理，对它视同主人。
+	BotOfOwner bool
+}
+
+// ServiceAgentVisibleTo 判断 agent 是否对该访问者可见（目录过滤 + 调用准入共用）。
+//
+// 先判「是不是我的」，再判级别：自己发布的东西三个级别都该看得到。
+// 空串按 public 处理（老数据没有这个字段）。
+func ServiceAgentVisibleTo(agent ServiceAgentDescriptor, viewer ServiceAgentViewer) bool {
+	if agent.OwnerUID != 0 && agent.OwnerUID == viewer.UID {
 		return true
 	}
-	return agent.OwnerUID != 0 && agent.OwnerUID == callerUID
+	// 访问者是发布者自己的 bot：等同发布者本人，三个级别都给。
+	if viewer.BotOfOwner {
+		return true
+	}
+	switch agent.Visibility {
+	case "", ServiceAgentVisibilityPublic:
+		return true
+	case ServiceAgentVisibilityFriends:
+		// 发布者的好友 **或** 执行 bot 的好友，任一成立即可。
+		return viewer.FriendOfOwner || viewer.FriendOfBot
+	default:
+		// private，以及任何没见过的取值：一律不给看。
+		// 想加新档位就得改这里 —— 默认放行会让一个手滑的字符串变成公开。
+		return false
+	}
 }
 
 // ServiceAgentStore 是服务调用面的编排存储（PG 主实现 + MySQL 镜像）。
@@ -194,6 +251,20 @@ type ServiceAgentStore interface {
 	// 重新发布会把它恢复为 active（幂等，见 ClaimServiceAgentOwnership）。
 	// 不存在 → ErrServiceAgentNotFound；不是本人（含平台 internal 条目）→ ErrServiceAgentOwnedByOther。
 	SetServiceAgentState(ctx context.Context, slug string, ownerUID int64, active bool) error
+	// ListServiceAgentsByOwner 列出某个 owner 名下的全部应用（含已下架），用于「我的应用」管理面。
+	// 与 ListServiceAgents 的区别只有一个：不过滤 state —— 下架后目录里看不到，但本人必须还能看到、
+	// 还能重新启用或彻底删除，否则「收回」就等于失联。
+	ListServiceAgentsByOwner(ctx context.Context, ownerUID int64) ([]ServiceAgentDescriptor, error)
+	// PurgeServiceAgent 彻底删除一个**已下架**的应用及其运行数据（owner 本人才能操作）。
+	//
+	// 删除范围：agent、全部版本、全部会话、全部 run（事件/回执/检查点走 CASCADE）。
+	// **账本 service_run_ledger 不删**：它是账务凭证，删了就没法对账；行随 run 消失后
+	// 仍可按 run_id 追溯。
+	//
+	// 拒绝条件：不存在 → ErrServiceAgentNotFound；不是本人 → ErrServiceAgentOwnedByOther；
+	// 平台 internal → ErrServiceAgentInternalReserved；仍是 active → ErrServiceAgentNotInactive
+	// （要求先收回，避免误删线上应用）；还有 running/submitted 的 run → ErrServiceAgentRunsPending。
+	PurgeServiceAgent(ctx context.Context, slug string, ownerUID int64) (ServiceAgentPurgeResult, error)
 	GetServiceAgentPackage(ctx context.Context, packageHash string) (bundle json.RawMessage, err error)
 	// GetServiceAgentPackageHash 返回该 agent 当前最新版本的 assets_hash（无包时为空串）。
 	GetServiceAgentPackageHash(ctx context.Context, agentID int64) (string, error)
