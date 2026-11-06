@@ -256,7 +256,7 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 				return nil, err
 			}
 			item.DeploymentProfile = deployment.Profile
-			if deployment.Profile == types.CloudWorkerPackedShared {
+			if deployment.Profile == types.CloudWorkerPackedShared && !isDeletedLifecycle(record.LifecycleState) {
 				// 只有在"记录确实是共享集群"时才把这个信号挂上去：
 				// ECS 租户查不到实例是另一回事，别混在一起。
 				if streak := packedAbsence[record.TenantName]; streak >= packedAbsenceThreshold {
@@ -489,6 +489,12 @@ func (h *CloudWorkerHandler) observePackedAbsence(
 		if tenant == "" {
 			continue
 		}
+		// 已删除/正在删除的租户本来就没有容器 —— 那是正常终态，不是对账不符。
+		// 第一次上线时这三条历史 deleted 记录立刻被标成漂移，噪音淹掉了真信号。
+		if isDeletedLifecycle(record.LifecycleState) {
+			delete(h.packedMissingStreak, tenant)
+			continue
+		}
 		// A tenant absent from the map was never reported by this snapshot's
 		// deployment group, which is not evidence about the container itself.
 		info, found := infos[tenant]
@@ -503,6 +509,17 @@ func (h *CloudWorkerHandler) observePackedAbsence(
 		}
 	}
 	return copyPackedAbsenceStreaks(h.packedMissingStreak)
+}
+
+// isDeletedLifecycle reports terminal/in-flight deletion states. A deleted
+// tenant keeps its bot_config row for the retention window while its container
+// is already gone, so "container missing" proves nothing there.
+func isDeletedLifecycle(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "deleted", "delete_running":
+		return true
+	}
+	return false
 }
 
 func copyPackedAbsenceStreaks(src map[string]int) map[string]int {
