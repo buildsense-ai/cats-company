@@ -60,26 +60,27 @@ type CloudWorkerHandler struct {
 	changePlanScript string
 	// billingScript is optional: an empty value falls back to the historical
 	// location next to renewScript and then to the image's ops directory.
-	billingScript     string
-	updateScript      string
-	rollbackScript    string
-	destroyScript     string
-	expireScript      string
-	imagesScript      string
-	releasesScript    string
-	statusScript      string
-	sshJumpHost       string
-	sshJumpAlias      string
-	sshJumpPort       string
-	sshJumpUser       string
-	sshJumpKey        string
-	sshHostJumpKey    string
-	sshStateRoot      string
-	sshHostStateRoot  string
-	sshUser           string
-	sshPort           string
-	credits           CloudWorkerCreditStore
-	publicProfileJSON string
+	billingScript      string
+	updateScript       string
+	rollbackScript     string
+	destroyScript      string
+	expireScript       string
+	imagesScript       string
+	releasesScript     string
+	statusScript       string
+	sshJumpHost        string
+	sshJumpAlias       string
+	sshJumpPort        string
+	sshJumpUser        string
+	sshJumpKey         string
+	sshHostJumpKey     string
+	sshStateRoot       string
+	sshHostStateRoot   string
+	sshUser            string
+	sshPort            string
+	packedControlPlane string
+	credits            CloudWorkerCreditStore
+	publicProfileJSON  string
 
 	scriptTimeout time.Duration
 
@@ -261,6 +262,10 @@ type CloudWorkerConfig struct {
 	SSHHostStateRoot string
 	SSHUser          string
 	SSHPort          string
+	// PackedControlPlane is the shared-cluster control-plane host that
+	// operators SSH into to reach tenant containers (incus). Empty disables
+	// the generated packed SSH command. It is a topology hint, not a secret.
+	PackedControlPlane string
 }
 
 // CloudWorkerCreditStore is optional for compatibility with focused test
@@ -379,65 +384,67 @@ const cloudWorkerExpiryGraceDays = 15
 // CloudWorkerConfigFromEnv reads configuration from the environment.
 func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 	return CloudWorkerConfig{
-		PublicProfileJSON: os.Getenv("CATSCO_WORKER_PUBLIC_PROFILE_JSON"),
-		CreateQuota:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_CREATE_QUOTA")),
-		ProvisionScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
-		ResetScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
-		RenewScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
-		ChangePlanScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_CHANGE_PLAN_SCRIPT")),
-		BillingScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_BILLING_SCRIPT")),
-		UpdateScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
-		RollbackScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
-		DestroyScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
-		ExpireScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_EXPIRE_SCRIPT")),
-		ImagesScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
-		ReleasesScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_RELEASES_SCRIPT")),
-		StatusScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
-		SSHJumpHost:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_IP")),
-		SSHJumpAlias:      strings.TrimSpace(os.Getenv("CTYUN_JUMP_ALIAS")),
-		SSHJumpPort:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_PORT")),
-		SSHJumpUser:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_USER")),
-		SSHJumpKey:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_KEY")),
-		SSHHostJumpKey:    strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_JUMP_KEY")),
-		SSHStateRoot:      strings.TrimSpace(os.Getenv("CTYUN_WORKER_STATE_ROOT")),
-		SSHHostStateRoot:  strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_STATE_ROOT")),
-		SSHUser:           strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_USER")),
-		SSHPort:           strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_PORT")),
+		PublicProfileJSON:  os.Getenv("CATSCO_WORKER_PUBLIC_PROFILE_JSON"),
+		CreateQuota:        strings.TrimSpace(os.Getenv("CATSCO_WORKER_CREATE_QUOTA")),
+		ProvisionScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
+		ResetScript:        strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
+		RenewScript:        strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
+		ChangePlanScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_CHANGE_PLAN_SCRIPT")),
+		BillingScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_BILLING_SCRIPT")),
+		UpdateScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
+		RollbackScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
+		DestroyScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
+		ExpireScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_EXPIRE_SCRIPT")),
+		ImagesScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
+		ReleasesScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_RELEASES_SCRIPT")),
+		StatusScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
+		SSHJumpHost:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_IP")),
+		PackedControlPlane: strings.TrimSpace(os.Getenv("PACKED_CONTROL_PLANE")),
+		SSHJumpAlias:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_ALIAS")),
+		SSHJumpPort:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_PORT")),
+		SSHJumpUser:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_USER")),
+		SSHJumpKey:         strings.TrimSpace(os.Getenv("CTYUN_JUMP_KEY")),
+		SSHHostJumpKey:     strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_JUMP_KEY")),
+		SSHStateRoot:       strings.TrimSpace(os.Getenv("CTYUN_WORKER_STATE_ROOT")),
+		SSHHostStateRoot:   strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_STATE_ROOT")),
+		SSHUser:            strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_USER")),
+		SSHPort:            strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_PORT")),
 	}
 }
 
 // NewCloudWorkerHandler creates a CloudWorkerHandler.
 func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConfig) *CloudWorkerHandler {
 	handler := &CloudWorkerHandler{
-		publicProfileJSON: cfg.PublicProfileJSON,
-		db:                db,
-		bots:              bots,
-		quota:             parseWorkerCreateQuota(cfg.CreateQuota),
-		provisionScript:   cfg.ProvisionScript,
-		resetScript:       cfg.ResetScript,
-		renewScript:       cfg.RenewScript,
-		changePlanScript:  cfg.ChangePlanScript,
-		billingScript:     cfg.BillingScript,
-		updateScript:      cfg.UpdateScript,
-		rollbackScript:    cfg.RollbackScript,
-		destroyScript:     cfg.DestroyScript,
-		expireScript:      cfg.ExpireScript,
-		imagesScript:      cfg.ImagesScript,
-		releasesScript:    cfg.ReleasesScript,
-		statusScript:      cfg.StatusScript,
-		sshJumpHost:       cfg.SSHJumpHost,
-		sshJumpAlias:      cfg.SSHJumpAlias,
-		sshJumpPort:       cfg.SSHJumpPort,
-		sshJumpUser:       cfg.SSHJumpUser,
-		sshJumpKey:        cfg.SSHJumpKey,
-		sshHostJumpKey:    cfg.SSHHostJumpKey,
-		sshStateRoot:      cfg.SSHStateRoot,
-		sshHostStateRoot:  cfg.SSHHostStateRoot,
-		sshUser:           cfg.SSHUser,
-		sshPort:           cfg.SSHPort,
-		credits:           nil,
-		scriptTimeout:     10 * time.Minute,
-		operations:        make(map[string]cloudWorkerOperation),
+		publicProfileJSON:  cfg.PublicProfileJSON,
+		db:                 db,
+		bots:               bots,
+		quota:              parseWorkerCreateQuota(cfg.CreateQuota),
+		provisionScript:    cfg.ProvisionScript,
+		resetScript:        cfg.ResetScript,
+		renewScript:        cfg.RenewScript,
+		changePlanScript:   cfg.ChangePlanScript,
+		billingScript:      cfg.BillingScript,
+		updateScript:       cfg.UpdateScript,
+		rollbackScript:     cfg.RollbackScript,
+		destroyScript:      cfg.DestroyScript,
+		expireScript:       cfg.ExpireScript,
+		imagesScript:       cfg.ImagesScript,
+		releasesScript:     cfg.ReleasesScript,
+		statusScript:       cfg.StatusScript,
+		sshJumpHost:        cfg.SSHJumpHost,
+		sshJumpAlias:       cfg.SSHJumpAlias,
+		sshJumpPort:        cfg.SSHJumpPort,
+		sshJumpUser:        cfg.SSHJumpUser,
+		sshJumpKey:         cfg.SSHJumpKey,
+		sshHostJumpKey:     cfg.SSHHostJumpKey,
+		sshStateRoot:       cfg.SSHStateRoot,
+		sshHostStateRoot:   cfg.SSHHostStateRoot,
+		packedControlPlane: cfg.PackedControlPlane,
+		sshUser:            cfg.SSHUser,
+		sshPort:            cfg.SSHPort,
+		credits:            nil,
+		scriptTimeout:      10 * time.Minute,
+		operations:         make(map[string]cloudWorkerOperation),
 	}
 	if credits, ok := db.(CloudWorkerCreditStore); ok {
 		handler.credits = credits
