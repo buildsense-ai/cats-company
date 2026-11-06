@@ -71,10 +71,12 @@ var errFeishuBotIdentityUnavailable = errors.New("feishu bot identity unavailabl
 
 // FeishuChannelHandler owns Feishu OAuth binding and event callbacks.
 type FeishuChannelHandler struct {
-	db     store.Store
-	hub    *Hub
-	config FeishuChannelConfig
-	api    feishuAPI
+	db      store.Store
+	hub     *Hub
+	config  FeishuChannelConfig
+	api     feishuAPI
+	storage UploadStorage
+	baseDir string
 }
 
 // NewFeishuChannelHandlerFromEnv creates the Feishu cloud channel handler.
@@ -91,7 +93,18 @@ func NewFeishuChannelHandler(db store.Store, hub *Hub, cfg FeishuChannelConfig, 
 	if api == nil {
 		api = newFeishuAPIClient(cfg)
 	}
-	return &FeishuChannelHandler{db: db, hub: hub, config: cfg, api: api}
+	return &FeishuChannelHandler{db: db, hub: hub, config: cfg, api: api, storage: NewLocalUploadStorage(uploadDir), baseDir: uploadDir}
+}
+
+func (h *FeishuChannelHandler) SetUploadStorage(storage UploadStorage, baseDir string) {
+	if h == nil || storage == nil {
+		return
+	}
+	h.storage = storage
+	h.baseDir = baseDir
+	if setter, ok := h.api.(interface{ SetUploadStorage(UploadStorage, string) }); ok {
+		setter.SetUploadStorage(storage, baseDir)
+	}
 }
 
 func normalizeFeishuAuthorizeURL(raw string) string {
@@ -900,7 +913,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		if download.ContentType == "" {
 			download.ContentType = media.ContentType
 		}
-		file, err := saveChannelMediaUpload(media.UploadType, download)
+		file, err := saveChannelMediaUploadWithStorage(ctx, h.storage, h.baseDir, media.UploadType, download)
 		if err != nil {
 			log.Printf("save feishu group media failed: %v", err)
 			return h.replyToFeishu(ctx, replyIDType, replyID, "保存飞书图片、文件或语音失败，请稍后重试。")
@@ -945,7 +958,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		if download.ContentType == "" {
 			download.ContentType = media.ContentType
 		}
-		file, err := saveChannelMediaUpload(media.UploadType, download)
+		file, err := saveChannelMediaUploadWithStorage(ctx, h.storage, h.baseDir, media.UploadType, download)
 		if err != nil {
 			log.Printf("save feishu media failed: %v", err)
 			return h.replyToFeishu(ctx, replyIDType, replyID, "保存飞书图片、文件或语音失败，请稍后重试。")
@@ -1050,7 +1063,7 @@ func (h *FeishuChannelHandler) handleFeishuNativeGroupMessage(ctx context.Contex
 	if download.ContentType == "" {
 		download.ContentType = media.ContentType
 	}
-	file, err := saveChannelMediaUpload(media.UploadType, download)
+	file, err := saveChannelMediaUploadWithStorage(ctx, h.storage, h.baseDir, media.UploadType, download)
 	if err != nil {
 		return true, err
 	}
@@ -2377,6 +2390,8 @@ func extractFeishuInboundMedia(messageType, content string) (*feishuInboundMedia
 type feishuAPIClient struct {
 	config        FeishuChannelConfig
 	http          *http.Client
+	storage       UploadStorage
+	baseDir       string
 	mu            sync.Mutex
 	token         string
 	expiry        time.Time
@@ -2394,9 +2409,19 @@ type feishuBotIdentityLoad struct {
 
 func newFeishuAPIClient(cfg FeishuChannelConfig) *feishuAPIClient {
 	return &feishuAPIClient{
-		config: cfg,
-		http:   &http.Client{Timeout: 10 * time.Second},
+		config:  cfg,
+		http:    &http.Client{Timeout: 10 * time.Second},
+		storage: NewLocalUploadStorage(uploadDir),
+		baseDir: uploadDir,
 	}
+}
+
+func (c *feishuAPIClient) SetUploadStorage(storage UploadStorage, baseDir string) {
+	if c == nil || storage == nil {
+		return
+	}
+	c.storage = storage
+	c.baseDir = baseDir
 }
 
 func (c *feishuAPIClient) AppID() string {
@@ -2512,26 +2537,21 @@ func (c *feishuAPIClient) SendAttachmentMessage(ctx context.Context, receiveIDTy
 	if c == nil || strings.TrimSpace(c.config.AppID) == "" || strings.TrimSpace(c.config.AppSecret) == "" {
 		return errors.New("feishu app is not configured")
 	}
-	media, err := weixinClawBotOutboundMediaFromAttachment(attachment)
-	if err != nil {
-		return err
-	}
 	const (
 		maxFeishuImageSize = int64(10 << 20)
 		maxFeishuFileSize  = int64(30 << 20)
 	)
-	if media.Size <= 0 {
-		return errors.New("cannot send an empty attachment to feishu")
-	}
 	maxSize := maxFeishuFileSize
-	if media.Type == "image" {
+	if strings.EqualFold(strings.TrimSpace(attachment.Type), "image") {
 		maxSize = maxFeishuImageSize
 	}
-	if media.Type == "image" && media.Size > maxSize {
-		return errors.New("feishu image attachment exceeds 10MB")
+	media, cleanup, err := materializeChannelOutboundAttachment(ctx, c.storage, c.baseDir, attachment, maxSize)
+	if err != nil {
+		return err
 	}
-	if media.Type != "image" && media.Size > maxSize {
-		return errors.New("feishu file attachment exceeds 30MB")
+	defer cleanup()
+	if media.Size <= 0 {
+		return errors.New("cannot send an empty attachment to feishu")
 	}
 	file, err := os.Open(media.Path)
 	if err != nil {
@@ -2551,7 +2571,6 @@ func (c *feishuAPIClient) SendAttachmentMessage(ctx context.Context, receiveIDTy
 	}
 	return c.sendMessage(ctx, receiveIDType, receiveID, "file", map[string]string{"file_key": key})
 }
-
 func (c *feishuAPIClient) sendMessage(ctx context.Context, receiveIDType, receiveID, messageType string, content map[string]string) error {
 	if c == nil || strings.TrimSpace(c.config.AppID) == "" || strings.TrimSpace(c.config.AppSecret) == "" {
 		return errors.New("feishu app is not configured")

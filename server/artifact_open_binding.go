@@ -408,7 +408,7 @@ func (h *ArtifactOpenBindingHandler) HandleAnnotations(w http.ResponseWriter, r 
 		openBindingFailure(w, http.StatusForbidden, "artifact_open_binding_invalid")
 		return
 	}
-	blocks, err := h.validatedScreenshotBlocks(claims.UID, req.ContentBlocks)
+	blocks, err := h.validatedScreenshotBlocks(r.Context(), claims.UID, req.ContentBlocks)
 	if err != nil {
 		openBindingFailure(w, http.StatusBadRequest, "artifact_screenshots_invalid")
 		return

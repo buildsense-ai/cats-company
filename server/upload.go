@@ -113,12 +113,12 @@ var allowedFileExts = map[string]bool{
 type UploadHandler struct {
 	baseDir        string
 	baseURL        string
+	storage        UploadStorage
 	mobileSessions map[string]*mobileUploadSession
 	mobileMu       sync.Mutex
 }
 
-// ValidateArtifactSourcePath confirms that path names an existing regular file
-// in this instance's uploaded-file storage.
+// ValidateArtifactSourcePath confirms that path names an existing uploaded file.
 func (h *UploadHandler) ValidateArtifactSourcePath(value string) error {
 	const prefix = "/uploads/files/"
 	if h == nil || !strings.HasPrefix(value, prefix) {
@@ -128,30 +128,8 @@ func (h *UploadHandler) ValidateArtifactSourcePath(value string) error {
 	if !uploadFileNamePattern.MatchString(fileName) || !allowedFileExts[strings.ToLower(filepath.Ext(fileName))] {
 		return errors.New("artifact source file key is invalid")
 	}
-
-	baseDir, err := filepath.Abs(filepath.Join(h.baseDir, "files"))
-	if err != nil {
-		return errors.New("artifact upload storage is unavailable")
-	}
-	fullPath, err := filepath.Abs(filepath.Join(baseDir, fileName))
-	if err != nil || !strings.HasPrefix(fullPath, baseDir+string(os.PathSeparator)) {
-		return errors.New("artifact source file path is invalid")
-	}
-	info, err := os.Lstat(fullPath)
-	if err != nil || !info.Mode().IsRegular() {
+	if _, err := statUploadWithLocalFallback(context.Background(), h.storage, h.baseDir, "uploads/files/"+fileName); err != nil {
 		return errors.New("artifact source file does not exist")
-	}
-	realBaseDir, err := filepath.EvalSymlinks(baseDir)
-	if err != nil {
-		return errors.New("artifact upload storage is unavailable")
-	}
-	realPath, err := filepath.EvalSymlinks(fullPath)
-	if err != nil {
-		return errors.New("artifact source file does not exist")
-	}
-	relative, err := filepath.Rel(realBaseDir, realPath)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return errors.New("artifact source file escapes upload storage")
 	}
 	return nil
 }
@@ -184,7 +162,7 @@ func (r *countingReadCloser) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// NewUploadHandler creates a new UploadHandler.
+// NewUploadHandler creates a new UploadHandler with local storage by default.
 func NewUploadHandler(baseDir, baseURL string) *UploadHandler {
 	os.MkdirAll(filepath.Join(baseDir, "images"), 0755)
 	os.MkdirAll(filepath.Join(baseDir, "files"), 0755)
@@ -193,7 +171,14 @@ func NewUploadHandler(baseDir, baseURL string) *UploadHandler {
 	return &UploadHandler{
 		baseDir:        baseDir,
 		baseURL:        baseURL,
+		storage:        NewLocalUploadStorage(baseDir),
 		mobileSessions: make(map[string]*mobileUploadSession),
+	}
+}
+
+func (h *UploadHandler) SetStorage(storage UploadStorage) {
+	if storage != nil {
+		h.storage = storage
 	}
 }
 
@@ -260,29 +245,13 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		subDir = "feedback"
 	}
 
-	destPath := filepath.Join(h.baseDir, subDir, fileKey)
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
-		return
-	}
-
-	dest, err := os.Create(destPath)
+	written, digest, err := saveUploadReader(r.Context(), h.storage, h.baseDir, "uploads/"+subDir+"/"+fileKey, file, int64(maxSize), mimeType)
 	if err != nil {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return
 	}
-	defer dest.Close()
-
-	written, err := io.Copy(dest, file)
-	if err != nil {
-		os.Remove(destPath)
-		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
-		return
-	}
-
 	if uploadType == "image" {
-		if err := h.rememberArtifactImageUpload(UIDFromContext(r.Context()), fileKey); err != nil {
-			_ = os.Remove(destPath)
+		if err := h.rememberArtifactImageUpload(UIDFromContext(r.Context()), fileKey, written, digest); err != nil {
 			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload receipt failed"})
 			return
 		}
@@ -491,20 +460,8 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 	if uploadType == "image" {
 		subDir = "images"
 	}
-	destPath := filepath.Join(h.baseDir, subDir, fileKey)
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
-		return
-	}
-	dest, err := os.Create(destPath)
+	written, _, err := saveUploadReader(r.Context(), h.storage, h.baseDir, "uploads/"+subDir+"/"+fileKey, file, int64(maxSize), mimeType)
 	if err != nil {
-		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
-		return
-	}
-	defer dest.Close()
-	written, err := io.Copy(dest, file)
-	if err != nil {
-		os.Remove(destPath)
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return
 	}
@@ -574,14 +531,13 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	baseDir, err := filepath.Abs(filepath.Join(h.baseDir, subDir))
+	info, err := statUploadWithLocalFallback(r.Context(), h.storage, h.baseDir, "uploads/"+subDir+"/"+fileName)
 	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	fullPath, err := filepath.Abs(filepath.Join(baseDir, fileName))
-	if err != nil || !strings.HasPrefix(fullPath, baseDir+string(os.PathSeparator)) {
-		http.NotFound(w, r)
+		if h.storage != nil && h.storage.Remote() && !isUploadNotFound(err) {
+			http.Error(w, "upload storage unavailable", http.StatusServiceUnavailable)
+		} else {
+			http.NotFound(w, r)
+		}
 		return
 	}
 
@@ -593,12 +549,17 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 			http.NotFound(w, r)
 			return
 		}
-		fileInfo, statErr := os.Stat(fullPath)
-		if statErr != nil || !fileInfo.Mode().IsRegular() {
-			http.NotFound(w, r)
-			return
+		previewPath := ""
+		if strings.EqualFold(ext, ".md") && r.Method != http.MethodHead && info.Size <= maxMarkdownPreviewSize {
+			var cleanup func()
+			previewPath, cleanup, err = materializeUpload(r.Context(), h.storage, h.baseDir, "uploads/"+subDir+"/"+fileName, maxMarkdownPreviewSize)
+			if err != nil {
+				http.Error(w, "preview unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			defer cleanup()
 		}
-		serveUploadPreviewPage(w, r, fullPath, fileName, ext, fileInfo.Size())
+		serveUploadPreviewPage(w, r, previewPath, fileName, ext, info.Size)
 		return
 	}
 
@@ -623,12 +584,22 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 			w.Header().Set("Content-Type", textMime)
 		}
 		if isHTMLUploadExtension(ext) && !forceDownload {
-			// Uploaded HTML may contain active content. Let browsers render it for
-			// navigation/preview, but keep it in an opaque sandboxed origin.
 			w.Header().Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-popups allow-modals")
 		}
 	}
-	http.ServeFile(w, r, fullPath)
+	path, cleanup, err := materializeUpload(r.Context(), h.storage, h.baseDir, "uploads/"+subDir+"/"+fileName, maxFileSize)
+	if err != nil {
+		http.Error(w, "upload storage unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer cleanup()
+	file, err := os.Open(path)
+	if err != nil {
+		http.Error(w, "upload storage unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer file.Close()
+	http.ServeContent(w, r, fileName, time.Time{}, file)
 }
 
 func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fileName, ext string, fileSize int64) {
@@ -1337,8 +1308,11 @@ func (h *UploadHandler) receiveRawUpload(
 
 	storedExt, mimeType := normalizedUploadMetadata(ext, contentType, temp)
 	fileKey := generateFileKey(storedExt)
-	destPath := filepath.Join(destinationDir, fileKey)
 	if err := temp.Chmod(0644); err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+	if err := temp.Sync(); err != nil {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return uploadPayload{}, false
 	}
@@ -1346,19 +1320,17 @@ func (h *UploadHandler) receiveRawUpload(
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return uploadPayload{}, false
 	}
-	if err := os.Rename(tempPath, destPath); err != nil {
+	written, digest, err := persistStagedUpload(r.Context(), h.storage, h.baseDir, "uploads/"+subDir+"/"+fileKey, tempPath, mimeType)
+	if err != nil {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return uploadPayload{}, false
 	}
-	tempPath = ""
 	if uploadType == "image" {
-		if err := h.rememberArtifactImageUpload(UIDFromContext(r.Context()), fileKey); err != nil {
-			_ = os.Remove(destPath)
+		if err := h.rememberArtifactImageUpload(UIDFromContext(r.Context()), fileKey, written, digest); err != nil {
 			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload receipt failed"})
 			return uploadPayload{}, false
 		}
 	}
-
 	return uploadPayload{
 		FileKey:  fileKey,
 		URL:      fmt.Sprintf("%s/%s/%s", h.baseURL, subDir, fileKey),
@@ -1368,7 +1340,6 @@ func (h *UploadHandler) receiveRawUpload(
 		MimeType: mimeType,
 	}, true
 }
-
 func parseUploadMultipart(w http.ResponseWriter, r *http.Request, maxSize int) bool {
 	body := &countingReadCloser{ReadCloser: r.Body}
 	r.Body = http.MaxBytesReader(w, body, int64(maxSize))

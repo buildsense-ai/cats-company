@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -24,14 +25,22 @@ func (m *channelMediaDownload) Close() error {
 }
 
 func saveChannelMediaUpload(uploadType string, media *channelMediaDownload) (uploadPayload, error) {
+	return saveChannelMediaUploadWithStorage(context.Background(), NewLocalUploadStorage(uploadDir), uploadDir, uploadType, media)
+}
+
+func saveChannelMediaUploadWithStorage(ctx context.Context, storage UploadStorage, baseDir, uploadType string, media *channelMediaDownload) (uploadPayload, error) {
 	if media == nil || media.Body == nil {
 		return uploadPayload{}, errors.New("missing media body")
 	}
 	defer media.Close()
-	return saveChannelMediaUploadFromReader(uploadType, media.FileName, media.ContentType, media.Body)
+	return saveChannelMediaUploadFromReaderWithStorage(ctx, storage, baseDir, uploadType, media.FileName, media.ContentType, media.Body)
 }
 
 func saveChannelMediaUploadFromReader(uploadType, fileName, contentType string, src io.Reader) (uploadPayload, error) {
+	return saveChannelMediaUploadFromReaderWithStorage(context.Background(), NewLocalUploadStorage(uploadDir), uploadDir, uploadType, fileName, contentType, src)
+}
+
+func saveChannelMediaUploadFromReaderWithStorage(ctx context.Context, storage UploadStorage, baseDir, uploadType, fileName, contentType string, src io.Reader) (uploadPayload, error) {
 	uploadType = normalizeChannelMediaUploadType(uploadType)
 	if src == nil {
 		return uploadPayload{}, errors.New("missing media body")
@@ -45,7 +54,6 @@ func saveChannelMediaUploadFromReader(uploadType, fileName, contentType string, 
 		}
 		fileName += ext
 	}
-
 	if uploadType == "image" {
 		if !allowedImageExts[ext] {
 			return uploadPayload{}, errors.New("invalid image type")
@@ -63,43 +71,31 @@ func saveChannelMediaUploadFromReader(uploadType, fileName, contentType string, 
 		subDir = "images"
 		maxSize = int64(maxImageSize)
 	}
-	if err := os.MkdirAll(filepath.Join(uploadDir, subDir), 0755); err != nil {
+	if err := os.MkdirAll(uploadStagingDir(), 0700); err != nil {
 		return uploadPayload{}, err
 	}
-	dstDir := filepath.Join(uploadDir, subDir)
-	temp, err := os.CreateTemp(dstDir, ".channel-media-*")
+	temp, err := os.CreateTemp(uploadStagingDir(), "channel-media-*")
 	if err != nil {
 		return uploadPayload{}, err
 	}
 	tempPath := temp.Name()
-	defer func() {
+	defer os.Remove(tempPath)
+	written, err := io.Copy(temp, io.LimitReader(src, maxSize+1))
+	if err != nil {
 		_ = temp.Close()
-		if tempPath != "" {
-			_ = os.Remove(tempPath)
-		}
-	}()
-	limited := &io.LimitedReader{R: src, N: maxSize + 1}
-	written, copyErr := io.Copy(temp, limited)
-	if copyErr != nil {
-		return uploadPayload{}, copyErr
+		return uploadPayload{}, err
 	}
 	if written > maxSize {
+		_ = temp.Close()
 		return uploadPayload{}, fmt.Errorf("file too large; maximum supported size is %dMB", maxUploadSizeMB)
 	}
-
-	// Preserve the audio/video distinction for Ogg containers just as direct
-	// uploads do. In particular, a video/ogg download must be stored as .ogv
-	// instead of becoming an audio/ogg attachment because its original filename
-	// ended in .ogg.
 	storedExt, mimeType := normalizedUploadMetadata(ext, contentType, temp)
-	if uploadType == "image" {
-		if !allowedImageExts[storedExt] {
-			return uploadPayload{}, errors.New("invalid image type")
-		}
-	} else if !allowedFileExts[storedExt] {
+	if (uploadType == "image" && !allowedImageExts[storedExt]) || (uploadType != "image" && !allowedFileExts[storedExt]) {
+		_ = temp.Close()
 		return uploadPayload{}, errors.New("file type not allowed")
 	}
-	if err := temp.Chmod(0644); err != nil {
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
 		return uploadPayload{}, err
 	}
 	if err := temp.Close(); err != nil {
@@ -107,16 +103,15 @@ func saveChannelMediaUploadFromReader(uploadType, fileName, contentType string, 
 	}
 
 	fileKey := generateFileKey(storedExt)
-	dstPath := filepath.Join(dstDir, fileKey)
-	if err := os.Rename(tempPath, dstPath); err != nil {
+	storedSize, _, err := persistStagedUpload(ctx, storage, baseDir, "uploads/"+subDir+"/"+fileKey, tempPath, mimeType)
+	if err != nil {
 		return uploadPayload{}, err
 	}
-	tempPath = ""
 	return uploadPayload{
 		FileKey:  fileKey,
 		URL:      fmt.Sprintf("/uploads/%s/%s", subDir, fileKey),
 		Name:     fileName,
-		Size:     written,
+		Size:     storedSize,
 		Type:     uploadType,
 		MimeType: mimeType,
 	}, nil

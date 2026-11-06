@@ -54,17 +54,16 @@ type WeixinClawBotConfig struct {
 }
 
 type WeixinClawBotHandler struct {
-	db     store.Store
-	hub    *Hub
-	config WeixinClawBotConfig
-	api    weixinClawBotAPI
+	db      store.Store
+	hub     *Hub
+	config  WeixinClawBotConfig
+	api     weixinClawBotAPI
+	storage UploadStorage
+	baseDir string
 
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	running map[int64]context.CancelFunc
-	// QR authorization can move to a regional iLink host before confirmation.
-	// Keep that short-lived routing state server-side so clients cannot supply
-	// arbitrary callback hosts.
+	mu          sync.Mutex
+	cancel      context.CancelFunc
+	running     map[int64]context.CancelFunc
 	qrRedirects map[string]weixinClawBotQRRedirect
 }
 
@@ -231,9 +230,19 @@ func NewWeixinClawBotHandler(db store.Store, hub *Hub, cfg WeixinClawBotConfig, 
 		hub:         hub,
 		config:      cfg,
 		api:         api,
+		storage:     NewLocalUploadStorage(uploadDir),
+		baseDir:     uploadDir,
 		running:     map[int64]context.CancelFunc{},
 		qrRedirects: map[string]weixinClawBotQRRedirect{},
 	}
+}
+
+func (h *WeixinClawBotHandler) SetUploadStorage(storage UploadStorage, baseDir string) {
+	if h == nil || storage == nil {
+		return
+	}
+	h.storage = storage
+	h.baseDir = baseDir
 }
 
 func (h *WeixinClawBotHandler) apiForToken(token *types.WeixinClawBotToken) (weixinClawBotAPI, error) {
@@ -575,16 +584,21 @@ func (h *WeixinClawBotHandler) SendOutboundMessage(ctx context.Context, binding 
 			fallbackAttachments = append(fallbackAttachments, message.Attachments[index:]...)
 			break
 		}
-		media, err := weixinClawBotOutboundMediaFromAttachment(attachment)
+		maxSize := int64(maxFileSize)
+		if strings.EqualFold(strings.TrimSpace(attachment.Type), "image") {
+			maxSize = int64(maxImageSize)
+		}
+		media, cleanup, err := materializeChannelOutboundAttachment(ctx, h.storage, h.baseDir, attachment, maxSize)
 		if err != nil {
 			log.Printf("weixin clawbot outbound attachment fallback name=%s url=%s: %v", attachment.Name, attachment.URL, err)
 			fallbackAttachments = append(fallbackAttachments, attachment)
 			continue
 		}
-		if err := api.SendMediaMessage(ctx, token.BotToken, channelUserID, media, contextValue.ContextToken, contextValue.BotUserID); err != nil {
+		err = api.SendMediaMessage(ctx, token.BotToken, channelUserID, media, contextValue.ContextToken, contextValue.BotUserID)
+		cleanup()
+		if err != nil {
 			log.Printf("weixin clawbot outbound media send failed name=%s path=%s: %v", media.Name, media.Path, err)
 			fallbackAttachments = append(fallbackAttachments, attachment)
-			continue
 		}
 	}
 	if len(fallbackAttachments) > 0 {
@@ -637,7 +651,7 @@ func weixinClawBotOutboundMediaFromAttachment(attachment channelOutboundAttachme
 	}, nil
 }
 
-func weixinClawBotLocalUploadPath(raw string, kind string) (string, error) {
+func weixinClawBotUploadObjectKey(raw string, kind string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", errors.New("missing outbound attachment url")
@@ -678,25 +692,26 @@ func weixinClawBotLocalUploadPath(raw string, kind string) (string, error) {
 	if subDir == "files" && !allowedFileExts[ext] {
 		return "", errors.New("outbound file type not allowed")
 	}
-	baseDir, err := filepath.Abs(filepath.Join(uploadDir, subDir))
+	return "uploads/" + rel, nil
+}
+
+func weixinClawBotLocalUploadPath(raw string, kind string) (string, error) {
+	key, err := weixinClawBotUploadObjectKey(raw, kind)
 	if err != nil {
 		return "", err
 	}
-	fullPath, err := filepath.Abs(filepath.Join(baseDir, fileName))
+	fullPath, err := localUploadPath(uploadDir, key)
 	if err != nil {
 		return "", err
-	}
-	if fullPath != baseDir && !strings.HasPrefix(fullPath, baseDir+string(os.PathSeparator)) {
-		return "", errors.New("invalid outbound attachment path")
 	}
 	info, err := os.Lstat(fullPath)
 	if err != nil {
 		return "", err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("outbound attachment must not be a symbolic link")
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", errors.New("outbound attachment must be a regular non-symlink file")
 	}
-	resolvedBase, err := filepath.EvalSymlinks(baseDir)
+	resolvedBase, err := filepath.EvalSymlinks(filepath.Dir(fullPath))
 	if err != nil {
 		return "", err
 	}
@@ -708,6 +723,43 @@ func weixinClawBotLocalUploadPath(raw string, kind string) (string, error) {
 		return "", errors.New("outbound attachment resolves outside uploads")
 	}
 	return resolvedPath, nil
+}
+
+func materializeChannelOutboundAttachment(ctx context.Context, storage UploadStorage, baseDir string, attachment channelOutboundAttachment, maxSize int64) (weixinClawBotOutboundMedia, func(), error) {
+	kind := strings.ToLower(strings.TrimSpace(attachment.Type))
+	if kind != "image" {
+		kind = "file"
+	}
+	rawURL := strings.TrimSpace(attachment.URL)
+	if rawURL == "" && strings.TrimSpace(attachment.FileKey) != "" {
+		rawURL = channelOutboundUploadURL(kind, attachment.FileKey)
+	}
+	key, err := weixinClawBotUploadObjectKey(rawURL, kind)
+	if err != nil {
+		return weixinClawBotOutboundMedia{}, func() {}, err
+	}
+	path, cleanup, err := materializeUpload(ctx, storage, baseDir, key, maxSize)
+	if err != nil {
+		return weixinClawBotOutboundMedia{}, func() {}, err
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		cleanup()
+		if err == nil {
+			err = errors.New("outbound attachment is not a regular file")
+		}
+		return weixinClawBotOutboundMedia{}, func() {}, err
+	}
+	if info.Size() > maxSize {
+		cleanup()
+		return weixinClawBotOutboundMedia{}, func() {}, fmt.Errorf("file too large; maximum supported size is %dMB", maxUploadSizeMB)
+	}
+	name := sanitizeChannelMediaFileName(firstNonEmpty(attachment.Name, channelOutboundFileNameFromURL(rawURL), filepath.Base(path)))
+	contentType := strings.TrimSpace(attachment.MimeType)
+	if contentType == "" {
+		contentType = normalizedUploadMimeType(filepath.Ext(name), "")
+	}
+	return weixinClawBotOutboundMedia{Type: kind, Name: name, Path: path, Size: info.Size(), ContentType: contentType}, cleanup, nil
 }
 
 func weixinClawBotURLMatchesPublicBase(parsed *url.URL) bool {
@@ -1188,7 +1240,7 @@ func (h *WeixinClawBotHandler) downloadClawBotMedia(ctx context.Context, token *
 		if strings.TrimSpace(media.ContentType) == "" {
 			media.ContentType = ref.ContentType
 		}
-		file, err := saveChannelMediaUpload(ref.Kind, media)
+		file, err := saveChannelMediaUploadWithStorage(ctx, h.storage, h.baseDir, ref.Kind, media)
 		if err != nil {
 			log.Printf("save weixin clawbot media failed token=%d message=%s name=%q: %v", token.ID, clawBotMessageID(msg), ref.Name, err)
 			failures = append(failures, weixinClawBotUnsupportedItem{Type: ref.ItemType, Reason: "save_failed", Name: ref.Name, Raw: ref.Raw})
