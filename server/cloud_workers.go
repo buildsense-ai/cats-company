@@ -597,6 +597,16 @@ type cloudWorkerSummary struct {
 	OperationAction string `json:"operation_action,omitempty"`
 	OperationStatus string `json:"operation_status,omitempty"`
 	TrialNotice     string `json:"trial_notice,omitempty"`
+	// 到期与保留期（来自 cloud_worker_lifecycles）。
+	//
+	// 共享集群的租户没有公网 IP、也没有 SSH —— 面板上真正要回答的问题是
+	// "这台员工还能用多久"和"停服后数据保留几天"。这两个值平台本来就算好了，
+	// 之前只拿来生成 TrialNotice，没往下传给前端。
+	PackageExpiresAt string `json:"package_expires_at,omitempty"`
+	DeleteAfter      string `json:"delete_after,omitempty"`
+	RetentionDays    int    `json:"retention_days,omitempty"`
+	LifecycleState   string `json:"lifecycle_state,omitempty"`
+	BillingMode      string `json:"billing_mode,omitempty"`
 }
 
 // cloudWorkerOperation is a short-lived, in-memory record for a long-running
@@ -660,6 +670,17 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 		w.RuntimeStatus = h.cloudWorkerRuntimeStatus(uid, w.UID)
 		if lifecycle, ok := lifecycleByTenant[tenantName]; ok {
 			w.TrialNotice = trialNotice(lifecycle, time.Now().UTC())
+			// 到期/保留期是用户侧最常问的两个数，直接把事实传下去，
+			// 不在前端重算（重算必然与生命周期状态脱节）。
+			if !lifecycle.PackageExpiresAt.IsZero() {
+				w.PackageExpiresAt = lifecycle.PackageExpiresAt.UTC().Format(time.RFC3339)
+			}
+			if !lifecycle.DeleteAfter.IsZero() {
+				w.DeleteAfter = lifecycle.DeleteAfter.UTC().Format(time.RFC3339)
+			}
+			w.RetentionDays = lifecycle.RetentionDays
+			w.LifecycleState = lifecycle.State
+			w.BillingMode = lifecycle.BillingMode
 		}
 		workers = append(workers, w)
 	}

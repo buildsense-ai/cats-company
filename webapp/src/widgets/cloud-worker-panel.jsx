@@ -67,6 +67,24 @@ const cloudActionsBlocked = (status) => (
     .includes(String(status || '').toLowerCase())
 );
 
+// 到期时间的展示口径：面板只把后端的 RFC3339 转成可读日期 + 剩余天数。
+// 剩余天数在 7 天内标红 —— 这是用户真正需要被提醒的时刻（续费窗口）。
+const formatExpiryDate = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+};
+
+const daysUntil = (iso) => {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.ceil((t - Date.now()) / 86400000);
+};
+
 const parseVersion = (value) => {
   const match = String(value || '').trim().replace(/^v/i, '').match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
   return match ? [Number(match[1]), Number(match[2] || 0), Number(match[3] || 0)] : null;
@@ -430,6 +448,25 @@ export default function CloudWorkerPanel({
                         : '暂未确认'}</b></span>
                     <span>应用版本 <b>{worker.app_version || '暂未读取'}</b></span>
                     <span>基础镜像 <b>{worker.cloud_version || '暂未读取'}</b></span>
+                    {worker.package_expires_at && (() => {
+                      const left = daysUntil(worker.package_expires_at);
+                      const urgent = left !== null && left <= 7;
+                      return (
+                        <span>
+                          到期时间{' '}
+                          <b style={urgent ? { color: 'var(--v3-danger, #d33)' } : undefined}>
+                            {formatExpiryDate(worker.package_expires_at)}
+                            {left !== null ? `（还剩 ${left} 天）` : ''}
+                          </b>
+                        </span>
+                      );
+                    })()}
+                    {worker.retention_days > 0 && (
+                      <span>停服后保留 <b>{worker.retention_days} 天</b></span>
+                    )}
+                    {worker.backend === 'packed' && (
+                      <span>连接方式 <b>通过平台连接（共享集群无 SSH / 无公网 IP）</b></span>
+                    )}
                     {!worker.app_version && !worker.cloud_version && !worker.cloud_image_id && (
                       <span>
                         {['provisioning', 'creating'].includes(String(shownStatus || '').toLowerCase())
