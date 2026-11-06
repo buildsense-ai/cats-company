@@ -147,6 +147,9 @@ func TestRelayKeyCreateAndRotateProxy(t *testing.T) {
 		7: {ID: 7, Username: "charlie", AccountType: types.AccountHuman, State: 0},
 	}}
 	keyHandler := NewRelayKeyHandlerFromEnv()
+	var touchedUIDs []int64
+	keyHandler.SetBotDefinitionToucher(func(uid int64) { touchedUIDs = append(touchedUIDs, uid) })
+
 	createHandler := OwnerMiddlewareWithDB(store)(keyHandler.HandleKey)
 	rotateHandler := OwnerMiddlewareWithDB(store)(keyHandler.HandleRotate)
 	revealHandler := OwnerMiddlewareWithDB(store)(keyHandler.HandleReveal)
@@ -170,6 +173,9 @@ func TestRelayKeyCreateAndRotateProxy(t *testing.T) {
 	if !strings.Contains(createRec.Body.String(), "sk-bf-created") {
 		t.Fatalf("expected one-time key in create response, body=%s", createRec.Body.String())
 	}
+	if len(touchedUIDs) != 0 {
+		t.Fatalf("creating a relay key must not bump bot definitions, got %v", touchedUIDs)
+	}
 
 	rotateReq := httptest.NewRequest(http.MethodPost, "/api/relay/key/rotate", nil)
 	rotateReq.Header.Set("Authorization", "Bearer "+userToken)
@@ -182,6 +188,9 @@ func TestRelayKeyCreateAndRotateProxy(t *testing.T) {
 	}
 	if !strings.Contains(rotateRec.Body.String(), "sk-bf-rotated") {
 		t.Fatalf("expected one-time key in rotate response, body=%s", rotateRec.Body.String())
+	}
+	if len(touchedUIDs) != 1 || touchedUIDs[0] != 7 {
+		t.Fatalf("rotating a relay key must bump the owner's bot definitions (uid=7), got %v", touchedUIDs)
 	}
 
 	revealReq := httptest.NewRequest(http.MethodPost, "/api/relay/key/reveal", nil)

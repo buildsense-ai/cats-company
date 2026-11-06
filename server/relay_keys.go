@@ -29,11 +29,22 @@ type RelayKeyHandler struct {
 	commercialEnforceEnabled  bool
 	commercialEnforceUIDs     map[int64]bool
 	commercialSyncer          *CommercialRelaySyncer
+	// botDefinitionToucher 在 relay key 轮换成功后，把该用户名下每个 bot 的
+	// BotDefinition revision 推一格。否则 worker 会一直用物化时缓存的旧 key，
+	// 直到有人手工删缓存或换模型（2026-11-06 事故）。
+	botDefinitionToucher func(uid int64)
 }
 
 func (h *RelayKeyHandler) SetCommercialRelaySyncer(syncer *CommercialRelaySyncer) {
 	if h != nil {
 		h.commercialSyncer = syncer
+	}
+}
+
+// SetBotDefinitionToucher 注册"relay key 轮换后强制 worker 重新物化模型配置"的回调。
+func (h *RelayKeyHandler) SetBotDefinitionToucher(toucher func(uid int64)) {
+	if h != nil {
+		h.botDefinitionToucher = toucher
 	}
 }
 
@@ -171,7 +182,7 @@ func (h *RelayKeyHandler) HandleKey(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		h.forward(w, r, http.MethodGet, uid, "", nil)
+		h.forward(w, r, http.MethodGet, uid, "", nil, nil)
 	case http.MethodPost:
 		var req relayKeyRequest
 		if r.Body != nil {
@@ -185,9 +196,9 @@ func (h *RelayKeyHandler) HandleKey(w http.ResponseWriter, r *http.Request) {
 			Name:     name,
 			Username: UsernameFromContext(r.Context()),
 			Email:    EmailFromContext(r.Context()),
-		})
+		}, nil)
 	case http.MethodDelete:
-		h.forward(w, r, http.MethodDelete, uid, "", nil)
+		h.forward(w, r, http.MethodDelete, uid, "", nil, nil)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
@@ -207,7 +218,7 @@ func (h *RelayKeyHandler) HandleRotate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	h.forward(w, r, http.MethodPost, uid, "/rotate", nil)
+	h.forward(w, r, http.MethodPost, uid, "/rotate", nil, h.botDefinitionToucher)
 }
 
 func (h *RelayKeyHandler) HandleReveal(w http.ResponseWriter, r *http.Request) {
@@ -224,7 +235,7 @@ func (h *RelayKeyHandler) HandleReveal(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	h.forward(w, r, http.MethodPost, uid, "/reveal", nil)
+	h.forward(w, r, http.MethodPost, uid, "/reveal", nil, nil)
 }
 
 func (h *RelayKeyHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
@@ -427,7 +438,7 @@ func relayUsageResponseForBudget(label string, budget commercialRelayBudget) rel
 	}
 }
 
-func (h *RelayKeyHandler) forward(w http.ResponseWriter, r *http.Request, method string, uid int64, suffix string, body interface{}) {
+func (h *RelayKeyHandler) forward(w http.ResponseWriter, r *http.Request, method string, uid int64, suffix string, body interface{}, onSuccess func(uid int64)) {
 	var out relayKeyResponse
 	err := h.admin.Do(r.Context(), method, fmt.Sprintf("/internal/users/%d/key%s", uid, suffix), body, &out)
 	if err != nil {
@@ -447,6 +458,9 @@ func (h *RelayKeyHandler) forward(w http.ResponseWriter, r *http.Request, method
 	}
 	if method == http.MethodPost && suffix == "" && h.commercialSyncer != nil && h.commercialSyncer.EnforcedFor(uid) {
 		h.commercialSyncer.Enqueue(uid)
+	}
+	if onSuccess != nil {
+		onSuccess(uid)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
