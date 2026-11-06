@@ -43,10 +43,15 @@ type CloudWorkerAdminImporter interface {
 }
 
 type cloudWorkerAdminItem struct {
-	BillingMode        string     `json:"billing_mode,omitempty"`
-	ConversionPending  bool       `json:"conversion_pending"`
-	BillingAction      string     `json:"billing_action,omitempty"`
-	DeploymentProfile  string     `json:"deployment_profile,omitempty"`
+	BillingMode       string `json:"billing_mode,omitempty"`
+	ConversionPending bool   `json:"conversion_pending"`
+	BillingAction     string `json:"billing_action,omitempty"`
+	DeploymentProfile string `json:"deployment_profile,omitempty"`
+	// DeploymentDrift is advisory: the platform record says packed_shared but
+	// the cluster keeps reporting the container as absent. It is never used to
+	// rewrite the record — a container being recreated looks identical, and a
+	// wrong rewrite would move billing onto the ECS path.
+	DeploymentDrift    string     `json:"deployment_drift,omitempty"`
 	SSHKeyPath         string     `json:"ssh_key_path,omitempty"`
 	SSHExecutionHost   string     `json:"ssh_execution_host,omitempty"`
 	UID                int64      `json:"uid"`
@@ -138,6 +143,13 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 		if fixed := h.reconcilePackedDeployments(records, infos); fixed > 0 {
 			log.Printf("[cloud-worker] admin overview reconciled %d deployment profile(s)", fixed)
 		}
+	}
+	// 反方向：平台记的是共享集群，但集群连续多次快照都查不到这个容器。
+	// 这里只统计、只暴露信号，不写库 —— 容器重建期间和"已经迁走"长得一样，
+	// 贸然改成 ECS 形态会把计费带上续费路径。
+	packedAbsence := map[string]int{}
+	if statusLoaded {
+		packedAbsence = h.observePackedAbsence(records, infos, statusUpdatedAt)
 	}
 	overview := &cloudWorkerAdminOverview{
 		DeploymentProfiles:       h.deploymentProfileOptions(),
@@ -244,6 +256,15 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 				return nil, err
 			}
 			item.DeploymentProfile = deployment.Profile
+			if deployment.Profile == types.CloudWorkerPackedShared {
+				// 只有在"记录确实是共享集群"时才把这个信号挂上去：
+				// ECS 租户查不到实例是另一回事，别混在一起。
+				if streak := packedAbsence[record.TenantName]; streak >= packedAbsenceThreshold {
+					item.DeploymentDrift = fmt.Sprintf(
+						"packed container packed-%s missing from %d consecutive cluster snapshots",
+						record.TenantName, streak)
+				}
+			}
 			item.Provider = "ctyun"
 			item.RegionID = deployment.Env["CTYUN_WORKER_REGION_ID"]
 			item.ProjectID = deployment.Env["CTYUN_WORKER_PROJECT_ID"]
@@ -430,6 +451,66 @@ func (h *CloudWorkerHandler) reconcilePackedDeployments(
 		fixed++
 	}
 	return fixed
+}
+
+// packedAbsenceThreshold is how many consecutive *distinct* cluster status
+// snapshots must report a packed tenant as absent before it is called drift.
+// One snapshot can miss a container that is being recreated; three in a row
+// (the status snapshot refreshes at least once a minute) cannot be explained
+// that way.
+const packedAbsenceThreshold = 3
+
+// observePackedAbsence counts, per tenant, how many consecutive status
+// snapshots report "missing". The counter only advances when the snapshot
+// itself advances: the admin roster is polled far more often than the cluster
+// is queried, and counting requests would make three refreshes of one page look
+// like three independent observations.
+//
+// It never writes the database. A shared-fleet record is what puts a worker on
+// the container billing path; rewriting it to an ECS profile because a
+// container is briefly absent would silently move that worker onto instance
+// renewal. The result is surfaced on the roster as an advisory field instead.
+func (h *CloudWorkerHandler) observePackedAbsence(
+	records []types.CloudWorkerAdminRecord,
+	infos map[string]cloudInstanceInfo,
+	snapshotAt time.Time,
+) map[string]int {
+	h.packedDriftMu.Lock()
+	defer h.packedDriftMu.Unlock()
+	if h.packedMissingStreak == nil {
+		h.packedMissingStreak = map[string]int{}
+	}
+	if snapshotAt.IsZero() || snapshotAt.Equal(h.packedDriftSnapshot) {
+		return copyPackedAbsenceStreaks(h.packedMissingStreak)
+	}
+	h.packedDriftSnapshot = snapshotAt
+	for _, record := range records {
+		tenant := record.TenantName
+		if tenant == "" {
+			continue
+		}
+		// A tenant absent from the map was never reported by this snapshot's
+		// deployment group, which is not evidence about the container itself.
+		info, found := infos[tenant]
+		if !found || !strings.EqualFold(strings.TrimSpace(info.Status), "missing") {
+			delete(h.packedMissingStreak, tenant)
+			continue
+		}
+		h.packedMissingStreak[tenant]++
+		if h.packedMissingStreak[tenant] == packedAbsenceThreshold {
+			log.Printf("[cloud-worker] packed tenant %s reported missing by %d consecutive cluster snapshots",
+				tenant, packedAbsenceThreshold)
+		}
+	}
+	return copyPackedAbsenceStreaks(h.packedMissingStreak)
+}
+
+func copyPackedAbsenceStreaks(src map[string]int) map[string]int {
+	out := make(map[string]int, len(src))
+	for tenant, streak := range src {
+		out[tenant] = streak
+	}
+	return out
 }
 
 // HandleAdminOverview is kept separate from the public cloud-worker routes;

@@ -116,6 +116,15 @@ type CloudWorkerHandler struct {
 	orphanMu           sync.Mutex
 	orphanRetryBlocked map[int64]time.Time
 
+	// packedDriftMu guards packedMissingStreak / packedDriftSnapshot: how many
+	// consecutive *distinct* status snapshots reported a shared-fleet container
+	// as absent. Snapshot identity matters — the admin roster is polled far more
+	// often than the cluster status script refreshes, so counting requests
+	// would turn three polls into "three observations".
+	packedDriftMu       sync.Mutex
+	packedMissingStreak map[string]int
+	packedDriftSnapshot time.Time
+
 	// orphanSweepInactiveOnce reports, once, why the orphan-credit backstop is
 	// not running. Two things disable it and neither is visible from the
 	// outside: the credit store not implementing the query (a wiring change, or
