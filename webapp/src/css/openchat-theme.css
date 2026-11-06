@@ -2883,8 +2883,8 @@ body {
 }
 
 .cloud-artifact-confirm-backdrop {
-  position: absolute;
-  z-index: 2;
+  position: fixed;
+  z-index: 3000;
   inset: 0;
   display: grid;
   place-items: center;
@@ -2897,7 +2897,10 @@ body {
   padding: 20px;
   border: 1px solid var(--v3-border);
   border-radius: 8px;
-  background: var(--cc-history-panel-bg);
+  /* An explicit opaque surface: the card must never inherit a see-through
+     panel colour, or the conversation behind it becomes readable through the
+     dialog text. */
+  background: var(--cc-modal-surface, var(--cc-bg));
   box-shadow: 0 20px 55px rgba(0, 0, 0, 0.42);
 }
 

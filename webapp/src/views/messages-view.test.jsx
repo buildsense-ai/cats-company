@@ -526,6 +526,17 @@ async function flushPromises(count = 8) {
   }
 }
 
+// The frame belonging to the conversation on screen.
+//
+// Several conversations can hold a live panel at the same time, and they are
+// deliberately rendered in a fixed order rather than "active first" — moving a
+// frame in the DOM reloads it. So the first frame in document order is not
+// necessarily the visible one; the parked ones are marked `data-panel-parked`.
+function activeGatewayFrame(container) {
+  return container.querySelector('.v3-file-preview-shell:not([data-panel-parked]) .cloud-artifacts-gateway-frame')
+    || container.querySelector('.cloud-artifacts-gateway-frame');
+}
+
 function dispatchFrameMessage(source, origin, data) {
   const event = new Event('message');
   Object.defineProperties(event, {
@@ -6586,7 +6597,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    const frame = activeGatewayFrame(container);
     expect(frame).not.toBeNull();
     Object.defineProperty(frame, 'contentWindow', {
       configurable: true,
@@ -6712,7 +6723,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    const frame = activeGatewayFrame(container);
     expect(frame).not.toBeNull();
     Object.defineProperty(frame, 'contentWindow', { configurable: true, value: frameWindow });
     await act(async () => {
@@ -10418,6 +10429,151 @@ describe('MessagesView composer draft isolation', () => {
       expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'mario-test', topic_id: 'p2p_1_440' });
     });
 
+    it('keeps the application alive across a conversation switch and back', async () => {
+      // The panel must survive leaving the conversation and returning to it:
+      // an unmounted iframe loses the application's own state (a half-filled
+      // form, a scroll position, a running task) and starts over from scratch.
+      api.getMessages.mockResolvedValue({
+        messages: [{
+          id: 722,
+          from_uid: 440,
+          content: `已发布：${gatewayApp.url}`,
+          created_at: '2026-10-08T00:00:00Z',
+        }],
+      });
+      api.getFriends.mockResolvedValue({ friends: [] });
+      api.getAgents.mockResolvedValue({
+        agents: [{
+          uid: 440,
+          topic_id: 'p2p_1_440',
+          username: 'doubao',
+          display_name: '豆包',
+          relation: 'friend',
+          is_bot: true,
+          account_type: 'bot',
+          cloud_artifacts_enabled: true,
+        }],
+      });
+      api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+      api.listArtifactApps.mockResolvedValue({ apps: [gatewayApp] });
+
+      await mountTopic(root, 'p2p_1_440');
+      await act(async () => {
+        await flushPromises();
+      });
+      await act(async () => {
+        Simulate.click(container.querySelector('.mock-open-artifact-app'));
+        await flushPromises();
+      });
+
+      const frame = activeGatewayFrame(container);
+      expect(frame).not.toBeNull();
+      const srcBefore = frame.getAttribute('src');
+      api.requestArtifactLaunch.mockClear();
+
+      // Leaving keeps the frame alive, hidden. That is what preserves a running
+      // application: nothing is torn down and nothing has to be launched again.
+      await mountTopic(root, 'p2p_1_3');
+      await act(async () => {
+        await flushPromises();
+      });
+      expect(activeGatewayFrame(container)).toBe(frame);
+
+      // Coming back shows the very same frame, so whatever it was running is
+      // still running.
+      await mountTopic(root, 'p2p_1_440');
+      await act(async () => {
+        await flushPromises();
+      });
+      const frameAfter = activeGatewayFrame(container);
+      expect(frameAfter).toBe(frame);
+      expect(frameAfter.getAttribute('src')).toBe(srcBefore);
+      expect(api.requestArtifactLaunch).not.toHaveBeenCalled();
+    });
+
+    it('keeps four conversations each on their own application', async () => {
+      // The report that started this: open a different application in four
+      // conversations, switch around, and one of them shows a neighbour's
+      // application. Each record is the only source of truth here.
+      const apps = [1, 2, 3, 4].map((n) => ({
+        id: `app-${n}`,
+        title: `应用${n}`,
+        url: `https://artifact.catsco.cc/app-${n}/`,
+        agent_uid: 7,
+      }));
+      const topics = ['p2p_1_71', 'p2p_1_72', 'p2p_1_73', 'p2p_1_74'];
+
+      api.getFriends.mockResolvedValue({ friends: [] });
+      api.getMessages.mockResolvedValue({ messages: [] });
+      api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+      api.listArtifactApps.mockResolvedValue({ apps });
+      api.getAgents.mockResolvedValue({
+        agents: [{ uid: 7, topic_id: topics[0], username: 'rachel', display_name: 'Rachel',
+          relation: 'friend', is_bot: true, account_type: 'bot', cloud_artifacts_enabled: true }],
+      });
+      // A distinct launch code per request, so a duplicate load would show up.
+      let minted = 0;
+      api.requestArtifactLaunch.mockImplementation(async () => {
+        minted += 1;
+        return { launch_url: `https://artifact.catsco.cc/_launch/${minted}` };
+      });
+
+      // Open a different application in each conversation.
+      for (let index = 0; index < topics.length; index += 1) {
+        await mountTopic(root, topics[index], {
+          cloudArtifactsRequest: {
+            requestId: `req-${index}`,
+            agentUid: 7,
+            topicId: topics[index],
+            initialTab: 'gateway',
+            app: apps[index],
+          },
+        });
+        await act(async () => {
+          await flushPromises();
+        });
+        // The frame must keep the launch address: that address is what carries
+        // the visitor's identity. Navigating to the plain application address
+        // after load was tried and reverted — the app reloaded without its code
+        // and every open landed on "需要先确认身份". The title names the app,
+        // which is what proves this conversation is not showing a neighbour's.
+        const launchFrame = activeGatewayFrame(container);
+        expect(launchFrame?.getAttribute('title')).toBe(apps[index].title);
+        expect(launchFrame?.getAttribute('src')).toMatch(/\/_launch\/\d+$/);
+        await act(async () => {
+          Simulate.load(launchFrame);
+          await Promise.resolve();
+        });
+        // A load must not rewrite the address away from the launch code.
+        expect(activeGatewayFrame(container)?.getAttribute('src'))
+          .toMatch(/\/_launch\/\d+$/);
+      }
+
+      // Come back to each one in a different order: every conversation must
+      // still show its own application, never a neighbour's.
+      for (const index of [2, 0, 3, 1]) {
+        await mountTopic(root, topics[index]);
+        await act(async () => {
+          await flushPromises();
+        });
+        // The frame title names the application. Asserting it here is what
+        // catches "this conversation shows a neighbour's app". The address stays
+        // on the launch code: that is what carries identity, and a load must not
+        // rewrite it away.
+        const frameBack = activeGatewayFrame(container);
+        expect(frameBack?.getAttribute('title')).toBe(apps[index].title);
+        await act(async () => {
+          Simulate.load(frameBack);
+          await Promise.resolve();
+        });
+        expect(activeGatewayFrame(container)?.getAttribute('src'))
+          .toMatch(/\/_launch\/\d+$/);
+      }
+      // Whether a switch reuses the live frame is covered by "keeps the
+      // application alive across a conversation switch and back". This test is
+      // about ownership only: no conversation may render another one's app.
+    });
+
     it('opens the application in a new page at its own address', async () => {
       // A new tab must not carry the hosted viewer URL: that address names this
       // conversation and the owning bot, which is wrong to show in an address bar
@@ -10462,6 +10618,17 @@ describe('MessagesView composer draft isolation', () => {
         expect(newPageButton).not.toBeNull();
         await act(async () => {
           Simulate.click(newPageButton);
+          await flushPromises();
+        });
+        // Leaving the conversation behind is confirmed first.
+        expect(opened).toHaveLength(0);
+        // The confirmation is portalled onto the document, outside this view.
+        const confirmButton = [...document.querySelectorAll('button')]
+          .find((button) => button.textContent === '仍然打开');
+        expect(confirmButton).not.toBeNull();
+        expect(document.body.textContent).toContain('新页面打开，则不再绑定会话');
+        await act(async () => {
+          Simulate.click(confirmButton);
           await flushPromises();
         });
       } finally {
@@ -10831,7 +10998,7 @@ describe('MessagesView gateway annotation flow', () => {
       container.querySelector('.cloud-artifact-main').click();
       await Promise.resolve();
     });
-    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    const frame = activeGatewayFrame(container);
     expect(frame).not.toBeNull();
     return frame;
   }
@@ -11087,7 +11254,7 @@ describe('MessagesView gateway annotation flow', () => {
         app: { id: 'saturday-demo', title: 'Saturday', url: `${APP_ORIGIN}/saturday-demo/` },
       },
     });
-    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    const frame = activeGatewayFrame(container);
     expect(frame).not.toBeNull();
     expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'saturday-demo', topic_id: topic });
     expect(container.querySelector('[aria-label="批注应用"]').getAttribute('aria-pressed')).toBe('false');
@@ -11591,7 +11758,11 @@ describe('MessagesView legacy saved annotation regressions', () => {
       container.querySelector('.cloud-artifact-main').click();
       await Promise.resolve();
     });
-    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    // Opening mints a launch code first, so the frame appears a tick later.
+    await act(async () => {
+      await flushPromises();
+    });
+    const frame = activeGatewayFrame(container);
     expect(frame).not.toBeNull();
     frame.dataset.legacyTopic = topic;
     return frame;

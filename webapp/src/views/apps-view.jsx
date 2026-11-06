@@ -16,6 +16,7 @@ import {
 import { api } from '../api';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import CustomSelect from '../widgets/custom-select';
+import { useDetachSessionConfirm } from '../widgets/detach-session-confirm';
 import AppMetadataEditor from '../widgets/app-metadata-editor';
 import LoadingState from '../widgets/loading-state';
 import '../css/apps-view.css';
@@ -405,6 +406,8 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
     ? `已加载 ${resolvedAgentCount} 个 Agent，正在读取 ${loadingAgentCount} 个`
     : '';
 
+  const { requestDetach, dialog: detachDialog } = useDetachSessionConfirm();
+
   const openApp = useCallback(async (app, target = 'viewer') => {
     if (!app?.id || !app?.url) return;
     const requestID = ++launchRequestRef.current;
@@ -420,12 +423,14 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
     if (requestID !== launchRequestRef.current) return;
     setOpeningID('');
     if (target === 'window') {
-      window.open(viewerURL, '_blank', 'noopener,noreferrer');
+      // The launched URL carries the conversation binding; the app's own
+      // address does not. Say so before the tab is opened.
+      requestDetach(app, () => window.open(viewerURL, '_blank', 'noopener,noreferrer'));
       return;
     }
     rememberListScroll();
     setSelectedApp({ ...app, viewerURL });
-  }, [topicId, rememberListScroll]);
+  }, [topicId, rememberListScroll, requestDetach]);
 
   const returnToList = () => {
     launchRequestRef.current += 1;
@@ -450,6 +455,7 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
           </button>
         </div>
         <iframe className="cc-apps-viewer-frame" src={selectedApp.viewerURL || selectedApp.url} title={pageTitle} sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals" referrerPolicy="no-referrer" />
+        {detachDialog}
       </section>
     );
   }
@@ -521,6 +527,7 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
           ? { ...app, ...updated, sourceAgent: app.sourceAgent } : app));
         setEditingApp(null);
       }} />}
+      {detachDialog}
     </section>
   );
 }

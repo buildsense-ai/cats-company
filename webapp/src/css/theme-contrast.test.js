@@ -44,7 +44,7 @@ describe('theme surface and primary action contrast', () => {
   });
 
   it('uses semantic colors for artifact confirmations and primary SkillHub actions', () => {
-    expect(artifacts).toMatch(/\.cloud-artifact-confirm\s*\{[^}]*background:\s*var\(--cc-history-panel-bg\)/);
+    expect(artifacts).toMatch(/\.cloud-artifact-confirm\s*\{[^}]*background:\s*var\(--cc-modal-surface/);
     expect(artifacts).toMatch(/\.cloud-artifact-confirm h4\s*\{[^}]*color:\s*var\(--cc-text\)/);
     expect(skillHub).toMatch(/\.cc-skillhub-page button\.primary\s*\{[^}]*background:\s*var\(--cc-action-bg\);[^}]*color:\s*var\(--cc-on-action\)/);
   });
