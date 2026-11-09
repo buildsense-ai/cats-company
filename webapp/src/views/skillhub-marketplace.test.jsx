@@ -5,6 +5,7 @@ import { getAuthRevision, setToken } from '../auth-session';
 import { marketplaceApi, marketplaceImage, imageFileBase64 } from '../skillhub-marketplace-api';
 import { MarketplaceProvider, MarketplaceFilters, mergeMarketplaceLibrary, useMarketplace, useMarketplaceCatalogue } from './skillhub-marketplace-state';
 import { IntroductionEditor, IntroImage, MarketplaceIntroduction, RichIntroduction, validIntro } from './skillhub-marketplace-intro';
+import SkillHubContent from './skillhub-content';
 
 vi.mock('../skillhub-marketplace-api', () => ({
   marketplaceApi: Object.fromEntries(['capabilities', 'catalogue', 'presentation', 'draft', 'save', 'publish', 'unpublish', 'upload'].map((k) => [k, vi.fn()])),
@@ -335,6 +336,26 @@ function NavigationHarness({ action }) {
   const { navigate } = useMarketplace();
   return <><button onClick={() => navigate(action)}>切换测试 Bot</button><IntroductionEditor target={target} initialHead={head(1)} /></>;
 }
+it('asks before opening the update list with unsaved introduction and respects cancellation', async () => {
+  const showUpdates = vi.fn(); window.confirm.mockReturnValue(false);
+  await render(<MarketplaceProvider>
+    <SkillHubContent
+      agentOptions={[{ value: '42', label: 'Owner Bot', updateCount: 1 }]}
+      selectedBotUID='42' definition={{ skills: [] }} activeSection='added'
+      librarySkills={[]} selectedUpdateCount={1} onToggleUpdates={showUpdates}
+      onChangeSection={() => {}} onSelectAgent={() => {}}
+    />
+    <IntroductionEditor target={target} initialHead={head(1)} />
+  </MarketplaceProvider>);
+  await act(async () => Simulate.change(container.querySelector('textarea'), { target: { value: 'unsaved' } }));
+  const updateFilter = container.querySelector('.cc-skillhub-updates-filter');
+  await act(async () => updateFilter.click());
+  expect(showUpdates).not.toHaveBeenCalled();
+  expect(container.querySelector('textarea').value).toBe('unsaved');
+  window.confirm.mockReturnValue(true);
+  await act(async () => updateFilter.click());
+  expect(showUpdates).toHaveBeenCalledTimes(1);
+});
 it('asks before switching bots with unsaved introduction and respects cancellation', async () => {
   const navigate = vi.fn(); window.confirm.mockReturnValue(false);
   await render(<MarketplaceProvider><NavigationHarness action={navigate} /></MarketplaceProvider>);
