@@ -118,7 +118,10 @@ export default function SkillHubContent(props) {
               selectedUpdateCount={selectedUpdateCount}
               selectedUpdateStatus={selectedUpdateStatus}
               updatesOnly={updatesOnly}
-              onToggleUpdates={() => { setCategory(''); onToggleUpdates(); }}
+              onToggleUpdates={() => {
+                const showUpdates = () => { setCategory(''); onToggleUpdates(); };
+                if (navigate) navigate(showUpdates); else showUpdates();
+              }}
               language={language}
               onLanguageChange={changeLanguage}
             />
