@@ -177,6 +177,7 @@ function AgentContext({
 }
 
 function AgentSelect({ agents, disabled, onChange, value }) {
+  const selected = agents.find(agent => agent.value === value);
   return (
     <span className='cc-skillhub-select-wrap'>
       <select
@@ -191,7 +192,7 @@ function AgentSelect({ agents, disabled, onChange, value }) {
         {agents.map((agent) => <option key={agent.value} value={agent.value}>{agent.label}</option>)}
       </select>
       <CustomSelect
-        ariaLabel='当前 Agent'
+        ariaLabel={selected ? `当前 Agent：${selected.label}${selected.updateCount > 0 ? `，${selected.updateCount} 个 Skill 可更新` : ''}` : '当前 Agent'}
         className='cc-skillhub-agent-select'
         density='comfortable'
         disabled={disabled}

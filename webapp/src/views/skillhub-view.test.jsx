@@ -3576,6 +3576,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     expect(container.querySelector('.cc-skillhub-agent-update-hint').textContent).toContain('点击「可更新」');
+    expect(container.querySelector('.cc-skillhub-agent-select-trigger').getAttribute('aria-label')).toBe('当前 Agent：烙馍村村长，2 个 Skill 可更新');
     expect(container.querySelector('.cc-skillhub-updates-filter span').textContent).toBe('2');
     expect(container.querySelector('#skillhub-catalogue-tab').getAttribute('aria-selected')).toBe('true');
     await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-updates-filter')); });
