@@ -339,3 +339,75 @@ func TestChannelOutboundUploadObjectKeyRejectsForeignAndMismatchedURLs(t *testin
 		}
 	}
 }
+
+func TestZOSOpenResolvesReadErrorsBeforeLocalFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		fallback bool
+		remote   string
+		want     string
+		wantErr  bool
+	}{
+		{name: "missing with fallback", status: http.StatusNotFound, fallback: true, want: "legacy local content"},
+		{name: "missing without fallback", status: http.StatusNotFound, wantErr: true},
+		{name: "denied with fallback", status: http.StatusForbidden, fallback: true, want: "legacy local content"},
+		{name: "remote takes priority", status: http.StatusOK, fallback: true, remote: "remote content", want: "remote content"},
+		{name: "empty remote takes priority", status: http.StatusOK, fallback: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/test-bucket/uploads/files/legacy.txt" {
+					t.Errorf("unexpected S3 path %s", r.URL.Path)
+				}
+				if tc.status != http.StatusOK {
+					w.Header().Set("Content-Type", "application/xml")
+					w.WriteHeader(tc.status)
+					code := "NoSuchKey"
+					if tc.status == http.StatusForbidden {
+						code = "AccessDenied"
+					}
+					_, _ = io.WriteString(w, "<Error><Code>"+code+"</Code><Message>remote unavailable</Message></Error>")
+					return
+				}
+				w.Header().Set("Content-Type", "text/plain")
+				w.Header().Set("Last-Modified", "Mon, 09 Nov 2026 00:00:00 GMT")
+				w.Header().Set("ETag", `"test-etag"`)
+				_, _ = io.WriteString(w, tc.remote)
+			}))
+			defer endpoint.Close()
+			storage, err := newZOSUploadStorage(zosUploadConfig{
+				Endpoint: endpoint.URL, Region: "cn-huanan-02", Bucket: "test-bucket",
+				AccessKeyID: "test-key", SecretAccessKey: "test-secret", LocalFallback: tc.fallback,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseDir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(baseDir, "files"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(baseDir, "files", "legacy.txt"), []byte("legacy local content"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			body, err := openUploadWithLocalFallback(context.Background(), storage, baseDir, "uploads/files/legacy.txt")
+			if tc.wantErr {
+				if body != nil {
+					_ = body.Close()
+				}
+				if !isUploadNotFound(err) {
+					t.Fatalf("open error = %v, want remote not-found error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, readErr := io.ReadAll(body)
+			closeErr := body.Close()
+			if readErr != nil || closeErr != nil || string(got) != tc.want {
+				t.Fatalf("read = %q, readErr=%v closeErr=%v, want %q", got, readErr, closeErr, tc.want)
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -272,7 +273,21 @@ func (s *zosUploadStorage) Open(ctx context.Context, key string) (io.ReadCloser,
 	if err != nil {
 		return nil, err
 	}
-	return s.client.GetObject(ctx, s.bucket, objectKey, minio.GetObjectOptions{})
+	object, err := s.client.GetObject(ctx, s.bucket, objectKey, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, err
+	}
+	// MinIO starts the GET on the first read. Resolve errors here so callers
+	// can use local fallback before returning a reader, preserving buffered bytes.
+	reader := bufio.NewReader(object)
+	if _, err := reader.Peek(1); err != nil && !errors.Is(err, io.EOF) {
+		_ = object.Close()
+		return nil, err
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{reader, object}, nil
 }
 
 func (s *zosUploadStorage) Stat(ctx context.Context, key string) (UploadObjectInfo, error) {
