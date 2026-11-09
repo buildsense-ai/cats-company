@@ -1105,18 +1105,31 @@ describe('MessagesView composer draft isolation', () => {
     it('delivers structured handoff through the conversation panel and accepts a second request', async () => {
       await setup();
       api.listArtifactApps.mockResolvedValue({ apps: [app] });
-      api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://artifact.catsco.cc/_launch/history-audit' });
+      api.requestArtifactLaunch
+        .mockResolvedValueOnce({ launch_url: 'https://artifact.catsco.cc/_launch/history-audit-first' })
+        .mockResolvedValueOnce({ launch_url: 'https://artifact.catsco.cc/_launch/history-audit-second' });
+      let residentFrame;
+      let residentSrc;
+      let post;
       for (const [index, requestId] of ['wired-request-9801', 'wired-request-9802'].entries()) {
         const request = { ...data, seq: 9901 + index, metadata: { app_open: {
           ...data.metadata.app_open, handoff: { ...data.metadata.app_open.handoff,
             request_id: requestId, parameters: { data_path: `/data/input-${index}` } },
         } } };
+        post?.mockClear();
         await act(async () => { wsHandler({ data: request }); await flushPromises(); });
         const frame = container.querySelector('iframe');
         expect(frame).not.toBeNull();
-        const post = vi.spyOn(frame.contentWindow, 'postMessage');
-        post.mockClear();
-        await act(async () => { Simulate.load(frame); await flushPromises(); });
+        if (index === 0) {
+          residentFrame = frame;
+          residentSrc = frame.src;
+          post = vi.spyOn(frame.contentWindow, 'postMessage');
+          await act(async () => { Simulate.load(frame); await flushPromises(); });
+        } else {
+          expect(frame).toBe(residentFrame);
+          expect(frame.src).toBe(residentSrc);
+        }
+        expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
         const hello = post.mock.calls.map(call => call[0]).find(message => message.type === 'hello');
         expect(hello).toEqual(expect.objectContaining({ protocol: 'catsco.app-handoff.v1', request_id: requestId }));
         await act(async () => window.dispatchEvent(new MessageEvent('message', {

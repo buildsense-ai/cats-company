@@ -26,6 +26,7 @@ vi.mock('../api', () => ({
 }));
 
 import { api } from '../api';
+import { getToken, setToken } from '../auth-session';
 import { FeedbackProvider } from '../components/feedback-system';
 import CloudArtifactsPanel from './cloud-artifacts-panel';
 import { promoGatewayApp, promoRegistryArtifact } from '../test-fixtures/promo-gateway';
@@ -316,6 +317,7 @@ describe('CloudArtifactsPanel', () => {
       expires_at: Date.now() + 60000, parameters: {},
     } };
     let finish;
+    const previousToken = getToken();
     api.listArtifactApps.mockResolvedValue({ apps: [app] });
     api.requestArtifactLaunch.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} />));
@@ -324,11 +326,12 @@ describe('CloudArtifactsPanel', () => {
     if (boundary === 'topic') {
       await act(async () => root.render(<TestPanel initialTab="gateway" topicId="p2p_7_other" />));
     } else {
-      await act(async () => window.dispatchEvent(new Event('cc:auth-changed')));
+      await act(async () => setToken('resident-new-login'));
     }
     await act(async () => finish({ launch_url: 'https://app.example/_launch/stale-' + boundary }));
     expect(container.querySelector('iframe')).toBeNull();
     expect(container.textContent).not.toContain('等待应用就绪');
+    if (boundary === 'auth') await act(async () => setToken(previousToken));
   });
 
   test('shows only files and results, with the result visibility explanation', async () => {
