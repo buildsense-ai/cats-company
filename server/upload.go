@@ -96,7 +96,7 @@ func isAllowedImageContentType(contentType string) bool {
 var allowedFileExts = map[string]bool{
 	".txt": true, ".pdf": true, ".doc": true, ".docx": true,
 	".xls": true, ".xlsx": true, ".ppt": true, ".pptx": true,
-	".zip": true, ".rar": true, ".7z": true,
+	".zip": true, ".skill": true, ".rar": true, ".7z": true,
 	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
 	".mp3": true, ".mp4": true, ".webm": true, ".ogg": true, ".ogv": true,
 	".m4v": true, ".mov": true, ".wav": true, ".amr": true, ".opus": true,
