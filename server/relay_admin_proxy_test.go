@@ -740,3 +740,54 @@ func TestRelayAdminCloudWorkerBillingWriteMarker(t *testing.T) {
 		t.Fatal("relay did not receive the local commercial write marker")
 	}
 }
+
+func TestRelayAdminCommercialActionsProxy(t *testing.T) {
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodGet, "/local/commercial-ops/api/actions?uid=116&operation_id=ops-one", ""},
+		{http.MethodPost, "/local/commercial-ops/api/actions", `{"uid":116,"preview":true}`},
+		{http.MethodPost, "/local/commercial-ops/api/actions/", `{"uid":116,"preview":false,"operation_id":"ops-one"}`},
+	} {
+		t.Run(tc.method+tc.path+tc.body, func(t *testing.T) {
+			calls := 0
+			relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				body, _ := io.ReadAll(r.Body)
+				expected := httptest.NewRequest(tc.method, tc.path, nil).URL
+				if r.Method != tc.method || r.URL.Path != expected.Path || r.URL.Query().Encode() != expected.Query().Encode() || string(body) != tc.body {
+					t.Errorf("forwarded %s %s %s", r.Method, r.URL.RequestURI(), body)
+				}
+				if tc.method == http.MethodPost && r.Header.Get("X-Cats-Relay-Local-Write") != "commercial-ops" {
+					t.Error("missing trusted write marker")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"ok":true}`)
+			}))
+			defer relay.Close()
+			h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+			for _, uid := range []int64{7, 38} {
+				req := httptest.NewRequest(tc.method, relayAdminRewritePrefix+tc.path, strings.NewReader(tc.body))
+				req = req.WithContext(context.WithValue(req.Context(), uidKey, uid))
+				rec := httptest.NewRecorder()
+				h.HandleProxy(rec, req)
+				want := http.StatusForbidden
+				if uid == 38 {
+					want = http.StatusOK
+				}
+				if rec.Code != want {
+					t.Fatalf("uid=%d status=%d body=%s", uid, rec.Code, rec.Body.String())
+				}
+			}
+			if calls != 1 {
+				t.Fatalf("upstream calls=%d, want 1", calls)
+			}
+		})
+	}
+	for _, path := range []string{"/local/commercial-ops/api/actions/delete", "/local/commercial-ops/api/actions-extra"} {
+		if relayAdminPathAllowed(path) {
+			t.Fatalf("unexpected allowed path: %s", path)
+		}
+	}
+	if relayAdminMethodAllowed(http.MethodDelete, "/local/commercial-ops/api/actions") {
+		t.Fatal("DELETE must remain blocked")
+	}
+}
