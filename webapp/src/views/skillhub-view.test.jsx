@@ -3585,6 +3585,53 @@ describe('SkillHubView', () => {
     expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
   });
 
+  it.each(['ready', 'partial', 'error'])('keeps an exit from an active update filter when the summary becomes %s with zero updates', async (status) => {
+    const render = (summary) => <SkillHubView user={{ uid: 7 }} skillHubUpdateSummary={{ byBot: { 42: summary } }} />;
+    await act(async () => { root.render(render({ status: 'ready', count: 1 })); });
+    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-updates-filter')); });
+    await act(async () => { root.render(render({ status, count: 0 })); });
+    expect(container.querySelector('.cc-skillhub-updates-filter')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('.cc-skillhub-added-item')).toBeNull();
+    const exit = [...container.querySelectorAll('button')].find(button => button.textContent === '查看全部能力');
+    expect(exit).toBeTruthy();
+    await act(async () => { Simulate.click(exit); });
+    expect(container.querySelector('.cc-skillhub-added-item')).toBeTruthy();
+    expect(container.querySelector('.cc-skillhub-updates-filter')).toBeNull();
+  });
+
+  it.each([
+    { status: 'ready', anotherUpdate: false, failure: false, exits: true },
+    { status: 'ready', anotherUpdate: true, failure: false, exits: false },
+    { status: 'partial', anotherUpdate: false, failure: false, exits: false },
+    { status: 'ready', anotherUpdate: false, failure: true, exits: false },
+  ])('returns to the overview only after the final confirmed successful update: %j', async ({ status, anotherUpdate, failure, exits }) => {
+    const old = id => ({ source: 'skillhub', skillId: id, version: '1.0.0', contentHash: 'a'.repeat(64) });
+    const installed = [old('tools/summarize'), old('tools/review')];
+    api.getBotDefinitionSkills.mockResolvedValue({ botId: '42', revision: 3, skills: installed });
+    api.searchSkillHubSkills.mockResolvedValue({ skills: [
+      { id: 'tools/summarize', name: 'Summarize', latestVersion: '2.0.0', contentHash: 'b'.repeat(64) },
+      { id: 'tools/review', name: 'Review', latestVersion: anotherUpdate ? '2.0.0' : '1.0.0', contentHash: 'a'.repeat(64) },
+    ] });
+    if (failure) api.updateBotDefinitionSkills.mockRejectedValue(new Error('update failed'));
+    else api.updateBotDefinitionSkills.mockResolvedValue({ botId: '42', revision: 4, skills: [
+      { ...installed[0], version: '2.0.0', contentHash: 'b'.repeat(64) }, installed[1],
+    ] });
+    await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} skillHubUpdateSummary={{
+      byBot: { 42: { status, count: anotherUpdate ? 2 : 1 } },
+    }} />); });
+    await openCatalogue();
+    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-updates-filter')); });
+    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-update-action')); });
+    expect(container.querySelector('.cc-skillhub-updates-filter')?.getAttribute('aria-pressed')).toBe(String(!exits));
+    expect(container.textContent.includes('更新已完成，已显示全部能力')).toBe(exits);
+    if (exits) expect(container.querySelectorAll('.cc-skillhub-added-item')).toHaveLength(2);
+    if (failure) expect(container.textContent).toContain('update failed');
+    if (!exits) {
+      await act(async () => { Simulate.click(container.querySelector('#skillhub-added-tab')); });
+      expect(container.querySelectorAll('.cc-skillhub-added-item')).toHaveLength(2);
+    }
+  });
+
   it('hides update guidance when no accessible owner has confirmed updates', async () => {
     await act(async () => {
       root.render(<SkillHubView user={{ uid: 7 }} skillHubUpdateSummary={{
