@@ -243,6 +243,94 @@ describe('CloudArtifactsPanel', () => {
     expect(post).toHaveBeenCalledTimes(1);
   });
 
+
+  test.each(['before-ready', 'after-ready', 'before-load'])('keeps the resident frame for a new handoff %s without another launch or load', async (timing) => {
+    const app = { id: 'resident-' + timing, title: 'Resident', url: 'https://app.example/', handoff: {
+      request_id: 'resident-first-' + timing, topic_id: 'p2p_7_440', action: 'initialize',
+      expires_at: Date.now() + 60000, parameters: { data_path: '/data/first' },
+    } };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch
+      .mockResolvedValueOnce({ launch_url: 'https://app.example/_launch/first-' + timing })
+      .mockResolvedValueOnce({ launch_url: 'https://app.example/_launch/second-' + timing });
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} />));
+    const frame = container.querySelector('iframe');
+    const src = frame.src;
+    const post = vi.spyOn(frame.contentWindow, 'postMessage');
+    const ready = async (hello) => act(async () => window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://app.example', source: frame.contentWindow,
+      data: { ...hello, type: 'ready', schema: { data_path: { type: 'path' } } },
+    })));
+    if (timing !== 'before-load') await act(async () => Simulate.load(frame));
+    const firstHello = post.mock.calls[0]?.[0];
+    if (timing === 'after-ready') await ready(firstHello);
+    const next = { ...app, handoff: { ...app.handoff, request_id: 'resident-second-' + timing, parameters: { data_path: '/data/second' } } };
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={next} />));
+    expect(container.querySelector('iframe')).toBe(frame);
+    expect(frame.src).toBe(src);
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+    if (timing === 'before-load') {
+      expect(post).not.toHaveBeenCalled();
+      await act(async () => Simulate.load(frame));
+    }
+    const secondHello = post.mock.calls.at(-1)[0];
+    expect(secondHello.type).toBe('hello');
+    expect(secondHello.request_id).toBe(next.handoff.request_id);
+    if (firstHello) {
+      expect(secondHello.nonce).not.toBe(firstHello.nonce);
+      const count = post.mock.calls.length;
+      await ready(firstHello);
+      expect(post).toHaveBeenCalledTimes(count);
+    }
+    await ready(secondHello);
+    expect(post.mock.calls.at(-1)[0]).toMatchObject({ type: 'handoff', request_id: next.handoff.request_id, parameters: { data_path: '/data/second' } });
+    const count = post.mock.calls.length;
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={{ ...next }} />));
+    expect(post).toHaveBeenCalledTimes(count);
+  });
+
+  test('does not send a replacement handoff while parked or through a visitor frame', async () => {
+    const app = { id: 'resident-visitor', title: 'Visitor', url: 'https://app.example/', handoff: {
+      request_id: 'visitor-first-request', topic_id: 'p2p_7_440', action: 'initialize',
+      expires_at: Date.now() + 60000, parameters: {},
+    } };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockRejectedValue(new Error('offline'));
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} />));
+    const frame = container.querySelector('iframe');
+    const post = vi.spyOn(frame.contentWindow, 'postMessage');
+    await act(async () => Simulate.load(frame));
+    const next = { ...app, handoff: { ...app.handoff, request_id: 'visitor-next-request' } };
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={next} isActive={false} />));
+    expect(container.querySelector('iframe')).toBe(frame);
+    expect(post).not.toHaveBeenCalled();
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={next} isActive />));
+    expect(container.querySelector('iframe')).toBe(frame);
+    expect(post).not.toHaveBeenCalled();
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['topic', 'auth'])('discards a real pending launch after %s changes', async (boundary) => {
+    const app = { id: 'pending-' + boundary, title: 'Pending', url: 'https://app.example/', handoff: {
+      request_id: 'pending-request-' + boundary, topic_id: 'p2p_7_440', action: 'initialize',
+      expires_at: Date.now() + 60000, parameters: {},
+    } };
+    let finish;
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} />));
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('iframe')).toBeNull();
+    if (boundary === 'topic') {
+      await act(async () => root.render(<TestPanel initialTab="gateway" topicId="p2p_7_other" />));
+    } else {
+      await act(async () => window.dispatchEvent(new Event('cc:auth-changed')));
+    }
+    await act(async () => finish({ launch_url: 'https://app.example/_launch/stale-' + boundary }));
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.textContent).not.toContain('等待应用就绪');
+  });
+
   test('shows only files and results, with the result visibility explanation', async () => {
     await renderPanel();
 
