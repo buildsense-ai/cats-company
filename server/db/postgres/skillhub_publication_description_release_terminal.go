@@ -100,9 +100,12 @@ func (a *Adapter) RecordSkillHubPublicationDescriptionReleaseTerminal(ctx contex
 	if !reflect.DeepEqual(*o, expected) {
 		return nil, store.ErrSkillHubPublicationConflict
 	}
+	// Concurrent retries can collide on application_id, entry_id, or permit_id.
+	// Handle every unique index, then verify the retained receipt below so that
+	// only an identical terminal is accepted as an idempotent retry.
 	_, err = tx.ExecContext(ctx, `INSERT INTO skillhub_publication_description_release_terminals
 		(application_id,entry_id,permit_id,intent_identity_hash,payload,identity_hash) VALUES($1,$2,$3,$4,$5,$6)
-		ON CONFLICT(application_id) DO NOTHING`, terminal.ApplicationID, terminal.EntryID, terminal.PermitID, terminal.IntentHash, raw, hash)
+		ON CONFLICT DO NOTHING`, terminal.ApplicationID, terminal.EntryID, terminal.PermitID, terminal.IntentHash, raw, hash)
 	if err != nil {
 		return nil, err
 	}

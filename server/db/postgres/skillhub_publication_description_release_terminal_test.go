@@ -71,17 +71,22 @@ func TestPostgresSkillHubPublicationDescriptionTerminalConcurrentRecovery(t *tes
 	}
 	defer peer.Close()
 	var wg sync.WaitGroup
-	results := make(chan *store.SkillHubPublicationDescriptionReleaseTerminalReceipt, 4)
-	errs := make(chan error, 4)
-	for _, adapter := range []*Adapter{db, peer, db, peer} {
+	const writers = 16
+	results := make(chan *store.SkillHubPublicationDescriptionReleaseTerminalReceipt, writers)
+	errs := make(chan error, writers)
+	start := make(chan struct{})
+	for i := 0; i < writers; i++ {
+		adapter := []*Adapter{db, peer}[i%2]
 		wg.Add(1)
 		go func(a *Adapter) {
 			defer wg.Done()
+			<-start
 			r, err := a.RecordSkillHubPublicationDescriptionReleaseTerminal(ctx, actor, o, terminal)
 			results <- r
 			errs <- err
 		}(adapter)
 	}
+	close(start)
 	wg.Wait()
 	close(results)
 	close(errs)
