@@ -1147,9 +1147,20 @@ export default function MessagesView({
   const activePanelTab = ownPanelIsAuthoritative && ownPanelRecord.open
     ? ownPanelRecord.tab
     : cloudArtifactsTab;
-  const activePanelApp = ownPanelIsAuthoritative && ownPanelRecord.open
-    ? ownPanelRecord.app
-    : cloudArtifactsInitialApp;
+  // Navigation records intentionally exclude commands. Merge only the live
+  // request for this exact conversation/application; never write it to the store.
+  const activePanelApp = useMemo(() => {
+    const app = ownPanelIsAuthoritative && ownPanelRecord.open
+      ? ownPanelRecord.app
+      : cloudArtifactsInitialApp;
+    const request = cloudArtifactsInitialApp?.handoff;
+    return request?.topic_id === topic
+      && String(app?.id) === String(cloudArtifactsInitialApp?.id)
+      && app?.url === cloudArtifactsInitialApp?.url
+      ? { ...app, handoff: request }
+      : app;
+  }, [ownPanelIsAuthoritative, ownPanelRecord.open, ownPanelRecord.app?.id,
+    ownPanelRecord.app?.url, cloudArtifactsInitialApp, topic]);
   // Panels of other conversations stay mounted while the user works elsewhere:
   // an application's own process only survives if its iframe is never torn down.
   //
@@ -1799,6 +1810,9 @@ export default function MessagesView({
       for (const operation of appOpenInFlightRef.current.values()) operation.cancelled = true;
       appOpenInFlightRef.current.clear();
       setPendingAppOpenMessage(null);
+      setCloudArtifactsInitialApp(current => current?.handoff
+        ? Object.fromEntries(Object.entries(current).filter(([key]) => key !== 'handoff'))
+        : current);
       pendingGatewayAnnotationStartRef.current = null;
       gatewayAnnotationBindingRef.current = null;
       gatewayAnnotationContextRef.current = null;
@@ -7895,6 +7909,7 @@ export default function MessagesView({
                 topicId={panelTopic}
                 tab={isActive ? activePanelTab : entry.tab}
                 initialApp={isActive ? activePanelApp : entry.app}
+                isActive={isActive}
                 onTabChange={isActive ? changeArtifactPanelTab : undefined}
                 onClose={isActive ? closeSidePanel : () => forgetArtifactPanelEntry(panelTopic)}
                 onPreviewArtifact={isActive ? previewCloudArtifact : undefined}

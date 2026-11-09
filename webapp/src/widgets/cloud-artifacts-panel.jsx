@@ -160,6 +160,7 @@ export default function CloudArtifactsPanel({
   topicId,
   initialTab = 'files',
   initialApp,
+  isActive = true,
   tab: controlledTab,
   onTabChange,
   onClose,
@@ -243,15 +244,33 @@ export default function CloudArtifactsPanel({
   const [gatewayRefreshing, setGatewayRefreshing] = useState(false);
   const [handoffState, setHandoffState] = useState('');
   const handoffStopRef = useRef(null);
+  const liveHandoffRef = useRef(null);
+  liveHandoffRef.current = isActive ? initialApp?.handoff : null;
   const stopHandoff = useCallback(() => {
     handoffStopRef.current?.();
     handoffStopRef.current = null;
   }, []);
-  useEffect(() => { stopHandoff(); setHandoffState(''); return stopHandoff; }, [topicId, agentUid, stopHandoff]);
+  // Parking stops the command channel, not the resident application's work.
+  useEffect(() => {
+    stopHandoff();
+    setHandoffState('');
+    if (!isActive) {
+      const preview = gatewayPreviewRef.current;
+      if (preview?.handoff) {
+        const { handoff: _discarded, ...navigation } = preview;
+        gatewayPreviewRef.current = navigation;
+        setGatewayPreview(navigation);
+      }
+    }
+    return stopHandoff;
+  }, [topicId, agentUid, isActive, initialApp?.handoff?.request_id, stopHandoff]);
   const handoffFrameLoaded = (frame) => {
     stopHandoff();
+    if (!isActive) return;
     const request = gatewayPreview?.handoff;
-    if (!request) { setHandoffState(''); return; }
+    // Returning to a resident panel restores navigation, never an old command.
+    // This also rejects a launch that completed after its topic was parked.
+    if (!request || request.request_id !== initialApp?.handoff?.request_id) { setHandoffState(''); return; }
     const key = `${agentUid}:${topicId}:${request.request_id}`;
     if (!claimHandoffRequest(key)) { setHandoffState('reloaded'); return; }
     if (gatewayPreview.visitor) { setHandoffState('invalid'); return; }
@@ -510,6 +529,7 @@ export default function CloudArtifactsPanel({
     }
     const nextPreview = {
       ...app,
+      handoff: app.handoff === liveHandoffRef.current ? app.handoff : undefined,
       viewerURL,
       visitor,
       artifact,
@@ -596,6 +616,7 @@ export default function CloudArtifactsPanel({
 
   useEffect(() => {
     const invalidate = () => {
+      liveHandoffRef.current = null;
       retireGatewayOpen();
       onGatewayFrameChange?.(null);
       gatewayPreviewRef.current = null;

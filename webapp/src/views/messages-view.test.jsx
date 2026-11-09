@@ -1130,6 +1130,35 @@ describe('MessagesView composer draft isolation', () => {
         expect(JSON.stringify({ ...sessionStorage })).not.toContain(`/data/input-${index}`);
       }
     });
+    it.each(['topic', 'auth'])('stops a wired handshake on %s change without reloading the resident frame', async (change) => {
+      await setup();
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://artifact.catsco.cc/_launch/lifecycle' });
+      const request = { ...data, seq: 9950, metadata: { app_open: {
+        ...data.metadata.app_open, handoff: { ...data.metadata.app_open.handoff,
+          request_id: `lifecycle-${change}-9950`, parameters: { data_path: '/data/lifecycle' } },
+      } } };
+      await act(async () => { wsHandler({ data: request }); await flushPromises(); });
+      const frame = container.querySelector('iframe');
+      const post = vi.spyOn(frame.contentWindow, 'postMessage');
+      await act(async () => Simulate.load(frame));
+      const hello = post.mock.calls[0][0];
+      if (change === 'topic') await mountTopic(root, 'p2p_1_3');
+      else await act(async () => { window.dispatchEvent(new Event('cc:auth-changed')); await flushPromises(); });
+      await act(async () => window.dispatchEvent(new MessageEvent('message', {
+        origin: 'https://artifact.catsco.cc', source: frame.contentWindow,
+        data: { ...hello, type: 'ready', schema: { data_path: { type: 'path' } } },
+      })));
+      expect(post.mock.calls.map(call => call[0].type)).toEqual(['hello']);
+      if (change === 'topic') {
+        expect(container.querySelector('iframe')).toBe(frame);
+        await mountTopic(root, data.topic);
+        expect(container.querySelector('iframe')).toBe(frame);
+        await act(async () => Simulate.load(frame));
+        expect(post).toHaveBeenCalledTimes(1);
+        expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+      }
+    });
     it('reports the actual catalogue error and permits a duplicate to recover, then deduplicates delivery', async () => {
       await setup();
       api.listArtifactApps.mockRejectedValueOnce(new Error('catalogue permission denied'));
