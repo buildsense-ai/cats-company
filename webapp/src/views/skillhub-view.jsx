@@ -2191,16 +2191,23 @@ export default function SkillHubView({
         revision: initiatingRevision,
       });
       if (saved?.ok && initiatingBotUID === selectedBotUIDRef.current) {
+        const updatesComplete = replacing && updatesOnly && selectedUpdateStatus === 'ready'
+          && saved.definition.skills.every((reference) => reference.localOnly || isPrivateSkillHubReference(reference.skillId)
+            || resolveSkillHubUpdateStatus(reference, reference.skillId === targetSkillID
+              ? resolved : addedSkillPresentationByID.get(reference.skillId)?.details) === 'current');
+        if (updatesComplete) setUpdatesOnly(false);
         const refresh = onRefreshSkillHubUpdateSummary?.();
         refresh?.catch?.(() => {});
         const installedName = resolved.displayName || resolved.skillId;
         const runtimeApply = await applyDefinitionToRuntime(initiatingBotUID);
+        if (initiatingBotUID !== selectedBotUIDRef.current) return;
         const operationLabel = replacing
           ? `已把 Agent“${agentName}”的 ${installedName} 更新到 ${formatSkillHubVersion(resolved.latestVersion)}`
           : `已为 Agent“${agentName}”添加 ${installedName}`;
-        setActionNotice(runtimeApply.status === 'applied'
+        const completionNotice = updatesComplete ? ' 当前可确认的 Skill 更新已完成，已显示全部能力。' : '';
+        setActionNotice((runtimeApply.status === 'applied'
           ? `${operationLabel}。运行环境已应用。`
-          : `${operationLabel}。运行环境等待应用，请保持 XiaoBa 在线。`);
+          : `${operationLabel}。运行环境等待应用，请保持 XiaoBa 在线。`) + completionNotice);
       }
     } catch (error) {
       if (
@@ -2934,7 +2941,13 @@ export default function SkillHubView({
     localWorkspaceRevision={localWorkspaceRevision}
     runtimeRouteError={runtimeRouteError}
     runtimeWorkspaceKnown={runtimeWorkspaceKnown}
-    onChangeSection={setActiveSection}
+    onChangeSection={(section) => {
+      setActiveSection(section);
+      if (section === 'added') {
+        setUpdatesOnly(false);
+        setAddedSkillQuery('');
+      }
+    }}
     onAddedSkillQuery={setAddedSkillQuery}
     onRefreshSkillHubUpdateSummary={onRefreshSkillHubUpdateSummary}
     onCopyLocalPath={copyLocalSkillsPath}
@@ -2963,6 +2976,7 @@ export default function SkillHubView({
       setRuntimeRouteError('');
       requestedBotSwitchRef.current = nextBotUID;
       setAddedSkillQuery('');
+      setUpdatesOnly(false);
       rememberSkillHubBotUID(user?.uid, nextBotUID);
       localRequestRef.current += 1;
       setSelectedBotUID(nextBotUID);

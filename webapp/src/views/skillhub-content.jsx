@@ -83,7 +83,10 @@ export default function SkillHubContent(props) {
   const guardedProps = {
     ...props,
     onSelectAgent: (value) => navigate ? navigate(() => props.onSelectAgent(value)) : props.onSelectAgent(value),
-    onChangeSection: (value) => navigate ? navigate(() => props.onChangeSection(value)) : props.onChangeSection(value),
+    onChangeSection: (value) => {
+      const change = () => { if (value === 'added') setCategory(''); props.onChangeSection(value); };
+      if (navigate) navigate(change); else change();
+    },
   };
   const {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled,
@@ -109,7 +112,7 @@ export default function SkillHubContent(props) {
         </header>
         {definitionError && <div className='cc-skillhub-alert error' role='alert'>{definitionError}</div>}
         {actionNotice && <div className='cc-skillhub-alert success' role='status'>{actionNotice}</div>}
-        {visibleSection === 'custom' ? <CustomSkills {...categorizedProps} /> : (
+        {visibleSection === 'custom' ? <CustomSkills {...categorizedProps} onChangeSection={guardedProps.onChangeSection} /> : (
           <>
             <SkillNavigation
               {...guardedProps}
@@ -132,7 +135,7 @@ export default function SkillHubContent(props) {
                 {skillAction?.type === 'remove' ? '正在移除能力…' : skillAction?.update ? '正在更新能力…' : '正在添加能力…'}
               </div>
             )}
-            {visibleSection === 'added' ? <AddedSkills key={props.selectedBotUID} {...categorizedProps} /> : <Catalogue key={props.selectedBotUID} {...categorizedProps} />}
+            {visibleSection === 'added' ? <AddedSkills key={props.selectedBotUID} {...categorizedProps} onChangeSection={guardedProps.onChangeSection} /> : <Catalogue key={props.selectedBotUID} {...categorizedProps} />}
           </>
         )}
       </div>
@@ -234,7 +237,7 @@ function SkillNavigation(props) {
             能力库
           </button>
         </div>
-        {!isReadOnly && selectedUpdateCount > 0 && (
+        {!isReadOnly && (selectedUpdateCount > 0 || updatesOnly) && (
           <button
             type='button'
             className={`cc-skillhub-updates-filter${updatesOnly ? ' active' : ''}`}
@@ -346,11 +349,12 @@ function AddedSkills(props) {
             />
           )}
           {visibleSkillCount === 0 && (
-            <EmptyState
+            <><EmptyState
               icon={<Search size={21} />}
               title={updatesOnly && !normalizedQuery ? '当前没有可更新的能力' : '没有找到匹配的能力'}
               copy={updatesOnly && !normalizedQuery ? '当前 Agent 已配置的 Skill 都是最新版本，或暂时无法确认更新状态。' : '试试能力名称、SkillHub ID 或运行目录名。'}
             />
+            {updatesOnly && <button type='button' className='cc-skillhub-back' onClick={() => onChangeSection('added')}>查看全部能力</button>}</>
           )}
         </div>
       )}
