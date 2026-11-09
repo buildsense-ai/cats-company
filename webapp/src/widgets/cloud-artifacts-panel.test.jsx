@@ -219,6 +219,30 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).toContain('不会重复发送');
   });
 
+  test('retires only the handshake when a resident panel is parked before ready', async () => {
+    const app = { id: 'parked-handoff', title: 'Parked', url: 'https://app.example/', handoff: {
+      request_id: 'parked-request-123', topic_id: 'p2p_7_440', action: 'initialize',
+      expires_at: Date.now() + 60000, parameters: { data_path: '/data/parked' },
+    } };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://app.example/_launch/parked' });
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} isActive />));
+    const frame = container.querySelector('iframe');
+    const post = vi.spyOn(frame.contentWindow, 'postMessage');
+    await act(async () => Simulate.load(frame));
+    const hello = post.mock.calls[0][0];
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} isActive={false} />));
+    await act(async () => window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://app.example', source: frame.contentWindow,
+      data: { ...hello, type: 'ready', schema: { data_path: { type: 'path' } } },
+    })));
+    expect(post.mock.calls.map(call => call[0].type)).toEqual(['hello']);
+    expect(container.querySelector('iframe')).toBe(frame);
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+    await act(async () => Simulate.load(frame));
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
   test('shows only files and results, with the result visibility explanation', async () => {
     await renderPanel();
 

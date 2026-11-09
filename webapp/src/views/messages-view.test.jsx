@@ -1102,6 +1102,34 @@ describe('MessagesView composer draft isolation', () => {
     async function deliver() {
       await act(async () => { wsHandler({ data }); await flushPromises(); });
     }
+    it('delivers structured handoff through the conversation panel and accepts a second request', async () => {
+      await setup();
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://artifact.catsco.cc/_launch/history-audit' });
+      for (const [index, requestId] of ['wired-request-9801', 'wired-request-9802'].entries()) {
+        const request = { ...data, seq: 9901 + index, metadata: { app_open: {
+          ...data.metadata.app_open, handoff: { ...data.metadata.app_open.handoff,
+            request_id: requestId, parameters: { data_path: `/data/input-${index}` } },
+        } } };
+        await act(async () => { wsHandler({ data: request }); await flushPromises(); });
+        const frame = container.querySelector('iframe');
+        expect(frame).not.toBeNull();
+        const post = vi.spyOn(frame.contentWindow, 'postMessage');
+        post.mockClear();
+        await act(async () => { Simulate.load(frame); await flushPromises(); });
+        const hello = post.mock.calls.map(call => call[0]).find(message => message.type === 'hello');
+        expect(hello).toEqual(expect.objectContaining({ protocol: 'catsco.app-handoff.v1', request_id: requestId }));
+        await act(async () => window.dispatchEvent(new MessageEvent('message', {
+          origin: 'https://artifact.catsco.cc', source: frame.contentWindow,
+          data: { ...hello, type: 'ready', schema: { data_path: { type: 'path' } } },
+        })));
+        expect(post.mock.calls.map(call => call[0])).toContainEqual(expect.objectContaining({
+          type: 'handoff', request_id: requestId, parameters: { data_path: `/data/input-${index}` },
+        }));
+        expect(JSON.stringify({ ...localStorage })).not.toContain(`/data/input-${index}`);
+        expect(JSON.stringify({ ...sessionStorage })).not.toContain(`/data/input-${index}`);
+      }
+    });
     it('reports the actual catalogue error and permits a duplicate to recover, then deduplicates delivery', async () => {
       await setup();
       api.listArtifactApps.mockRejectedValueOnce(new Error('catalogue permission denied'));
