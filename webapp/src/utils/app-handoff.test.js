@@ -37,7 +37,7 @@ describe('handoff safety and lifecycle', () => {
     expect(h.states.at(-1)).toBe('initialized');
     expect(h.listeners.size).toBe(0);
   });
-  it('run requires both user intent and application support', () => {
+  it('run requires an Agent intent assertion and application capability, not execution authorization', () => {
     expect(normalizeHandoff({ ...request, action: 'run' })).toBeNull();
     const h = harness({ ...request, action: 'run', user_requested_run: true });
     h.receive({ type: 'ready', schema, supports_run: false });
@@ -48,6 +48,24 @@ describe('handoff safety and lifecycle', () => {
     h.receive({ type: 'ready', schema, supports_run: true }); h.receive({ type: 'ack', status: 'running' });
     expect(h.states.at(-1)).toBe('running'); expect(h.listeners.size).toBe(1);
     h.receive({ type: 'ack', status: 'completed' }); expect(h.states.at(-1)).toBe('completed'); expect(h.listeners.size).toBe(0);
+  });
+  it('rechecks expiry on ready when the clock advances without timer execution', () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      const h = harness({ ...request, expires_at: now + 50 });
+      vi.setSystemTime(now + 51); // Deliberately do NOT advance timers.
+      expect(h.states.at(-1)).toBe('waiting_ready');
+      h.receive({ type: 'ready', schema });
+      expect(h.states.at(-1)).toBe('expired');
+      expect(h.child.postMessage).toHaveBeenCalledTimes(1); // hello only
+      expect(h.listeners.size).toBe(0);
+      vi.runAllTimers();
+      expect(h.states.at(-1)).toBe('expired');
+    } finally { vi.useRealTimers(); }
+  });
+  it('does not mistake a scalar denylist for a secret detector', () => {
+    expect(normalizeHandoff({ ...request, parameters: { label: 'opaque-sensitive-value' } })).toBeTruthy();
   });
   it('times out explicitly and cleanup ignores late responses', () => {
     vi.useFakeTimers(); const h = harness(); vi.advanceTimersByTime(101);

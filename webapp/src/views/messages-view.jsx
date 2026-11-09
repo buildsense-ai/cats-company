@@ -1006,6 +1006,7 @@ export default function MessagesView({
   // replayed (or fanned out twice) from opening the panel twice.
   const [pendingAppOpenMessage, setPendingAppOpenMessage] = useState(null);
   const appOpenHandledKeysRef = useRef(new Set());
+  const appOpenInFlightRef = useRef(new Map());
   // An Agent that cannot emit the structured open command still answers with a
   // card for the application it is talking about. That card is the request: the
   // user asked for an application and the reply points at exactly one. Parking
@@ -2970,6 +2971,7 @@ export default function MessagesView({
     peerProfileRequestRef.current += 1;
     invalidateArtifactSnapshot();
     activeTopicRef.current = topic;
+    setPendingAppOpenMessage(null);
     activeArtifactFocusRef.current = null;
     activeArtifactFrameRef.current = null;
     setInput(readComposerInputDraft(composerDraftStoreRef.current, topic));
@@ -3911,6 +3913,13 @@ export default function MessagesView({
   // back in that Agent's own catalogue, and each message may act only once.
   // The catalogue is the authority on the address, so nothing inside the message
   // can steer the viewer at a different origin.
+  // Only identity/lifecycle changes cancel catalogue work. Clearing pending state
+  // must not cancel its own operation; transport duplicates share an in-flight key.
+  useEffect(() => () => {
+    for (const operation of appOpenInFlightRef.current.values()) operation.cancelled = true;
+    appOpenInFlightRef.current.clear();
+  }, [selectedAgent?.id, selectedAgent?.uid, topic]);
+
   useEffect(() => {
     if (!pendingAppOpenMessage) return;
     const { message: commandMessage, topic: commandTopic } = pendingAppOpenMessage;
@@ -3924,28 +3933,35 @@ export default function MessagesView({
       seenKeys: appOpenHandledKeysRef.current,
     });
     if (!command) return;
-    appOpenHandledKeysRef.current.add(command.key);
-
-    let cancelled = false;
+    if (appOpenInFlightRef.current.has(command.key)) return;
+    const operation = { cancelled: false };
+    appOpenInFlightRef.current.set(command.key, operation);
+    // This effect does not own cancellation: clearing the pending slot is safe.
+    setPendingAppOpenMessage(null);
     (async () => {
-      let apps = [];
       try {
         const response = await api.listArtifactApps(agentUid);
-        apps = Array.isArray(response?.apps) ? response.apps : [];
-      } catch {
-        // A catalogue that cannot be read cannot authorise anything.
-        return;
+        if (operation.cancelled || activeTopicRef.current !== topic) return;
+        const apps = Array.isArray(response?.apps) ? response.apps : [];
+        const target = findAppOpenTarget(apps, command.appId);
+        if (!target) return;
+        if (command.handoff && command.handoff.expires_at <= Date.now()) {
+          feedback.notify({ tone: 'error', message: '交接请求已过期，未发送参数。' });
+          return;
+        }
+        await openArtifactApp({ ...target, agent_uid: agentUid, ...(command.handoff ? { handoff: command.handoff } : {}) });
+        appOpenHandledKeysRef.current.add(command.key);
+      } catch (error) {
+        if (!operation.cancelled && activeTopicRef.current === topic) {
+          feedback.notify({ tone: 'error', message: error?.message || '应用目录读取失败，请重试。' });
+        }
+      } finally {
+        if (appOpenInFlightRef.current.get(command.key) === operation) {
+          appOpenInFlightRef.current.delete(command.key);
+        }
       }
-      if (cancelled || activeTopicRef.current !== topic) return;
-      const target = findAppOpenTarget(apps, command.appId);
-      if (!target) return;
-      openArtifactApp({ ...target, agent_uid: agentUid, ...(command.handoff ? { handoff: command.handoff } : {}) });
     })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [openArtifactApp, pendingAppOpenMessage, selectedAgent?.id, selectedAgent?.uid, topic]);
+  }, [feedback, openArtifactApp, pendingAppOpenMessage, selectedAgent?.id, selectedAgent?.uid, topic]);
 
 
   const syncPhoneUploads = useCallback(async ({ final = false } = {}) => {

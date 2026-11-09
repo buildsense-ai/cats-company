@@ -31,19 +31,19 @@ Emit an ordinary Agent reply with this metadata (not a code block parsed from pr
 
 `expires_at` is epoch milliseconds; replace the illustrative value with now + 60 seconds, never more than 5 minutes. A request ID is 8–80 ASCII letters/digits/underscore/hyphen, unique per logical user task, reused only for transport duplicates. `agent_uid` is optional on ingress, always stamped by the server from the authenticated sender. `topic_id` must equal the message's authenticated conversation. The server checks bot membership and app ownership; the viewer also checks message sender and current Agent/topic, then resolves only the Agent catalogue's URL.
 
-Use `action: run` only when the user's task actually requests execution and the integration declares support; set `user_requested_run: true` only for that actual user intent. This flag is an Agent/runtime assertion, not independent cryptographic proof of consent. An application must enforce its own user authorization and confirmation policies (especially side effects). The receiver must explicitly advertise `supports_run: true`, or no parameters are delivered for run. A mere panel open is never success.
+Use `action: run` only when the user's task actually requests execution and the integration declares support; set `user_requested_run: true` only for that actual user intent. This flag is only an Agent/runtime self-assertion, NOT user consent or authorization for dangerous work. It must never bypass the application's existing execution authorization or dangerous-operation confirmation. An application must independently enforce those policies using its authenticated user session before any job starts; advertising supports_run is capability only, not permission to launch arbitrary tasks. The receiver must explicitly advertise `supports_run: true`, or no parameters are delivered for run. A mere panel open is never success.
 
 ## Parameter boundary
 
-At most 16 flat scalar parameters, 4096 serialized bytes, 512 characters per string. No nesting, files, URLs, credentials, executable command/script fields or multiline values. Common credential names, private-key markers, URL and Bearer values are rejected before metadata persistence. These conservative checks are not a secret detector: the runtime must never put a password, token, private key or other secret under any innocuous name, in the surrounding prose, or in arbitrary metadata. Only non-sensitive server references and data paths belong here. The receiving application resolves server credentials locally from its own authorized store; the handoff must not provide them.
+At most 16 flat scalar parameters, 4096 serialized bytes, 512 characters per string. The format rejects nesting, files, recognized URLs, executable command/script fields and multiline values; these checks do not guarantee that values contain no credentials. Common credential names, private-key markers, URL and Bearer values are rejected before metadata persistence. This parameter denylist is NOT a privacy guarantee. An ordinary string under an innocuous key can still hide a secret, and these checks cannot filter all secrets: the runtime must never put a password, token, private key or other secret under any innocuous name, in the surrounding prose, or in arbitrary metadata. Only non-sensitive server references and data paths belong here. The receiving application resolves server credentials locally from its own authorized store; the handoff must not provide them.
 
-No handoff parameter is appended to an iframe URL or persisted in the panel navigation record. Parameters are already part of the originating message, so assume authorized conversation readers can see them. Never send sensitive filesystem paths or identifiers either.
+No handoff parameter is appended to an iframe URL or persisted in the panel navigation record. The originating message metadata, including parameters, IS persisted in conversation storage and is visible to authorized conversation readers; panel non-persistence does not make message metadata ephemeral. Never send sensitive filesystem paths or identifiers either.
 
 The app's ready message supplies a bounded schema, validated before delivery. Schema is a map of parameter names to `{ type, required?, maxLength?, minimum?, maximum?, values? }`. Supported types: `path` (absolute path without `..` or shell metacharacters), `server_ref` (opaque short hostname/alias), `string`, `number`, `boolean`, `enum` (at most 32 string choices). Unknown fields are rejected. Applications must repeat schema/business validation on receipt, enforce server/path allowlists and resolve data access within the user's permissions. Paths are data, never shell interpolation.
 
 ## Receiving handshake and minimal integration sketch
 
-Install the receiver before the frame load event, with a fixed trusted platform origin from configuration, never from a query parameter. Do not use `*`. Bind to `window.parent` and verify the live user/topic inside the application's authenticated backend before execution. This sketch illustrates the wire contract; replace `validateAndAuthorize`, `fillForm`, and `runAuthorizedTask` with real application functions. An app without `runAuthorizedTask` must leave `supports_run` false.
+Install the receiver before the frame load event, with a fixed trusted platform origin from configuration, never from a query parameter. Do not use `*`. Bind to `window.parent` and verify the live user/topic inside the application's authenticated backend before execution. This initialize-only sketch illustrates the wire contract; replace `validateAndAuthorize` and `fillForm` with real application functions. Run support must stay false until the app implements its existing execution authorization, dangerous-operation confirmation and backend request-ID deduplication. Never wire a received run action directly to an arbitrary task launcher.
 
 ```js
 const platformOrigin = 'https://YOUR-PLATFORM-ORIGIN'; // trusted deployment configuration
@@ -70,17 +70,20 @@ window.addEventListener('message', async event => {
     if (d.action !== 'initialize') { reply({ type: 'ack', status: 'unsupported' }); return; }
     fillForm(d.parameters);
     reply({ type: 'ack', status: 'initialized' });
-    // A run-capable app instead advertises supports_run:true, validates user intent,
-    // replies running only on acceptance, then completed/failed after the actual job result.
+    // A run-capable app MUST independently require its existing authenticated-user
+    // execution authorization AND dangerous-operation confirmation before starting.
+    // The Agent's user_requested_run assertion is NOT that authorization.
+    // Only after approval and backend deduplication may it accept an allowlisted task,
+    // reply running, then completed/failed after the actual job result.
   } catch { reply({ type: 'ack', status: 'failed' }); } // no secrets/errors reflected to messages
 });
 ```
 
 ## Lifecycle and status ownership
 
-The panel is the only handoff status owner. It sends one hello on iframe load to the exact HTTPS catalogue origin (no credentials, query, or fragment); matching `origin`, `source`, nonce and request ID are mandatory. Only a matching ready receives parameters. No automatic retries. Ack `initialized` means form initialization only; `running` is not completion; `completed` and `failed` are application-reported outcomes, not independently verified job results. Missing ready/ack yields visible timeout/unknown outcome. Long jobs must expose their durable job/result interface inside the app; no background polling is invented here.
+The panel is the only handoff status owner. It sends one hello on iframe load to the exact HTTPS catalogue origin (no credentials, query, or fragment); matching `origin`, `source`, nonce and request ID are mandatory. Only a matching ready receives parameters, after rechecking expires_at against the current clock even if the timeout callback was throttled. No automatic retries. Ack `initialized` means form initialization only; `running` is not completion; `completed` and `failed` are application-reported outcomes, not independently verified job results. Missing ready/ack yields visible timeout/unknown outcome. Long jobs must expose their durable job/result interface inside the app; no background polling is invented here.
 
-Reload, close, auth change and topic change retire the listener/timer. Consumed identities (not parameters) live in a module set and sessionStorage so panel remount/reload cannot silently rerun a request in the same tab. Requests expire within five minutes and history loading does not trigger them. There is no global cross-tab exactly-once guarantee: a run-capable app MUST implement backend idempotency by request ID. Unknown results must not be retried with a new ID until the app checks whether the original ran.
+Catalogue lookup failures are visible and do not consume a request; a duplicate may recover before delivery. In-flight lookups are deduplicated and cancelled on topic/Agent change. Only a successful panel delivery is marked handled. Reload, close, auth change and topic change retire the listener/timer. Consumed identities (not parameters) live in a module set and sessionStorage so panel remount/reload cannot silently rerun a request in the same tab. Requests expire within five minutes and history loading does not trigger them. There is no global cross-tab exactly-once guarantee: a run-capable app MUST implement backend idempotency by request ID. Unknown results must not be retried with a new ID until the app checks whether the original ran.
 
 ## Validation
 

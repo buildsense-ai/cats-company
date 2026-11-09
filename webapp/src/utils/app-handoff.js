@@ -8,6 +8,7 @@ export function claimHandoffRequest(key) {
   try { if (sessionStorage.getItem(`catsco.handoff:${key}`)) return false; sessionStorage.setItem(`catsco.handoff:${key}`, '1'); } catch { /* in-memory fallback */ }
   consumedRequests.add(key); return true;
 }
+// A denylist is only a format guard, not a privacy boundary or secret detector.
 const sensitive = /password|passwd|token|secret|credential|private.?key|authorization|cookie|command|script/i;
 const unsafeValue = /-----BEGIN|(?:https?|ssh|sftp):\/\/|bearer\s|[\r\n\x00-\x1f]/i;
 export function safeParameters(parameters) {
@@ -22,6 +23,7 @@ export function normalizeHandoff(value) {
     || typeof value.topic_id !== 'string' || !value.topic_id || value.topic_id.length > 128
     || !['initialize', 'run'].includes(value.action) || !safeParameters(value.parameters)
     || !Number.isSafeInteger(value.expires_at) || value.expires_at <= 0
+    // Agent assertion only; the receiving app must independently authorize execution.
     || (value.action === 'run' && value.user_requested_run !== true)) return null;
   return { request_id: value.request_id, topic_id: value.topic_id, action: value.action,
     parameters: { ...value.parameters }, expires_at: value.expires_at, user_requested_run: value.action === 'run' };
@@ -72,6 +74,8 @@ export function startAppHandoff({ host = window, frame, url, request, agentUid, 
     const data = event.data;
     if (!plain(data) || data.protocol !== HANDOFF_PROTOCOL || data.nonce !== nonce || data.request_id !== normalized.request_id) return;
     if (phase === 'ready' && data.type === 'ready') {
+      // Timers may be throttled in background tabs; check the deadline at delivery.
+      if (normalized.expires_at <= Date.now()) return finish('expired');
       if (normalized.action === 'run' && data.supports_run !== true) return finish('unsupported');
       if (!validateParameters(normalized.parameters, data.schema)) return finish('invalid_parameters');
       phase = 'ack'; onState('awaiting_ack');
@@ -93,6 +97,7 @@ export const HANDOFF_LABELS = {
   waiting_ready: '等待应用就绪，尚未交接', awaiting_ack: '参数已发送，等待应用确认',
   initialized: '应用已确认参数初始化，未运行', running: '应用报告正在运行，尚未完成', completed: '应用报告运行成功',
   failed: '应用报告交接或运行失败', unsupported: '应用不支持请求的运行操作，未运行',
+  expired: '交接请求已过期，未发送参数',
   timeout: '应用确认超时，结果未知；不会自动重试', invalid: '交接绑定、有效期或应用地址无效，未发送',
   invalid_parameters: '参数与应用声明不匹配，未发送', reloaded: '应用已重载，交接已停止；不会重复发送',
 };

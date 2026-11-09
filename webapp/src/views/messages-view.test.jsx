@@ -1087,6 +1087,62 @@ describe('MessagesView composer draft isolation', () => {
     expect(onBackToSearch).toHaveBeenCalledTimes(1);
   });
 
+  describe('structured app-open catalogue recovery', () => {
+    const app = { id: 'handoff-demo', title: 'Handoff demo', url: 'https://artifact.catsco.cc/handoff-demo/' };
+    const data = { topic: 'p2p_1_440', from: 'usr440', seq: 9801, type: 'text', content: 'Application request',
+      metadata: { app_open: { contract_version: 'catsco.app-open.v2', app_id: 'handoff-demo', agent_uid: 440,
+        handoff: { request_id: 'recovery-9801', topic_id: 'p2p_1_440', action: 'initialize', parameters: {}, expires_at: Date.now() + 240000 } } } };
+    async function setup() {
+      api.getAgents.mockResolvedValue({ agents: [{ uid: 440, topic_id: data.topic, is_bot: true, account_type: 'bot', cloud_artifacts_enabled: true }] });
+      api.listArtifactApps.mockResolvedValue({ apps: [] });
+      await mountTopic(root, data.topic);
+      await act(async () => { await flushPromises(); });
+      api.listArtifactApps.mockClear();
+    }
+    async function deliver() {
+      await act(async () => { wsHandler({ data }); await flushPromises(); });
+    }
+    it('reports the actual catalogue error and permits a duplicate to recover, then deduplicates delivery', async () => {
+      await setup();
+      api.listArtifactApps.mockRejectedValueOnce(new Error('catalogue permission denied'));
+      await deliver();
+      expect(feedbackNotify).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', message: 'catalogue permission denied' }));
+      expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      await deliver();
+      expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+      api.listArtifactApps.mockClear();
+      await deliver();
+      expect(api.listArtifactApps).not.toHaveBeenCalled();
+    });
+    it('keeps a pending lookup alive after clearing pending state and coalesces duplicates', async () => {
+      await setup();
+      let resolve;
+      api.listArtifactApps.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+      await deliver();
+      await deliver();
+      expect(api.listArtifactApps).toHaveBeenCalledTimes(1);
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      await act(async () => { resolve({ apps: [app] }); await flushPromises(); });
+      expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    });
+    it('cancels on topic change without consuming the undelivered request', async () => {
+      await setup();
+      let resolve;
+      api.listArtifactApps.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+      await deliver();
+      await mountTopic(root, 'p2p_1_3');
+      await act(async () => { resolve({ apps: [app] }); await flushPromises(); });
+      expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+      await mountTopic(root, data.topic);
+      await act(async () => { await flushPromises(); });
+      expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      await deliver();
+      expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    });
+  });
+
   it('selects existing conversation messages and exports a branded sharing image', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: [

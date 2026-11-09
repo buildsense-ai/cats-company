@@ -16,8 +16,9 @@ var handoffParamKey = regexp.MustCompile(`^[a-z][a-z0-9_]{0,47}$`)
 var handoffSensitiveKey = regexp.MustCompile(`(?i)password|passwd|token|secret|credential|private.?key|authorization|cookie|command|script`)
 var handoffUnsafeValue = regexp.MustCompile("(?i)-----BEGIN|(?:https?|ssh|sftp)://|bearer\\s|[\\r\\n\\x00-\\x1f]")
 
-// This is only a declarative handoff. No job, version, credential or URL is
-// accepted. Per-application schema validation happens before iframe delivery.
+// This is only a declarative handoff, not execution authorization. The denylist
+// below is a format guard, not a secret detector; message metadata is persisted.
+// Per-application schema validation happens before iframe delivery.
 func normalizeAppHandoff(value interface{}) (map[string]interface{}, error) {
 	fail := func() (map[string]interface{}, error) { return nil, errors.New("invalid app handoff") }
 	object, ok := value.(map[string]interface{})
