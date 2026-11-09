@@ -37,6 +37,15 @@ describe('handoff safety and lifecycle', () => {
     expect(h.states.at(-1)).toBe('initialized');
     expect(h.listeners.size).toBe(0);
   });
+  it('delivers the authenticated identity and deadline required by strict receivers', () => {
+    const h = harness();
+    h.receive({ type: 'ready', schema });
+    const payload = h.child.postMessage.mock.calls[1][0];
+    expect(payload.expires_at).toBe(request.expires_at);
+    expect(payload.agent_uid).toBe('9');
+    expect(Object.keys(payload).sort()).toEqual(['protocol', 'type', 'nonce', 'request_id', 'topic_id', 'agent_uid', 'action', 'parameters', 'expires_at'].sort());
+    h.stop();
+  });
   it('run requires an Agent intent assertion and application capability, not execution authorization', () => {
     expect(normalizeHandoff({ ...request, action: 'run' })).toBeNull();
     const h = harness({ ...request, action: 'run', user_requested_run: true });
