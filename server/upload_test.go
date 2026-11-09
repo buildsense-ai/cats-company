@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,55 @@ func (r failingReadCloser) Read([]byte) (int, error) {
 
 func (r failingReadCloser) Close() error {
 	return nil
+}
+
+func TestHandleUploadPreservesSkillArchiveAttachment(t *testing.T) {
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	entry, err := writer.Create("caveman/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("---\nname: caveman\ndescription: inert upload fixture\n---\nNo operations.\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	content := archive.Bytes()
+	for _, raw := range []bool{false, true} {
+		t.Run(fmt.Sprintf("raw=%v", raw), func(t *testing.T) {
+			handler := NewUploadHandler(t.TempDir(), "/uploads")
+			fileName := "caveman.SKILL"
+			req := buildUploadRequest(t, "/api/upload?type=file", fileName, content)
+			if raw {
+				req = httptest.NewRequest(http.MethodPost, "/api/upload?type=file&raw=1", bytes.NewReader(content))
+				req.Header.Set("Content-Type", "application/octet-stream")
+				req.Header.Set(rawUploadFileNameHeader, url.PathEscape(fileName))
+				req.Header.Set(rawUploadFileSizeHeader, fmt.Sprint(len(content)))
+			}
+			rec := httptest.NewRecorder()
+			handler.HandleUpload(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("upload status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var response uploadPayload
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Name != fileName || response.Type != "file" || !strings.HasSuffix(response.FileKey, ".skill") {
+				t.Fatalf("archive identity changed: %+v", response)
+			}
+			download := httptest.NewRecorder()
+			handler.HandleServeFile(download, httptest.NewRequest(http.MethodGet, response.URL, nil))
+			if download.Code != http.StatusOK || !bytes.Equal(download.Body.Bytes(), content) {
+				t.Fatalf("archive download changed: status=%d", download.Code)
+			}
+			if !strings.HasPrefix(download.Header().Get("Content-Disposition"), "attachment") {
+				t.Fatal("Skill archives must remain download-only attachments")
+			}
+		})
+	}
 }
 
 func TestHandleUploadAllowsHTMLAsFileAttachment(t *testing.T) {

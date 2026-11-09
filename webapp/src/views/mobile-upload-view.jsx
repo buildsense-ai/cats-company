@@ -63,7 +63,7 @@ export default function MobileUploadView({ sessionId }) {
           <input
             type="file"
             multiple
-            accept={`${IMAGE_UPLOAD_ACCEPT},${VIDEO_UPLOAD_ACCEPT},.pdf,.doc,.docx,.xls,.xlsx,.zip`}
+            accept={`${IMAGE_UPLOAD_ACCEPT},${VIDEO_UPLOAD_ACCEPT},.pdf,.doc,.docx,.xls,.xlsx,.zip,.skill`}
             onChange={handleFiles}
             disabled={isUploading}
           />
