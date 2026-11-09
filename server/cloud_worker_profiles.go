@@ -13,6 +13,26 @@ import (
 
 type cloudWorkerProfileContextKey struct{}
 type cloudWorkerBillingContextKey struct{}
+type cloudWorkerRuntimeContextKey struct{}
+
+// Runtime selection is an internal capability. Keep this optional so older
+// stores retain their existing unfiltered creation and grant behavior.
+type cloudWorkerRuntimeCredits interface {
+	CloudWorkerRuntimeCreditSummary(int64, string, string, string) (int, int, error)
+	ReserveCloudWorkerRuntimeCredit(int64, string, string, string, string) (types.CloudWorkerCreditSelection, bool, error)
+	GrantCloudWorkerRuntimeCredits(int64, int, string, *time.Time, string, string, string) (int, error)
+}
+
+func cloudWorkerRuntimeForProfile(profile, raw string) (string, error) {
+	plan, valid := types.NormalizeCloudWorkerRuntimePlan(raw)
+	if !valid {
+		return "", fmt.Errorf("invalid runtime plan")
+	}
+	if plan != "" && profile != types.CloudWorkerPackedShared {
+		return "", fmt.Errorf("runtime_plan is only supported for packed_shared")
+	}
+	return plan, nil
+}
 
 type cloudWorkerBillingCredits interface {
 	CloudWorkerConfiguredCreditSummary(int64, string, string) (int, int, error)

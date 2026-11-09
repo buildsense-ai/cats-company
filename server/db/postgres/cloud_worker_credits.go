@@ -40,6 +40,12 @@ func (a *Adapter) GrantCloudWorkerProfileCredits(uid int64, count int, sourceRef
 }
 
 func (a *Adapter) GrantCloudWorkerConfiguredCredits(uid int64, count int, sourceRef string, expiresAt *time.Time, profile, billing string) (int, error) {
+	return a.GrantCloudWorkerRuntimeCredits(uid, count, sourceRef, expiresAt, profile, billing, "")
+}
+
+// GrantCloudWorkerRuntimeCredits keeps the granted tier on the credit itself.
+// Empty and standard represent the same effective tier for idempotent replays.
+func (a *Adapter) GrantCloudWorkerRuntimeCredits(uid int64, count int, sourceRef string, expiresAt *time.Time, profile, billing, runtimePlan string) (int, error) {
 	billing, billingValid := types.NormalizeCloudWorkerBilling(billing)
 	if !billingValid || (billing == types.CloudWorkerOnDemand && (expiresAt == nil || !expiresAt.After(time.Now()))) {
 		return 0, fmt.Errorf("on-demand trial requires a future expiry")
@@ -47,6 +53,10 @@ func (a *Adapter) GrantCloudWorkerConfiguredCredits(uid int64, count int, source
 	profile, valid := types.NormalizeCloudWorkerProfile(profile)
 	if !valid {
 		return 0, fmt.Errorf("invalid cloud worker deployment profile")
+	}
+	runtimePlan, valid = types.NormalizeCloudWorkerRuntimePlan(runtimePlan)
+	if !valid || (runtimePlan != "" && profile != types.CloudWorkerPackedShared) {
+		return 0, fmt.Errorf("invalid cloud worker runtime plan for deployment profile")
 	}
 	sourceRef = strings.TrimSpace(sourceRef)
 	if uid <= 0 || count <= 0 || count > 100 || sourceRef == "" || len(sourceRef) > 96 {
@@ -61,9 +71,9 @@ func (a *Adapter) GrantCloudWorkerConfiguredCredits(uid int64, count int, source
 	for i := 1; i <= count; i++ {
 		ref := fmt.Sprintf("manual:%s:%d", sourceRef, i)
 		result, err := tx.Exec(`
-			INSERT INTO cloud_worker_credits(uid, source_ref, expires_at, deployment_profile, billing_mode)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, ref, expiresAt, profile, billing)
+			INSERT INTO cloud_worker_credits(uid, source_ref, expires_at, deployment_profile, billing_mode, runtime_plan)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, ref, expiresAt, profile, billing, runtimePlan)
 		if err != nil {
 			return 0, fmt.Errorf("grant cloud worker credit: %w", err)
 		}
@@ -71,12 +81,12 @@ func (a *Adapter) GrantCloudWorkerConfiguredCredits(uid int64, count int, source
 			granted++
 		} else {
 			var previousUID int64
-			var previousProfile, previousBilling string
-			if err := tx.QueryRow(`SELECT uid, deployment_profile, billing_mode FROM cloud_worker_credits WHERE source_ref=$1`, ref).Scan(&previousUID, &previousProfile, &previousBilling); err != nil {
+			var previousProfile, previousBilling, previousRuntime string
+			if err := tx.QueryRow(`SELECT uid, deployment_profile, billing_mode, runtime_plan FROM cloud_worker_credits WHERE source_ref=$1`, ref).Scan(&previousUID, &previousProfile, &previousBilling, &previousRuntime); err != nil {
 				return 0, err
 			}
-			if previousUID != uid || previousProfile != profile || previousBilling != billing {
-				return 0, fmt.Errorf("operation already belongs to a different owner or deployment profile")
+			if previousUID != uid || previousProfile != profile || previousBilling != billing || effectiveCloudWorkerRuntimePlan(previousRuntime) != effectiveCloudWorkerRuntimePlan(runtimePlan) {
+				return 0, fmt.Errorf("operation already belongs to a different owner, deployment profile, billing mode or runtime plan")
 			}
 		}
 	}
@@ -84,6 +94,13 @@ func (a *Adapter) GrantCloudWorkerConfiguredCredits(uid int64, count int, source
 		return 0, fmt.Errorf("commit cloud worker credit grant: %w", err)
 	}
 	return granted, nil
+}
+
+func effectiveCloudWorkerRuntimePlan(plan string) string {
+	if plan == "" {
+		return types.CloudWorkerRuntimeStandard
+	}
+	return plan
 }
 
 // ReserveCloudWorkerCredit atomically claims one available paid credit. A
@@ -160,6 +177,16 @@ func (a *Adapter) ReserveCloudWorkerProfileCredit(uid int64, reservation, profil
 }
 
 func (a *Adapter) ReserveCloudWorkerConfiguredCredit(uid int64, reservation, profile, billing string) (selection types.CloudWorkerCreditSelection, reserved bool, err error) {
+	return a.ReserveCloudWorkerRuntimeCredit(uid, reservation, profile, billing, "")
+}
+
+// ReserveCloudWorkerRuntimeCredit filters only when a runtime was requested;
+// legacy callers still use the existing ordering across all runtime tiers.
+func (a *Adapter) ReserveCloudWorkerRuntimeCredit(uid int64, reservation, profile, billing, runtimePlan string) (selection types.CloudWorkerCreditSelection, reserved bool, err error) {
+	runtimePlan, validRuntime := types.NormalizeCloudWorkerRuntimePlan(runtimePlan)
+	if !validRuntime || (runtimePlan != "" && profile != types.CloudWorkerPackedShared) {
+		return selection, false, fmt.Errorf("invalid cloud worker runtime plan for deployment profile")
+	}
 	if billing != "" {
 		if _, ok := types.NormalizeCloudWorkerBilling(billing); !ok {
 			return selection, false, fmt.Errorf("invalid billing mode")
@@ -231,11 +258,17 @@ func (a *Adapter) ReserveCloudWorkerConfiguredCredit(uid int64, reservation, pro
 	//  4. Monthly before on-demand: on-demand is a temporary rate, and leaving a
 	//     monthly credit to expire later only wastes money.
 	//  5. Oldest first, so credits do not rot.
+	runtimeFilter := ""
+	args := []interface{}{uid, profile, billing}
+	if runtimePlan != "" {
+		runtimeFilter = " AND COALESCE(NULLIF(c.runtime_plan, ''), 'standard') = $4"
+		args = append(args, runtimePlan)
+	}
 	err = tx.QueryRow(`
 		SELECT c.id, c.deployment_profile, c.billing_mode, c.expires_at, c.retention_days, c.runtime_plan
 		FROM cloud_worker_credits c
 		WHERE c.uid = $1 AND c.state = 'available' AND ($2 = '' OR c.deployment_profile = $2) AND ($3 = '' OR c.billing_mode = $3)
-		  AND (c.expires_at IS NULL OR c.expires_at > CURRENT_TIMESTAMP)
+		  AND (c.expires_at IS NULL OR c.expires_at > CURRENT_TIMESTAMP)`+runtimeFilter+`
 		ORDER BY
 		  CASE WHEN EXISTS (
 		      SELECT 1
@@ -250,7 +283,7 @@ func (a *Adapter) ReserveCloudWorkerConfiguredCredit(uid int64, reservation, pro
 		  CASE WHEN c.deployment_profile = 'public_ip' THEN 0 ELSE 1 END,
 		  CASE WHEN c.billing_mode = 'month' THEN 0 ELSE 1 END,
 		  c.created_at, c.id
-		FOR UPDATE SKIP LOCKED LIMIT 1`, uid, profile, billing).Scan(&id, &selectedProfile, &selectedBilling, &selectedExpiresAt, &selectedRetention, &selectedRuntimePlan)
+		FOR UPDATE SKIP LOCKED LIMIT 1`, args...).Scan(&id, &selectedProfile, &selectedBilling, &selectedExpiresAt, &selectedRetention, &selectedRuntimePlan)
 	if err == sql.ErrNoRows {
 		return selection, false, nil
 	}

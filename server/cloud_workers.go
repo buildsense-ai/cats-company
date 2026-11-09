@@ -310,6 +310,12 @@ type cloudWorkerQueueStore interface {
 	ClaimQueuedCloudWorkerCredit(uid int64) (bool, error)
 }
 
+// A typed retry releases one queued credit, keeping other tiers parked until
+// their own retry. The legacy queue interface remains unchanged.
+type cloudWorkerRuntimeQueueStore interface {
+	ClaimQueuedCloudWorkerRuntimeCredit(uid int64, runtimePlan string) (bool, error)
+}
+
 // cloudWorkerQueueRetrySeconds is how long a queued buyer is told to wait
 // before the console re-checks. It matches the capacity sweep interval: a slot
 // that frees up is picked up within about a minute, so a shorter hint would
@@ -1285,6 +1291,10 @@ func (h *CloudWorkerHandler) autoProvisionBudget(uid int64) (int, error) {
 // provisionAutoWorker runs one auto-provisioned create, retrying only while a
 // different operation holds the owner's lock.
 func (h *CloudWorkerHandler) provisionAutoWorker(uid int64) (int, string) {
+	return h.provisionAutoWorkerWithRuntime(uid, "")
+}
+
+func (h *CloudWorkerHandler) provisionAutoWorkerWithRuntime(uid int64, runtimePlan string) (int, string) {
 	username, err := autoCloudWorkerUsername(uid)
 	if err != nil {
 		return http.StatusInternalServerError, err.Error()
@@ -1304,6 +1314,12 @@ func (h *CloudWorkerHandler) provisionAutoWorker(uid int64) (int, string) {
 			return http.StatusInternalServerError, err.Error()
 		}
 		req = req.WithContext(context.WithValue(context.Background(), uidKey, uid))
+		if runtimePlan != "" {
+			ctx := context.WithValue(req.Context(), cloudWorkerProfileContextKey{}, types.CloudWorkerPackedShared)
+			ctx = context.WithValue(ctx, cloudWorkerBillingContextKey{}, types.CloudWorkerMonthly)
+			ctx = context.WithValue(ctx, cloudWorkerRuntimeContextKey{}, runtimePlan)
+			req = req.WithContext(ctx)
+		}
 		recorder := &discardResponseWriter{}
 		h.HandleCreate(recorder, req)
 		if recorder.status >= 200 && recorder.status < 300 {
@@ -1750,6 +1766,16 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	requestedProfile, _ := r.Context().Value(cloudWorkerProfileContextKey{}).(string)
+	requestedBilling, _ := r.Context().Value(cloudWorkerBillingContextKey{}).(string)
+	requestedRuntime, _ := r.Context().Value(cloudWorkerRuntimeContextKey{}).(string)
+	runtimeCredits, supportsRuntime := h.credits.(cloudWorkerRuntimeCredits)
+	if requestedRuntime != "" {
+		if _, err := cloudWorkerRuntimeForProfile(requestedProfile, requestedRuntime); err != nil || !supportsRuntime {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime configuration unavailable", "code": "cloud_worker_create_failed"})
+			return
+		}
+	}
 	staticTotal := h.quota[uid]
 	_, creditAvailable := h.creditInfo(uid)
 	if staticTotal <= 0 && creditAvailable <= 0 {
@@ -1781,12 +1807,23 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	runtimePlan := ""
 	profile := types.CloudWorkerPrivateNAT
 	billing := types.CloudWorkerMonthly
-	requestedProfile, _ := r.Context().Value(cloudWorkerProfileContextKey{}).(string)
-	requestedBilling, _ := r.Context().Value(cloudWorkerBillingContextKey{}).(string)
-	if configured, ok := h.credits.(cloudWorkerBillingCredits); ok {
-		selected, reserved, reserveErr := configured.ReserveCloudWorkerConfiguredCredit(uid, reservation, requestedProfile, requestedBilling)
+	if configured, ok := h.credits.(cloudWorkerBillingCredits); ok || requestedRuntime != "" {
+		var selected types.CloudWorkerCreditSelection
+		var reserved bool
+		var reserveErr error
+		if requestedRuntime != "" {
+			selected, reserved, reserveErr = runtimeCredits.ReserveCloudWorkerRuntimeCredit(uid, reservation, requestedProfile, requestedBilling, requestedRuntime)
+		} else {
+			selected, reserved, reserveErr = configured.ReserveCloudWorkerConfiguredCredit(uid, reservation, requestedProfile, requestedBilling)
+		}
 		if reserveErr != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to reserve cloud worker credit", "code": "cloud_worker_create_failed"})
+			return
+		}
+		if reserved && requestedRuntime != "" && (selected.Profile != requestedProfile || selected.BillingMode != requestedBilling ||
+			(selected.RuntimePlan != requestedRuntime && !(requestedRuntime == types.CloudWorkerRuntimeStandard && selected.RuntimePlan == ""))) {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reserved credit does not match requested runtime", "code": "cloud_worker_create_failed"})
 			return
 		}
 		reservedCredit = reserved
@@ -1814,7 +1851,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	if !reservedCredit && (staticRemaining == 0 || requestedProfile == types.CloudWorkerPublicIP || requestedBilling == types.CloudWorkerOnDemand) {
+	if !reservedCredit && (requestedRuntime != "" || staticRemaining == 0 || requestedProfile == types.CloudWorkerPublicIP || requestedBilling == types.CloudWorkerOnDemand) {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "cloud worker creation quota exhausted",
 			"code":  "cloud_worker_quota_exhausted",
@@ -2326,8 +2363,30 @@ func (h *CloudWorkerHandler) retryQueuedCloudWorkers() {
 		log.Printf("[cloud-worker] queued credit sweep failed: %v", err)
 		return
 	}
+	_, supportsRuntime := h.credits.(cloudWorkerRuntimeCredits)
+	runtimeQueuer, supportsRuntimeQueue := h.credits.(cloudWorkerRuntimeQueueStore)
 	for _, item := range queued {
-		claimed, claimErr := queuer.ClaimQueuedCloudWorkerCredit(item.UID)
+		runtimePlan := item.Tier
+		if runtimePlan == "" && supportsRuntime && supportsRuntimeQueue {
+			// A legacy empty runtime is standard. Filter the retry without
+			// changing the credit's stored runtime or its script arguments.
+			runtimePlan = types.CloudWorkerRuntimeStandard
+		}
+		var claimed bool
+		var claimErr error
+		if runtimePlan != "" {
+			if !supportsRuntime {
+				log.Printf("[cloud-worker] queued runtime credit uid=%d cannot be retried without runtime store support", item.UID)
+				continue
+			}
+			if !supportsRuntimeQueue {
+				log.Printf("[cloud-worker] queued runtime credit uid=%d cannot be claimed by tier", item.UID)
+				continue
+			}
+			claimed, claimErr = runtimeQueuer.ClaimQueuedCloudWorkerRuntimeCredit(item.UID, runtimePlan)
+		} else {
+			claimed, claimErr = queuer.ClaimQueuedCloudWorkerCredit(item.UID)
+		}
 		if claimErr != nil {
 			log.Printf("[cloud-worker] queued credit claim uid=%d failed: %v", item.UID, claimErr)
 			continue
@@ -2336,7 +2395,16 @@ func (h *CloudWorkerHandler) retryQueuedCloudWorkers() {
 			continue
 		}
 		log.Printf("[cloud-worker] retrying queued worker uid=%d tier=%s queued_at=%s", item.UID, item.Tier, item.QueuedAt.UTC().Format(time.RFC3339))
-		h.AutoProvisionForOwner(item.UID)
+		if runtimePlan != "" {
+			// Retry the queued tier even if an older credit for another tier is
+			// available. The reservation remains the source of the script's plan.
+			status, body := h.provisionAutoWorkerWithRuntime(item.UID, runtimePlan)
+			if status < 200 || status >= 300 {
+				log.Printf("[cloud-worker] queued runtime retry uid=%d failed status=%d body=%s", item.UID, status, truncateWorkerOutput(body))
+			}
+		} else {
+			h.AutoProvisionForOwner(item.UID)
+		}
 	}
 }
 

@@ -151,6 +151,10 @@ func (a *Adapter) CloudWorkerProfileCreditSummary(uid int64, profile string) (to
 }
 
 func (a *Adapter) CloudWorkerConfiguredCreditSummary(uid int64, profile, billing string) (total, available int, err error) {
+	return a.CloudWorkerRuntimeCreditSummary(uid, profile, billing, "")
+}
+
+func (a *Adapter) CloudWorkerRuntimeCreditSummary(uid int64, profile, billing, runtimePlan string) (total, available int, err error) {
 	if billing != "" {
 		if _, ok := types.NormalizeCloudWorkerBilling(billing); !ok {
 			return 0, 0, fmt.Errorf("invalid billing mode")
@@ -160,9 +164,15 @@ func (a *Adapter) CloudWorkerConfiguredCreditSummary(uid int64, profile, billing
 	if !valid || uid <= 0 {
 		return 0, 0, fmt.Errorf("invalid deployment profile owner")
 	}
+	runtimePlan, valid = types.NormalizeCloudWorkerRuntimePlan(runtimePlan)
+	if !valid || (runtimePlan != "" && profile != types.CloudWorkerPackedShared) {
+		return 0, 0, fmt.Errorf("invalid cloud worker runtime plan for deployment profile")
+	}
 	err = a.db.QueryRow(`SELECT COUNT(*) FILTER (WHERE state IN ('available','reserved','consumed','queued')),
 		COUNT(*) FILTER (WHERE state='available') FROM cloud_worker_credits
-		WHERE uid=$1 AND deployment_profile=$2 AND ($3='' OR billing_mode=$3) AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)`, uid, profile, billing).Scan(&total, &available)
+		WHERE uid=$1 AND deployment_profile=$2 AND ($3='' OR billing_mode=$3)
+		AND ($4='' OR COALESCE(NULLIF(runtime_plan, ''), 'standard')=$4)
+		AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)`, uid, profile, billing, runtimePlan).Scan(&total, &available)
 	return
 }
 
