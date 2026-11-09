@@ -23,7 +23,7 @@ func (a *Adapter) CloudWorkerCreditSummary(uid int64) (total, available int, err
 		SELECT COUNT(*) FILTER (WHERE state IN ('available','reserved','consumed','queued')),
 		       COUNT(*) FILTER (WHERE state = 'available')
 		FROM cloud_worker_credits
-		WHERE uid = $1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, uid).Scan(&total, &available)
+		WHERE uid = $1 AND source_ref NOT LIKE 'ops:%' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, uid).Scan(&total, &available)
 	return
 }
 
@@ -138,14 +138,14 @@ func (a *Adapter) ReserveCloudWorkerCredit(uid int64, reservation string) (bool,
 			ELSE 'available'
 		END,
 		reservation_ref = '', reserved_at = NULL
-		WHERE c.uid = $1 AND c.state = 'reserved'
+		WHERE c.uid = $1 AND c.state = 'reserved' AND c.source_ref NOT LIKE 'ops:%'
 		  AND c.reserved_at < CURRENT_TIMESTAMP - INTERVAL '20 minutes'`, uid); err != nil {
 		return false, fmt.Errorf("release stale cloud worker credit reservation: %w", err)
 	}
 	var id int64
 	err = tx.QueryRow(`
 		SELECT id FROM cloud_worker_credits
-		WHERE uid = $1 AND state = 'available'
+		WHERE uid = $1 AND state = 'available' AND source_ref NOT LIKE 'ops:%'
 		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 		ORDER BY created_at, id
 		FOR UPDATE SKIP LOCKED LIMIT 1`, uid).Scan(&id)
@@ -229,7 +229,7 @@ func (a *Adapter) ReserveCloudWorkerRuntimeCredit(uid int64, reservation, profil
 			ELSE 'available'
 		END,
 		reservation_ref = '', reserved_at = NULL
-		WHERE c.uid = $1 AND c.state = 'reserved'
+		WHERE c.uid = $1 AND c.state = 'reserved' AND c.source_ref NOT LIKE 'ops:%'
 		  AND c.reserved_at < CURRENT_TIMESTAMP - INTERVAL '20 minutes'`, uid); err != nil {
 		return selection, false, fmt.Errorf("release stale cloud worker credit reservation: %w", err)
 	}
@@ -267,7 +267,7 @@ func (a *Adapter) ReserveCloudWorkerRuntimeCredit(uid int64, reservation, profil
 	err = tx.QueryRow(`
 		SELECT c.id, c.deployment_profile, c.billing_mode, c.expires_at, c.retention_days, c.runtime_plan
 		FROM cloud_worker_credits c
-		WHERE c.uid = $1 AND c.state = 'available' AND ($2 = '' OR c.deployment_profile = $2) AND ($3 = '' OR c.billing_mode = $3)
+		WHERE c.uid = $1 AND c.state = 'available' AND c.source_ref NOT LIKE 'ops:%' AND ($2 = '' OR c.deployment_profile = $2) AND ($3 = '' OR c.billing_mode = $3)
 		  AND (c.expires_at IS NULL OR c.expires_at > CURRENT_TIMESTAMP)`+runtimeFilter+`
 		ORDER BY
 		  CASE WHEN EXISTS (

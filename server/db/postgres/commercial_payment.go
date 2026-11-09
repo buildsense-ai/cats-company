@@ -667,6 +667,7 @@ func cloudWorkerSurvivesRenewal(tx *sql.Tx, uid int64) (bool, error) {
 		) OR EXISTS (
 			SELECT 1 FROM cloud_worker_credits
 			WHERE uid = $1 AND state IN ('available', 'reserved')
+			  AND source_ref NOT LIKE 'ops:%'
 			  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 		)`, uid).Scan(&survives); err != nil {
 		return false, fmt.Errorf("check cloud worker renewal target: %w", err)

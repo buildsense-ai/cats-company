@@ -314,6 +314,11 @@ func TestCommercialAdjustmentAcceptsRelaySecondPrecisionReadback(t *testing.T) {
 	if err := handler.resetCommercialRelayCycle(context.Background(), 38, requestedAt); err != nil {
 		t.Fatal(err)
 	}
+	// A durable action can retry after Relay accepted the reset but before
+	// its journal was saved. Second-precision readback must suppress a repeat.
+	if err := handler.resetCommercialRelayCycle(context.Background(), 38, requestedAt); err != nil {
+		t.Fatal(err)
+	}
 	if posts != 1 {
 		t.Fatalf("Relay cycle reset posts=%d, want 1", posts)
 	}

@@ -41,7 +41,7 @@ func (a *Adapter) CloudWorkerQueuePosition(uid int64) (int, error) {
 	var queuedAt sql.NullTime
 	err := a.db.QueryRow(`
 		SELECT MIN(queued_at) FROM cloud_worker_credits
-		WHERE uid = $1 AND state = 'queued'`, uid).Scan(&queuedAt)
+		WHERE uid = $1 AND state = 'queued' AND source_ref NOT LIKE 'ops:%'`, uid).Scan(&queuedAt)
 	if err == sql.ErrNoRows {
 		return -1, nil
 	}
@@ -54,7 +54,7 @@ func (a *Adapter) CloudWorkerQueuePosition(uid int64) (int, error) {
 	var ahead int
 	if err := a.db.QueryRow(`
 		SELECT COUNT(*) FROM cloud_worker_credits
-		WHERE state = 'queued' AND queued_at < $1`, queuedAt.Time).Scan(&ahead); err != nil {
+		WHERE state = 'queued' AND source_ref NOT LIKE 'ops:%' AND queued_at < $1`, queuedAt.Time).Scan(&ahead); err != nil {
 		return -1, fmt.Errorf("cloud worker queue position: %w", err)
 	}
 	return ahead, nil
@@ -122,7 +122,7 @@ func (a *Adapter) ListQueuedCloudWorkerCredits(minAge time.Duration, limit int) 
 	rows, err := a.db.Query(`
 		SELECT uid, runtime_plan, queued_at
 		FROM cloud_worker_credits
-		WHERE state = 'queued' AND queued_at <= CURRENT_TIMESTAMP - $1::interval
+		WHERE state = 'queued' AND source_ref NOT LIKE 'ops:%' AND queued_at <= CURRENT_TIMESTAMP - $1::interval
 		ORDER BY queued_at
 		LIMIT $2`, fmt.Sprintf("%d seconds", int(minAge.Seconds())), limit)
 	if err != nil {
@@ -151,7 +151,7 @@ func (a *Adapter) ClaimQueuedCloudWorkerCredit(uid int64) (bool, error) {
 	result, err := a.db.Exec(`
 		UPDATE cloud_worker_credits
 		SET state = 'available', queued_at = NULL
-		WHERE uid = $1 AND state = 'queued'
+		WHERE uid = $1 AND state = 'queued' AND source_ref NOT LIKE 'ops:%'
 		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, uid)
 	if err != nil {
 		return false, fmt.Errorf("claim queued cloud worker credit: %w", err)
@@ -173,7 +173,7 @@ func (a *Adapter) ClaimQueuedCloudWorkerRuntimeCredit(uid int64, runtimePlan str
 		SET state = 'available', queued_at = NULL
 		WHERE id = (
 			SELECT id FROM cloud_worker_credits
-			WHERE uid = $1 AND state = 'queued'
+			WHERE uid = $1 AND state = 'queued' AND source_ref NOT LIKE 'ops:%'
 			  AND deployment_profile = 'packed_shared' AND billing_mode = 'month'
 			  AND COALESCE(NULLIF(runtime_plan, ''), 'standard') = $2
 			  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)

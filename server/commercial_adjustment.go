@@ -436,7 +436,8 @@ func (h *AccountAdminHandler) resetCommercialRelayCycle(ctx context.Context, uid
 	}
 	stamp := resetAt.Format(time.RFC3339Nano)
 	if current != nil {
-		if currentAt, ok := parseCommercialRelayTime(current.UsageWindowStart); ok && !currentAt.Before(resetAt) {
+		if currentAt, ok := parseCommercialRelayTime(current.UsageWindowStart); ok &&
+			(!currentAt.Before(resetAt) || sameCommercialRelayTimestamp(current.UsageWindowStart, stamp)) {
 			return nil
 		}
 	}
