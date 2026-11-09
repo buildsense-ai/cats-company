@@ -63,3 +63,20 @@ func TestCommercialRecordsAuthAndPagination(t *testing.T) {
 		t.Fatal("unauthorized request reached store")
 	}
 }
+
+// The durable operator-action history is listed through the same read-only
+// records endpoint so an operator can recover the operation_id of a worker that
+// vanished (and refresh/retry it) without touching the database.
+func TestCommercialRecordsActionsKindKeepsFilters(t *testing.T) {
+	store := &recordsTestStore{commercialOpsTestStore: newCommercialOpsTestStore()}
+	h := NewCommercialOpsHandler(nil, commercialOpsTestVerifier{service: AccountService{Slug: "readonly", Scopes: []string{commercialOpsReadScope}}}, store)
+	r := httptest.NewRecorder()
+	h.HandleRecords(r, commercialOpsRequest(http.MethodGet, "/api/account/commercial-ops/records?kind=actions&uid=116&q=484efdad-787e&status=failed&limit=50&offset=100", ""))
+	if r.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+	}
+	got := store.query
+	if got.Kind != "actions" || got.UID != 116 || got.Status != "failed" || got.Search != "484efdad-787e" || got.Limit != 50 || got.Offset != 100 {
+		t.Fatalf("filters lost: %#v", got)
+	}
+}

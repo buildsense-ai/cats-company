@@ -490,6 +490,15 @@ type CloudWorkerAdminRecord struct {
 	BindingSource      string
 	BindingStatus      string
 	LastVerifiedAt     *time.Time
+	// Operation* / WorkerStatus / RuntimePlan / PlannedExpiresAt describe an
+	// active durable commercial operator action that is currently provisioning
+	// this worker. They are only populated when the record's username is the
+	// exact per-operation bot identity, never by owner.
+	OperationID      string
+	OperationStatus  string
+	WorkerStatus     string
+	RuntimePlan      string
+	PlannedExpiresAt *time.Time
 }
 
 // CloudWorkerBindingRecord describes a manually imported provider instance.

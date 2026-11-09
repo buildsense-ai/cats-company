@@ -3,14 +3,72 @@ package postgres
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
+
+// commercialOpsActiveAction is the projection of one still-running durable
+// operator action, keyed by the exact bot username that action provisions.
+type commercialOpsActiveAction struct {
+	OperationID      string
+	OperationStatus  string
+	WorkerStatus     string
+	RuntimePlan      string
+	PlannedExpiresAt *time.Time
+}
+
+// activeCommercialOpsActions returns pending/running actions indexed by the
+// username the action creates. The username is derived in Go
+// (types.CommercialActionUsername is a hash), so it cannot be joined in SQL.
+// The index is keyed per operation on purpose: matching by owner would label
+// every worker of that owner as provisioning.
+func (a *Adapter) activeCommercialOpsActions() (map[string]commercialOpsActiveAction, error) {
+	rows, err := a.db.Query(`
+		SELECT uid, operation_id, status, worker_status,
+		       COALESCE(preview->>'runtime_plan', ''),
+		       COALESCE(preview->>'worker_expires_at', '')
+		FROM commercial_ops_actions
+		WHERE status IN ('pending','running')
+		ORDER BY created_at, operation_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list active commercial actions: %w", err)
+	}
+	defer rows.Close()
+	active := map[string]commercialOpsActiveAction{}
+	for rows.Next() {
+		var uid int64
+		var action commercialOpsActiveAction
+		var planned string
+		if err := rows.Scan(&uid, &action.OperationID, &action.OperationStatus, &action.WorkerStatus, &action.RuntimePlan, &planned); err != nil {
+			return nil, fmt.Errorf("scan active commercial action: %w", err)
+		}
+		if planned != "" {
+			if value, err := time.Parse(time.RFC3339Nano, planned); err == nil {
+				utc := value.UTC()
+				action.PlannedExpiresAt = &utc
+			}
+		}
+		active[types.CommercialActionUsername(uid, action.OperationID)] = action
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read active commercial actions: %w", err)
+	}
+	return active, nil
+}
 
 // ListCloudWorkerAdminRecords returns the safe, read-only projection consumed
 // by the internal commercial-ops cloud-worker dashboard. Provider credentials
 // and bot API keys are intentionally excluded.
 func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord, error) {
+	// Read in-flight operator actions first: a worker that an active action is
+	// still provisioning has no container yet, and the caller needs that fact
+	// attached to the row (matched by exact per-operation username) to avoid
+	// reporting it as a missing worker.
+	activeActions, err := a.activeCommercialOpsActions()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := a.db.Query(`
 		SELECT u.id,
 		       COALESCE(b.owner_id, 0),
@@ -28,13 +86,14 @@ func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord,
 		       COALESCE(l.last_error, ''),
 		       credit.state,
 		       COALESCE(credit.source_ref, ''),
-		       credit.expires_at
+		       credit.expires_at,
+		       COALESCE(credit.runtime_plan, '')
 		FROM users u
 		JOIN bot_config b ON b.user_id = u.id
 		LEFT JOIN users owner ON owner.id = b.owner_id
 		LEFT JOIN cloud_worker_lifecycles l ON l.worker_uid = u.id
 		LEFT JOIN LATERAL (
-			SELECT c.state, c.source_ref, c.expires_at
+			SELECT c.state, c.source_ref, c.expires_at, c.runtime_plan
 			FROM cloud_worker_credits c
 			WHERE c.worker_uid = u.id
 			ORDER BY COALESCE(c.consumed_at, c.reserved_at, c.created_at) DESC, c.id DESC
@@ -51,7 +110,7 @@ func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord,
 	var records []types.CloudWorkerAdminRecord
 	for rows.Next() {
 		var record types.CloudWorkerAdminRecord
-		var lifecycleState, lifecycleLastError, creditState, creditSourceRef sql.NullString
+		var lifecycleState, lifecycleLastError, creditState, creditSourceRef, creditRuntimePlan sql.NullString
 		var packageExpiresAt, deleteAfter, creditExpiresAt sql.NullTime
 		if err := rows.Scan(
 			&record.WorkerUID,
@@ -71,6 +130,7 @@ func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord,
 			&creditState,
 			&creditSourceRef,
 			&creditExpiresAt,
+			&creditRuntimePlan,
 		); err != nil {
 			return nil, fmt.Errorf("scan cloud worker admin record: %w", err)
 		}
@@ -89,6 +149,18 @@ func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord,
 		if creditExpiresAt.Valid {
 			value := creditExpiresAt.Time
 			record.CreditExpiresAt = &value
+		}
+		// Daily-use machines get their tier from the credit that paid for them.
+		// An in-flight action overrides it below: the credit may not exist yet.
+		record.RuntimePlan = creditRuntimePlan.String
+		if action, found := activeActions[record.Username]; found {
+			record.OperationID = action.OperationID
+			record.OperationStatus = action.OperationStatus
+			record.WorkerStatus = action.WorkerStatus
+			record.PlannedExpiresAt = action.PlannedExpiresAt
+			if action.RuntimePlan != "" {
+				record.RuntimePlan = action.RuntimePlan
+			}
 		}
 		record.Provider = "ctyun"
 		record.ManagementMode = "managed"
