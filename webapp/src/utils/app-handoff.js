@@ -79,7 +79,7 @@ export function startAppHandoff({ host = window, frame, url, request, agentUid, 
       if (normalized.action === 'run' && data.supports_run !== true) return finish('unsupported');
       if (!validateParameters(normalized.parameters, data.schema)) return finish('invalid_parameters');
       phase = 'ack'; onState('awaiting_ack');
-      send({ type: 'handoff', topic_id: String(topicId), agent_uid: Number(agentUid), action: normalized.action, parameters: normalized.parameters });
+      send({ type: 'handoff', topic_id: String(topicId), agent_uid: String(agentUid), action: normalized.action, parameters: normalized.parameters, expires_at: normalized.expires_at });
     } else if (phase === 'ack' && data.type === 'ack') {
       if (data.status === 'failed' || data.status === 'unsupported') return finish(data.status);
       if (normalized.action === 'initialize' && data.status === 'initialized') return finish('initialized');
@@ -90,7 +90,7 @@ export function startAppHandoff({ host = window, frame, url, request, agentUid, 
   host.addEventListener('message', receive);
   timer = setTimeout(() => finish('timeout'), Math.min(timeoutMs, normalized.expires_at - Date.now()));
   onState('waiting_ready');
-  try { send({ type: 'hello', topic_id: String(topicId), agent_uid: Number(agentUid) }); } catch { finish('failed'); }
+  try { send({ type: 'hello', topic_id: String(topicId), agent_uid: String(agentUid) }); } catch { finish('failed'); }
   return stop;
 }
 export const HANDOFF_LABELS = {
