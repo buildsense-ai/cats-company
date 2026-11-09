@@ -159,3 +159,30 @@ func (a *Adapter) ClaimQueuedCloudWorkerCredit(uid int64) (bool, error) {
 	n, _ := result.RowsAffected()
 	return n > 0, nil
 }
+
+// ClaimQueuedCloudWorkerRuntimeCredit releases one credit of the queued tier.
+// Releasing every tier for the owner would strand the remaining manual grants
+// after a filtered retry, or release a tier that has just queued again.
+func (a *Adapter) ClaimQueuedCloudWorkerRuntimeCredit(uid int64, runtimePlan string) (bool, error) {
+	runtimePlan, valid := types.NormalizeCloudWorkerRuntimePlan(runtimePlan)
+	if uid <= 0 || !valid || runtimePlan == "" {
+		return false, fmt.Errorf("invalid cloud worker runtime queue claim")
+	}
+	result, err := a.db.Exec(`
+		UPDATE cloud_worker_credits
+		SET state = 'available', queued_at = NULL
+		WHERE id = (
+			SELECT id FROM cloud_worker_credits
+			WHERE uid = $1 AND state = 'queued'
+			  AND deployment_profile = 'packed_shared' AND billing_mode = 'month'
+			  AND COALESCE(NULLIF(runtime_plan, ''), 'standard') = $2
+			  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+			ORDER BY queued_at, id
+			FOR UPDATE SKIP LOCKED LIMIT 1
+		)`, uid, runtimePlan)
+	if err != nil {
+		return false, fmt.Errorf("claim queued cloud worker runtime credit: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return n == 1, nil
+}

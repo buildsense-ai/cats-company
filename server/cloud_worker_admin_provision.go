@@ -40,6 +40,7 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 		ExpiresAt         string `json:"expires_at"`
 		DeploymentProfile string `json:"deployment_profile"`
 		BillingMode       string `json:"billing_mode"`
+		RuntimePlan       string `json:"runtime_plan"`
 		// Additional opens one more billable instance on an account that
 		// already owns a cloud worker. It is an explicit internal decision
 		// (one account, several bots) and is never implied by a retry: the
@@ -120,6 +121,16 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing mode"})
 		return
 	}
+	runtimePlan, runtimeErr := cloudWorkerRuntimeForProfile(profile, input.RuntimePlan)
+	if runtimeErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": runtimeErr.Error()})
+		return
+	}
+	runtimeCredits, supportsRuntime := h.credits.(cloudWorkerRuntimeCredits)
+	if runtimePlan != "" && !supportsRuntime {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime configuration unavailable"})
+		return
+	}
 	// Shared containers have no cloud subscription: collapse the machine
 	// billing dimension so a direct provision cannot mint an on-demand credit
 	// that the expiry sweeper would later send into the ECS billing scripts.
@@ -132,11 +143,16 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "selected deployment profile is not configured"})
 		return
 	}
-	_, available, err := h.credits.CloudWorkerCreditSummary(input.UID)
-	if configured, ok := h.credits.(cloudWorkerBillingCredits); ok {
+	var available int
+	var err error
+	if runtimePlan != "" {
+		_, available, err = runtimeCredits.CloudWorkerRuntimeCreditSummary(input.UID, profile, billing, runtimePlan)
+	} else if configured, ok := h.credits.(cloudWorkerBillingCredits); ok {
 		_, available, err = configured.CloudWorkerConfiguredCreditSummary(input.UID, profile, billing)
 	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 		_, available, err = profiled.CloudWorkerProfileCreditSummary(input.UID, profile)
+	} else {
+		_, available, err = h.credits.CloudWorkerCreditSummary(input.UID)
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to read cloud worker credits"})
@@ -158,7 +174,9 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 			return
 		}
 		var grantErr error
-		if configured, ok := h.credits.(cloudWorkerBillingCredits); ok {
+		if runtimePlan != "" {
+			_, grantErr = runtimeCredits.GrantCloudWorkerRuntimeCredits(input.UID, 1, input.SourceRef, expiresAt, profile, billing, runtimePlan)
+		} else if configured, ok := h.credits.(cloudWorkerBillingCredits); ok {
 			_, grantErr = configured.GrantCloudWorkerConfiguredCredits(input.UID, 1, input.SourceRef, expiresAt, profile, billing)
 		} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 			_, grantErr = profiled.GrantCloudWorkerProfileCredits(input.UID, 1, input.SourceRef, expiresAt, profile)
@@ -177,6 +195,9 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 	createReq := r.Clone(context.WithValue(r.Context(), uidKey, input.UID))
 	createReq = createReq.WithContext(context.WithValue(createReq.Context(), cloudWorkerProfileContextKey{}, profile))
 	createReq = createReq.WithContext(context.WithValue(createReq.Context(), cloudWorkerBillingContextKey{}, billing))
+	if runtimePlan != "" {
+		createReq = createReq.WithContext(context.WithValue(createReq.Context(), cloudWorkerRuntimeContextKey{}, runtimePlan))
+	}
 	createReq.Body = io.NopCloser(bytes.NewReader(createBody))
 	h.HandleCreate(w, createReq)
 }
@@ -195,20 +216,12 @@ func cloudWorkerProvisionExpiry(db interface{}, uid int64, raw string) (*time.Ti
 		if err != nil {
 			return nil, errInvalidCloudWorkerProvisionExpiry
 		}
-		var latest *time.Time
 		if summary != nil {
-			for _, entitlement := range summary.Entitlements {
-				if entitlement == nil || strings.ToLower(strings.TrimSpace(entitlement.State)) != "active" || entitlement.ExpiresAt == nil {
-					continue
-				}
-				if latest == nil || entitlement.ExpiresAt.After(*latest) {
-					value := entitlement.ExpiresAt.UTC()
-					latest = &value
-				}
+			current := types.PrimaryCommercialEntitlement(summary.Entitlements, time.Now().UTC())
+			if current != nil && current.ExpiresAt != nil {
+				value := current.ExpiresAt.UTC()
+				return &value, nil
 			}
-		}
-		if latest != nil && latest.After(time.Now().UTC()) {
-			return latest, nil
 		}
 	}
 	return nil, errInvalidCloudWorkerProvisionExpiry

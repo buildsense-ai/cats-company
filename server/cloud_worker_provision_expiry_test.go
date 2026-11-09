@@ -28,3 +28,32 @@ func TestCloudWorkerProvisionExpiryArgs(t *testing.T) {
 		t.Fatalf("non-shared profile must not send the flag, got %v", got)
 	}
 }
+
+type provisionExpirySummaryStore struct {
+	CommercialStore
+	summary *types.CommercialSummary
+}
+
+func (s provisionExpirySummaryStore) GetCommercialSummary(int64) (*types.CommercialSummary, error) {
+	return s.summary, nil
+}
+
+func TestCloudWorkerProvisionExpiryFollowsCurrentPackage(t *testing.T) {
+	now := time.Now().UTC()
+	currentExpiry, legacyExpiry, futureExpiry := now.Add(10*24*time.Hour), now.Add(90*24*time.Hour), now.Add(120*24*time.Hour)
+	current := &types.CommercialEntitlement{State: "active", Source: "invite", StartsAt: now.Add(-time.Hour), ExpiresAt: &currentExpiry}
+	legacy := &types.CommercialEntitlement{State: "active", Source: "legacy", StartsAt: now.Add(-time.Hour), ExpiresAt: &legacyExpiry}
+	future := &types.CommercialEntitlement{State: "active", Source: "invite", StartsAt: now.Add(24 * time.Hour), ExpiresAt: &futureExpiry}
+	s := provisionExpirySummaryStore{summary: &types.CommercialSummary{Entitlements: []*types.CommercialEntitlement{legacy, future, current}}}
+	got, err := cloudWorkerProvisionExpiry(s, 7, "")
+	if err != nil || got == nil || !got.Equal(currentExpiry) {
+		t.Fatalf("must follow current package: expiry=%v err=%v", got, err)
+	}
+	current.ExpiresAt = nil
+	if got, err := cloudWorkerProvisionExpiry(s, 7, ""); err == nil || got != nil {
+		t.Fatalf("permanent current package must require explicit test term: expiry=%v err=%v", got, err)
+	}
+	if got, err := cloudWorkerProvisionExpiry(s, 7, currentExpiry.Format(time.RFC3339)); err != nil || got == nil || got.Unix() != currentExpiry.Unix() {
+		t.Fatalf("explicit test term must still work: expiry=%v err=%v", got, err)
+	}
+}

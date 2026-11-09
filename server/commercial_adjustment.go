@@ -197,7 +197,7 @@ func (h *AccountAdminHandler) buildCommercialAdjustmentPreview(ctx context.Conte
 		return nil, fmt.Errorf("load commercial summary: %w", err)
 	}
 	if summary == nil || len(summary.Entitlements) == 0 {
-		return nil, &types.CommercialAdjustmentError{Code: "no_package", Message: "用户当前没有有效套餐"}
+		return nil, &types.CommercialAdjustmentError{Code: "no_package", Message: "用户当前没有有效套餐，请先通过邀请码发放套餐"}
 	}
 	plans, err := store.ListCommercialPlans(true)
 	if err != nil {
@@ -279,7 +279,7 @@ func (h *AccountAdminHandler) buildCommercialAdjustmentPreview(ctx context.Conte
 			}
 		}
 		if latestExtendable == nil {
-			return nil, &types.CommercialAdjustmentError{Code: "no_active_plan", Message: "当前没有有效的付费套餐；如已到期，请使用「更换套餐」重新开通"}
+			return nil, &types.CommercialAdjustmentError{Code: "no_active_plan", Message: "当前没有支持顺延的有效付费套餐；内部、免费或永久套餐不支持顺延；如已到期，请使用「更换套餐」重新开通"}
 		}
 		plan := planByID[latestExtendable.PlanID]
 		if plan == nil {

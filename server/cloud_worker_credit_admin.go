@@ -36,6 +36,7 @@ func (h *AccountAdminHandler) HandleCloudWorkerCredits(w http.ResponseWriter, r 
 		ExpiresAt         string `json:"expires_at"`
 		DeploymentProfile string `json:"deployment_profile"`
 		BillingMode       string `json:"billing_mode"`
+		RuntimePlan       string `json:"runtime_plan"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid credit grant request"})
@@ -69,6 +70,11 @@ func (h *AccountAdminHandler) HandleCloudWorkerCredits(w http.ResponseWriter, r 
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid deployment profile"})
 		return
 	}
+	runtimePlan, runtimeErr := cloudWorkerRuntimeForProfile(profile, req.RuntimePlan)
+	if runtimeErr != nil {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": runtimeErr.Error()})
+		return
+	}
 	var granted int
 	var err error
 	billing, valid := types.NormalizeCloudWorkerBilling(req.BillingMode)
@@ -84,7 +90,14 @@ func (h *AccountAdminHandler) HandleCloudWorkerCredits(w http.ResponseWriter, r 
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "on-demand trial requires a valid billing mode and future expiry"})
 		return
 	}
-	if configured, ok := h.cloudWorkerCredits.(cloudWorkerBillingCredits); ok {
+	if runtimePlan != "" {
+		runtimeCredits, ok := h.cloudWorkerCredits.(cloudWorkerRuntimeCredits)
+		if !ok {
+			writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime configuration unavailable"})
+			return
+		}
+		granted, err = runtimeCredits.GrantCloudWorkerRuntimeCredits(req.UID, req.Count, req.SourceRef, expiresAt, profile, billing, runtimePlan)
+	} else if configured, ok := h.cloudWorkerCredits.(cloudWorkerBillingCredits); ok {
 		granted, err = configured.GrantCloudWorkerConfiguredCredits(req.UID, req.Count, req.SourceRef, expiresAt, profile, billing)
 	} else if billing != types.CloudWorkerMonthly {
 		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "billing configuration unavailable"})
@@ -109,5 +122,6 @@ func (h *AccountAdminHandler) HandleCloudWorkerCredits(w http.ResponseWriter, r 
 		"source_ref":         req.SourceRef,
 		"deployment_profile": profile,
 		"billing_mode":       billing,
+		"runtime_plan":       runtimePlan,
 	})
 }
