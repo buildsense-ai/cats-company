@@ -118,7 +118,7 @@ export default function SkillHubContent(props) {
               selectedUpdateCount={selectedUpdateCount}
               selectedUpdateStatus={selectedUpdateStatus}
               updatesOnly={updatesOnly}
-              onToggleUpdates={onToggleUpdates}
+              onToggleUpdates={() => { setCategory(''); onToggleUpdates(); }}
               language={language}
               onLanguageChange={changeLanguage}
             />
@@ -146,10 +146,15 @@ function AgentContext({
   agentOptions, loadingBots, onSelectAgent, saving, selectedBotUID, sharingSkill, syncingWorkspace,
 }) {
   const disabled = loadingBots || agentOptions.length === 0 || Boolean(sharingSkill) || saving || syncingWorkspace;
+  const totalUpdates = agentOptions.reduce((total, agent) => total + (agent.updateCount || 0), 0);
+  const selectedUpdates = agentOptions.find(agent => agent.value === selectedBotUID)?.updateCount || 0;
   return (
     <div className='cc-skillhub-agent-context'>
       <label className='cc-skillhub-bot-picker'>
-        <span className='cc-skillhub-agent-label'><Bot size={15} aria-hidden='true' /> 当前 Agent</span>
+        <span className='cc-skillhub-agent-label'>
+          <Bot size={15} aria-hidden='true' /> 当前 Agent
+          {totalUpdates > 0 && <span className='cc-skillhub-agent-update-badge' aria-label={`共 ${totalUpdates} 个 Skill 可更新`}>{totalUpdates}</span>}
+        </span>
         <AgentSelect
           agents={agentOptions}
           disabled={disabled}
@@ -157,6 +162,11 @@ function AgentContext({
           value={selectedBotUID}
         />
       </label>
+      {totalUpdates > 0 && <p className='cc-skillhub-agent-update-hint' role='status'>
+        {selectedUpdates > 0
+          ? '当前 Agent 有 Skill 可更新，点击「可更新」查看。'
+          : '有 Skill 可更新，请点击上方选择器，切换到带数字提醒的 Agent。'}
+      </p>}
     </div>
   );
 }
@@ -194,7 +204,10 @@ function AgentSelect({ agents, disabled, onChange, value }) {
             value={agent.value}
             data-title={agent.label}
           >
-            {agent.label}
+            <span className='cc-skillhub-agent-option-content'>
+              <span className='cc-skillhub-agent-option-name'>{agent.label}</span>
+              {agent.updateCount > 0 && <span className='cc-skillhub-agent-update-badge' aria-label={`${agent.updateCount} 个 Skill 可更新`}>{agent.updateCount}</span>}
+            </span>
           </option>
         ))}
       </CustomSelect>

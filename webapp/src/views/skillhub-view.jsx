@@ -1438,14 +1438,17 @@ export default function SkillHubView({
     return skillHubUpdateSummary?.byBot?.[uid] || null;
   }, [skillHubUpdateSummary]);
 
-  const agentOptions = useMemo(() => bots.map((bot) => ({
-    value: String(botUID(bot)),
-    label: botLabel(bot),
-  })), [bots]);
+  const agentOptions = useMemo(() => bots.map((bot) => {
+    const summary = updateSummaryForBot(bot);
+    const count = Number(summary?.count || 0);
+    return {
+      value: String(botUID(bot)),
+      label: botLabel(bot),
+      updateCount: ['ready', 'partial'].includes(summary?.status) && Number.isSafeInteger(count) && count > 0 ? count : 0,
+    };
+  }), [bots, updateSummaryForBot]);
   const selectedUpdateSummary = updateSummaryForBot(selectedAgent);
-  const selectedUpdateCount = ['ready', 'partial'].includes(selectedUpdateSummary?.status)
-    ? Number(selectedUpdateSummary?.count || 0)
-    : 0;
+  const selectedUpdateCount = agentOptions.find(agent => agent.value === selectedBotUID)?.updateCount || 0;
   const selectedUpdateStatus = selectedUpdateSummary?.status || '';
   const selectedUnavailableSkillIds = selectedUpdateSummary?.unavailableSkillIds || [];
   const loadDevices = useCallback(async (options = {}) => {
@@ -2967,7 +2970,11 @@ export default function SkillHubView({
     onShareLocalSkill={shareLocalSkill}
     onSyncWorkspace={syncWorkspaceToAgent}
     onUpdateSkill={updateSkill}
-    onToggleUpdates={() => setUpdatesOnly((current) => !current)}
+    onToggleUpdates={() => {
+      setActiveSection('added');
+      setAddedSkillQuery('');
+      setUpdatesOnly((current) => activeSection !== 'added' || !current);
+    }}
     query={query}
     saving={saving}
     selectedAgentName={selectedAgent ? botLabel(selectedAgent) : ''}

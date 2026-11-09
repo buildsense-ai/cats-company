@@ -3537,8 +3537,70 @@ describe('SkillHubView', () => {
       Simulate.click(trigger);
     });
     const selectedOption = document.body.querySelector('[role="option"][aria-selected="true"]');
-    expect(selectedOption?.textContent).toBe('Owner Bot');
+    expect(selectedOption?.textContent).toBe('Owner Bot1');
+    expect(selectedOption?.querySelector('.cc-skillhub-agent-update-badge')?.getAttribute('aria-label')).toBe('1 个 Skill 可更新');
     expect(selectedOption?.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('guides users from another Agent to the owner with updates, then opens the update list', async () => {
+    api.getMyBots.mockResolvedValue({ bots: [
+      { uid: 42, display_name: 'David', relation: 'owner', is_owner: true },
+      { uid: 44, display_name: '烙馍村村长', relation: 'owner', is_owner: true },
+      { uid: 43, display_name: 'Friend Bot', relation: 'friend', is_owner: false, owner_id: 99 },
+    ] });
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} skillHubUpdateSummary={{
+        total: 2,
+        byBot: {
+          42: { status: 'ready', count: 0 },
+          44: { status: 'ready', count: 2 },
+          43: { status: 'ready', count: 99 },
+        },
+        detailsBySkillID: {},
+      }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCatalogue();
+    expect(container.querySelector('.cc-skillhub-agent-label').textContent).toContain('2');
+    expect(container.querySelector('.cc-skillhub-agent-update-hint').textContent).toContain('切换到带数字提醒的 Agent');
+    expect(container.querySelector('.cc-skillhub-updates-filter')).toBeNull();
+    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-agent-select-trigger')); });
+    const options = [...document.body.querySelectorAll('[role="listbox"][aria-label="Agent 列表"] [role="option"]')];
+    expect(options[0].querySelector('.cc-skillhub-agent-update-badge')).toBeNull();
+    expect(options[1].querySelector('.cc-skillhub-agent-update-badge')?.textContent).toBe('2');
+    expect(options[2].querySelector('.cc-skillhub-agent-update-badge')).toBeNull();
+    await act(async () => {
+      Simulate.click(options[1]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.cc-skillhub-agent-update-hint').textContent).toContain('点击「可更新」');
+    expect(container.querySelector('.cc-skillhub-updates-filter span').textContent).toBe('2');
+    expect(container.querySelector('#skillhub-catalogue-tab').getAttribute('aria-selected')).toBe('true');
+    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-updates-filter')); });
+    expect(container.querySelector('#skillhub-added-tab').getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('.cc-skillhub-updates-filter').getAttribute('aria-pressed')).toBe('true');
+    expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+  });
+
+  it('hides update guidance when no accessible owner has confirmed updates', async () => {
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} skillHubUpdateSummary={{
+        total: 9,
+        byBot: {
+          42: { status: 'error', count: 2 },
+          43: { status: 'ready', count: 3 },
+          999: { status: 'ready', count: 4 },
+        },
+      }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.cc-skillhub-agent-update-hint')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-agent-label .cc-skillhub-agent-update-badge')).toBeNull();
+    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-agent-select-trigger')); });
+    expect(document.body.querySelector('.cc-skillhub-agent-options .cc-skillhub-agent-update-badge')).toBeNull();
   });
 
   it('loads only owner bots and binds a precise SkillHub reference', async () => {
