@@ -1,6 +1,6 @@
 /* Approved account overview layout. Shared tokens own themes and control states. */
 .oc-modal.relay-access-account {
-  width: min(1080px, calc(100vw - 32px));
+  width: min(900px, calc(100vw - 32px));
   max-width: calc(100vw - 32px);
   padding: 0;
   overflow: hidden;
@@ -36,8 +36,16 @@
   scrollbar-gutter: stable;
 }
 
+.relay-access-account > .relay-access-body[aria-busy='true'] {
+  padding: 0;
+  scrollbar-gutter: auto;
+}
+
 .relay-access-account .relay-access-account-loading {
-  min-height: min(440px, 55dvh);
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  padding-block: 12px 44px;
   justify-content: center;
 }
 

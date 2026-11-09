@@ -6,6 +6,28 @@ let root, container;
 beforeEach(() => { container = document.createElement('div'); document.body.append(container); root = createRoot(container); });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 
+it('defers a generic target check while history owns loading feedback, then restores it if still blocked', async () => {
+  const fork = { blocked: true, checking: true };
+  await act(async () => root.render(<ConversationForkNotice fork={fork} historyLoading />));
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  await act(async () => root.render(<ConversationForkNotice fork={fork} />));
+  expect(container.textContent).toContain('正在确认会话状态');
+  await act(async () => root.render(<ConversationForkNotice fork={{ blocked: false, checking: false }} />));
+  expect(container.querySelector('[role="status"]')).toBeNull();
+});
+
+it('keeps lookup failures actionable and confirmed initialization visible while history loads', async () => {
+  const checkTarget = vi.fn();
+  await act(async () => root.render(<ConversationForkNotice historyLoading fork={{ blocked: true, targetError: 'offline', checkTarget }} />));
+  expect(container.querySelector('[role="alert"]').textContent).toContain('offline');
+  await act(async () => container.querySelector('button').click());
+  expect(checkTarget).toHaveBeenCalledTimes(1);
+  await act(async () => root.render(<ConversationForkNotice historyLoading fork={{ blocked: true, provenance: { state: 'pending' } }} />));
+  expect(container.textContent).toContain('新会话正在初始化');
+  await act(async () => root.render(<ConversationForkNotice historyLoading fork={{ blocked: true, provenance: { state: 'failed', error: 'session_fork_ack_timeout' } }} />));
+  expect(container.querySelector('[role="alert"]')).not.toBeNull();
+});
+
 it('supports keyboard focus and returns focus when the menu closes', async () => {
   const create = vi.fn();
   await act(async () => root.render(<ConversationForkAction eligible onCreate={create} />));
