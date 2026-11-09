@@ -1796,6 +1796,9 @@ export default function MessagesView({
 
   useEffect(() => {
     const invalidate = () => {
+      for (const operation of appOpenInFlightRef.current.values()) operation.cancelled = true;
+      appOpenInFlightRef.current.clear();
+      setPendingAppOpenMessage(null);
       pendingGatewayAnnotationStartRef.current = null;
       gatewayAnnotationBindingRef.current = null;
       gatewayAnnotationContextRef.current = null;
@@ -3934,14 +3937,15 @@ export default function MessagesView({
     });
     if (!command) return;
     if (appOpenInFlightRef.current.has(command.key)) return;
-    const operation = { cancelled: false };
+    const operation = { cancelled: false, authRevision: getAuthRevision(), token: getToken() };
     appOpenInFlightRef.current.set(command.key, operation);
     // This effect does not own cancellation: clearing the pending slot is safe.
     setPendingAppOpenMessage(null);
     (async () => {
       try {
         const response = await api.listArtifactApps(agentUid);
-        if (operation.cancelled || activeTopicRef.current !== topic) return;
+        if (operation.cancelled || activeTopicRef.current !== topic
+          || operation.authRevision !== getAuthRevision() || operation.token !== getToken()) return;
         const apps = Array.isArray(response?.apps) ? response.apps : [];
         const target = findAppOpenTarget(apps, command.appId);
         if (!target) return;

@@ -37,6 +37,11 @@ describe('handoff safety and lifecycle', () => {
     expect(h.states.at(-1)).toBe('initialized');
     expect(h.listeners.size).toBe(0);
   });
+  it('counts Unicode code points and bounds serialized UTF-8 bytes', () => {
+    expect(normalizeHandoff({ ...request, parameters: { label: '😀'.repeat(300) } })).not.toBeNull();
+    expect(validateParameters({ label: '😀'.repeat(300) }, { label: { type: 'string', maxLength: 300 } })).toBe(true);
+    expect(normalizeHandoff({ ...request, parameters: { a: '界'.repeat(512), b: '界'.repeat(512), c: '界'.repeat(512) } })).toBeNull();
+  });
   it('delivers the authenticated identity and deadline required by strict receivers', () => {
     const h = harness();
     h.receive({ type: 'ready', schema });

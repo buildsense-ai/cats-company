@@ -1126,6 +1126,18 @@ describe('MessagesView composer draft isolation', () => {
       await act(async () => { resolve({ apps: [app] }); await flushPromises(); });
       expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
     });
+    it('cancels a catalogue lookup when the authenticated session changes', async () => {
+      await setup();
+      let resolve;
+      api.listArtifactApps.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+      await deliver();
+      await act(async () => { window.dispatchEvent(new Event('cc:auth-changed')); await flushPromises(); });
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      await act(async () => { resolve({ apps: [app] }); await flushPromises(); });
+      expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+      await deliver();
+      expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    });
     it('cancels on topic change without consuming the undelivered request', async () => {
       await setup();
       let resolve;

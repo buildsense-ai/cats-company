@@ -13,10 +13,10 @@ const sensitive = /password|passwd|token|secret|credential|private.?key|authoriz
 const unsafeValue = /-----BEGIN|(?:https?|ssh|sftp):\/\/|bearer\s|[\r\n\x00-\x1f]/i;
 export function safeParameters(parameters) {
   if (!plain(parameters) || Object.keys(parameters).length > 16) return false;
-  if (JSON.stringify(parameters).length > 4096) return false;
+  if (new TextEncoder().encode(JSON.stringify(parameters)).length > 4096) return false;
   return Object.entries(parameters).every(([key, value]) => /^[a-z][a-z0-9_]{0,47}$/.test(key)
     && !sensitive.test(key) && (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))
-      || (typeof value === 'string' && value.length <= 512 && !unsafeValue.test(value))));
+      || (typeof value === 'string' && [...value].length <= 512 && !unsafeValue.test(value))));
 }
 export function normalizeHandoff(value) {
   if (!plain(value) || !/^[a-zA-Z0-9_-]{8,80}$/.test(value.request_id || '')
@@ -44,7 +44,7 @@ export function validateParameters(parameters, schema) {
       && (spec.minimum === undefined || value >= spec.minimum) && (spec.maximum === undefined || value <= spec.maximum);
     if (typeof value !== 'string') return false;
     if (spec.type === 'enum') return Array.isArray(spec.values) && spec.values.length <= 32 && spec.values.includes(value);
-    if (value.length > Math.min(512, spec.maxLength ?? 512)) return false;
+    if ([...value].length > Math.min(512, spec.maxLength ?? 512)) return false;
     if (spec.type === 'server_ref') return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value);
     if (spec.type === 'path') return /^(\/|[a-zA-Z]:[\\/])/.test(value)
       && !value.split(/[\\/]/).includes('..') && !/[;&|`$<>]/.test(value);
