@@ -96,6 +96,9 @@ jobs:
           cache-dependency-path: cats-company/go.sum
       - name: Install pinned Runtime dependencies
         working-directory: XiaoBa-CLI
+        env:
+          # These Node/Go contracts never start the desktop shell.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: npm ci --prefer-offline --no-audit --fund=false
       - name: Verify real Runtime source checks without skip fallback
         working-directory: cats-company
@@ -158,6 +161,9 @@ jobs:
           npm run db:migrate
       - name: Install pinned XiaoBa Runtime dependencies
         working-directory: XiaoBa-CLI
+        env:
+          # Keep lifecycle scripts, but avoid an unrelated desktop binary CDN.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: npm ci --prefer-offline --no-audit --fund=false
       - name: Verify Runtime + Cloud composition and exotic encoding vectors
         working-directory: cats-company
