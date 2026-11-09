@@ -190,6 +190,35 @@ describe('CloudArtifactsPanel', () => {
     container.remove();
   });
 
+  test('hands parameters to a ready bound frame once and does not equate opening with running', async () => {
+    const app = { id: 'handoff-test', title: 'Handoff test', url: 'https://app.example/', handoff: {
+      request_id: 'panel-request-123', topic_id: 'p2p_7_440', action: 'initialize',
+      expires_at: Date.now() + 60000, parameters: { data_path: '/data/sample' },
+    } };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://app.example/_launch/code' });
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} />));
+    const frame = container.querySelector('iframe');
+    const post = vi.spyOn(frame.contentWindow, 'postMessage');
+    await act(async () => Simulate.load(frame));
+    expect(container.textContent).toContain('尚未交接');
+    const hello = post.mock.calls[0][0];
+    await act(async () => window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://app.example', source: frame.contentWindow,
+      data: { ...hello, type: 'ready', schema: { data_path: { type: 'path' } } },
+    })));
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('等待应用确认');
+    await act(async () => window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://app.example', source: frame.contentWindow,
+      data: { ...hello, type: 'ack', status: 'initialized' },
+    })));
+    expect(container.textContent).toContain('未运行');
+    await act(async () => Simulate.load(frame));
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('不会重复发送');
+  });
+
   test('shows only files and results, with the result visibility explanation', async () => {
     await renderPanel();
 

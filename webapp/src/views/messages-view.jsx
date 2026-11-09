@@ -2710,7 +2710,7 @@ export default function MessagesView({
     writeArtifactPanelEntry(panelTopic, {
       open: true,
       agentUid,
-      app: { ...artifact },
+      app: Object.fromEntries(Object.entries(artifact).filter(([key]) => key !== 'handoff')),
       tab: 'gateway',
       returnOpen: false,
     });
@@ -3914,7 +3914,6 @@ export default function MessagesView({
   useEffect(() => {
     if (!pendingAppOpenMessage) return;
     const { message: commandMessage, topic: commandTopic } = pendingAppOpenMessage;
-    setPendingAppOpenMessage(null);
     if (!commandMessage || commandTopic !== topic) return;
 
     const agentUid = Number(selectedAgent?.uid || selectedAgent?.id || 0);
@@ -3940,7 +3939,7 @@ export default function MessagesView({
       if (cancelled || activeTopicRef.current !== topic) return;
       const target = findAppOpenTarget(apps, command.appId);
       if (!target) return;
-      openArtifactApp({ ...target, agent_uid: agentUid });
+      openArtifactApp({ ...target, agent_uid: agentUid, ...(command.handoff ? { handoff: command.handoff } : {}) });
     })();
 
     return () => {

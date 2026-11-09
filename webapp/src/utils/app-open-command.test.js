@@ -161,3 +161,26 @@ describe('resolving the application to open', () => {
     expect(target.url).toBe(APP.url);
   });
 });
+
+
+describe('v2 handoff command binding', () => {
+  const handoff = () => ({ request_id: 'unique-request-123', topic_id: 'p2p_7_9', action: 'initialize', parameters: { data_path: '/data/sample' }, expires_at: Date.now() + 60000 });
+  const message = () => ({ id: 900, from_uid: 9, topic: 'p2p_7_9', metadata: { app_open: { contract_version: 'catsco.app-open.v2', agent_uid: 9, app_id: 'research', handoff: handoff() } } });
+  it('preserves initialization payload and deduplicates logical request across different message ids', () => {
+    const m = message();
+    const first = appOpenCommandForMessage({ message: m, topic: m.topic, topicAgentUid: 9, seenKeys: new Set() });
+    expect(first.handoff.parameters.data_path).toBe('/data/sample');
+    const duplicate = appOpenCommandForMessage({ message: { ...m, id: 901 }, topic: m.topic, topicAgentUid: 9, seenKeys: new Set([first.key]) });
+    expect(duplicate).toBeNull();
+  });
+  it('rejects sender mismatch, topic mismatch, missing stamp and expired handoff', () => {
+    for (const change of ['sender', 'topic', 'stamp', 'expiry']) {
+      const m = message();
+      if (change === 'sender') m.from_uid = 10;
+      if (change === 'topic') m.metadata.app_open.handoff.topic_id = 'other';
+      if (change === 'stamp') delete m.metadata.app_open.agent_uid;
+      if (change === 'expiry') m.metadata.app_open.handoff.expires_at = 1;
+      expect(appOpenCommandForMessage({ message: m, topic: m.topic, topicAgentUid: 9 })).toBeNull();
+    }
+  });
+});

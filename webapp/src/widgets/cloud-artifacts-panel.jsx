@@ -1,3 +1,4 @@
+import { startAppHandoff, HANDOFF_LABELS, claimHandoffRequest } from '../utils/app-handoff';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import './gateway-annotation-popover.css';
 import { createPortal } from 'react-dom';
@@ -240,14 +241,33 @@ export default function CloudArtifactsPanel({
   // The live frame element, read at load time instead of from the event object.
   const gatewayFrameElementRef = useRef(null);
   const [gatewayRefreshing, setGatewayRefreshing] = useState(false);
+  const [handoffState, setHandoffState] = useState('');
+  const handoffStopRef = useRef(null);
+  const stopHandoff = useCallback(() => {
+    handoffStopRef.current?.();
+    handoffStopRef.current = null;
+  }, []);
+  useEffect(() => { stopHandoff(); setHandoffState(''); return stopHandoff; }, [topicId, agentUid, stopHandoff]);
+  const handoffFrameLoaded = (frame) => {
+    stopHandoff();
+    const request = gatewayPreview?.handoff;
+    if (!request) { setHandoffState(''); return; }
+    const key = `${agentUid}:${topicId}:${request.request_id}`;
+    if (!claimHandoffRequest(key)) { setHandoffState('reloaded'); return; }
+    if (gatewayPreview.visitor) { setHandoffState('invalid'); return; }
+    handoffStopRef.current = startAppHandoff({ frame, url: gatewayPreview.url,
+      request, agentUid, topicId, onState: setHandoffState });
+  };
+
   const retireGatewayOpen = useCallback(() => {
+    stopHandoff();
     ++gatewayOpenSequenceRef.current;
     gatewayBindingControllerRef.current?.abort();
     gatewayBindingControllerRef.current = null;
     const previous = gatewayOpenRef.current;
     gatewayOpenRef.current = null;
     if (previous?.open_ref) void api.revokeArtifactOpenBinding(previous.open_ref).catch(() => {});
-  }, []);
+  }, [stopHandoff]);
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -392,7 +412,7 @@ export default function CloudArtifactsPanel({
     // `code_expired_or_used` or a guest page — and a guest page is what makes the
     // application ask for identity when a task is submitted. The refresh action
     // asks for this explicitly, so it is the one caller that overrides it.
-    if (!force) {
+    if (!force && !app.handoff) {
       const showing = gatewayPreviewRef.current;
       if (showing
         && String(showing.id) === String(app.id)
@@ -685,11 +705,13 @@ export default function CloudArtifactsPanel({
       && consumed.topicId === topicId
       && String(consumed.appId) === String(initialApp.id)
       && String(consumed.appURL) === String(initialApp.url)
+      && consumed.requestId === initialApp.handoff?.request_id
       && Number(consumed.authRevision) === Number(getAuthRevision());
     if (sameApplication) return;
     consumedInitialAppRef.current = {
       appId: String(initialApp.id),
       appURL: String(initialApp.url),
+      requestId: initialApp.handoff?.request_id,
       agentUid,
       topicId,
       authRevision: getAuthRevision(),
@@ -1337,6 +1359,7 @@ export default function CloudArtifactsPanel({
                   新页面打开
                 </button>
               </div>
+              {handoffState && <p className="cloud-artifacts-gateway-viewer-note" role="status">{HANDOFF_LABELS[handoffState]}</p>}
               {gatewayAnnotationCapabilityNote && (
                 <p className="cloud-artifacts-gateway-viewer-note" role="status">
                   {gatewayAnnotationCapabilityNote}
@@ -1381,7 +1404,9 @@ export default function CloudArtifactsPanel({
                 // single-use code valid for the whole session.
                 src={gatewayPreview.viewerURL || gatewayPreview.url}
                 title={gatewayPreview.title || gatewayPreview.id}
-                onLoad={(event) => onGatewayFrameChange?.({
+                onLoad={(event) => {
+                  handoffFrameLoaded(event?.currentTarget || gatewayFrameElementRef.current);
+                  onGatewayFrameChange?.({
                   frame: event?.currentTarget || gatewayFrameElementRef.current,
                   url: gatewayPreview.viewerURL || gatewayPreview.url,
                   artifact: gatewayPreview.artifact,
@@ -1391,7 +1416,7 @@ export default function CloudArtifactsPanel({
                     appId: gatewayPreview.id,
                     title: gatewayPreview.title || gatewayPreview.id,
                   },
-                })}
+                }); }}
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
                 referrerPolicy="no-referrer"
                 style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}
