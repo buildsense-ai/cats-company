@@ -68,6 +68,24 @@ func (a *Adapter) RecordCommercialCycleReset(uid int64, operationID, note string
 }
 
 func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialAccountAdjustment) (*types.CommercialAccountAdjustmentResult, error) {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	result, err := a.applyCommercialAccountAdjustmentTx(tx, adjustment)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// applyCommercialAccountAdjustmentTx leaves commit ownership to its caller so
+// the actions journal and package mutation share the same atomic boundary.
+func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *types.CommercialAccountAdjustment) (*types.CommercialAccountAdjustmentResult, error) {
 	if adjustment == nil || adjustment.UID <= 0 {
 		return nil, commercialAdjustmentError("invalid_request", "invalid commercial adjustment")
 	}
@@ -80,12 +98,6 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-
-	tx, err := a.db.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("begin commercial account adjustment: %w", err)
-	}
-	defer tx.Rollback()
 
 	var lockedUID int64
 	if err := tx.QueryRow(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, adjustment.UID).Scan(&lockedUID); err == sql.ErrNoRows {
@@ -132,9 +144,6 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		}
 		if existingID != 0 {
 			result.NextTotalCNY = previousTotal
-			if err := tx.Commit(); err != nil {
-				return nil, fmt.Errorf("commit repeated commercial adjustment: %w", err)
-			}
 			return result, nil
 		}
 		if adjustment.ExpectedTotalCNY != nil && !commercialAmountEqual(previousTotal, *adjustment.ExpectedTotalCNY) {
@@ -181,9 +190,6 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 			repeatedStartsAt = repeatedStartsAt.UTC()
 			result.CycleStartedAt = &repeatedStartsAt
 			result.ExpiresAt = nullableTime(repeatedExpiresAt)
-			if err := tx.Commit(); err != nil {
-				return nil, fmt.Errorf("commit repeated commercial plan change: %w", err)
-			}
 			return result, nil
 		}
 		if adjustment.ExpectedTotalCNY != nil && !commercialAmountEqual(previousTotal, *adjustment.ExpectedTotalCNY) {
@@ -292,9 +298,6 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 					return nil, fmt.Errorf("check repeated renewal cycle reset: %w", err)
 				}
 			}
-			if err := tx.Commit(); err != nil {
-				return nil, fmt.Errorf("commit repeated commercial extension: %w", err)
-			}
 			return result, nil
 		}
 
@@ -308,15 +311,20 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		// "extendable" and the commit failed with unsupported_plan.
 		var currentPlanID int64
 		var currentExpires time.Time
-		err = tx.QueryRow(`
-			SELECT e.plan_id, e.expires_at
-			FROM commercial_entitlements e
+		query := `SELECT e.plan_id, e.expires_at FROM commercial_entitlements e
 			JOIN commercial_plans p ON p.id = e.plan_id
-			WHERE e.uid = $1 AND e.state = 'active'
-			  AND p.price_fen > 0
-			  AND e.expires_at IS NOT NULL AND e.expires_at > $2
-			ORDER BY e.expires_at DESC, e.starts_at DESC, e.id DESC
-			LIMIT 1`, adjustment.UID, now).Scan(&currentPlanID, &currentExpires)
+			WHERE e.uid = $1 AND e.state = 'active' AND p.price_fen > 0
+			AND e.expires_at IS NOT NULL AND e.expires_at > $2
+			ORDER BY e.expires_at DESC, e.starts_at DESC, e.id DESC LIMIT 1`
+		args := []interface{}{adjustment.UID, now}
+		if adjustment.OperationsIntent {
+			query = `SELECT plan_id, expires_at FROM commercial_entitlements
+			WHERE uid=$1 AND state='active' AND plan_id=$3
+			AND expires_at IS NOT NULL AND expires_at>$2
+			ORDER BY expires_at DESC, starts_at DESC, id DESC LIMIT 1`
+			args = append(args, adjustment.PlanID)
+		}
+		err = tx.QueryRow(query, args...).Scan(&currentPlanID, &currentExpires)
 		if err == sql.ErrNoRows {
 			// Distinguish an expired paid package from an account that never
 			// had one so the operator knows if a plan change can reopen it.
@@ -341,14 +349,18 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		if err != nil {
 			return nil, fmt.Errorf("load extendable commercial plan: %w", err)
 		}
-		if plan.DurationDays <= 0 {
-			return nil, commercialAdjustmentError("unsupported_plan", "the current package cannot be extended by whole periods")
+		days := plan.DurationDays
+		if adjustment.OperationsIntent && adjustment.DurationDays > 0 {
+			days = adjustment.DurationDays
+		}
+		if days <= 0 {
+			return nil, commercialAdjustmentError("unsupported_plan", "an explicit duration is required for this finite entitlement")
 		}
 		currentExpiry := currentExpires.UTC()
 		if adjustment.ExpectedExpiresAt != nil && !adjustment.ExpectedExpiresAt.UTC().Equal(currentExpiry) {
 			return nil, commercialAdjustmentError("stale_expiry", "package expiry changed after preview; refresh and try again")
 		}
-		newExpiry := currentExpiry.AddDate(0, 0, plan.DurationDays)
+		newExpiry := currentExpiry.AddDate(0, 0, days)
 		if _, err := tx.Exec(`
 			INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
 			VALUES ($1, $2, 'operator', $3, 'active', $4, $5)`,
@@ -384,9 +396,6 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		return nil, commercialAdjustmentError("invalid_request", "unsupported commercial adjustment action")
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit commercial account adjustment: %w", err)
-	}
 	return result, nil
 }
 

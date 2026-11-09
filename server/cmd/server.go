@@ -762,6 +762,7 @@ func main() {
 	relayCommercialHandler.SetCloudWorkerEnsure(cloudWorkerHandler.AutoProvisionForOwner)
 	commercialOpsHandler := server.NewCommercialOpsHandler(accountAdminHandler, accountServiceVerifier, commercialOperationsStore)
 	commercialOpsHandler.SetCloudWorkerAdmin(cloudWorkerHandler)
+	commercialOpsHandler.StartActions(commercialServiceCtx)
 	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")
 	paymentProviders := []server.CommercialPaymentProvider{}
 	paymentSaleChannels := map[string]bool{}
@@ -967,6 +968,7 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/cloud-workers/import", commercialOpsHandler.HandleCloudWorkerImport)
 	mux.HandleFunc("/api/account/commercial-ops/cloud-workers/billing", commercialOpsHandler.HandleCloudWorkerBilling)
 	mux.HandleFunc("/api/account/commercial-ops/adjustments", commercialOpsHandler.HandleAdjustments)
+	mux.HandleFunc("/api/account/commercial-ops/actions", commercialOpsHandler.HandleActions)
 	mux.HandleFunc("/api/account/commercial-ops/baseline-repair", commercialOpsHandler.HandleBaselineRepair)
 	mux.HandleFunc("/api/account/commercial-ops/auto-renew", commercialOpsHandler.HandleAutoRenew)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)

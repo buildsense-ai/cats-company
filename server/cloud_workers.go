@@ -1738,6 +1738,18 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer opLock.Unlock()
+	if gate, ok := h.credits.(commercialWorkerOwnerGate); ok {
+		release, acquired, err := gate.AcquireCommercialWorkerOwnerGate(uid)
+		if err != nil || !acquired {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "owner operation is busy", "code": "cloud_worker_operation_busy"})
+			return
+		}
+		defer release()
+	}
+	operation, _ := r.Context().Value(commercialWorkerActionContextKey{}).(*types.CommercialAction)
+	if operation != nil && h.prepareCommercialActionWorker(w, uid, operation) {
+		return
+	}
 
 	// Parse and validate the request before reserving a paid credit. Invalid
 	// requests must never make a user's entitlement appear consumed/reserved.
@@ -1771,14 +1783,14 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	requestedRuntime, _ := r.Context().Value(cloudWorkerRuntimeContextKey{}).(string)
 	runtimeCredits, supportsRuntime := h.credits.(cloudWorkerRuntimeCredits)
 	if requestedRuntime != "" {
-		if _, err := cloudWorkerRuntimeForProfile(requestedProfile, requestedRuntime); err != nil || !supportsRuntime {
+		if _, err := cloudWorkerRuntimeForProfile(requestedProfile, requestedRuntime); err != nil || (!supportsRuntime && operation == nil) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime configuration unavailable", "code": "cloud_worker_create_failed"})
 			return
 		}
 	}
 	staticTotal := h.quota[uid]
 	_, creditAvailable := h.creditInfo(uid)
-	if staticTotal <= 0 && creditAvailable <= 0 {
+	if operation == nil && staticTotal <= 0 && creditAvailable <= 0 {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "cloud worker creation is not enabled for this account",
 			"code":  "cloud_worker_not_enabled",
@@ -1807,7 +1819,23 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	runtimePlan := ""
 	profile := types.CloudWorkerPrivateNAT
 	billing := types.CloudWorkerMonthly
-	if configured, ok := h.credits.(cloudWorkerBillingCredits); ok || requestedRuntime != "" {
+	if operation != nil {
+		store, ok := h.credits.(commercialWorkerActionStore)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "operation credits unavailable"})
+			return
+		}
+		source := types.CommercialActionSource(uid, operation.Operation.OperationID)
+		reservation = source
+		selected, reserved, err := store.ReserveCommercialOperationCredit(uid, source, reservation, operation.Preview)
+		if err != nil || !reserved {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "operation credit unavailable", "code": "cloud_worker_operation_credit_unavailable"})
+			return
+		}
+		reservedCredit = true
+		profile, billing, runtimePlan = selected.Profile, selected.BillingMode, selected.RuntimePlan
+		creditExpiresAt, retentionDays = selected.ExpiresAt, selected.RetentionDays
+	} else if configured, ok := h.credits.(cloudWorkerBillingCredits); ok || requestedRuntime != "" {
 		var selected types.CloudWorkerCreditSelection
 		var reserved bool
 		var reserveErr error
@@ -1851,7 +1879,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	if !reservedCredit && (requestedRuntime != "" || staticRemaining == 0 || requestedProfile == types.CloudWorkerPublicIP || requestedBilling == types.CloudWorkerOnDemand) {
+	if !reservedCredit && (operation != nil || requestedRuntime != "" || staticRemaining == 0 || requestedProfile == types.CloudWorkerPublicIP || requestedBilling == types.CloudWorkerOnDemand) {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "cloud worker creation quota exhausted",
 			"code":  "cloud_worker_quota_exhausted",
@@ -2214,6 +2242,13 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		deploymentStatus = "running"
 	}
 	h.requestCloudStatusRefresh(true)
+	if operation != nil {
+		store := h.credits.(commercialWorkerActionStore)
+		if err := store.CompleteCommercialOperationWorker(uid, types.CommercialActionSource(uid, operation.Operation.OperationID), result.UID); err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "worker completion requires reconciliation", "code": "cloud_worker_reconciliation_required"})
+			return
+		}
+	}
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"uid":               result.UID,
 		"username":          result.Username,

@@ -272,6 +272,10 @@ type CommercialQuotaGrant struct {
 // user's commercial package or shared quota pool. AmountCNY is always positive;
 // Action determines whether it is credited or debited.
 type CommercialAccountAdjustment struct {
+	// OperationsIntent opts only the actions endpoint into finite internal and
+	// legacy renewal. Payment and automatic renewal keep their existing rules.
+	OperationsIntent bool
+	DurationDays     int
 	UID              int64
 	Action           string
 	AmountCNY        float64

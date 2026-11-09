@@ -170,7 +170,7 @@ func (a *Adapter) CloudWorkerRuntimeCreditSummary(uid int64, profile, billing, r
 	}
 	err = a.db.QueryRow(`SELECT COUNT(*) FILTER (WHERE state IN ('available','reserved','consumed','queued')),
 		COUNT(*) FILTER (WHERE state='available') FROM cloud_worker_credits
-		WHERE uid=$1 AND deployment_profile=$2 AND ($3='' OR billing_mode=$3)
+		WHERE uid=$1 AND source_ref NOT LIKE 'ops:%' AND deployment_profile=$2 AND ($3='' OR billing_mode=$3)
 		AND ($4='' OR COALESCE(NULLIF(runtime_plan, ''), 'standard')=$4)
 		AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)`, uid, profile, billing, runtimePlan).Scan(&total, &available)
 	return

@@ -122,6 +122,7 @@ func (a *Adapter) CreateSchema() error {
 		// the two, and the migration integration tests still exercise the SQL
 		// against a real database.
 		migrateCommercialAutoRenew,
+		createCommercialOpsActions,
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
