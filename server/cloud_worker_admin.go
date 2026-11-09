@@ -103,6 +103,15 @@ type cloudWorkerAdminItem struct {
 	BindingSource      string     `json:"binding_source,omitempty"`
 	BindingStatus      string     `json:"binding_status,omitempty"`
 	LastVerifiedAt     *time.Time `json:"last_verified_at,omitempty"`
+	// OperationID / OperationStatus / WorkerStatus describe the durable
+	// operator action that is currently provisioning this worker. They are
+	// optional: only rows whose username is the exact per-operation bot
+	// identity of a pending/running action carry them.
+	OperationID      string     `json:"operation_id,omitempty"`
+	OperationStatus  string     `json:"operation_status,omitempty"`
+	WorkerStatus     string     `json:"worker_status,omitempty"`
+	RuntimePlan      string     `json:"runtime_plan,omitempty"`
+	PlannedExpiresAt *time.Time `json:"planned_expires_at,omitempty"`
 }
 
 type cloudWorkerAdminOverview struct {
@@ -149,7 +158,18 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 	// 贸然改成 ECS 形态会把计费带上续费路径。
 	packedAbsence := map[string]int{}
 	if statusLoaded {
-		packedAbsence = h.observePackedAbsence(records, infos, statusUpdatedAt)
+		// An active durable action means the container is not expected to exist
+		// yet. Those rows are removed from the observation input, not just from
+		// the report: otherwise one in-flight create would accumulate the
+		// three-snapshot drift signal as soon as provisioning is slow.
+		observed := make([]types.CloudWorkerAdminRecord, 0, len(records))
+		for _, record := range records {
+			if isProvisioningCloudWorkerRecord(record) {
+				continue
+			}
+			observed = append(observed, record)
+		}
+		packedAbsence = h.observePackedAbsence(observed, infos, statusUpdatedAt)
 	}
 	overview := &cloudWorkerAdminOverview{
 		DeploymentProfiles:       h.deploymentProfileOptions(),
@@ -197,6 +217,13 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 				}
 			}
 		}
+		// A worker that an active action is still provisioning is not missing.
+		// The cluster has never been asked to create its container yet, so the
+		// snapshot can only ever answer "missing" until provisioning finishes.
+		provisioning := isProvisioningCloudWorkerRecord(record)
+		if provisioning {
+			providerStatus = "provisioning"
+		}
 		item := cloudWorkerAdminItem{
 			UID:                record.WorkerUID,
 			OwnerUID:           record.OwnerUID,
@@ -243,6 +270,16 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 			BindingStatus:      record.BindingStatus,
 			LastVerifiedAt:     record.LastVerifiedAt,
 		}
+		item.OperationID = record.OperationID
+		item.OperationStatus = record.OperationStatus
+		item.WorkerStatus = record.WorkerStatus
+		item.RuntimePlan = record.RuntimePlan
+		item.PlannedExpiresAt = record.PlannedExpiresAt
+		if provisioning && item.LifecycleState == "" {
+			// No lifecycle row exists until provisioning finishes; show the
+			// phase instead of an empty column that reads like a lost worker.
+			item.LifecycleState = "provisioning"
+		}
 		if record.ManagementMode != "manual_import" && record.LifecycleMode != "external" {
 			if billing, ok := h.credits.(cloudWorkerBillingStore); ok {
 				if lifecycle, err := billing.GetCloudWorkerBillingLifecycle(record.TenantName); err == nil {
@@ -256,7 +293,7 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 				return nil, err
 			}
 			item.DeploymentProfile = deployment.Profile
-			if deployment.Profile == types.CloudWorkerPackedShared && !isDeletedLifecycle(record.LifecycleState) {
+			if deployment.Profile == types.CloudWorkerPackedShared && !provisioning && !isDeletedLifecycle(record.LifecycleState) {
 				// 只有在"记录确实是共享集群"时才把这个信号挂上去：
 				// ECS 租户查不到实例是另一回事，别混在一起。
 				if streak := packedAbsence[record.TenantName]; streak >= packedAbsenceThreshold {
@@ -517,6 +554,29 @@ func (h *CloudWorkerHandler) observePackedAbsence(
 func isDeletedLifecycle(state string) bool {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "deleted", "delete_running":
+		return true
+	}
+	return false
+}
+
+// isProvisioningCloudWorkerRecord reports a worker whose durable operator
+// action is still provisioning it. The store only sets these fields when the
+// bot username is the exact identity of a pending/running action, so a second
+// worker of the same owner is never mistaken for one.
+//
+// A failed action is not provisioning: it keeps the original behaviour, which
+// is what makes the failure visible instead of hiding it behind a phase.
+func isProvisioningCloudWorkerRecord(record types.CloudWorkerAdminRecord) bool {
+	if record.OperationID == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(record.OperationStatus)) {
+	case "pending", "running":
+	default:
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(record.WorkerStatus)) {
+	case "pending", "running":
 		return true
 	}
 	return false

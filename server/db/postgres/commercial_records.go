@@ -36,6 +36,18 @@ func (a *Adapter) ListCommercialRecords(ctx context.Context, q types.CommercialR
 	case "operator-events":
 		projection = `id, service, action, target_type, target_ref, status_code, created_at`
 		from, search, state, uid = "commercial_operator_events", "service || ' ' || action || ' ' || target_ref", "status_code::text", "NULL::bigint"
+	case "actions":
+		// Durable operator-action history. The projection is explicit on
+		// purpose: request/preview carry preview tokens and the internal
+		// fingerprint, and lease belongs to the executor. Only the operator
+		// facts are listed, and the primary key is aliased to `id` because the
+		// shared ORDER BY below needs a tie-breaker column of that name.
+		projection = `operation_id AS id, operation_id, uid, intent, status, worker_status, worker_uid,
+			LEFT(error, 500) AS error, created_at, updated_at, LEFT(request->>'note', 500) AS note,
+			COALESCE(NULLIF(preview->>'deployment_profile', ''), request->>'deployment_profile') AS deployment_profile,
+			COALESCE(NULLIF(preview->>'runtime_plan', ''), request->>'runtime_plan') AS runtime_plan,
+			preview->>'worker_expires_at' AS worker_expires_at`
+		from, search, state, uid = "commercial_ops_actions", "operation_id || ' ' || intent || ' ' || COALESCE(request->>'note','')", "status", "uid"
 	default:
 		return nil, fmt.Errorf("invalid commercial records kind")
 	}

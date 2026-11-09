@@ -24,7 +24,10 @@ func (h *CommercialOpsHandler) HandleRecords(w http.ResponseWriter, r *http.Requ
 	query := r.URL.Query()
 	q := types.CommercialRecordsQuery{Kind: query.Get("kind"), Search: strings.TrimSpace(query.Get("q")), Status: strings.TrimSpace(query.Get("status")), Limit: 20}
 	switch q.Kind {
-	case "orders", "invites", "payment-events", "entitlements", "operator-events":
+	// actions is the durable operator-action history. It stays readable after
+	// the worker it created is gone, which is the only place an operator can
+	// recover the original operation_id to refresh/retry.
+	case "orders", "invites", "payment-events", "entitlements", "operator-events", "actions":
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid record kind"})
 		return
