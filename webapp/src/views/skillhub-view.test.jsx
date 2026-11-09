@@ -40,7 +40,7 @@ import SkillHubView, {
 } from './skillhub-view';
 import { api, requestSkillHubDeviceTool } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
-import { resolveRuntimeSkillPresentation } from './skillhub-content';
+import SkillHubContent, { resolveRuntimeSkillPresentation } from './skillhub-content';
 import {
   formatSkillHubPublisher,
   isPrivateSkillHubReference,
@@ -3601,6 +3601,24 @@ describe('SkillHubView', () => {
     expect(container.querySelector('.cc-skillhub-agent-label .cc-skillhub-agent-update-badge')).toBeNull();
     await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-agent-select-trigger')); });
     expect(document.body.querySelector('.cc-skillhub-agent-options .cc-skillhub-agent-update-badge')).toBeNull();
+  });
+
+  it('points workspace users to the existing return action before the update filter', async () => {
+    const changeSection = vi.fn();
+    await act(async () => {
+      root.render(<SkillHubContent
+        agentOptions={[{ value: '42', label: 'Owner Bot', updateCount: 2 }]}
+        selectedBotUID='42' activeSection='custom' isLocalEnabled
+        definition={{ skills: [] }} localSkills={[]} devices={[]}
+        onChangeSection={changeSection} onSelectAgent={() => {}}
+      />);
+    });
+    expect(container.querySelector('.cc-skillhub-updates-filter')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-agent-update-hint').textContent).toContain('请先点击「返回 Agent 能力总览」');
+    const back = container.querySelector('.cc-skillhub-back');
+    expect(back.textContent).toContain('返回 Agent 能力总览');
+    await act(async () => Simulate.click(back));
+    expect(changeSection).toHaveBeenCalledWith('added');
   });
 
   it('loads only owner bots and binds a precise SkillHub reference', async () => {

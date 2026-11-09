@@ -146,7 +146,7 @@ function readSkillLanguage(uid) {
 }
 
 function AgentContext({
-  agentOptions, loadingBots, onSelectAgent, saving, selectedBotUID, sharingSkill, syncingWorkspace,
+  activeSection, agentOptions, loadingBots, onSelectAgent, saving, selectedBotUID, sharingSkill, syncingWorkspace,
 }) {
   const disabled = loadingBots || agentOptions.length === 0 || Boolean(sharingSkill) || saving || syncingWorkspace;
   const totalUpdates = agentOptions.reduce((total, agent) => total + (agent.updateCount || 0), 0);
@@ -167,7 +167,9 @@ function AgentContext({
       </label>
       {totalUpdates > 0 && <p className='cc-skillhub-agent-update-hint' role='status'>
         {selectedUpdates > 0
-          ? '当前 Agent 有 Skill 可更新，点击「可更新」查看。'
+          ? activeSection === 'custom'
+            ? '当前 Agent 有 Skill 可更新，请先点击「返回 Agent 能力总览」，再点击「可更新」。'
+            : '当前 Agent 有 Skill 可更新，点击「可更新」查看。'
           : '有 Skill 可更新，请点击上方选择器，切换到带数字提醒的 Agent。'}
       </p>}
     </div>
