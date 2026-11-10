@@ -2,6 +2,8 @@ services:
   server:
     image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-server:${IMAGE_TAG}"
     restart: unless-stopped
+    # Reap orphaned descendants from cloud-worker shell commands.
+    init: true
     environment:
       OC_DB_DRIVER: "${OC_DB_DRIVER:-mysql}"
       OC_DB_DSN: "${OC_DB_DSN:?OC_DB_DSN is required}"
