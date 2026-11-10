@@ -1209,6 +1209,28 @@ func (h *WeixinClawBotHandler) addClawBotMediaMetadata(metadata map[string]inter
 	}
 }
 
+func (h *WeixinClawBotHandler) mediaUploaderUID(token *types.WeixinClawBotToken, msg weixinClawBotMessage) (int64, error) {
+	target, err := h.resolveDeliveryTarget(token, msg)
+	if err != nil {
+		return 0, err
+	}
+	if target.groupBinding != nil {
+		return target.groupBinding.CanonicalUID, nil
+	}
+	bindings, ok := h.db.(store.ChannelAgentBindingStore)
+	if !ok {
+		return 0, errors.New("channel binding store unavailable")
+	}
+	binding, err := bindings.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{Channel: "weixin_clawbot", ChannelAppID: token.TokenHash, ChannelUserID: strings.TrimSpace(msg.FromUserID), ChannelConversationType: "p2p", AgentUID: target.agentUID})
+	if err != nil {
+		return 0, err
+	}
+	if binding == nil {
+		return 0, errors.New("channel media actor unavailable")
+	}
+	return channelBindingConversationActorUID(binding, binding.ActorUID), nil
+}
+
 func (h *WeixinClawBotHandler) downloadClawBotMedia(ctx context.Context, token *types.WeixinClawBotToken, msg weixinClawBotMessage, refs []weixinClawBotMediaRef) ([]uploadPayload, []weixinClawBotUnsupportedItem) {
 	if h == nil || h.api == nil || token == nil || len(refs) == 0 {
 		return nil, nil
@@ -1220,6 +1242,13 @@ func (h *WeixinClawBotHandler) downloadClawBotMedia(ctx context.Context, token *
 		log.Printf("resolve weixin clawbot api failed token=%d message=%s: %v", token.ID, clawBotMessageID(msg), err)
 		for _, ref := range refs {
 			failures = append(failures, weixinClawBotUnsupportedItem{Type: ref.ItemType, Reason: "invalid_api_base_url", Name: ref.Name, Raw: ref.Raw})
+		}
+		return nil, failures
+	}
+	ownerUID, err := h.mediaUploaderUID(token, msg)
+	if err != nil {
+		for _, ref := range refs {
+			failures = append(failures, weixinClawBotUnsupportedItem{Type: ref.ItemType, Reason: "unbound_media_actor", Name: ref.Name, Raw: ref.Raw})
 		}
 		return nil, failures
 	}
@@ -1240,7 +1269,7 @@ func (h *WeixinClawBotHandler) downloadClawBotMedia(ctx context.Context, token *
 		if strings.TrimSpace(media.ContentType) == "" {
 			media.ContentType = ref.ContentType
 		}
-		file, err := saveChannelMediaUploadWithStorage(ctx, h.storage, h.baseDir, ref.Kind, media)
+		file, err := saveOwnedChannelMediaUpload(ctx, h.db, ownerUID, h.storage, h.baseDir, ref.Kind, media)
 		if err != nil {
 			log.Printf("save weixin clawbot media failed token=%d message=%s name=%q: %v", token.ID, clawBotMessageID(msg), ref.Name, err)
 			failures = append(failures, weixinClawBotUnsupportedItem{Type: ref.ItemType, Reason: "save_failed", Name: ref.Name, Raw: ref.Raw})

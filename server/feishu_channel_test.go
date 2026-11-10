@@ -1281,7 +1281,7 @@ func TestFeishuFileMessageDeliversAttachmentBlocks(t *testing.T) {
 	os.RemoveAll("uploads")
 	t.Cleanup(func() { os.RemoveAll("uploads") })
 
-	db := newChannelAgentTestStore()
+	db := newLegacyChannelPrivacyStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
 	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
@@ -1387,7 +1387,7 @@ func TestFeishuAudioMessageDeliversAudioBlock(t *testing.T) {
 	os.RemoveAll("uploads")
 	t.Cleanup(func() { os.RemoveAll("uploads") })
 
-	db := newChannelAgentTestStore()
+	db := newLegacyChannelPrivacyStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
 	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
@@ -1485,7 +1485,7 @@ func TestFeishuGroupMobileAudioMessageDeliversAudioBlock(t *testing.T) {
 	os.RemoveAll("uploads")
 	t.Cleanup(func() { os.RemoveAll("uploads") })
 
-	db := newChannelAgentTestStore()
+	db := newLegacyChannelPrivacyStore()
 	db.users[85] = &types.User{ID: 85, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[453] = &types.User{ID: 453, Username: channelActorUsername("feishu", "cli_app", "ou_group_mobile"), DisplayName: "Feishu Mobile User", AccountType: types.AccountHuman}
 	db.groups[500] = &types.Group{ID: 500, Name: "Project Group", OwnerID: 85}

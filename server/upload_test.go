@@ -46,11 +46,11 @@ func TestHandleUploadPreservesSkillArchiveAttachment(t *testing.T) {
 	content := archive.Bytes()
 	for _, raw := range []bool{false, true} {
 		t.Run(fmt.Sprintf("raw=%v", raw), func(t *testing.T) {
-			handler := NewUploadHandler(t.TempDir(), "/uploads")
+			handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 			fileName := "caveman.SKILL"
 			req := buildUploadRequest(t, "/api/upload?type=file", fileName, content)
 			if raw {
-				req = httptest.NewRequest(http.MethodPost, "/api/upload?type=file&raw=1", bytes.NewReader(content))
+				req = legacyUploadRequest(http.MethodPost, "/api/upload?type=file&raw=1", bytes.NewReader(content))
 				req.Header.Set("Content-Type", "application/octet-stream")
 				req.Header.Set(rawUploadFileNameHeader, url.PathEscape(fileName))
 				req.Header.Set(rawUploadFileSizeHeader, fmt.Sprint(len(content)))
@@ -68,7 +68,7 @@ func TestHandleUploadPreservesSkillArchiveAttachment(t *testing.T) {
 				t.Fatalf("archive identity changed: %+v", response)
 			}
 			download := httptest.NewRecorder()
-			handler.HandleServeFile(download, httptest.NewRequest(http.MethodGet, response.URL, nil))
+			handler.HandleServeFile(download, legacyUploadRequest(http.MethodGet, response.URL, nil))
 			if download.Code != http.StatusOK || !bytes.Equal(download.Body.Bytes(), content) {
 				t.Fatalf("archive download changed: status=%d", download.Code)
 			}
@@ -80,7 +80,7 @@ func TestHandleUploadPreservesSkillArchiveAttachment(t *testing.T) {
 }
 
 func TestHandleUploadAllowsHTMLAsFileAttachment(t *testing.T) {
-	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 	req := buildUploadRequest(t, "/api/upload?type=file", "page.html", []byte("<!doctype html><script>alert(1)</script>"))
 	rec := httptest.NewRecorder()
 
@@ -117,7 +117,7 @@ func TestHandleUploadAllowsHTMLAsFileAttachment(t *testing.T) {
 }
 
 func TestHandleUploadAllowsWebMVideoAttachment(t *testing.T) {
-	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 	req := buildUploadRequest(t, "/api/upload?type=file", "demo.webm", []byte("webm video bytes"))
 	rec := httptest.NewRecorder()
 
@@ -142,7 +142,7 @@ func TestHandleUploadAllowsWebMVideoAttachment(t *testing.T) {
 }
 
 func TestHandleUploadServesOggAudioInline(t *testing.T) {
-	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 	req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", "demo.ogg", "audio/ogg", []byte("ogg audio bytes"))
 	rec := httptest.NewRecorder()
 
@@ -167,7 +167,7 @@ func TestHandleUploadServesOggAudioInline(t *testing.T) {
 	}
 
 	serveRec := httptest.NewRecorder()
-	handler.HandleServeFile(serveRec, httptest.NewRequest(http.MethodGet, body.URL, nil))
+	handler.HandleServeFile(serveRec, legacyUploadRequest(http.MethodGet, body.URL, nil))
 	if serveRec.Code != http.StatusOK {
 		t.Fatalf("serve status = %d, want %d", serveRec.Code, http.StatusOK)
 	}
@@ -187,7 +187,7 @@ func TestHandleUploadNormalizesBrowserAudioMIMETypes(t *testing.T) {
 		{fileName: "demo.wav", contentType: "application/octet-stream", wantMime: "audio/wav"},
 	} {
 		t.Run(tc.fileName, func(t *testing.T) {
-			handler := NewUploadHandler(t.TempDir(), "/uploads")
+			handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 			req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", tc.fileName, tc.contentType, []byte("audio bytes"))
 			rec := httptest.NewRecorder()
 
@@ -219,7 +219,7 @@ func TestHandleUploadPreservesOpusMIMEType(t *testing.T) {
 		{fileName: "voice.ogg", contentType: "audio/opus"},
 	} {
 		t.Run(tc.fileName+"/"+tc.contentType, func(t *testing.T) {
-			handler := NewUploadHandler(t.TempDir(), "/uploads")
+			handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 			req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", tc.fileName, tc.contentType, []byte("opus audio bytes"))
 			rec := httptest.NewRecorder()
 
@@ -243,7 +243,7 @@ func TestHandleUploadPreservesOpusMIMEType(t *testing.T) {
 			}
 
 			serveRec := httptest.NewRecorder()
-			handler.HandleServeFile(serveRec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+body.FileKey, nil))
+			handler.HandleServeFile(serveRec, legacyUploadRequest(http.MethodGet, "/uploads/files/"+body.FileKey, nil))
 			if serveRec.Code != http.StatusOK {
 				t.Fatalf("serve status = %d, want %d", serveRec.Code, http.StatusOK)
 			}
@@ -255,7 +255,7 @@ func TestHandleUploadPreservesOpusMIMEType(t *testing.T) {
 }
 
 func TestHandleUploadNormalizesOggVideoToOGV(t *testing.T) {
-	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 	req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", "demo.ogg", "video/ogg", []byte("ogg video bytes"))
 	rec := httptest.NewRecorder()
 
@@ -283,7 +283,7 @@ func TestHandleUploadNormalizesOggVideoToOGV(t *testing.T) {
 	}
 
 	serveRec := httptest.NewRecorder()
-	handler.HandleServeFile(serveRec, httptest.NewRequest(http.MethodGet, body.URL, nil))
+	handler.HandleServeFile(serveRec, legacyUploadRequest(http.MethodGet, body.URL, nil))
 	if serveRec.Code != http.StatusOK {
 		t.Fatalf("serve status = %d, want %d", serveRec.Code, http.StatusOK)
 	}
@@ -298,7 +298,7 @@ func TestHandleUploadNormalizesOggVideoToOGV(t *testing.T) {
 func TestHandleUploadDetectsTheoraVideoWithAmbiguousOggMime(t *testing.T) {
 	for _, contentType := range []string{"", "application/ogg"} {
 		t.Run(contentType, func(t *testing.T) {
-			handler := NewUploadHandler(t.TempDir(), "/uploads")
+			handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 			req := buildUploadRequestWithPartContentType(
 				t,
 				"/api/upload?type=file",
@@ -331,7 +331,7 @@ func TestHandleUploadDetectsTheoraVideoWithAmbiguousOggMime(t *testing.T) {
 }
 
 func TestHandleUploadKeepsAmbiguousVorbisOggAsAudio(t *testing.T) {
-	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 	req := buildUploadRequestWithPartContentType(
 		t,
 		"/api/upload?type=file",
@@ -372,8 +372,8 @@ func TestHandleServeFileAllowsGeneratedFeedbackImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
-	req := httptest.NewRequest(http.MethodGet, "/uploads/feedback/"+fileName, nil)
+	handler := legacyUploadHandler(t, dir, "/uploads")
+	req := legacyUploadRequest(http.MethodGet, "/uploads/feedback/"+fileName, nil)
 	rec := httptest.NewRecorder()
 
 	handler.HandleServeFile(rec, req)
@@ -406,11 +406,11 @@ func TestHandleServeFileDisablesHTTPCaching(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			handler := NewUploadHandler(dir, "/uploads")
+			handler := legacyUploadHandler(t, dir, "/uploads")
 			recorder := httptest.NewRecorder()
 			handler.HandleServeFile(
 				recorder,
-				httptest.NewRequest(http.MethodGet, "/uploads/"+testCase.subDir+"/"+testCase.fileName, nil),
+				legacyUploadRequest(http.MethodGet, "/uploads/"+testCase.subDir+"/"+testCase.fileName, nil),
 			)
 
 			if recorder.Code != http.StatusOK {
@@ -436,8 +436,8 @@ func TestHandleServeFileServesHTMLFilesInlineWithSandbox(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			handler := NewUploadHandler(dir, "/uploads")
-			req := httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil)
+			handler := legacyUploadHandler(t, dir, "/uploads")
+			req := legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName, nil)
 			rec := httptest.NewRecorder()
 
 			handler.HandleServeFile(rec, req)
@@ -476,11 +476,11 @@ func TestHandleServeFileRendersPreviewMetadataForPDFHTMLAndMarkdown(t *testing.T
 				t.Fatal(err)
 			}
 
-			handler := NewUploadHandler(dir, "/uploads")
+			handler := legacyUploadHandler(t, dir, "/uploads")
 			friendlyName := "学情报告" + ext
 			requestPath := "/uploads/files/" + fileName + "?preview=1&name=" + url.QueryEscape(friendlyName)
 			recorder := httptest.NewRecorder()
-			handler.HandleServeFile(recorder, httptest.NewRequest(http.MethodGet, requestPath, nil))
+			handler.HandleServeFile(recorder, legacyUploadRequest(http.MethodGet, requestPath, nil))
 
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
@@ -488,8 +488,8 @@ func TestHandleServeFileRendersPreviewMetadataForPDFHTMLAndMarkdown(t *testing.T
 			if got := recorder.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
 				t.Fatalf("Content-Type = %q, want HTML", got)
 			}
-			if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=300" {
-				t.Fatalf("Cache-Control = %q, want public preview caching", got)
+			if got := recorder.Header().Get("Cache-Control"); got != "private, no-store" {
+				t.Fatalf("Cache-Control = %q, want private uncached preview", got)
 			}
 			if got := recorder.Header().Get("Content-Disposition"); got != "" {
 				t.Fatalf("Content-Disposition = %q, want empty for preview page", got)
@@ -574,12 +574,12 @@ func TestHandleServeFileRejectsOversizedMarkdownPreviews(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
+	handler := legacyUploadHandler(t, dir, "/uploads")
 	requestPath := "/uploads/files/" + fileName + "?preview=1"
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		t.Run(method, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			handler.HandleServeFile(recorder, httptest.NewRequest(method, requestPath, nil))
+			handler.HandleServeFile(recorder, legacyUploadRequest(method, requestPath, nil))
 
 			if recorder.Code != http.StatusRequestEntityTooLarge {
 				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusRequestEntityTooLarge)
@@ -650,10 +650,10 @@ func TestHandleServeFileRendersVideoPreviewWithMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
+	handler := legacyUploadHandler(t, dir, "/uploads")
 	requestPath := "/uploads/files/" + fileName + "?preview=1&name=" + url.QueryEscape("产品演示.mp4")
 	recorder := httptest.NewRecorder()
-	handler.HandleServeFile(recorder, httptest.NewRequest(http.MethodGet, requestPath, nil))
+	handler.HandleServeFile(recorder, legacyUploadRequest(http.MethodGet, requestPath, nil))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
@@ -688,7 +688,7 @@ func TestHandleServeFileRendersVideoPreviewWithMetadata(t *testing.T) {
 
 func TestHandleServeFileReturnsNotFoundForMissingPreviewFile(t *testing.T) {
 	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
-	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 
 	for _, ext := range []string{".pdf", ".html", ".md", ".mp4"} {
 		t.Run(ext, func(t *testing.T) {
@@ -696,7 +696,7 @@ func TestHandleServeFileReturnsNotFoundForMissingPreviewFile(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			handler.HandleServeFile(
 				recorder,
-				httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1", nil),
+				legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1", nil),
 			)
 
 			if recorder.Code != http.StatusNotFound {
@@ -720,11 +720,11 @@ func TestHandleServeFileKeepsDownloadSemanticsWhenPreviewIsRequested(t *testing.
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
+	handler := legacyUploadHandler(t, dir, "/uploads")
 	recorder := httptest.NewRecorder()
 	handler.HandleServeFile(
 		recorder,
-		httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1&download=1", nil),
+		legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1&download=1", nil),
 	)
 
 	if recorder.Code != http.StatusOK {
@@ -750,11 +750,11 @@ func TestHandleServeFileEscapesPreviewNameInHTMLMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
+	handler := legacyUploadHandler(t, dir, "/uploads")
 	recorder := httptest.NewRecorder()
 	handler.HandleServeFile(
 		recorder,
-		httptest.NewRequest(
+		legacyUploadRequest(
 			http.MethodGet,
 			"/uploads/files/"+fileName+"?preview=1&name="+url.QueryEscape(`<script>alert('x')</script>.pdf`),
 			nil,
@@ -815,9 +815,9 @@ func TestHandleServeFileRejectsPreviewWithoutConfiguredPublicOrigin(t *testing.T
 			}
 
 			recorder := httptest.NewRecorder()
-			NewUploadHandler(dir, "/uploads").HandleServeFile(
+			legacyUploadHandler(t, dir, "/uploads").HandleServeFile(
 				recorder,
-				httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1", nil),
+				legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1", nil),
 			)
 
 			if recorder.Code != http.StatusServiceUnavailable {
@@ -857,8 +857,8 @@ func TestHandleServeFileForcesHTMLDownloadWithoutSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
-	req := httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?download=1", nil)
+	handler := legacyUploadHandler(t, dir, "/uploads")
+	req := legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName+"?download=1", nil)
 	rec := httptest.NewRecorder()
 
 	handler.HandleServeFile(rec, req)
@@ -884,7 +884,7 @@ func TestHandleServeFileDownloadUsesMessageFilename(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "files", storedName), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewUploadHandler(dir, "/uploads")
+	handler := legacyUploadHandler(t, dir, "/uploads")
 	for _, tc := range []struct{ name, want string }{
 		{"下载文件名问题-报障说明.html", "下载文件名问题-报障说明.html"},
 		{"report & notes.html", "report & notes.html"},
@@ -900,7 +900,7 @@ func TestHandleServeFileDownloadUsesMessageFilename(t *testing.T) {
 			for _, method := range []string{http.MethodGet, http.MethodHead} {
 				rec := httptest.NewRecorder()
 				query := url.Values{"download": {"1"}, "name": {tc.name}}.Encode()
-				handler.HandleServeFile(rec, httptest.NewRequest(method, "/uploads/files/"+storedName+"?"+query, nil))
+				handler.HandleServeFile(rec, legacyUploadRequest(method, "/uploads/files/"+storedName+"?"+query, nil))
 				if rec.Code != http.StatusOK {
 					t.Fatalf("status = %d", rec.Code)
 				}
@@ -927,8 +927,8 @@ func TestHandleServeFileForcesDownloadWithoutFilenameInURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
-	req := httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?download=1", nil)
+	handler := legacyUploadHandler(t, dir, "/uploads")
+	req := legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName+"?download=1", nil)
 	rec := httptest.NewRecorder()
 	handler.HandleServeFile(rec, req)
 
@@ -967,14 +967,14 @@ func TestHandleServeFileDownloadsMarkdownWithStoredName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
+	handler := legacyUploadHandler(t, dir, "/uploads")
 	for _, requestPath := range []string{
 		"/uploads/files/" + fileName,
 		"/uploads/files/" + fileName + "?download=1",
 	} {
 		t.Run(requestPath, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, requestPath, nil))
+			handler.HandleServeFile(rec, legacyUploadRequest(http.MethodGet, requestPath, nil))
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -1026,9 +1026,9 @@ func TestHandleServeFilePinsMarkdownTypeWithoutMimeDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
+	handler := legacyUploadHandler(t, dir, "/uploads")
 	rec := httptest.NewRecorder()
-	handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
+	handler.HandleServeFile(rec, legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -1049,8 +1049,8 @@ func TestHandleServeFileForcesImageDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
-	req := httptest.NewRequest(http.MethodGet, "/uploads/images/"+fileName+"?download=1", nil)
+	handler := legacyUploadHandler(t, dir, "/uploads")
+	req := legacyUploadRequest(http.MethodGet, "/uploads/images/"+fileName+"?download=1", nil)
 	rec := httptest.NewRecorder()
 	handler.HandleServeFile(rec, req)
 
@@ -1073,8 +1073,8 @@ func TestHandleServeFileServesPDFFilesInline(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
-	req := httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil)
+	handler := legacyUploadHandler(t, dir, "/uploads")
+	req := legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName, nil)
 	rec := httptest.NewRecorder()
 
 	handler.HandleServeFile(rec, req)
@@ -1102,11 +1102,11 @@ func TestHandleServeFileServesMP4FilesInlineWithRangeSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
+	handler := legacyUploadHandler(t, dir, "/uploads")
 	url := "/uploads/files/" + fileName
 
 	rec := httptest.NewRecorder()
-	handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, url, nil))
+	handler.HandleServeFile(rec, legacyUploadRequest(http.MethodGet, url, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
@@ -1120,7 +1120,7 @@ func TestHandleServeFileServesMP4FilesInlineWithRangeSupport(t *testing.T) {
 		t.Fatalf("body = %q, want %q", rec.Body.Bytes(), videoBytes)
 	}
 
-	rangeReq := httptest.NewRequest(http.MethodGet, url, nil)
+	rangeReq := legacyUploadRequest(http.MethodGet, url, nil)
 	rangeReq.Header.Set("Range", "bytes=0-3")
 	rangeRec := httptest.NewRecorder()
 	handler.HandleServeFile(rangeRec, rangeReq)
@@ -1138,7 +1138,7 @@ func TestHandleServeFileServesMP4FilesInlineWithRangeSupport(t *testing.T) {
 	}
 
 	downloadRec := httptest.NewRecorder()
-	handler.HandleServeFile(downloadRec, httptest.NewRequest(http.MethodGet, url+"?download=1", nil))
+	handler.HandleServeFile(downloadRec, legacyUploadRequest(http.MethodGet, url+"?download=1", nil))
 	if got := downloadRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
 		t.Fatalf("download Content-Disposition = %q, want attachment", got)
 	}
@@ -1167,9 +1167,9 @@ func TestHandleServeFileServesBrowserVideoFormatsInline(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			handler := NewUploadHandler(dir, "/uploads")
+			handler := legacyUploadHandler(t, dir, "/uploads")
 			rec := httptest.NewRecorder()
-			handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
+			handler.HandleServeFile(rec, legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -1206,9 +1206,9 @@ func TestHandleServeFileServesBrowserAudioFormatsInline(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			handler := NewUploadHandler(dir, "/uploads")
+			handler := legacyUploadHandler(t, dir, "/uploads")
 			rec := httptest.NewRecorder()
-			handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
+			handler.HandleServeFile(rec, legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -1221,7 +1221,7 @@ func TestHandleServeFileServesBrowserAudioFormatsInline(t *testing.T) {
 			}
 
 			downloadRec := httptest.NewRecorder()
-			handler.HandleServeFile(downloadRec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?download=1", nil))
+			handler.HandleServeFile(downloadRec, legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName+"?download=1", nil))
 			if got := downloadRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
 				t.Fatalf("download Content-Disposition = %q, want attachment", got)
 			}
@@ -1240,8 +1240,8 @@ func TestHandleServeFileServesDOCXFilesAsAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
-	req := httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil)
+	handler := legacyUploadHandler(t, dir, "/uploads")
+	req := legacyUploadRequest(http.MethodGet, "/uploads/files/"+fileName, nil)
 	rec := httptest.NewRecorder()
 
 	handler.HandleServeFile(rec, req)
@@ -1291,7 +1291,7 @@ func TestHandleServeFileRejectsMutationMethods(t *testing.T) {
 }
 
 func TestHandleUploadAllowsImageContentTypeWithParameters(t *testing.T) {
-	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 	req := buildUploadRequestWithPartContentType(t, "/api/upload?type=image", "photo.jpg", "image/jpeg; charset=utf-8", []byte("fake image bytes"))
 	rec := httptest.NewRecorder()
 
@@ -1350,7 +1350,7 @@ func TestHandleUploadRejectsMalformedMultipartWithoutRetrying(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			handler := NewUploadHandler(t.TempDir(), "/uploads")
-			req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image", strings.NewReader(tt.body))
+			req := legacyUploadRequest(http.MethodPost, "/api/upload?type=image", strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", tt.contentType)
 			rec := httptest.NewRecorder()
 
@@ -1382,7 +1382,7 @@ func TestHandleUploadReportsIncompleteMultipartWithoutCallingItTooLarge(t *testi
 		"Content-Disposition: form-data; name=\"file\"; filename=\"tiny.jpg\"\r\n" +
 		"Content-Type: image/jpeg\r\n\r\n" +
 		"tiny")
-	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image", body)
+	req := legacyUploadRequest(http.MethodPost, "/api/upload?type=image", body)
 	req.ContentLength += 100
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=catsco-boundary")
 	rec := httptest.NewRecorder()
@@ -1410,10 +1410,10 @@ func TestHandleUploadReportsIncompleteMultipartWithoutCallingItTooLarge(t *testi
 
 func TestHandleUploadAcceptsRawImageBodyFromWebApp(t *testing.T) {
 	baseDir := t.TempDir()
-	handler := NewUploadHandler(baseDir, "/uploads")
+	handler := legacyUploadHandler(t, baseDir, "/uploads")
 	content := []byte("raw phone image bytes")
 	fileName := "试卷 01.jpg"
-	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req := legacyUploadRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
 	req.Header.Set("Content-Type", "image/jpeg")
 	req.Header.Set("X-CatsCo-File-Name", url.PathEscape(fileName))
 	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", len(content)))
@@ -1444,7 +1444,7 @@ func TestHandleUploadRejectsIncompleteRawBodyWithoutSavingIt(t *testing.T) {
 	baseDir := t.TempDir()
 	handler := NewUploadHandler(baseDir, "/uploads")
 	content := []byte("partial image")
-	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req := legacyUploadRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
 	req.Header.Set("Content-Type", "image/jpeg")
 	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
 	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", len(content)+100))
@@ -1478,7 +1478,7 @@ func TestReceiveRawUploadReportsActualBodyLimitError(t *testing.T) {
 	baseDir := t.TempDir()
 	handler := NewUploadHandler(baseDir, "/uploads")
 	content := []byte("body exceeds the test limit")
-	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req := legacyUploadRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
 	req.Header.Set("Content-Type", "image/jpeg")
 	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
 	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", len(content)))
@@ -1511,7 +1511,7 @@ func TestReceiveRawUploadReportsActualBodyLimitError(t *testing.T) {
 
 func TestReceiveRawUploadDoesNotRetryStorageCopyFailure(t *testing.T) {
 	handler := NewUploadHandler(t.TempDir(), "/uploads")
-	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", strings.NewReader("unused"))
+	req := legacyUploadRequest(http.MethodPost, "/api/upload?type=image&raw=1", strings.NewReader("unused"))
 	req.Body = failingReadCloser{err: &os.PathError{
 		Op:   "write",
 		Path: "/dev/full",
@@ -1545,7 +1545,7 @@ func TestHandleUploadRejectsRawBodyWithUnderreportedSizeMetadata(t *testing.T) {
 	baseDir := t.TempDir()
 	handler := NewUploadHandler(baseDir, "/uploads")
 	content := []byte("small image body")
-	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req := legacyUploadRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
 	req.Header.Set("Content-Type", "image/jpeg")
 	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
 	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", len(content)-1))
@@ -1579,7 +1579,7 @@ func TestHandleUploadDoesNotCallRawMetadataMismatchTooLarge(t *testing.T) {
 	baseDir := t.TempDir()
 	handler := NewUploadHandler(baseDir, "/uploads")
 	content := []byte("small image body")
-	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req := legacyUploadRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
 	req.Header.Set("Content-Type", "image/jpeg")
 	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
 	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", maxImageSize+1))
@@ -1613,7 +1613,7 @@ func TestHandleUploadDoesNotCallRawContentLengthMismatchTooLarge(t *testing.T) {
 	baseDir := t.TempDir()
 	handler := NewUploadHandler(baseDir, "/uploads")
 	content := []byte("small image body")
-	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req := legacyUploadRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
 	req.ContentLength = int64(maxImageSize) + 1
 	req.Header.Set("Content-Type", "image/jpeg")
 	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
@@ -1645,9 +1645,9 @@ func TestHandleUploadDoesNotCallRawContentLengthMismatchTooLarge(t *testing.T) {
 }
 
 func TestMobileUploadSessionAcceptsPhoneUploadsAndListsFiles(t *testing.T) {
-	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	handler := legacyUploadHandler(t, t.TempDir(), "/uploads")
 
-	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile-upload/sessions", strings.NewReader(`{"topic":"p2p_1_2"}`))
+	createReq := legacyUploadRequest(http.MethodPost, "/api/mobile-upload/sessions", strings.NewReader(`{"topic":"p2p_1_2"}`))
 	createRec := httptest.NewRecorder()
 	handler.HandleMobileUploadSession(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -1697,7 +1697,7 @@ func TestMobileUploadSessionAcceptsPhoneUploadsAndListsFiles(t *testing.T) {
 		t.Fatalf("video upload status = %d, body=%s", videoUploadRec.Code, videoUploadRec.Body.String())
 	}
 
-	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile-upload/sessions/"+created.SessionID, nil)
+	listReq := legacyUploadRequest(http.MethodGet, "/api/mobile-upload/sessions/"+created.SessionID, nil)
 	listRec := httptest.NewRecorder()
 	handler.HandleMobileUploadSession(listRec, listReq)
 	if listRec.Code != http.StatusOK {
@@ -1757,14 +1757,14 @@ func buildUploadRequestWithPartContentType(t *testing.T, target, fileName, partC
 		t.Fatalf("close multipart writer: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, target, &body)
+	req := legacyUploadRequest(http.MethodPost, target, &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req
 }
 
 func TestHandleUploadKeepsLargeBodyOutOfHeapAndStoresItIntact(t *testing.T) {
 	root := t.TempDir()
-	handler := NewUploadHandler(root, "/uploads")
+	handler := legacyUploadHandler(t, root, "/uploads")
 
 	content := make([]byte, int(multipartMemoryLimit)+64*1024)
 	copy(content, "PK\x03\x04")

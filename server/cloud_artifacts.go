@@ -37,7 +37,7 @@ func validArtifactID(value string) bool {
 	return len(value) > 0 && len(value) <= artifactIDMaxLength && artifactIDPattern.MatchString(value)
 }
 
-// CloudArtifactHandler proxies the public index and the protected artifact-management service.
+// CloudArtifactHandler proxies artifact metadata through message-based read checks.
 type CloudArtifactHandler struct {
 	indexURL          string
 	managementURL     string
@@ -54,6 +54,8 @@ type CloudArtifactHandler struct {
 	nodeRegistryErr   error
 	directTemplate    *artifactDirectURLTemplate
 	directTemplateErr error
+	fileAccess        artifactFileAccess
+	originSecret      string
 
 	artifactContextCacheMu                 sync.Mutex
 	artifactContextCache                   map[artifactContextCacheKey]artifactContextCacheEntry
@@ -76,6 +78,10 @@ type CloudArtifactNotifier interface {
 // this CatsCo instance's upload storage.
 type ArtifactUploadSourceValidator interface {
 	ValidateArtifactSourcePath(string) error
+}
+
+type artifactPrivateSourceSigner interface {
+	PrivateArtifactSourceURL(*http.Request, int64, string) (string, error)
 }
 
 type cloudArtifactIndex struct {
@@ -168,7 +174,7 @@ func (h *CloudArtifactHandler) SetNotifier(notifier CloudArtifactNotifier) {
 }
 
 func newCloudArtifactHandler(indexURL, managementURL, managementToken string, client *http.Client) *CloudArtifactHandler {
-	h := &CloudArtifactHandler{httpClient: client}
+	h := &CloudArtifactHandler{httpClient: client, originSecret: strings.TrimSpace(os.Getenv("CATSCO_ARTIFACT_ORIGIN_SECRET"))}
 	h.publishOrigin, h.publishOriginErr = configuredArtifactPublishOrigin()
 	if h.httpClient == nil {
 		h.httpClient = &http.Client{Timeout: artifactUpstreamTimeout}
@@ -546,6 +552,7 @@ func (h *CloudArtifactHandler) handleManagedList(
 			}
 		}
 	}
+	list.Artifacts = h.readableArtifacts(r, list.Artifacts)
 	list.Count = len(list.Artifacts)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, list)
@@ -644,6 +651,7 @@ func (h *CloudArtifactHandler) handlePublicIndexList(w http.ResponseWriter, r *h
 	if !ok {
 		return
 	}
+	index.Artifacts = h.readableArtifacts(r, index.Artifacts)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, index)
 }
@@ -739,6 +747,7 @@ func (h *CloudArtifactHandler) handleNodePublicIndexList(
 		list.Artifacts[i].CanDelete = false
 		list.Artifacts[i].CanRestore = false
 	}
+	list.Artifacts = h.readableArtifacts(r, list.Artifacts)
 	list.Count = len(list.Artifacts)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, list)
@@ -768,7 +777,7 @@ func (h *CloudArtifactHandler) readPublicArtifactIndexWithOptions(
 	upstreamReq.Header.Set("Accept", "application/json")
 	upstreamReq.Header.Set("User-Agent", "catsco-cloud-artifacts/1.0")
 
-	resp, err := h.httpClient.Do(upstreamReq)
+	resp, err := artifactHTTPClient(h.httpClient).Do(upstreamReq)
 	if err != nil {
 		if allowMissing && artifactIndexDNSNotFound(err) {
 			// The node's host does not resolve (yet). The list treats this as
@@ -829,6 +838,10 @@ func (h *CloudArtifactHandler) handleMutation(
 	managementToken, publicBaseURL string,
 	agentUID int64,
 ) bool {
+	if err := h.authorizeArtifactMutation(r, uid, artifactID, suffix, collectionURL, managementToken, publicBaseURL, agentUID); err != nil {
+		writeArtifactUpstreamError(w, err)
+		return false
+	}
 	payload, _ := json.Marshal(map[string]string{"actor_uid": strconv.FormatInt(uid, 10)})
 	target := collectionURL + "/" + url.PathEscape(artifactID) + suffix
 	body, err := h.requestManagement(r, r.Method, target, payload, managementToken)
@@ -892,10 +905,36 @@ func (h *CloudArtifactHandler) handlePublish(
 		writeArtifactError(w, http.StatusBadRequest, "artifact_publish_request_invalid")
 		return
 	}
+	if h.fileAccess == nil {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_file_access_unavailable")
+		return
+	}
+	if !h.fileAccess.CanUseResource(r.Context(), viewerUID, "upload:"+strings.TrimPrefix(sourcePath, "/uploads/")) {
+		writeArtifactError(w, http.StatusForbidden, "artifact_source_forbidden")
+		return
+	}
+	recorder, canRecord := h.fileAccess.(artifactUploadRecorder)
+	if !canRecord {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_file_access_unavailable")
+		return
+	}
+	publicBaseURL, err = h.trustedArtifactPublicBase(publicBaseURL)
+	if err != nil {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	sourceURL := request.URL
+	if signer, ok := h.uploadSource.(artifactPrivateSourceSigner); ok {
+		sourceURL, err = signer.PrivateArtifactSourceURL(r, viewerUID, request.URL)
+		if err != nil {
+			writeArtifactError(w, http.StatusServiceUnavailable, "artifact_source_unavailable")
+			return
+		}
+	}
 	payload, _ := json.Marshal(map[string]string{
 		"title":           request.Title,
 		"kind":            request.Kind,
-		"url":             request.URL,
+		"url":             sourceURL,
 		"source_title":    request.SourceTitle,
 		"source_topic_id": request.SourceTopicID,
 		"actor_uid":       strconv.FormatInt(viewerUID, 10),
@@ -905,7 +944,7 @@ func (h *CloudArtifactHandler) handlePublish(
 		"uploader_uid":    strconv.FormatInt(viewerUID, 10),
 		"publish_mode":    "immediate",
 	})
-	body, err := h.requestManagement(r, http.MethodPost, collectionURL, payload, managementToken)
+	body, upstreamStatus, err := h.requestManagementResponse(r, http.MethodPost, collectionURL, payload, managementToken)
 	if err != nil {
 		writeArtifactUpstreamError(w, err)
 		return
@@ -922,6 +961,25 @@ func (h *CloudArtifactHandler) handlePublish(
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return
 	}
+	resource := canonicalArtifactResource(operation.Artifact.URL)
+	if resource == "" || !strings.HasSuffix(resource, "/"+operation.Artifact.ID) {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
+	created := upstreamStatus == http.StatusCreated &&
+		(operation.Artifact.PublishVersion == nil || *operation.Artifact.PublishVersion == 1)
+	if !created {
+		// An existing artifact never becomes caller-owned just because a
+		// service re-imported an upload or returned its URL in a response.
+		if !h.fileAccess.CanUseResource(r.Context(), viewerUID, resource) {
+			writeArtifactError(w, http.StatusForbidden, "artifact_source_forbidden")
+			return
+		}
+	} else if err := recorder.RecordUpload(r.Context(), viewerUID, resource); err != nil {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_file_access_unavailable")
+		return
+	}
+	h.invalidateArtifactContextCache(agentUID, operation.Artifact.ID)
 	operation.Artifact.UploadedByMe = true
 	operation.Artifact.CanDelete = true
 	operation.Artifact.CanRestore = false
@@ -1015,13 +1073,18 @@ func (h *CloudArtifactHandler) resolveArtifactNode(agentUID int64) (artifactNode
 }
 
 func (h *CloudArtifactHandler) requestManagement(r *http.Request, method, target string, payload []byte, managementToken string) ([]byte, error) {
+	body, _, err := h.requestManagementResponse(r, method, target, payload, managementToken)
+	return body, err
+}
+
+func (h *CloudArtifactHandler) requestManagementResponse(r *http.Request, method, target string, payload []byte, managementToken string) ([]byte, int, error) {
 	var body io.Reader
 	if payload != nil {
 		body = bytes.NewReader(payload)
 	}
 	request, err := http.NewRequestWithContext(r.Context(), method, target, body)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+managementToken)
@@ -1029,19 +1092,19 @@ func (h *CloudArtifactHandler) requestManagement(r *http.Request, method, target
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	response, err := h.httpClient.Do(request)
+	response, err := artifactHTTPClient(h.httpClient).Do(request)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer response.Body.Close()
 	responseBody, readErr := readArtifactResponse(response.Body)
 	if readErr != nil {
-		return nil, readErr
+		return nil, 0, readErr
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, parseArtifactUpstreamError(response.StatusCode, responseBody)
+		return nil, response.StatusCode, parseArtifactUpstreamError(response.StatusCode, responseBody)
 	}
-	return responseBody, nil
+	return responseBody, response.StatusCode, nil
 }
 
 func validateCloudArtifactIndex(index cloudArtifactIndex) error {
@@ -1200,7 +1263,7 @@ func validateCloudArtifactPublishRequest(request cloudArtifactPublishRequest, ex
 	artifactURL, err := url.Parse(request.URL)
 	artifactOrigin, originErr := parseArtifactURLOrigin(request.URL)
 	if err != nil || originErr != nil || artifactURL.Scheme != "https" || artifactURL.Host == "" ||
-		artifactURL.User != nil || artifactURL.RawQuery != "" || artifactURL.Fragment != "" ||
+		artifactURL.User != nil || artifactURL.RawQuery != "" || artifactURL.ForceQuery || artifactURL.Fragment != "" ||
 		artifactURL.RawPath != "" || artifactOrigin != expectedOrigin ||
 		!strings.HasPrefix(artifactURL.Path, "/uploads/files/") {
 		return "", errors.New("invalid artifact publish URL")
@@ -1352,6 +1415,10 @@ func writeArtifactUpstreamError(w http.ResponseWriter, err error) {
 	status := http.StatusBadGateway
 	if upstream.status == http.StatusBadRequest || upstream.status == http.StatusNotFound || upstream.status == http.StatusConflict {
 		status = upstream.status
+	}
+	if upstream.status == http.StatusServiceUnavailable &&
+		(upstream.code == "artifact_file_access_unavailable" || upstream.code == "artifact_management_unavailable") {
+		status = http.StatusServiceUnavailable
 	}
 	writeArtifactError(w, status, upstream.code)
 }

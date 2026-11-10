@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { createContext, memo, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, Maximize2, Minimize2, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
@@ -30,6 +30,7 @@ import {
   HTML_PREVIEW_SANDBOX,
   REMOTE_ARTIFACT_PREVIEW_SANDBOX,
 } from './controlled-artifact-preview';
+import PrivateArtifactFrame, { isPrivateArtifactFrameURL } from './private-artifact-frame';
 import {
   ARTIFACT_FRAME_BRIDGE_CONTRACT,
   artifactFrameBridgeNonce,
@@ -1061,8 +1062,18 @@ function WorkingProcess({ blocks, complete: completeOverride = false, stopped = 
   );
 }
 
+const FileMediaMessageContext = createContext(null);
+const FILE_ATTACHMENT_TYPES = ['file', 'image'];
+const FILE_MEDIA_TYPES = [...FILE_ATTACHMENT_TYPES, 'audio', 'voice', 'video'];
+
+function useFileMediaMessageId(payload) {
+  const message = useContext(FileMediaMessageContext);
+  return fileMediaMessageIdForPreview(message, payload)
+    || payload?.annotation_source?.message_id || payload?.message_id;
+}
+
 // Match the server's filtered attachment order, which omits text/tool blocks.
-export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
+function attachmentSourceForPreview(message, payload, topicId, types) {
   // A displayed assistant reply can contain files delivered by earlier
   // messages. Resolve against persisted originals, never the merged reply ID
   // or the reordered attachment positions used only for presentation.
@@ -1070,11 +1081,11 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   if (Array.isArray(originals) && originals.length > 0) {
     const candidates = originals.filter(original => original !== message);
     const exact = candidates.filter(original => (
-      original?.content_blocks?.some(block => ['file', 'image'].includes(block?.type) && block.payload === payload)
+      original?.content_blocks?.some(block => types.includes(block?.type) && block.payload === payload)
       || original?.content?.payload === payload
     ));
     const matches = (exact.length > 0 ? exact : candidates)
-      .map(original => fileAnnotationSourceForPreview(original, payload, topicId))
+      .map(original => attachmentSourceForPreview(original, payload, topicId, types))
       .filter(Boolean);
     const unique = new Map(matches.map(source => [
       JSON.stringify([source.topic_id, source.message_id, source.attachment_index]), source,
@@ -1084,7 +1095,7 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   }
   const messageId = Number(message?.seq_id || message?.id || 0);
   const topic = String(message?.topic_id || topicId || '');
-  if (!Number.isSafeInteger(messageId) || messageId <= 0 || !topic
+  if (!Number.isSafeInteger(messageId) || messageId <= 0
     || message?._pending || message?._streaming || !payload) return null;
   const firstString = (value, keys) => keys.map(key => value?.[key])
     .find(item => typeof item === 'string' && item.trim())?.trim() || '';
@@ -1094,10 +1105,10 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
     name: firstString(value, ['name', 'file_name', 'filename', 'title']),
   });
   let attachments = (Array.isArray(message.content_blocks) ? message.content_blocks : [])
-    .filter(block => ['file', 'image'].includes(String(block?.type || '').trim().toLowerCase()))
+    .filter(block => types.includes(String(block?.type || '').trim().toLowerCase()))
     .map(block => block.payload)
     .filter(value => { const item = identity(value); return item.url || item.key || item.name; });
-  if (!attachments.length && ['file', 'image'].includes(String(message.msg_type || '').toLowerCase())) {
+  if (!attachments.length && types.includes(String(message.msg_type || '').toLowerCase())) {
     try {
       let legacy = message.content;
       if (typeof legacy === 'string') legacy = JSON.parse(legacy);
@@ -1117,6 +1128,15 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
 }
 
+export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
+  const source = attachmentSourceForPreview(message, payload, topicId, FILE_ATTACHMENT_TYPES);
+  return source?.topic_id ? source : null;
+}
+
+export function fileMediaMessageIdForPreview(message, payload) {
+  return attachmentSourceForPreview(message, payload, '', FILE_MEDIA_TYPES)?.message_id;
+}
+
 function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
   const liquidConversation = useLiquidConversation();
   const [replyRevealing, setReplyRevealing] = useState(false);
@@ -1130,7 +1150,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     // The kind belongs to the enclosing content block (including legacy rich
     // content), not its payload. Preserve it without weakening source checks.
     onPreviewFileCallback?.({ ...fileAnnotationPreviewFile(payload, attachmentType),
-      annotation_source: fileAnnotationSourceForPreview(message, payload, annotationTopicId) });
+      annotation_source: fileAnnotationSourceForPreview(message, payload, annotationTopicId),
+      message_id: fileMediaMessageIdForPreview(message, payload) });
   }, [annotationTopicId, message, onPreviewFileCallback]);
   const onPreviewFile = onPreviewFileCallback ? previewMessageFile : undefined;
   const [copyState, setCopyState] = useState('');
@@ -1398,6 +1419,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   if (!replyPending && !hasText && richBlocks.length === 0 && workingBlocks.length === 0 && !workingAnnotationDoc) return null;
 
   return (
+    <FileMediaMessageContext.Provider value={message}>
     <div
       className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}${hasFileOnly ? ' has-file-only' : ''}${artifactsFirst ? ' artifacts-first' : ''}${(executionState ? executionState === 'running' : (workingOnly || message._streaming) && !workingProcessComplete && !message._stopped) ? ' is-working' : ''}${workingProcessComplete && !message._stopped ? ' is-complete' : ''}`}
       data-conversation-question={questionAnchorKey || undefined}
@@ -1634,6 +1656,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
         </div>}
       </div>
     </div>
+    </FileMediaMessageContext.Provider>
   );
 }
 
@@ -2032,8 +2055,9 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '',
   const previewRef = useRef(null);
   const triggerRef = useRef(null);
   const closeButtonRef = useRef(null);
+  const messageId = useFileMediaMessageId(payload);
   const src = payload?.url || payload?.thumbnail;
-  const resolvedSrc = resolveMediaURL(payload?.url || src);
+  const resolvedSrc = resolveMediaURL(payload?.url || src, messageId);
   const downloadURL = downloadableMediaURL(resolvedSrc);
 
   useEffect(() => {
@@ -2110,7 +2134,7 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '',
           type="button"
         >
           <img
-            src={resolveMediaURL(src)}
+            src={resolveMediaURL(src, messageId)}
             alt={payload.name || 'image'}
             className="oc-rich-image-thumb"
             draggable={canDragChatAttachment({ type: 'image', payload })}
@@ -2177,7 +2201,7 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '',
         type="button"
       >
         <img
-          src={resolveMediaURL(src)}
+          src={resolveMediaURL(src, messageId)}
           alt={payload.name || 'image'}
           className="oc-rich-image-thumb"
           draggable={canDragChatAttachment({ type: 'image', payload })}
@@ -2393,13 +2417,12 @@ export function isWebKitPdfPreview() {
     && !/(Chrome|Chromium|Edg|OPR|OPiOS|CriOS|FxiOS|Firefox|SamsungBrowser)/.test(ua);
 }
 
-export function previewFileDescriptor(payload) {
+export function previewFileDescriptor(payload, messageId = payload?.annotation_source?.message_id || payload?.message_id) {
   if (!payload) return null;
   const ext = fileExtension(payload);
   const isHtml = isHtmlFile(payload, ext);
-  // 托管 Artifact 预览依赖同源 frame bridge（上下文快照 / 结果回写），
-  // 这类页面保持源站 origin；其余 /uploads 资源走媒体域（CDN）加速。
-  // 仅当解析后仍是同源 URL 时保持（protocol-relative 等外部形态除外）。
+  // Managed artifacts preserve the canonical origin used by the frame bridge.
+  // Protected uploads stay on the API host with its media-session cookie.
   const prefersManagedArtifactOrigin = (() => {
     if (!isHtml || !trustedArtifactPreviewPayloads.has(payload)) return false;
     const raw = String(payload.url || '');
@@ -2410,9 +2433,10 @@ export function previewFileDescriptor(payload) {
       return false;
     }
   })();
-  const url = prefersManagedArtifactOrigin
+  const canonicalURL = prefersManagedArtifactOrigin
     ? new URL(payload.url, window.location.origin).toString()
     : resolveMediaURL(payload.url);
+  const url = prefersManagedArtifactOrigin ? canonicalURL : resolveMediaURL(payload.url, messageId);
   const meta = artifactMeta(payload, ext);
   const isPdf = isPdfFile(payload, ext);
   const isImage = isImageFile(payload, ext);
@@ -2448,7 +2472,7 @@ export function previewFileDescriptor(payload) {
     canPreview,
     downloadURL: downloadableMediaURL(url),
     sizeStr: payload.size ? formatFileSize(payload.size) : '',
-    key: `${url}|${payload.name || ''}|${payload.size || ''}`,
+    key: `${canonicalURL}|${payload.name || ''}|${payload.size || ''}`,
   };
 }
 
@@ -2468,7 +2492,8 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   const shouldFocusFallbackRef = useRef(false);
   const shareResetTimerRef = useRef(null);
   const shareRequestRef = useRef(0);
-  const src = resolveMediaURL(payload?.url);
+  const messageId = useFileMediaMessageId(payload);
+  const src = resolveMediaURL(payload?.url, messageId);
   const downloadURL = downloadableMediaURL(src);
 
   useEffect(() => {
@@ -2693,7 +2718,8 @@ function AudioContent({ payload, onPreviewFile, activePreviewFile }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
   const fallbackActionRef = useRef(null);
   const shouldFocusFallbackRef = useRef(false);
-  const src = resolveMediaURL(payload?.url);
+  const messageId = useFileMediaMessageId(payload);
+  const src = resolveMediaURL(payload?.url, messageId);
   const downloadURL = downloadableMediaURL(src);
   const sizeStr = payload?.size ? formatFileSize(payload.size) : '';
 
@@ -2766,6 +2792,7 @@ function AudioContent({ payload, onPreviewFile, activePreviewFile }) {
 }
 
 function FileContent({ payload, onPreviewFile, activePreviewFile, inlineMedia = true, actionRef = null }) {
+  const messageId = useFileMediaMessageId(payload);
   if (inlineMedia && payload && isInlineVideoFile(payload)) {
     return <VideoContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
   }
@@ -2773,7 +2800,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineMedia = 
     return <AudioContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
   }
   if (!payload) return null;
-  const descriptor = previewFileDescriptor(payload);
+  const descriptor = previewFileDescriptor(payload, messageId);
   const { url, ext, canPreview, downloadURL, meta, sizeStr, key } = descriptor;
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = canPreview && activeKey === key;
@@ -3513,8 +3540,9 @@ export function FilePreviewPanel({
                      attemptSeed: pendingRemoteArtifactAttemptSeed,
                    }
                   : null,
-              ].filter(Boolean).map((frameEntry) => (
-                <iframe
+              ].filter(Boolean).map((frameEntry) => {
+                const Frame = isPrivateArtifactFrameURL(frameEntry.descriptor.url) ? PrivateArtifactFrame : 'iframe';
+                return <Frame
                   key={frameEntry.key}
                   ref={frameEntry.current ? remoteArtifactFrameRef : pendingRemoteArtifactFrameRef}
                   src={frameEntry.descriptor?.isSameOriginRemoteArtifact
@@ -3524,7 +3552,7 @@ export function FilePreviewPanel({
                   className={frameEntry.current ? 'v3-file-preview-frame' : 'v3-file-preview-frame-pending'}
                   title={frameEntry.current ? 'Cloud Artifact Preview' : 'Cloud Artifact Refresh Check'}
                   sandbox={frameEntry.descriptor?.isSameOriginRemoteArtifact ? HTML_PREVIEW_SANDBOX : REMOTE_ARTIFACT_PREVIEW_SANDBOX}
-                  credentialless=""
+                  {...(Frame === PrivateArtifactFrame ? { messageId: file?.annotation_source?.message_id || file?.message_id } : {})}
                   referrerPolicy="no-referrer"
                   aria-hidden={frameEntry.current ? undefined : 'true'}
                   tabIndex={frameEntry.current && !isSheetMode ? undefined : -1}
@@ -3542,7 +3570,7 @@ export function FilePreviewPanel({
                     ? () => handleCurrentRemoteArtifactError(frameEntry.key)
                     : () => handlePendingRemoteArtifactError(frameEntry.attemptSeed)}
                 />
-              ))}
+              })}
               {remoteFrameState === 'loading' && (
                 <div className="v3-remote-artifact-preview-state"><LoadingState kind="apps" label="正在加载云端生成物" /></div>
               )}

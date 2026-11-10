@@ -35,6 +35,7 @@ import { useFeedback } from '../components/feedback-system';
 import { clearPersistedComposerDrafts } from '../utils/composer-draft-storage';
 import { createCloudArtifactPreviewFile, previewFileDescriptor } from '../widgets/chat-message';
 import ControlledArtifactPreview from '../widgets/controlled-artifact-preview';
+import { isPrivateArtifactFrameURL } from '../widgets/private-artifact-frame';
 import './artifact-fullscreen-viewer.css';
 
 const VIEWER_HEARTBEAT_MS = 2000;
@@ -84,7 +85,7 @@ async function loadGuestApplication(artifactId, signal) {
         .find((item) => item?.id === artifactId);
       if (!app) continue;
       const url = gatewayApplicationShareURL(app);
-      if (!url) continue;
+      if (!url || isPrivateArtifactFrameURL(url)) continue;
       return { browseURL: url, title: app.title || app.id, guest: true };
     } catch (error) {
       if (signal?.aborted) return null;

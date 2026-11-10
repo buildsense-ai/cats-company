@@ -25,9 +25,10 @@ func (n *recordingCloudArtifactNotifier) NotifyCloudArtifactShared(ownerUID int6
 	n.ownerUIDs = append(n.ownerUIDs, ownerUID)
 }
 
-func artifactUploadSourceForTest(t *testing.T) (*UploadHandler, string) {
+func artifactUploadSourceForTest(t *testing.T) (*legacyArtifactUploadSourceFixture, string) {
 	t.Helper()
 	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
+	t.Setenv("CATSCO_ARTIFACT_FILE_ORIGINS", os.Getenv("CATSCO_ARTIFACT_FILE_ORIGINS")+",https://example.test")
 	baseDir := t.TempDir()
 	fileDir := filepath.Join(baseDir, "files")
 	if err := os.MkdirAll(fileDir, 0o755); err != nil {
@@ -36,7 +37,7 @@ func artifactUploadSourceForTest(t *testing.T) (*UploadHandler, string) {
 	if err := os.WriteFile(filepath.Join(fileDir, testArtifactUploadFileName), []byte("<!doctype html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return NewUploadHandler(baseDir, "/uploads"),
+	return &legacyArtifactUploadSourceFixture{uploads: NewUploadHandler(baseDir, "/uploads")},
 		"https://app.example/uploads/files/" + testArtifactUploadFileName
 }
 
@@ -46,12 +47,13 @@ func TestCloudArtifactHandlerListsValidatedIndex(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"contract_version":"cloud-artifacts.index.v1",
 			"updated_at":"2026-07-22T06:00:00.000Z",
-			"artifacts":[{"id":"lesson-game","title":"课堂小游戏","kind":"html","url":"https://example.test/lesson-game/latest/","updated_at":"2026-07-22T06:00:00.000Z"}]
+			"artifacts":[{"id":"lesson-game","title":"课堂小游戏","kind":"html","url":"https://example.test/artifacts/lesson-game/latest/","updated_at":"2026-07-22T06:00:00.000Z"}]
 		}`))
 	}))
 	defer upstream.Close()
 
 	handler := NewCloudArtifactHandler(upstream.URL, upstream.Client())
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/artifacts/lesson-game/latest/")
 	req := authenticatedArtifactRequest(http.MethodGet)
 	rec := httptest.NewRecorder()
 	handler.HandleList(rec, req)
@@ -119,7 +121,7 @@ func TestCloudArtifactHandlerListsManagedMetadata(t *testing.T) {
 				"id":"lesson-game",
 				"title":"课堂小游戏",
 				"kind":"html",
-				"url":"https://example.test/lesson-game/latest/",
+				"url":"https://example.test/artifacts/lesson-game/latest/",
 				"status":"active",
 				"created_at":"2026-07-22T05:00:00.000Z",
 				"updated_at":"2026-07-22T06:00:00.000Z",
@@ -141,6 +143,7 @@ func TestCloudArtifactHandlerListsManagedMetadata(t *testing.T) {
 		token,
 		upstream.Client(),
 	)
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/artifacts/lesson-game/latest/")
 	rec := httptest.NewRecorder()
 	handler.Handle(rec, authenticatedArtifactRequestPath(http.MethodGet, "/api/artifacts?status=active"))
 
@@ -157,6 +160,13 @@ func TestCloudArtifactHandlerListsManagedMetadata(t *testing.T) {
 func TestCloudArtifactHandlerDeletesExactIDWithAuthenticatedActor(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if r.URL.Path != "/" || r.URL.Query().Get("status") != "active" || r.Header.Get("Authorization") != "Bearer "+token {
+				t.Fatalf("authorization request = %s %s", r.Method, r.URL)
+			}
+			_, _ = w.Write([]byte(managedArtifactOperationListJSON("", "witch-poison-game-2", "active")))
+			return
+		}
 		if r.Method != http.MethodDelete {
 			t.Fatalf("method = %s", r.Method)
 		}
@@ -184,6 +194,7 @@ func TestCloudArtifactHandlerDeletesExactIDWithAuthenticatedActor(t *testing.T) 
 		token,
 		upstream.Client(),
 	)
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/artifacts/witch-poison-game-2/latest/")
 	rec := httptest.NewRecorder()
 	handler.Handle(rec, authenticatedArtifactRequestPath(http.MethodDelete, "/api/artifacts/witch-poison-game-2"))
 
@@ -198,6 +209,13 @@ func TestCloudArtifactHandlerDeletesExactIDWithAuthenticatedActor(t *testing.T) 
 func TestCloudArtifactHandlerRestoresExactID(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if r.URL.Path != "/" || r.URL.Query().Get("status") != "deleted" || r.Header.Get("Authorization") != "Bearer "+token {
+				t.Fatalf("authorization request = %s %s", r.Method, r.URL)
+			}
+			_, _ = w.Write([]byte(managedArtifactOperationListJSON("", "lesson-game", "deleted")))
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/lesson-game/restore" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
@@ -211,6 +229,7 @@ func TestCloudArtifactHandlerRestoresExactID(t *testing.T) {
 		token,
 		upstream.Client(),
 	)
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/artifacts/lesson-game/latest/")
 	rec := httptest.NewRecorder()
 	handler.Handle(rec, authenticatedArtifactRequestPath(http.MethodPost, "/api/artifacts/lesson-game/restore"))
 	if rec.Code != http.StatusOK {
@@ -221,6 +240,13 @@ func TestCloudArtifactHandlerRestoresExactID(t *testing.T) {
 func TestCloudArtifactHandlerMapsManagementConflict(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if r.URL.Query().Get("status") != "active" {
+				t.Fatalf("authorization status = %q", r.URL.Query().Get("status"))
+			}
+			_, _ = w.Write([]byte(managedArtifactOperationListJSON("", "lesson-game", "active")))
+			return
+		}
 		w.WriteHeader(http.StatusConflict)
 		_, _ = w.Write([]byte(`{"ok":false,"error":{"code":"artifact_already_deleted","message":"already deleted"}}`))
 	}))
@@ -232,6 +258,7 @@ func TestCloudArtifactHandlerMapsManagementConflict(t *testing.T) {
 		token,
 		upstream.Client(),
 	)
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/artifacts/lesson-game/latest/")
 	rec := httptest.NewRecorder()
 	handler.Handle(rec, authenticatedArtifactRequestPath(http.MethodDelete, "/api/artifacts/lesson-game"))
 	if rec.Code != http.StatusConflict {
@@ -281,6 +308,7 @@ func TestCloudArtifactHandlerListsArtifactsForAccessibleManagedAgent(t *testing.
 	friendStore := managedArtifactAgentStore(8, 440, true)
 	friendStore.friendPairs[agentPairKey(7, 440)] = true
 	handler.SetStore(friendStore)
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/by-agent/440/shared-game/latest/")
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		rec,
@@ -332,6 +360,7 @@ func TestCloudArtifactHandlerGrantsOwnerManagementWhenUpstreamOmitsFlags(t *test
 				upstream.Client(),
 			)
 			handler.SetStore(managedArtifactAgentStore(8, 440, true))
+			grantLegacyArtifactResources(t, handler, 8, "https://example.test/by-agent/440/shared-game/latest/")
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(
 				http.MethodGet,
@@ -375,6 +404,7 @@ func TestCloudArtifactHandlerDoesNotGuessCreatorForLegacyManagedArtifact(t *test
 		upstream.Client(),
 	)
 	handler.SetStore(managedArtifactAgentStore(7, 440, true))
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/by-agent/440/shared-game/latest/")
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		rec,
@@ -420,6 +450,7 @@ func TestCloudArtifactHandlerAllowsFriendToRemoveOwnArtifactOnly(t *testing.T) {
 	friendStore := managedArtifactAgentStore(8, 440, true)
 	friendStore.friendPairs[agentPairKey(7, 440)] = true
 	handler.SetStore(friendStore)
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/by-agent/440/shared-game/latest/")
 
 	allowed := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
@@ -440,7 +471,10 @@ func TestCloudArtifactHandlerAllowsFriendToRemoveOwnArtifactOnly(t *testing.T) {
 			t.Fatalf("request %s %s status = %d, body = %s", request.Method, request.URL.Path, rec.Code, rec.Body.String())
 		}
 	}
-	if len(upstreamCalls) != 2 {
+	if len(upstreamCalls) != 3 ||
+		upstreamCalls[0] != "GET /internal/agents/440/artifacts" ||
+		upstreamCalls[1] != "GET /internal/agents/440/artifacts" ||
+		upstreamCalls[2] != "DELETE /internal/agents/440/artifacts/shared-game" {
 		t.Fatalf("upstream calls = %v", upstreamCalls)
 	}
 }
@@ -497,22 +531,28 @@ func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 		if payload["title"] != "课堂网页" || payload["source_topic_id"] != "p2p_7_440" {
 			t.Fatalf("publish metadata = %#v", payload)
 		}
+		if payload["url"] != sourceURL {
+			t.Fatalf("legacy source URL = %q, want %q", payload["url"], sourceURL)
+		}
+		version := 1
 		operation := cloudArtifactOperation{
 			OK: true,
 			Artifact: cloudArtifact{
-				ID:           "member-result",
-				Title:        "课堂网页",
-				Kind:         "html",
-				URL:          "https://example.test/by-agent/440/member-result/latest/",
-				Status:       "active",
-				CreatedAt:    "2026-08-12T07:00:00Z",
-				UpdatedAt:    "2026-08-12T07:00:00Z",
-				AgentUID:     "440",
-				UploaderUID:  "7",
-				UploaderName: "成员甲",
-				CanDelete:    true,
+				ID:             "member-result",
+				Title:          "课堂网页",
+				Kind:           "html",
+				URL:            "https://example.test/by-agent/440/member-result/latest/",
+				Status:         "active",
+				CreatedAt:      "2026-08-12T07:00:00Z",
+				UpdatedAt:      "2026-08-12T07:00:00Z",
+				AgentUID:       "440",
+				UploaderUID:    "7",
+				UploaderName:   "成员甲",
+				CanDelete:      true,
+				PublishVersion: &version,
 			},
 		}
+		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(operation)
 	}))
 	defer upstream.Close()
@@ -524,6 +564,7 @@ func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 		upstream.Client(),
 	)
 	handler.SetUploadSourceValidator(uploadHandler)
+	grantLegacyArtifactResources(t, handler, 7, sourceURL)
 	notifier := &recordingCloudArtifactNotifier{}
 	handler.SetNotifier(notifier)
 	friendStore := managedArtifactAgentStore(8, 440, true)
@@ -539,6 +580,10 @@ func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 	handler.HandleAgentArtifacts(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	resource := "artifact:https://example.test/by-agent/440/member-result"
+	if !handler.fileAccess.CanUseResource(req.Context(), 7, resource) || handler.fileAccess.CanUseResource(req.Context(), 8, resource) {
+		t.Fatal("created artifact was not recorded exclusively for its publisher")
 	}
 	if !strings.Contains(rec.Body.String(), `"uploaded_by_me":true`) ||
 		!strings.Contains(rec.Body.String(), `"creator_type":"user"`) ||
@@ -556,6 +601,8 @@ func TestCloudArtifactHandlerDoesNotNotifyPublishingOwner(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	uploadHandler, sourceURL := artifactUploadSourceForTest(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		version := 1
+		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(cloudArtifactOperation{
 			OK: true,
 			Artifact: cloudArtifact{
@@ -563,6 +610,7 @@ func TestCloudArtifactHandlerDoesNotNotifyPublishingOwner(t *testing.T) {
 				URL: "https://example.test/by-agent/440/owner-result/latest/", Status: "active",
 				CreatedAt: "2026-08-12T07:00:00Z", UpdatedAt: "2026-08-12T07:00:00Z",
 				AgentUID: "440", UploaderUID: "8", CanDelete: true,
+				PublishVersion: &version,
 			},
 		})
 	}))
@@ -576,6 +624,7 @@ func TestCloudArtifactHandlerDoesNotNotifyPublishingOwner(t *testing.T) {
 	)
 	handler.SetStore(managedArtifactAgentStore(8, 440, true))
 	handler.SetUploadSourceValidator(uploadHandler)
+	grantLegacyArtifactResources(t, handler, 8, sourceURL)
 	notifier := &recordingCloudArtifactNotifier{}
 	handler.SetNotifier(notifier)
 	recorder := httptest.NewRecorder()
@@ -607,6 +656,8 @@ func TestCloudArtifactHandlerOwnerNotificationFailureDoesNotFailPublish(t *testi
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	uploadHandler, sourceURL := artifactUploadSourceForTest(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		version := 1
+		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(cloudArtifactOperation{
 			OK: true,
 			Artifact: cloudArtifact{
@@ -614,6 +665,7 @@ func TestCloudArtifactHandlerOwnerNotificationFailureDoesNotFailPublish(t *testi
 				URL: "https://example.test/by-agent/440/member-result/latest/", Status: "active",
 				CreatedAt: "2026-08-12T07:00:00Z", UpdatedAt: "2026-08-12T07:00:00Z",
 				AgentUID: "440", UploaderUID: "7", CanDelete: true,
+				PublishVersion: &version,
 			},
 		})
 	}))
@@ -629,6 +681,7 @@ func TestCloudArtifactHandlerOwnerNotificationFailureDoesNotFailPublish(t *testi
 	)
 	handler.SetStore(&artifactOwnerLookupFailureStore{agentTestStore: baseStore})
 	handler.SetUploadSourceValidator(uploadHandler)
+	grantLegacyArtifactResources(t, handler, 7, sourceURL)
 	handler.SetNotifier(&recordingCloudArtifactNotifier{})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(
@@ -837,6 +890,7 @@ func TestCloudArtifactHandlerListsArtifactsForAccessibleSelfHostedBot(t *testing
 		upstream.Client(),
 	)
 	handler.SetStore(managedArtifactAgentStore(7, 440, false))
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/by-agent/440/shared-game/latest/")
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		rec,
@@ -851,6 +905,13 @@ func TestCloudArtifactHandlerListsArtifactsForAccessibleSelfHostedBot(t *testing
 func TestCloudArtifactHandlerDeletesOnlyThroughRequestedAgentNamespace(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if r.URL.Path != "/internal/agents/440/artifacts" || r.URL.Query().Get("status") != "active" {
+				t.Fatalf("authorization request = %s %s", r.Method, r.URL)
+			}
+			_, _ = w.Write([]byte(managedAgentListJSON("440", "active")))
+			return
+		}
 		if r.Method != http.MethodDelete || r.URL.Path != "/internal/agents/440/artifacts/shared-game" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
@@ -869,6 +930,7 @@ func TestCloudArtifactHandlerDeletesOnlyThroughRequestedAgentNamespace(t *testin
 		upstream.Client(),
 	)
 	handler.SetStore(managedArtifactAgentStore(7, 440, true))
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/by-agent/440/shared-game/latest/")
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(
 		http.MethodDelete,
@@ -885,6 +947,13 @@ func TestCloudArtifactHandlerDeletesOnlyThroughRequestedAgentNamespace(t *testin
 func TestCloudArtifactHandlerRestoresThroughRequestedAgentNamespace(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if r.URL.Path != "/internal/agents/440/artifacts" || r.URL.Query().Get("status") != "deleted" {
+				t.Fatalf("authorization request = %s %s", r.Method, r.URL)
+			}
+			_, _ = w.Write([]byte(managedAgentListJSON("440", "deleted")))
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/internal/agents/440/artifacts/shared-game/restore" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
@@ -903,6 +972,7 @@ func TestCloudArtifactHandlerRestoresThroughRequestedAgentNamespace(t *testing.T
 		upstream.Client(),
 	)
 	handler.SetStore(managedArtifactAgentStore(7, 440, true))
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/by-agent/440/shared-game/latest/")
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		rec,
@@ -944,6 +1014,7 @@ func TestCloudArtifactHandlerRejectsInaccessibleAndAllowsAccessibleSelfHostedBot
 	selfHostedStore := managedArtifactAgentStore(7, 440, false)
 	selfHostedStore.botBodyIDs = map[int64]string{440: "body-self-hosted-agent"}
 	handler.SetStore(selfHostedStore)
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/by-agent/440/shared-game/latest/")
 	selfHosted := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		selfHosted,
@@ -1047,7 +1118,25 @@ func managedAgentOperationJSON(agentUID, id, status string) string {
 	var payload cloudArtifactOperation
 	_ = json.Unmarshal([]byte(managedOperationJSON(id, status)), &payload)
 	payload.Artifact.AgentUID = agentUID
+	payload.Artifact.URL = "https://example.test/by-agent/" + agentUID + "/" + id + "/latest/"
 	body, _ := json.Marshal(payload)
+	return string(body)
+}
+
+// Mutations first read the current artifact in its protected collection.
+func managedArtifactOperationListJSON(agentUID, id, status string) string {
+	operationJSON := managedOperationJSON(id, status)
+	if agentUID != "" {
+		operationJSON = managedAgentOperationJSON(agentUID, id, status)
+	}
+	var operation cloudArtifactOperation
+	_ = json.Unmarshal([]byte(operationJSON), &operation)
+	body, _ := json.Marshal(cloudArtifactManagementList{
+		ContractVersion: artifactManagementContract,
+		Status:          status,
+		Count:           1,
+		Artifacts:       []cloudArtifact{operation.Artifact},
+	})
 	return string(body)
 }
 
@@ -1064,7 +1153,7 @@ func managedOperationJSON(id, status string) string {
 			ID:         id,
 			Title:      "Artifact " + id,
 			Kind:       "html",
-			URL:        "https://example.test/" + id + "/latest/",
+			URL:        "https://example.test/artifacts/" + id + "/latest/",
 			Status:     status,
 			CreatedAt:  "2026-07-22T05:00:00.000Z",
 			UpdatedAt:  "2026-07-22T07:00:00.000Z",

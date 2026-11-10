@@ -37,9 +37,10 @@ vi.mock('../components/feedback-system', () => ({
   useFeedback: () => ({ confirm: feedbackConfirm, notify: feedbackNotify }),
 }));
 
-vi.mock('../widgets/chat-message', () => ({
+vi.mock('../widgets/chat-message', async importOriginal => ({
   __esModule: true,
   downloadableMediaURL: (url) => `${url}${url.includes('?') ? '&' : '?'}download=1`,
+  fileMediaMessageIdForPreview: (await importOriginal()).fileMediaMessageIdForPreview,
   default: function MockChatMessage(props) {
     const [workingExpanded, setWorkingExpanded] = React.useState(false);
     const fileBlock = props.message?.content_blocks?.find?.((block) => block.type === 'file');
