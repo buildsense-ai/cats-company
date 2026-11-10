@@ -18,6 +18,66 @@ const (
 	CloudWorkerOnDemand     = "ondemand"
 )
 
+// Cloud worker term modes decide what a worker's expiry actually follows.
+//
+// A dedicated ECS worker buys a cloud subscription, so the only term it can
+// honour is the one prepaid at creation (fixed) or the historical behaviour
+// where the term came from whatever package was current (legacy). The shared
+// container fleet has no subscription per worker: the cluster already owns the
+// machine, so an operator can pin a worker to its own window (fixed), let it
+// ride along with the active primary package (follow_plan — including a
+// perpetual one) or grant it without any deadline (permanent).
+//
+// legacy is never requested: it is the value historical rows and credits keep
+// so nothing written before this field existed changes behaviour.
+const (
+	CloudWorkerExpiryLegacy     = "legacy"
+	CloudWorkerExpiryFixed      = "fixed"
+	CloudWorkerExpiryFollowPlan = "follow_plan"
+	CloudWorkerExpiryPermanent  = "permanent"
+)
+
+// NormalizeCloudWorkerExpiryMode validates an operator-supplied term mode.
+//
+// An empty value stays empty on purpose. It is the honest representation of a
+// request written before the field existed, and rewriting it to a concrete mode
+// would change the durable fingerprint of an already-journaled operation (and
+// silently re-term every worker those requests own).
+func NormalizeCloudWorkerExpiryMode(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "":
+		return "", true
+	case CloudWorkerExpiryFixed, CloudWorkerExpiryFollowPlan, CloudWorkerExpiryPermanent:
+		return strings.ToLower(strings.TrimSpace(mode)), true
+	default:
+		return mode, false
+	}
+}
+
+// CloudWorkerExpiryModeRequiresShared reports whether a mode is only meaningful
+// on the shared container fleet. "Follow the package" and "permanent" are not
+// terms a prepaid ECS instance can honour.
+func CloudWorkerExpiryModeRequiresShared(mode string) bool {
+	return mode == CloudWorkerExpiryFollowPlan || mode == CloudWorkerExpiryPermanent
+}
+
+// CloudWorkerExpiryModeOrDefault maps an empty (historical) request mode to the
+// row value legacy rows carry, so persisted credits and lifecycles keep their
+// meaning instead of turning into a new term by accident.
+func CloudWorkerExpiryModeOrDefault(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return CloudWorkerExpiryLegacy
+	}
+	return mode
+}
+
+// CloudWorkerExpiryModeIndependentOfPlan reports whether a paid-period
+// extension must leave the row's own term alone. A fixed cluster worker was
+// sold its own window and a permanent grant has no window at all; neither is
+// extended, shortened or rescheduled by a package purchase.
+func CloudWorkerExpiryModeIndependentOfPlan(mode string) bool {
+	return mode == CloudWorkerExpiryFixed || mode == CloudWorkerExpiryPermanent
+}
 func NormalizeCloudWorkerBilling(mode string) (string, bool) {
 	if mode == "" || mode == CloudWorkerMonthly {
 		return CloudWorkerMonthly, true
@@ -61,6 +121,10 @@ type CloudWorkerCreditSelection struct {
 	// path can prepay the provider for every month the credit covers. It is
 	// nil for perpetual manual grants.
 	ExpiresAt *time.Time
+	// ExpiryMode is the term the credit carries (fixed/follow_plan/permanent).
+	// Empty or legacy means the historical behaviour: the create path derives
+	// the term from the credit's paid window exactly as it always did.
+	ExpiryMode string
 }
 
 func NormalizeCloudWorkerProfile(profile string) (string, bool) {

@@ -70,9 +70,9 @@ func TestReserveCloudWorkerRuntimeCreditFiltersTier(t *testing.T) {
 			a := &Adapter{db: db}
 			mock.ExpectBegin()
 			mock.ExpectExec(`UPDATE cloud_worker_credits c\s+SET state = CASE`).WithArgs(int64(7)).WillReturnResult(sqlmock.NewResult(0, 0))
-			rows := sqlmock.NewRows([]string{"id", "deployment_profile", "billing_mode", "expires_at", "retention_days", "runtime_plan"})
+			rows := sqlmock.NewRows([]string{"id", "deployment_profile", "billing_mode", "expires_at", "retention_days", "runtime_plan", "expiry_mode"})
 			if tc.found {
-				rows.AddRow(1, "packed_shared", "month", nil, 7, tc.stored)
+				rows.AddRow(1, "packed_shared", "month", nil, 7, tc.stored, "follow_plan")
 			}
 			mock.ExpectQuery(`SELECT c\.id, .*COALESCE\(NULLIF\(c.runtime_plan, ''\), 'standard'\) = \$4`).
 				WithArgs(int64(7), "packed_shared", "month", tc.requested).WillReturnRows(rows)

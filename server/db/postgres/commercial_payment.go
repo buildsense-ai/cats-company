@@ -612,16 +612,33 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 			if err != nil {
 				return nil, false, err
 			}
-			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt, profile, retention, runtimePlan); err != nil {
+			// A shared worker bought by a package follows that package: the term is
+			// not a separate product an operator has to remember to set, and a
+			// contract that outlives the package is exactly the drift this column
+			// removes. Dedicated ECS keeps the historical derivation (empty mode).
+			expiryMode := ""
+			if profile == types.CloudWorkerPackedShared {
+				expiryMode = types.CloudWorkerExpiryFollowPlan
+			}
+			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt, profile, retention, runtimePlan, expiryMode); err != nil {
 				return nil, false, err
 			}
 		}
 		// If the user already has a cloud worker, a renewal/upgrade extends the
 		// retention window atomically with the paid entitlement. The worker is
 		// not deleted at the old expiry while a new monthly package is active.
-		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, order.UID, expiresAt, retention); err != nil {
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, order.UID, &expiresAt, retention); err != nil {
 			return nil, false, err
 		}
+	}
+	// Whatever this purchase did - renew the same package, upgrade from a lower
+	// tier, or buy a token-only package that revoked a machine tier - a
+	// follow_plan worker now follows the package the buyer really holds. The
+	// extend above keeps a longer remaining window when the package only grows;
+	// this settles it against what actually survived, so a revoked or superseded
+	// window cannot outlive it.
+	if err := settleSharedCloudWorkerFollowPlanTerms(tx, order.UID, paidAt); err != nil {
+		return nil, false, err
 	}
 	fulfilled, err := scanCommercialOrder(tx.QueryRow(`
 		UPDATE commercial_orders
@@ -842,14 +859,34 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 	// before the column existed carry 0, so fall back to the shortest published
 	// window instead of zero.
 	if _, err := tx.Exec(`
-		UPDATE cloud_worker_lifecycles
+		UPDATE cloud_worker_lifecycles l
 		SET package_expires_at = $2::timestamptz,
-		    delete_after = $2::timestamptz + (GREATEST(NULLIF(retention_days, 0), $3::int) * INTERVAL '1 day'),
+		    delete_after = $2::timestamptz + (GREATEST(NULLIF(l.retention_days, 0), $3::int) * INTERVAL '1 day'),
 		    conversion_pending = false,
+		    -- The remaining package window is what the worker now follows, so the
+		    -- provider has to be told before another sweep may destroy it.
+		    sync_pending = CASE WHEN l.expiry_mode IN ('legacy','follow_plan') AND `+cloudWorkerSharedProfileFilter+` THEN TRUE ELSE l.sync_pending END,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE owner_uid = $1 AND state IN ('active','delete_pending','delete_failed')`,
+		-- A refund rolls the owner back to the paid time that survives it (or to
+		-- a finite window ending now). A shared worker on its own fixed term, or a
+		-- permanent grant, is not part of any package: refunding a package must not
+		-- reschedule it, and a permanent grant must not acquire an expiry because
+		-- somebody else's order was refunded. A follow_plan worker is resolved from
+		-- the surviving package below instead of from this blanket rollback: it may
+		-- still be following a perpetual package, which this one update cannot
+		-- express without inventing a date.
+		WHERE l.owner_uid = $1 AND l.state IN ('active','delete_pending','delete_failed')
+		  AND NOT (`+cloudWorkerSharedProfileFilter+` AND l.expiry_mode IN ('fixed','permanent','follow_plan'))`,
 		order.UID, rollbackUntil, commercialRefundMinRetentionDays); err != nil {
 		return nil, false, fmt.Errorf("roll back cloud worker lifecycles after refund: %w", err)
+	}
+	// The refunded entitlement is already revoked at this point, so this settles
+	// follow_plan workers on what the buyer really still holds: the surviving
+	// package's window, a perpetual one (no deadline), or — when nothing is left —
+	// expiry now plus a pending sync, so the worker is paused and collected
+	// instead of staying open-ended on an entitlement that no longer exists.
+	if err := settleSharedCloudWorkerFollowPlanTerms(tx, order.UID, refundedAt); err != nil {
+		return nil, false, err
 	}
 	refunded, err := scanCommercialOrder(tx.QueryRow(`
 		UPDATE commercial_orders

@@ -13,6 +13,10 @@ import (
 // worker that action creates. Matching by owner (or by tenant name) would label
 // every other worker of that owner as provisioning, and a worker with no action
 // must stay untouched so a genuinely missing one is still reported as missing.
+//
+// It also pins the term projection: a worker that already has a lifecycle row
+// reports that row's expiry_mode/sync_pending, while a still-provisioning one
+// has no row yet and must take the mode from the durable action's preview.
 func TestCloudWorkerAdminRecordsAttachOnlyExactActiveAction(t *testing.T) {
 	matcher := &recordingQueryMatcher{}
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(matcher))
@@ -28,27 +32,30 @@ func TestCloudWorkerAdminRecordsAttachOnlyExactActiveAction(t *testing.T) {
 
 	mock.ExpectQuery(`FROM commercial_ops_actions`).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"uid", "operation_id", "status", "worker_status", "runtime_plan", "worker_expires_at",
+			"uid", "operation_id", "status", "worker_status", "runtime_plan", "worker_expiry_mode", "worker_expires_at",
 		}).
-			AddRow(int64(116), operationID, "running", "running", "standard", "2026-12-19T06:00:00Z").
-			AddRow(int64(116), "queued-op", "pending", "pending", "", ""))
+			AddRow(int64(116), operationID, "running", "running", "standard", "follow_plan", "2026-12-19T06:00:00Z").
+			// An action journaled before worker_expiry_mode existed projects an
+			// empty mode: the historical default, not a mode somebody chose.
+			AddRow(int64(116), "queued-op", "pending", "pending", "", "", ""))
 
 	mock.ExpectQuery(`FROM users u`).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "owner_id", "owner_username", "owner_display_name", "username", "display_name",
 			"tenant_name", "state", "enabled", "visibility", "lifecycle_state", "package_expires_at",
 			"delete_after", "last_error", "credit_state", "credit_source_ref", "credit_expires_at",
-			"credit_runtime_plan",
+			"credit_runtime_plan", "expiry_mode", "sync_pending",
 		}).
-			// The worker the durable action is creating right now.
+			// The worker the durable action is creating right now: no lifecycle row.
 			AddRow(int64(1671), int64(116), "owner116", "Owner", provisioningName, "", provisioningName,
-				0, true, "public", nil, nil, nil, "", nil, "", nil, "").
-			// Another worker of the same owner with no action of its own.
+				0, true, "public", nil, nil, nil, "", nil, "", nil, "", "legacy", false).
+			// Another worker of the same owner with no action of its own, but with
+			// its own fixed term that still has to reach the provider.
 			AddRow(int64(1600), int64(116), "owner116", "Owner", "bot-ops-other", "", "bot-ops-other",
-				0, true, "public", nil, nil, nil, "", nil, "", nil, "").
+				0, true, "public", nil, nil, nil, "", nil, "", nil, "", "fixed", true).
 			// A second, pending action still uses its own identity.
 			AddRow(int64(1700), int64(116), "owner116", "Owner", pendingName, "", pendingName,
-				0, true, "public", nil, nil, nil, "", nil, "", nil, ""))
+				0, true, "public", nil, nil, nil, "", nil, "", nil, "", "legacy", false))
 
 	mock.ExpectQuery(`FROM cloud_worker_bindings b`).
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -77,13 +84,21 @@ func TestCloudWorkerAdminRecordsAttachOnlyExactActiveAction(t *testing.T) {
 		!provisioning.PlannedExpiresAt.Equal(time.Date(2026, 12, 19, 6, 0, 0, 0, time.UTC)) {
 		t.Fatalf("preview facts lost: %+v", provisioning)
 	}
+	if provisioning.ExpiryMode != "follow_plan" {
+		t.Fatalf("a provisioning worker must report the action's own term, got %q", provisioning.ExpiryMode)
+	}
 
 	other := byUsername["bot-ops-other"]
 	if other.OperationID != "" || other.OperationStatus != "" || other.WorkerStatus != "" || other.PlannedExpiresAt != nil {
 		t.Fatalf("owner match leaked an operation onto an unrelated worker: %+v", other)
 	}
+	if other.ExpiryMode != "fixed" || !other.SyncPending {
+		t.Fatalf("lifecycle term/sync gap lost from the admin projection: %+v", other)
+	}
 	if pending := byUsername[pendingName]; pending.OperationID != "queued-op" || pending.OperationStatus != "pending" || pending.WorkerStatus != "pending" || pending.PlannedExpiresAt != nil {
 		t.Fatalf("pending action: %+v", pending)
+	} else if pending.ExpiryMode != "legacy" {
+		t.Fatalf("an action without a mode must not invent one: %q", pending.ExpiryMode)
 	}
 
 	if len(matcher.queries) == 0 || !strings.Contains(matcher.queries[0], "WHERE status IN ('pending','running')") {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -219,5 +220,41 @@ func TestCommercialOpsCloudWorkersIsInternalReadOnlyAndAudited(t *testing.T) {
 	h.HandleCloudWorkers(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("external status=%d want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestCloudWorkerAdminOverviewExposesSharedTermJSON(t *testing.T) {
+	for _, mode := range []string{types.CloudWorkerExpiryFollowPlan, types.CloudWorkerExpiryFixed, types.CloudWorkerExpiryPermanent, types.CloudWorkerExpiryLegacy} {
+		t.Run(mode, func(t *testing.T) {
+			h, store := newCloudWorkerTestHandler("")
+			store.adminRecords = []types.CloudWorkerAdminRecord{{
+				WorkerUID: 42, OwnerUID: 7, TenantName: "bot-term-json",
+				LifecycleState: "active", ExpiryMode: mode, SyncPending: true,
+			}}
+			overview, err := h.CloudWorkerAdminOverview(time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(overview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload struct {
+				Workers []map[string]interface{} `json:"workers"`
+			}
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if len(payload.Workers) != 1 {
+				t.Fatalf("unexpected workers: %s", raw)
+			}
+			item := payload.Workers[0]
+			if item["expiry_mode"] != mode || item["sync_pending"] != true {
+				t.Fatalf("shared machine term lost in roster JSON: %s", raw)
+			}
+			if item["package_expires_at"] != nil {
+				t.Fatalf("missing deadline must remain absent for %s: %s", mode, raw)
+			}
+		})
 	}
 }

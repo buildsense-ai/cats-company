@@ -74,6 +74,16 @@ func commercialActionSnapshot(tx *sql.Tx, uid int64, now time.Time) (*types.Comm
 	if err != nil {
 		return nil, 0, err
 	}
+	// The machine-granting package is resolved by the same statement the
+	// settlement and the operator preview use, so this snapshot cannot disagree
+	// with either of them about when the account's worker expires.
+	machineTerm, err := queryCloudWorkerMachineTerm(tx, uid, now)
+	if err != nil {
+		return nil, 0, err
+	}
+	if machineTerm != nil {
+		s.CloudWorkerPackageTerm = machineTerm.packageTerm()
+	}
 	var count int
 	err = tx.QueryRow(`SELECT COUNT(*) FROM bot_config WHERE owner_id=$1 AND COALESCE(tenant_name,'')<>''`, uid).Scan(&count)
 	return s, count, err
@@ -161,6 +171,9 @@ func buildCommercialActionPreview(r types.CommercialActionRequest, s *types.Comm
 		p.DeploymentProfile = r.DeploymentProfile
 		p.BillingMode = r.BillingMode
 		p.RuntimePlan = r.RuntimePlan
+		// Empty keeps the historical preview shape (and therefore the historical
+		// preview token) for every request written before the field existed.
+		p.WorkerExpiryMode = r.WorkerExpiryMode
 		if r.Intent == "grant_plan" || r.Intent == "renew_plan" {
 			if plan != nil {
 				p.DeploymentProfile, _ = types.NormalizeCloudWorkerProfile(plan.CloudWorkerDeploymentProfile)
@@ -192,9 +205,82 @@ func buildCommercialActionPreview(r types.CommercialActionRequest, s *types.Comm
 		if p.DeploymentProfile == types.CloudWorkerPackedShared && p.RuntimePlan == "" {
 			p.RuntimePlan = types.CloudWorkerRuntimeStandard
 		}
-		if p.WorkerExpiresAt == nil || !p.WorkerExpiresAt.After(now) {
+		// An explicitly requested term replaces the derivation above. The modes
+		// exist because the derived term was wrong for two real products: a
+		// shared worker that follows its package (which may be perpetual) and a
+		// permanent grant that was never meant to expire with a package.
+		openTerm := false
+		switch r.WorkerExpiryMode {
+		case types.CloudWorkerExpiryFixed:
+			// The operator's own window: the duration / explicit-date rules below
+			// still apply unchanged, so a fixed term cannot be left dangling.
+		case types.CloudWorkerExpiryFollowPlan:
+			if p.DeploymentProfile != types.CloudWorkerPackedShared {
+				warn("跟随套餐只支持共享集群（packed_shared）机器")
+				break
+			}
+			// Which window the worker follows depends on what is being done, and in
+			// every case on a package that actually grants a machine - never on the
+			// package that governs models and quota. The two differ: a token package
+			// can outrank the machine package, and an invite can hand out a machine on
+			// a token-only plan (the rule itself lives in cloudWorkerMachineTermQuery).
+			followTerm := true
+			switch r.Intent {
+			case "grant_plan":
+				// The package being granted has to buy a machine itself; a token-only
+				// target cannot be followed into a machine term.
+				if plan == nil || !plan.CloudWorkerIncluded {
+					warn("所选套餐不含机器，不能跟随套餐")
+					followTerm = false
+					break
+				}
+				p.WorkerExpiresAt = p.ExpiresAt
+			case "renew_plan":
+				// A renewal keeps the machine the account already holds - including an
+				// invite that granted machine credits against a token-only plan - and
+				// applies the new renewal window to it.
+				if s.CloudWorkerPackageTerm == nil {
+					warn("当前没有含机器的套餐，不能跟随套餐")
+					followTerm = false
+					break
+				}
+				p.WorkerExpiresAt = p.ExpiresAt
+			default:
+				// ensure_worker / add_worker: the worker follows the machine package the
+				// account really holds, so its deadline is that package's - not the model
+				// package's, and never a free/legacy baseline that happens to have no
+				// expiry.
+				if s.CloudWorkerPackageTerm == nil {
+					warn("跟随套餐需要当前有效的含机器套餐（免费或旧版基线不算）")
+					followTerm = false
+					break
+				}
+				p.WorkerExpiresAt = s.CloudWorkerPackageTerm.ExpiresAt
+			}
+			if !followTerm {
+				break
+			}
+			if p.WorkerExpiresAt == nil {
+				openTerm = true
+				p.Warnings = append(p.Warnings, "跟随永久套餐：机器无到期时间，且不会为此购买外部 ECS")
+			} else {
+				p.Warnings = append(p.Warnings, "机器期限跟随当前套餐，套餐变更后自动同步")
+			}
+		case types.CloudWorkerExpiryPermanent:
+			if p.DeploymentProfile != types.CloudWorkerPackedShared {
+				warn("永久期限只支持共享集群（packed_shared）机器")
+				break
+			}
+			p.WorkerExpiresAt = nil
+			openTerm = true
+			p.Warnings = append(p.Warnings, "永久期限：机器无到期时间，且不会为此购买外部 ECS")
+		}
+		// An open-ended term is complete as it stands: there is no date to
+		// require, and demanding one is exactly the gap this mode closes. The term
+		// itself is already recorded in WorkerExpiryMode.
+		if !openTerm && (p.WorkerExpiresAt == nil || !p.WorkerExpiresAt.After(now)) {
 			if p.WorkerEffect != "keep_existing" {
-				warn("新机器必须有明确的未来期限；永久套餐请指定 worker_expires_at")
+				warn("新机器必须有明确的未来期限；永久套餐请指定 worker_expires_at 或 worker_expiry_mode")
 			}
 		}
 	} else if r.WorkerExpiresAt != nil {
@@ -364,7 +450,10 @@ func (a *Adapter) applyCommercialAction(r types.CommercialActionRequest) (*types
 		if p.TargetPlan != nil {
 			retention = types.CloudWorkerRetentionDays(p.TargetPlan.CloudWorkerRetentionDays, p.DurationDays)
 		}
-		if _, err = tx.Exec(`INSERT INTO cloud_worker_credits(uid,source_ref,expires_at,deployment_profile,billing_mode,runtime_plan,retention_days) VALUES($1,$2,$3,$4,$5,$6,$7)`, r.UID, types.CommercialActionSource(r.UID, r.OperationID), p.WorkerExpiresAt, p.DeploymentProfile, p.BillingMode, p.RuntimePlan, retention); err != nil {
+		// The term travels with the credit: the durable action outlives this
+		// transaction, and an operator-requested permanent/follow_plan term must
+		// not be re-derived (as a package window) when the worker is provisioned.
+		if _, err = tx.Exec(`INSERT INTO cloud_worker_credits(uid,source_ref,expires_at,deployment_profile,billing_mode,runtime_plan,retention_days,expiry_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, r.UID, types.CommercialActionSource(r.UID, r.OperationID), p.WorkerExpiresAt, p.DeploymentProfile, p.BillingMode, p.RuntimePlan, retention, types.CloudWorkerExpiryModeOrDefault(p.WorkerExpiryMode)); err != nil {
 			return nil, err
 		}
 	}

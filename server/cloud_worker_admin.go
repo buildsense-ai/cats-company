@@ -71,6 +71,8 @@ type cloudWorkerAdminItem struct {
 	LifecycleState     string     `json:"lifecycle_state,omitempty"`
 	PackageExpiresAt   *time.Time `json:"package_expires_at,omitempty"`
 	DeleteAfter        *time.Time `json:"delete_after,omitempty"`
+	ExpiryMode         string     `json:"expiry_mode,omitempty"`
+	SyncPending        bool       `json:"sync_pending,omitempty"`
 	LifecycleLastError string     `json:"lifecycle_last_error,omitempty"`
 	CreditState        string     `json:"credit_state,omitempty"`
 	CreditSourceRef    string     `json:"credit_source_ref,omitempty"`
@@ -242,6 +244,8 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 			LifecycleState:     record.LifecycleState,
 			PackageExpiresAt:   record.PackageExpiresAt,
 			DeleteAfter:        record.DeleteAfter,
+			ExpiryMode:         record.ExpiryMode,
+			SyncPending:        record.SyncPending,
 			LifecycleLastError: record.LifecycleLastError,
 			CreditState:        record.CreditState,
 			CreditSourceRef:    record.CreditSourceRef,

@@ -15,6 +15,7 @@ type commercialOpsActiveAction struct {
 	OperationStatus  string
 	WorkerStatus     string
 	RuntimePlan      string
+	ExpiryMode       string
 	PlannedExpiresAt *time.Time
 }
 
@@ -27,6 +28,7 @@ func (a *Adapter) activeCommercialOpsActions() (map[string]commercialOpsActiveAc
 	rows, err := a.db.Query(`
 		SELECT uid, operation_id, status, worker_status,
 		       COALESCE(preview->>'runtime_plan', ''),
+		       COALESCE(preview->>'worker_expiry_mode', ''),
 		       COALESCE(preview->>'worker_expires_at', '')
 		FROM commercial_ops_actions
 		WHERE status IN ('pending','running')
@@ -40,7 +42,7 @@ func (a *Adapter) activeCommercialOpsActions() (map[string]commercialOpsActiveAc
 		var uid int64
 		var action commercialOpsActiveAction
 		var planned string
-		if err := rows.Scan(&uid, &action.OperationID, &action.OperationStatus, &action.WorkerStatus, &action.RuntimePlan, &planned); err != nil {
+		if err := rows.Scan(&uid, &action.OperationID, &action.OperationStatus, &action.WorkerStatus, &action.RuntimePlan, &action.ExpiryMode, &planned); err != nil {
 			return nil, fmt.Errorf("scan active commercial action: %w", err)
 		}
 		if planned != "" {
@@ -87,7 +89,13 @@ func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord,
 		       credit.state,
 		       COALESCE(credit.source_ref, ''),
 		       credit.expires_at,
-		       COALESCE(credit.runtime_plan, '')
+		       COALESCE(credit.runtime_plan, ''),
+		       -- The term and the sync gap belong on the operator view: a worker
+		       -- whose provider still has to be reconciled looks healthy here
+		       -- otherwise, and the term is what explains its dates (or their
+		       -- absence).
+		       COALESCE(l.expiry_mode, 'legacy'),
+		       COALESCE(l.sync_pending, FALSE)
 		FROM users u
 		JOIN bot_config b ON b.user_id = u.id
 		LEFT JOIN users owner ON owner.id = b.owner_id
@@ -131,6 +139,8 @@ func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord,
 			&creditSourceRef,
 			&creditExpiresAt,
 			&creditRuntimePlan,
+			&record.ExpiryMode,
+			&record.SyncPending,
 		); err != nil {
 			return nil, fmt.Errorf("scan cloud worker admin record: %w", err)
 		}
@@ -160,6 +170,13 @@ func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord,
 			record.PlannedExpiresAt = action.PlannedExpiresAt
 			if action.RuntimePlan != "" {
 				record.RuntimePlan = action.RuntimePlan
+			}
+			// A worker that is still provisioning has no lifecycle row yet, so the
+			// only source for its term is the durable action's own preview. Actions
+			// journaled before the field existed project an empty mode, which reads
+			// as the historical default rather than as a mode nobody chose.
+			if action.ExpiryMode != "" {
+				record.ExpiryMode = action.ExpiryMode
 			}
 		}
 		record.Provider = "ctyun"
