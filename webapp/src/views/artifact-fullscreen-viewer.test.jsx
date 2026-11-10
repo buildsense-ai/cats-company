@@ -429,6 +429,34 @@ describe('ArtifactFullscreenViewer', () => {
     expect(mocks.createArtifactTask).not.toHaveBeenCalled();
   });
 
+  it.each(['/by-agent/440/risk-register/v2/', '/artifacts/risk-register/v2/'])('never embeds a static artifact from the guest catalog: %s', async (path) => {
+    mocks.listArtifactApps.mockRejectedValue(Object.assign(new Error('forbidden'), { status: 403 }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ apps: [
+      { id: 'risk-register', url: `https://artifact.catsco.cc${path}` },
+    ] }) }));
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={{ ...location, search: '?mode=gateway&topic=p2p_1_440&agent=440&artifact=risk-register' }} />);
+      await flushPromises(20);
+    });
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(mocks.connectWS).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 403, 404])('keeps a refused static fullscreen artifact closed without consulting the guest catalog (%s)', async status => {
+    mocks.getCloudArtifacts.mockRejectedValue(Object.assign(new Error('refused'), { status }));
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={location} />);
+      await flushPromises(20);
+    });
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.requestArtifactLaunch).not.toHaveBeenCalled();
+  });
+
   it('still fails closed when the platform refuses and the application is not public', async () => {
     const refusal = Object.assign(new Error('forbidden'), { status: 403 });
     mocks.listArtifactApps.mockRejectedValue(refusal);

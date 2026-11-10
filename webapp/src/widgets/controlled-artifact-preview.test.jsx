@@ -4,6 +4,17 @@ import { Simulate } from 'react-dom/test-utils';
 import { ARTIFACT_FRAME_BRIDGE_CONTRACT } from '../artifact-context';
 import ControlledArtifactPreview from './controlled-artifact-preview';
 
+vi.mock('../auth-session', () => ({
+  getToken: () => 'artifact-user',
+  getAuthRevision: () => 1,
+  isCurrentAuthSession: (token, revision) => token === 'artifact-user' && revision === 1,
+  request: vi.fn(async (_method, _path, body) => {
+    const url = new URL(body.url);
+    url.searchParams.set('media_token', 'scoped');
+    return { url: url.href, expires_in: 900 };
+  }),
+}));
+
 let container;
 let root;
 
@@ -52,6 +63,8 @@ test('reports a bound cross-origin Artifact only after its iframe loads', async 
     agentUid: 440,
     url: file.url,
   }));
+  expect(frame.src).toContain('media_token=scoped');
+  expect(frame.hasAttribute('credentialless')).toBe(false);
 });
 
 test('invalidates a cross-origin binding after a second document load', async () => {
@@ -103,13 +116,30 @@ test('uses the opaque bridge once and rejects a later same-origin document load'
 
   const frame = container.querySelector('iframe');
   expect(frame.src).toContain('catsco_bridge_nonce=');
+  const transport = new URL(frame.src);
+  expect(transport.searchParams.get('media_token')).toBe('scoped');
+  expect(sameOriginFile.url).not.toContain('media_token');
   await act(async () => Simulate.load(frame));
   expect(onBindingChange).toHaveBeenLastCalledWith(expect.objectContaining({
     bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
     bridgeReady: true,
+    url: sameOriginFile.url,
+    bridgeNonce: new URLSearchParams(transport.hash.slice(1)).get('catsco_bridge_nonce'),
   }));
 
   await act(async () => Simulate.load(frame));
   expect(onError).toHaveBeenCalledWith('artifact_frame_navigated');
   expect(onBindingChange).toHaveBeenLastCalledWith(null);
+});
+
+test('preserves gateway launch URLs without a static media exchange', async () => {
+  const { request } = await import('../auth-session');
+  request.mockClear();
+  const url = 'https://artifact.catsco.cc/_launch/one-time-code?next=/lesson/';
+  await act(async () => root.render(
+    <ControlledArtifactPreview file={{ ...file, url }}
+      descriptor={{ isRemoteArtifact: true, url }} />,
+  ));
+  expect(container.querySelector('iframe').src).toBe(url);
+  expect(request).not.toHaveBeenCalled();
 });

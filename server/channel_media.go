@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/openchat/openchat/server/store"
 )
 
 type channelMediaDownload struct {
@@ -22,6 +24,19 @@ func (m *channelMediaDownload) Close() error {
 		return nil
 	}
 	return m.Body.Close()
+}
+
+// saveOwnedChannelMediaUpload records provenance at the trusted byte-ingestion
+// boundary, before a channel message can reference the newly generated key.
+func saveOwnedChannelMediaUpload(ctx context.Context, db store.Store, ownerUID int64, storage UploadStorage, baseDir, uploadType string, media *channelMediaDownload) (uploadPayload, error) {
+	file, err := saveChannelMediaUploadWithStorage(ctx, storage, baseDir, uploadType, media)
+	if err != nil {
+		return uploadPayload{}, err
+	}
+	if err := NewFileAccessService(db, nil).RecordUpload(ctx, ownerUID, file.URL); err != nil {
+		return uploadPayload{}, err
+	}
+	return file, nil
 }
 
 func saveChannelMediaUpload(uploadType string, media *channelMediaDownload) (uploadPayload, error) {

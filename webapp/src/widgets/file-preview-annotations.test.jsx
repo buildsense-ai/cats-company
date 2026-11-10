@@ -2,7 +2,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../api', () => ({ resolveMediaURL: value => value }));
+vi.mock('../api', async importOriginal => ({ resolveMediaURL: (await importOriginal()).resolveMediaURL }));
 vi.mock('./file-annotation-editor', () => ({
   default: ({ source, kind, onModeChange }) => (
     <button data-testid="file-editor" data-kind={kind} data-source={JSON.stringify(source)}
@@ -13,7 +13,7 @@ vi.mock('./mobile-pdf-preview', () => ({
   default: ({ annotationMode }) => <canvas data-testid="pdf-reader" data-mode={String(annotationMode)} />,
 }));
 vi.mock('./avatar', () => ({ default: () => <span /> }));
-import ChatMessage, { FilePreviewPanel, fileAnnotationSourceForPreview, previewFileDescriptor } from './chat-message';
+import ChatMessage, { FilePreviewPanel, fileAnnotationSourceForPreview, fileMediaMessageIdForPreview, previewFileDescriptor } from './chat-message';
 
 let container;
 let root;
@@ -133,5 +133,53 @@ describe('file preview source and annotation integration', () => {
     await act(async () => root.render(<FilePreviewPanel file={{ ...image, annotation_source: { topic_id: 'p2p_7_9', message_id: 42, attachment_index: 0 } }} annotationApi={{}} />));
     expect(container.querySelector('[data-testid="file-editor"]').dataset.kind).toBe('image');
     expect(container.querySelector('img').dataset.fileAnnotationSurface).toBe('image');
+  });
+  it.each([
+    ['image', image, 'img'],
+    ['file', video, 'video'],
+    ['voice', { name: 'voice.mp3', url: '/uploads/files/voice.mp3', mime_type: 'audio/mpeg' }, 'audio'],
+    ['file', { name: 'report.pdf', url: '/uploads/files/report.pdf' }, 'a[title="下载"]'],
+  ])('carries the real message read hint to native %s media and downloads without mutating payloads', async (type, payload, selector) => {
+    const original = { id: 41, topic_id: 'p2p_7_9', msg_type: type, content_blocks: [{ type, payload }] };
+    const merged = { ...message(), id: 99, content_blocks: [{ type, payload }], _display_source_messages: [original] };
+    const before = JSON.stringify(merged);
+    const onPreviewFile = vi.fn();
+    await act(async () => root.render(<ChatMessage message={merged} isSelf={false} onPreviewFile={onPreviewFile} />));
+    const media = container.querySelector(selector);
+    const url = new URL(media.src || media.href);
+    expect(url.searchParams.get('message_id')).toBe('41');
+    expect(JSON.stringify(merged)).toBe(before);
+    expect(payload.url).not.toContain('message_id');
+    if (type === 'file' && selector.startsWith('a')) {
+      await act(async () => container.querySelector('button[title="预览文件"]').click());
+      const preview = onPreviewFile.mock.calls[0][0];
+      expect(preview.message_id).toBe(41);
+      expect(preview.url).toBe(payload.url);
+      expect(previewFileDescriptor(preview).url).toContain('message_id=41');
+      expect(previewFileDescriptor(preview).key).toBe(previewFileDescriptor(payload).key);
+    }
+  });
+  it('supports legacy voice hints and declines pending or ambiguous sources', () => {
+    const payload = { url: '/uploads/files/voice.mp3', mime_type: 'audio/mpeg' };
+    const legacy = { id: 41, msg_type: 'voice', content: JSON.stringify({ type: 'voice', payload }) };
+    expect(fileMediaMessageIdForPreview(legacy, payload)).toBe(41);
+    expect(fileMediaMessageIdForPreview({ ...legacy, _pending: true }, payload)).toBeUndefined();
+    const merged = { _display_source_messages: [legacy, { ...legacy, id: 42 }] };
+    expect(fileMediaMessageIdForPreview(merged, { ...payload })).toBeUndefined();
+  });
+  it('extracts historical video message hints from persisted blocks', () => {
+    const payload = { name: 'clip.mp4', url: '/uploads/files/clip.mp4', mime_type: 'video/mp4' };
+    const original = { id: 41, msg_type: 'video', content_blocks: [{ type: 'video', payload }] };
+    expect(fileMediaMessageIdForPreview(original, payload)).toBe(41);
+    expect(fileMediaMessageIdForPreview({ ...original, _streaming: true }, payload)).toBeUndefined();
+  });
+  it('uses a historical hint for text preview fetches while keeping the file identity canonical', async () => {
+    const fetcher = vi.fn(async () => ({ ok: true, headers: { get: () => null }, text: async () => 'Historical report' }));
+    vi.stubGlobal('fetch', fetcher);
+    const file = { name: 'report.txt', url: '/uploads/files/report.txt', message_id: 41 };
+    await act(async () => root.render(<FilePreviewPanel file={file} />));
+    expect(fetcher.mock.calls[0][0]).toContain('/uploads/files/report.txt?message_id=41');
+    expect(container.textContent).toContain('Historical report');
+    expect(file.url).toBe('/uploads/files/report.txt');
   });
 });

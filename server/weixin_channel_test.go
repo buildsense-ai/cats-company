@@ -697,7 +697,7 @@ func TestWeixinTextMessageDeliversToBoundAgent(t *testing.T) {
 
 func TestWeixinImageMessageDeliversAttachmentBlocks(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
-	db := newChannelAgentTestStore()
+	db := newLegacyChannelPrivacyStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
 	db.users[8] = &types.User{ID: 8, Username: "weixin-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
@@ -755,7 +755,7 @@ func TestWeixinImageMessageDeliversAttachmentBlocks(t *testing.T) {
 
 func TestWeixinVoiceMessageDeliversAudioBlock(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
-	db := newChannelAgentTestStore()
+	db := newLegacyChannelPrivacyStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
 	db.users[8] = &types.User{ID: 8, Username: "weixin-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
@@ -811,7 +811,7 @@ func TestWeixinVoiceMessageDeliversAudioBlock(t *testing.T) {
 
 func TestWeixinGroupMobileVoiceMessageDeliversAudioBlock(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
-	db := newChannelAgentTestStore()
+	db := newLegacyChannelPrivacyStore()
 	db.users[85] = &types.User{ID: 85, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[453] = &types.User{ID: 453, Username: channelActorUsername("weixin", "wx_app", "openid-group-mobile"), DisplayName: "Weixin Mobile User", AccountType: types.AccountHuman}
 	db.groups[500] = &types.Group{ID: 500, Name: "Project Group", OwnerID: 85}
@@ -1858,7 +1858,7 @@ func TestWeixinClawBotVoiceWithoutTranscriptUsesVoiceFallback(t *testing.T) {
 
 func TestWeixinClawBotPollDeliversTextAndFileAttachmentBlocks(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
-	db := newChannelAgentTestStore()
+	db := newLegacyChannelPrivacyStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[9] = &types.User{ID: 9, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "virtual-catsco", DisplayName: "Virtual Catsco", AccountType: types.AccountBot}
@@ -1886,7 +1886,7 @@ func TestWeixinClawBotPollDeliversTextAndFileAttachmentBlocks(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed token: %v", err)
 	}
-	seedClawBotAgentBinding(t, db, tokenHash, "wx-user-1", 9, 43, entry)
+	seedClawBotAgentBinding(t, db.channelAgentTestStore, tokenHash, "wx-user-1", 9, 43, entry)
 	fileURL := "https://media.example/contract.pdf"
 	api := &fakeWeixinClawBotAPI{
 		updates: &weixinClawBotUpdates{
@@ -1942,7 +1942,7 @@ func TestWeixinClawBotPollDeliversTextAndFileAttachmentBlocks(t *testing.T) {
 
 func TestWeixinClawBotPollDeliversPureImageAttachmentBlocks(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
-	db := newChannelAgentTestStore()
+	db := newLegacyChannelPrivacyStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[9] = &types.User{ID: 9, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "virtual-catsco", DisplayName: "Virtual Catsco", AccountType: types.AccountBot}
@@ -1970,7 +1970,7 @@ func TestWeixinClawBotPollDeliversPureImageAttachmentBlocks(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed token: %v", err)
 	}
-	seedClawBotAgentBinding(t, db, tokenHash, "wx-user-1", 9, 43, entry)
+	seedClawBotAgentBinding(t, db.channelAgentTestStore, tokenHash, "wx-user-1", 9, 43, entry)
 	imageURL := "https://media.example/photo.jpg"
 	api := &fakeWeixinClawBotAPI{
 		updates: &weixinClawBotUpdates{
@@ -2200,7 +2200,7 @@ func TestWeixinClawBotPollDeliversDownloadFailureSummary(t *testing.T) {
 
 func TestWeixinClawBotPollDeliversGroupImageAttachmentBlocks(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
-	db := newChannelAgentTestStore()
+	db := newLegacyChannelPrivacyStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[9] = &types.User{ID: 9, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "virtual-catsco", DisplayName: "Virtual Catsco", AccountType: types.AccountBot}

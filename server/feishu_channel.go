@@ -913,7 +913,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		if download.ContentType == "" {
 			download.ContentType = media.ContentType
 		}
-		file, err := saveChannelMediaUploadWithStorage(ctx, h.storage, h.baseDir, media.UploadType, download)
+		file, err := saveOwnedChannelMediaUpload(ctx, h.db, groupBinding.CanonicalUID, h.storage, h.baseDir, media.UploadType, download)
 		if err != nil {
 			log.Printf("save feishu group media failed: %v", err)
 			return h.replyToFeishu(ctx, replyIDType, replyID, "保存飞书图片、文件或语音失败，请稍后重试。")
@@ -958,7 +958,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		if download.ContentType == "" {
 			download.ContentType = media.ContentType
 		}
-		file, err := saveChannelMediaUploadWithStorage(ctx, h.storage, h.baseDir, media.UploadType, download)
+		file, err := saveOwnedChannelMediaUpload(ctx, h.db, channelBindingConversationActorUID(binding, actorUID), h.storage, h.baseDir, media.UploadType, download)
 		if err != nil {
 			log.Printf("save feishu media failed: %v", err)
 			return h.replyToFeishu(ctx, replyIDType, replyID, "保存飞书图片、文件或语音失败，请稍后重试。")
@@ -1063,7 +1063,7 @@ func (h *FeishuChannelHandler) handleFeishuNativeGroupMessage(ctx context.Contex
 	if download.ContentType == "" {
 		download.ContentType = media.ContentType
 	}
-	file, err := saveChannelMediaUploadWithStorage(ctx, h.storage, h.baseDir, media.UploadType, download)
+	file, err := saveOwnedChannelMediaUpload(ctx, h.db, messageActorUID, h.storage, h.baseDir, media.UploadType, download)
 	if err != nil {
 		return true, err
 	}

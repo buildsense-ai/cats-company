@@ -12,15 +12,138 @@ export const DIRECT_HOST_PORT = 19990;
 
 const scriptPath = fileURLToPath(import.meta.url);
 const HEALTH_PATH = "/__artifact_health";
-const STATIC_PREFIX = "/artifacts";
 
 export function createDirectHostServer(options = {}) {
   const root = path.resolve(requiredText(options.root, "static root"));
   const port = positivePort(options.port, DIRECT_HOST_PORT);
+  const authorization = authorizationOptions(options);
   const rootId = rootIdentifier(root);
   return http.createServer((request, response) => {
-    void handleRequest({ request, response, root, rootId, port });
+    void handleRequest({ request, response, root, rootId, port, authorization });
   });
+}
+
+function authorizationOptions(options) {
+  const secret = String(options.originSecret ?? process.env.CATSCO_ARTIFACT_ORIGIN_SECRET ?? "").trim();
+  const rawUrl = String(options.authorizationUrl ?? process.env.CATSCO_ARTIFACT_AUTHORIZATION_URL ?? "").trim();
+  if (!/^[A-Za-z0-9_-]{32,256}$/.test(secret) || !rawUrl) return null;
+  const url = new URL(rawUrl);
+  const loopback = ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname);
+  if ((url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
+    || url.username || url.password || url.search || url.hash) {
+    throw new Error("Artifact authorization URL must be a fixed HTTPS endpoint (HTTP allowed on loopback only)");
+  }
+  const publicBase = String(options.publicOrigin ?? process.env.CATSCO_ARTIFACT_PUBLIC_BASE_URL ?? "").trim();
+  if (!publicBase) return null;
+  const base = new URL(publicBase);
+  if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash
+    || !/^(?:\/artifacts(?:\/by-agent\/[1-9][0-9]*)?|\/by-agent(?:\/[1-9][0-9]*)?)?\/?$/.test(base.pathname)) {
+    throw new Error("Artifact public base must use HTTPS and a supported artifact namespace");
+  }
+  const namespace = base.pathname.replace(/\/$/, "") || "/artifacts";
+  const mount = namespace.startsWith("/artifacts") ? "/artifacts" : "";
+  return { secret, origin: base.origin, namespace, mount, url: url.href, fetchImpl: options.fetchImpl || fetch };
+}
+
+async function authorizeRequest(request, requestUrl, authorization) {
+  if (!authorization) return 503;
+  const supplied = Buffer.from(String(request.headers["x-catsco-artifact-origin-secret"] || ""));
+  const expected = Buffer.from(authorization.secret);
+  if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return 404;
+  const origin = authorization.origin;
+  if (!requestUrl.pathname.startsWith(`${authorization.namespace}/`)) return 404;
+  // Never forward credentials to a URL supplied by the visitor or a redirect.
+  const callback = new URL(authorization.url);
+  callback.searchParams.set("path", requestUrl.pathname);
+  callback.searchParams.set("origin", origin);
+  const messageID = requestUrl.searchParams.get("message_id");
+  if (messageID !== null) callback.searchParams.set("message_id", messageID);
+  const headers = { "X-Catsco-Artifact-Origin-Secret": authorization.secret };
+  const mediaToken = artifactMediaToken(request, requestUrl);
+  if (requestUrl.searchParams.has("media_token") && !validMediaToken(mediaToken, requestUrl, authorization)) return 404;
+  if (!requestUrl.searchParams.has("media_token") && request.headers.authorization) {
+    // Ordinary reads honor explicit identity even when another account's
+    // scoped cookie is present. A failed header must never fall back to it.
+    headers.Authorization = request.headers.authorization;
+  } else if (mediaToken) {
+    // Establish a cookie only when this exact token was validated, never
+    // because a separate platform credential succeeded.
+    if (!validMediaToken(mediaToken, requestUrl, authorization)) return 404;
+    headers["X-Catsco-Artifact-Media"] = mediaToken;
+  } else {
+    if (request.headers.cookie) headers.Cookie = request.headers.cookie;
+    if (request.headers.authorization) headers.Authorization = request.headers.authorization;
+  }
+  try {
+    const result = await authorization.fetchImpl(callback.href, {
+      method: "GET", headers, redirect: "error", signal: AbortSignal.timeout(5_000)
+    });
+    const status = result.status;
+    await result.body?.cancel();
+    if (status !== 204) return status >= 500 ? 503 : 404;
+    // Independently refuse aggregate indexes and ambiguous path layouts, even
+    // if an incorrectly configured auth endpoint returns success for them.
+    const rawPath = String(request.url || "").split("?")[0];
+    if (rawPath !== requestUrl.pathname || !artifactPathParts(requestUrl.pathname, authorization.mount)) return 404;
+    return 204;
+  } catch {
+    return 503;
+  }
+}
+
+function artifactMediaToken(request, requestUrl) {
+  const query = requestUrl.searchParams.get("media_token");
+  if (query) return query;
+  for (const cookie of String(request.headers.cookie || "").split(";")) {
+    const match = cookie.trim().match(/^catsco_artifact_media=([A-Za-z0-9_.-]+)$/);
+    if (match) return match[1];
+  }
+  return "";
+}
+
+function validMediaToken(token, requestUrl, authorization) {
+  if (!token || token.length > 8192 || !/^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/.test(token)) return false;
+  const parts = artifactPathParts(requestUrl.pathname, authorization.mount);
+  if (!parts) return false;
+  const scope = `artifact:${authorization.origin}${parts.resourcePath}`;
+  return token.split(".")[0] === Buffer.from(scope).toString("base64url");
+}
+
+function establishArtifactCookie(requestUrl, response, authorization) {
+  if (!requestUrl.searchParams.has("media_token")) return false;
+  const token = requestUrl.searchParams.get("media_token");
+  const { resourcePath } = artifactPathParts(requestUrl.pathname, authorization.mount);
+  response.setHeader("Set-Cookie", `catsco_artifact_media=${token}; Path=${resourcePath}; HttpOnly; Secure; SameSite=None; Max-Age=600`);
+  requestUrl.searchParams.delete("media_token");
+  response.writeHead(303, { Location: `${requestUrl.pathname}${requestUrl.search}` }).end();
+  return true;
+}
+
+function artifactPathParts(escapedPath, mount = "/artifacts") {
+  let decoded;
+  try { decoded = decodeURIComponent(escapedPath); } catch { return null; }
+  if (!decoded.startsWith(`${mount}/`) || /[\\\0\r\n%?#]/.test(decoded)) return null;
+  const all = decoded.slice(mount.length + 1).replace(/\/$/, "").split("/");
+  if (all.some(part => !part || part === "." || part === "..")) return null;
+  const start = all[0] === "by-agent" ? 2 : 0;
+  if (start && (all.length < 3 || !/^[1-9][0-9]*$/.test(all[1]) || BigInt(all[1]) > 9223372036854775807n)) return null;
+  if (!mount && !start) return null;
+  if (!/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(all[start]) || all[start].length > 64
+    || ["artifacts-index.json", "by-agent"].includes(all[start])) return null;
+  return { resourcePath: `${mount}/${all.slice(0, start + 1).join("/")}` };
+}
+
+function realPathStaysInsideArtifact(target, root, relative) {
+  try {
+    const parts = relative.split("/");
+    const prefix = parts[0] === "by-agent" ? parts.slice(0, 3) : parts.slice(0, 1);
+    const artifactRoot = path.resolve(fs.realpathSync(root), ...prefix);
+    // The artifact directory itself must not alias a different artifact.
+    return fs.realpathSync(path.resolve(root, ...prefix)) === artifactRoot
+      && isInsideOrEqual(fs.realpathSync(target), artifactRoot);
+  } catch {
+    return false;
+  }
 }
 
 export async function waitForDirectHostHealth(options = {}) {
@@ -59,8 +182,12 @@ export async function waitForDirectHostHealth(options = {}) {
   throw new Error(`Artifact static service did not become ready: ${lastError}`);
 }
 
-async function handleRequest({ request, response, root, rootId, port }) {
+async function handleRequest({ request, response, root, rootId, port, authorization }) {
   try {
+    response.setHeader("Cache-Control", "no-store");
+    response.setHeader("Vary", "Cookie, Authorization");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Referrer-Policy", "no-referrer");
     if (!["GET", "HEAD"].includes(request.method || "")) {
       send(response, 405, "Method Not Allowed", {
         Allow: "GET, HEAD",
@@ -77,6 +204,8 @@ async function handleRequest({ request, response, root, rootId, port }) {
         service: DIRECT_HOST_SERVICE_NAME,
         pid: process.pid,
         port,
+        privacy_enforced: true,
+        authorization_configured: Boolean(authorization),
         root_id: rootId
       })}\n`);
       send(response, 200, body, {
@@ -86,27 +215,27 @@ async function handleRequest({ request, response, root, rootId, port }) {
       return;
     }
 
-    if (requestUrl.pathname === STATIC_PREFIX) {
-      response.writeHead(308, { Location: `${STATIC_PREFIX}/` }).end();
-      return;
-    }
-    if (!requestUrl.pathname.startsWith(`${STATIC_PREFIX}/`)) {
-      send(response, 404, "Not Found", {
+    // Authorize before filesystem metadata, redirects, HEAD or Range handling.
+    // The health response above contains no artifact data.
+    const authorized = await authorizeRequest(request, requestUrl, authorization);
+    if (authorized !== 204) {
+      send(response, authorized, authorized === 503 ? "Service Unavailable" : "Not Found", {
         "Content-Type": "text/plain; charset=utf-8"
       }, request.method);
       return;
     }
+    if (establishArtifactCookie(requestUrl, response, authorization)) return;
 
     let relative;
     try {
-      relative = decodeURIComponent(requestUrl.pathname.slice(STATIC_PREFIX.length + 1));
+      relative = decodeURIComponent(requestUrl.pathname.slice(authorization.mount.length + 1));
     } catch {
       send(response, 400, "Bad Request", {
         "Content-Type": "text/plain; charset=utf-8"
       }, request.method);
       return;
     }
-    if (relative.includes("\0")) {
+    if (relative.includes("\0") || relative.includes("\\") || relative.includes("%")) {
       send(response, 400, "Bad Request", {
         "Content-Type": "text/plain; charset=utf-8"
       }, request.method);
@@ -127,6 +256,10 @@ async function handleRequest({ request, response, root, rootId, port }) {
       return;
     }
 
+    if (!realPathStaysInside(target, root) || !realPathStaysInsideArtifact(target, root, relative)) {
+      send(response, 404, "Not Found", { "Content-Type": "text/plain; charset=utf-8" }, request.method);
+      return;
+    }
     let stat = fs.statSync(target);
     if (stat.isDirectory()) {
       if (!requestUrl.pathname.endsWith("/")) {
@@ -144,7 +277,8 @@ async function handleRequest({ request, response, root, rootId, port }) {
       }
       stat = fs.statSync(target);
     }
-    if (!stat.isFile() || !realPathStaysInside(target, root)) {
+    if (!stat.isFile() || !realPathStaysInside(target, root)
+      || !realPathStaysInsideArtifact(target, root, relative)) {
       send(response, 404, "Not Found", {
         "Content-Type": "text/plain; charset=utf-8"
       }, request.method);
