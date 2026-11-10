@@ -1364,6 +1364,7 @@ html[data-theme='dark'] .cc-skillhub-card-illustration[data-icon-key='test'] { -
 .cc-skillhub-card-footer button { min-width: 76px; }
 .cc-skillhub-library-status { display: flex; align-items: center; gap: 6px; padding: 10px 20px 0; color: var(--cc-muted); font-size: 11px; }
 .cc-skillhub-library-alert { margin: 12px 20px 0; }
+.cc-skillhub-addition-notice { margin: 0 0 14px; color: var(--cc-muted); font-size: 12px; line-height: 1.6; }
 .cc-skillhub-page button.added { border-color: var(--cc-border); background: var(--cc-selected); color: var(--cc-accent-text); }
 .cc-skillhub-custom { padding: 20px; }
 .cc-skillhub-custom-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: start; }

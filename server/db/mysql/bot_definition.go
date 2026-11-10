@@ -240,9 +240,12 @@ func (a *Adapter) updateBotDefinition(
 	if err != nil {
 		return nil, fmt.Errorf("decode bot definition: %w", err)
 	}
-	if err := update(record, time.Now().UTC().Format(time.RFC3339)); err != nil {
+	previousSkills := append([]types.BotSkillRef(nil), record.Definition.Skills...)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := update(record, now); err != nil {
 		return nil, err
 	}
+	store.RecordBotSkillAdditions(record, previousSkills, now)
 	next, err := store.EncodeBotDefinitionJSON(raw, record)
 	if err != nil {
 		return nil, fmt.Errorf("encode bot definition: %w", err)

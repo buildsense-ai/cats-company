@@ -2291,7 +2291,21 @@ describe('SkillHubView', () => {
     await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
     expect([...container.querySelectorAll('.cc-skillhub-card h3')].map(el => el.textContent))
       .toEqual(['tools/new', 'tools/old', 'tools/legacy-new', 'tools/legacy-old']);
+    expect(container.querySelector('.cc-skillhub-addition-notice')?.textContent).toContain('2 项能力尚无添加时间记录');
+    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-sort-trigger')); });
+    await act(async () => { Simulate.click([...document.querySelectorAll('[role="option"]')].find(el => el.textContent.includes('最早添加'))); });
+    expect([...container.querySelectorAll('.cc-skillhub-card h3')].map(el => el.textContent))
+      .toEqual(['tools/old', 'tools/new', 'tools/legacy-new', 'tools/legacy-old']);
     expect(container.querySelector('.cc-skillhub-card-runtime')).toBeNull();
+  });
+
+  it('explains unchanged time sorting for an entirely undated Agent inventory', async () => {
+    await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
+    expect(container.querySelector('.cc-skillhub-addition-notice')?.textContent)
+      .toContain('切换最近／最早添加不会改变顺序');
+    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-sort-trigger')); });
+    await act(async () => { Simulate.click([...document.querySelectorAll('[role="option"]')].find(el => el.textContent.includes('名称 A → Z'))); });
+    expect(container.querySelector('.cc-skillhub-addition-notice')).toBeNull();
   });
 
   it('persists successful additions and shows them first after returning to the overview', async () => {

@@ -252,7 +252,9 @@ func ApplyBotSkillMutationDefinition(
 		return ErrBotSkillMutationStateConflict
 	}
 
+	previousSkills := record.Definition.Skills
 	record.Definition.Skills = skills
+	RecordBotSkillAdditions(record, previousSkills, now.UTC().Format(time.RFC3339Nano))
 	if record.Definition.Model.Kind == "" {
 		record.Definition.Model = types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"}
 	}

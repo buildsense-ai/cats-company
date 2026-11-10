@@ -184,6 +184,9 @@ func TestApplyBotSkillMutationDefinitionCreatesWithoutOverwriting(t *testing.T) 
 	if len(record.Definition.Skills) != 1 || record.Definition.Skills[0] != after || record.Runtime.DesiredRevision != 5 {
 		t.Fatalf("unexpected created definition: %+v", record)
 	}
+	if record.SkillAddedAt[after.SkillID] != now.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("mutation create lost addition date: %v", record.SkillAddedAt)
+	}
 
 	duplicate := &types.BotDefinitionRecord{
 		Definition: types.BotDefinition{Skills: []types.BotSkillRef{after}},

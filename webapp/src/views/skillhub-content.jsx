@@ -354,8 +354,16 @@ function AddedSkills(props) {
   });
   const visibleSkillCount = visibleSkills.length;
   const totalSkillCount = formalSkills.length + localOnlySkills.length;
+  const unknownAdditionCount = visibleSkills.filter(skill => !skillAddedTimestamp(skill)).length;
   return (
     <section id='skillhub-added-panel' data-loading-region='' className='cc-skillhub-surface cc-skillhub-added' role='tabpanel' aria-labelledby='skillhub-added-tab'>
+      {!loadingDefinition && props.sortOrders.added.startsWith('time-') && unknownAdditionCount > 0 && (
+        <p className='cc-skillhub-addition-notice' role='status'>
+          {unknownAdditionCount === visibleSkillCount
+            ? '这些能力尚无添加时间记录，暂按名称排序；切换最近／最早添加不会改变顺序。'
+            : `${unknownAdditionCount} 项能力尚无添加时间记录，放在末尾并按名称排序。`}
+        </p>
+      )}
       {selectedBotUID && !loadingDefinition && definition.skills.length > 0 && (normalizedQuery || updatesOnly) && (
         <span className='cc-visually-hidden cc-skillhub-added-search-count' role='status'>{visibleSkillCount} / {totalSkillCount}</span>
       )}
