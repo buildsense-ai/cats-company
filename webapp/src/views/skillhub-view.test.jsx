@@ -2278,7 +2278,7 @@ describe('SkillHubView', () => {
     expect(container.textContent).toContain('Skills 目录');
   });
 
-  it('orders overview cards by addition time and retains server order for legacy references', async () => {
+  it('orders overview cards by addition time and uses names for undated legacy references', async () => {
     const reference = (skillId, addedAt) => ({ source: 'skillhub', skillId, version: '1.0.0', contentHash: 'a'.repeat(64), ...(addedAt ? { addedAt } : {}) });
     api.getBotDefinitionSkills.mockResolvedValue({ botId: '42', revision: 3, skills: [
       reference('tools/old', '2026-09-01'), reference('tools/new', '2026-10-01'),
@@ -2290,7 +2290,7 @@ describe('SkillHubView', () => {
     ] });
     await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
     expect([...container.querySelectorAll('.cc-skillhub-card h3')].map(el => el.textContent))
-      .toEqual(['tools/new', 'tools/old', 'tools/legacy-old', 'tools/legacy-new']);
+      .toEqual(['tools/new', 'tools/old', 'tools/legacy-new', 'tools/legacy-old']);
     expect(container.querySelector('.cc-skillhub-card-runtime')).toBeNull();
   });
 
