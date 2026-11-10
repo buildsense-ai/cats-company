@@ -42,9 +42,15 @@ func (a *Adapter) ReserveCommercialOperationCredit(uid int64, source, reservatio
 	err := a.db.QueryRow(`UPDATE cloud_worker_credits SET state='reserved',reservation_ref=$3,reserved_at=CURRENT_TIMESTAMP,queued_at=NULL
  WHERE uid=$1 AND source_ref=$2 AND source_ref LIKE 'ops:%'
  AND deployment_profile=$4 AND billing_mode=$5 AND COALESCE(runtime_plan,'')=$6
- AND expires_at IS NOT DISTINCT FROM $7::timestamptz AND expires_at>CURRENT_TIMESTAMP
+ AND expires_at IS NOT DISTINCT FROM $7::timestamptz
+ -- The reserved credit must still be worth spending. An unexpired paid window
+ -- qualifies; so does an explicitly open-ended term (permanent, or follow_plan on
+ -- a perpetual package), which has no date by design. A legacy credit without an
+ -- expiry keeps the historical behaviour of never being reserved here, so old
+ -- perpetual operator grants cannot start provisioning machines by accident.
+ AND (expires_at > CURRENT_TIMESTAMP OR (expires_at IS NULL AND expiry_mode <> 'legacy'))
  AND (state IN ('available','queued') OR (state='reserved' AND reserved_at<CURRENT_TIMESTAMP-INTERVAL '35 minutes'))
- RETURNING deployment_profile,billing_mode,runtime_plan,retention_days,expires_at`, uid, source, reservation, p.DeploymentProfile, p.BillingMode, p.RuntimePlan, p.WorkerExpiresAt).Scan(&selection.Profile, &selection.BillingMode, &selection.RuntimePlan, &selection.RetentionDays, &selection.ExpiresAt)
+ RETURNING deployment_profile,billing_mode,runtime_plan,retention_days,expires_at,COALESCE(NULLIF(expiry_mode,''),'legacy')`, uid, source, reservation, p.DeploymentProfile, p.BillingMode, p.RuntimePlan, p.WorkerExpiresAt).Scan(&selection.Profile, &selection.BillingMode, &selection.RuntimePlan, &selection.RetentionDays, &selection.ExpiresAt, &selection.ExpiryMode)
 	if err == sql.ErrNoRows {
 		return selection, false, nil
 	}

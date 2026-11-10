@@ -7,13 +7,17 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+// GetCloudWorkerBillingLifecycle is the billing loop's view of one worker.
+// It shares the lifecycle projection so the fields it needs cannot drift out of
+// sync with the rest of the store (RetentionDays was silently missing here,
+// which made a renewal fall back to the legacy 15-day window).
 func (a *Adapter) GetCloudWorkerBillingLifecycle(tenant string) (*types.CloudWorkerLifecycle, error) {
-	var item types.CloudWorkerLifecycle
-	// The claim timestamp is coalesced so the scan never has to special-case a
-	// NULL: an unclaimed row simply reports the zero time.
-	err := a.db.QueryRow(`SELECT id,worker_uid,owner_uid,tenant_name,package_expires_at,delete_after,state,billing_mode,conversion_pending,billing_action,COALESCE(billing_action_started_at,'epoch'::timestamptz)
-		FROM cloud_worker_lifecycles WHERE tenant_name=$1 AND state<>'deleted'`, tenant).Scan(&item.ID, &item.WorkerUID, &item.OwnerUID, &item.TenantName, &item.PackageExpiresAt, &item.DeleteAfter, &item.State, &item.BillingMode, &item.ConversionPending, &item.BillingAction, &item.BillingActionStartedAt)
-	return &item, err
+	item, err := scanCloudWorkerLifecycle(a.db.QueryRow(`SELECT `+cloudWorkerLifecycleColumns+`
+		FROM cloud_worker_lifecycles WHERE tenant_name=$1 AND state<>'deleted'`, tenant))
+	if err != nil {
+		return nil, err
+	}
+	return item, nil
 }
 
 func (a *Adapter) RequestCloudWorkerConversion(id int64) (bool, error) {

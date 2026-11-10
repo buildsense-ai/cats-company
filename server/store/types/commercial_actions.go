@@ -13,19 +13,24 @@ import (
 // CommercialActionRequest is the complete operator decision. Preview controls
 // transport only; all business fields participate in the durable fingerprint.
 type CommercialActionRequest struct {
-	UID               int64      `json:"uid"`
-	Intent            string     `json:"intent"`
-	PlanID            int64      `json:"plan_id"`
-	DurationDays      int        `json:"duration_days"`
-	WorkerAction      string     `json:"worker_action"`
-	DeploymentProfile string     `json:"deployment_profile"`
-	BillingMode       string     `json:"billing_mode"`
-	RuntimePlan       string     `json:"runtime_plan"`
-	WorkerExpiresAt   *time.Time `json:"worker_expires_at"`
-	Note              string     `json:"note"`
-	OperationID       string     `json:"operation_id"`
-	Preview           bool       `json:"preview"`
-	PreviewToken      string     `json:"preview_token"`
+	UID               int64  `json:"uid"`
+	Intent            string `json:"intent"`
+	PlanID            int64  `json:"plan_id"`
+	DurationDays      int    `json:"duration_days"`
+	WorkerAction      string `json:"worker_action"`
+	DeploymentProfile string `json:"deployment_profile"`
+	BillingMode       string `json:"billing_mode"`
+	RuntimePlan       string `json:"runtime_plan"`
+	// WorkerExpiryMode is the term an operator explicitly asked for:
+	// fixed / follow_plan / permanent. It is omitempty because a request
+	// written before this field existed must keep its durable fingerprint
+	// and its original term semantics (the row default is legacy).
+	WorkerExpiryMode string     `json:"worker_expiry_mode,omitempty"`
+	WorkerExpiresAt  *time.Time `json:"worker_expires_at"`
+	Note             string     `json:"note"`
+	OperationID      string     `json:"operation_id"`
+	Preview          bool       `json:"preview"`
+	PreviewToken     string     `json:"preview_token"`
 }
 
 var commercialActionID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$`)
@@ -40,6 +45,13 @@ func (r *CommercialActionRequest) Normalize() error {
 	r.DeploymentProfile = strings.ToLower(strings.TrimSpace(r.DeploymentProfile))
 	r.BillingMode = strings.ToLower(strings.TrimSpace(r.BillingMode))
 	r.RuntimePlan = strings.ToLower(strings.TrimSpace(r.RuntimePlan))
+	// The term mode stays empty when the request did not send one: a rewrite
+	// would change the durable fingerprint and re-term existing workers.
+	expiryMode, validExpiryMode := NormalizeCloudWorkerExpiryMode(r.WorkerExpiryMode)
+	if !validExpiryMode {
+		return bad("invalid worker_expiry_mode (fixed, follow_plan or permanent)")
+	}
+	r.WorkerExpiryMode = expiryMode
 	if r.UID <= 0 {
 		return bad("uid is required")
 	}
@@ -95,8 +107,29 @@ func (r *CommercialActionRequest) Normalize() error {
 		if r.DeploymentProfile == CloudWorkerPackedShared && r.RuntimePlan == "" {
 			r.RuntimePlan = CloudWorkerRuntimeStandard
 		}
+		// follow_plan and permanent are terms only the shared container fleet
+		// can honour: a dedicated ECS instance would have to buy a cloud
+		// subscription for either of them, which is exactly what an operator
+		// must not trigger by accident.
+		if CloudWorkerExpiryModeRequiresShared(r.WorkerExpiryMode) && r.DeploymentProfile != CloudWorkerPackedShared {
+			return bad("worker_expiry_mode follow_plan/permanent requires deployment_profile=packed_shared")
+		}
+		if r.Intent == "test_worker" && r.WorkerExpiryMode != "" && r.WorkerExpiryMode != CloudWorkerExpiryFixed {
+			return bad("test_worker only supports worker_expiry_mode=fixed")
+		}
 	default:
 		return bad("unsupported intent")
+	}
+	// No worker, no term: a mode only describes what an actual machine's
+	// expiry follows, so it cannot travel with worker_action=none.
+	if r.WorkerAction == "none" && r.WorkerExpiryMode != "" {
+		return bad("worker_action=none cannot carry worker_expiry_mode")
+	}
+	// Only a fixed term is pinned by the operator. Every other mode derives its
+	// deadline from the package (or from nothing at all), so an explicit
+	// duration or date would contradict it.
+	if r.WorkerExpiryMode != "" && r.WorkerExpiryMode != CloudWorkerExpiryFixed && (r.DurationDays != 0 || r.WorkerExpiresAt != nil) {
+		return bad("worker_expiry_mode other than fixed cannot carry duration_days or worker_expires_at")
 	}
 	if r.WorkerExpiresAt != nil {
 		v := r.WorkerExpiresAt.UTC()
@@ -145,10 +178,13 @@ type CommercialActionPreview struct {
 	DeploymentProfile string          `json:"deployment_profile"`
 	BillingMode       string          `json:"billing_mode"`
 	RuntimePlan       string          `json:"runtime_plan"`
-	PackageEffect     string          `json:"package_effect"`
-	WorkerEffect      string          `json:"worker_effect"`
-	CurrentTotalCNY   float64         `json:"current_total_cny"`
-	NextTotalCNY      float64         `json:"next_total_cny"`
+	// WorkerExpiryMode mirrors the request. Empty means the request predates
+	// the field, so the preview keeps its historical shape and token.
+	WorkerExpiryMode string  `json:"worker_expiry_mode,omitempty"`
+	PackageEffect    string  `json:"package_effect"`
+	WorkerEffect     string  `json:"worker_effect"`
+	CurrentTotalCNY  float64 `json:"current_total_cny"`
+	NextTotalCNY     float64 `json:"next_total_cny"`
 }
 type CommercialActionOperation struct {
 	UID            int64  `json:"uid"`

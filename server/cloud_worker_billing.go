@@ -134,10 +134,7 @@ func (h *CloudWorkerHandler) HandleAdminBilling(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "billing operations unavailable"})
 		return
 	}
-	var input struct {
-		Tenant string `json:"tenant_name"`
-		Action string `json:"action"`
-	}
+	var input sharedCloudWorkerTermInput
 	r.Body = http.MaxBytesReader(w, r.Body, 8192)
 	if json.NewDecoder(r.Body).Decode(&input) != nil || !workerUsernameRe.MatchString(input.Tenant) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing request"})
@@ -148,7 +145,7 @@ func (h *CloudWorkerHandler) HandleAdminBilling(w http.ResponseWriter, r *http.R
 	// writes the provider's own expiry back. It deliberately reuses
 	// renewOneCloudWorker so a manual renewal can never drift from what a paid
 	// package renewal does, including the expiry/retention reconciliation.
-	if input.Action != "convert" && input.Action != "suspend" && input.Action != "start" && input.Action != "release" && input.Action != "cancel" && input.Action != "renew" {
+	if input.Action != "convert" && input.Action != "suspend" && input.Action != "start" && input.Action != "release" && input.Action != "cancel" && input.Action != "renew" && input.Action != "set_term" && input.Action != "sync_term" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing action"})
 		return
 	}
@@ -156,12 +153,27 @@ func (h *CloudWorkerHandler) HandleAdminBilling(w http.ResponseWriter, r *http.R
 	// action used to take the global gate, so a single convert (about 20s) made
 	// every buyer's create return "busy".
 	item, err := store.GetCloudWorkerBillingLifecycle(input.Tenant)
-	if err != nil {
+	if err != nil || item == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "managed lifecycle not found"})
 		return
 	}
 	opLock := h.lockOwnerOperation(item.OwnerUID)
 	defer opLock.Unlock()
+	// Re-read after waiting for the owner's operation: the preceding action
+	// may have renewed or released this lifecycle while we waited.
+	item, err = store.GetCloudWorkerBillingLifecycle(input.Tenant)
+	if err != nil || item == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "managed lifecycle not found"})
+		return
+	}
+	if input.Action == "set_term" || input.Action == "sync_term" {
+		h.handleSharedCloudWorkerTerm(w, r, item, input)
+		return
+	}
+	if h.tenantRunsOnPackedShared(item.TenantName) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "共享集群机器请使用原机续期/恢复入口选择期限", "code": "cloud_worker_use_term_action"})
+		return
+	}
 	if input.Action == "convert" && item.BillingMode == types.CloudWorkerMonthly {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "monthly"})
 		return

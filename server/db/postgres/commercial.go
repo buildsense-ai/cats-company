@@ -662,21 +662,39 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 			return nil, fmt.Errorf("create invite quota ledger: %w", err)
 		}
 	}
+	// A shared worker funded by an invite follows the invite's package, which can
+	// be perpetual (duration -1): the credit carries that term so the create path
+	// registers a lifecycle row with no deadline instead of inventing one.
+	inviteExpiryMode := ""
+	if cloudWorkerProfile == types.CloudWorkerPackedShared {
+		inviteExpiryMode = types.CloudWorkerExpiryFollowPlan
+	}
 	for ordinal := 1; ordinal <= cloudWorkerCredits; ordinal++ {
 		if _, err := tx.Exec(`
-			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode, retention_days, runtime_plan)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile, cloudWorkerBilling, retentionDays, cloudWorkerRuntimePlan); err != nil {
+			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode, retention_days, runtime_plan, expiry_mode)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile, cloudWorkerBilling, retentionDays, cloudWorkerRuntimePlan, types.CloudWorkerExpiryModeOrDefault(inviteExpiryMode)); err != nil {
 			return nil, fmt.Errorf("create invite cloud worker credit: %w", err)
 		}
 	}
-	if entitlementExpires != nil {
-		// A redemption reopens or extends the paid window; keep existing cloud
-		// workers on the same retention schedule instead of letting them expire
-		// against the replaced package. GREATEST keeps a longer paid window.
-		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, *entitlementExpires, retentionDays); err != nil {
-			return nil, err
-		}
+	// A redemption reopens or extends the paid window; keep existing cloud
+	// workers on the same retention schedule instead of letting them expire
+	// against the replaced package. GREATEST keeps a longer paid window, and a
+	// perpetual invite opens the workers that follow the package instead of
+	// leaving them on the previous package's date.
+	if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, entitlementExpires, retentionDays); err != nil {
+		return nil, err
+	}
+	// The tier activation above revoked whatever package this invite supersedes,
+	// and the extension above only ever grows a window: on its own it keeps a
+	// follow_plan worker on the revoked period, or hands it the term of a
+	// token-only invite that buys no machine at all. Settle on what the
+	// redemption actually left the account holding - the invite's own window, a
+	// perpetual one, or nothing (the worker then expires now, keeps its retention
+	// window and is synced before it is collected). Fixed terms and permanent
+	// grants are left alone: they were sold independently of any package.
+	if err := settleSharedCloudWorkerFollowPlanTerms(tx, uid, startsAt); err != nil {
+		return nil, err
 	}
 	if _, err := tx.Exec(`UPDATE commercial_invite_codes SET redeemed_count = redeemed_count + 1 WHERE id = $1`, inviteID); err != nil {
 		return nil, fmt.Errorf("update invite redemption count: %w", err)
@@ -763,6 +781,14 @@ func (a *Adapter) GetCommercialSummary(uid int64) (*types.CommercialSummary, err
 		UID:           uid,
 		Plans:         plans,
 		TotalsByModel: map[string]float64{},
+	}
+	// The machine package is a different question from "which package governs
+	// models": an invite can hand out a machine on a token-only plan, and a token
+	// package can outrank the machine package. Callers get the answer that
+	// actually decides whether a worker has a term.
+	summary.CloudWorkerPackageTerm, err = a.GetSharedCloudWorkerPackageTerm(uid)
+	if err != nil {
+		return nil, err
 	}
 	entitlementRows, err := a.db.Query(`
 		SELECT e.id, e.uid, e.plan_id, p.slug, p.name, e.source, e.source_ref, e.state, e.starts_at, e.expires_at, e.created_at, e.updated_at

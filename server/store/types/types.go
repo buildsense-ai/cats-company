@@ -365,16 +365,37 @@ type CommercialOperationsOverview struct {
 	RecentOperatorEvents       []*CommercialOperatorEvent `json:"recent_operator_events,omitempty"`
 }
 
+// CloudWorkerPackageTerm is the package that actually grants this owner a
+// machine, which is not necessarily the package that governs models and quota.
+//
+// The two can differ in both directions: an invite can hand out machine credits
+// against a token-only plan, and a paid token package can outrank the machine
+// package in the "primary" ordering. ExpiresAt nil means the machine term is
+// genuinely perpetual — never "unknown" — and the field is always serialized so
+// a caller can tell a perpetual package from a missing one (the whole object is
+// null) and from an older backend that does not report the field at all.
+type CloudWorkerPackageTerm struct {
+	EntitlementID int64      `json:"entitlement_id"`
+	PlanID        int64      `json:"plan_id"`
+	ExpiresAt     *time.Time `json:"expires_at"`
+	RetentionDays int        `json:"retention_days"`
+}
+
 // CommercialSummary is the user/admin view of commercial relay allocation.
 type CommercialSummary struct {
-	CurrentEntitlement *CommercialEntitlement   `json:"current_entitlement,omitempty"`
-	UID                int64                    `json:"uid"`
-	Plans              []*CommercialPlan        `json:"plans,omitempty"`
-	Entitlements       []*CommercialEntitlement `json:"entitlements,omitempty"`
-	Grants             []*CommercialQuotaGrant  `json:"grants,omitempty"`
-	Ledger             []*CommercialLedgerEntry `json:"ledger,omitempty"`
-	TotalsByModel      map[string]float64       `json:"totals_by_model,omitempty"`
-	TotalCNY           float64                  `json:"total_cny"`
+	// CloudWorkerPackageTerm is the machine-granting package this account holds
+	// right now; nil means it holds none. It is deliberately not omitempty: an
+	// explicit null is what tells a caller "no machine package", while a missing
+	// field means the backend predates this contract.
+	CloudWorkerPackageTerm *CloudWorkerPackageTerm  `json:"cloud_worker_package_term"`
+	CurrentEntitlement     *CommercialEntitlement   `json:"current_entitlement,omitempty"`
+	UID                    int64                    `json:"uid"`
+	Plans                  []*CommercialPlan        `json:"plans,omitempty"`
+	Entitlements           []*CommercialEntitlement `json:"entitlements,omitempty"`
+	Grants                 []*CommercialQuotaGrant  `json:"grants,omitempty"`
+	Ledger                 []*CommercialLedgerEntry `json:"ledger,omitempty"`
+	TotalsByModel          map[string]float64       `json:"totals_by_model,omitempty"`
+	TotalCNY               float64                  `json:"total_cny"`
 	// TokenQuota is the active package's enforced token allowance; 0 means
 	// the account is limited only by CNY budgets.
 	TokenQuota         int64  `json:"token_quota,omitempty"`
@@ -416,6 +437,17 @@ type CloudWorkerLifecycle struct {
 	// reuse it instead of falling back to the global default.
 	RetentionDays int
 	State         string
+	// ExpiryMode is what this row's expiry follows: legacy (historical rows),
+	// fixed (its own window), follow_plan (the active primary package, which may
+	// itself be perpetual) or permanent (no deadline at all). A row whose
+	// PackageExpiresAt/DeleteAfter are NULL is permanently open; readers get the
+	// zero time rather than a magic far-future date.
+	ExpiryMode string `json:"expiry_mode,omitempty"`
+	// SyncPending reports that the database already holds a newer term than the
+	// provider does. Background sync must bring the provider in line before the
+	// expiry sweeper may destroy the container, so it is also the flag that
+	// blocks an automatic delete claim.
+	SyncPending bool `json:"sync_pending,omitempty"`
 }
 
 // CloudWorkerQueuedCredit is one paid credit waiting for shared-fleet capacity.
@@ -474,22 +506,28 @@ type CloudWorkerAdminRecord struct {
 	PackageExpiresAt   *time.Time
 	DeleteAfter        *time.Time
 	LifecycleLastError string
-	CreditState        string
-	CreditSourceRef    string
-	CreditExpiresAt    *time.Time
-	Provider           string
-	RegionID           string
-	ProjectID          string
-	AZName             string
-	InstanceID         string
-	InstanceName       string
-	PrivateIP          string
-	PublicIP           string
-	ManagementMode     string
-	LifecycleMode      string
-	BindingSource      string
-	BindingStatus      string
-	LastVerifiedAt     *time.Time
+	// ExpiryMode / SyncPending surface the term the lifecycle row follows and
+	// whether the provider still has to be reconciled with it. A record that is
+	// still provisioning takes its mode from the durable action's preview,
+	// because the lifecycle row does not exist yet.
+	ExpiryMode      string
+	SyncPending     bool
+	CreditState     string
+	CreditSourceRef string
+	CreditExpiresAt *time.Time
+	Provider        string
+	RegionID        string
+	ProjectID       string
+	AZName          string
+	InstanceID      string
+	InstanceName    string
+	PrivateIP       string
+	PublicIP        string
+	ManagementMode  string
+	LifecycleMode   string
+	BindingSource   string
+	BindingStatus   string
+	LastVerifiedAt  *time.Time
 	// Operation* / WorkerStatus / RuntimePlan / PlannedExpiresAt describe an
 	// active durable commercial operator action that is currently provisioning
 	// this worker. They are only populated when the record's username is the

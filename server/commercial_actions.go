@@ -254,7 +254,9 @@ func (h *CloudWorkerHandler) prepareCommercialActionWorker(w http.ResponseWriter
 			return true
 		}
 	}
-	if v.Preview.WorkerExpiresAt == nil || !v.Preview.WorkerExpiresAt.After(time.Now().UTC()) {
+	indefinite := v.Preview.DeploymentProfile == types.CloudWorkerPackedShared &&
+		(v.Preview.WorkerExpiryMode == "permanent" || v.Preview.WorkerExpiryMode == "follow_plan") && v.Preview.WorkerExpiresAt == nil
+	if !indefinite && (v.Preview.WorkerExpiresAt == nil || !v.Preview.WorkerExpiresAt.After(time.Now().UTC())) {
 		writeJSON(w, 409, map[string]string{"error": "operation worker expiry has passed", "code": "cloud_worker_operation_expired"})
 		return true
 	}

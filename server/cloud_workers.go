@@ -1418,6 +1418,9 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewRep
 		if lifecycle.State == "delete_running" || lifecycle.State == "deleted" || strings.TrimSpace(lifecycle.TenantName) == "" {
 			continue
 		}
+		if lifecycle.ExpiryMode == "fixed" || lifecycle.ExpiryMode == "permanent" {
+			continue
+		}
 		report.Outcomes = append(report.Outcomes, h.renewOneCloudWorker(uid, lifecycle))
 	}
 	h.requestCloudStatusRefresh(true)
@@ -1499,6 +1502,15 @@ func (h *CloudWorkerHandler) cloudWorkerRenewArgs(uid int64, lifecycle CloudWork
 // reports the outcome; it never creates a replacement instance.
 func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorkerLifecycle) types.CloudWorkerRenewOutcome {
 	item := types.CloudWorkerRenewOutcome{TenantName: lifecycle.TenantName}
+	if _, ok := h.credits.(sharedCloudWorkerTermStore); ok && h.tenantRunsOnPackedShared(lifecycle.TenantName) {
+		if !lifecycle.SyncPending {
+			item.Status = types.CloudWorkerRenewApplied
+			item.ExpiresAt = sharedCloudWorkerDeadline(lifecycle)
+			item.Message = "原机器期限无需重复同步"
+			return item
+		}
+		return h.syncSharedCloudWorkerTerm(lifecycle.ID)
+	}
 	if handled, trialErr := h.renewTrial(lifecycle); handled {
 		item.Status = types.CloudWorkerRenewApplied
 		item.Message = "试用已转为付费"
@@ -1584,6 +1596,9 @@ func (h *CloudWorkerHandler) PlatformLifecycleCount(uid int64) int {
 	count := 0
 	for _, lifecycle := range lifecycles {
 		if lifecycle.State == "delete_running" || lifecycle.State == "deleted" || strings.TrimSpace(lifecycle.TenantName) == "" {
+			continue
+		}
+		if lifecycle.ExpiryMode == "fixed" || lifecycle.ExpiryMode == "permanent" {
 			continue
 		}
 		count++
@@ -1810,6 +1825,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	reservation := fmt.Sprintf("create-%d-%d", uid, time.Now().UnixNano())
 	reservedCredit := false
 	var creditExpiresAt *time.Time
+	expiryMode := ""
 	// retentionDays comes from the purchased plan's credit (7-day package → 3
 	// days, longer → 7 days); 0 keeps the fleet-wide default.
 	retentionDays := 0
@@ -1835,6 +1851,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		reservedCredit = true
 		profile, billing, runtimePlan = selected.Profile, selected.BillingMode, selected.RuntimePlan
 		creditExpiresAt, retentionDays = selected.ExpiresAt, selected.RetentionDays
+		expiryMode = selected.ExpiryMode
 	} else if configured, ok := h.credits.(cloudWorkerBillingCredits); ok || requestedRuntime != "" {
 		var selected types.CloudWorkerCreditSelection
 		var reserved bool
@@ -1860,6 +1877,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			creditExpiresAt = selected.ExpiresAt
 			retentionDays = selected.RetentionDays
 			runtimePlan = selected.RuntimePlan
+			expiryMode = selected.ExpiryMode
 		}
 	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 		selected, reserved, reserveErr := profiled.ReserveCloudWorkerProfileCredit(uid, reservation, requestedProfile)
@@ -2051,7 +2069,25 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	if deployment.Profile == types.CloudWorkerPackedShared && runtimePlan != "" {
 		provisionArgs = append(provisionArgs, "--plan", runtimePlan)
 	}
-	provisionArgs = append(provisionArgs, cloudWorkerProvisionExpiryArgs(deployment.Profile, h.cloudWorkerPaidUntil(uid, creditExpiresAt))...)
+	if deployment.Profile == types.CloudWorkerPackedShared {
+		paidUntil := h.cloudWorkerPaidUntil(uid, creditExpiresAt)
+		if expiryMode == "fixed" || expiryMode == "permanent" || expiryMode == "follow_plan" {
+			paidUntil = time.Time{}
+			if creditExpiresAt != nil {
+				paidUntil = creditExpiresAt.UTC()
+			}
+		}
+		if paidUntil.IsZero() && (expiryMode == "permanent" || expiryMode == "follow_plan") {
+			provisionArgs = append(provisionArgs, "--expires-at", "none")
+		} else {
+			provisionArgs = append(provisionArgs, cloudWorkerProvisionExpiryArgs(deployment.Profile, paidUntil)...)
+		}
+		graceDays := retentionDays
+		if graceDays <= 0 {
+			graceDays = 7
+		}
+		provisionArgs = append(provisionArgs, "--grace-days", strconv.Itoa(graceDays))
+	}
 	provOut, err := h.runScript(h.provisionScript, provisionArgs...)
 	if err != nil {
 		// 脚本的具体失败原因（如云资源配额不足）只写入服务器日志，不回显给前端。
@@ -2220,7 +2256,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	// credit, so they would otherwise leave no lifecycle record and escape the
 	// hourly retention sweep entirely. Give them the same durable handle as
 	// paid creations: follow the owner's active package when one exists.
-	if !reservedCredit || creditExpiresAt == nil {
+	if !reservedCredit || (creditExpiresAt == nil && expiryMode != "permanent" && expiryMode != "follow_plan") {
 		h.registerFallbackCloudWorkerLifecycle(uid, result.UID, tenantName, billing)
 	}
 
@@ -2273,6 +2309,7 @@ func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 	if !h.sweepMu.TryLock() {
 		return
 	}
+	h.retrySharedCloudWorkerTerms()
 	rebuildOwners := h.sweepExpiredWorkersLocked(now)
 	h.sweepMu.Unlock()
 	// Rebuilding provisions a new worker through HandleCreate, which takes the
@@ -2540,6 +2577,31 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 				if item.RetentionDays > 0 {
 					expireArgs = append(expireArgs, "--grace-days", strconv.Itoa(item.RetentionDays))
 				}
+				if h.tenantRunsOnPackedShared(item.TenantName) {
+					termStore, ok := h.credits.(sharedCloudWorkerTermStore)
+					if !ok {
+						failed++
+						continue
+					}
+					claimed, claimErr := termStore.ClaimSharedCloudWorkerExpiry(item.ID, now)
+					if claimErr != nil || !claimed {
+						continue
+					}
+					expireArgs = append(expireArgs, "--expected-expires-at", item.PackageExpiresAt.UTC().Format(time.RFC3339Nano))
+					out, runErr := h.runScript(h.expireScript, expireArgs...)
+					errorText := ""
+					if runErr != nil {
+						errorText = truncateWorkerOutput(destroyErrorDetail(runErr, out))
+					} else if cloudWorkerHookSkipped(out) {
+						errorText = "集群期限或运行状态已变化，跳过旧到期操作，等待重新核对"
+					}
+					if completeErr := termStore.CompleteSharedCloudWorkerExpiry(item.ID, item.PackageExpiresAt, errorText); completeErr != nil || errorText != "" {
+						failed++
+					} else {
+						markedPending++
+					}
+					continue
+				}
 				out, err := h.runScript(h.expireScript, expireArgs...)
 				if err != nil {
 					failed++
@@ -2563,7 +2625,16 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 			continue
 		}
 		claimedCount++
-		out, err := h.runScript(h.destroyScript, "--name", item.TenantName)
+		destroyArgs := []string{"--name", item.TenantName}
+		if h.tenantRunsOnPackedShared(item.TenantName) {
+			destroyArgs = append(destroyArgs, "--expected-expires-at", item.PackageExpiresAt.UTC().Format(time.RFC3339Nano), "--expected-delete-after", item.DeleteAfter.UTC().Format(time.RFC3339Nano))
+		}
+		out, err := h.runScript(h.destroyScript, destroyArgs...)
+		if err == nil && cloudWorkerHookSkipped(out) {
+			_ = store.MarkCloudWorkerLifecycleDeleted(item.ID, "集群期限已变化，未删除机器；请核对期限后重试")
+			awaitingRecycle++
+			continue
+		}
 		if err != nil {
 			if destroyAwaitingProviderRecycle(err, out) {
 				// An expired instance is past the self-service unsubscribe window:

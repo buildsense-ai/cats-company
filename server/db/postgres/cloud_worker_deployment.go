@@ -83,6 +83,27 @@ ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_mode VARCHA
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS conversion_pending BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_action VARCHAR(24) NOT NULL DEFAULT '';
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_action_started_at TIMESTAMPTZ;
+-- Worker term modes.
+--
+-- legacy is never requested and never written by new code: it is what every
+-- row written before this column existed keeps, because those rows took their
+-- date from whatever package happened to be current. Re-reading them as a new
+-- mode would silently re-term machines that are already sold.
+ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS expiry_mode TEXT NOT NULL DEFAULT 'legacy'
+    CHECK (expiry_mode IN ('legacy','fixed','follow_plan','permanent'));
+ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS expiry_mode TEXT NOT NULL DEFAULT 'legacy'
+    CHECK (expiry_mode IN ('legacy','fixed','follow_plan','permanent'));
+-- A permanent (or perpetual follow_plan) worker has no deadline at all. This
+-- table used to require a date, which is why the alternative would have been a
+-- notional far-future placeholder that every reader then has to special-case.
+-- Dropping NOT NULL is what removes the need for one.
+ALTER TABLE cloud_worker_lifecycles ALTER COLUMN package_expires_at DROP NOT NULL;
+ALTER TABLE cloud_worker_lifecycles ALTER COLUMN delete_after DROP NOT NULL;
+-- The database can hold a newer term than the provider does. sync_pending
+-- records that gap and blocks the automatic destroy until it is closed, so an
+-- extended worker is never destroyed by an expiry scan that ran before the
+-- extension synced.
+ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS sync_pending BOOLEAN NOT NULL DEFAULT FALSE;
 `
 
 // activateCloudWorkerPackedSharedProfile widens the two profile CHECK

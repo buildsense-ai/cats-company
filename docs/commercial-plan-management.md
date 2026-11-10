@@ -13,3 +13,24 @@ Hidden, free-to-assign internal plans may set `duration_days: -1` for permanent 
 Admin summaries expose `current_entitlement`. It and adjustment previews follow the database operation ordering: active and already started, unexpired, explicit package before Free/legacy baseline, then expiry descending (null last), start time descending, and ID descending. The displayed expiry belongs to that same entitlement. Consumers must parse timestamps as dates; lexical sorting of RFC3339 timestamps fails when fractional seconds are omitted.
 
 Deploy CatsCompany before the Relay dashboard update. Historical data is retained. Create or assign permanent plans only after verifying the updated backend is live; older backend versions do not support permanent custom durations.
+
+## Shared Agent validity and recovery
+
+New `packed_shared` operations persist an explicit `worker_expiry_mode`:
+
+| Mode | Machine validity | Package changes |
+| --- | --- | --- |
+| `follow_plan` | Follows actual machine entitlement; null expiry only for a permanent machine entitlement | Renewal, replacement, invitation upgrades and refunds recompute the remaining machine entitlement |
+| `fixed` | An absolute deadline fixed when the operation is accepted | Independent of model package renewal or refund |
+| `permanent` | No expiry, explicitly granted by an operator | Independent of model package renewal or refund |
+| `legacy` | Existing behavior for historical records and requests without the new field | No bulk migration or inference of permanent validity |
+
+`cloud_worker_package_term` in the commercial summary is the shared machine authorization, separate from the primary model package. An explicit null means no machine entitlement; an object with `expires_at: null` means a permanent machine entitlement. Free/legacy baselines never authorize a shared machine, even if their plan is incorrectly marked as including one. Invitations with explicitly attached machine credits count even when their model plan does not include a machine.
+
+Machine validity includes purchased future periods connected to the current authorization without a gap. An isolated future entitlement does not authorize use today. Removing or refunding a period recomputes the surviving connected validity; it must not preserve a refunded deadline or convert the Free baseline into a permanent machine. Independent fixed/permanent machine terms remain unchanged.
+
+Expiry first pauses the original container. Its data remains available until the recorded `delete_after`, calculated from the absolute deadline plus the configured retention days (default 3 days for a 7-day package, otherwise 7 days). The dashboard displays both the machine deadline and retention deadline. Renewal within retention synchronizes the new deadline and resumes the same original machine; after deletion, the original machine cannot be resumed. Manual suspension and security isolation remain in effect after renewal.
+
+The protected operator billing endpoint accepts `action: set_term` with `tenant_name`, `expiry_mode`, an absolute future `expires_at` for fixed terms, and a required reason in `note`. It stores the target before calling the cluster. A remote failure leaves `sync_pending`; `action: sync_term` retries that same target and the original machine without charging, buying another cycle or creating a replacement. A missing container cannot report successful renewal. The platform also retries pending synchronization with backoff.
+
+Shared lifecycle operations use the control-plane entry point and tenant operation lock. Expiry and deletion compare the expected deadline again under the lock; an older collection task must skip a newly renewed machine. Retention timers are enabled only on the control plane and removed from other members. Publish the cluster scripts and platform adapters before CatsCompany, then publish the Relay dashboard. Existing ECS subscription billing is unchanged.
