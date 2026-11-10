@@ -158,10 +158,60 @@ it('never falls back from public image to private preview, and revokes object UR
   expect(marketplaceImage.mock.calls[1][1].preview).toBe(false);
 });
 
-function CatalogueHarness({ query = '' }) {
-  const market = useMarketplaceCatalogue(query);
+function CatalogueHarness({ query = '', loadAll = false }) {
+  const market = useMarketplaceCatalogue(query, { loadAll });
   return <><MarketplaceFilters market={market} /><pre>{JSON.stringify(market.state?.skills)}</pre><button onClick={market.more}>more</button></>;
 }
+it('loads every page for name/oldest sorting and caches the complete result', async () => {
+  vi.useFakeTimers();
+  const browseStateRef = { current: {} };
+  marketplaceApi.catalogue
+    .mockResolvedValueOnce({ skills: [{ skillId: 'zulu' }], total: 3, nextCursor: 'page2' })
+    .mockResolvedValueOnce({ skills: [{ skillId: 'beta' }], total: 3, nextCursor: 'page3' })
+    .mockResolvedValueOnce({ skills: [{ skillId: 'alpha' }], total: 3, nextCursor: null });
+  await render(<MarketplaceProvider browseStateRef={browseStateRef}><CatalogueHarness loadAll /></MarketplaceProvider>);
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect(marketplaceApi.catalogue).toHaveBeenCalledTimes(3);
+  expect(marketplaceApi.catalogue.mock.calls.map(([request]) => request.cursor)).toEqual([undefined, 'page2', 'page3']);
+  expect(browseStateRef.current.marketplace.data).toMatchObject({
+    skills: [{ skillId: 'zulu' }, { skillId: 'beta' }, { skillId: 'alpha' }], pageCount: 3, cursor: '',
+  });
+  expect(container.querySelector('pre').textContent).toContain('alpha');
+});
+
+it('cancels a full-catalogue sort when its filter changes', async () => {
+  vi.useFakeTimers();
+  const oldPage = deferred();
+  marketplaceApi.catalogue
+    .mockResolvedValueOnce({ skills: [{ skillId: 'old-first' }], total: 2, nextCursor: 'old-next' })
+    .mockReturnValueOnce(oldPage.promise)
+    .mockResolvedValueOnce({ skills: [{ skillId: 'fresh' }], total: 1 });
+  await render(<MarketplaceProvider><CatalogueHarness loadAll query='old' /></MarketplaceProvider>);
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  const signal = marketplaceApi.catalogue.mock.calls[1][1];
+  await render(<MarketplaceProvider><CatalogueHarness loadAll query='new' /></MarketplaceProvider>);
+  expect(signal.aborted).toBe(true);
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  await act(async () => oldPage.resolve({ skills: [{ skillId: 'old-last' }], total: 2 }));
+  expect(container.querySelector('pre').textContent).toContain('fresh');
+  expect(container.querySelector('pre').textContent).not.toContain('old-');
+});
+
+it('discloses an incomplete sort when a later catalogue page fails and allows retry', async () => {
+  vi.useFakeTimers();
+  marketplaceApi.catalogue
+    .mockResolvedValueOnce({ skills: [{ skillId: 'first' }], total: 2, nextCursor: 'next' })
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce({ skills: [{ skillId: 'first' }, { skillId: 'last' }], total: 2 });
+  await render(<MarketplaceProvider><CatalogueHarness loadAll /></MarketplaceProvider>);
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect(container.textContent).toContain('完整能力库暂未加载完成');
+  await click('重试分类');
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect(container.querySelector('pre').textContent).toContain('last');
+  expect(container.textContent).not.toContain('完整能力库暂未加载完成');
+});
+
 it('paginates with name-only filters, renders global category counts, restarts stale cursors', async () => {
   vi.useFakeTimers();
   marketplaceApi.catalogue.mockResolvedValueOnce({ skills: [{ skillId: 'one' }], total: 2, nextCursor: 'next', categoryCounts: [{ category: 'documents', count: 2 }] })
