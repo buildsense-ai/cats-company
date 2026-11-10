@@ -46,6 +46,7 @@ type botDefinitionSkillsResponse struct {
 }
 
 type botViewerSkill struct {
+	AddedAt        string `json:"addedAt,omitempty"`
 	Source         string `json:"source"`
 	SkillID        string `json:"skillId"`
 	Version        string `json:"version"`
@@ -57,6 +58,7 @@ type botViewerSkill struct {
 }
 
 type botDefinitionSkillResponse struct {
+	AddedAt        string `json:"addedAt,omitempty"`
 	Source         string `json:"source"`
 	SkillID        string `json:"skillId"`
 	Version        string `json:"version"`
@@ -188,7 +190,8 @@ func (h *BotDefinitionHandler) HandleViewerSkills(w http.ResponseWriter, r *http
 		for _, skill := range record.Definition.Skills {
 			presentation := metadata[botSkillMetadataKey(skill.SkillID, skill.Version)]
 			response.Skills = append(response.Skills, botViewerSkill{
-				Source: skill.Source, SkillID: skill.SkillID, Version: skill.Version,
+				AddedAt: record.SkillAddedAt[skill.SkillID],
+				Source:  skill.Source, SkillID: skill.SkillID, Version: skill.Version,
 				DisplayName: presentation.DisplayName, RevisionNumber: presentation.RevisionNumber,
 				LastChangedBy: presentation.LastChangedBy, LastChangedAt: presentation.LastChangedAt,
 				ChangeSource: presentation.ChangeSource,
@@ -391,7 +394,8 @@ func (h *BotDefinitionHandler) writeSkills(
 		for _, skill := range record.Definition.Skills {
 			presentation := metadata[botSkillMetadataKey(skill.SkillID, skill.Version)]
 			response.Skills = append(response.Skills, botDefinitionSkillResponse{
-				Source: skill.Source, SkillID: skill.SkillID, Version: skill.Version,
+				AddedAt: record.SkillAddedAt[skill.SkillID],
+				Source:  skill.Source, SkillID: skill.SkillID, Version: skill.Version,
 				ContentHash: skill.ContentHash,
 				DisplayName: presentation.DisplayName, RevisionNumber: presentation.RevisionNumber,
 				LastChangedBy: presentation.LastChangedBy, LastChangedAt: presentation.LastChangedAt,

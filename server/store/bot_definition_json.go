@@ -11,6 +11,7 @@ import (
 const (
 	botDefinitionJSONKey            = "bot_definition"
 	botDefinitionRuntimeJSONKey     = "bot_definition_runtime"
+	botSkillAddedAtJSONKey          = "bot_skill_added_at"
 	botDefinitionSavedCustomJSONKey = "bot_definition_saved_custom_model"
 	botPromptVisibilityJSONKey      = "bot_prompt_visibility"
 	botDefaultPromptSnapshotJSONKey = "bot_default_prompt_snapshot"
@@ -28,6 +29,11 @@ func DecodeBotDefinitionJSON(raw []byte, botUID int64) (*types.BotDefinitionReco
 	}
 	record := &types.BotDefinitionRecord{}
 	record.PromptVisibility = types.BotPromptOwner
+	if value := root[botSkillAddedAtJSONKey]; len(value) > 0 {
+		if err := json.Unmarshal(value, &record.SkillAddedAt); err != nil {
+			return nil, err
+		}
+	}
 	if value := root[botDefinitionJSONKey]; len(value) > 0 {
 		if err := json.Unmarshal(value, &record.Definition); err != nil {
 			return nil, err
@@ -109,6 +115,15 @@ func EncodeBotDefinitionJSON(raw []byte, record *types.BotDefinitionRecord) ([]b
 	}
 	root[botDefinitionJSONKey] = definition
 	root[botDefinitionRuntimeJSONKey] = runtime
+	if len(record.SkillAddedAt) > 0 {
+		addedAt, err := json.Marshal(record.SkillAddedAt)
+		if err != nil {
+			return nil, err
+		}
+		root[botSkillAddedAtJSONKey] = addedAt
+	} else {
+		delete(root, botSkillAddedAtJSONKey)
+	}
 	visibility := record.PromptVisibility
 	if visibility != types.BotPromptFriends {
 		visibility = types.BotPromptOwner

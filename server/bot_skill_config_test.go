@@ -42,6 +42,29 @@ func newBotSkillDefinitionTestHandler() (*BotDefinitionHandler, *botDefinitionTe
 	return NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models)), db
 }
 
+func TestBotSkillResponsesExposeServerAdditionDate(t *testing.T) {
+	handler, db := newBotSkillDefinitionTestHandler()
+	db.records[43].Definition.Skills = []types.BotSkillRef{{Source: "skillhub", SkillID: "catsco/example", Version: "1.0.0", ContentHash: testSkillHash}}
+	const addedAt = "2026-11-10T06:00:00.123456789Z"
+	db.records[43].SkillAddedAt = map[string]string{"catsco/example": addedAt}
+	for _, viewer := range []bool{false, true} {
+		req := httptest.NewRequest(http.MethodGet, "/api/agents/skills?uid=43", nil)
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+		response := httptest.NewRecorder()
+		if viewer {
+			handler.HandleViewerSkills(response, req)
+		} else {
+			handler.writeSkills(response, req, 43, db.records[43], false)
+		}
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"addedAt":"`+addedAt+`"`) {
+			t.Fatalf("viewer=%v: %d %s", viewer, response.Code, response.Body.String())
+		}
+		if viewer && strings.Contains(response.Body.String(), "contentHash") {
+			t.Fatal("viewer hash leaked")
+		}
+	}
+}
+
 func TestBotDefinitionViewerSkillsRespectVisibilityAndRedactDefinition(t *testing.T) {
 	tests := []struct {
 		name       string

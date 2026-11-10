@@ -1070,7 +1070,9 @@ type BotDefinitionSavedCustomModel struct {
 }
 
 type BotDefinitionRecord struct {
-	Definition       BotDefinition
+	Definition BotDefinition
+	// SkillAddedAt is server-owned inventory metadata, outside immutable refs.
+	SkillAddedAt     map[string]string
 	Runtime          BotDefinitionRuntime
 	SavedCustomModel *BotDefinitionSavedCustomModel
 	PromptVisibility BotPromptVisibility
