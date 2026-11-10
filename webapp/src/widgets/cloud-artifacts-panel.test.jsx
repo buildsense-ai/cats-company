@@ -26,6 +26,7 @@ vi.mock('../api', () => ({
 }));
 
 import { api } from '../api';
+import { getToken, setToken } from '../auth-session';
 import { FeedbackProvider } from '../components/feedback-system';
 import CloudArtifactsPanel from './cloud-artifacts-panel';
 import { promoGatewayApp, promoRegistryArtifact } from '../test-fixtures/promo-gateway';
@@ -188,6 +189,149 @@ describe('CloudArtifactsPanel', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  test('hands parameters to a ready bound frame once and does not equate opening with running', async () => {
+    const app = { id: 'handoff-test', title: 'Handoff test', url: 'https://app.example/', handoff: {
+      request_id: 'panel-request-123', topic_id: 'p2p_7_440', action: 'initialize',
+      expires_at: Date.now() + 60000, parameters: { data_path: '/data/sample' },
+    } };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://app.example/_launch/code' });
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} />));
+    const frame = container.querySelector('iframe');
+    const post = vi.spyOn(frame.contentWindow, 'postMessage');
+    await act(async () => Simulate.load(frame));
+    expect(container.textContent).toContain('尚未交接');
+    const hello = post.mock.calls[0][0];
+    await act(async () => window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://app.example', source: frame.contentWindow,
+      data: { ...hello, type: 'ready', schema: { data_path: { type: 'path' } } },
+    })));
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('等待应用确认');
+    await act(async () => window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://app.example', source: frame.contentWindow,
+      data: { ...hello, type: 'ack', status: 'initialized' },
+    })));
+    expect(container.textContent).toContain('未运行');
+    await act(async () => Simulate.load(frame));
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('不会重复发送');
+  });
+
+  test('retires only the handshake when a resident panel is parked before ready', async () => {
+    const app = { id: 'parked-handoff', title: 'Parked', url: 'https://app.example/', handoff: {
+      request_id: 'parked-request-123', topic_id: 'p2p_7_440', action: 'initialize',
+      expires_at: Date.now() + 60000, parameters: { data_path: '/data/parked' },
+    } };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://app.example/_launch/parked' });
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} isActive />));
+    const frame = container.querySelector('iframe');
+    const post = vi.spyOn(frame.contentWindow, 'postMessage');
+    await act(async () => Simulate.load(frame));
+    const hello = post.mock.calls[0][0];
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} isActive={false} />));
+    await act(async () => window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://app.example', source: frame.contentWindow,
+      data: { ...hello, type: 'ready', schema: { data_path: { type: 'path' } } },
+    })));
+    expect(post.mock.calls.map(call => call[0].type)).toEqual(['hello']);
+    expect(container.querySelector('iframe')).toBe(frame);
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+    await act(async () => Simulate.load(frame));
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+
+  test.each(['before-ready', 'after-ready', 'before-load'])('keeps the resident frame for a new handoff %s without another launch or load', async (timing) => {
+    const app = { id: 'resident-' + timing, title: 'Resident', url: 'https://app.example/', handoff: {
+      request_id: 'resident-first-' + timing, topic_id: 'p2p_7_440', action: 'initialize',
+      expires_at: Date.now() + 60000, parameters: { data_path: '/data/first' },
+    } };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch
+      .mockResolvedValueOnce({ launch_url: 'https://app.example/_launch/first-' + timing })
+      .mockResolvedValueOnce({ launch_url: 'https://app.example/_launch/second-' + timing });
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} />));
+    const frame = container.querySelector('iframe');
+    const src = frame.src;
+    const post = vi.spyOn(frame.contentWindow, 'postMessage');
+    const ready = async (hello) => act(async () => window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://app.example', source: frame.contentWindow,
+      data: { ...hello, type: 'ready', schema: { data_path: { type: 'path' } } },
+    })));
+    if (timing !== 'before-load') await act(async () => Simulate.load(frame));
+    const firstHello = post.mock.calls[0]?.[0];
+    if (timing === 'after-ready') await ready(firstHello);
+    const next = { ...app, handoff: { ...app.handoff, request_id: 'resident-second-' + timing, parameters: { data_path: '/data/second' } } };
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={next} />));
+    expect(container.querySelector('iframe')).toBe(frame);
+    expect(frame.src).toBe(src);
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+    if (timing === 'before-load') {
+      expect(post).not.toHaveBeenCalled();
+      await act(async () => Simulate.load(frame));
+    }
+    const secondHello = post.mock.calls.at(-1)[0];
+    expect(secondHello.type).toBe('hello');
+    expect(secondHello.request_id).toBe(next.handoff.request_id);
+    if (firstHello) {
+      expect(secondHello.nonce).not.toBe(firstHello.nonce);
+      const count = post.mock.calls.length;
+      await ready(firstHello);
+      expect(post).toHaveBeenCalledTimes(count);
+    }
+    await ready(secondHello);
+    expect(post.mock.calls.at(-1)[0]).toMatchObject({ type: 'handoff', request_id: next.handoff.request_id, parameters: { data_path: '/data/second' } });
+    const count = post.mock.calls.length;
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={{ ...next }} />));
+    expect(post).toHaveBeenCalledTimes(count);
+  });
+
+  test('does not send a replacement handoff while parked or through a visitor frame', async () => {
+    const app = { id: 'resident-visitor', title: 'Visitor', url: 'https://app.example/', handoff: {
+      request_id: 'visitor-first-request', topic_id: 'p2p_7_440', action: 'initialize',
+      expires_at: Date.now() + 60000, parameters: {},
+    } };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockRejectedValue(new Error('offline'));
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} />));
+    const frame = container.querySelector('iframe');
+    const post = vi.spyOn(frame.contentWindow, 'postMessage');
+    await act(async () => Simulate.load(frame));
+    const next = { ...app, handoff: { ...app.handoff, request_id: 'visitor-next-request' } };
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={next} isActive={false} />));
+    expect(container.querySelector('iframe')).toBe(frame);
+    expect(post).not.toHaveBeenCalled();
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={next} isActive />));
+    expect(container.querySelector('iframe')).toBe(frame);
+    expect(post).not.toHaveBeenCalled();
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['topic', 'auth'])('discards a real pending launch after %s changes', async (boundary) => {
+    const app = { id: 'pending-' + boundary, title: 'Pending', url: 'https://app.example/', handoff: {
+      request_id: 'pending-request-' + boundary, topic_id: 'p2p_7_440', action: 'initialize',
+      expires_at: Date.now() + 60000, parameters: {},
+    } };
+    let finish;
+    const previousToken = getToken();
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} />));
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('iframe')).toBeNull();
+    if (boundary === 'topic') {
+      await act(async () => root.render(<TestPanel initialTab="gateway" topicId="p2p_7_other" />));
+    } else {
+      await act(async () => setToken('resident-new-login'));
+    }
+    await act(async () => finish({ launch_url: 'https://app.example/_launch/stale-' + boundary }));
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.textContent).not.toContain('等待应用就绪');
+    if (boundary === 'auth') await act(async () => setToken(previousToken));
   });
 
   test('shows only files and results, with the result visibility explanation', async () => {

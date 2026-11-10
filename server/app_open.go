@@ -23,7 +23,7 @@ import (
 const (
 	// appOpenMetadataKey carries the request.
 	appOpenMetadataKey = "app_open"
-	// AppOpenContractV1 is the only accepted contract_version.
+	// AppOpenContractV1 is the backward-compatible open-only contract.
 	AppOpenContractV1 = "catsco.app-open.v1"
 	// appOpenMaxAppIDRunes bounds one application id.
 	appOpenMaxAppIDRunes = 128
@@ -35,6 +35,8 @@ const (
 type appOpenDocument struct {
 	AgentUID int64
 	AppID    string
+	Contract string
+	Handoff  map[string]interface{}
 }
 
 // hasAppOpenMetadata reports whether a metadata map claims to open an app.
@@ -72,7 +74,8 @@ func normalizeAppOpen(value interface{}) (*appOpenDocument, error) {
 		return nil, errors.New("app_open must be an object")
 	}
 	contract, _ := object["contract_version"].(string)
-	if strings.TrimSpace(contract) != AppOpenContractV1 {
+	contract = strings.TrimSpace(contract)
+	if contract != AppOpenContractV1 && contract != AppOpenContractV2 {
 		return nil, errors.New("app_open.contract_version is not supported")
 	}
 	appID, _ := object["app_id"].(string)
@@ -87,7 +90,15 @@ func normalizeAppOpen(value interface{}) (*appOpenDocument, error) {
 	if err != nil && object["agent_uid"] != nil {
 		return nil, errors.New("app_open.agent_uid is not a usable id")
 	}
-	return &appOpenDocument{AgentUID: agentUID, AppID: appID}, nil
+	document := &appOpenDocument{AgentUID: agentUID, AppID: appID, Contract: contract}
+	if contract == AppOpenContractV2 {
+		handoff, err := normalizeAppHandoff(object["handoff"])
+		if err != nil {
+			return nil, err
+		}
+		document.Handoff = handoff
+	}
+	return document, nil
 }
 
 // appOpenUID accepts the numeric encodings a JSON decoder can produce and
@@ -168,6 +179,9 @@ func (h *Hub) validateAppOpenMetadata(senderUID int64, topicID string, metadata 
 	if document.AgentUID != 0 && document.AgentUID != senderUID {
 		return stripped
 	}
+	if document.Handoff != nil && document.Handoff["topic_id"] != topicID {
+		return stripped
+	}
 	document.AgentUID = senderUID
 	if err := h.gatewayAnnotationsAppAuthorized(document.AgentUID, document.AppID); err != nil {
 		return stripped
@@ -176,9 +190,12 @@ func (h *Hub) validateAppOpenMetadata(senderUID int64, topicID string, metadata 
 		stripped = make(map[string]interface{}, 1)
 	}
 	stripped[appOpenMetadataKey] = map[string]interface{}{
-		"contract_version": AppOpenContractV1,
+		"contract_version": document.Contract,
 		"app_id":           document.AppID,
 		"agent_uid":        document.AgentUID,
+	}
+	if document.Handoff != nil {
+		stripped[appOpenMetadataKey].(map[string]interface{})["handoff"] = document.Handoff
 	}
 	return stripped
 }

@@ -1,3 +1,4 @@
+import { startAppHandoff, HANDOFF_LABELS, claimHandoffRequest } from '../utils/app-handoff';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import './gateway-annotation-popover.css';
 import { createPortal } from 'react-dom';
@@ -159,6 +160,7 @@ export default function CloudArtifactsPanel({
   topicId,
   initialTab = 'files',
   initialApp,
+  isActive = true,
   tab: controlledTab,
   onTabChange,
   onClose,
@@ -239,15 +241,64 @@ export default function CloudArtifactsPanel({
   const gatewayFrameURLRef = useRef('');
   // The live frame element, read at load time instead of from the event object.
   const gatewayFrameElementRef = useRef(null);
+  const gatewayLoadedFrameRef = useRef(null);
   const [gatewayRefreshing, setGatewayRefreshing] = useState(false);
+  const [handoffState, setHandoffState] = useState('');
+  const handoffStopRef = useRef(null);
+  const liveHandoffRef = useRef(null);
+  liveHandoffRef.current = isActive ? initialApp?.handoff : null;
+  const stopHandoff = useCallback(() => {
+    handoffStopRef.current?.();
+    handoffStopRef.current = null;
+  }, []);
+  // Parking stops the command channel, not the resident application's work.
+  useEffect(() => {
+    stopHandoff();
+    setHandoffState('');
+    if (!isActive) {
+      const preview = gatewayPreviewRef.current;
+      if (preview?.handoff) {
+        const { handoff: _discarded, ...navigation } = preview;
+        gatewayPreviewRef.current = navigation;
+        setGatewayPreview(navigation);
+      }
+    }
+    return stopHandoff;
+  }, [topicId, agentUid, isActive, initialApp?.handoff?.request_id, stopHandoff]);
+  const beginFrameHandoff = useCallback((frame) => {
+    stopHandoff();
+    if (!isActive) return;
+    const preview = gatewayPreviewRef.current;
+    const request = preview?.handoff;
+    if (!request || request.request_id !== liveHandoffRef.current?.request_id
+      || preview.authRevision !== getAuthRevision() || preview.authToken !== (getToken() || '')) {
+      setHandoffState(''); return;
+    }
+    if (preview.visitor) { setHandoffState('invalid'); return; }
+    const key = `${agentUid}:${topicId}:${request.request_id}`;
+    if (!claimHandoffRequest(key)) { setHandoffState('reloaded'); return; }
+    handoffStopRef.current = startAppHandoff({ frame, url: preview.url,
+      request, agentUid, topicId, onState: setHandoffState });
+  }, [agentUid, topicId, isActive, stopHandoff]);
+  const handoffFrameLoaded = (frame) => {
+    gatewayLoadedFrameRef.current = frame;
+    beginFrameHandoff(frame);
+  };
+  // A new command uses the resident document; its hello still waits for load.
+  useEffect(() => {
+    const frame = gatewayFrameElementRef.current;
+    if (frame && gatewayLoadedFrameRef.current === frame) beginFrameHandoff(frame);
+  }, [gatewayPreview?.handoff?.request_id, beginFrameHandoff]);
+
   const retireGatewayOpen = useCallback(() => {
+    stopHandoff();
     ++gatewayOpenSequenceRef.current;
     gatewayBindingControllerRef.current?.abort();
     gatewayBindingControllerRef.current = null;
     const previous = gatewayOpenRef.current;
     gatewayOpenRef.current = null;
     if (previous?.open_ref) void api.revokeArtifactOpenBinding(previous.open_ref).catch(() => {});
-  }, []);
+  }, [stopHandoff]);
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -385,26 +436,21 @@ export default function CloudArtifactsPanel({
       requestDetach(app, () => window.open(app.url, '_blank', 'noopener,noreferrer'));
       return;
     }
-    // Already showing exactly this application in this conversation: do nothing.
-    //
-    // Re-entering would mint a second launch code and rebuild the frame. The
-    // gateway treats a launch code as single-use, so the reload lands on either
-    // `code_expired_or_used` or a guest page — and a guest page is what makes the
-    // application ask for identity when a task is submitted. The refresh action
-    // asks for this explicitly, so it is the one caller that overrides it.
     if (!force) {
       const showing = gatewayPreviewRef.current;
-      if (showing
+      if (showing && gatewayFrameElementRef.current
         && String(showing.id) === String(app.id)
-        && String(showing.panelTopicId || '') === String(topicId || '')) {
-        // Same application, same conversation, frame still alive: returning to
-        // this conversation must NOT open it again. Re-opening mints a new
-        // launch code, which bumps the frame key, which reloads the iframe —
-        // that is the white flash and the lost in-app state on every switch.
-        //
-        // A relogin does not need a check here: `cc:auth-changed` clears
-        // `gatewayPreviewRef` (see the invalidate handler), so the guard cannot
-        // hold a stale session open.
+        && String(showing.url) === String(app.url)
+        && showing.panelAgentUid === agentUid
+        && String(showing.panelTopicId || '') === String(topicId || '')
+        && showing.authRevision === getAuthRevision()
+        && showing.authToken === (getToken() || '')) {
+        const handoff = app.handoff === liveHandoffRef.current ? app.handoff : undefined;
+        if (handoff !== showing.handoff) {
+          const nextPreview = { ...showing, handoff };
+          gatewayPreviewRef.current = nextPreview;
+          setGatewayPreview(nextPreview);
+        }
         return;
       }
     }
@@ -490,6 +536,7 @@ export default function CloudArtifactsPanel({
     }
     const nextPreview = {
       ...app,
+      handoff: app.handoff === liveHandoffRef.current ? app.handoff : undefined,
       viewerURL,
       visitor,
       artifact,
@@ -498,6 +545,7 @@ export default function CloudArtifactsPanel({
       // The conversation this open belongs to, so a repeat request from the same
       // conversation can be recognised as "already showing" and skipped.
       panelTopicId: String(topicId || ''),
+      panelAgentUid: agentUid,
       // The session that minted this open. A later relogin keeps the frame alive
       // but its identity is the previous visitor's, so "already showing" must
       // not cover a different session.
@@ -576,6 +624,7 @@ export default function CloudArtifactsPanel({
 
   useEffect(() => {
     const invalidate = () => {
+      liveHandoffRef.current = null;
       retireGatewayOpen();
       onGatewayFrameChange?.(null);
       gatewayPreviewRef.current = null;
@@ -685,11 +734,13 @@ export default function CloudArtifactsPanel({
       && consumed.topicId === topicId
       && String(consumed.appId) === String(initialApp.id)
       && String(consumed.appURL) === String(initialApp.url)
+      && consumed.requestId === initialApp.handoff?.request_id
       && Number(consumed.authRevision) === Number(getAuthRevision());
     if (sameApplication) return;
     consumedInitialAppRef.current = {
       appId: String(initialApp.id),
       appURL: String(initialApp.url),
+      requestId: initialApp.handoff?.request_id,
       agentUid,
       topicId,
       authRevision: getAuthRevision(),
@@ -1337,6 +1388,7 @@ export default function CloudArtifactsPanel({
                   新页面打开
                 </button>
               </div>
+              {handoffState && <p className="cloud-artifacts-gateway-viewer-note" role="status">{HANDOFF_LABELS[handoffState]}</p>}
               {gatewayAnnotationCapabilityNote && (
                 <p className="cloud-artifacts-gateway-viewer-note" role="status">
                   {gatewayAnnotationCapabilityNote}
@@ -1381,7 +1433,9 @@ export default function CloudArtifactsPanel({
                 // single-use code valid for the whole session.
                 src={gatewayPreview.viewerURL || gatewayPreview.url}
                 title={gatewayPreview.title || gatewayPreview.id}
-                onLoad={(event) => onGatewayFrameChange?.({
+                onLoad={(event) => {
+                  handoffFrameLoaded(event?.currentTarget || gatewayFrameElementRef.current);
+                  onGatewayFrameChange?.({
                   frame: event?.currentTarget || gatewayFrameElementRef.current,
                   url: gatewayPreview.viewerURL || gatewayPreview.url,
                   artifact: gatewayPreview.artifact,
@@ -1391,7 +1445,7 @@ export default function CloudArtifactsPanel({
                     appId: gatewayPreview.id,
                     title: gatewayPreview.title || gatewayPreview.id,
                   },
-                })}
+                }); }}
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
                 referrerPolicy="no-referrer"
                 style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}
