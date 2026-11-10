@@ -19,6 +19,7 @@ import { marketplaceApi } from '../skillhub-marketplace-api';
 import { categoryKey, readCategoryDrafts, inferSkillCategory, localizedSkillText, skillUploadedTimestamp, SkillCategoryField, SkillCategoryFilters } from './skillhub-categories';
 import { skillSourceQuery } from './skillhub-presentation';
 import { skillIconKey } from './skillhub-icons';
+import { readSkillSort, writeSkillSort, skillSortOptions, skillAddedTimestamp, sortSkills } from './skillhub-sort';
 import {
   formatSkillHubPublisher,
   formatSkillHubVersion,
@@ -67,6 +68,16 @@ export default function SkillHubContent(props) {
   const cancelScrollRestore = () => { restoreScrollRef.current = null; };
   const [languagePreference, setLanguagePreference] = useState(() => ({ owner: categoryOwner, value: readSkillLanguage(categoryOwner) }));
   const language = languagePreference.owner === categoryOwner ? languagePreference.value : readSkillLanguage(categoryOwner);
+  const [sortPreferences, setSortPreferences] = useState(() => ({
+    owner: categoryOwner, added: readSkillSort(categoryOwner, 'added'), catalogue: readSkillSort(categoryOwner, 'catalogue'),
+  }));
+  const sortOrders = sortPreferences.owner === categoryOwner ? sortPreferences : {
+    added: readSkillSort(categoryOwner, 'added'), catalogue: readSkillSort(categoryOwner, 'catalogue'),
+  };
+  const changeSort = (section, value) => {
+    setSortPreferences({ ...sortOrders, owner: categoryOwner, [section]: value });
+    writeSkillSort(categoryOwner, section, value);
+  };
   const changeLanguage = value => {
     setLanguagePreference({ owner: categoryOwner, value });
     try { localStorage.setItem(`catsco.skillhub.language.${categoryOwner}`, value); } catch {}
@@ -79,7 +90,7 @@ export default function SkillHubContent(props) {
     setCategoryDrafts({ owner: categoryOwner, values });
     try { localStorage.setItem(`catsco.skillhub.categories.${categoryOwner}`, JSON.stringify(values)); } catch {}
   };
-  const categorizedProps = { ...props, language, selectedCategory: category, categoryOf, onSkillCategoryChange: changeCategory };
+  const categorizedProps = { ...props, language, sortOrders, selectedCategory: category, categoryOf, onSkillCategoryChange: changeCategory };
   const guardedProps = {
     ...props,
     onSelectAgent: (value) => navigate ? navigate(() => props.onSelectAgent(value)) : props.onSelectAgent(value),
@@ -127,6 +138,8 @@ export default function SkillHubContent(props) {
               }}
               language={language}
               onLanguageChange={changeLanguage}
+              sortOrder={sortOrders[visibleSection]}
+              onSortChange={value => changeSort(visibleSection, value)}
             />
             <SkillCategoryFilters value={category} onChange={setCategory} showOther={category === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other')} />
             {saving && !loadingDefinition && (
@@ -258,6 +271,17 @@ function SkillNavigation(props) {
           <button type='button' aria-pressed={props.language === 'source'} onClick={() => props.onLanguageChange('source')}>原文</button>
           <button type='button' aria-pressed={props.language === 'zh-CN'} onClick={() => props.onLanguageChange('zh-CN')}>中文</button>
         </div>
+        <CustomSelect
+          ariaLabel={`排序：${skillSortOptions(activeSection).find(([value]) => value === props.sortOrder)?.[1]}`}
+          className='cc-skillhub-sort'
+          triggerClassName='cc-skillhub-sort-trigger'
+          listboxAriaLabel='Skill 排序方式'
+          menuClassName='cc-skillhub-sort-options'
+          value={props.sortOrder}
+          onValueChange={props.onSortChange}
+        >
+          {skillSortOptions(activeSection).map(([value, label]) => <option key={value} value={value}>排序：{label}</option>)}
+        </CustomSelect>
         <SkillSearch {...props} />
         {activeSection === 'added' && <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
           <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={16} aria-hidden='true' />
@@ -318,10 +342,16 @@ function AddedSkills(props) {
     skill,
     props.addedSkillPresentationByID.get(skill.skillId)?.details,
   );
-  // Keep the server order for legacy references with no recorded addition time.
-  const visibleSkills = [...definition.skills]
-    .filter(matches).filter(skill => !updatesOnly || isUpdateable(skill))
-    .sort((left, right) => skillAddedTimestamp(right) - skillAddedTimestamp(left));
+  const visibleSkills = sortSkills(definition.skills
+    .filter(matches).filter(skill => !updatesOnly || isUpdateable(skill)), {
+    order: props.sortOrders.added,
+    language: props.language,
+    timeOf: skillAddedTimestamp,
+    presentationOf: skill => {
+      const presentation = props.addedSkillPresentationByID.get(skill.skillId);
+      return { ...skill, ...presentation?.details, displayName: presentation?.label || skill.displayName || skill.localName || skill.skillId };
+    },
+  });
   const visibleSkillCount = visibleSkills.length;
   const totalSkillCount = formalSkills.length + localOnlySkills.length;
   return (
@@ -370,12 +400,6 @@ function AbilityGroup({ label, skills, ...props }) {
       </div>
     </section>
   );
-}
-
-function skillAddedTimestamp(skill) {
-  const value = skill.addedAt || skill.added_at || skill.installedAt || skill.installed_at;
-  const timestamp = typeof value === 'number' ? value : Date.parse(String(value || ''));
-  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function AddedSkillItem({ addedSkillPresentationByID, categoryOf, definitionReady, isReadOnly, language, onLoadSkillHistory, onRemoveSkill, onUpdateSkill, saving, selectedBotUID, sharingSkill, skill, skillAction }) {
@@ -839,7 +863,8 @@ function Catalogue(props) {
     catalogueError, libraryLocalError, librarySkills: legacySkills, loadingCatalogue,
     loadingLibraryLocalSkills,
   } = props;
-  const market = useMarketplaceCatalogue(skillSourceQuery(props.query || ''));
+  const completeSort = props.sortOrders.catalogue !== 'time-desc';
+  const market = useMarketplaceCatalogue(skillSourceQuery(props.query || ''), { loadAll: completeSort });
   const hasMarketPage = (market.enabled || market.cached) && Boolean(market.state?.skills);
   // Render the legacy catalogue immediately while the optional marketplace
   // request is warming up. The cloud response replaces it in place once it
@@ -848,10 +873,11 @@ function Catalogue(props) {
     ? mergeMarketplaceLibrary(legacySkills, market.state.skills, market.category)
     : legacySkills;
   const search = normalizeSkillSearchValue(props.query);
-  const librarySkills = availableSkills
+  const librarySkills = sortSkills(availableSkills
     .filter(skill => !props.selectedCategory || props.categoryOf(skill) === props.selectedCategory)
-    .filter(skill => !search || [skill.displayName, skill.skillId, localizedSkillText(skill, 'zh-CN').name].some(value => normalizeSkillSearchValue(value).includes(search)))
-    .sort((left, right) => skillUploadedTimestamp(right) - skillUploadedTimestamp(left));
+    .filter(skill => !search || [skill.displayName, skill.skillId, localizedSkillText(skill, 'zh-CN').name].some(value => normalizeSkillSearchValue(value).includes(search))), {
+    order: props.sortOrders.catalogue, language: props.language, timeOf: skillUploadedTimestamp,
+  });
   const loading = (market.enabled ? Boolean(market.state?.loading) : loadingCatalogue) || loadingLibraryLocalSkills;
   return (
     <section id='skillhub-catalogue-panel' data-loading-region='' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
@@ -867,7 +893,7 @@ function Catalogue(props) {
         <EmptyState icon={<Search size={21} />} title='没有找到匹配的能力' copy='换一个更宽泛的关键词再试试。' />
       ) : (
         <>
-          {loading && <div className='cc-skillhub-library-status' role='status'><RefreshCw className='is-spinning' size={13} aria-hidden='true' /> 正在更新能力…</div>}
+          {loading && <div className='cc-skillhub-library-status' role='status'><RefreshCw className='is-spinning' size={13} aria-hidden='true' /> {completeSort ? '正在加载完整能力库以排序…' : '正在更新能力…'}</div>}
           <div className='cc-skillhub-grid'>
             {librarySkills.map((skill) => <CatalogueCard key={skill.skillId} skill={skill} {...props} definitionReady={props.definitionReady && !market.cached} />)}
           </div>

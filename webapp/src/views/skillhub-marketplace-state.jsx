@@ -81,7 +81,7 @@ export function MarketplaceProvider({ children, browseStateRef }) {
 
 // The new filtered catalogue is display-only. It does not replace the legacy
 // metadata map used by Agent status, update detection, or installation rules.
-export function useMarketplaceCatalogue(query) {
+export function useMarketplaceCatalogue(query, { loadAll = false } = {}) {
   const { enabled, checkingCapabilities, capabilitiesUnavailable, refreshCapabilities, browseStateRef } = useMarketplace();
   const allowCachedCatalogue = checkingCapabilities || capabilitiesUnavailable;
   const saved = browseStateRef?.current?.marketplace;
@@ -89,7 +89,7 @@ export function useMarketplaceCatalogue(query) {
   const [category, setCategory] = useState(savedCurrent?.category || '');
   const [reload, setReload] = useState(0);
   const pending = useRef(null);
-  const key = JSON.stringify([query, category, reload]);
+  const key = JSON.stringify([query, category, reload, loadAll]);
   const filterKey = JSON.stringify([query, category]);
   const [state, setState] = useState(() => savedCurrent?.filterKey === filterKey
     ? { ...savedCurrent.data, key, loading: false, error: '' }
@@ -119,7 +119,7 @@ export function useMarketplaceCatalogue(query) {
         if (pageCursor) seenCursors.add(pageCursor);
         // Revalidate the already visible pages together so returning to a
         // scrolled list does not shrink it to page one underneath the user.
-      } while (!cursor && pageCursor && pageCount < (retained?.pageCount || 1));
+      } while (!cursor && pageCursor && (loadAll || pageCount < (retained?.pageCount || 1)));
       const data = { skills: entries, pageCount,
         total: result.total, cursor: result.nextCursor || '', counts: Object.fromEntries((Array.isArray(result.categoryCounts) ? result.categoryCounts : [])
           .filter((c) => typeof c?.category === 'string' && Number.isSafeInteger(c.count) && c.count >= 0)
@@ -137,7 +137,8 @@ export function useMarketplaceCatalogue(query) {
         setState(null);
         setReload((value) => value + 1); // Restart page one, never retry a mutation.
       } else setState({ ...(previous || retained || {}), key, loading: false,
-        error: previous ? '后续页面暂不可用，已保留当前结果。' : retained ? '刷新暂不可用，已保留上次加载的能力。请稍后重试。' : '新版分类暂不可用，以下显示原有能力库（未按分类筛选）。' });
+        error: loadAll ? '完整能力库暂未加载完成，以下仅对当前已加载的能力排序，请重试。'
+          : previous ? '后续页面暂不可用，已保留当前结果。' : retained ? '刷新暂不可用，已保留上次加载的能力。请稍后重试。' : '新版分类暂不可用，以下显示原有能力库（未按分类筛选）。' });
     }
   };
   useEffect(() => {

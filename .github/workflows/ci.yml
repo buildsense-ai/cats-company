@@ -99,7 +99,9 @@ jobs:
         env:
           # These Node/Go contracts never start the desktop shell.
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-        run: npm ci --prefer-offline --no-audit --fund=false
+        # The pinned lock contains npmmirror tarball URLs. Override only that
+        # host; keep locked versions, integrity checks and lifecycle scripts.
+        run: npm ci --prefer-offline --no-audit --fund=false --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com
       - name: Verify real Runtime source checks without skip fallback
         working-directory: cats-company
         env:
@@ -164,7 +166,8 @@ jobs:
         env:
           # Keep lifecycle scripts, but avoid an unrelated desktop binary CDN.
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-        run: npm ci --prefer-offline --no-audit --fund=false
+        # Use the official tarballs when the pinned lock's mirror is unavailable.
+        run: npm ci --prefer-offline --no-audit --fund=false --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com
       - name: Verify Runtime + Cloud composition and exotic encoding vectors
         working-directory: cats-company
         env:
