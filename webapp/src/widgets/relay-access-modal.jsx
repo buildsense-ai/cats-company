@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Cloud, Copy, Cpu, CreditCard, ExternalLink, Gift, History, KeyRound, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Cloud, Copy, Cpu, CreditCard, ExternalLink, Gift, History, KeyRound, Percent, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
-import { salePlansForOffers } from './plans/plan-offers';
+import { resolvePlanOffers, salePlansForOffers } from './plans/plan-offers';
 import LoadingState from './loading-state';
 import { restoreDialogFocus } from '../utils/use-dialog-behavior';
 import {
@@ -665,7 +665,7 @@ function CommercialPlanCards({
         const pendingOrder = purchaseBlocked || plan.catalogUnavailable ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
         return (
           <article
-            className={`relay-access-plan-row${hasCurrentCommercialPlans ? ' official' : ''}${presentation.recommended ? ' recommended' : ''}${presentation.pro ? ' pro' : ''}${presentation.wide ? ' wide' : ''}${presentation.highlights?.length ? ' has-highlights' : ''}`}
+            className={`relay-access-plan-row${hasCurrentCommercialPlans ? ' official' : ''}${presentation.recommended ? ' recommended' : ''}${presentation.pro ? ' pro' : ''}${presentation.wide ? ' wide' : ''}${presentation.highlights?.length ? ' has-highlights' : ''}${presentation.creditPlan ? ' credit-plan' : ''}`}
             key={plan.id}
           >
             <div className="relay-access-plan-heading">
@@ -674,11 +674,12 @@ function CommercialPlanCards({
             </div>
             <strong className="relay-access-plan-name">{plan.name}</strong>
             <div className="relay-access-plan-price">
-              {hasCurrentCommercialPlans && <span className="relay-access-plan-currency">¥</span>}
+              {hasCurrentCommercialPlans && !presentation.creditPlan && <span className="relay-access-plan-currency">¥</span>}
               <strong>{hasCurrentCommercialPlans ? formatPriceAmountFen(plan.price_fen) : formatPriceFen(plan.price_fen)}</strong>
               <span>{commercialPlanCycle(plan)}</span>
+              {presentation.originalPriceFen > plan.price_fen && <del className="relay-access-plan-original-price" aria-label={`原价 ${formatPriceAmountFen(presentation.originalPriceFen)} 元每月`}>{formatPriceAmountFen(presentation.originalPriceFen)}</del>}
             </div>
-            <span className="relay-access-plan-tagline">{presentation.tagline}</span>
+            {presentation.tagline != null && <span className="relay-access-plan-tagline">{presentation.tagline}</span>}
             <p>{plan.description || `${plan.duration_days} 天有效`}</p>
             {!compact && <em>{commercialUsageTextForUser(plan, presentation)}</em>}
             {!compact && <span className="relay-access-plan-audience">适合：{presentation.audience}</span>}
@@ -709,7 +710,7 @@ function CommercialPlanCards({
             {presentation.highlights?.length > 0 && (
               <dl className="relay-access-plan-highlights">
                 {presentation.highlights.map(highlight => {
-                  const Icon = highlight.kind === 'cloud' ? Cloud : Cpu;
+                  const Icon = highlight.kind === 'rate' ? Percent : highlight.kind === 'cloud' ? Cloud : Cpu;
                   return <div key={highlight.label}>
                     <dt><Icon size={17} aria-hidden="true" />{highlight.label}</dt>
                     <dd>{highlight.value}{highlight.unit && <span>{highlight.unit}</span>}</dd>
@@ -794,7 +795,7 @@ function EnterprisePlanCard() {
   );
 }
 
-export default function RelayAccessModal({ onClose, initialPlanSlug = '', initialPlanChooserOpen = false, showFreePlan = true, planPresentationOverrides = {}, teamPlanContent = null, enterprisePlanContent = null, planChooserNote = '', planOffers = null, personalPlanExcludedSlugs = [], returnFocusRef }) {
+export default function RelayAccessModal({ onClose, initialPlanSlug = '', initialPlanChooserOpen = false, showFreePlan = true, planPresentationOverrides = {}, teamPlanContent = null, enterprisePlanContent = null, planChooserNote = '', planOffers = null, planChooserOffers = null, personalPlanExcludedSlugs = [], returnFocusRef }) {
   const feedback = useFeedback();
   const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [relayKey, setRelayKey] = useState(null);
@@ -1086,7 +1087,9 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
   const hasCurrentCommercialPlans = Boolean(planOffers) || catalogPlans.some(plan => commercialPlanTier(plan) > 0);
   const salePlans = planOffers ? salePlansForOffers(planOffers, catalogPlans, commercialCatalog?.enabled === true) : catalogPlans;
   const personalCatalogPlans = catalogPlans.filter(plan => !personalPlanExcludedSlugs.includes(plan.slug));
-  const personalSalePlans = planOffers
+  const personalSalePlans = planChooserOffers
+    ? resolvePlanOffers(planChooserOffers, personalCatalogPlans, commercialCatalog?.enabled === true)
+    : planOffers
     ? salePlansForOffers(planOffers, personalCatalogPlans, commercialCatalog?.enabled === true)
     : personalCatalogPlans;
   const allSalePlansAreMonthly = salePlans.length > 0 && salePlans.every(
@@ -1805,7 +1808,9 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                 <div>
                   <span>{purchaseIsRenewal ? '确认续费' : '确认购买'}</span>
                   <strong>{purchasePlan.name}</strong>
-                  <p>{purchaseIsRenewal
+                  <p>{purchasePlan.catalogUnavailable && planPresentationOverrides[purchasePlan.slug]?.purchaseDescription
+                    ? planPresentationOverrides[purchasePlan.slug].purchaseDescription
+                    : purchaseIsRenewal
                     ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期日顺延 ${Number(purchasePlan.duration_days || 30)} 天；处于到期保留期的云托管员工会自动恢复，已释放的实例无法恢复；不会自动扣款。`
                     : purchaseIsUpgrade
                     ? `${formatPriceFen(purchasePlan.price_fen)}，支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 ${Number(purchasePlan.duration_days || 30)} 天，额度按新套餐重置。`

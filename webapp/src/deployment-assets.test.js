@@ -5,7 +5,7 @@ import viteConfig from '../vite.config.js';
 
 function nginxLocationBlock(config, path) {
   const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const startMatch = config.match(new RegExp(`location\\s+${escapedPath}\\s*\\{`));
+  const startMatch = config.match(new RegExp(`location\\s+(?:(?:=|\\^~|~\\*?)\\s+)?${escapedPath}\\s*\\{`));
   expect(startMatch, `missing Nginx location for ${path}`).not.toBeNull();
   let depth = 0;
   const start = startMatch.index + startMatch[0].length - 1;
@@ -76,6 +76,10 @@ describe('production asset caching', () => {
       [
         '../deploy/tencent/nginx/catscompany-app.conf',
         ['/api/', '/api/stt/realtime', '/v1/', '/uploads/', '/v0/channels'],
+      ],
+      [
+        '../deploy/tencent/nginx/catscompany-app-cn.conf',
+        ['/uploads/'],
       ],
       [
         '../deploy/tencent/nginx/catscompany-api.conf',

@@ -317,8 +317,8 @@ func TestDeviceConnectorRefreshAddsUploadScopeWithoutDroppingExistingScopes(t *t
 	if err != nil {
 		t.Fatalf("ParseDeviceConnectorToken refreshed: %v", err)
 	}
-	if !deviceConnectorHasScope(claims, "device:refresh") || !deviceConnectorHasScope(claims, "device:upload") {
-		t.Fatalf("refresh scopes = %#v, want existing refresh scope and upload migration scope", claims.Scopes)
+	if !deviceConnectorHasScope(claims, "device:refresh") || !deviceConnectorHasScope(claims, "device:upload") || !deviceConnectorHasScope(claims, "device:download") {
+		t.Fatalf("refresh scopes = %#v, want existing refresh and separate upload/download scopes", claims.Scopes)
 	}
 	if !containsDeviceCapability(claims.Capabilities, "send_file") {
 		t.Fatalf("refresh capabilities = %#v, want send_file migration capability", claims.Capabilities)
@@ -358,8 +358,8 @@ func TestDeviceConnectorRefreshDoesNotGrantUploadToLegacyCapabilitySet(t *testin
 	if err != nil {
 		t.Fatalf("ParseDeviceConnectorToken refreshed: %v", err)
 	}
-	if deviceConnectorHasScope(claims, "device:upload") || containsDeviceCapability(claims.Capabilities, "send_file") {
-		t.Fatalf("legacy refresh escalated upload authorization: scopes=%#v capabilities=%#v", claims.Scopes, claims.Capabilities)
+	if deviceConnectorHasScope(claims, "device:upload") || deviceConnectorHasScope(claims, "device:download") || containsDeviceCapability(claims.Capabilities, "send_file") {
+		t.Fatalf("legacy refresh escalated file authorization: scopes=%#v capabilities=%#v", claims.Scopes, claims.Capabilities)
 	}
 }
 
@@ -469,8 +469,8 @@ func TestDeviceConnectorPairingToUploadAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse enrolled connector token: %v", err)
 	}
-	if !deviceConnectorHasScope(claims, "device:upload") || !containsDeviceCapability(claims.Capabilities, "send_file") {
-		t.Fatalf("enrolled token lacks upload authorization: scopes=%#v capabilities=%#v", claims.Scopes, claims.Capabilities)
+	if !deviceConnectorHasScope(claims, "device:upload") || !deviceConnectorHasScope(claims, "device:download") || !containsDeviceCapability(claims.Capabilities, "send_file") {
+		t.Fatalf("enrolled token lacks file authorization: scopes=%#v capabilities=%#v", claims.Scopes, claims.Capabilities)
 	}
 
 	uploadAuth := DeviceConnectorUploadAuthWithDB(store, hub)(func(w http.ResponseWriter, r *http.Request) {
@@ -652,5 +652,60 @@ func TestUnlinkDeviceRevokesConnectorToken(t *testing.T) {
 	connectorHandler.HandleRegisterDevice(registerAgainRec, registerAgainReq)
 	if registerAgainRec.Code != http.StatusForbidden {
 		t.Fatalf("revoked token register status=%d body=%s", registerAgainRec.Code, registerAgainRec.Body.String())
+	}
+}
+
+func TestDeviceConnectorDownloadScopeAndOwnerRevalidation(t *testing.T) {
+	db := &deviceHandlerStore{users: map[int64]*types.User{
+		7: {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+	}}
+	hub := NewHub(db, nil)
+	for _, tc := range []struct {
+		name, scope, method string
+		state               int
+		bot, revoked        bool
+		want                int
+	}{
+		{name: "download", scope: "device:download", method: "GET", want: 204},
+		{name: "head", scope: "device:download", method: "HEAD", want: 204},
+		{name: "upload cannot read", scope: "device:upload", method: "GET", want: 403},
+		{name: "download cannot write", scope: "device:download", method: "POST", want: 405},
+		{name: "disabled", scope: "device:download", method: "GET", state: 1, want: 403},
+		{name: "bot owner", scope: "device:download", method: "GET", bot: true, want: 403},
+		{name: "revoked", scope: "device:download", method: "GET", revoked: true, want: 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db.users[7].State = tc.state
+			db.users[7].AccountType = types.AccountHuman
+			if tc.bot {
+				db.users[7].AccountType = types.AccountBot
+			}
+			// Scope alone provides identity; message authorization happens next.
+			token, err := GenerateDeviceConnectorToken(DeviceConnectorTokenInput{UID: 7, DeviceID: "download-device", Scopes: []string{tc.scope}, Capabilities: []string{"read_file"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims, err := ParseDeviceConnectorToken(token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.revoked {
+				if err := hub.revokeDeviceConnectorToken(claims.ID, claims.ExpiresAt.Time); err != nil {
+					t.Fatal(err)
+				}
+			}
+			req := httptest.NewRequest(tc.method, "/uploads/private.pdf", nil)
+			req.Header.Set("Authorization", "DeviceConnector "+token)
+			rec := httptest.NewRecorder()
+			NewFileMediaAuth(db, hub).Middleware(func(w http.ResponseWriter, r *http.Request) {
+				if UIDFromContext(r.Context()) != 7 {
+					t.Errorf("owner uid=%d", UIDFromContext(r.Context()))
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status=%d want=%d body=%s", rec.Code, tc.want, rec.Body.String())
+			}
+		})
 	}
 }

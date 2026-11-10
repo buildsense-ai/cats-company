@@ -1,3 +1,4 @@
+import { normalizeHandoff } from './app-handoff';
 // A conversation's Agent can ask the viewer to open one of its applications:
 // the user says "open the topic-research app" and the Agent answers with a
 // structured command instead of hoping the client parses prose.
@@ -28,16 +29,20 @@ function isPlainObject(value) {
 // the stamp would have derived from.
 export function normalizeAppOpenCommand(value) {
   if (!isPlainObject(value)) return null;
-  if (String(value.contract_version ?? '') !== APP_OPEN_CONTRACT) return null;
+  const v2 = value.contract_version === 'catsco.app-open.v2';
+  if (!v2 && String(value.contract_version ?? '') !== APP_OPEN_CONTRACT) return null;
+  const handoff = v2 ? normalizeHandoff(value.handoff) : null;
+  if (v2 && !handoff) return null;
   const appId = String(value.app_id ?? '').trim();
   if (!appId) return null;
   const rawAgentUid = value.agent_uid;
   if (rawAgentUid === undefined || rawAgentUid === null || rawAgentUid === '') {
+    if (v2) return null;
     return { agentUid: 0, appId };
   }
   const agentUid = Number(rawAgentUid);
-  if (!Number.isFinite(agentUid) || agentUid <= 0) return null;
-  return { agentUid, appId };
+  if (!Number.isSafeInteger(agentUid) || agentUid <= 0) return null;
+  return { agentUid, appId, ...(handoff ? { handoff } : {}) };
 }
 
 export function appOpenCommandFromMessage(message) {
@@ -45,6 +50,7 @@ export function appOpenCommandFromMessage(message) {
   if (!isPlainObject(metadata)) return null;
   const command = normalizeAppOpenCommand(metadata[APP_OPEN_METADATA_KEY]);
   if (!command) return null;
+  if (command.handoff && command.agentUid !== Number(message?.from_uid ?? message?.from ?? 0)) return null;
   if (command.agentUid > 0) return command;
   // No stamped identity: fall back to the authenticated sender of the message.
   // That is the same value the server would have stamped, so trusting it here
@@ -90,7 +96,8 @@ export function appOpenCommandForMessage({
   const command = appOpenCommandFromMessage(message);
   if (!command) return null;
   if (!appOpenCommandAppliesToTopic(command, topicAgentUid)) return null;
-  const key = appOpenMessageKey(message);
+  if (command.handoff && (command.handoff.topic_id !== String(topic) || command.handoff.expires_at <= Date.now())) return null;
+  const key = command.handoff ? `${topic}:${command.agentUid}:${command.handoff.request_id}` : appOpenMessageKey(message);
   if (key && seenKeys?.has?.(key)) return null;
   return { ...command, key };
 }

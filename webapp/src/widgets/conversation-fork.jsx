@@ -63,8 +63,11 @@ export function ConversationForkMenuItem({ topic, userId, name, onActivateTopic 
   </>;
 }
 
-export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) {
+export function ConversationForkNotice({ fork, canCreate = false, buttonRole, historyLoading = false }) {
   const { operation, provenance, busy, error, targetError, checking, blocked } = fork;
+  // Initial history already owns the loading feedback. Keep actionable errors
+  // and confirmed initialization states visible, and only defer the generic check.
+  const deferTargetCheck = historyLoading && !targetError && !provenance;
   return (
     <>
       {/* A copy reads as an ordinary conversation: the name already says where it
@@ -72,7 +75,7 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
           user cannot act on. */}
       {/* Dismissing hides the failure report only. A separate lookup error still
           needs its own "重新查询" action, so keep the block when one is present. */}
-      {blocked && !(fork.noticeDismissed && provenance?.state === 'failed' && !targetError)
+      {blocked && !deferTargetCheck && !(fork.noticeDismissed && provenance?.state === 'failed' && !targetError)
         && <div className="cc-fork-notice" role={targetError || provenance?.state === 'failed' ? 'alert' : 'status'}>
         {checking && <LoaderCircle size={16} className="is-spinning" aria-hidden="true" />}
         <span>{targetError ? `无法确认会话状态：${targetError}`

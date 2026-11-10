@@ -26,7 +26,18 @@ import RelayAccessModal from './relay-access-modal';
 import { api } from '../api';
 import EnterpriseTeam from './plans/enterprise-team';
 import CatsCoPlansModal from './plans/catsco-plans-modal';
-import { personalPlanOffers, resolvePlanOffers, salePlansForOffers, teamPlanOffer } from './plans/plan-offers';
+import { personalPlanOffers, planPresentationOverrides, resolvePlanOffers, salePlansForOffers, teamPlanOffer } from './plans/plan-offers';
+import { creditPlanOffers } from './plans/credit-plan-offers';
+import EnterpriseServices from './plans/enterprise-services';
+
+// Keep regression coverage for existing Token contracts and their live order
+// paths independently of the new credit-only chooser presentation.
+function LegacyPlansModal(props) {
+  return <RelayAccessModal {...props} showFreePlan={false} planOffers={personalPlanOffers}
+    personalPlanExcludedSlugs={[teamPlanOffer.slug]} planPresentationOverrides={planPresentationOverrides}
+    teamPlanContent={({ onSelectPlan, catalogPlans, catalogEnabled }) => <EnterpriseTeam onSelectPlan={onSelectPlan} plan={resolvePlanOffers([teamPlanOffer], catalogPlans, catalogEnabled)[0]} />}
+    enterprisePlanContent={<EnterpriseServices />} />;
+}
 
 describe('RelayAccessModal commercial rollout', () => {
   let container;
@@ -209,9 +220,28 @@ describe('RelayAccessModal commercial rollout', () => {
 
   async function renderIntegratedPlans(props = {}) {
     await act(async () => {
-      root.render(<CatsCoPlansModal onClose={vi.fn()} {...props} />);
+      root.render(<LegacyPlansModal onClose={vi.fn()} {...props} />);
     });
   }
+
+  it('migrates the credit chooser without submitting a legacy product at the new price', async () => {
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans: personalPlanOffers.map((plan, index) => ({ ...plan, id: 800 + index })) });
+    await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} initialPlanChooserOpen />); });
+    const chooser = container.querySelector('#relay-access-personal-plan-panel');
+    expect([...chooser.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent)).toEqual(['59.9', '99.9', '169.9']);
+    expect([...chooser.querySelectorAll('.relay-access-plan-highlights dd')].map(el => el.textContent)).toEqual(['60credit', '官方价 × 95%', '105credit', '官方价 × 90%', '189credit', '官方价 × 85%']);
+    expect(chooser.querySelectorAll('.relay-access-plan-currency')).toHaveLength(0);
+    expect(chooser.querySelectorAll('.lucide-percent')).toHaveLength(3);
+    expect(chooser.querySelectorAll('.recommended')).toHaveLength(1);
+    expect(chooser.querySelector('.relay-access-plan-original-price')?.textContent).toBe('119.9');
+    expect(chooser.querySelectorAll('.relay-access-plan-footnote')).toHaveLength(0);
+    await act(async () => chooser.querySelectorAll('button')[1].click());
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('按自然月对日计算');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).not.toContain('15 天');
+    expect(findButton('暂未开放购买').disabled).toBe(true);
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+    expect(creditPlanOffers.every(plan => !personalPlanOffers.some(old => old.slug === plan.slug))).toBe(true);
+  });
 
   it('keeps the live catalogue purchasable when no draft offer matches', async () => {
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'alipay_page' }], plans: [

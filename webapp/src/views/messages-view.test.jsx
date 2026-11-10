@@ -37,9 +37,10 @@ vi.mock('../components/feedback-system', () => ({
   useFeedback: () => ({ confirm: feedbackConfirm, notify: feedbackNotify }),
 }));
 
-vi.mock('../widgets/chat-message', () => ({
+vi.mock('../widgets/chat-message', async importOriginal => ({
   __esModule: true,
   downloadableMediaURL: (url) => `${url}${url.includes('?') ? '&' : '?'}download=1`,
+  fileMediaMessageIdForPreview: (await importOriginal()).fileMediaMessageIdForPreview,
   default: function MockChatMessage(props) {
     const [workingExpanded, setWorkingExpanded] = React.useState(false);
     const fileBlock = props.message?.content_blocks?.find?.((block) => block.type === 'file');
@@ -1033,6 +1034,36 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.mock-create-conversation-fork')).toBeNull();
   });
 
+  it.each(['history-first', 'check-first'])('uses one initial conversation loader when requests finish %s', async (order) => {
+    let resolveHistory, rejectCheck;
+    api.getMessages.mockImplementationOnce(() => new Promise(resolve => { resolveHistory = resolve; }));
+    api.getConversationFork.mockImplementationOnce(() => new Promise((resolve, reject) => { rejectCheck = reject; }));
+    await mountTopic(root, 'grp_99', { isGroup: true, groupId: 99 });
+    expect(container.querySelector('.cc-history-loading')).not.toBeNull();
+    expect(container.textContent).not.toContain('正在确认会话状态');
+    expect(container.querySelector('textarea').disabled).toBe(true);
+    const historyReady = async () => act(async () => { resolveHistory({ messages: [] }); await flushPromises(); });
+    const checkReady = async () => act(async () => {
+      rejectCheck(Object.assign(new Error('session_fork_not_found'), { status: 404 }));
+      await flushPromises();
+    });
+    if (order === 'history-first') {
+      await historyReady();
+      expect(container.querySelector('.cc-history-loading')).toBeNull();
+      expect(container.textContent).toContain('正在确认会话状态');
+      expect(container.querySelector('textarea').disabled).toBe(true);
+      await checkReady();
+    } else {
+      await checkReady();
+      expect(container.querySelector('.cc-history-loading')).not.toBeNull();
+      expect(container.textContent).not.toContain('正在确认会话状态');
+      await historyReady();
+    }
+    expect(container.querySelector('.cc-history-loading')).toBeNull();
+    expect(container.textContent).not.toContain('正在确认会话状态');
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('disables the pending target composer without marking the copy in the chat', async () => {
     api.getConversationFork.mockResolvedValueOnce({
       request_id: 'pending-copy', source_topic_id: 'p2p_1_2', target_topic_id: 'grp_99', state: 'pending',
@@ -1085,6 +1116,144 @@ describe('MessagesView composer draft isolation', () => {
       .find((button) => button.textContent.includes('返回搜索结果'));
     await act(async () => backButton.click());
     expect(onBackToSearch).toHaveBeenCalledTimes(1);
+  });
+
+  describe('structured app-open catalogue recovery', () => {
+    const app = { id: 'handoff-demo', title: 'Handoff demo', url: 'https://artifact.catsco.cc/handoff-demo/' };
+    const data = { topic: 'p2p_1_440', from: 'usr440', seq: 9801, type: 'text', content: 'Application request',
+      metadata: { app_open: { contract_version: 'catsco.app-open.v2', app_id: 'handoff-demo', agent_uid: 440,
+        handoff: { request_id: 'recovery-9801', topic_id: 'p2p_1_440', action: 'initialize', parameters: {}, expires_at: Date.now() + 240000 } } } };
+    async function setup() {
+      api.getAgents.mockResolvedValue({ agents: [{ uid: 440, topic_id: data.topic, is_bot: true, account_type: 'bot', cloud_artifacts_enabled: true }] });
+      api.listArtifactApps.mockResolvedValue({ apps: [] });
+      await mountTopic(root, data.topic);
+      await act(async () => { await flushPromises(); });
+      api.listArtifactApps.mockClear();
+    }
+    async function deliver() {
+      await act(async () => { wsHandler({ data }); await flushPromises(); });
+    }
+    it('delivers structured handoff through the conversation panel and accepts a second request', async () => {
+      await setup();
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      api.requestArtifactLaunch
+        .mockResolvedValueOnce({ launch_url: 'https://artifact.catsco.cc/_launch/history-audit-first' })
+        .mockResolvedValueOnce({ launch_url: 'https://artifact.catsco.cc/_launch/history-audit-second' });
+      let residentFrame;
+      let residentSrc;
+      let post;
+      for (const [index, requestId] of ['wired-request-9801', 'wired-request-9802'].entries()) {
+        const request = { ...data, seq: 9901 + index, metadata: { app_open: {
+          ...data.metadata.app_open, handoff: { ...data.metadata.app_open.handoff,
+            request_id: requestId, parameters: { data_path: `/data/input-${index}` } },
+        } } };
+        post?.mockClear();
+        await act(async () => { wsHandler({ data: request }); await flushPromises(); });
+        const frame = container.querySelector('iframe');
+        expect(frame).not.toBeNull();
+        if (index === 0) {
+          residentFrame = frame;
+          residentSrc = frame.src;
+          post = vi.spyOn(frame.contentWindow, 'postMessage');
+          await act(async () => { Simulate.load(frame); await flushPromises(); });
+        } else {
+          expect(frame).toBe(residentFrame);
+          expect(frame.src).toBe(residentSrc);
+        }
+        expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+        const hello = post.mock.calls.map(call => call[0]).find(message => message.type === 'hello');
+        expect(hello).toEqual(expect.objectContaining({ protocol: 'catsco.app-handoff.v1', request_id: requestId }));
+        await act(async () => window.dispatchEvent(new MessageEvent('message', {
+          origin: 'https://artifact.catsco.cc', source: frame.contentWindow,
+          data: { ...hello, type: 'ready', schema: { data_path: { type: 'path' } } },
+        })));
+        expect(post.mock.calls.map(call => call[0])).toContainEqual(expect.objectContaining({
+          type: 'handoff', request_id: requestId, parameters: { data_path: `/data/input-${index}` },
+        }));
+        expect(JSON.stringify({ ...localStorage })).not.toContain(`/data/input-${index}`);
+        expect(JSON.stringify({ ...sessionStorage })).not.toContain(`/data/input-${index}`);
+      }
+    });
+    it.each(['topic', 'auth'])('stops a wired handshake on %s change without reloading the resident frame', async (change) => {
+      await setup();
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://artifact.catsco.cc/_launch/lifecycle' });
+      const request = { ...data, seq: 9950, metadata: { app_open: {
+        ...data.metadata.app_open, handoff: { ...data.metadata.app_open.handoff,
+          request_id: `lifecycle-${change}-9950`, parameters: { data_path: '/data/lifecycle' } },
+      } } };
+      await act(async () => { wsHandler({ data: request }); await flushPromises(); });
+      const frame = container.querySelector('iframe');
+      const post = vi.spyOn(frame.contentWindow, 'postMessage');
+      await act(async () => Simulate.load(frame));
+      const hello = post.mock.calls[0][0];
+      if (change === 'topic') await mountTopic(root, 'p2p_1_3');
+      else await act(async () => { window.dispatchEvent(new Event('cc:auth-changed')); await flushPromises(); });
+      await act(async () => window.dispatchEvent(new MessageEvent('message', {
+        origin: 'https://artifact.catsco.cc', source: frame.contentWindow,
+        data: { ...hello, type: 'ready', schema: { data_path: { type: 'path' } } },
+      })));
+      expect(post.mock.calls.map(call => call[0].type)).toEqual(['hello']);
+      if (change === 'topic') {
+        expect(container.querySelector('iframe')).toBe(frame);
+        await mountTopic(root, data.topic);
+        expect(container.querySelector('iframe')).toBe(frame);
+        await act(async () => Simulate.load(frame));
+        expect(post).toHaveBeenCalledTimes(1);
+        expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+      }
+    });
+    it('reports the actual catalogue error and permits a duplicate to recover, then deduplicates delivery', async () => {
+      await setup();
+      api.listArtifactApps.mockRejectedValueOnce(new Error('catalogue permission denied'));
+      await deliver();
+      expect(feedbackNotify).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', message: 'catalogue permission denied' }));
+      expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      await deliver();
+      expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+      api.listArtifactApps.mockClear();
+      await deliver();
+      expect(api.listArtifactApps).not.toHaveBeenCalled();
+    });
+    it('keeps a pending lookup alive after clearing pending state and coalesces duplicates', async () => {
+      await setup();
+      let resolve;
+      api.listArtifactApps.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+      await deliver();
+      await deliver();
+      expect(api.listArtifactApps).toHaveBeenCalledTimes(1);
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      await act(async () => { resolve({ apps: [app] }); await flushPromises(); });
+      expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    });
+    it('cancels a catalogue lookup when the authenticated session changes', async () => {
+      await setup();
+      let resolve;
+      api.listArtifactApps.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+      await deliver();
+      await act(async () => { window.dispatchEvent(new Event('cc:auth-changed')); await flushPromises(); });
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      await act(async () => { resolve({ apps: [app] }); await flushPromises(); });
+      expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+      await deliver();
+      expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    });
+    it('cancels on topic change without consuming the undelivered request', async () => {
+      await setup();
+      let resolve;
+      api.listArtifactApps.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+      await deliver();
+      await mountTopic(root, 'p2p_1_3');
+      await act(async () => { resolve({ apps: [app] }); await flushPromises(); });
+      expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+      await mountTopic(root, data.topic);
+      await act(async () => { await flushPromises(); });
+      expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+      api.listArtifactApps.mockResolvedValue({ apps: [app] });
+      await deliver();
+      expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    });
   });
 
   it('selects existing conversation messages and exports a branded sharing image', async () => {

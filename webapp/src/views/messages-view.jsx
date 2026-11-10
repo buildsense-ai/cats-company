@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, MessageSquare, Minus, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq, isWSConnected } from '../api';
 import t from '../i18n';
-import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, fileMediaMessageIdForPreview, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import { isCloudWorkerPending } from '../cloud-worker-pending';
@@ -486,7 +486,7 @@ function imageGalleryItems(messages) {
     imageBlocks.forEach((block, blockIndex) => {
       if (block?.type !== 'image' || !block.payload) return;
       const id = imageGalleryItemId(message, blockIndex, block.payload);
-      if (id) items.push({ id, payload: block.payload });
+      if (id) items.push({ id, payload: block.payload, message_id: fileMediaMessageIdForPreview(message, block.payload) });
     });
   });
   return items;
@@ -1006,6 +1006,7 @@ export default function MessagesView({
   // replayed (or fanned out twice) from opening the panel twice.
   const [pendingAppOpenMessage, setPendingAppOpenMessage] = useState(null);
   const appOpenHandledKeysRef = useRef(new Set());
+  const appOpenInFlightRef = useRef(new Map());
   // An Agent that cannot emit the structured open command still answers with a
   // card for the application it is talking about. That card is the request: the
   // user asked for an application and the reply points at exactly one. Parking
@@ -1146,9 +1147,20 @@ export default function MessagesView({
   const activePanelTab = ownPanelIsAuthoritative && ownPanelRecord.open
     ? ownPanelRecord.tab
     : cloudArtifactsTab;
-  const activePanelApp = ownPanelIsAuthoritative && ownPanelRecord.open
-    ? ownPanelRecord.app
-    : cloudArtifactsInitialApp;
+  // Navigation records intentionally exclude commands. Merge only the live
+  // request for this exact conversation/application; never write it to the store.
+  const activePanelApp = useMemo(() => {
+    const app = ownPanelIsAuthoritative && ownPanelRecord.open
+      ? ownPanelRecord.app
+      : cloudArtifactsInitialApp;
+    const request = cloudArtifactsInitialApp?.handoff;
+    return request?.topic_id === topic
+      && String(app?.id) === String(cloudArtifactsInitialApp?.id)
+      && app?.url === cloudArtifactsInitialApp?.url
+      ? { ...app, handoff: request }
+      : app;
+  }, [ownPanelIsAuthoritative, ownPanelRecord.open, ownPanelRecord.app?.id,
+    ownPanelRecord.app?.url, cloudArtifactsInitialApp, topic]);
   // Panels of other conversations stay mounted while the user works elsewhere:
   // an application's own process only survives if its iframe is never torn down.
   //
@@ -1795,6 +1807,12 @@ export default function MessagesView({
 
   useEffect(() => {
     const invalidate = () => {
+      for (const operation of appOpenInFlightRef.current.values()) operation.cancelled = true;
+      appOpenInFlightRef.current.clear();
+      setPendingAppOpenMessage(null);
+      setCloudArtifactsInitialApp(current => current?.handoff
+        ? Object.fromEntries(Object.entries(current).filter(([key]) => key !== 'handoff'))
+        : current);
       pendingGatewayAnnotationStartRef.current = null;
       gatewayAnnotationBindingRef.current = null;
       gatewayAnnotationContextRef.current = null;
@@ -2710,7 +2728,7 @@ export default function MessagesView({
     writeArtifactPanelEntry(panelTopic, {
       open: true,
       agentUid,
-      app: { ...artifact },
+      app: Object.fromEntries(Object.entries(artifact).filter(([key]) => key !== 'handoff')),
       tab: 'gateway',
       returnOpen: false,
     });
@@ -2970,6 +2988,7 @@ export default function MessagesView({
     peerProfileRequestRef.current += 1;
     invalidateArtifactSnapshot();
     activeTopicRef.current = topic;
+    setPendingAppOpenMessage(null);
     activeArtifactFocusRef.current = null;
     activeArtifactFrameRef.current = null;
     setInput(readComposerInputDraft(composerDraftStoreRef.current, topic));
@@ -3911,10 +3930,16 @@ export default function MessagesView({
   // back in that Agent's own catalogue, and each message may act only once.
   // The catalogue is the authority on the address, so nothing inside the message
   // can steer the viewer at a different origin.
+  // Only identity/lifecycle changes cancel catalogue work. Clearing pending state
+  // must not cancel its own operation; transport duplicates share an in-flight key.
+  useEffect(() => () => {
+    for (const operation of appOpenInFlightRef.current.values()) operation.cancelled = true;
+    appOpenInFlightRef.current.clear();
+  }, [selectedAgent?.id, selectedAgent?.uid, topic]);
+
   useEffect(() => {
     if (!pendingAppOpenMessage) return;
     const { message: commandMessage, topic: commandTopic } = pendingAppOpenMessage;
-    setPendingAppOpenMessage(null);
     if (!commandMessage || commandTopic !== topic) return;
 
     const agentUid = Number(selectedAgent?.uid || selectedAgent?.id || 0);
@@ -3925,28 +3950,36 @@ export default function MessagesView({
       seenKeys: appOpenHandledKeysRef.current,
     });
     if (!command) return;
-    appOpenHandledKeysRef.current.add(command.key);
-
-    let cancelled = false;
+    if (appOpenInFlightRef.current.has(command.key)) return;
+    const operation = { cancelled: false, authRevision: getAuthRevision(), token: getToken() };
+    appOpenInFlightRef.current.set(command.key, operation);
+    // This effect does not own cancellation: clearing the pending slot is safe.
+    setPendingAppOpenMessage(null);
     (async () => {
-      let apps = [];
       try {
         const response = await api.listArtifactApps(agentUid);
-        apps = Array.isArray(response?.apps) ? response.apps : [];
-      } catch {
-        // A catalogue that cannot be read cannot authorise anything.
-        return;
+        if (operation.cancelled || activeTopicRef.current !== topic
+          || operation.authRevision !== getAuthRevision() || operation.token !== getToken()) return;
+        const apps = Array.isArray(response?.apps) ? response.apps : [];
+        const target = findAppOpenTarget(apps, command.appId);
+        if (!target) return;
+        if (command.handoff && command.handoff.expires_at <= Date.now()) {
+          feedback.notify({ tone: 'error', message: '交接请求已过期，未发送参数。' });
+          return;
+        }
+        await openArtifactApp({ ...target, agent_uid: agentUid, ...(command.handoff ? { handoff: command.handoff } : {}) });
+        appOpenHandledKeysRef.current.add(command.key);
+      } catch (error) {
+        if (!operation.cancelled && activeTopicRef.current === topic) {
+          feedback.notify({ tone: 'error', message: error?.message || '应用目录读取失败，请重试。' });
+        }
+      } finally {
+        if (appOpenInFlightRef.current.get(command.key) === operation) {
+          appOpenInFlightRef.current.delete(command.key);
+        }
       }
-      if (cancelled || activeTopicRef.current !== topic) return;
-      const target = findAppOpenTarget(apps, command.appId);
-      if (!target) return;
-      openArtifactApp({ ...target, agent_uid: agentUid });
     })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [openArtifactApp, pendingAppOpenMessage, selectedAgent?.id, selectedAgent?.uid, topic]);
+  }, [feedback, openArtifactApp, pendingAppOpenMessage, selectedAgent?.id, selectedAgent?.uid, topic]);
 
 
   const syncPhoneUploads = useCallback(async ({ final = false } = {}) => {
@@ -7166,7 +7199,7 @@ export default function MessagesView({
           transform: 'none',
         } : undefined}>
           {topBar}
-          <ConversationForkNotice fork={conversationFork} canCreate={forkEligible} />
+          <ConversationForkNotice fork={conversationFork} canCreate={forkEligible} historyLoading={!historyLoaded} />
           <PublicationRepairPanel key={`${user.uid}:${topic}`} userUid={user.uid} topic={topic} isGroup={isGroup} groupId={groupId} />
           {cloudWorkerPending && activeCloudWorker && !cloudWorkerUpdateVisible && (
             <section className="cc-cloud-worker-pending-notice" role="status" aria-live="polite">
@@ -7876,6 +7909,7 @@ export default function MessagesView({
                 topicId={panelTopic}
                 tab={isActive ? activePanelTab : entry.tab}
                 initialApp={isActive ? activePanelApp : entry.app}
+                isActive={isActive}
                 onTabChange={isActive ? changeArtifactPanelTab : undefined}
                 onClose={isActive ? closeSidePanel : () => forgetArtifactPanelEntry(panelTopic)}
                 onPreviewArtifact={isActive ? previewCloudArtifact : undefined}
@@ -9218,7 +9252,7 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
   stateRef.current = { item, index, items, onClose, onChange, triggerRef, hasOlder, loadingOlder, onLoadOlder };
   const hasPrevious = index > 0 || (hasOlder && !loadingOlder);
   const hasNext = index < items.length - 1;
-  const imageURL = resolveMediaURL(item.payload?.url || item.payload?.thumbnail);
+  const imageURL = resolveMediaURL(item.payload?.url || item.payload?.thumbnail, item.message_id);
   const downloadURL = downloadableMediaURL(imageURL);
 
   useEffect(() => {

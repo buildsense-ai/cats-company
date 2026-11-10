@@ -114,6 +114,7 @@ type UploadHandler struct {
 	baseDir        string
 	baseURL        string
 	storage        UploadStorage
+	fileAccess     *FileAccessService
 	mobileSessions map[string]*mobileUploadSession
 	mobileMu       sync.Mutex
 }
@@ -136,6 +137,7 @@ func (h *UploadHandler) ValidateArtifactSourcePath(value string) error {
 
 type mobileUploadSession struct {
 	ID        string          `json:"session_id"`
+	OwnerUID  int64           `json:"-"`
 	Topic     string          `json:"topic"`
 	CreatedAt time.Time       `json:"created_at"`
 	ExpiresAt time.Time       `json:"expires_at"`
@@ -181,6 +183,16 @@ func (h *UploadHandler) SetStorage(storage UploadStorage) {
 	if storage != nil {
 		h.storage = storage
 	}
+}
+
+func (h *UploadHandler) SetFileAccess(access *FileAccessService) { h.fileAccess = access }
+
+func (h *UploadHandler) recordPrivateUpload(w http.ResponseWriter, r *http.Request, subDir, fileKey string) bool {
+	if err := h.fileAccess.RecordUpload(r.Context(), UIDFromContext(r.Context()), "upload:"+subDir+"/"+fileKey); err != nil {
+		writeUploadJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "upload ownership unavailable"})
+		return false
+	}
+	return true
 }
 
 // HandleUpload handles POST /api/upload
@@ -251,6 +263,9 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 		return
 	}
+	if !h.recordPrivateUpload(w, r, subDir, fileKey) {
+		return
+	}
 	if uploadType == "image" {
 		if err := h.rememberArtifactImageUpload(UIDFromContext(r.Context()), fileKey, written, digest); err != nil {
 			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload receipt failed"})
@@ -315,6 +330,10 @@ func (h *UploadHandler) HandleMobileUploadSession(w http.ResponseWriter, r *http
 }
 
 func (h *UploadHandler) handleCreateMobileUploadSession(w http.ResponseWriter, r *http.Request) {
+	if UIDFromContext(r.Context()) <= 0 {
+		writeUploadJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
 	var req struct {
 		Topic string `json:"topic"`
 	}
@@ -322,6 +341,7 @@ func (h *UploadHandler) handleCreateMobileUploadSession(w http.ResponseWriter, r
 	sessionID := generateSessionID()
 	now := time.Now().UTC()
 	session := &mobileUploadSession{
+		OwnerUID:  UIDFromContext(r.Context()),
 		ID:        sessionID,
 		Topic:     strings.TrimSpace(req.Topic),
 		CreatedAt: now,
@@ -402,6 +422,7 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 		writeUploadJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
+	r = r.WithContext(context.WithValue(r.Context(), uidKey, session.OwnerUID))
 
 	uploadType := r.URL.Query().Get("type")
 	if uploadType == "" {
@@ -464,6 +485,9 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 	written, _, err := saveUploadReader(r.Context(), h.storage, "uploads/"+subDir+"/"+fileKey, file, int64(maxSize), mimeType)
 	if err != nil {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return
+	}
+	if !h.recordPrivateUpload(w, r, subDir, fileKey) {
 		return
 	}
 
@@ -530,6 +554,16 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 	if subDir == "files" && !allowedFileExts[ext] {
 		http.NotFound(w, r)
 		return
+	}
+
+	if subDir != "tutorial" {
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Vary", "Authorization, Cookie")
+		resource := canonicalFileResource(r.URL.Path)
+		if r.URL.RawPath != "" || resource == "" || !h.fileAccess.CanReadResource(r.Context(), UIDFromContext(r.Context()), resource, queryInt64(r, "message_id")) {
+			http.NotFound(w, r)
+			return
+		}
 	}
 
 	info, err := statUploadWithLocalFallback(r.Context(), h.storage, h.baseDir, "uploads/"+subDir+"/"+fileName)
@@ -636,7 +670,7 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-src 'self'; media-src 'self'; img-src 'self' http: https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
@@ -1323,6 +1357,9 @@ func (h *UploadHandler) receiveRawUpload(
 	written, digest, err := persistStagedUpload(r.Context(), h.storage, "uploads/"+subDir+"/"+fileKey, tempPath, mimeType)
 	if err != nil {
 		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+	if !h.recordPrivateUpload(w, r, subDir, fileKey) {
 		return uploadPayload{}, false
 	}
 	if uploadType == "image" {

@@ -307,6 +307,8 @@ func tagTestHandlerWithUpstream(t *testing.T, tagStore *artifactTagTestStore, up
 		upstream.Client(),
 	)
 	handler.SetStore(tagStore)
+	grantLegacyArtifactResources(t, handler, 7, "https://example.test/by-agent/440/alpha/latest/")
+	grantLegacyArtifactResources(t, handler, 8, "https://example.test/by-agent/440/alpha/latest/")
 	return handler
 }
 
@@ -581,6 +583,7 @@ func TestAgentArtifactListMergesAgentTags(t *testing.T) {
 		upstream.Client(),
 	)
 	handler.SetStore(tagStore)
+	grantLegacyArtifactResources(t, handler, 8, "https://example.test/by-agent/440/shared-game/latest/")
 
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(rec, ownerArtifactRequest(http.MethodGet, "/api/agents/440/artifacts?status=active"))
@@ -705,11 +708,11 @@ func TestAgentArtifactManagedListReconcilesOrphansWhenListEmpty(t *testing.T) {
 // agent's artifact index listing the given IDs.
 func newPublicIndexTagHandler(t *testing.T, tagStore *artifactTagTestStore, ids ...string) *CloudArtifactHandler {
 	t.Helper()
-	const indexPath = "/public/by-agent/440/artifacts-index.json"
+	const indexPath = "/artifacts/by-agent/440/artifacts-index.json"
 	publicBaseURL := ""
 	var upstream *httptest.Server
 	artifacts := make([]map[string]any, 0, len(ids))
-	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == indexPath {
 			index := map[string]any{
 				"contract_version": "cloud-artifacts.index.v1",
@@ -727,7 +730,7 @@ func newPublicIndexTagHandler(t *testing.T, tagStore *artifactTagTestStore, ids 
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(upstream.Close)
-	publicBaseURL = upstream.URL + "/public"
+	publicBaseURL = upstream.URL + "/artifacts"
 	for _, id := range ids {
 		artifacts = append(artifacts, map[string]any{
 			"id":         id,
@@ -751,6 +754,11 @@ func newPublicIndexTagHandler(t *testing.T, tagStore *artifactTagTestStore, ids 
 		},
 		"agents": map[string]string{"440": "fallback"},
 	})
+	for _, id := range ids {
+		resource := publicBaseURL + "/by-agent/440/" + id + "/latest"
+		grantLegacyArtifactResources(t, handler, 7, resource)
+		grantLegacyArtifactResources(t, handler, 8, resource)
+	}
 	return handler
 }
 
