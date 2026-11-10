@@ -23,6 +23,16 @@ class ComposeRolloutTest(unittest.TestCase):
         self.assertIsNotNone(match, f"service {name} missing in deploy/{stack}/docker-compose.yml")
         return match.group(1)
 
+    def test_server_reaps_orphaned_shell_descendants(self):
+        # A server running as PID 1 leaves orphaned timeout/bash descendants
+        # as zombies until they exhaust the container's PID budget.
+        for stack in ("prod", "test"):
+            self.assertRegex(
+                self.service_block(stack, "server"),
+                r"(?m)^    init: true\s*$",
+                f"server needs an init reaper in deploy/{stack}/docker-compose.yml",
+            )
+
     def test_server_health_check_flips_fast_after_a_deploy(self):
         # Scope to the server block: the same strings exist on other services,
         # so a whole-file assertion would not notice the server losing them.
