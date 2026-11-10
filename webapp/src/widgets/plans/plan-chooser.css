@@ -150,6 +150,15 @@ html[data-theme="liquid"] .relay-access-plan-modal { --plans-canvas: #161616; --
 .relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-feature-details > li { grid-template-columns: 16px minmax(0, 1fr); gap: 10px; color: var(--cc-text-secondary); font-size: 14px; line-height: 24px; }
 .relay-access-plan-feature-details > li::before { content: ''; width: 11px; height: 12px; box-sizing: border-box; margin: 3px 0 0 2px; border-left: 1.5px solid var(--cc-muted); border-bottom: 1.5px solid var(--cc-muted); border-bottom-left-radius: 4px; }
 .relay-access-plan-list-chooser .relay-access-plan-row.has-highlights > .relay-access-plan-footnote { min-height: 0; margin: 20px 0 0; padding-top: 14px; border-top: 1px solid var(--cc-border); color: var(--cc-muted); font-size: 11px; line-height: 1.7; }
+/* Credit cards retain the approved geometry and use neutral emphasis. */
+.relay-access-plan-list-chooser .credit-plan .relay-access-plan-original-price { margin-left: 12px; color: var(--cc-muted); font-size: 24px; font-weight: 400; line-height: 1.2; letter-spacing: -0.02em; text-decoration-thickness: 1.5px; }
+.relay-access-plan-list-chooser .relay-access-plan-row.credit-plan .relay-access-plan-features > li:first-child { font-size: 15px; font-weight: 600; }
+.relay-access-plan-list-chooser .relay-access-plan-row.credit-plan .relay-access-plan-feature-details > li { font-size: 13px; font-weight: 400; }
+.relay-access-plan-list-chooser .relay-access-plan-row.credit-plan .relay-access-plan-feature-details > li:last-child { color: var(--cc-text); font-weight: 500; }
+.relay-access-plan-list-chooser .relay-access-plan-row.credit-plan .relay-access-plan-features > li:nth-child(n + 2) { color: var(--cc-text-secondary); font-size: 13px; }
+.relay-access-plan-list-chooser .relay-access-plan-row.credit-plan.recommended { --plan-surface: var(--plans-card); border-color: var(--plan-border); background: var(--plan-surface); box-shadow: 0 2px 5px rgb(0 0 0 / 3%), 0 12px 28px -8px rgb(0 0 0 / 10%); }
+html[data-theme="dark"] .relay-access-plan-list-chooser .relay-access-plan-row.credit-plan.recommended { box-shadow: 0 2px 6px rgb(0 0 0 / 18%), 0 14px 30px -8px rgb(0 0 0 / 35%); }
+.relay-access-plan-list-chooser .relay-access-plan-row.credit-plan.recommended .relay-access-plan-badge { position: relative; left: 8px; margin: 0; padding: 3px 8px; border: 0; border-radius: 5px; background: var(--cc-text); color: var(--plans-card); font-size: 11px; font-weight: 500; line-height: 16px; }
 .relay-access-enterprise-card {
   grid-template-columns: minmax(0, 1fr);
   gap: 32px;

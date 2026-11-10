@@ -1033,6 +1033,36 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.mock-create-conversation-fork')).toBeNull();
   });
 
+  it.each(['history-first', 'check-first'])('uses one initial conversation loader when requests finish %s', async (order) => {
+    let resolveHistory, rejectCheck;
+    api.getMessages.mockImplementationOnce(() => new Promise(resolve => { resolveHistory = resolve; }));
+    api.getConversationFork.mockImplementationOnce(() => new Promise((resolve, reject) => { rejectCheck = reject; }));
+    await mountTopic(root, 'grp_99', { isGroup: true, groupId: 99 });
+    expect(container.querySelector('.cc-history-loading')).not.toBeNull();
+    expect(container.textContent).not.toContain('正在确认会话状态');
+    expect(container.querySelector('textarea').disabled).toBe(true);
+    const historyReady = async () => act(async () => { resolveHistory({ messages: [] }); await flushPromises(); });
+    const checkReady = async () => act(async () => {
+      rejectCheck(Object.assign(new Error('session_fork_not_found'), { status: 404 }));
+      await flushPromises();
+    });
+    if (order === 'history-first') {
+      await historyReady();
+      expect(container.querySelector('.cc-history-loading')).toBeNull();
+      expect(container.textContent).toContain('正在确认会话状态');
+      expect(container.querySelector('textarea').disabled).toBe(true);
+      await checkReady();
+    } else {
+      await checkReady();
+      expect(container.querySelector('.cc-history-loading')).not.toBeNull();
+      expect(container.textContent).not.toContain('正在确认会话状态');
+      await historyReady();
+    }
+    expect(container.querySelector('.cc-history-loading')).toBeNull();
+    expect(container.textContent).not.toContain('正在确认会话状态');
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('disables the pending target composer without marking the copy in the chat', async () => {
     api.getConversationFork.mockResolvedValueOnce({
       request_id: 'pending-copy', source_topic_id: 'p2p_1_2', target_topic_id: 'grp_99', state: 'pending',

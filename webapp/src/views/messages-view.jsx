@@ -7166,7 +7166,7 @@ export default function MessagesView({
           transform: 'none',
         } : undefined}>
           {topBar}
-          <ConversationForkNotice fork={conversationFork} canCreate={forkEligible} />
+          <ConversationForkNotice fork={conversationFork} canCreate={forkEligible} historyLoading={!historyLoaded} />
           <PublicationRepairPanel key={`${user.uid}:${topic}`} userUid={user.uid} topic={topic} isGroup={isGroup} groupId={groupId} />
           {cloudWorkerPending && activeCloudWorker && !cloudWorkerUpdateVisible && (
             <section className="cc-cloud-worker-pending-notice" role="status" aria-live="polite">
