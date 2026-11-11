@@ -1538,7 +1538,7 @@ describe('CatsCo shell styling', () => {
     expect(createActionRule).toContain('width: 100%;');
     expect(createActionRule).toContain('background: var(--cc-accent);');
     expect(createActionRule).toContain('color: #fff;');
-    expect(sectionsRule).toContain('grid-template-columns: repeat(4, minmax(0, 1fr));');
+    expect(sectionsRule).toContain('grid-template-columns: repeat(5, minmax(0, 1fr));');
     expect(tabRule).toContain('min-height: 42px;');
     expect(tabLabelRule).toContain('font-size: 14px;');
   });

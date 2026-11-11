@@ -1,0 +1,434 @@
+.cc-daily-notes {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 460px;
+  color: var(--cc-text);
+}
+
+.cc-daily-notes-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--cc-border);
+  background: var(--cc-panel);
+}
+
+.cc-daily-notes-search {
+  display: flex;
+  flex: 1 1 260px;
+  align-items: center;
+  gap: 8px;
+  max-width: 420px;
+  min-height: 34px;
+  padding: 0 6px 0 10px;
+  border: 1px solid var(--cc-field-border, var(--cc-border-strong));
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-field-surface, var(--cc-panel));
+  color: var(--cc-muted);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.cc-daily-notes-search:focus-within {
+  border-color: var(--cc-accent);
+  box-shadow: 0 0 0 3px var(--cc-accent-soft);
+}
+
+.cc-daily-notes-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--cc-field-ink, var(--cc-text));
+  font: inherit;
+  font-size: 13px;
+  caret-color: var(--cc-accent);
+}
+
+/* The field frame shows focus; the inner input must not draw a second ring. */
+.cc-daily-notes .cc-daily-notes-search input:focus { outline: none !important; }
+
+.cc-daily-notes-search input::placeholder { color: var(--cc-field-placeholder, var(--cc-muted)); }
+.cc-daily-notes-search input::-webkit-search-cancel-button { display: none; }
+
+.cc-daily-notes-clear {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-muted);
+  cursor: pointer;
+}
+
+.cc-daily-notes-clear:hover { background: var(--cc-hover); color: var(--cc-text); }
+
+.cc-daily-notes-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--cc-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-daily-notes-spin { animation: cc-daily-notes-spin 900ms linear infinite; }
+
+@keyframes cc-daily-notes-spin { to { transform: rotate(360deg); } }
+
+.cc-daily-notes-views {
+  display: inline-flex;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-panel-raised);
+}
+
+.cc-daily-notes-views button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cc-daily-notes-views button[aria-pressed="true"] {
+  background: var(--cc-panel);
+  color: var(--cc-text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.cc-daily-notes-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 16px 0;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-panel);
+  color: var(--cc-danger-text);
+  font-size: 13px;
+}
+
+.cc-daily-notes-alert .oc-btn { display: inline-flex; align-items: center; gap: 5px; }
+
+.cc-daily-notes-body {
+  display: grid;
+  grid-row: 3;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.cc-daily-notes[data-view="network"] .cc-daily-notes-body {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+}
+
+.cc-daily-notes-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--cc-border);
+  background: var(--cc-panel);
+}
+
+.cc-daily-notes-day h4 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0;
+  padding: 14px 16px 6px;
+  background: var(--cc-panel);
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cc-daily-notes-day h4 span {
+  color: var(--cc-muted);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-daily-notes-day ul,
+.cc-daily-notes-related ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cc-daily-notes-day li button {
+  display: block;
+  width: 100%;
+  padding: 7px 16px 7px 24px;
+  border: 0;
+  background: transparent;
+  color: var(--cc-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-daily-notes-day li button:hover { background: var(--cc-hover); }
+
+.cc-daily-notes-day li button[aria-current="true"] {
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent-text);
+  font-weight: 600;
+}
+
+.cc-daily-notes mark {
+  padding: 0 1px;
+  border-radius: 3px;
+  background: rgba(255, 196, 0, 0.32);
+  color: inherit;
+}
+
+.cc-daily-notes-none {
+  margin: 0;
+  padding: 16px;
+  color: var(--cc-muted);
+  font-size: 13px;
+}
+
+.cc-daily-notes-reader {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 22px 28px 32px;
+  background: var(--cc-panel-raised);
+}
+
+.cc-daily-notes[data-view="network"] .cc-daily-notes-reader {
+  border-left: 1px solid var(--cc-border);
+  padding: 20px 22px 28px;
+}
+
+.cc-daily-notes-reader > * { max-width: 68ch; }
+
+.cc-daily-notes-reader-day {
+  margin: 0 0 6px;
+  color: var(--cc-muted);
+  font-size: 12px;
+}
+
+.cc-daily-notes-reader h3 {
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+.cc-daily-notes-text {
+  color: var(--cc-text);
+  font-size: 14px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.cc-daily-notes-text > :first-child { margin-top: 0; }
+.cc-daily-notes-text p { margin: 0 0 0.8em; }
+.cc-daily-notes-text code { font-family: var(--cc-font-mono); font-size: 0.92em; }
+
+.cc-daily-notes-text-loading { display: grid; gap: 10px; padding-top: 4px; }
+
+.cc-daily-notes-text-loading span {
+  height: 12px;
+  border-radius: 4px;
+  background: var(--cc-hover);
+  animation: cc-daily-notes-pulse 1.2s ease-in-out infinite;
+}
+
+.cc-daily-notes-text-loading span:nth-child(2) { width: 92%; }
+.cc-daily-notes-text-loading span:nth-child(3) { width: 64%; }
+
+@keyframes cc-daily-notes-pulse { 50% { opacity: 0.45; } }
+
+.cc-daily-notes-related,
+.cc-daily-notes-sources {
+  margin-top: 26px;
+  padding-top: 16px;
+  border-top: 1px solid var(--cc-border);
+}
+
+.cc-daily-notes-related h4,
+.cc-daily-notes-sources h4 {
+  margin: 0 0 8px;
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cc-daily-notes-related button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto 13px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-daily-notes-related button:hover { background: var(--cc-hover); }
+.cc-daily-notes-related button > svg { color: var(--cc-muted); }
+
+.cc-daily-notes-relation {
+  min-width: 3em;
+  color: var(--cc-accent-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cc-daily-notes-related-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cc-daily-notes-related-day {
+  color: var(--cc-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-daily-notes-sources p {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cc-daily-notes-empty {
+  grid-row: 3;
+  align-self: center;
+  justify-self: center;
+  max-width: 34ch;
+  padding: 40px 16px;
+  text-align: center;
+}
+
+.cc-daily-notes-empty strong { font-size: 15px; }
+
+.cc-daily-notes-empty p {
+  margin: 8px 0 0;
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cc-daily-notes-network {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--cc-panel);
+}
+
+.cc-daily-notes-network canvas {
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+
+.cc-daily-notes-network canvas[data-cursor="pointer"] { cursor: pointer; }
+.cc-daily-notes-network canvas:active { cursor: grabbing; }
+
+.cc-daily-notes-network-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-panel);
+  color: var(--cc-muted);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.cc-daily-notes-network-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.cc-daily-notes-network-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.cc-daily-notes-network-legend .is-entry { background: var(--cc-accent); }
+.cc-daily-notes-network-legend .is-source { border: 1.4px solid var(--cc-muted); }
+.cc-daily-notes-network-legend .is-link,
+.cc-daily-notes-network-legend .is-correct { width: 14px; height: 2px; border-radius: 1px; background: var(--cc-accent); }
+.cc-daily-notes-network-legend .is-correct { background: var(--cc-danger); }
+
+.cc-daily-notes-network-hover {
+  position: absolute;
+  top: 34px;
+  left: 50%;
+  max-width: min(70%, 480px);
+  padding: 5px 10px;
+  overflow: hidden;
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-text);
+  color: var(--cc-panel);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.cc-daily-notes-network-controls {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.cc-daily-notes-network-controls .oc-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+
+@media (max-width: 820px) {
+  .cc-daily-notes-body,
+  .cc-daily-notes[data-view="network"] .cc-daily-notes-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(220px, 42%) minmax(0, 1fr);
+  }
+  .cc-daily-notes-list { border-right: 0; border-bottom: 1px solid var(--cc-border); }
+  .cc-daily-notes[data-view="network"] .cc-daily-notes-reader { border-left: 0; border-top: 1px solid var(--cc-border); }
+  .cc-daily-notes-reader { padding: 18px 16px 24px; }
+  .cc-daily-notes-views { margin-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-daily-notes-spin,
+  .cc-daily-notes-text-loading span { animation: none; }
+}
