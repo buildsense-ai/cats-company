@@ -68,15 +68,19 @@ sudo install -o root -g root -m 644 deploy/tencent/nginx/uploads-zos-map.conf /e
 sudo nginx -t
 ```
 
-The `/uploads/` read path in both app vhosts relies on
-`deploy/tencent/nginx/uploads-zos-map.conf`, which defines `$uploads_disp`
-(Content-Disposition mirror of the application rules) and `$uploads_csp` (CSP
-sandbox for HTML served directly by ZOS). Install the map file into
-`/etc/nginx/conf.d/` before reloading: without it the `add_header` directives
-degrade to empty values and the headers are silently dropped. The vhosts
-answer `?preview`/`?download` with `418` so share-preview and forced-download
-links keep going to the app origin, and fall back to the web container
-(`@uploads_fallback`) when ZOS returns 403/404 or an error.
+Both app vhosts keep the ZOS read route temporarily for legacy clients that
+send no `Authorization` header. Requests with an `Authorization` header are
+internally routed to `@uploads_authenticated`, which delegates current
+persisted-message authorization to the application. That named location has
+no ZOS fallback: application denials and errors are returned to the caller.
+
+The existing `?preview` and `?download` query routes also continue to use the
+application fallback, including for legacy clients.
+
+The anonymous ZOS route remains a bearer-link compatibility path, not a
+privacy boundary. Keep this split only during client migration; remove the
+ZOS route and its maps after legacy clients are retired. The map file installed
+above defines `$uploads_disp` and `$uploads_csp`, used by the ZOS route.
 
 Enable on the host:
 

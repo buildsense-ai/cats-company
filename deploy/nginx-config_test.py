@@ -34,6 +34,56 @@ def _assert_live_api_resolution(config: str) -> None:
             )
 
 
+def _location_block(config: str, marker: str) -> str:
+    start = config.find(marker)
+    if start < 0:
+        raise AssertionError(f"missing Nginx location: {marker}")
+    opening = config.find("{", start)
+    depth = 0
+    for index in range(opening, len(config)):
+        if config[index] == "{":
+            depth += 1
+        elif config[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return config[start:index + 1]
+    raise AssertionError(f"unterminated Nginx location: {marker}")
+
+
+def _assert_attachment_compat_route(config_path: Path) -> None:
+    config = config_path.read_text(encoding="utf-8")
+    legacy = _location_block(config, "location ^~ /uploads/ {")
+    authenticated = _location_block(config, "location @uploads_authenticated {")
+    fallback = _location_block(config, "location @uploads_fallback {")
+
+    if 'if ($http_authorization != "") { return 419; }' not in legacy:
+        raise AssertionError("authenticated attachment requests must leave the legacy ZOS route")
+    if "error_page 419 = @uploads_authenticated;" not in legacy:
+        raise AssertionError("authenticated requests must route to the app location")
+    if "proxy_pass http://100.86.2.1/catscompany$request_uri;" not in legacy:
+        raise AssertionError("unauthenticated legacy attachment requests must retain the ZOS route")
+    if "proxy_intercept_errors on;" not in legacy:
+        raise AssertionError("legacy ZOS error fallback behavior must remain enabled")
+
+    if "proxy_pass http://127.0.0.1:28080$request_uri;" not in authenticated:
+        raise AssertionError("authenticated attachment requests must reach the app")
+    if "proxy_set_header Authorization $http_authorization;" not in authenticated:
+        raise AssertionError("the app must receive the client's authorization header")
+    if "proxy_intercept_errors off;" not in authenticated or "error_page" in authenticated:
+        raise AssertionError("app authorization errors must not fall back to ZOS")
+    if "100.86.2.1" in authenticated:
+        raise AssertionError("authenticated route must not reach ZOS")
+    if "proxy_pass http://127.0.0.1:28080$request_uri;" not in fallback:
+        raise AssertionError("legacy ZOS fallback must continue to use the app")
+
+
+def _assert_tencent_attachment_compat_routes() -> None:
+    nginx_dir = Path(__file__).with_name("tencent") / "nginx"
+    for name in ("catscompany-app.conf", "catscompany-app-cn.conf"):
+        _assert_attachment_compat_route(nginx_dir / name)
+
+
+
 def main() -> None:
     config = CONFIG_PATH.read_text(encoding="utf-8")
     matches = re.findall(r"client_max_body_size\s+(\d+)\s*([kKmMgG])?\s*;", config)
@@ -47,6 +97,7 @@ def main() -> None:
                 "uploads must not be rejected below the 300MB product limit"
             )
     _assert_live_api_resolution(config)
+    _assert_tencent_attachment_compat_routes()
 
 
 if __name__ == "__main__":
