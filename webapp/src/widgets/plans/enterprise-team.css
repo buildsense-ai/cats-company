@@ -15,9 +15,9 @@
 .enterprise-team-price { display: flex; align-items: baseline; gap: 6px; margin-top: 24px; }
 .enterprise-team-price strong { font-size: 44px; font-weight: 600; line-height: 1.2; letter-spacing: -.025em; font-variant-numeric: tabular-nums; }
 .enterprise-team-price :is(span, small) { color: var(--cc-text-secondary); font-size: 13px; }
-.enterprise-team-offer > button { width: 100%; min-height: 46px; margin-top: 20px; border: 1px solid transparent; border-radius: 11px; background: var(--cc-text); color: var(--plans-card); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
-.enterprise-team-offer > button:hover { background: color-mix(in srgb, var(--cc-text) 88%, var(--plans-card)); }
-.enterprise-team-offer > button:active { background: color-mix(in srgb, var(--cc-text) 78%, var(--plans-card)); }
+.enterprise-team-offer > button { width: 100%; min-height: 46px; margin-top: 20px; border: 1px solid transparent; border-radius: 11px; background: var(--cc-accent); color: var(--plans-card); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+.enterprise-team-offer > button:hover { background: var(--cc-accent-hover); }
+.enterprise-team-offer > button:active { background: color-mix(in srgb, var(--cc-accent-hover) 86%, #10251f); }
 .enterprise-team-offer > button:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 3px; }
 .enterprise-team-allowances { display: grid; gap: 12px; margin: 22px 0 0; }
 .enterprise-team-allowances > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; }

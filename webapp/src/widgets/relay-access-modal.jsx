@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Cloud, Copy, Cpu, CreditCard, ExternalLink, Gift, History, KeyRound, Percent, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, BadgeCheck, BadgePercent, Check, ChevronDown, Cloud, Copy, Cpu, CreditCard, ExternalLink, Gift, History, KeyRound, Percent, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { resolvePlanOffers, salePlansForOffers } from './plans/plan-offers';
@@ -710,7 +710,7 @@ function CommercialPlanCards({
             {presentation.highlights?.length > 0 && (
               <dl className="relay-access-plan-highlights">
                 {presentation.highlights.map(highlight => {
-                  const Icon = highlight.kind === 'rate' ? Percent : highlight.kind === 'cloud' ? Cloud : Cpu;
+                  const Icon = highlight.kind === 'discount' ? BadgePercent : highlight.kind === 'rate' ? Percent : highlight.kind === 'cloud' ? Cloud : Cpu;
                   return <div key={highlight.label}>
                     <dt><Icon size={17} aria-hidden="true" />{highlight.label}</dt>
                     <dd>{highlight.value}{highlight.unit && <span>{highlight.unit}</span>}</dd>
