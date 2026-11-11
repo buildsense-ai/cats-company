@@ -1,9 +1,8 @@
-// A deterministic force layout for the Daily Notes network. Notes are pulled
-// toward their day's row, newest at the top like the list, so the network
-// scrolls as a timeline; the sessions they cite settle between those days.
+// A deterministic force layout for the Daily Notes graph. Notes that link to
+// each other, or cite the same session, settle into one cluster; the session
+// sources become the hubs between them.
 
-export const DAY_SPACING = 120;
-const CELL = 90;
+const CELL = 140;
 
 function hash(value) {
   let h = 2166136261;
@@ -15,40 +14,46 @@ function hash(value) {
 }
 
 export function layoutDailyNotes(model, previous = new Map()) {
-  const days = model.days.map(({ day }) => day).sort().reverse();
-  const dayY = new Map(days.map((day, index) => [day, index * DAY_SPACING]));
   const nodes = [];
   const index = new Map();
   const add = (node) => {
     const seed = previous.get(node.id);
-    node.x = seed ? seed.x : (hash(node.id) - 0.5) * 420;
-    node.y = seed ? seed.y : node.ty + (hash(`${node.id}:y`) - 0.5) * 40;
+    // Unseeded nodes start on a sunflower spiral, so the first frame is spread out.
+    const angle = nodes.length * 2.39996 + hash(node.id);
+    const radius = 14 * Math.sqrt(nodes.length + 1);
+    node.x = seed ? seed.x : Math.cos(angle) * radius;
+    node.y = seed ? seed.y : Math.sin(angle) * radius;
     node.vx = 0;
     node.vy = 0;
+    node.degree = 0;
     index.set(node.id, nodes.length);
     nodes.push(node);
   };
-  for (const entry of model.entries.values()) {
-    add({ id: entry.id, type: 'entry', ty: dayY.get(entry.day) || 0, r: 6 + Math.min(6, entry.links.length * 1.5) });
-  }
+  for (const entry of model.entries.values()) add({ id: entry.id, type: 'entry' });
   for (const source of model.sources.values()) {
-    if (!source.entries.size) continue;
-    let sum = 0;
-    for (const id of source.entries) sum += dayY.get(model.entries.get(id)?.day) || 0;
-    add({ id: source.key, type: 'source', ty: sum / source.entries.size, r: 4 + Math.min(5, Math.sqrt(source.entries.size) * 1.4) });
+    if (source.entries.size) add({ id: source.key, type: 'source' });
   }
   const links = [];
-  for (const relation of model.relations) {
-    links.push({ source: index.get(relation.from), target: index.get(relation.to), kind: relation.kind, distance: 120, strength: 0.05 });
-  }
+  const link = (from, to, kind, distance, strength) => {
+    const source = index.get(from);
+    const target = index.get(to);
+    if (source === undefined || target === undefined) return;
+    nodes[source].degree += 1;
+    nodes[target].degree += 1;
+    links.push({ source, target, kind, distance, strength });
+  };
+  for (const relation of model.relations) link(relation.from, relation.to, relation.kind, 60, 0.08);
   for (const entry of model.entries.values()) {
-    for (const key of entry.sources) {
-      if (index.has(key)) links.push({ source: index.get(entry.id), target: index.get(key), kind: 'cites', distance: 70, strength: 0.03 });
-    }
+    for (const key of entry.sources) link(entry.id, key, 'cites', 46, 0.05);
+  }
+  for (const node of nodes) {
+    node.r = node.type === 'entry'
+      ? 4.5 + Math.min(7, Math.sqrt(node.degree) * 1.6)
+      : 3.5 + Math.min(9, Math.sqrt(node.degree) * 1.8);
   }
 
   // Seeded positions only need settling; a fresh layout needs the full run.
-  const steps = previous.size ? 120 : 280;
+  const steps = previous.size ? 120 : 320;
   for (let step = 0; step < steps; step += 1) {
     const alpha = 1 - step / steps;
     const grid = new Map();
@@ -57,7 +62,8 @@ export function layoutDailyNotes(model, previous = new Map()) {
       if (!grid.has(key)) grid.set(key, []);
       grid.get(key).push(i);
     }
-    // Repulsion only between near neighbours keeps each step linear.
+    // Repulsion only between near neighbours keeps each step linear; gravity
+    // below keeps separate clusters from drifting apart.
     for (let i = 0; i < nodes.length; i += 1) {
       const a = nodes[i];
       const cx = Math.floor(a.x / CELL);
@@ -72,7 +78,7 @@ export function layoutDailyNotes(model, previous = new Map()) {
             let d2 = dx * dx + dy * dy;
             if (d2 > CELL * CELL) continue;
             if (d2 < 1) { dx = hash(`${a.id}${b.id}`) - 0.5; dy = 0.5; d2 = 1; }
-            const force = (1800 * alpha) / d2;
+            const force = (900 * (0.3 + alpha)) / d2;
             const d = Math.sqrt(d2);
             const fx = (dx / d) * force;
             const fy = (dy / d) * force;
@@ -81,23 +87,23 @@ export function layoutDailyNotes(model, previous = new Map()) {
         }
       }
     }
-    for (const link of links) {
-      const a = nodes[link.source];
-      const b = nodes[link.target];
+    for (const { source, target, distance, strength } of links) {
+      const a = nodes[source];
+      const b = nodes[target];
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const pull = (d - link.distance) * link.strength * alpha;
+      const pull = (d - distance) * strength;
       a.vx += (dx / d) * pull; a.vy += (dy / d) * pull;
       b.vx -= (dx / d) * pull; b.vy -= (dy / d) * pull;
     }
     for (const node of nodes) {
-      node.vy += (node.ty - node.y) * (node.type === 'entry' ? 0.12 : 0.04) * alpha;
-      node.vx += -node.x * 0.006 * alpha;
-      node.vx *= 0.6;
-      node.vy *= 0.6;
-      node.x += Math.max(-30, Math.min(30, node.vx));
-      node.y += Math.max(-30, Math.min(30, node.vy));
+      node.vx -= node.x * 0.004;
+      node.vy -= node.y * 0.004;
+      node.vx *= 0.55;
+      node.vy *= 0.55;
+      node.x += Math.max(-24, Math.min(24, node.vx));
+      node.y += Math.max(-24, Math.min(24, node.vy));
     }
   }
 
@@ -110,7 +116,6 @@ export function layoutDailyNotes(model, previous = new Map()) {
     nodes,
     index,
     links,
-    days: days.map((day) => ({ day, y: dayY.get(day) })),
     bounds: nodes.length ? { minX, maxX, minY, maxY } : { minX: 0, maxX: 0, minY: 0, maxY: 0 },
   };
 }

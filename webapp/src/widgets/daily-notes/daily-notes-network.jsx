@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Maximize2, Minus, Plus } from 'lucide-react';
-import { formatDay } from './daily-notes-model';
-import { DAY_SPACING } from './daily-notes-layout';
 
 const MIN_ZOOM = 0.15;
-const MAX_ZOOM = 3;
+const MAX_ZOOM = 4;
+const MAX_LABELS = 60;
+const HUB_LABELS = 10;
 
 function palette(element) {
   const style = getComputedStyle(element);
@@ -16,7 +16,6 @@ function palette(element) {
     rule: read('--cc-border', '#ececef'),
     strong: read('--cc-border-strong', '#dedee2'),
     accent: read('--cc-accent', '#29bc95'),
-    accentText: read('--cc-accent-text', '#147c65'),
     danger: read('--cc-danger', '#e05757'),
     font: read('--cc-font-sans', 'system-ui, sans-serif'),
   };
@@ -29,7 +28,9 @@ function clipLabel(context, text, width) {
   return `${text.slice(0, end)}…`;
 }
 
-export default function DailyNotesNetwork({ layout, model, matches, selectedId, onSelect }) {
+// rightInset is the width covered by the floating reader, so fitting and
+// centring use the part of the canvas that is actually visible.
+export default function DailyNotesNetwork({ layout, model, matches, selectedId, onSelect, rightInset: requestedInset = 0 }) {
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const viewRef = useRef({ x: 0, y: 0, k: 1 });
@@ -38,6 +39,8 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
   const frameRef = useRef(0);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [hoverId, setHoverId] = useState('');
+  // Below the narrow breakpoint the reader sits under the graph, not beside it.
+  const rightInset = size.width > 820 ? requestedInset : 0;
 
   const neighbors = useMemo(() => {
     const out = new Set();
@@ -51,6 +54,21 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     return out;
   }, [layout, selectedId]);
 
+  // Newer days draw darker, so recent work stands out without a time axis.
+  const recency = useMemo(() => {
+    const out = new Map();
+    const last = Math.max(1, model.days.length - 1);
+    model.days.forEach(({ entries }, rank) => {
+      for (const entry of entries) out.set(entry.id, 1 - rank / last);
+    });
+    return out;
+  }, [model]);
+
+  // The most-linked nodes are named even at the overview zoom.
+  const hubs = useMemo(() => new Set([...layout.nodes].sort((a, b) => b.degree - a.degree).slice(0, HUB_LABELS).map((node) => node.id)), [layout]);
+
+  const titleOf = useCallback((id) => model.entries.get(id)?.title || model.sources.get(id)?.label || '', [model]);
+
   const draw = useCallback(() => {
     frameRef.current = 0;
     const canvas = canvasRef.current;
@@ -60,28 +78,9 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     const colors = palette(canvas);
     const { x, y, k } = viewRef.current;
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.globalAlpha = 1;
     context.fillStyle = colors.canvas;
     context.fillRect(0, 0, size.width, size.height);
-
-    // Day rows: the vertical axis is time, newest at the top.
-    context.font = `500 11px ${colors.font}`;
-    context.textAlign = 'left';
-    context.textBaseline = 'bottom';
-    const step = Math.max(1, Math.ceil(28 / (DAY_SPACING * k)));
-    layout.days.forEach(({ day, y: dayY }, i) => {
-      const sy = (dayY - DAY_SPACING / 2) * k + y;
-      if (sy < -20 || sy > size.height + 20) return;
-      context.strokeStyle = colors.rule;
-      context.lineWidth = 1;
-      context.beginPath();
-      context.moveTo(0, sy);
-      context.lineTo(size.width, sy);
-      context.stroke();
-      if (i % step === 0) {
-        context.fillStyle = colors.muted;
-        context.fillText(formatDay(day).split(' · ')[0], 10, sy + 16);
-      }
-    });
 
     const visible = (id) => !matches || matches.has(id) || id === selectedId;
     const focus = (id) => id === selectedId || neighbors.has(id) || id === hoverId;
@@ -89,11 +88,11 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     for (const link of layout.links) {
       const a = layout.nodes[link.source];
       const b = layout.nodes[link.target];
-      const lit = selectedId && (a.id === selectedId || b.id === selectedId);
+      const lit = (selectedId && (a.id === selectedId || b.id === selectedId)) || (hoverId && (a.id === hoverId || b.id === hoverId));
       const dim = (matches && !(visible(a.id) && visible(b.id))) || (selectedId && !lit);
-      context.globalAlpha = dim ? 0.08 : link.kind === 'cites' ? 0.35 : 0.75;
+      context.globalAlpha = lit ? 0.9 : dim ? 0.06 : link.kind === 'cites' ? 0.28 : 0.6;
       context.strokeStyle = link.kind === 'corrects' ? colors.danger : link.kind === 'cites' ? colors.strong : colors.accent;
-      context.lineWidth = (link.kind === 'cites' ? 1 : 1.6) * (lit ? 1.6 : 1);
+      context.lineWidth = (link.kind === 'cites' ? 1 : 1.5) * (lit ? 1.5 : 1);
       context.beginPath();
       context.moveTo(a.x * k + x, a.y * k + y);
       context.lineTo(b.x * k + x, b.y * k + y);
@@ -101,92 +100,81 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     }
 
     const labels = [];
+    const scale = Math.min(1.6, Math.max(0.55, k));
     for (const node of layout.nodes) {
       const sx = node.x * k + x;
       const sy = node.y * k + y;
-      const r = Math.max(2.5, node.r * Math.min(1.4, Math.max(0.6, k)));
-      if (sx < -r || sy < -r || sx > size.width + r || sy > size.height + r) continue;
+      const r = Math.max(2.5, node.r * scale);
+      if (sx < -r - 160 || sy < -r - 20 || sx > size.width + r + 160 || sy > size.height + r + 20) continue;
       const dim = !visible(node.id) || (selectedId && !focus(node.id));
-      context.globalAlpha = dim ? 0.15 : 1;
+      context.globalAlpha = dim ? 0.14 : 1;
       context.beginPath();
       context.arc(sx, sy, r, 0, Math.PI * 2);
       if (node.type === 'entry') {
+        context.fillStyle = colors.canvas;
+        context.fill();
+        context.globalAlpha = (dim ? 0.14 : 1) * (0.4 + 0.6 * (recency.get(node.id) ?? 1));
         context.fillStyle = colors.accent;
         context.fill();
       } else {
         context.fillStyle = colors.canvas;
         context.fill();
         context.strokeStyle = colors.muted;
-        context.lineWidth = 1.4;
+        context.lineWidth = 1.5;
         context.stroke();
       }
-      if (node.id === selectedId) {
+      if (node.id === selectedId || node.id === hoverId) {
         context.globalAlpha = 1;
         context.strokeStyle = colors.text;
-        context.lineWidth = 2;
+        context.lineWidth = node.id === selectedId ? 2 : 1.2;
         context.beginPath();
-        context.arc(sx, sy, r + 4, 0, Math.PI * 2);
+        context.arc(sx, sy, r + 3.5, 0, Math.PI * 2);
         context.stroke();
       }
-      if (!dim && (node.type === 'entry' || focus(node.id))) {
-        const priority = node.id === selectedId ? 0 : node.id === hoverId ? 1 : neighbors.has(node.id) ? 2 : matches?.has(node.id) ? 3 : 4 + 1 / node.r;
-        labels.push({ node, sx, sy, r, priority, strong: priority < 2 });
-      }
+      if (dim) continue;
+      // Hubs are named first; every other title appears as the reader zooms in.
+      const priority = node.id === selectedId ? 0 : node.id === hoverId ? 1 : neighbors.has(node.id) ? 2 : matches?.has(node.id) ? 3 : 10 - Math.min(6, node.degree / 2);
+      const earned = priority < 4 || hubs.has(node.id) || node.r * k >= 9 || k >= 1.4;
+      if (earned) labels.push({ node, sx, sy, r, priority, strong: priority < 2 });
     }
 
-    // Labels are placed by priority and skipped where they would overlap,
-    // so titles stay legible at any zoom.
+    // Labels sit centred under their node, placed by priority and skipped where
+    // they would overlap, so titles stay legible at any zoom.
     context.globalAlpha = 1;
-    context.textAlign = 'left';
-    context.textBaseline = 'middle';
+    context.textAlign = 'center';
+    context.textBaseline = 'top';
     labels.sort((a, b) => a.priority - b.priority);
     const placed = [];
-    for (const { node, sx, sy, r, strong } of labels.slice(0, 160)) {
-      if (placed.length >= 48) break;
-      const text = node.type === 'entry'
-        ? model.entries.get(node.id)?.title || ''
-        : model.sources.get(node.id)?.label || '';
-      context.font = `${strong ? 600 : 500} 12px ${colors.font}`;
-      const overlaps = (box) => placed.some((b) => box.x < b.x + b.w && b.x < box.x + box.w && box.y < b.y + b.h && b.y < box.y + box.h);
-      // Right of the node first, then left; a label with no free side is skipped.
-      let label = '';
-      let box = null;
-      for (const side of size.width - sx - r - 20 >= 90 ? ['right', 'left'] : ['left']) {
-        const room = side === 'right' ? size.width - sx - r - 20 : sx - r - 20;
-        if (room < 48) continue;
-        const candidate = clipLabel(context, text, Math.min(strong ? 300 : 170, room));
-        const width = context.measureText(candidate).width + 8;
-        const next = { x: side === 'right' ? sx + r + 4 : sx - r - 4 - width, y: sy - 9, w: width, h: 18 };
-        if (strong || !overlaps(next)) { label = candidate; box = next; break; }
-      }
-      if (!box) continue;
+    for (const { node, sx, sy, r, strong } of labels) {
+      if (placed.length >= MAX_LABELS) break;
+      context.font = `${strong ? 600 : 500} ${strong ? 12.5 : 11.5}px ${colors.font}`;
+      const label = clipLabel(context, titleOf(node.id), strong ? 280 : 150);
+      const width = context.measureText(label).width + 8;
+      const box = { x: sx - width / 2, y: sy + r + 3, w: width, h: 17 };
+      if (!strong && placed.some((b) => box.x < b.x + b.w && b.x < box.x + box.w && box.y < b.y + b.h && b.y < box.y + box.h)) continue;
       placed.push(box);
+      context.globalAlpha = 0.88;
       context.fillStyle = colors.canvas;
-      context.globalAlpha = 0.9;
       context.fillRect(box.x, box.y, box.w, box.h);
       context.globalAlpha = 1;
-      context.fillStyle = node.type === 'entry' ? colors.text : colors.muted;
-      context.fillText(label, box.x + 4, sy);
+      context.fillStyle = node.type === 'entry' || strong ? colors.text : colors.muted;
+      context.fillText(label, sx, box.y + 2);
     }
-  }, [layout, model, matches, selectedId, neighbors, hoverId, size]);
+  }, [layout, matches, selectedId, neighbors, hoverId, size, recency, titleOf, hubs]);
 
   const schedule = useCallback(() => {
     if (!frameRef.current) frameRef.current = requestAnimationFrame(draw);
   }, [draw]);
 
-  // Fit the width and start at the newest day; the timeline scrolls down.
   const fit = useCallback(() => {
-    const { minX, maxX } = layout.bounds;
+    const { minX, maxX, minY, maxY } = layout.bounds;
     if (!size.width || !layout.nodes.length) return;
-    const pad = 56;
-    const k = Math.max(MIN_ZOOM, Math.min(1, (size.width - pad * 2) / Math.max(1, maxX - minX), size.height / (DAY_SPACING * 5.5)));
-    viewRef.current = {
-      k,
-      x: size.width / 2 - ((minX + maxX) / 2) * k + 20,
-      y: (DAY_SPACING / 2) * k + 8,
-    };
+    const pad = 40;
+    const width = Math.max(200, size.width - rightInset);
+    const k = Math.max(MIN_ZOOM, Math.min(1.6, (width - pad * 2) / Math.max(1, maxX - minX), (size.height - pad * 2) / Math.max(1, maxY - minY)));
+    viewRef.current = { k, x: width / 2 - ((minX + maxX) / 2) * k, y: size.height / 2 - ((minY + maxY) / 2) * k };
     schedule();
-  }, [layout, size, schedule]);
+  }, [layout, size, rightInset, schedule]);
 
   useEffect(() => {
     const element = wrapRef.current;
@@ -209,13 +197,16 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     canvas.style.height = `${size.height}px`;
   }, [size]);
 
-  // Fit once when the first pages arrive; later pages keep the reader's view.
+  // Fit when the first pages arrive and again once loading finishes; later
+  // changes keep the reader's view.
+  const nodeCount = layout.nodes.length;
   useEffect(() => {
-    if (!fittedRef.current && size.width && layout.nodes.length) {
-      fittedRef.current = true;
+    if (!size.width || !nodeCount) return;
+    if (!fittedRef.current || fittedRef.current === 'partial') {
+      fittedRef.current = layout.complete ? true : 'partial';
       fit();
     }
-  }, [fit, layout, size]);
+  }, [fit, nodeCount, layout.complete, size.width]);
 
   useEffect(() => {
     schedule();
@@ -226,13 +217,14 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     const node = layout.nodes[layout.index.get(selectedId)];
     if (!node || !size.height) return;
     const view = viewRef.current;
+    const width = Math.max(200, size.width - rightInset);
     const sy = node.y * view.k + view.y;
     const sx = node.x * view.k + view.x;
-    if (sy < 40 || sy > size.height - 40 || sx < 20 || sx > size.width - 20) {
-      viewRef.current = { ...view, x: size.width / 2 - node.x * view.k, y: size.height / 3 - node.y * view.k };
+    if (sy < 30 || sy > size.height - 60 || sx < 30 || sx > width - 30) {
+      viewRef.current = { ...view, x: width / 2 - node.x * view.k, y: size.height / 2 - node.y * view.k };
       schedule();
     }
-  }, [selectedId, layout, size, schedule]);
+  }, [selectedId, layout, size, rightInset, schedule]);
 
   useEffect(() => () => cancelAnimationFrame(frameRef.current), []);
 
@@ -241,11 +233,12 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     const { x, y, k } = viewRef.current;
     const px = (clientX - rect.left - x) / k;
     const py = (clientY - rect.top - y) / k;
+    const scale = Math.min(1.6, Math.max(0.55, k));
     let best = null;
     let bestDistance = Infinity;
     for (const node of layout.nodes) {
       const d = Math.hypot(node.x - px, node.y - py);
-      if (d < bestDistance && d <= node.r + 6 / k) {
+      if (d < bestDistance && d <= (Math.max(2.5, node.r * scale) + 6) / k) {
         best = node;
         bestDistance = d;
       }
@@ -253,7 +246,7 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     return best;
   };
 
-  const zoomAt = (factor, cx = size.width / 2, cy = size.height / 2) => {
+  const zoomAt = (factor, cx = (size.width - rightInset) / 2, cy = size.height / 2) => {
     const view = viewRef.current;
     const k = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, view.k * factor));
     viewRef.current = { k, x: cx - ((cx - view.x) / view.k) * k, y: cy - ((cy - view.y) / view.k) * k };
@@ -266,28 +259,25 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     const onWheel = (event) => {
       event.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      // Pinch and Ctrl+wheel zoom; a plain wheel scrolls the timeline.
-      if (event.ctrlKey || event.metaKey) {
-        zoomAt(Math.exp(-event.deltaY * 0.01), event.clientX - rect.left, event.clientY - rect.top);
-      } else {
-        viewRef.current = { ...viewRef.current, x: viewRef.current.x - event.deltaX, y: viewRef.current.y - event.deltaY };
+      // The wheel zooms around the pointer, as in other graph tools; a
+      // sideways trackpad swipe pans.
+      if (!event.ctrlKey && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+        viewRef.current = { ...viewRef.current, x: viewRef.current.x - event.deltaX };
         schedule();
+        return;
       }
+      zoomAt(Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.002)), event.clientX - rect.left, event.clientY - rect.top);
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
   });
-
-  const hoverLabel = hoverId
-    ? model.entries.get(hoverId)?.title || model.sources.get(hoverId)?.label || ''
-    : '';
 
   return (
     <div className="cc-daily-notes-network" ref={wrapRef}>
       <canvas
         ref={canvasRef}
         role="img"
-        aria-label={`笔记网络：${model.entries.size} 条笔记，${layout.days.length} 天。可在列表视图中逐条阅读。`}
+        aria-label={`笔记图谱：${model.entries.size} 条笔记，${model.sources.size} 个来源会话。可在列表视图中逐条阅读。`}
         data-cursor={hoverId ? 'pointer' : 'grab'}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -303,30 +293,25 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
             schedule();
             return;
           }
-          const node = nodeAt(event.clientX, event.clientY);
-          setHoverId(node?.id || '');
+          setHoverId(nodeAt(event.clientX, event.clientY)?.id || '');
         }}
         onPointerUp={(event) => {
           const drag = dragRef.current;
           dragRef.current = null;
-          if (drag && !drag.moved) {
-            const node = nodeAt(event.clientX, event.clientY);
-            if (node?.type === 'entry') onSelect(node.id);
-          }
+          if (drag && !drag.moved) onSelect(nodeAt(event.clientX, event.clientY)?.id || '');
         }}
         onPointerLeave={() => setHoverId('')}
       />
       <div className="cc-daily-notes-network-legend" aria-hidden="true">
-        <span><i className="is-entry" />笔记</span>
+        <span><i className="is-entry" />笔记（越深越新）</span>
         <span><i className="is-source" />来源会话</span>
         <span><i className="is-link" />笔记关系</span>
         <span><i className="is-correct" />更正</span>
       </div>
-      {hoverLabel && <div className="cc-daily-notes-network-hover" aria-hidden="true">{hoverLabel}</div>}
-      <div className="cc-daily-notes-network-controls">
+      <div className="cc-daily-notes-network-controls" style={{ right: rightInset + 12 }}>
         <button type="button" className="oc-btn oc-btn-default" aria-label="放大" title="放大" onClick={() => zoomAt(1.25)}><Plus size={15} aria-hidden="true" /></button>
         <button type="button" className="oc-btn oc-btn-default" aria-label="缩小" title="缩小" onClick={() => zoomAt(0.8)}><Minus size={15} aria-hidden="true" /></button>
-        <button type="button" className="oc-btn oc-btn-default" aria-label="回到最新一天" title="回到最新一天" onClick={fit}><Maximize2 size={15} aria-hidden="true" /></button>
+        <button type="button" className="oc-btn oc-btn-default" aria-label="显示全部" title="显示全部" onClick={fit}><Maximize2 size={15} aria-hidden="true" /></button>
       </div>
     </div>
   );

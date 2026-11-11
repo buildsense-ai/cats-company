@@ -59,7 +59,7 @@ export default function DailyNotesPanel({ agentUid }) {
   const [loadError, setLoadError] = useState(null);
   const [cursor, setCursor] = useState('');
   const [query, setQuery] = useState('');
-  const [view, setView] = useState('list');
+  const [view, setView] = useState('network');
   const [selectedId, setSelectedId] = useState('');
   const [documents, setDocuments] = useState(() => new Map());
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -104,6 +104,7 @@ export default function DailyNotesPanel({ agentUid }) {
     layoutRef.current = layoutDailyNotes(model, previous);
     return layoutRef.current;
   }, [model, view]);
+  const graph = useMemo(() => layout && { ...layout, complete: !loading }, [layout, loading]);
 
   const texts = useMemo(() => {
     const out = new Map();
@@ -137,10 +138,13 @@ export default function DailyNotesPanel({ agentUid }) {
     }
   }, [agentUid]);
 
+  // A selection is a note or, from the graph, a source session.
   const selected = selectedId ? model.entries.get(selectedId) : null;
+  const selectedSource = selectedId && !selected ? model.sources.get(selectedId) : null;
+  // The list opens on the newest note; the graph opens on the whole picture.
   useEffect(() => {
-    if (!selectedId && model.days[0]?.entries[0]) setSelectedId(model.days[0].entries[0].id);
-  }, [model, selectedId]);
+    if (view === 'list' && !selectedId && model.days[0]?.entries[0]) setSelectedId(model.days[0].entries[0].id);
+  }, [model, selectedId, view]);
   const selectedStatus = selected ? documents.get(selected.documentId)?.status : '';
   useEffect(() => {
     if (!selected?.documentId || selectedStatus === 'ready' || selectedStatus === 'loading' || selectedStatus === 'error') return;
@@ -175,9 +179,9 @@ export default function DailyNotesPanel({ agentUid }) {
     .map(({ day, entries }) => ({ day, entries: matches ? entries.filter((entry) => matches.has(entry.id)) : entries }))
     .filter(({ entries }) => entries.length), [model, matches]);
 
-  const select = (id) => {
+  const select = (id = '') => {
     setSelectedId(id);
-    requestAnimationFrame(() => listRef.current?.querySelector(`[data-entry-id="${id}"]`)?.scrollIntoView({ block: 'nearest' }));
+    requestAnimationFrame(() => listRef.current?.querySelector(`[data-entry-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' }));
   };
 
   const failure = loadError ? describeError(loadError) : '';
@@ -226,7 +230,7 @@ export default function DailyNotesPanel({ agentUid }) {
         </span>
         <div className="cc-daily-notes-views" role="group" aria-label="视图">
           <button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}><List size={14} aria-hidden="true" />列表</button>
-          <button type="button" aria-pressed={view === 'network'} onClick={() => setView('network')}><Network size={14} aria-hidden="true" />网络</button>
+          <button type="button" aria-pressed={view === 'network'} onClick={() => setView('network')}><Network size={14} aria-hidden="true" />图谱</button>
         </div>
       </div>
 
@@ -273,11 +277,38 @@ export default function DailyNotesPanel({ agentUid }) {
               {loading && <p className="cc-daily-notes-none">正在加载更早的笔记…</p>}
             </nav>
           ) : (
-            layout && <DailyNotesNetwork layout={layout} model={model} matches={matches} selectedId={selectedId} onSelect={select} />
+            graph && <DailyNotesNetwork layout={graph} model={model} matches={matches} selectedId={selectedId} onSelect={select} rightInset={selectedId ? 376 : 0} />
           )}
 
+          {(view === 'list' || selectedId) && (
           <article className="cc-daily-notes-reader" aria-live="polite">
-            {!selected ? (
+            {view === 'network' && (
+              <button type="button" className="cc-daily-notes-reader-close" aria-label="关闭" title="关闭" onClick={() => select('')}>
+                <X size={15} aria-hidden="true" />
+              </button>
+            )}
+            {selectedSource ? (
+              <>
+                <p className="cc-daily-notes-reader-day">来源会话</p>
+                <h3>{selectedSource.label}</h3>
+                <section className="cc-daily-notes-related is-first">
+                  <h4>引用它的笔记 · {selectedSource.entries.size}</h4>
+                  <ul>
+                    {[...selectedSource.entries].map((id) => model.entries.get(id)).filter(Boolean)
+                      .sort((a, b) => b.day.localeCompare(a.day))
+                      .map((other) => (
+                        <li key={other.id}>
+                          <button type="button" onClick={() => select(other.id)}>
+                            <span className="cc-daily-notes-related-title">{other.title}</span>
+                            <span className="cc-daily-notes-related-day">{formatDay(other.day).split(' · ')[0]}</span>
+                            <ArrowRight size={13} aria-hidden="true" />
+                          </button>
+                        </li>
+                      ))}
+                  </ul>
+                </section>
+              </>
+            ) : !selected ? (
               <p className="cc-daily-notes-none">{loading ? '正在加载笔记…' : '选择一条笔记阅读。'}</p>
             ) : (
               <>
@@ -328,12 +359,20 @@ export default function DailyNotesPanel({ agentUid }) {
                 {selected.sources.size > 0 && (
                   <section className="cc-daily-notes-sources">
                     <h4>来源</h4>
-                    <p>{[...selected.sources].map((key) => model.sources.get(key)?.label).filter(Boolean).join('、')}</p>
+                    <div className="cc-daily-notes-source-chips">
+                      {[...selected.sources].filter((key) => model.sources.has(key)).map((key) => (
+                        <button type="button" key={key} onClick={() => select(key)}>
+                          {model.sources.get(key).label}
+                          <span>{model.sources.get(key).entries.size}</span>
+                        </button>
+                      ))}
+                    </div>
                   </section>
                 )}
               </>
             )}
           </article>
+          )}
         </div>
       )}
     </div>
