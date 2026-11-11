@@ -54,7 +54,8 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     return out;
   }, [layout, selectedId]);
 
-  // Newer days draw darker, so recent work stands out without a time axis.
+  // Older days fade toward the canvas, so recent work stands out without a
+  // time axis in either theme.
   const recency = useMemo(() => {
     const out = new Map();
     const last = Math.max(1, model.days.length - 1);
@@ -303,7 +304,7 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
         onPointerLeave={() => setHoverId('')}
       />
       <div className="cc-daily-notes-network-legend" aria-hidden="true">
-        <span><i className="is-entry" />笔记（越深越新）</span>
+        <span><i className="is-entry" />笔记（越淡越旧）</span>
         <span><i className="is-source" />来源会话</span>
         <span><i className="is-link" />笔记关系</span>
         <span><i className="is-correct" />更正</span>
