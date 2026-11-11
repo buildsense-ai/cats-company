@@ -5870,7 +5870,10 @@ export default function MessagesView({
     if (task && ['completed', 'failed', 'cancelled', 'stale'].includes(task.state)) return task.state;
     const lastWorkingOrder = Math.max(...group.messages.map(message => conversationMessageOrder.get(message.id) ?? -1));
     const replyOrder = conversationReplies.get(group.explicitTurnKey || group.fallbackTurnKey) ?? -1;
-    if (!task && (replyOrder > lastWorkingOrder || group.conversationReplied)) return 'replied';
+    const hasFinalReply = replyOrder > lastWorkingOrder || group.conversationReplied;
+    // The runtime sends the visible reply before its asynchronous terminal
+    // task_status. Do not keep showing an active task after that reply arrives.
+    if (hasFinalReply && (!task || ['running', 'waiting'].includes(task.state))) return 'replied';
     const latest = latestConversationWorking.get(uid) === group;
     const runActive = group.messages.some(message => (
       conversationActivity[`${uid}:${assistantReplyTurnKey(message)}`]
