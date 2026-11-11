@@ -96,15 +96,17 @@ html[data-theme="liquid"] .relay-access-plan-modal { --plans-canvas: #161616; --
 .relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-tagline { font-weight: 500; line-height: 20px; }
 .relay-access-plan-list-chooser .relay-access-plan-row.has-highlights .relay-access-plan-action { margin-top: 24px; }
 .relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights .relay-access-plan-action button {
-  --plan-button-bg: var(--cc-text);
-  --plan-button-hover: color-mix(in srgb, var(--cc-text) 88%, var(--cc-panel));
-  --plan-button-pressed: color-mix(in srgb, var(--cc-text) 78%, var(--cc-panel));
-  --plan-button-text: var(--cc-panel);
+  --plan-button-bg: var(--cc-accent);
+  --plan-button-hover: var(--cc-accent-hover);
+  --plan-button-pressed: color-mix(in srgb, var(--cc-accent-hover) 86%, #10251f);
+  --plan-button-text: var(--plans-card);
   --plan-button-border: transparent;
   min-height: 46px;
   border-color: var(--plan-button-border);
   background: var(--plan-button-bg);
   color: var(--plan-button-text);
+  font-size: 15px;
+  font-weight: 600;
   box-shadow: none;
 }
 .relay-access-plan-list-chooser .relay-access-plan-row.official.has-highlights .relay-access-plan-action button:is(:hover, :active):not(:disabled) {
@@ -151,14 +153,26 @@ html[data-theme="liquid"] .relay-access-plan-modal { --plans-canvas: #161616; --
 .relay-access-plan-feature-details > li::before { content: ''; width: 11px; height: 12px; box-sizing: border-box; margin: 3px 0 0 2px; border-left: 1.5px solid var(--cc-muted); border-bottom: 1.5px solid var(--cc-muted); border-bottom-left-radius: 4px; }
 .relay-access-plan-list-chooser .relay-access-plan-row.has-highlights > .relay-access-plan-footnote { min-height: 0; margin: 20px 0 0; padding-top: 14px; border-top: 1px solid var(--cc-border); color: var(--cc-muted); font-size: 11px; line-height: 1.7; }
 /* Credit cards retain the approved geometry and use neutral emphasis. */
-.relay-access-plan-list-chooser .credit-plan .relay-access-plan-original-price { margin-left: 12px; color: var(--cc-muted); font-size: 24px; font-weight: 400; line-height: 1.2; letter-spacing: -0.02em; text-decoration-thickness: 1.5px; }
+.relay-access-plan-list-chooser .credit-plan .relay-access-plan-original-price { margin-left: 12px; color: color-mix(in srgb, var(--cc-muted) 82%, var(--plans-card)); font-size: 26px; font-weight: 400; line-height: 1.2; letter-spacing: -0.02em; text-decoration-thickness: 1.5px; }
 .relay-access-plan-list-chooser .relay-access-plan-row.credit-plan .relay-access-plan-features > li:first-child { font-size: 15px; font-weight: 600; }
 .relay-access-plan-list-chooser .relay-access-plan-row.credit-plan .relay-access-plan-feature-details > li { font-size: 13px; font-weight: 400; }
 .relay-access-plan-list-chooser .relay-access-plan-row.credit-plan .relay-access-plan-feature-details > li:last-child { color: var(--cc-text); font-weight: 500; }
 .relay-access-plan-list-chooser .relay-access-plan-row.credit-plan .relay-access-plan-features > li:nth-child(n + 2) { color: var(--cc-text-secondary); font-size: 13px; }
-.relay-access-plan-list-chooser .relay-access-plan-row.credit-plan.recommended { --plan-surface: var(--plans-card); border-color: var(--plan-border); background: var(--plan-surface); box-shadow: 0 2px 5px rgb(0 0 0 / 3%), 0 12px 28px -8px rgb(0 0 0 / 10%); }
-html[data-theme="dark"] .relay-access-plan-list-chooser .relay-access-plan-row.credit-plan.recommended { box-shadow: 0 2px 6px rgb(0 0 0 / 18%), 0 14px 30px -8px rgb(0 0 0 / 35%); }
-.relay-access-plan-list-chooser .relay-access-plan-row.credit-plan.recommended .relay-access-plan-badge { position: relative; left: 8px; margin: 0; padding: 3px 8px; border: 0; border-radius: 5px; background: var(--cc-text); color: var(--plans-card); font-size: 11px; font-weight: 500; line-height: 16px; }
+.relay-access-plan-list-chooser .relay-access-plan-row.credit-plan.recommended { --plan-surface: var(--plans-card); border-color: var(--plan-border); background: var(--plan-surface); box-shadow: 0 3px 8px rgb(0 0 0 / 4%), 0 16px 36px -10px rgb(0 0 0 / 14%); }
+html[data-theme="dark"] .relay-access-plan-list-chooser .relay-access-plan-row.credit-plan.recommended { box-shadow: 0 3px 8px rgb(0 0 0 / 22%), 0 16px 36px -8px rgb(0 0 0 / 42%); }
+.relay-access-plan-list-chooser .relay-access-plan-row.credit-plan.recommended .relay-access-plan-badge { position: relative; left: 8px; margin: 0; padding: 3px 9px; border: 0; border-radius: 5px; background: var(--cc-accent); color: var(--plans-card); font-size: 12px; font-weight: 500; line-height: 16px; }
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .relay-access-plan-list-chooser .credit-plan:hover .relay-access-plan-price > strong { animation: catsco-plan-price-motion-16 660ms cubic-bezier(0.2, 0.7, 0.25, 1) both; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .relay-access-plan-list-chooser .credit-plan .relay-access-plan-price > strong { animation: none; transition: none; }
+}
+@keyframes catsco-plan-price-motion-16 {
+  0%, 100% { transform: scaleX(1) scaleY(1); }
+  30% { transform: scaleX(1.12) scaleY(0.88); }
+  58% { transform: scaleX(0.96) scaleY(1.08); }
+  80% { transform: scaleX(1.03) scaleY(0.98); }
+}
 .relay-access-enterprise-card {
   grid-template-columns: minmax(0, 1fr);
   gap: 32px;
