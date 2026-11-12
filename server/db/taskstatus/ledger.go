@@ -307,9 +307,11 @@ func (l Ledger) MarkStale(topic string, source int64, run string, cutoff time.Ti
 	s.Error = "bot disconnected before terminal task status"
 	s.ExpiresAt = nil
 	s.UpdatedAt = now
-	if s.EventUpdatedAt.Before(now) {
-		s.EventUpdatedAt = now
-	}
+	// Advance the event time only past this run's own last event. Stamping it
+	// with now would outrank a later run's terminal and turn a conversation
+	// whose last turn actually finished into "任务已自动中止" after any
+	// reconnect, which is what most stale aggregates in production were.
+	s.EventUpdatedAt = s.EventUpdatedAt.Add(time.Microsecond)
 	aggregate, err := l.write(tx, s, now)
 	if err != nil {
 		return nil, false, err

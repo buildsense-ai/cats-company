@@ -436,6 +436,37 @@ func Run(t *testing.T, db *sql.DB, adapter Adapter, postgres bool) {
 		}
 	})
 
+	t.Run("recovery keeps a later terminal as the topic status", func(t *testing.T) {
+		topic, a, _ := fixture(t)
+		upsert(t, topic, a, "abandoned", "running")
+		shift := `UPDATE conversation_task_runs SET created_at = created_at - INTERVAL '5 seconds' WHERE topic_id = ? AND run_id = 'abandoned'`
+		if !postgres {
+			shift = `UPDATE conversation_task_runs SET created_at = created_at - INTERVAL 5 SECOND WHERE topic_id = ? AND run_id = 'abandoned'`
+		}
+		if _, err := db.Exec(query(shift), topic); err != nil {
+			t.Fatal(err)
+		}
+		upsert(t, topic, a, "next", "running")
+		upsert(t, topic, a, "next", "completed")
+		generation, err := adapter.BumpBotConnectionGeneration(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The bot disconnects after the newer run already answered. Recovering
+		// the abandoned run must not replace "已完成" with "任务已自动中止".
+		aggregate, updated, err := adapter.MarkConversationTaskStatusStaleIfUnchanged(topic, a, "abandoned", time.Now().UTC().Add(time.Minute), generation)
+		if err != nil || !updated {
+			t.Fatalf("recovery updated=%v err=%v", updated, err)
+		}
+		if aggregate.State != "completed" || aggregate.RunID != "next" {
+			t.Fatalf("recovery outranked a later terminal: %+v", aggregate)
+		}
+		if source, err := adapter.GetConversationTaskStatusForSource(topic, a); err != nil || source == nil ||
+			source.RunID != "next" || source.State != "completed" {
+			t.Fatalf("source=%+v err=%v", source, err)
+		}
+	})
+
 	t.Run("concurrent workers claim distinct events", func(t *testing.T) {
 		topic, a, _ := fixture(t)
 		upsert(t, topic, a, "claim-a", "completed")
