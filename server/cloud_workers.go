@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -3085,9 +3086,15 @@ func (h *CloudWorkerHandler) runScriptTimeout(timeout time.Duration, script stri
 	}
 	deployment, err := h.deploymentForTenant(tenant)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve deployment for tenant %q: %w", tenant, err)
 	}
-	return h.runDeploymentScript(timeout, deployment, script, args...)
+	out, err := h.runDeploymentScript(timeout, deployment, script, args...)
+	if err != nil {
+		// These failures are debugged from the server log alone, and a script that
+		// dies before writing anything used to leave nothing but "exit status 1".
+		return out, fmt.Errorf("%w (tenant=%q script=%s)", err, tenant, filepath.Base(script))
+	}
+	return out, nil
 }
 
 func (h *CloudWorkerHandler) runDeploymentScript(timeout time.Duration, deployment types.CloudWorkerDeployment, script string, args ...string) (string, error) {
@@ -3108,9 +3115,20 @@ func (h *CloudWorkerHandler) runDeploymentScript(timeout time.Duration, deployme
 		if ctx.Err() != nil {
 			return string(out), fmt.Errorf("script timed out after %s: %w", timeout, ctx.Err())
 		}
-		return string(out), fmt.Errorf("script failed: %w", err)
+		return string(out), scriptFailureError(string(out), err)
 	}
 	return string(out), nil
+}
+
+// scriptFailureError turns a bare "exit status 1" into something an operator can
+// act on. A worker script that dies before printing anything (missing dependency,
+// unreachable jump host, bad argument) used to log nothing but the exit code, so
+// the same failure had to be rediscovered by hand every time.
+func scriptFailureError(out string, err error) error {
+	if strings.TrimSpace(out) == "" {
+		return fmt.Errorf("script wrote no output: %w", err)
+	}
+	return fmt.Errorf("script failed: %w", err)
 }
 
 // truncateWorkerOutput bounds script output before it is written to the server
