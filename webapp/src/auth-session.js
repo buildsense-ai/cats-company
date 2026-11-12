@@ -213,7 +213,9 @@ export async function request(method, path, body, options = {}) {
   const headers = { 'Content-Type': 'application/json' };
   const authToken = options.authToken === undefined ? token : options.authToken;
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  if (authToken === token && mediaToken(authToken) && method === 'GET') {
+  // JSON-only consumers do not need the file cookie. Let them opt out of this
+  // ordered write barrier without changing file preview/logout semantics.
+  if (options.waitForMediaSession !== false && authToken === token && mediaToken(authToken) && method === 'GET') {
     await ensureFileMediaSession().catch(() => false);
   }
 
