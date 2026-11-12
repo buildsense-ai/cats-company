@@ -140,7 +140,6 @@ func normalizeDeviceConnectorScopes(scopes []string) []string {
 		"device:rpc_result": {},
 		"device:refresh":    {},
 		"device:upload":     {},
-		"device:download":   {},
 	}
 	out := make([]string, 0, len(scopes))
 	seen := make(map[string]struct{}, len(scopes))
@@ -223,37 +222,6 @@ func DeviceConnectorUploadAuthWithDB(db store.Store, hub *Hub) func(http.Handler
 			}
 			ctx := context.WithValue(r.Context(), uidKey, claims.UID)
 			ctx = context.WithValue(ctx, usernameKey, claims.Username)
-			next(w, r.WithContext(ctx))
-		}
-	}
-}
-
-// DeviceConnectorDownloadAuthWithDB authenticates GET/HEAD file reads as the
-// active human owner. Message/file authorization remains the caller's job.
-func DeviceConnectorDownloadAuthWithDB(db store.Store, hub *Hub) func(http.HandlerFunc) http.HandlerFunc {
-	return func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "file download requires GET or HEAD"})
-				return
-			}
-			h := &DeviceConnectorHandler{db: db, hub: hub}
-			claims, status, msg := h.verifyConnectorRequest(r, "device:download")
-			if status != 0 {
-				writeJSON(w, status, map[string]string{"error": msg})
-				return
-			}
-			user, status, msg := activeUserByID(claims.UID, db.GetUser)
-			if status != 0 {
-				writeJSON(w, status, map[string]string{"error": msg})
-				return
-			}
-			if user.AccountType != types.AccountHuman {
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "file download requires a human-owned device connector"})
-				return
-			}
-			ctx := context.WithValue(r.Context(), uidKey, claims.UID)
-			ctx = context.WithValue(ctx, usernameKey, user.Username)
 			next(w, r.WithContext(ctx))
 		}
 	}
@@ -793,7 +761,6 @@ func (h *DeviceConnectorHandler) HandleEnroll(w http.ResponseWriter, r *http.Req
 	scopes := normalizeDeviceConnectorScopes(nil)
 	if containsDeviceCapability(capabilities, "send_file") {
 		scopes = appendDeviceScope(scopes, "device:upload")
-		scopes = appendDeviceScope(scopes, "device:download")
 	}
 	token, err := GenerateDeviceConnectorToken(DeviceConnectorTokenInput{
 		UID:            pairing.OwnerUID,
@@ -836,7 +803,6 @@ func (h *DeviceConnectorHandler) HandleRefreshToken(w http.ResponseWriter, r *ht
 	scopes := append([]string(nil), claims.Scopes...)
 	if containsDeviceCapability(claims.Capabilities, "send_file") {
 		scopes = appendDeviceScope(scopes, "device:upload")
-		scopes = appendDeviceScope(scopes, "device:download")
 	}
 	token, err := GenerateDeviceConnectorToken(DeviceConnectorTokenInput{
 		UID:            claims.UID,

@@ -495,7 +495,7 @@ func TestCloudArtifactHandlerMutationInvalidatesArtifactContextCache(t *testing.
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	active := true
 	listRequests := 0
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/internal/agents/440/artifacts":
 			listRequests++
@@ -506,7 +506,7 @@ func TestCloudArtifactHandlerMutationInvalidatesArtifactContextCache(t *testing.
 					ID:             "lesson-game",
 					Title:          "课堂小游戏",
 					Kind:           "html",
-					URL:            "https://" + r.Host + "/by-agent/440/lesson-game/latest/",
+					URL:            "http://" + r.Host + "/by-agent/440/lesson-game/latest/",
 					Status:         "active",
 					CreatedAt:      "2026-08-07T00:00:00Z",
 					UpdatedAt:      "2026-08-07T00:01:00Z",
@@ -529,7 +529,7 @@ func TestCloudArtifactHandlerMutationInvalidatesArtifactContextCache(t *testing.
 					ID:         "lesson-game",
 					Title:      "课堂小游戏",
 					Kind:       "html",
-					URL:        "https://" + r.Host + "/by-agent/440/lesson-game/latest/",
+					URL:        "http://" + r.Host + "/by-agent/440/lesson-game/latest/",
 					Status:     "deleted",
 					CreatedAt:  "2026-08-07T00:00:00Z",
 					UpdatedAt:  "2026-08-07T00:02:00Z",
@@ -556,7 +556,6 @@ func TestCloudArtifactHandlerMutationInvalidatesArtifactContextCache(t *testing.
 			agents: map[int64]string{440: "test"},
 		},
 	}
-	grantLegacyArtifactResources(t, handler, 7, server.URL+"/by-agent/440/lesson-game/latest/")
 	if _, err := handler.ResolveActiveArtifact(context.Background(), 440, "lesson-game"); err != nil {
 		t.Fatalf("initial resolution: %v", err)
 	}
@@ -587,8 +586,8 @@ func TestCloudArtifactHandlerMutationInvalidatesArtifactContextCache(t *testing.
 	if _, err := handler.ResolveActiveArtifact(context.Background(), 440, "lesson-game"); err == nil {
 		t.Fatal("deleted artifact should not resolve after cache invalidation")
 	}
-	if listRequests != 3 {
-		t.Fatalf("list requests after mutation = %d, want 3 (including authorization)", listRequests)
+	if listRequests != 2 {
+		t.Fatalf("list requests after mutation = %d, want 2", listRequests)
 	}
 }
 
@@ -598,21 +597,20 @@ func TestCloudArtifactHandlerMutationRejectsInflightStaleResolution(t *testing.T
 	releaseRequest := make(chan struct{})
 	active := true
 	listRequests := 0
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/internal/agents/440/artifacts":
 			listRequests++
-			requestNumber := listRequests
-			if requestNumber == 1 {
+			if listRequests == 1 {
 				close(requestStarted)
 				<-releaseRequest
 			}
 			artifacts := []cloudArtifact{}
-			if active || requestNumber == 1 {
+			if active || listRequests == 1 {
 				version := 2
 				artifacts = append(artifacts, cloudArtifact{
 					ID: "lesson-game", Title: "课堂小游戏", Kind: "html",
-					URL:    "https://" + r.Host + "/by-agent/440/lesson-game/latest/",
+					URL:    "http://" + r.Host + "/by-agent/440/lesson-game/latest/",
 					Status: "active", CreatedAt: "2026-08-07T00:00:00Z", UpdatedAt: "2026-08-07T00:01:00Z",
 					PublishVersion: &version, AgentUID: "440", CanDelete: true,
 				})
@@ -627,7 +625,7 @@ func TestCloudArtifactHandlerMutationRejectsInflightStaleResolution(t *testing.T
 				OK: true,
 				Artifact: cloudArtifact{
 					ID: "lesson-game", Title: "课堂小游戏", Kind: "html",
-					URL:    "https://" + r.Host + "/by-agent/440/lesson-game/latest/",
+					URL:    "http://" + r.Host + "/by-agent/440/lesson-game/latest/",
 					Status: "deleted", CreatedAt: "2026-08-07T00:00:00Z", UpdatedAt: "2026-08-07T00:02:00Z",
 					DeletedAt: "2026-08-07T00:02:00Z", AgentUID: "440", CanRestore: true,
 				},
@@ -637,13 +635,6 @@ func TestCloudArtifactHandlerMutationRejectsInflightStaleResolution(t *testing.T
 		}
 	}))
 	defer server.Close()
-	defer func() {
-		select {
-		case <-releaseRequest:
-		default:
-			close(releaseRequest)
-		}
-	}()
 
 	handler := &CloudArtifactHandler{
 		httpClient: server.Client(),
@@ -655,7 +646,6 @@ func TestCloudArtifactHandlerMutationRejectsInflightStaleResolution(t *testing.T
 			agents: map[int64]string{440: "test"},
 		},
 	}
-	grantLegacyArtifactResources(t, handler, 7, server.URL+"/by-agent/440/lesson-game/latest/")
 	resolutionResult := make(chan error, 1)
 	go func() {
 		_, err := handler.ResolveActiveArtifact(context.Background(), 440, "lesson-game")
@@ -680,8 +670,8 @@ func TestCloudArtifactHandlerMutationRejectsInflightStaleResolution(t *testing.T
 	if _, err := handler.ResolveActiveArtifact(context.Background(), 440, "lesson-game"); err == nil {
 		t.Fatal("deleted artifact should not resolve after in-flight invalidation")
 	}
-	if listRequests != 3 {
-		t.Fatalf("list requests = %d, want 3 (including authorization)", listRequests)
+	if listRequests != 2 {
+		t.Fatalf("list requests = %d, want 2", listRequests)
 	}
 }
 

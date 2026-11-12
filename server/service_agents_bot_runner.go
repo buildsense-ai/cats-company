@@ -586,8 +586,8 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 	//
 	// 同时把会话 id 写进 metadata：bot 侧据此决定「这是新会话还是接着上一个说」。
 	// 这是「上下文不串」的那一半；「结果不串」靠下面的 reply_to 认领。
-	msgID, _, err := saveServiceBotPrompt(
-		r.store, topic, req.CallerUID, prompt,
+	msgID, _, err := r.store.SaveMessageWithMetadata(
+		topic, req.CallerUID, prompt, nil, "", "", "text", 0, "",
 		map[string]interface{}{
 			"catsco_bot_call":     true,
 			"catsco_caller_uid":   req.CallerUID,

@@ -1409,43 +1409,16 @@ describe('media acceleration URL resolution', () => {
       .toBe('https://app.catsco.cc/uploads/images/b.jpg');
   });
 
-  test('keeps protected uploads on the authenticated API host despite a legacy media base', async () => {
+  test('routes uploads to the configured media base and passes everything else through', async () => {
     vi.resetModules();
     vi.stubEnv('VITE_MEDIA_BASE', 'https://i.catsco.cn/');
     const api = await import('./api');
 
-    expect(api.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
-    expect(api.resolveMediaURL('/uploads/files/b.pdf')).toBe('/uploads/files/b.pdf');
-    expect(api.resolveMediaURL('https://i.catsco.cn/uploads/images/a.jpg?size=2'))
-      .toBe('/uploads/images/a.jpg?size=2');
+    expect(api.resolveMediaURL('/uploads/images/a.jpg')).toBe('https://i.catsco.cn/uploads/images/a.jpg');
+    expect(api.resolveMediaURL('/uploads/files/b.pdf')).toBe('https://i.catsco.cn/uploads/files/b.pdf');
     expect(api.resolveMediaURL('/pwa-512x512.png')).toBe('/pwa-512x512.png');
     expect(api.resolveMediaURL('https://app.catsco.cc/uploads/images/c.jpg'))
       .toBe('https://app.catsco.cc/uploads/images/c.jpg');
-  });
-
-  test('adds historical message hints only to protected upload transport URLs', async () => {
-    vi.resetModules();
-    const api = await import('./api');
-    expect(api.resolveMediaURL('/uploads/files/a.pdf?download=1#page=2', 42))
-      .toBe('/uploads/files/a.pdf?download=1&message_id=42#page=2');
-    expect(api.resolveMediaURL('https://i.catsco.cn/uploads/a.png', 42))
-      .toBe('/uploads/a.png?message_id=42');
-    expect(api.resolveMediaURL('/uploads/a.png?message_id=1', 42))
-      .toBe('/uploads/a.png?message_id=42');
-    expect(api.resolveMediaURL('https://external.example/uploads/a.png', 42))
-      .toBe('https://external.example/uploads/a.png');
-    expect(api.resolveMediaURL('/artifacts/app/v2/', 42)).toBe('/artifacts/app/v2/');
-    for (const invalid of [0, -1, 1.5, '42', Number.MAX_SAFE_INTEGER + 1]) {
-      expect(api.resolveMediaURL('/uploads/a.png', invalid)).toBe('/uploads/a.png');
-    }
-  });
-
-  test.each(['https://api.example.test', '/backend'])('keeps upload hints on the configured API base %s', async (base) => {
-    vi.resetModules();
-    vi.stubEnv('VITE_API_BASE', base);
-    const api = await import('./api');
-    expect(api.resolveMediaURL('/uploads/files/a.pdf', 42)).toBe(`${base}/uploads/files/a.pdf?message_id=42`);
-    expect(api.resolveMediaURL('https://i.catsco.cc/uploads/a.png', 42)).toBe(`${base}/uploads/a.png?message_id=42`);
   });
 
   test('ignores invalid explicit media bases and keeps non-string inputs safe', async () => {

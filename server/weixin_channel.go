@@ -444,13 +444,7 @@ func (h *WeixinChannelHandler) handleMediaMessage(w http.ResponseWriter, ctx con
 	if media.FileName == "" {
 		media.FileName = "weixin-" + strings.ToLower(strings.TrimSpace(msg.MsgType)) + "-" + mediaID
 	}
-	ownerUID := int64(0)
-	if deliverToGroup {
-		ownerUID = groupBinding.CanonicalUID
-	} else {
-		ownerUID = channelBindingConversationActorUID(binding, actorUID)
-	}
-	file, err := saveOwnedChannelMediaUpload(ctx, h.db, ownerUID, h.storage, h.baseDir, uploadType, media)
+	file, err := saveChannelMediaUploadWithStorage(ctx, h.storage, h.baseDir, uploadType, media)
 	if err != nil {
 		log.Printf("save weixin media failed: %v", err)
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "保存微信图片、文件或语音失败，请稍后重试。")
