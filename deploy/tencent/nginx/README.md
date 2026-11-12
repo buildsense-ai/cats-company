@@ -56,10 +56,6 @@ run `sudo nginx -t`, and reload nginx. If the certificate or website container
 is not ready, keep the previous redirect config in place. The production
 helper performs these checks and fails closed.
 
-For a new host, the commands below install the complete vhost templates. On the
-existing production host, do not overwrite either app vhost: those files include
-the independently managed uploads snippet and contain host-specific settings.
-
 Install without enabling traffic:
 
 ```bash
@@ -68,46 +64,19 @@ sudo install -o root -g root -m 644 deploy/tencent/nginx/catscompany-app-cn.conf
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catsco-public.conf /etc/nginx/sites-available/catsco-public
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catscompany-api.conf /etc/nginx/sites-available/catscompany-api
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catsco-safe-log.conf /etc/nginx/conf.d/catsco-safe-log.conf
-sudo install -o root -g root -m 644 deploy/tencent/nginx/uploads-zos.conf /etc/nginx/snippets/uploads-zos.conf
 sudo install -o root -g root -m 644 deploy/tencent/nginx/uploads-zos-map.conf /etc/nginx/conf.d/uploads-zos-map.conf
 sudo nginx -t
 ```
 
-Both app vhosts keep the ZOS read route temporarily for legacy clients that
-send no `Authorization` header. Requests with an `Authorization` header are
-internally routed to `@uploads_authenticated`, which delegates current
-persisted-message authorization to the application. That named location has
-no ZOS fallback: application denials and errors are returned to the caller.
-
-The existing `?preview` and `?download` query routes also continue to use the
-application fallback, including for legacy clients.
-
-The anonymous ZOS route remains a bearer-link compatibility path, not a
-privacy boundary. Keep this split only during client migration; remove the
-ZOS route and its maps after legacy clients are retired. The map file installed
-above defines `$uploads_disp` and `$uploads_csp`, used by the ZOS route.
-
-After a production release has bundled the helper and snippet, the operator
-must record the legacy-route retirement date and explicitly run:
-
-```bash
-sudo -n /srv/catscompany-prod/compose/ensure-uploads-compat-nginx.sh
-```
-
-The helper leaves `/etc/nginx/sites-available/catscompany-app` unchanged after
-confirming its existing snippet include. It backs up the `.cn` app vhost and
-replaces only its unique inline `/uploads/` location with the include; an
-ambiguous or duplicate route fails closed. It also backs up and updates the
-snippet, then validates with `nginx -t` and reloads Nginx. Validation or reload
-failure restores both the prior `.cn` vhost and snippet. The production workflow
-packages these files but does not execute the helper, so merge/deploy alone does
-not change attachment routing. Docker Compose deployments continue to route
-uploads directly to the application.
-
-Retire the anonymous ZOS route after the supported XiaoBa client floor has
-moved to authenticated downloads and logs show no required legacy traffic for
-the agreed observation window. Remove the ZOS route and its maps by the
-recorded retirement date; do not extend the bridge without an explicit review.
+The `/uploads/` read path in both app vhosts relies on
+`deploy/tencent/nginx/uploads-zos-map.conf`, which defines `$uploads_disp`
+(Content-Disposition mirror of the application rules) and `$uploads_csp` (CSP
+sandbox for HTML served directly by ZOS). Install the map file into
+`/etc/nginx/conf.d/` before reloading: without it the `add_header` directives
+degrade to empty values and the headers are silently dropped. The vhosts
+answer `?preview`/`?download` with `418` so share-preview and forced-download
+links keep going to the app origin, and fall back to the web container
+(`@uploads_fallback`) when ZOS returns 403/404 or an error.
 
 Enable on the host:
 

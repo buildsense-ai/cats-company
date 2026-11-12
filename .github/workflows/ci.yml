@@ -655,8 +655,6 @@ jobs:
           python3 deploy/shimo-skill-connector-nginx_test.py
           python3 deploy/website-nginx-config_test.py
           python3 deploy/nginx-config_test.py
-          python3 deploy/prod/update-nginx-uploads-route_test.py
-          bash -n deploy/prod/ensure-uploads-compat-nginx.sh
           python3 deploy/compose-rollout_test.py
           python3 deploy/runtime-storage_test.py
           python3 deploy/session-fork-config_test.py
