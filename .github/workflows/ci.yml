@@ -52,7 +52,7 @@ jobs:
             go-build-${{ runner.os }}-${{ github.job }}-
 
       - name: Test backend
-        run: go test ./server/...
+        run: go test ./server/... ./cmd/tos-fetch
 
       - name: Test authorization-only storage concurrency
         run: go test -race ./server ./server/cmd -run '^TestDeviceAuthorization' -count=1
@@ -624,6 +624,12 @@ jobs:
           deploy/prod/ops/status-worker.test.mjs deploy/prod/ops/worker-deployment-profile.test.mjs
           deploy/prod/ops/billing-worker.test.mjs
           deploy/prod/ops/artifact-gateway-route.test.mjs
+
+      - name: Test worker artifact cache with Alpine BusyBox
+        run: |
+          bash -n deploy/prod/ops/bootstrap-worker-artifact-cache.sh
+          docker run --rm -v "$PWD:/workspace:ro" alpine:3.24.1 sh -c \
+            'apk add --no-cache bash >/dev/null && bash /workspace/deploy/tests/worker-artifact-cache.sh'
 
       - name: Validate deploy env updates
         run: |
