@@ -13,12 +13,16 @@ import AgentStoreModal from '../widgets/agent-store-modal';
 // ?busy=1 refuses the second page once with 429 to exercise the backoff.
 // ?days=<n> scales the synthetic set (about 4.5 notes a day) for load tests;
 // ?pageDays=<n> sets how many days each graph page carries (default 8).
+// ?skew=1 makes the set look like a long-lived Agent: ten notes a day spread
+// over sources by a power law (a few busy group chats, many one-off
+// sessions), continues/corrects within a source and a few links across.
 
 const AGENT_UID = 574;
 const params = new URLSearchParams(location.search);
 const latency = Number(params.get('latency') || 400);
 const days = Number(params.get('days') || 20);
 const pageDays = Number(params.get('pageDays') || 8);
+const skew = params.get('skew') === '1';
 
 function syntheticFixture() {
   const titles = ['部署回滚与验证', '索引重建的根因', 'CLI 认证改用 cookie', '群聊通知去重', '会话恢复策略', '构建缓存命中率', '权限模型调整', '每日巡检结果'];
@@ -27,21 +31,36 @@ function syntheticFixture() {
   let page = { nodes: [], edges: [], lane: 'diaries', units: 0, exhausted: false };
   let previous = null;
   const groups = Math.max(4, Math.round(days / 5));
+  let seed = 7;
+  const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const sources = Math.max(4, Math.round(days * 1.2));
+  const lastOf = new Map();
   for (let d = 0; d < days; d += 1) {
     const day = new Date(Date.UTC(2026, 9, 31 - d)).toISOString().slice(0, 10);
     const documentId = `akd-${String(d).padStart(24, '0')}`;
     const entries = [];
-    const session = { kind: 'session_query', id: `ref_${d}`, session_id: `cc_group:grp_${5100 + (d % groups)}`, session_type: 'catscompany' };
-    const sessionKey = JSON.stringify(session);
-    page.nodes.push({ key: sessionKey, kind: 'session_query', label: session.id, status: 'referenced', day, anchor: session });
-    for (let e = 0; e < 3 + (d % 4); e += 1) {
+    const sessionOf = (index) => {
+      const session = { kind: 'session_query', id: `ref_${d}_${index}`, session_id: `cc_group:grp_${5100 + index}`, session_type: 'catscompany' };
+      page.nodes.push({ key: JSON.stringify(session), kind: 'session_query', label: session.id, status: 'referenced', day, anchor: session });
+      return JSON.stringify(session);
+    };
+    const daySession = skew ? null : sessionOf(d % groups);
+    for (let e = 0; e < (skew ? 10 : 3 + (d % 4)); e += 1) {
       const id = `ake-${String(d * 10 + e).padStart(24, '0')}`;
       const anchor = { kind: 'knowledge_entry', id, document_id: documentId, revision: `akr-${d}` };
       const key = JSON.stringify(anchor);
       const title = `${titles[(d + e) % titles.length]}（${day.slice(5)}）`;
       page.nodes.push({ key, kind: 'knowledge_entry', label: title, status: 'draft', day, anchor });
-      page.edges.push({ from: key, to: sessionKey, kind: 'cites' });
-      if (previous && e === 0) page.edges.push({ from: key, to: previous, kind: d % 5 === 0 ? 'corrects' : 'continues' });
+      if (skew) {
+        const source = Math.min(sources - 1, Math.floor(sources ** random()) - 1);
+        page.edges.push({ from: key, to: sessionOf(source), kind: 'cites' });
+        if (lastOf.has(source) && random() < 0.6) page.edges.push({ from: key, to: lastOf.get(source), kind: random() < 0.15 ? 'corrects' : 'continues' });
+        if (previous && e === 0 && random() < 0.5) page.edges.push({ from: key, to: previous, kind: 'related' });
+        lastOf.set(source, key);
+      } else {
+        page.edges.push({ from: key, to: daySession, kind: 'cites' });
+        if (previous && e === 0) page.edges.push({ from: key, to: previous, kind: d % 5 === 0 ? 'corrects' : 'continues' });
+      }
       if (e === 0) previous = key;
       entries.push({ id, title, text: `${title}。\n\n这是本地预览生成的正文，用于检查阅读排版、搜索高亮与关联跳转。**关键结论**：变更已验证，剩余问题记录在后续笔记中。`, status: 'draft' });
     }
