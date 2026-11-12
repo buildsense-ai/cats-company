@@ -22,6 +22,17 @@ function nginxLocationBlock(config, path) {
   throw new Error(`unterminated Nginx location for ${path}`);
 }
 
+function readHostNginxConfig(configPath) {
+  const config = readFileSync(resolve(process.cwd(), configPath), 'utf8');
+  const uploadsSnippet = readFileSync(
+    resolve(process.cwd(), '../deploy/tencent/nginx/uploads-zos.conf'),
+    'utf8',
+  );
+  const include = 'include /etc/nginx/snippets/uploads-zos.conf;';
+  expect(config).toContain(include);
+  return config.replace(include, uploadsSnippet);
+}
+
 function expectImmutableAssetLocation(config, path) {
   const block = nginxLocationBlock(config, path);
   expect(block).toContain('try_files $uri =404;');
@@ -88,7 +99,9 @@ describe('production asset caching', () => {
     ]);
 
     for (const [configPath, privateRoutes] of privateRoutesByConfig) {
-      const nginxConfig = readFileSync(resolve(process.cwd(), configPath), 'utf8');
+      const nginxConfig = configPath.includes('catscompany-app')
+        ? readHostNginxConfig(configPath)
+        : readFileSync(resolve(process.cwd(), configPath), 'utf8');
 
       for (const route of privateRoutes) {
         expectPrivateProxyLocation(nginxConfig, route);
