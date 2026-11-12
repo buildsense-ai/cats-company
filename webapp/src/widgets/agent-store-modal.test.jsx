@@ -951,7 +951,7 @@ describe('AgentStoreModal', () => {
     });
 
     const settingTriggers = Array.from(container.querySelectorAll('button.cc-agent-manage-section-trigger'));
-    expect(settingTriggers).toHaveLength(4);
+    expect(settingTriggers.map((trigger) => trigger.querySelector('strong').textContent)).toEqual(['基本信息', '连接与凭证', '使用与协作', '行为与能力', 'Daily Notes']);
     expect(container.querySelector('.cc-agent-manager-tabs')).toBeNull();
     expect(container.querySelector('[aria-label="返回助手列表"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="入口码"]')).not.toBeNull();
