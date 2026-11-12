@@ -20,6 +20,7 @@ func main() {
 	var key string
 	var listPrefix string
 	var deleteKey string
+	var presignKey string
 	var output string
 
 	flag.StringVar(&endpoint, "endpoint", "", "TOS endpoint")
@@ -28,11 +29,18 @@ func main() {
 	flag.StringVar(&key, "key", "", "TOS object key")
 	flag.StringVar(&listPrefix, "list-prefix", "", "list TOS object keys below this prefix")
 	flag.StringVar(&deleteKey, "delete-key", "", "delete one TOS object key (explicit operator action)")
+	flag.StringVar(&presignKey, "presign-key", "", "print a 10-minute GET URL for one TOS object")
 	flag.StringVar(&output, "output", "", "local destination")
 	flag.Parse()
 
 	var err error
-	if strings.TrimSpace(deleteKey) != "" {
+	if strings.TrimSpace(presignKey) != "" {
+		var signedURL string
+		signedURL, err = presignObject(endpoint, region, bucket, presignKey)
+		if err == nil {
+			_, err = fmt.Fprintln(os.Stdout, signedURL)
+		}
+	} else if strings.TrimSpace(deleteKey) != "" {
 		err = deleteObject(endpoint, region, bucket, deleteKey)
 	} else if strings.TrimSpace(listPrefix) != "" {
 		err = listObjects(endpoint, region, bucket, listPrefix, os.Stdout)

@@ -11,6 +11,15 @@ NAME=""
 VERSION=""
 DRY_RUN=0
 
+UPDATE_STAGE=validation
+UPDATE_STAGE_STARTED=$SECONDS
+trap 'rc=$?; printf "error: worker update failed tenant=%s stage=%s elapsed_seconds=%s exit=%s\n" "$NAME" "$UPDATE_STAGE" "$((SECONDS-UPDATE_STAGE_STARTED))" "$rc" >&2; exit "$rc"' ERR
+worker_update_stage() {
+  printf 'worker-update: stage=%s elapsed_seconds=%s\n' "$UPDATE_STAGE" "$((SECONDS-UPDATE_STAGE_STARTED))" >&2
+  UPDATE_STAGE="$1"
+  UPDATE_STAGE_STARTED=$SECONDS
+}
+
 while (($#)); do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
@@ -31,7 +40,7 @@ if [[ -n "$VERSION" && ! "$VERSION" =~ ^v?[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; 
 fi
 VERSION="${VERSION#v}"
 
-for cmd in ctyun-cli jq tos-fetch sha256sum tar ssh scp timeout awk cut sort; do
+for cmd in ctyun-cli jq tos-fetch sha256sum tar ssh scp timeout awk cut sort flock; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "error: missing required command: $cmd" >&2; exit 2; }
 done
 
@@ -68,6 +77,7 @@ ARTIFACT_CACHE_ROOT="${CATSCO_WORKER_ARTIFACT_CACHE_DIR:-$STATE_ROOT/.artifacts}
 ARTIFACT_CACHE_KEEP="${CATSCO_WORKER_ARTIFACT_CACHE_KEEP:-3}"
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIST_RELEASES_CMD="${CATSCO_WORKER_RELEASES_SCRIPT:-$OPS_DIR/list-worker-releases.sh}"
+source "$OPS_DIR/worker-artifact-cache.sh"
 
 JUMP_IP="${CTYUN_JUMP_IP:-}"
 JUMP_PORT="${CTYUN_JUMP_PORT:-22}"
@@ -132,6 +142,7 @@ if [[ -z "$VERSION" ]]; then
 fi
 [[ "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || { echo "error: selected application version is invalid" >&2; exit 1; }
 
+worker_update_stage cloud-api
 inst="$(find_instance "worker-$NAME")"
 [[ -n "$inst" ]] || { echo "error: instance worker-$NAME not found" >&2; exit 1; }
 INSTANCE_IP="$(worker_connection_ip <<<"$inst")"
@@ -182,6 +193,7 @@ download_private_object() {
     --output "$destination"
 }
 
+worker_update_stage manifest
 MANIFEST_KEY="$ARTIFACT_PREFIX/$VERSION/manifest.json"
 download_private_object "$MANIFEST_KEY" "$MANIFEST" 180
 
@@ -207,11 +219,13 @@ fi
 # Lazy reuse: image builds and previous installs leave immutable releases on
 # the worker. Re-selecting one switches the symlink locally without downloading
 # or unpacking the artifact again.
+worker_update_stage worker-release-probe
 RELEASE_ID="${VERSION}-${COMMIT:0:8}"
 RELEASE_ROOT="/opt/catsco/releases/$RELEASE_ID"
 if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
   "current=\$(readlink -f /opt/catsco/current 2>/dev/null || true); test \"\$current\" = '$RELEASE_ROOT' && test -f '$RELEASE_ROOT/.catsco-release-complete' && jq -e '.schemaVersion == 1 and .version == \"$VERSION\" and .commit == \"$COMMIT\" and (.sha256 | ascii_downcase) == \"${EXPECTED_SHA,,}\"' '$RELEASE_ROOT/.catsco-release-complete' >/dev/null && systemctl is-active --quiet catsco-agent.service"; then
   record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
+  worker_update_stage complete
   jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
     '{status:"already-current",instance_name:$name,version:$version,commit:$commit}'
   exit 0
@@ -221,11 +235,16 @@ if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
   timeout -s TERM -k 20 90s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
     "old=\$(readlink -f /opt/catsco/current 2>/dev/null || true); mkdir -p /var/lib/catsco; if test \"\$old\" != '$RELEASE_ROOT'; then printf '%s\\n' \"\$old\" > /var/lib/catsco/previous-release; fi; ln -sfn '$RELEASE_ROOT' /opt/catsco/current; systemctl restart catsco-agent.service; sleep 5; systemctl is-active catsco-agent.service" >/dev/null
   record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
+  worker_update_stage complete
   jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
     '{status:"reused-local-release",instance_name:$name,version:$version,commit:$commit}'
   exit 0
 fi
 
+worker_update_stage artifact-cache
+mkdir -p "$ARTIFACT_CACHE_ROOT"
+exec 8>"$ARTIFACT_CACHE_ROOT/.prune.lock"
+flock -s 8
 ARTIFACT_CACHE_DIR="$ARTIFACT_CACHE_ROOT/$VERSION"
 ARTIFACT="$ARTIFACT_CACHE_DIR/$ARTIFACT_FILE"
 mkdir -p "$ARTIFACT_CACHE_DIR"
@@ -249,14 +268,20 @@ else
 fi
 chmod 700 "$UPDATER"
 
-timeout -s TERM -k 15 300s scp "${ssh_opts[@]}" "$ARTIFACT" "root@$INSTANCE_IP:${REMOTE_PREFIX}.tar.gz"
+worker_update_stage artifact-transfer
+if ! worker_copy_artifact_from_mirror; then
+  timeout -s TERM -k 15 300s scp "${ssh_opts[@]}" "$ARTIFACT" "root@$INSTANCE_IP:${REMOTE_PREFIX}.tar.gz"
+fi
+worker_update_stage updater-transfer
 timeout -s TERM -k 15 60s scp "${ssh_opts[@]}" "$UPDATER" "root@$INSTANCE_IP:${REMOTE_PREFIX}.sh"
+worker_update_stage install
 timeout -s TERM -k 30 300s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
   "bash '${REMOTE_PREFIX}.sh' --artifact '${REMOTE_PREFIX}.tar.gz' --sha256 '$EXPECTED_SHA' --version '$VERSION' --commit '$COMMIT'"
 
 # Never trust a zero exit from a legacy or interrupted updater by itself. The
 # completion marker is the cross-component commit record for the immutable
 # release and must match the exact artifact selected above.
+worker_update_stage verify
 timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
   "test -f '$RELEASE_ROOT/.catsco-release-complete' && jq -e '.schemaVersion == 1 and .version == \"$VERSION\" and .commit == \"$COMMIT\" and (.sha256 | ascii_downcase) == \"${EXPECTED_SHA,,}\"' '$RELEASE_ROOT/.catsco-release-complete' >/dev/null" || {
   echo "error: worker updater returned without a valid completion marker" >&2
@@ -264,19 +289,11 @@ timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
 }
 
 record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
+worker_update_stage complete
 jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
   '{status:"updated",instance_name:$name,version:$version,commit:$commit}'
 
-# ---- 缓存回收（成功路径才做；失败时保留现场便于排查）----
-# 每版 artifact ~127MB，旧版不删会无上限增长（2026-11-03 实测 1.9G / 4 版）。
-if [[ "${ARTIFACT_CACHE_KEEP:-0}" =~ ^[1-9][0-9]*$ ]] && [[ -d "$ARTIFACT_CACHE_ROOT" ]]; then
-  while IFS= read -r stale; do
-    [[ -n "$stale" ]] || continue
-    [[ "$stale" == "$VERSION" ]] && continue
-    rm -rf -- "${ARTIFACT_CACHE_ROOT:?}/$stale" 2>/dev/null || true
-  done < <(
-    find "$ARTIFACT_CACHE_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null \
-      | grep -E '^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$' \
-      | sort -V | head -n -"$ARTIFACT_CACHE_KEEP" || true
-  )
-fi
+# Cleanup is best effort and must remain visible when it fails.
+flock -u 8
+worker_prune_artifact_cache "$ARTIFACT_CACHE_ROOT" "$VERSION" "$ARTIFACT_CACHE_KEEP" || \
+  echo 'warning: could not prune local worker artifact cache' >&2

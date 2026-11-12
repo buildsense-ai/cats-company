@@ -94,6 +94,34 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cn/v0/channels  # 缺省 .cn（可显�
 - worker 应用包从私有 TOS 桶下载。生产凭证只授予
   `catsco-worker-release/update/worker/*` 的只读权限，不下发给浏览器或 worker。
 
+### 内网更新包缓存
+
+控制服务器与员工可能处于不同 VPC，普通缓存命中仍会经公网 SSH 跳板传输整个包。
+可在已有跳板上启用独立的私网 HTTP 缓存，无需把 TOS 凭据或员工私钥放到跳板：
+
+```bash
+# 在跳板上执行；填写实际私网地址和员工网段。只监听此私网 IP。
+CATSCO_WORKER_CACHE_LISTEN_IP=<jump-private-ip> \
+CATSCO_WORKER_CACHE_ALLOW_CIDRS=<worker-subnet-cidr>,<packed-subnet-cidr> \
+  bash bootstrap-worker-artifact-cache.sh
+# 在控制服务器 prod.env 中配置，随 server 容器重建生效。
+CATSCO_WORKER_ARTIFACT_MIRROR_URL=http://<jump-private-ip>:19992
+CATSCO_WORKER_ARTIFACT_MIRROR_DIR=/var/cache/catsco-worker-artifacts
+CATSCO_WORKER_ARTIFACT_CACHE_KEEP=3
+```
+
+跳板安全组只需允许员工网段访问 TCP 19992。配置独立位于
+`/etc/nginx/conf.d/20-catsco-worker-cache.conf`，不修改 artifact 网关路由。
+控制面按 `版本/SHA256/文件名` 校验并原子发布缓存，员工从内网下载后再次校验 SHA256。
+首次填充由控制面签发单个对象、有效十分钟的 GET 链接，经 SSH stdin 交给跳板直接从 TOS 下载；
+链接不写文件或日志，永久凭据留在控制面。直接下载失败时可用 SCP 填充，命中后只经 SSH 传小安装脚本。
+缓存不可达、发布或校验失败时自动退回原 SCP 路径。公网部署不启用此路径。
+清空 `CATSCO_WORKER_ARTIFACT_MIRROR_URL` 可停用。URL 只填协议、主机和端口，不带路径。
+两端缓存默认保留最新三版及当前安装版，`CATSCO_WORKER_ARTIFACT_CACHE_KEEP=0` 可关闭回收。
+本地更新持共享锁，镜像下载使用 pin 避免并发回收；异常中断遗留 pin 最多保护一天。
+回收只识别含 worker 包的版本目录，不删除员工 `/opt/catsco/releases`；失败输出 warning。
+更新错误包含 tenant、阶段和阶段耗时。
+
 ### TOS 发布生命周期
 
 控制面展示专用 worker artifact 桶中实际发现的全部 `manifest.json` 发布，不再截断为固定数量。
