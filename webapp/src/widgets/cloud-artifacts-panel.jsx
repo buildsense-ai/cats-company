@@ -27,6 +27,7 @@ import {
 import { api, resolveMediaURL } from '../api';
 import { getAuthRevision, getToken } from '../auth-session';
 import { normalizeArtifactOpenBinding, artifactOpenBindingUsable } from '../gateway-annotations';
+import { gatewayAppAllowsBindingOrigin } from '../utils/gateway-app-origin';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import { useFeedback } from '../components/feedback-system';
 import { useDetachSessionConfirm } from './detach-session-confirm';
@@ -477,8 +478,7 @@ export default function CloudArtifactsPanel({
       if (openBinding && (openBinding.topic_id !== String(topicId || '')
         || (Number(agentUid) > 0 && openBinding.agent_uid !== Number(agentUid))
         || openBinding.app_id !== app.id
-        || openBinding.app_origin !== new URL(app.url).origin
-        || openBinding.app_origin !== new URL(viewerURL).origin)) {
+        || !gatewayAppAllowsBindingOrigin(app, openBinding.app_origin, viewerURL))) {
         void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
         openBinding = null;
       }

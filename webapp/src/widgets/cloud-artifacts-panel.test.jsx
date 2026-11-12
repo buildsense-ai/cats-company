@@ -912,6 +912,37 @@ describe('CloudArtifactsPanel', () => {
     expect(container.querySelector('.cc-workspace-fullscreen-action')).toBeNull();
   });
 
+  test('keeps a cn binding when the app advertises both cc and cn roots', async () => {
+    const app = {
+      id: 'saturday-demo',
+      title: 'Saturday',
+      url: 'https://artifact.catsco.cc/saturday-demo/',
+      urls: ['https://artifact.catsco.cc/saturday-demo/', 'https://artifact.catsco.cn/saturday-demo/'],
+    };
+    const binding = {
+      contract_version: 'catsco.artifact-open-binding.v1',
+      open_ref: 'aob_cn_open_123456789',
+      topic_id: 'p2p_7_440',
+      agent_uid: 440,
+      app_id: app.id,
+      app_origin: 'https://artifact.catsco.cn',
+      expires_at: '2099-01-01T00:00:00Z',
+    };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({
+      launch_url: 'https://artifact.catsco.cn/_launch/code',
+      open_binding: binding,
+    });
+
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+
+    expect(api.revokeArtifactOpenBinding).not.toHaveBeenCalled();
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')?.getAttribute('src'))
+      .toBe('https://artifact.catsco.cn/_launch/code');
+    expect(container.querySelector('[aria-label="批注应用"]')?.disabled).toBe(false);
+  });
+
   test('refreshing an open application reloads the frame instead of only the catalogue', async () => {
     const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
     api.listArtifactApps.mockResolvedValue({ apps: [app] });
