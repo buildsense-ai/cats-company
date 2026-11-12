@@ -213,6 +213,13 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     schedule();
   }, [schedule]);
 
+  // Colours come from theme variables, so a theme switch repaints the canvas.
+  useEffect(() => {
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-liquid-variant'] });
+    return () => observer.disconnect();
+  }, [schedule]);
+
   // A note chosen from the reader or the list is brought into view.
   useEffect(() => {
     const node = layout.nodes[layout.index.get(selectedId)];
