@@ -11,10 +11,14 @@ import AgentStoreModal from '../widgets/agent-store-modal';
 // synthetic notes by default, or ?fixture=<url> for a captured set of
 // CatsLog diaries pages ({ pages: [...], reads?: {document_id: page} }).
 // ?busy=1 refuses the second page once with 429 to exercise the backoff.
+// ?days=<n> scales the synthetic set (about 4.5 notes a day) for load tests;
+// ?pageDays=<n> sets how many days each graph page carries (default 8).
 
 const AGENT_UID = 574;
 const params = new URLSearchParams(location.search);
 const latency = Number(params.get('latency') || 400);
+const days = Number(params.get('days') || 20);
+const pageDays = Number(params.get('pageDays') || 8);
 
 function syntheticFixture() {
   const titles = ['部署回滚与验证', '索引重建的根因', 'CLI 认证改用 cookie', '群聊通知去重', '会话恢复策略', '构建缓存命中率', '权限模型调整', '每日巡检结果'];
@@ -22,11 +26,12 @@ function syntheticFixture() {
   const reads = {};
   let page = { nodes: [], edges: [], lane: 'diaries', units: 0, exhausted: false };
   let previous = null;
-  for (let d = 0; d < 20; d += 1) {
+  const groups = Math.max(4, Math.round(days / 5));
+  for (let d = 0; d < days; d += 1) {
     const day = new Date(Date.UTC(2026, 9, 31 - d)).toISOString().slice(0, 10);
     const documentId = `akd-${String(d).padStart(24, '0')}`;
     const entries = [];
-    const session = { kind: 'session_query', id: `ref_${d}`, session_id: `cc_group:grp_${5100 + (d % 4)}`, session_type: 'catscompany' };
+    const session = { kind: 'session_query', id: `ref_${d}`, session_id: `cc_group:grp_${5100 + (d % groups)}`, session_type: 'catscompany' };
     const sessionKey = JSON.stringify(session);
     page.nodes.push({ key: sessionKey, kind: 'session_query', label: session.id, status: 'referenced', day, anchor: session });
     for (let e = 0; e < 3 + (d % 4); e += 1) {
@@ -42,7 +47,7 @@ function syntheticFixture() {
     }
     reads[documentId] = { document_id: documentId, day, entries, exhausted: true };
     page.units += 1;
-    if (page.units === 8 || d === 19) {
+    if (page.units === pageDays || d === days - 1) {
       pages.push(page);
       page = { nodes: [], edges: [], lane: 'diaries', units: 0, exhausted: false };
     }
@@ -61,6 +66,11 @@ async function loadFixture() {
 }
 
 const fixture = loadFixture();
+// Main-thread tasks over 50 ms, recorded from first load for the E2E probe.
+window.__dailyNotesLongTasks = [];
+new PerformanceObserver((list) => {
+  for (const task of list.getEntries()) window.__dailyNotesLongTasks.push({ at: Math.round(task.startTime), ms: Math.round(task.duration) });
+}).observe({ type: 'longtask', buffered: true });
 const log = [];
 window.__dailyNotesLog = log;
 let refusedBusy = false;

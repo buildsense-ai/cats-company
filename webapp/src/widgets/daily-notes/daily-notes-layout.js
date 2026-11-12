@@ -1,8 +1,22 @@
 // A deterministic force layout for the Daily Notes graph. Notes that link to
 // each other, or cite the same session, settle into one cluster; the session
 // sources become the hubs between them.
+//
+// The simulation runs in slices (advance) that pause inside a step, so laying
+// out a large graph never holds the main thread for long. Slicing does not
+// change the result.
 
 const CELL = 140;
+const FRESH_STEPS = 320;
+const SEEDED_STEPS = 120;
+// A step costs about one pass over each node's near neighbours, so graphs
+// above BUDGET_NODES get proportionally fewer steps, but never under MIN_STEPS.
+const BUDGET_NODES = 1500;
+const MIN_STEPS = 40;
+// Neighbouring grid cells, each unordered pair once.
+const FORWARD = [[1, -1], [1, 0], [1, 1], [0, 1]];
+// Pair checks between pauses; a few hundred microseconds of work.
+const PAUSE_PAIRS = 20000;
 
 function hash(value) {
   let h = 2166136261;
@@ -13,7 +27,22 @@ function hash(value) {
   return ((h >>> 0) % 10000) / 10000;
 }
 
-export function layoutDailyNotes(model, previous = new Map()) {
+const cellKey = (cx, cy) => (cx + 50000) * 100000 + (cy + 50000);
+
+function repel(a, b, alpha) {
+  let dx = b.x - a.x;
+  let dy = b.y - a.y;
+  let d2 = dx * dx + dy * dy;
+  if (d2 > CELL * CELL) return;
+  if (d2 < 1) { dx = hash(`${a.id}${b.id}`) - 0.5; dy = 0.5; d2 = 1; }
+  const force = (900 * (0.3 + alpha)) / d2;
+  const d = Math.sqrt(d2);
+  const fx = (dx / d) * force;
+  const fy = (dy / d) * force;
+  a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
+}
+
+export function createDailyNotesLayout(model, previous = new Map()) {
   const nodes = [];
   const index = new Map();
   const add = (node) => {
@@ -53,39 +82,44 @@ export function layoutDailyNotes(model, previous = new Map()) {
   }
 
   // Seeded positions only need settling; a fresh layout needs the full run.
-  const steps = previous.size ? 120 : 320;
-  for (let step = 0; step < steps; step += 1) {
-    const alpha = 1 - step / steps;
+  const base = previous.size ? SEEDED_STEPS : FRESH_STEPS;
+  const steps = nodes.length
+    ? Math.min(base, Math.max(MIN_STEPS, Math.round((base * BUDGET_NODES) / nodes.length)))
+    : 0;
+
+  function* simulate() {
+    for (let done = 0; done < steps; done += 1) yield* step(1 - done / steps);
+  }
+
+  function* step(alpha) {
     const grid = new Map();
-    for (let i = 0; i < nodes.length; i += 1) {
-      const key = `${Math.floor(nodes[i].x / CELL)},${Math.floor(nodes[i].y / CELL)}`;
-      if (!grid.has(key)) grid.set(key, []);
-      grid.get(key).push(i);
+    for (const node of nodes) {
+      const cx = Math.floor(node.x / CELL);
+      const cy = Math.floor(node.y / CELL);
+      const key = cellKey(cx, cy);
+      let cell = grid.get(key);
+      if (!cell) { cell = { cx, cy, nodes: [] }; grid.set(key, cell); }
+      cell.nodes.push(node);
     }
     // Repulsion only between near neighbours keeps each step linear; gravity
     // below keeps separate clusters from drifting apart.
-    for (let i = 0; i < nodes.length; i += 1) {
-      const a = nodes[i];
-      const cx = Math.floor(a.x / CELL);
-      const cy = Math.floor(a.y / CELL);
-      for (let gx = cx - 1; gx <= cx + 1; gx += 1) {
-        for (let gy = cy - 1; gy <= cy + 1; gy += 1) {
-          for (const j of grid.get(`${gx},${gy}`) || []) {
-            if (j <= i) continue;
-            const b = nodes[j];
-            let dx = b.x - a.x;
-            let dy = b.y - a.y;
-            let d2 = dx * dx + dy * dy;
-            if (d2 > CELL * CELL) continue;
-            if (d2 < 1) { dx = hash(`${a.id}${b.id}`) - 0.5; dy = 0.5; d2 = 1; }
-            const force = (900 * (0.3 + alpha)) / d2;
-            const d = Math.sqrt(d2);
-            const fx = (dx / d) * force;
-            const fy = (dy / d) * force;
-            a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
-          }
-        }
+    let pairs = 0;
+    for (const { cx, cy, nodes: here } of grid.values()) {
+      for (let i = 0; i < here.length; i += 1) {
+        for (let j = i + 1; j < here.length; j += 1) repel(here[i], here[j], alpha);
       }
+      pairs += (here.length * (here.length - 1)) / 2;
+      for (const [ox, oy] of FORWARD) {
+        const there = grid.get(cellKey(cx + ox, cy + oy));
+        if (!there) continue;
+        for (const a of here) {
+          for (const b of there.nodes) repel(a, b, alpha);
+        }
+        pairs += here.length * there.nodes.length;
+      }
+      // Forces only accumulate until the moves below, so pausing between
+      // cells leaves the step's result unchanged.
+      if (pairs >= PAUSE_PAIRS) { pairs = 0; yield; }
     }
     for (const { source, target, distance, strength } of links) {
       const a = nodes[source];
@@ -105,17 +139,34 @@ export function layoutDailyNotes(model, previous = new Map()) {
       node.x += Math.max(-24, Math.min(24, node.vx));
       node.y += Math.max(-24, Math.min(24, node.vy));
     }
+    yield;
   }
 
-  let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
-  for (const node of nodes) {
-    minX = Math.min(minX, node.x - node.r); maxX = Math.max(maxX, node.x + node.r);
-    minY = Math.min(minY, node.y - node.r); maxY = Math.max(maxY, node.y + node.r);
-  }
-  return {
+  const run = simulate();
+  const layout = {
     nodes,
     index,
     links,
-    bounds: nodes.length ? { minX, maxX, minY, maxY } : { minX: 0, maxX: 0, minY: 0, maxY: 0 },
+    steps,
+    settled: steps === 0,
+    bounds: { minX: 0, maxX: 0, minY: 0, maxY: 0 },
+    // Runs until the deadline (a performance.now() time), at least one slice
+    // per call. Returns true once the layout has settled.
+    advance(deadline) {
+      if (layout.settled) return true;
+      let finished;
+      do finished = run.next().done; while (!finished && performance.now() < deadline);
+      if (finished) {
+        layout.settled = true;
+        let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
+        for (const node of nodes) {
+          minX = Math.min(minX, node.x - node.r); maxX = Math.max(maxX, node.x + node.r);
+          minY = Math.min(minY, node.y - node.r); maxY = Math.max(maxY, node.y + node.r);
+        }
+        layout.bounds = { minX, maxX, minY, maxY };
+      }
+      return layout.settled;
+    },
   };
+  return layout;
 }

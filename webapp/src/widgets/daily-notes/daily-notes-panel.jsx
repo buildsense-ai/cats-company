@@ -3,11 +3,12 @@ import { ArrowRight, List, LoaderCircle, Network, RotateCcw, Search, X } from 'l
 import { api } from '../../api';
 import { renderSafeMarkdown } from '../markdown-utils';
 import { buildDailyNotesModel, formatDay, matchEntries, RELATION_LABELS } from './daily-notes-model';
-import { layoutDailyNotes } from './daily-notes-layout';
+import { createDailyNotesLayout } from './daily-notes-layout';
 import DailyNotesNetwork from './daily-notes-network';
 import './daily-notes.css';
 
 const BUSY_RETRIES = 4;
+const LAYOUT_SLICE_MS = 10;
 const wait = (ms, signal) => new Promise((resolve, reject) => {
   const timer = setTimeout(resolve, ms);
   signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('aborted', 'AbortError')); }, { once: true });
@@ -31,6 +32,41 @@ const describeError = (error) => {
   if (error?.status === 504) return '读取超时，请重试。';
   return 'Daily Notes 暂时无法读取，请稍后重试。';
 };
+
+// Lays the graph out a slice per task, off the render path, so a large graph
+// never freezes the panel. A layout in progress finishes before the newest
+// model is laid out, so pages arriving quickly never starve the graph; the
+// graph shows the last finished layout and the model it was built from.
+function useGraphLayout(model, active) {
+  const [shown, setShown] = useState(null);
+  const runRef = useRef({ model: null, running: null, runningModel: null, shown: null, timer: 0 });
+  useEffect(() => {
+    const run = runRef.current;
+    run.model = active ? model : null;
+    const pump = () => {
+      run.timer = 0;
+      if (!run.model) { run.running = null; return; }
+      if (!run.running) {
+        if (run.model === run.shown?.model) return;
+        const previous = new Map((run.shown?.layout.nodes || []).map((node) => [node.id, node]));
+        run.running = createDailyNotesLayout(run.model, previous);
+        run.runningModel = run.model;
+      }
+      if (run.running.advance(performance.now() + LAYOUT_SLICE_MS)) {
+        run.shown = { layout: run.running, model: run.runningModel };
+        run.running = null;
+        setShown(run.shown);
+      }
+      run.timer = setTimeout(pump, 0);
+    };
+    if (!run.timer) run.timer = setTimeout(pump, 0);
+  }, [model, active]);
+  useEffect(() => () => {
+    clearTimeout(runRef.current.timer);
+    runRef.current.timer = 0;
+  }, []);
+  return shown;
+}
 
 function Highlight({ text, terms }) {
   if (!terms.length) return text;
@@ -65,7 +101,6 @@ export default function DailyNotesPanel({ agentUid }) {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const documentsRef = useRef(documents);
   const readControllerRef = useRef(null);
-  const layoutRef = useRef(null);
   const listRef = useRef(null);
   documentsRef.current = documents;
 
@@ -98,13 +133,10 @@ export default function DailyNotesPanel({ agentUid }) {
   useEffect(() => () => readControllerRef.current?.abort(), []);
 
   const model = useMemo(() => buildDailyNotesModel(pages), [pages]);
-  const layout = useMemo(() => {
-    if (view !== 'network') return layoutRef.current;
-    const previous = new Map((layoutRef.current?.nodes || []).map((node) => [node.id, node]));
-    layoutRef.current = layoutDailyNotes(model, previous);
-    return layoutRef.current;
-  }, [model, view]);
-  const graph = useMemo(() => layout && { ...layout, complete: !loading }, [layout, loading]);
+  const shown = useGraphLayout(model, view === 'network');
+  const layoutPending = view === 'network' && shown?.model !== model;
+  // The graph counts as complete only once its layout covers every page.
+  const graph = useMemo(() => shown && { ...shown.layout, complete: !loading && shown.model === model }, [shown, loading, model]);
 
   const texts = useMemo(() => {
     const out = new Map();
@@ -225,7 +257,7 @@ export default function DailyNotesPanel({ agentUid }) {
           )}
         </label>
         <span className="cc-daily-notes-status" role="status">
-          {(loading || searchingBodies) && <LoaderCircle size={13} className="cc-daily-notes-spin" aria-hidden="true" />}
+          {(loading || searchingBodies || layoutPending) && <LoaderCircle size={13} className="cc-daily-notes-spin" aria-hidden="true" />}
           {status}
         </span>
         <div className="cc-daily-notes-views" role="group" aria-label="视图">
@@ -277,7 +309,9 @@ export default function DailyNotesPanel({ agentUid }) {
               {loading && <p className="cc-daily-notes-none">正在加载更早的笔记…</p>}
             </nav>
           ) : (
-            graph && <DailyNotesNetwork layout={graph} model={model} matches={matches} selectedId={selectedId} onSelect={select} rightInset={selectedId ? 376 : 0} />
+            graph
+              ? <DailyNotesNetwork layout={graph} model={model} matches={matches} selectedId={selectedId} onSelect={select} rightInset={selectedId ? 376 : 0} />
+              : <p className="cc-daily-notes-none">正在排布图谱…</p>
           )}
 
           {(view === 'list' || selectedId) && (
