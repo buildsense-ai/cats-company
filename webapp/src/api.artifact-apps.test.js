@@ -10,6 +10,44 @@ afterEach(() => {
 });
 
 describe('shared app list transport', () => {
+  test.each([true, false])('bounds a stalled JSON body, including public mode=%s', async (publicMode) => {
+    vi.useFakeTimers();
+    vi.stubEnv('DEV', publicMode);
+    vi.stubEnv('VITE_ARTIFACT_APPS_CATALOG', publicMode ? 'public' : '');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => new Promise(() => {}) }));
+    const { api } = await import('./api');
+    const pending = api.listArtifactApps(42);
+    const rejection = expect(pending).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(8000);
+    await rejection;
+    vi.useRealTimers();
+  });
+
+  test('caller cancellation settles even after headers with a stalled body', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => new Promise(() => {}) }));
+    const { api } = await import('./api');
+    const controller = new AbortController();
+    const pending = api.listArtifactApps(42, { signal: controller.signal });
+    const rejection = expect(pending).rejects.toMatchObject({ code: 'REQUEST_ABORTED' });
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    controller.abort();
+    await rejection;
+  });
+
+  test('a stalled media-cookie bootstrap cannot block the bearer-authenticated catalogue', async () => {
+    const fetchMock = vi.fn((url) => url === '/api/files/media-session'
+      ? new Promise(() => {})
+      : Promise.resolve({ ok: true, json: async () => ({ apps: [{ id: 'demo' }] }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { api, setToken } = await import('./api');
+    const payload = btoa(JSON.stringify({ userId: 7, exp: 4102444800 }));
+    setToken(`header.${payload}.signature`);
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/files/media-session')).toBe(true);
+    await expect(api.listArtifactApps(42)).resolves.toEqual({ apps: [{ id: 'demo' }] });
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/artifacts/apps?agent=42')).toBe(true);
+  });
+
   test.each([true, false])('explicit public compatibility mode is development-only: %s', async (development) => {
     vi.stubEnv('DEV', development);
     vi.stubEnv('VITE_ARTIFACT_APPS_CATALOG', 'public');

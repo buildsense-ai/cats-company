@@ -939,6 +939,73 @@ describe('CloudArtifactsPanel', () => {
     expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
   });
 
+  test('an advertised CN launch keeps its binding on open and refresh', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday CN', url: 'https://artifact.catsco.cc/saturday-demo/',
+      urls: ['https://artifact.catsco.cc/saturday-demo/', 'https://artifact.catsco.cn/saturday-demo/'] };
+    const binding = { contract_version: 'catsco.artifact-open-binding.v1',
+      open_ref: 'aob_cn_open_123456789', topic_id: 'p2p_7_440', agent_uid: 440,
+      app_id: app.id, app_origin: 'https://artifact.catsco.cn', expires_at: '2099-01-01T00:00:00Z' };
+    api.revokeArtifactOpenBinding.mockClear();
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://artifact.catsco.cn/_launch/cn-code', open_binding: binding });
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+    expect(container.querySelector('iframe')?.getAttribute('src')).toContain('artifact.catsco.cn');
+    expect(container.textContent).not.toContain('会话绑定不可用');
+    expect(api.revokeArtifactOpenBinding).not.toHaveBeenCalled();
+    const refreshed = { ...binding, open_ref: 'aob_cn_refresh_123456789' };
+    api.requestArtifactLaunch.mockResolvedValueOnce({ launch_url: 'https://artifact.catsco.cn/_launch/cn-new', open_binding: refreshed });
+    await act(async () => container.querySelector('button[aria-label="刷新当前栏目"]').click());
+    await flush();
+    expect(api.revokeArtifactOpenBinding).toHaveBeenCalledWith(binding.open_ref);
+    expect(api.revokeArtifactOpenBinding).not.toHaveBeenCalledWith(refreshed.open_ref);
+    expect(container.textContent).not.toContain('会话绑定不可用');
+  });
+
+  test('tab switches show cached apps while refreshing and abort stale catalogue requests', async () => {
+    const app = { id: 'cached', title: 'Cached application', url: 'https://artifact.catsco.cc/cached/' };
+    api.listArtifactApps.mockResolvedValueOnce({ apps: [app] });
+    await renderPanel({ initialTab: 'gateway' });
+    expect(container.textContent).toContain(app.title);
+    api.listArtifactApps.mockImplementation(() => new Promise(() => {}));
+    const selectTab = async (name) => act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')].find((button) => button.textContent === name).click();
+    });
+    await selectTab('文件');
+    await selectTab('应用');
+    expect(container.textContent).toContain(app.title);
+    expect(container.querySelector('.cloud-artifacts-body.is-loading')).toBeNull();
+    const signal = api.listArtifactApps.mock.calls.at(-1)[1].signal;
+    await selectTab('文件');
+    expect(signal.aborted).toBe(true);
+    await renderPanel({ agentUid: 441 });
+    await selectTab('应用');
+    expect(container.textContent).not.toContain(app.title);
+  });
+
+  test('auth changes discard cached apps and ignore late catalogue responses', async () => {
+    const app = { id: 'private', title: 'Private previous account app', url: 'https://artifact.catsco.cc/private/' };
+    api.listArtifactApps.mockResolvedValueOnce({ apps: [app] });
+    await renderPanel({ initialTab: 'gateway' });
+    expect(container.textContent).toContain(app.title);
+    let resolveOld;
+    api.listArtifactApps.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
+    await act(async () => container.querySelector('button[aria-label="刷新当前栏目"]').click());
+    const signal = api.listArtifactApps.mock.calls.at(-1)[1].signal;
+    await act(async () => setToken('changed-account-token'));
+    expect(signal.aborted).toBe(true);
+    expect(container.textContent).not.toContain(app.title);
+    await act(async () => resolveOld({ apps: [app] }));
+    expect(container.textContent).not.toContain(app.title);
+    expect(container.querySelector('button[aria-label="刷新当前栏目"]').disabled).toBe(false);
+    const nextApp = { ...app, id: 'new-account', title: 'New account application' };
+    api.listArtifactApps.mockResolvedValueOnce({ apps: [nextApp] });
+    await act(async () => container.querySelector('button[aria-label="刷新当前栏目"]').click());
+    await flush();
+    expect(container.textContent).toContain(nextApp.title);
+    await act(async () => setToken(null));
+  });
+
   test('a failed refresh keeps the open binding and the current application', async () => {
     const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
     const binding = { contract_version: 'catsco.artifact-open-binding.v1',
@@ -1182,7 +1249,7 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
 
-    expect(api.listArtifactApps).toHaveBeenCalledWith(440);
+    expect(api.listArtifactApps).toHaveBeenCalledWith(440, { signal: expect.any(AbortSignal) });
     expect(container.textContent).toContain('Saturday 演示应用');
     expect(container.textContent).toContain('ready');
 

@@ -28,6 +28,8 @@ import { api, resolveMediaURL } from '../api';
 import { getAuthRevision, getToken } from '../auth-session';
 import { normalizeArtifactOpenBinding, artifactOpenBindingUsable } from '../gateway-annotations';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
+import { gatewayAppAllowsBindingOrigin } from '../utils/gateway-app-origin';
+import { loadGatewayArtifactMetadata } from '../utils/gateway-artifact-metadata';
 import { useFeedback } from '../components/feedback-system';
 import { useDetachSessionConfirm } from './detach-session-confirm';
 import useDialogBehavior from '../utils/use-dialog-behavior';
@@ -193,6 +195,8 @@ export default function CloudArtifactsPanel({
   const [artifacts, setArtifacts] = useState([]);
   const [files, setFiles] = useState([]);
   const [gatewayApps, setGatewayApps] = useState([]);
+  const gatewayAppsCacheRef = useRef(null);
+  const contentRequestControllerRef = useRef(null);
   const [gatewayPreview, setGatewayPreview] = useState(null);
   // Gateway exposes focus mode only while an app iframe is open. The other
   // cloud tabs are themselves workspace content and can always be expanded.
@@ -361,7 +365,13 @@ export default function CloudArtifactsPanel({
   const loadContent = useCallback(async ({ append = false, beforeId = 0, beforeCreatedAt = '' } = {}) => {
     const requestID = requestSequenceRef.current + 1;
     requestSequenceRef.current = requestID;
-    const isCurrentRequest = () => requestSequenceRef.current === requestID;
+    contentRequestControllerRef.current?.abort();
+    const controller = new AbortController();
+    contentRequestControllerRef.current = controller;
+    const authRevision = getAuthRevision();
+    const authToken = getToken();
+    const isCurrentRequest = () => requestSequenceRef.current === requestID
+      && !controller.signal.aborted && getAuthRevision() === authRevision && getToken() === authToken;
     setLoading(true);
     setError('');
     try {
@@ -388,9 +398,11 @@ export default function CloudArtifactsPanel({
         return;
       }
       if (tab === 'gateway') {
-        const result = await api.listArtifactApps(agentUid);
+        const result = await api.listArtifactApps(agentUid, { signal: controller.signal });
         if (!isCurrentRequest()) return;
-        setGatewayApps(Array.isArray(result?.apps) ? result.apps : []);
+        const apps = Array.isArray(result?.apps) ? result.apps : [];
+        gatewayAppsCacheRef.current = { agentUid, authRevision, authToken, apps };
+        setGatewayApps(apps);
         return;
       }
       const result = await api.getCloudArtifacts(agentUid, tab);
@@ -464,11 +476,14 @@ export default function CloudArtifactsPanel({
     let visitor = true;
     let artifact = null;
     let launchFailed = false;
+    // Compatibility metadata is optional: fetch beside launch, with a hard
+    // deadline that includes body reads, instead of blocking it serially.
+    const metadata = target === 'panel' ? loadGatewayArtifactMetadata(api, agentUid, app.id) : Promise.resolve(null);
     try {
       const launch = await api.requestArtifactLaunch({ app: app.id, ...(topicId ? { topic_id: topicId } : {}) });
       if (launch?.launch_url) { viewerURL = launch.launch_url; visitor = false; }
       openBinding = normalizeArtifactOpenBinding(launch?.open_binding);
-            // The Agent check is skipped while this panel has not loaded its Agent
+      // The Agent check is skipped while this panel has not loaded its Agent
       // yet (`agentUid` is 0). The binding is signed by the server and names the
       // Agent itself, so an unknown local value is not evidence of a mismatch —
       // rejecting here threw away a perfectly good open on every remount that
@@ -477,8 +492,7 @@ export default function CloudArtifactsPanel({
       if (openBinding && (openBinding.topic_id !== String(topicId || '')
         || (Number(agentUid) > 0 && openBinding.agent_uid !== Number(agentUid))
         || openBinding.app_id !== app.id
-        || openBinding.app_origin !== new URL(app.url).origin
-        || openBinding.app_origin !== new URL(viewerURL).origin)) {
+        || !gatewayAppAllowsBindingOrigin(app, openBinding.app_origin, viewerURL))) {
         void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
         openBinding = null;
       }
@@ -494,22 +508,7 @@ export default function CloudArtifactsPanel({
     if (launchFailed && keepOnLaunchFailure) {
       throw new Error('artifact_refresh_launch_failed');
     }
-    if (target === 'panel') {
-      // Compatibility with applications also published to the platform registry.
-      // Gateway registration alone does not create a versioned task manifest;
-      // do not invent a version or imply that a gateway-only app can run tasks.
-      try {
-        const registry = await api.getCloudArtifacts(agentUid, 'active');
-        artifact = (Array.isArray(registry?.artifacts) ? registry.artifacts : [])
-          .find((item) => String(item?.id || '') === String(app.id || '')) || null;
-      } catch (error) {
-        console.warn('[CatsCo] gateway artifact metadata lookup failed', {
-          agentUid,
-          appId: app.id,
-          error: error?.message || String(error),
-        });
-      }
-    }
+    artifact = await metadata;
     if (launchSequence !== gatewayLaunchSequenceRef.current
       || requestID !== gatewayOpenSequenceRef.current || getAuthRevision() !== authRevision || getToken() !== token) {
       if (openBinding) void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
@@ -592,7 +591,7 @@ export default function CloudArtifactsPanel({
         // Only the application is reloaded. Re-reading the catalogue here would use
         // the `tab` captured at click time, so switching tabs mid-refresh would let a
         // stale response overwrite the panel the user is actually looking at.
-        await openGatewayApp({ id: open.id, title: open.title, url: open.url }, 'panel', {
+        await openGatewayApp({ id: open.id, title: open.title, url: open.url, urls: open.urls }, 'panel', {
           keepOnLaunchFailure: !open.visitor,
           // The user pressed refresh: remounting is the whole point.
           force: true,
@@ -624,6 +623,12 @@ export default function CloudArtifactsPanel({
 
   useEffect(() => {
     const invalidate = () => {
+      requestSequenceRef.current += 1;
+      contentRequestControllerRef.current?.abort();
+      gatewayAppsCacheRef.current = null;
+      setGatewayApps([]);
+      setLoading(false);
+      setError('');
       liveHandoffRef.current = null;
       retireGatewayOpen();
       onGatewayFrameChange?.(null);
@@ -685,7 +690,9 @@ export default function CloudArtifactsPanel({
   useEffect(() => {
     setArtifacts([]);
     setFiles([]);
-    setGatewayApps([]);
+    const cached = gatewayAppsCacheRef.current;
+    setGatewayApps(cached?.agentUid === agentUid && cached.authRevision === getAuthRevision()
+      && cached.authToken === getToken() ? cached.apps : []);
     setViewerRelation('');
     setCanPublish(false);
     setTagCounts([]);
@@ -696,6 +703,7 @@ export default function CloudArtifactsPanel({
     loadContent();
     return () => {
       requestSequenceRef.current += 1;
+      contentRequestControllerRef.current?.abort();
     };
   }, [loadContent]);
 

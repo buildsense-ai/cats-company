@@ -14,6 +14,7 @@ import {
 } from './auth-session';
 import { fetchWithRequestError } from './utils/request-error';
 import { normalizeArtifactOpenBinding } from './gateway-annotations';
+import { withRequestDeadline } from './utils/request-deadline';
 
 // Each browser tab owns its opens. Capture the original auth token solely for
 // best-effort HTTP revocation after logout; never expose it (or open_ref) to apps.
@@ -1111,7 +1112,7 @@ export const api = {
       undefined,
       options,
     ),
-  listArtifactApps: async (agentUid, options = {}) => {
+  listArtifactApps: (agentUid, options = {}) => withRequestDeadline(async (signal) => {
     const agent = String(agentUid ?? '').trim();
     const query = /^[0-9]+$/.test(agent) ? `?agent=${encodeURIComponent(agent)}` : '';
     const publicCatalog = async () => {
@@ -1121,7 +1122,7 @@ export const api = {
       // stops waiting. A bare fetch has neither.
       const response = await fetchWithRequestError(`${DEV_ARTIFACT_GATEWAY_BASE}/api/apps${query}`, {
         credentials: 'omit',
-        signal: options.signal,
+        signal,
         timeoutMs: ARTIFACT_GATEWAY_TIMEOUT_MS,
       });
       if (!response.ok) throw new Error('artifact_gateway_unavailable');
@@ -1134,13 +1135,12 @@ export const api = {
       return publicCatalog();
     }
     try {
-      // `request` defaults to no timeout, which is too long for a list that only
-      // decorates the artifact registry. The bound has to exceed the gateway's own
-      // probe budget (4s, plus 3s per probe) or the client gives up on requests the
-      // server is still working on — a cold list measures ~3.03s.
+      // This authenticated JSON catalog does not consume the file-media cookie.
+      // A pending cookie write must not sit outside its request timeout.
       return await request('GET', `/api/artifacts/apps${query}`, undefined, {
-        signal: options.signal,
+        signal,
         timeoutMs: ARTIFACT_GATEWAY_TIMEOUT_MS,
+        waitForMediaSession: false,
       });
     } catch (error) {
       // Older development backends can still browse the public catalog. Never
@@ -1148,7 +1148,7 @@ export const api = {
       if (!import.meta.env.DEV || ![404, 405, 501].includes(error.status)) throw error;
       return publicCatalog();
     }
-  },
+  }, { signal: options.signal, timeoutMs: ARTIFACT_GATEWAY_TIMEOUT_MS }),
   updateArtifactApp: (id, metadata) =>
     request('PATCH', `/api/artifacts/apps/${encodeURIComponent(id)}`, metadata),
   // Ask the platform for a one-time Artifact code. Opening the returned
