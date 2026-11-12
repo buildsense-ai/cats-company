@@ -1,10 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Maximize2, Minus, Plus } from 'lucide-react';
+import { NOTE_SPACING, regionAt } from './daily-notes-layout';
 
 const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 4;
 const MAX_LABELS = 60;
-const HUB_LABELS = 10;
+// Below this on-screen spacing between notes, each cluster draws as one disc.
+const OVERVIEW_SPACING = 6;
+// Zoomed out, only clusters this large on screen are named, at most this many.
+const OVERVIEW_LABEL_RADIUS = 12;
+const OVERVIEW_LABELS = 24;
 
 function palette(element) {
   const style = getComputedStyle(element);
@@ -19,6 +24,37 @@ function palette(element) {
     danger: read('--cc-danger', '#e05757'),
     font: read('--cc-font-sans', 'system-ui, sans-serif'),
   };
+}
+
+// Hues for the clusters after the first, which takes the accent. Each is
+// used only if it sits clear of the accent, so the brand hue stays unique.
+const CLUSTER_HUES = [255, 62, 322, 205, 128, 28, 290, 95];
+
+// OKLab hue and lightness of any CSS colour, normalised through the canvas.
+function oklch(context, color) {
+  context.fillStyle = '#000';
+  context.fillStyle = color;
+  const channels = context.fillStyle.startsWith('#')
+    ? [1, 3, 5].map((i) => parseInt(context.fillStyle.slice(i, i + 2), 16))
+    : context.fillStyle.match(/[\d.]+/g).slice(0, 3).map(Number);
+  const [r, g, b] = channels.map((v) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  const lightness = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+  const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+  const bb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+  return { lightness, hue: ((Math.atan2(bb, a) * 180) / Math.PI + 360) % 360 };
+}
+
+function clusterColors(context, colors) {
+  const dark = oklch(context, colors.canvas).lightness < 0.5;
+  const accent = oklch(context, colors.accent).hue;
+  const hues = CLUSTER_HUES.filter((hue) => Math.min(Math.abs(hue - accent), 360 - Math.abs(hue - accent)) > 35);
+  return [colors.accent, ...hues.map((hue) => `oklch(${dark ? 0.76 : 0.66} ${dark ? 0.11 : 0.12} ${hue})`)];
 }
 
 function clipLabel(context, text, width) {
@@ -38,21 +74,52 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
   const dragRef = useRef(null);
   const frameRef = useRef(0);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const [hoverId, setHoverId] = useState('');
+  const [hover, setHover] = useState({ id: '', region: -1 });
+  const hoverId = hover.id;
   // Below the narrow breakpoint the reader sits under the graph, not beside it.
   const rightInset = size.width > 820 ? requestedInset : 0;
 
-  const neighbors = useMemo(() => {
-    const out = new Set();
-    if (!selectedId) return out;
-    for (const link of layout.links) {
-      const a = layout.nodes[link.source].id;
-      const b = layout.nodes[link.target].id;
-      if (a === selectedId) out.add(b);
-      if (b === selectedId) out.add(a);
+  // What a selected (or hovered) note or source lights up: the note, its
+  // linked notes and its source regions; or every note citing the source.
+  const focusOf = useCallback((id) => {
+    const notes = new Set();
+    const regions = new Set();
+    const entry = model.entries.get(id);
+    if (entry) {
+      notes.add(id);
+      for (const link of entry.links) notes.add(link.from === id ? link.to : link.from);
+      for (const key of entry.sources) if (layout.regionIndex.has(key)) regions.add(layout.regionIndex.get(key));
+    } else if (model.sources.has(id)) {
+      for (const noteId of model.sources.get(id).entries) notes.add(noteId);
+      if (layout.regionIndex.has(id)) regions.add(layout.regionIndex.get(id));
     }
-    return out;
-  }, [layout, selectedId]);
+    return { notes, regions };
+  }, [layout, model]);
+  const selection = useMemo(() => (selectedId ? focusOf(selectedId) : null), [focusOf, selectedId]);
+
+  // Per region: whether it stays lit under the search and selection, and how
+  // many of its notes match the search. Computed once per change, not per frame.
+  const regionState = useMemo(() => layout.regions.map((region, i) => {
+    let matched = 0;
+    let selected = false;
+    for (const n of region.members) {
+      const id = layout.nodes[n].id;
+      if (matches?.has(id)) matched += 1;
+      if (selection?.notes.has(id)) selected = true;
+    }
+    return { matched, shown: (!matches || matched > 0) && (!selection || selected || selection.regions.has(i)) };
+  }), [layout, matches, selection]);
+
+  // Links inside a cluster fade as the cluster gets busier, so a cluster with
+  // thousands of notes keeps its shape instead of turning into a mesh.
+  const insideAlpha = useMemo(() => {
+    const counts = new Array(layout.regions.length).fill(0);
+    for (const { source, target } of layout.links) {
+      const a = layout.nodes[source].region;
+      if (a === layout.nodes[target].region) counts[a] += 1;
+    }
+    return counts.map((count) => 0.55 / Math.sqrt(Math.max(1, count / 40)));
+  }, [layout]);
 
   // Older days fade toward the canvas, so recent work stands out without a
   // time axis in either theme.
@@ -64,9 +131,6 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     });
     return out;
   }, [model]);
-
-  // The most-linked nodes are named even at the overview zoom.
-  const hubs = useMemo(() => new Set([...layout.nodes].sort((a, b) => b.degree - a.degree).slice(0, HUB_LABELS).map((node) => node.id)), [layout]);
 
   const titleOf = useCallback((id) => model.entries.get(id)?.title || model.sources.get(id)?.label || '', [model]);
 
@@ -84,84 +148,223 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     context.fillRect(0, 0, size.width, size.height);
 
     const visible = (id) => !matches || matches.has(id) || id === selectedId;
-    const focus = (id) => id === selectedId || neighbors.has(id) || id === hoverId;
-    context.lineCap = 'round';
-    for (const link of layout.links) {
-      const a = layout.nodes[link.source];
-      const b = layout.nodes[link.target];
-      const lit = (selectedId && (a.id === selectedId || b.id === selectedId)) || (hoverId && (a.id === hoverId || b.id === hoverId));
-      const dim = (matches && !(visible(a.id) && visible(b.id))) || (selectedId && !lit);
-      context.globalAlpha = lit ? 0.9 : dim ? 0.06 : link.kind === 'cites' ? 0.28 : 0.6;
-      context.strokeStyle = link.kind === 'corrects' ? colors.danger : link.kind === 'cites' ? colors.strong : colors.accent;
-      context.lineWidth = (link.kind === 'cites' ? 1 : 1.5) * (lit ? 1.5 : 1);
+    const focus = hoverId && hoverId !== selectedId ? focusOf(hoverId) : null;
+    const noteDim = (id) => !visible(id) || (selection && !selection.notes.has(id));
+    const lit = (i) => selection?.regions.has(i) || focus?.regions.has(i) || hover.region === i;
+    // Colour names the cluster: the largest takes the accent; packed
+    // neighbours never share a colour; the shared "other" cluster is grey.
+    const hues = clusterColors(context, colors);
+    const tone = layout.regions.map((region) => (region.other ? colors.muted : hues[region.hue % hues.length]));
+    const toScreen = (px, py) => [px * k + x, py * k + y];
+    const onScreen = (sx, sy, r) => sx > -r - 160 && sy > -r - 20 && sx < size.width + r + 160 && sy < size.height + r + 20;
+    // A curve is skipped when its bounding box, bulge included, is off screen.
+    const curve = (ax, ay, bx, by) => {
+      const [sx, sy] = toScreen(ax, ay);
+      const [tx, ty] = toScreen(bx, by);
+      const bulge = 0.16 * (Math.abs(tx - sx) + Math.abs(ty - sy));
+      if (Math.max(sx, tx) < -bulge || Math.min(sx, tx) > size.width + bulge || Math.max(sy, ty) < -bulge || Math.min(sy, ty) > size.height + bulge) return;
       context.beginPath();
-      context.moveTo(a.x * k + x, a.y * k + y);
-      context.lineTo(b.x * k + x, b.y * k + y);
+      context.moveTo(sx, sy);
+      context.quadraticCurveTo((sx + tx) / 2 - (ty - sy) * 0.16, (sy + ty) / 2 + (tx - sx) * 0.16, tx, ty);
       context.stroke();
-    }
-
+    };
+    const overview = k * NOTE_SPACING < OVERVIEW_SPACING;
     const labels = [];
-    const scale = Math.min(1.6, Math.max(0.55, k));
-    for (const node of layout.nodes) {
-      const sx = node.x * k + x;
-      const sy = node.y * k + y;
-      const r = Math.max(2.5, node.r * scale);
-      if (sx < -r - 160 || sy < -r - 20 || sx > size.width + r + 160 || sy > size.height + r + 20) continue;
-      const dim = !visible(node.id) || (selectedId && !focus(node.id));
-      context.globalAlpha = dim ? 0.14 : 1;
-      context.beginPath();
-      context.arc(sx, sy, r, 0, Math.PI * 2);
-      if (node.type === 'entry') {
-        context.fillStyle = colors.canvas;
-        context.fill();
-        context.globalAlpha = (dim ? 0.14 : 1) * (0.4 + 0.6 * (recency.get(node.id) ?? 1));
-        context.fillStyle = colors.accent;
-        context.fill();
-      } else {
-        context.fillStyle = colors.canvas;
-        context.fill();
-        context.strokeStyle = colors.muted;
-        context.lineWidth = 1.5;
-        context.stroke();
+    context.lineCap = 'round';
+
+    if (overview) {
+      // Zoomed out, a cluster is one disc and the links between two clusters
+      // are one line, so the drawing scales with clusters, not notes.
+      for (const { a, b, count } of layout.regionLinks) {
+        const on = lit(a) || lit(b);
+        const shown = regionState[a].shown && regionState[b].shown;
+        context.globalAlpha = on ? 0.6 : shown && !selection ? 0.16 : 0.04;
+        context.strokeStyle = on ? colors.text : colors.muted;
+        context.lineWidth = Math.min(7, 0.8 + Math.log2(count) * 1.1);
+        curve(layout.regions[a].x, layout.regions[a].y, layout.regions[b].x, layout.regions[b].y);
       }
-      if (node.id === selectedId || node.id === hoverId) {
-        context.globalAlpha = 1;
-        context.strokeStyle = colors.text;
-        context.lineWidth = node.id === selectedId ? 2 : 1.2;
+      for (const [i, region] of layout.regions.entries()) {
+        const [sx, sy] = toScreen(region.x, region.y);
+        const r = Math.max(2, region.r * k * 0.9);
+        if (!onScreen(sx, sy, r)) continue;
+        const newest = recency.get(layout.nodes[region.members[0]].id) ?? 1;
         context.beginPath();
-        context.arc(sx, sy, r + 3.5, 0, Math.PI * 2);
+        context.arc(sx, sy, r, 0, Math.PI * 2);
+        context.globalAlpha = 1;
+        context.fillStyle = colors.canvas;
+        context.fill();
+        // A light wash with a fine rim: clusters read as areas, not buttons.
+        const weight = (regionState[i].shown ? 1 : 0.15) * (region.other ? 0.6 : 1);
+        context.globalAlpha = weight * (0.14 + 0.36 * newest);
+        context.fillStyle = tone[i];
+        context.fill();
+        context.globalAlpha = weight * (0.45 + 0.4 * newest);
+        context.strokeStyle = tone[i];
+        context.lineWidth = 1;
         context.stroke();
+        if (lit(i)) {
+          context.globalAlpha = 1;
+          context.strokeStyle = colors.text;
+          context.lineWidth = 1.5;
+          context.beginPath();
+          context.arc(sx, sy, r + 3, 0, Math.PI * 2);
+          context.stroke();
+        }
       }
-      if (dim) continue;
-      // Hubs are named first; every other title appears as the reader zooms in.
-      const priority = node.id === selectedId ? 0 : node.id === hoverId ? 1 : neighbors.has(node.id) ? 2 : matches?.has(node.id) ? 3 : 10 - Math.min(6, node.degree / 2);
-      const earned = priority < 4 || hubs.has(node.id) || node.r * k >= 9 || k >= 1.4;
-      if (earned) labels.push({ node, sx, sy, r, priority, strong: priority < 2 });
+      // The selected or hovered note is still marked inside its disc.
+      for (const id of [selectedId, hoverId]) {
+        const node = layout.nodes[layout.index.get(id)];
+        if (!node) continue;
+        const [sx, sy] = toScreen(node.x, node.y);
+        context.globalAlpha = 1;
+        context.fillStyle = colors.text;
+        context.beginPath();
+        context.arc(sx, sy, 3.5, 0, Math.PI * 2);
+        context.fill();
+        labels.push({ title: titleOf(id), sx, at: [sy + 7], priority: id === selectedId ? 0 : 1, strong: true });
+      }
+    } else {
+      // A cluster in focus gets a soft ground, which also shows the click target.
+      for (const [i, region] of layout.regions.entries()) {
+        if (!lit(i)) continue;
+        const [sx, sy] = toScreen(region.x, region.y);
+        context.globalAlpha = 0.09;
+        context.fillStyle = tone[i];
+        context.beginPath();
+        context.arc(sx, sy, (region.r + 6) * k, 0, Math.PI * 2);
+        context.fill();
+      }
+      // Links bow gently; within a cluster they take its colour, between
+      // clusters they recede to a hairline so they connect without covering.
+      const selectedNote = layout.index.get(selectedId);
+      const hoveredNote = layout.index.get(hoverId);
+      const across = layout.regions.length > 40 ? 0.07 : 0.16;
+      for (const link of layout.links) {
+        const a = layout.nodes[link.source];
+        const b = layout.nodes[link.target];
+        const on = link.source === selectedNote || link.target === selectedNote || link.source === hoveredNote || link.target === hoveredNote;
+        const dim = (matches && !(visible(a.id) && visible(b.id))) || (selection && !on);
+        const inside = a.region === b.region;
+        context.globalAlpha = on ? 0.95 : dim ? 0.05 : inside ? insideAlpha[a.region] : across;
+        context.strokeStyle = link.kind === 'corrects' ? colors.danger : inside ? tone[a.region] : on ? colors.text : colors.muted;
+        context.lineWidth = on ? 1.8 : 1.1;
+        curve(a.x, a.y, b.x, b.y);
+      }
+      // Citations of another session run dashed to that cluster's edge.
+      context.setLineDash([2, 4]);
+      for (const { source, region: regionIndex } of layout.bridges) {
+        const node = layout.nodes[source];
+        const region = layout.regions[regionIndex];
+        const on = source === selectedNote || source === hoveredNote || region.key === selectedId || region.key === hoverId;
+        if (!on && (selection || (matches && !visible(node.id)))) continue;
+        const dx = node.x - region.x;
+        const dy = node.y - region.y;
+        const d = Math.hypot(dx, dy) || 1;
+        context.globalAlpha = on ? 0.85 : across * 1.6;
+        context.strokeStyle = on ? colors.text : colors.muted;
+        context.lineWidth = 1;
+        curve(node.x, node.y, region.x + (dx / d) * region.r, region.y + (dy / d) * region.r);
+      }
+      context.setLineDash([]);
+
+      const scale = Math.min(1.6, Math.max(0.55, k));
+      for (const [i, region] of layout.regions.entries()) {
+        const [rx, ry] = toScreen(region.x, region.y);
+        if (!onScreen(rx, ry, region.r * k)) continue;
+        for (const n of region.members) {
+          const node = layout.nodes[n];
+          const [sx, sy] = toScreen(node.x, node.y);
+          const r = Math.max(2, node.r * scale);
+          if (!onScreen(sx, sy, r)) continue;
+          const dim = noteDim(node.id);
+          context.globalAlpha = dim ? 0.12 : 1;
+          context.beginPath();
+          context.arc(sx, sy, r, 0, Math.PI * 2);
+          context.fillStyle = colors.canvas;
+          context.fill();
+          // The shared "other" cluster is quieter than the named ones.
+          context.globalAlpha = (dim ? 0.12 : 1) * (region.other ? 0.55 : 1) * (0.32 + 0.68 * (recency.get(node.id) ?? 1));
+          context.fillStyle = tone[i];
+          context.fill();
+          if (node.id === selectedId || node.id === hoverId) {
+            context.globalAlpha = 1;
+            context.strokeStyle = colors.text;
+            context.lineWidth = node.id === selectedId ? 2 : 1.2;
+            context.beginPath();
+            context.arc(sx, sy, r + 3.5, 0, Math.PI * 2);
+            context.stroke();
+          }
+          if (dim) continue;
+          // Note titles appear once zoomed in, or when the note is in focus.
+          const priority = node.id === selectedId ? 0 : node.id === hoverId ? 1 : selection?.notes.has(node.id) ? 2 : matches?.has(node.id) ? 3 : 10 - Math.min(4, node.degree);
+          if (priority < 4 || k >= 1.5) labels.push({ title: titleOf(node.id), sx, at: [sy + r + 3], priority: priority + 2, strong: priority < 2 });
+        }
+      }
     }
 
-    // Labels sit centred under their node, placed by priority and skipped where
+    // Cluster names lead at the overview; the largest claim space first.
+    // While searching, the count reads matches / notes.
+    for (const [i, region] of layout.regions.entries()) {
+      if (!regionState[i].shown) continue;
+      const [sx, sy] = toScreen(region.x, region.y);
+      const r = region.r * k * (overview ? 0.9 : 1);
+      const on = lit(i);
+      if (!onScreen(sx, sy, r) || (!on && r < (overview ? OVERVIEW_LABEL_RADIUS : 7))) continue;
+      const count = matches ? `${regionState[i].matched}/${region.count}` : String(region.count);
+      // Above the cluster, or below it when a neighbour's name is there. A
+      // cluster zoomed in past the top edge keeps its name pinned there.
+      const cx = (size.width - rightInset) / 2;
+      const pinned = sy - r < 0 && Math.hypot(cx - sx, size.height / 2 - sy) < r;
+      if (pinned) labels.push({ title: region.label, count, color: tone[i], sx: cx, at: [10], priority: -1, strong: true });
+      else labels.push({ title: region.label, count, color: tone[i], sx, at: [sy - r - (overview ? 20 : 16), sy + r + (overview ? 3 : -2)], priority: on ? 0 : 1 + 1 / region.count, strong: on });
+    }
+
+    // Labels sit centred on their anchor, placed by priority and skipped where
     // they would overlap, so titles stay legible at any zoom.
     context.globalAlpha = 1;
-    context.textAlign = 'center';
+    context.textAlign = 'left';
     context.textBaseline = 'top';
     labels.sort((a, b) => a.priority - b.priority);
+    let clusterBudget = overview ? OVERVIEW_LABELS : MAX_LABELS;
     const placed = [];
-    for (const { node, sx, sy, r, strong } of labels) {
+    const free = (box) => !placed.some((b) => box.x < b.x + b.w && b.x < box.x + box.w && box.y < b.y + b.h && b.y < box.y + box.h);
+    for (const { title, count, color, sx, at, strong } of labels) {
       if (placed.length >= MAX_LABELS) break;
-      context.font = `${strong ? 600 : 500} ${strong ? 12.5 : 11.5}px ${colors.font}`;
-      const label = clipLabel(context, titleOf(node.id), strong ? 280 : 150);
-      const width = context.measureText(label).width + 8;
-      const box = { x: sx - width / 2, y: sy + r + 3, w: width, h: 17 };
-      if (!strong && placed.some((b) => box.x < b.x + b.w && b.x < box.x + box.w && box.y < b.y + b.h && b.y < box.y + box.h)) continue;
+      const cluster = count !== undefined;
+      if (cluster && !strong && clusterBudget <= 0) continue;
+      const nameFont = `${strong || cluster ? 600 : 500} ${strong ? 12.5 : cluster ? 12 : 11.5}px ${colors.font}`;
+      context.font = nameFont;
+      const label = clipLabel(context, title, strong ? 280 : 170);
+      const nameWidth = context.measureText(label).width;
+      context.font = `500 11px ${colors.font}`;
+      const countWidth = cluster ? context.measureText(count).width + 6 : 0;
+      const lead = cluster ? 13 : 0;
+      const width = lead + nameWidth + countWidth + 10;
+      const boxes = at.map((y) => ({ x: sx - width / 2, y, w: width, h: 18 }));
+      const box = strong ? boxes[0] : boxes.find(free);
+      if (!box) continue;
       placed.push(box);
-      context.globalAlpha = 0.88;
+      if (cluster) clusterBudget -= 1;
+      context.globalAlpha = cluster ? 0.92 : 0.88;
       context.fillStyle = colors.canvas;
       context.fillRect(box.x, box.y, box.w, box.h);
       context.globalAlpha = 1;
-      context.fillStyle = node.type === 'entry' || strong ? colors.text : colors.muted;
-      context.fillText(label, sx, box.y + 2);
+      if (cluster) {
+        context.fillStyle = color;
+        context.beginPath();
+        context.arc(box.x + 9, box.y + 9, 3.5, 0, Math.PI * 2);
+        context.fill();
+      }
+      context.font = nameFont;
+      context.fillStyle = colors.text;
+      context.fillText(label, box.x + 5 + lead, box.y + 2.5);
+      if (cluster) {
+        context.font = `500 11px ${colors.font}`;
+        context.fillStyle = colors.muted;
+        context.fillText(count, box.x + 5 + lead + nameWidth + 6, box.y + 3.5);
+      }
     }
-  }, [layout, matches, selectedId, neighbors, hoverId, size, recency, titleOf, hubs]);
+  }, [layout, matches, selectedId, selection, regionState, insideAlpha, focusOf, hover, hoverId, size, rightInset, recency, titleOf]);
 
   const schedule = useCallback(() => {
     if (!frameRef.current) frameRef.current = requestAnimationFrame(draw);
@@ -222,7 +425,7 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
 
   // A note chosen from the reader or the list is brought into view.
   useEffect(() => {
-    const node = layout.nodes[layout.index.get(selectedId)];
+    const node = layout.nodes[layout.index.get(selectedId)] || layout.regions[layout.regionIndex.get(selectedId)];
     if (!node || !size.height) return;
     const view = viewRef.current;
     const width = Math.max(200, size.width - rightInset);
@@ -236,22 +439,38 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
 
   useEffect(() => () => cancelAnimationFrame(frameRef.current), []);
 
-  const nodeAt = (clientX, clientY) => {
+  // The note under the pointer and the region around it. Zoomed out, only
+  // the region counts. Only that region's notes are searched.
+  const targetAt = (clientX, clientY) => {
     const rect = canvasRef.current.getBoundingClientRect();
     const { x, y, k } = viewRef.current;
     const px = (clientX - rect.left - x) / k;
     const py = (clientY - rect.top - y) / k;
+    const region = regionAt(layout, px, py);
+    if (region < 0) return { id: '', region: -1, overview: false };
+    const overview = k * NOTE_SPACING < OVERVIEW_SPACING;
     const scale = Math.min(1.6, Math.max(0.55, k));
-    let best = null;
+    let best = '';
     let bestDistance = Infinity;
-    for (const node of layout.nodes) {
+    for (const n of overview ? [] : layout.regions[region].members) {
+      const node = layout.nodes[n];
       const d = Math.hypot(node.x - px, node.y - py);
-      if (d < bestDistance && d <= (Math.max(2.5, node.r * scale) + 6) / k) {
-        best = node;
+      if (d < bestDistance && d <= (Math.max(2, node.r * scale) + 5) / k) {
+        best = node.id;
         bestDistance = d;
       }
     }
-    return best;
+    return { id: best || layout.regions[region].key, region, overview };
+  };
+
+  // Clicking a cluster at the overview zooms in until its notes are readable.
+  const zoomToRegion = (index) => {
+    const region = layout.regions[index];
+    const width = Math.max(200, size.width - rightInset);
+    const k = Math.max((OVERVIEW_SPACING * 1.6) / NOTE_SPACING, Math.min(1.4, (0.7 * Math.min(width, size.height)) / (2 * region.r)));
+    viewRef.current = { k, x: width / 2 - region.x * k, y: size.height / 2 - region.y * k };
+    setHover({ id: '', region: -1 });
+    schedule();
   };
 
   const zoomAt = (factor, cx = (size.width - rightInset) / 2, cy = size.height / 2) => {
@@ -285,8 +504,8 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
       <canvas
         ref={canvasRef}
         role="img"
-        aria-label={`笔记图谱：${model.entries.size} 条笔记，${model.sources.size} 个来源会话。可在列表视图中逐条阅读。`}
-        data-cursor={hoverId ? 'pointer' : 'grab'}
+        aria-label={`笔记图谱：${model.entries.size} 条笔记，按来源会话分为 ${layout.regions.length} 组。可在列表视图中逐条阅读。`}
+        data-cursor={hover.id || hover.region >= 0 ? 'pointer' : 'grab'}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
           dragRef.current = { x: event.clientX, y: event.clientY, view: viewRef.current, moved: false };
@@ -301,20 +520,27 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
             schedule();
             return;
           }
-          setHoverId(nodeAt(event.clientX, event.clientY)?.id || '');
+          const target = targetAt(event.clientX, event.clientY);
+          // Notes are clickable everywhere; regions only as an overview disc
+          // or as a named source.
+          const next = { id: target.id, region: target.overview || target.id ? target.region : -1 };
+          setHover((current) => (current.id === next.id && current.region === next.region ? current : next));
         }}
         onPointerUp={(event) => {
           const drag = dragRef.current;
           dragRef.current = null;
-          if (drag && !drag.moved) onSelect(nodeAt(event.clientX, event.clientY)?.id || '');
+          if (!drag || drag.moved) return;
+          const target = targetAt(event.clientX, event.clientY);
+          if (target.overview && target.region >= 0) zoomToRegion(target.region);
+          else onSelect(target.id);
         }}
-        onPointerLeave={() => setHoverId('')}
+        onPointerLeave={() => setHover({ id: '', region: -1 })}
       />
       <div className="cc-daily-notes-network-legend" aria-hidden="true">
-        <span><i className="is-entry" />笔记（越淡越旧）</span>
-        <span><i className="is-source" />来源会话</span>
+        <span><i className="is-entry" /><i className="is-entry is-second" />笔记（同色同来源，越淡越旧）</span>
         <span><i className="is-link" />笔记关系</span>
         <span><i className="is-correct" />更正</span>
+        <span><i className="is-bridge" />引用其他会话</span>
       </div>
       <div className="cc-daily-notes-network-controls" style={{ right: rightInset + 12 }}>
         <button type="button" className="oc-btn oc-btn-default" aria-label="放大" title="放大" onClick={() => zoomAt(1.25)}><Plus size={15} aria-hidden="true" /></button>
