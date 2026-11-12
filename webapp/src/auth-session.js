@@ -8,12 +8,10 @@ import {
   REQUEST_FAILURE_KIND,
   requestFailureKind,
 } from './utils/request-error';
-import { createFileMediaSession } from './file-media-session';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 let token = readStorageValue('oc_token');
-let tokenStored = Boolean(token);
 const PUSH_REGISTRATION_ID_KEY = 'oc_push_registration_id';
 const PUSH_REGISTRATION_OWNER_KEY = 'oc_push_registration_owner';
 // A registration ID guards server deletes. sessionStorage preserves it across
@@ -93,31 +91,14 @@ const clearPushRegistration = () => {
   removeStorageValue(PUSH_REGISTRATION_OWNER_KEY, 'sessionStorage');
 };
 
-const fileMediaSession = createFileMediaSession({
-  base: API_BASE,
-  current: (candidate, revision) => isCurrentAuthSession(candidate, revision)
-    && (!tokenStored || readStorageValue('oc_token') === candidate),
-});
-
-const mediaToken = (candidate) => decodeTokenPayload(candidate)?.userId && !isTokenExpired(candidate)
-  ? candidate : null;
-
-// Callers may await this before rendering native <img>, <video> or downloads.
-export function ensureFileMediaSession() {
-  return fileMediaSession.ensure(mediaToken(token), authRevision);
-}
-
 export function setToken(nextToken) {
-  const previous = mediaToken(token);
   token = nextToken;
   authRevision += 1;
-  if (nextToken) tokenStored = writeStorageValue('oc_token', nextToken);
+  if (nextToken) writeStorageValue('oc_token', nextToken);
   else {
-    tokenStored = false;
     removeStorageValue('oc_token');
     clearPushRegistration();
   }
-  void fileMediaSession.change(previous, mediaToken(nextToken), authRevision).catch(() => {});
   window.dispatchEvent(new CustomEvent('cc:auth-changed', {
     detail: {
       loggedIn: Boolean(nextToken),
@@ -140,17 +121,6 @@ export function isCurrentAuthSession(candidate, revision) {
     && token === candidate
     && authRevision === revision;
 }
-
-// Keep peer tabs from renewing a cookie for the account that just logged out.
-window.addEventListener('storage', (event) => {
-  if (event.key !== 'oc_token' && event.key !== null) return;
-  const latest = readStorageValue('oc_token');
-  if (latest !== token) setToken(latest);
-});
-
-// Begin while the workspace chunk loads; the bootstrap request below is also
-// an awaitable barrier before the first conversation content is returned.
-if (mediaToken(token)) void ensureFileMediaSession().catch(() => {});
 
 export function getPushRegistrationID() {
   return token ? registrationIDForToken(token) : '';
@@ -213,9 +183,6 @@ export async function request(method, path, body, options = {}) {
   const headers = { 'Content-Type': 'application/json' };
   const authToken = options.authToken === undefined ? token : options.authToken;
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  if (authToken === token && mediaToken(authToken) && method === 'GET') {
-    await ensureFileMediaSession().catch(() => false);
-  }
 
   const res = await fetchWithRequestError(`${API_BASE}${path}`, {
     method,

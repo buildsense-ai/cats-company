@@ -604,6 +604,12 @@ jobs:
         working-directory: services/dreamina-worker
         run: npm test
 
+      - name: Test attachment rollback Nginx routing with synthetic origins
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y nginx
+          python3 deploy/attachment-privacy-rollback-nginx_test.py
+
       - name: Validate host Nginx timeout update
         run: |
           bash -n deploy/prod/ensure-image-timeout-nginx.sh
@@ -655,8 +661,7 @@ jobs:
           python3 deploy/shimo-skill-connector-nginx_test.py
           python3 deploy/website-nginx-config_test.py
           python3 deploy/nginx-config_test.py
-          python3 deploy/prod/update-nginx-uploads-route_test.py
-          bash -n deploy/prod/ensure-uploads-compat-nginx.sh
+          python3 deploy/attachment-privacy-rollback_test.py
           python3 deploy/compose-rollout_test.py
           python3 deploy/runtime-storage_test.py
           python3 deploy/session-fork-config_test.py

@@ -41,20 +41,6 @@ vi.mock('../api', () => ({
   getApiBaseURL: () => window.location.origin,
 }));
 
-vi.mock('../auth-session', async (importOriginal) => ({
-  ...await importOriginal(),
-  getToken: () => 'artifact-user',
-  getAuthRevision: () => 1,
-  isCurrentAuthSession: (token, revision) => token === 'artifact-user' && revision === 1,
-  request: vi.fn(async (_method, _path, body) => ({ url: signedArtifactURL(body.url), expires_in: 900 })),
-}));
-
-function signedArtifactURL(value) {
-  const url = new URL(value);
-  url.searchParams.set('media_token', 'scoped');
-  return url.href;
-}
-
 vi.mock('./avatar', () => ({
   default: function MockAvatar() {
     return <div data-testid="avatar" />;
@@ -2183,9 +2169,9 @@ describe('ChatMessage rich file rendering', () => {
     const panel = container.querySelector('.v3-file-preview-panel');
     expect(panel).not.toBeNull();
     const frame = panel.querySelector('iframe.v3-file-preview-frame');
-    expect(frame.getAttribute('src')).toBe(signedArtifactURL(previewURL));
+    expect(frame.getAttribute('src')).toBe(previewURL);
     expect(frame.getAttribute('sandbox')).toContain('allow-same-origin');
-    expect(frame.hasAttribute('credentialless')).toBe(false);
+    expect(frame.hasAttribute('credentialless')).toBe(true);
     const fullscreenButton = panel.querySelector('button[aria-label="在新标签页打开"]');
     expect(fullscreenButton).not.toBeNull();
     expect(container.querySelector('.v3-artifact-action[href]')).toBeNull();
@@ -2259,8 +2245,8 @@ describe('ChatMessage rich file rendering', () => {
 
     const visibleFrame = container.querySelector('iframe[title="Cloud Artifact Preview"]');
     const refreshFrame = container.querySelector('iframe[title="Cloud Artifact Refresh Check"]');
-    expect(visibleFrame?.getAttribute('src')).toBe(signedArtifactURL(current.url));
-    expect(refreshFrame?.getAttribute('src')).toBe(signedArtifactURL(pending.url));
+    expect(visibleFrame?.getAttribute('src')).toBe(current.url);
+    expect(refreshFrame?.getAttribute('src')).toBe(pending.url);
 
     const frameWindow = {
       postMessage(message, targetOrigin) {
@@ -2299,12 +2285,12 @@ describe('ChatMessage rich file rendering', () => {
     expect(onFailed).not.toHaveBeenCalled();
     const promotedFrame = container.querySelector('iframe[title="Cloud Artifact Preview"]');
     expect(promotedFrame).toBe(refreshFrame);
-    expect(promotedFrame.getAttribute('src')).toBe(signedArtifactURL(pending.url));
+    expect(promotedFrame.getAttribute('src')).toBe(pending.url);
     expect(visibleFrame.isConnected).toBe(false);
     expect(container.querySelector('iframe[title="Cloud Artifact Refresh Check"]')).toBeNull();
   });
 
-  it('handles a refresh-frame load immediately after authorization mounts it', async () => {
+  it('replays a refresh-frame load that occurs before the passive attempt effect', async () => {
     const current = createCloudArtifactPreviewFile({
       id: 'lesson-game',
       agent_uid: 440,
@@ -2325,42 +2311,34 @@ describe('ChatMessage rich file rendering', () => {
     function EarlyLoadTrigger({ enabled }) {
       React.useLayoutEffect(() => {
         if (!enabled) return;
-        const loadFrame = () => {
-          const refreshFrame = container.querySelector('iframe[title="Cloud Artifact Refresh Check"]');
-          if (!refreshFrame) return;
-          const frameWindow = {
-            postMessage(message, targetOrigin) {
-              expect(targetOrigin).toBe('https://artifacts.example.test');
-              const event = new Event('message');
-              Object.defineProperties(event, {
-                source: { value: frameWindow },
-                origin: { value: 'https://artifacts.example.test' },
-                data: {
-                  value: {
-                    type: 'catsco.artifact.context.response.v1',
-                    request_id: message.request_id,
-                    context: {
-                      contract_version: 'catsco.artifact-page-context.v1',
-                      observed_at: '2026-08-10T12:00:00Z',
-                      title: '课堂小游戏',
-                    },
+        const refreshFrame = container.querySelector('iframe[title="Cloud Artifact Refresh Check"]');
+        const frameWindow = {
+          postMessage(message, targetOrigin) {
+            expect(targetOrigin).toBe('https://artifacts.example.test');
+            const event = new Event('message');
+            Object.defineProperties(event, {
+              source: { value: frameWindow },
+              origin: { value: 'https://artifacts.example.test' },
+              data: {
+                value: {
+                  type: 'catsco.artifact.context.response.v1',
+                  request_id: message.request_id,
+                  context: {
+                    contract_version: 'catsco.artifact-page-context.v1',
+                    observed_at: '2026-08-10T12:00:00Z',
+                    title: '课堂小游戏',
                   },
                 },
-              });
-              window.dispatchEvent(event);
-            },
-          };
-          Object.defineProperty(refreshFrame, 'contentWindow', {
-            configurable: true,
-            value: frameWindow,
-          });
-          Simulate.load(refreshFrame);
-          observer.disconnect();
+              },
+            });
+            window.dispatchEvent(event);
+          },
         };
-        const observer = new MutationObserver(loadFrame);
-        observer.observe(container, { childList: true, subtree: true });
-        loadFrame();
-        return () => observer.disconnect();
+        Object.defineProperty(refreshFrame, 'contentWindow', {
+          configurable: true,
+          value: frameWindow,
+        });
+        Simulate.load(refreshFrame);
       }, [enabled]);
       return null;
     }
@@ -2547,7 +2525,7 @@ describe('ChatMessage rich file rendering', () => {
 
       expect(onReady).not.toHaveBeenCalled();
       expect(onFailed).toHaveBeenCalledWith(pending);
-      expect(visibleFrame.getAttribute('src')).toBe(signedArtifactURL(current.url));
+      expect(visibleFrame.getAttribute('src')).toBe(current.url);
     } finally {
       vi.useRealTimers();
     }
@@ -2633,13 +2611,11 @@ describe('ChatMessage rich file rendering', () => {
     expect(panel).not.toBeNull();
     const frame = panel.querySelector('iframe.v3-file-preview-frame');
     const frameURL = new URL(frame?.getAttribute('src'));
-    expect(frameURL.searchParams.get('media_token')).toBe('scoped');
-    frameURL.searchParams.delete('media_token');
     expect(`${frameURL.origin}${frameURL.pathname}${frameURL.search}`).toBe(previewURL);
     expect(frameURL.hash).toContain('catsco_bridge_nonce=');
     expect(frame?.getAttribute('srcdoc')).toBeNull();
     expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups allow-modals');
-    expect(frame?.hasAttribute('credentialless')).toBe(false);
+    expect(frame?.hasAttribute('credentialless')).toBe(true);
   });
 
   it('invalidates the opaque bridge when the preview iframe loads a second document', async () => {

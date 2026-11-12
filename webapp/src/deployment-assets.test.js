@@ -5,7 +5,7 @@ import viteConfig from '../vite.config.js';
 
 function nginxLocationBlock(config, path) {
   const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const startMatch = config.match(new RegExp(`location\\s+(?:(?:=|\\^~|~\\*?)\\s+)?${escapedPath}\\s*\\{`));
+  const startMatch = config.match(new RegExp(`location\\s+${escapedPath}\\s*\\{`));
   expect(startMatch, `missing Nginx location for ${path}`).not.toBeNull();
   let depth = 0;
   const start = startMatch.index + startMatch[0].length - 1;
@@ -20,17 +20,6 @@ function nginxLocationBlock(config, path) {
     }
   }
   throw new Error(`unterminated Nginx location for ${path}`);
-}
-
-function readHostNginxConfig(configPath) {
-  const config = readFileSync(resolve(process.cwd(), configPath), 'utf8');
-  const uploadsSnippet = readFileSync(
-    resolve(process.cwd(), '../deploy/tencent/nginx/uploads-zos.conf'),
-    'utf8',
-  );
-  const include = 'include /etc/nginx/snippets/uploads-zos.conf;';
-  expect(config).toContain(include);
-  return config.replace(include, uploadsSnippet);
 }
 
 function expectImmutableAssetLocation(config, path) {
@@ -89,19 +78,13 @@ describe('production asset caching', () => {
         ['/api/', '/api/stt/realtime', '/v1/', '/uploads/', '/v0/channels'],
       ],
       [
-        '../deploy/tencent/nginx/catscompany-app-cn.conf',
-        ['/uploads/'],
-      ],
-      [
         '../deploy/tencent/nginx/catscompany-api.conf',
         ['/api/', '/api/stt/realtime', '/v1/', '/v0/channels', '/advanced-reader/'],
       ],
     ]);
 
     for (const [configPath, privateRoutes] of privateRoutesByConfig) {
-      const nginxConfig = configPath.includes('catscompany-app')
-        ? readHostNginxConfig(configPath)
-        : readFileSync(resolve(process.cwd(), configPath), 'utf8');
+      const nginxConfig = readFileSync(resolve(process.cwd(), configPath), 'utf8');
 
       for (const route of privateRoutes) {
         expectPrivateProxyLocation(nginxConfig, route);

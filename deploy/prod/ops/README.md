@@ -170,14 +170,6 @@ https://agent-<uid>.artifacts.catsco.fun:19991/artifacts/...
   -> worker-private-ip:19990/artifacts/...
 ```
 
-Artifact 文件现在必须经过持久化消息权限校验。部署前先完成
-[私有 Artifact 接入](../artifact-privacy.md)：注册人类/机器人认证回调，给 server、
-gateway 和所有 worker 配置同一 `CATSCO_ARTIFACT_ORIGIN_SECRET`，并给 gateway/worker
-配置固定 HTTPS `CATSCO_ARTIFACT_AUTHORIZATION_URL`。现有 provision/reset 不会自动
-注入这两个新增变量，必须配置静态服务的 systemd 环境；缺失时文件请求返回 503。
-网关转发到受保护的 worker，由 worker 每次请求回调服务端；HEAD、Range、JSON、页面子资源均不例外。
-聚合静态 index 一律拒绝，列表发现需改用受保护的 management 元数据接口。
-
 启用前，在生产 `prod.env` 填写 `env.prod.example` 中的 Artifact gateway 参数。
 DNS Access Key 只供网关初始化和证书续签使用，不会注入 worker。然后在 server
 容器中执行一次：
@@ -214,13 +206,12 @@ curl --fail https://gateway-probe.artifacts.catsco.fun:19991/__artifact_gateway_
 /opt/catsco/ops/artifact-gateway-route.sh status <agent-uid>
 curl --fail http://<worker-private-ip>:19990/__artifact_health
 curl --fail https://agent-<agent-uid>.artifacts.catsco.fun:19991/__artifact_health
-# 应返回拒绝状态，不能输出 index 文件；health 成功并不代表文件应公开。
-curl --silent --output /dev/null --write-out '%{http_code}\n' https://agent-<agent-uid>.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
+curl --fail https://agent-<agent-uid>.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
 ```
 
-回滚必须保留文件授权边界，不可恢复匿名 `direct-https`/静态 index 或公共 fallback。
-关闭网关不会删除 Artifact 文件，但旧公网 worker、别名源站和对象存储 ACL 仍需独立
-核查和关闭旁路；仓库配置不能证明生产中不存在其他入口。
+回滚时将 `CATSCO_ARTIFACT_GATEWAY_ENABLED=0` 且
+`CATSCO_WORKER_ARTIFACT_HOST_MODE=`，重新创建 server 容器。旧的公网 worker
+继续使用 Skill 的 `direct-https` 模式；关闭开关不会删除已有 Artifact 文件。
 
 ## 脚本依赖（Dockerfile 已装）
 

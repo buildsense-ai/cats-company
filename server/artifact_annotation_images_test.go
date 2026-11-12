@@ -86,15 +86,13 @@ func (f *openBindingFixture) uploadScreenshot(t *testing.T, token, role string, 
 }
 
 func TestArtifactScreenshotOwnedUploadTwoImagesPersistDeliveryHistoryAndDedup(t *testing.T) {
-	f := newLegacyScreenshotPrivacyFixture(t)
+	f := newOpenBindingFixture(t)
 	binding := f.open(t, "p2p_7_9")
 	full := f.uploadScreenshot(t, f.token, "full", 80, 60, false)
 	crop := f.uploadScreenshot(t, f.token, "crop", 32, 24, true)
 	// Owner receipt survives re-creating the upload handler; no in-memory claim.
 	old := f.bindings.uploads
-	replacement := NewUploadHandler(old.baseDir, old.baseURL)
-	replacement.SetFileAccess(old.fileAccess)
-	f.bindings.SetUploadHandler(replacement)
+	f.bindings.SetUploadHandler(NewUploadHandler(old.baseDir, old.baseURL))
 	payload := boundPayload(binding, "screenshot-message")
 	payload["content_blocks"] = []types.ContentBlock{full, crop}
 	agent := &Client{uid: 9, accountType: types.AccountBot, send: make(chan []byte, 4)}
@@ -133,12 +131,7 @@ func TestArtifactScreenshotOwnedUploadTwoImagesPersistDeliveryHistoryAndDedup(t 
 	}
 	// Actual stored bytes served and JPEG-decoded, not merely a URL claim.
 	for _, block := range stored.ContentBlocks {
-		request, err := http.NewRequest(http.MethodGet, f.platform.URL+block.Payload["url"].(string), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request.Header.Set("Authorization", "Bearer "+f.token)
-		response, err := f.platform.Client().Do(request)
+		response, err := f.platform.Client().Get(f.platform.URL + block.Payload["url"].(string))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -187,7 +180,7 @@ func TestArtifactScreenshotOwnedUploadTwoImagesPersistDeliveryHistoryAndDedup(t 
 func TestArtifactScreenshotRejectsForeignForgedMissingCorruptAndBudget(t *testing.T) {
 	for _, scenario := range []string{"foreign owner", "foreign URL", "query URL", "receipt missing", "missing image", "same key", "same role", "unknown role", "size mismatch", "dimension mismatch", "over dimension", "corrupt bytes", "symlink", "nonJPEG", "unsupported block", "incomplete JPEG", "budget bytes"} {
 		t.Run(scenario, func(t *testing.T) {
-			f := newLegacyScreenshotPrivacyFixture(t)
+			f := newOpenBindingFixture(t)
 			binding := f.open(t, "p2p_7_9")
 			token := f.token
 			if scenario == "foreign owner" {

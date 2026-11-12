@@ -100,7 +100,6 @@ func TestCloudArtifactHandlerListsDirectRootIndex(t *testing.T) {
 			), nil
 		},
 	))
-	grantLegacyArtifactResources(t, handler, 7, "https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/")
 
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
@@ -277,10 +276,6 @@ func TestCloudArtifactHandlerPrefersExplicitNodeThenDirectTemplate(t *testing.T)
 	})
 	handler.directTemplate = mustDirectArtifactTemplate(t)
 	handler.SetStore(twoManagedArtifactAgentsStore())
-	grantLegacyArtifactResources(t, handler, 7,
-		"https://mapped.example.test/artifacts/by-agent/440/mapped-game/latest/",
-		"https://agent-310.artifacts.catsco.fun:19991/artifacts/direct-game/latest/",
-	)
 
 	for _, agentUID := range []string{"440", "310"} {
 		rec := httptest.NewRecorder()
