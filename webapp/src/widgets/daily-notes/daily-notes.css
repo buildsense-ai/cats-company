@@ -439,7 +439,8 @@
 .cc-daily-notes-network-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .cc-daily-notes-network-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .cc-daily-notes-network-legend .is-entry { background: var(--cc-accent); }
-.cc-daily-notes-network-legend .is-source { border: 1.4px solid var(--cc-muted); }
+.cc-daily-notes-network-legend .is-entry.is-second { margin-left: -3px; background: oklch(0.7 0.12 62); }
+.cc-daily-notes-network-legend .is-bridge { width: 14px; height: 0; border-radius: 0; border-top: 1.5px dashed var(--cc-muted); }
 .cc-daily-notes-network-legend .is-link,
 .cc-daily-notes-network-legend .is-correct { width: 14px; height: 2px; border-radius: 1px; background: var(--cc-accent); }
 .cc-daily-notes-network-legend .is-correct { background: var(--cc-danger); }
