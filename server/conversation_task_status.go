@@ -427,11 +427,13 @@ func (h *Hub) runConversationTaskReaper() {
 	// Startup sweep: catch rows whose disconnect timer was lost in a previous
 	// process before the first tick.
 	h.recoverStaleDisconnectedBotTasks(time.Now().Add(-grace))
+	h.closeSupersededTaskRuns()
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
 		h.recoverStaleDisconnectedBotTasks(time.Now().Add(-grace))
+		h.closeSupersededTaskRuns()
 	}
 }
 
@@ -480,5 +482,37 @@ func (h *Hub) recoverStaleDisconnectedBotTasks(cutoff time.Time) {
 		h.observeGroupAgentTaskStatus(recoveredTaskSourceStatus(candidate, time.Now().UTC()))
 		h.publishCommittedTaskStatus(candidate.SourceUID, recovered, nil)
 		log.Printf("task status reaper: marked stale uid=%d topic=%s run=%s", candidate.SourceUID, candidate.TopicID, candidate.RunID)
+	}
+}
+
+// closeSupersededTaskRuns retires pending runs that a newer run of the same bot
+// already finished over. The disconnected-bot recovery above only applies to
+// bots that are offline everywhere, so a bot that stays connected after being
+// stopped, interrupted by the next message, or restarted mid-turn would leave
+// its conversation "running" until the liveness lease expires. Retiring the
+// abandoned run exposes the terminal the projections were hiding.
+//
+// This is a repair, not a lifecycle event: it does not notify push surfaces.
+// Clients still receive the repaired projection so an open conversation clears
+// its running indicator instead of waiting for the next reload.
+func (h *Hub) closeSupersededTaskRuns() {
+	if h == nil || h.db == nil {
+		return
+	}
+	supersedeStore, ok := h.db.(store.ConversationTaskStatusSupersedeStore)
+	if !ok {
+		return
+	}
+	repaired, err := supersedeStore.CloseSupersededConversationTaskStatuses(50)
+	for _, status := range repaired {
+		if status == nil || status.SourceUID <= 0 || status.TopicID == "" {
+			continue
+		}
+		h.publishCommittedTaskStatus(status.SourceUID, status, nil)
+		log.Printf("task status supersede: retired abandoned run uid=%d topic=%s state=%s run=%s",
+			status.SourceUID, status.TopicID, status.State, status.RunID)
+	}
+	if err != nil {
+		log.Printf("task status supersede: sweep failed: %v", err)
 	}
 }

@@ -62,6 +62,10 @@ func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topic string, sourc
 	return a.taskLedger().MarkStale(topic, source, run, cutoff, generation)
 }
 
+func (a *Adapter) CloseSupersededConversationTaskStatuses(limit int) ([]*types.ConversationTaskStatus, error) {
+	return a.taskLedger().CloseSuperseded(limit)
+}
+
 type conversationTaskStatusExecer interface {
 	Exec(string, ...interface{}) (sql.Result, error)
 }
@@ -127,3 +131,4 @@ func (a *Adapter) BotConnectionGeneration(botUID int64) (uint64, error) {
 
 var _ store.ConversationTaskRunStore = (*Adapter)(nil)
 var _ store.ConversationTaskStatusOutboxStore = (*Adapter)(nil)
+var _ store.ConversationTaskStatusSupersedeStore = (*Adapter)(nil)
