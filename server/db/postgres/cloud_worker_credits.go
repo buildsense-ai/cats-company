@@ -362,9 +362,17 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 			VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, FALSE, $9)
 			ON CONFLICT (worker_uid) DO UPDATE SET owner_uid = EXCLUDED.owner_uid,
 			  tenant_name = EXCLUDED.tenant_name, package_expires_at = EXCLUDED.package_expires_at,
-			  delete_after = EXCLUDED.delete_after, billing_mode = EXCLUDED.billing_mode,
+			  -- retain_data is a promise that was already made on this machine. A
+			  -- later legacy (or operator-issued) credit must not withdraw it, and
+			  -- must not schedule the deletion it forbids: the marker is sticky and,
+			  -- while it is set, delete_after stays NULL however the window moves.
+			  -- A brand-new machine has no row yet, so it simply takes the credit's
+			  -- own answer above.
+			  retain_data = cloud_worker_lifecycles.retain_data OR EXCLUDED.retain_data,
+			  delete_after = CASE WHEN cloud_worker_lifecycles.retain_data OR EXCLUDED.retain_data
+			    THEN NULL ELSE EXCLUDED.delete_after END,
+			  billing_mode = EXCLUDED.billing_mode,
 			  retention_days = EXCLUDED.retention_days, expiry_mode = EXCLUDED.expiry_mode,
-			  retain_data = EXCLUDED.retain_data,
 			  sync_pending = FALSE, state = 'active', archived_at = NULL,
 			  delete_started_at = NULL, last_error = '', updated_at = CURRENT_TIMESTAMP`,
 			workerUID, uid, strings.TrimSpace(tenantName), expiresAt.Time, deleteAfter, billing, graceDays, types.CloudWorkerExpiryModeOrDefault(expiryMode), retainData); err != nil {
@@ -382,7 +390,12 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 			ON CONFLICT (worker_uid) DO UPDATE SET owner_uid = EXCLUDED.owner_uid,
 			  tenant_name = EXCLUDED.tenant_name, package_expires_at = NULL, delete_after = NULL,
 			  billing_mode = EXCLUDED.billing_mode, retention_days = EXCLUDED.retention_days,
-			  expiry_mode = EXCLUDED.expiry_mode, retain_data = EXCLUDED.retain_data, sync_pending = FALSE, state = 'active',
+			  expiry_mode = EXCLUDED.expiry_mode,
+			  -- Same promise as the bounded branch: once this machine is retained, no
+			  -- later credit can withdraw it (the row keeps NULL dates either way, so
+			  -- only the marker itself needs the OR).
+			  retain_data = cloud_worker_lifecycles.retain_data OR EXCLUDED.retain_data,
+			  sync_pending = FALSE, state = 'active',
 			  archived_at = NULL, delete_started_at = NULL, last_error = '', updated_at = CURRENT_TIMESTAMP`,
 			workerUID, uid, strings.TrimSpace(tenantName), billing, graceDays, types.CloudWorkerExpiryModeOrDefault(expiryMode), retainData); err != nil {
 			return fmt.Errorf("register perpetual cloud worker lifecycle: %w", err)

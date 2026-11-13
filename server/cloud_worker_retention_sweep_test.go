@@ -212,3 +212,63 @@ func TestSweepLegacyFollowPlanRowKeepsItsGraceWindow(t *testing.T) {
 		t.Fatalf("lifecycle state=%q want delete_pending", got)
 	}
 }
+
+// The provider sync (`syncSharedCloudWorkerTerm` -> platform/renew.sh) is the
+// only path that reaches an already-running machine, so it has to carry the
+// marker. A retained row gets `--retain` and NO grace window; a legacy row keeps
+// the exact invocation it always had.
+func TestSharedCloudWorkerSyncArgsCarryRetention(t *testing.T) {
+	future := time.Now().UTC().Add(30 * 24 * time.Hour).Truncate(time.Second)
+	past := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	futureArg := future.Format(time.RFC3339)
+	pastArg := past.Format(time.RFC3339)
+	for _, tc := range []struct {
+		name     string
+		item     CloudWorkerLifecycle
+		expected *time.Time
+		want     string
+		comment  string
+	}{
+		{
+			name:     "retained credit environment",
+			item:     CloudWorkerLifecycle{TenantName: "bot-credit", RetentionDays: 7, RetainData: true},
+			expected: &future,
+			want:     "--name bot-credit --expires-at " + futureArg + " --retain",
+			comment:  "a grace window here would become a purge date on the cluster",
+		},
+		{
+			name:     "retained credit environment whose window already passed",
+			item:     CloudWorkerLifecycle{TenantName: "bot-credit", RetentionDays: 7, RetainData: true},
+			expected: &past,
+			want:     "--name bot-credit --expires-at " + pastArg + " --retain --expire-if-due",
+			comment:  "expiry may pause it, but the sync still hands over no deadline",
+		},
+		{
+			name:     "retained perpetual credit environment",
+			item:     CloudWorkerLifecycle{TenantName: "bot-credit", RetainData: true},
+			expected: nil,
+			want:     "--name bot-credit --expires-at none --retain",
+			comment:  "a perpetual term is still retained",
+		},
+		{
+			name:     "legacy row keeps its exact invocation",
+			item:     CloudWorkerLifecycle{TenantName: "bot-legacy", RetentionDays: 7},
+			expected: &future,
+			want:     "--name bot-legacy --expires-at " + futureArg + " --grace-days 7",
+			comment:  "legacy renewals must not change shape",
+		},
+		{
+			name:     "legacy row without a recorded window",
+			item:     CloudWorkerLifecycle{TenantName: "bot-legacy"},
+			expected: &future,
+			want:     "--name bot-legacy --expires-at " + futureArg + " --grace-days 7",
+			comment:  "the fleet default stays 7 days",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := strings.Join(sharedCloudWorkerSyncArgs(tc.item, tc.expected), " "); got != tc.want {
+				t.Fatalf("args=%q want %q (%s)", got, tc.want, tc.comment)
+			}
+		})
+	}
+}

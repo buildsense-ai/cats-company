@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/openchat/openchat/server/store/types"
@@ -128,14 +129,70 @@ func (a *Adapter) CompleteCommercialOperationWorker(uid int64, source string, wo
 	}
 	return nil
 }
+
+// KeepCommercialOperationWorker records that an existing machine is what a
+// durable operation adopted, and carries that credit's retention intent onto the
+// machine before the operation may be reported as kept (approved credit rules
+// 2026-11-09, P1-2).
+//
+// It is deliberately narrow:
+//   - only the machine this operation adopted is touched, and only when that
+//     machine really is this owner's live worker with a tenant identity —
+//     stamping a retention promise on another customer's machine would be worse
+//     than not stamping it at all;
+//   - only a credit that says "credit environment" (retain_data) writes
+//     anything: a legacy or operator-issued credit keeps the schedule it always
+//     had, and worker_action=none never reaches this method;
+//   - the marker, the cleared automatic deadline and the pending provider sync
+//     land in one transaction. If the lifecycle row cannot be updated (missing
+//     row, a destroy already in flight, an in-flight billing action) the credit
+//     is left untouched and the call fails, so the operation is never reported
+//     as kept while the protection the buyer paid for is missing.
 func (a *Adapter) KeepCommercialOperationWorker(uid int64, source string, worker int64) error {
-	res, err := a.db.Exec(`UPDATE cloud_worker_credits SET state='revoked',worker_uid=$3,operation_completed=TRUE,reservation_ref='',reserved_at=NULL WHERE uid=$1 AND source_ref=$2 AND state IN ('available','queued','reserved')`, uid, source, worker)
+	if uid <= 0 || worker <= 0 || strings.TrimSpace(source) == "" {
+		return fmt.Errorf("invalid operation keep target")
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin operation keep: %w", err)
+	}
+	defer tx.Rollback()
+	var retainData bool
+	err = tx.QueryRow(`
+		UPDATE cloud_worker_credits c
+		SET state = 'revoked', worker_uid = $3, operation_completed = TRUE, reservation_ref = '', reserved_at = NULL
+		WHERE c.uid = $1 AND c.source_ref = $2 AND c.state IN ('available','queued','reserved')
+		  AND EXISTS (
+		      SELECT 1 FROM bot_config b
+		      WHERE b.user_id = $3 AND b.owner_id = $1 AND COALESCE(b.tenant_name, '') <> ''
+		  )
+		RETURNING c.retain_data`, uid, strings.TrimSpace(source), worker).Scan(&retainData)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("operation keep marker not recorded")
+	}
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n != 1 {
-		return fmt.Errorf("operation keep marker not recorded")
+	if retainData {
+		res, err := tx.Exec(`
+			UPDATE cloud_worker_lifecycles l
+			SET retain_data = TRUE, delete_after = NULL, sync_pending = TRUE,
+			    state = 'active', archived_at = NULL, delete_started_at = NULL,
+			    last_error = '', updated_at = CURRENT_TIMESTAMP
+			WHERE l.worker_uid = $1 AND l.owner_uid = $2
+			  AND l.billing_action = ''
+			  -- A destroy already started (or finished) is an explicit decision an
+			  -- adoption must not silently undo: the operator has to resolve it.
+			  AND l.state IN ('active','delete_pending','delete_failed')`, worker, uid)
+		if err != nil {
+			return fmt.Errorf("keep credit environment worker %d: %w", worker, err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return fmt.Errorf("operation keep could not record the credit environment on worker %d", worker)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit operation keep: %w", err)
 	}
 	return nil
 }
