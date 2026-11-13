@@ -39,21 +39,22 @@ BEGIN
         RETURN;
     END IF;
     FOR item IN
-        SELECT con.conname
+        SELECT con.oid, con.conname
         FROM pg_constraint con
-        JOIN pg_class rel ON rel.oid = con.conrelid
-        JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
-        WHERE rel.relname = 'model_credit_ledger_events'
-          AND nsp.nspname = current_schema()
+        WHERE con.conrelid = 'model_credit_ledger_events'::regclass
           AND con.contype = 'c'
           AND con.conname NOT IN (
               'ck_model_credit_ledger_events_event_type',
               'ck_model_credit_ledger_events_units_sign',
               'ck_model_credit_ledger_events_request_scope',
               'ck_model_credit_ledger_events_bucket_type')
-          AND (pg_get_constraintdef(con.oid) LIKE '%event_type%' OR pg_get_constraintdef(con.oid) LIKE '%units > 0%')
     LOOP
-        EXECUTE format('ALTER TABLE model_credit_ledger_events DROP CONSTRAINT %I', item.conname);
+        -- Decode only this table's selected constraints. Evaluating the catalog
+        -- function in WHERE may touch concurrently dropped tables in other schemas.
+        IF pg_get_constraintdef(item.oid) LIKE '%event_type%'
+           OR pg_get_constraintdef(item.oid) LIKE '%units > 0%' THEN
+            EXECUTE format('ALTER TABLE model_credit_ledger_events DROP CONSTRAINT %I', item.conname);
+        END IF;
     END LOOP;
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint con
