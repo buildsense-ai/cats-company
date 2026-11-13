@@ -149,7 +149,10 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 	if err != nil {
 		return nil, fmt.Errorf("load commercial plan: %w", err)
 	}
-	if plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 || plan.MonthlyBudget > 0 || !commercialPlanHasPositiveModelBudget(plan) {
+	// Credit-only plans sell ledger units; a new buyer has no legacy model budget.
+	creditOnly := plan.ModelCreditUnits > 0 && plan.MonthlyBudget <= 0 &&
+		!commercialPlanHasPositiveBudget(plan) && store.ModelCreditTaskPlanTierTrusted(plan.PlanTier)
+	if plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 || plan.MonthlyBudget > 0 || (!commercialPlanHasPositiveModelBudget(plan) && !creditOnly) {
 		return nil, fmt.Errorf("commercial plan is not purchasable")
 	}
 	if err := validateCommercialOfficialPlanPurchase(tx, order.UID, plan.Slug, time.Now().UTC()); err != nil {

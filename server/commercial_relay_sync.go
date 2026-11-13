@@ -1124,12 +1124,36 @@ func parseCommercialRelayTime(value string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// errCommercialPlanNotPurchasable marks a purchase refusal caused by the plan
+// definition itself: a mixed credit/legacy budget, a ladder tier the relay
+// cannot price, or credit sold before the relay settlement channel exists.
+// Nothing here clears by retrying, so the payment handler answers it as "this
+// plan is unavailable" instead of promising the buyer that a later attempt may
+// work.
+var errCommercialPlanNotPurchasable = errors.New("commercial plan is not purchasable")
+
+// ValidatePurchase is the last gate before a real payment order is created.
+//
+// Legacy CNY/token packages keep their original contract: the plan has to carry
+// relay model budgets and this buyer's relay key has to resolve every one of
+// them to a live provider/model mapping, otherwise the order is refused.
+//
+// Credit-only packages (ModelCreditUnits > 0, no legacy budgets) must not go
+// through that path at all. They sell ledger credit priced by the package tier,
+// the relay never seeds them with per-model CNY budgets, and a brand-new buyer
+// has no relay key yet — reading one turned every credit purchase into a 503.
+// The credit contract the ledger and the relay both rely on is checked instead
+// (validateCommercialCreditPurchase), and a plan that is neither clean credit
+// nor clean legacy fails closed here rather than selling a mixed product.
 func (s *CommercialRelaySyncer) ValidatePurchase(ctx context.Context, uid int64, plan *types.CommercialPlan) error {
 	if s == nil || s.store == nil || s.relayAdmin == nil || !s.EnforcedFor(uid) {
 		return fmt.Errorf("commercial relay sync is not enabled for uid")
 	}
 	if plan == nil {
 		return fmt.Errorf("commercial plan is required")
+	}
+	if plan.ModelCreditUnits > 0 {
+		return validateCommercialCreditPurchase(plan)
 	}
 	if !commercialModelBudgetsConfigured(plan.ModelBudgets) {
 		return fmt.Errorf("commercial plan has no relay model budgets")
@@ -1139,6 +1163,42 @@ func (s *CommercialRelaySyncer) ValidatePurchase(ctx context.Context, uid int64,
 		return fmt.Errorf("load relay usage: %w", err)
 	}
 	return validateCommercialRelayModels(plan.ModelBudgets, relayUser)
+}
+
+// validateCommercialCreditPurchase checks the credit contract of a package that
+// sells nothing but model credit. It reads no relay state on purpose: the buyer
+// may never have had a key, and the relay grants models from the credit tier
+// rather than from per-model budgets. Failing closed here is still required,
+// because every item below is something the ledger, the relay task gate or the
+// catalogue would otherwise discover only after the buyer paid.
+func validateCommercialCreditPurchase(plan *types.CommercialPlan) error {
+	if plan == nil || plan.ModelCreditUnits <= 0 {
+		return fmt.Errorf("%w: commercial plan sells no model credit", errCommercialPlanNotPurchasable)
+	}
+	// Credit and the legacy CNY/token budgets are separate products; the plan
+	// editor refuses the combination, so a row that has both is corrupt and must
+	// not be sold as whichever branch happens to win.
+	if !commercialCreditOnlyPlan(plan) {
+		return fmt.Errorf("%w: commercial plan mixes model credit with legacy CNY/token budgets", errCommercialPlanNotPurchasable)
+	}
+	// The relay snapshots plan_tier into a running task to price it and refuses
+	// to start any task without a trusted tier (store.ModelCreditTaskPlanTierTrusted).
+	// A credit package off the ladder would sell credit nobody can spend.
+	if !store.ModelCreditTaskPlanTierTrusted(plan.PlanTier) {
+		return fmt.Errorf("%w: commercial plan tier %d is not on the priced ladder", errCommercialPlanNotPurchasable, plan.PlanTier)
+	}
+	// Credit is only spendable through the relay's eligibility/reserve/settle
+	// channel; selling it before that channel is configured is the same failure
+	// the catalogue gate prevents by hiding the package.
+	if !commercialCreditPlanSaleGatesOpen() {
+		return fmt.Errorf("%w: relay credit settlement is not configured", errCommercialPlanNotPurchasable)
+	}
+	// A credit package bills in anchored natural months, so it needs a period to
+	// anchor the first one on.
+	if plan.DurationDays <= 0 {
+		return fmt.Errorf("%w: commercial plan has no billing period", errCommercialPlanNotPurchasable)
+	}
+	return nil
 }
 
 func commercialModelBudgetsConfigured(budgets map[string]float64) bool {
