@@ -104,6 +104,17 @@ ALTER TABLE cloud_worker_lifecycles ALTER COLUMN delete_after DROP NOT NULL;
 -- extended worker is never destroyed by an expiry scan that ran before the
 -- extension synced.
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS sync_pending BOOLEAN NOT NULL DEFAULT FALSE;
+-- Approved credit rules 2026-11-09 (P1-2): a credit environment keeps its
+-- environment, files and history after the paid window ends — running out of
+-- credit or letting the package lapse never deletes existing data. This is a
+-- stored purchase fact, not a derivation: a legacy shared package also uses
+-- follow_plan, and legacy rows keep their plan's retention window. FALSE is
+-- the honest value for every row written before the column existed.
+ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS retain_data BOOLEAN NOT NULL DEFAULT FALSE;
+-- The credit carries the flag so it survives the trip from purchase to the
+-- provisioning call, including credits that outlive the plan row they came
+-- from (retired packages stay spendable).
+ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS retain_data BOOLEAN NOT NULL DEFAULT FALSE;
 `
 
 // activateCloudWorkerPackedSharedProfile widens the two profile CHECK

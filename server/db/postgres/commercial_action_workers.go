@@ -50,7 +50,7 @@ func (a *Adapter) ReserveCommercialOperationCredit(uid int64, source, reservatio
  -- perpetual operator grants cannot start provisioning machines by accident.
  AND (expires_at > CURRENT_TIMESTAMP OR (expires_at IS NULL AND expiry_mode <> 'legacy'))
  AND (state IN ('available','queued') OR (state='reserved' AND reserved_at<CURRENT_TIMESTAMP-INTERVAL '35 minutes'))
- RETURNING deployment_profile,billing_mode,runtime_plan,retention_days,expires_at,COALESCE(NULLIF(expiry_mode,''),'legacy')`, uid, source, reservation, p.DeploymentProfile, p.BillingMode, p.RuntimePlan, p.WorkerExpiresAt).Scan(&selection.Profile, &selection.BillingMode, &selection.RuntimePlan, &selection.RetentionDays, &selection.ExpiresAt, &selection.ExpiryMode)
+ RETURNING deployment_profile,billing_mode,runtime_plan,retention_days,expires_at,COALESCE(NULLIF(expiry_mode,''),'legacy'),retain_data`, uid, source, reservation, p.DeploymentProfile, p.BillingMode, p.RuntimePlan, p.WorkerExpiresAt).Scan(&selection.Profile, &selection.BillingMode, &selection.RuntimePlan, &selection.RetentionDays, &selection.ExpiresAt, &selection.ExpiryMode, &selection.RetainData)
 	if err == sql.ErrNoRows {
 		return selection, false, nil
 	}

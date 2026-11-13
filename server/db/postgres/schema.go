@@ -1562,6 +1562,10 @@ CREATE TABLE IF NOT EXISTS cloud_worker_credits (
     expires_at TIMESTAMPTZ DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     reserved_at TIMESTAMPTZ DEFAULT NULL,
+    -- A credit environment keeps its files and history after the paid window
+    -- ends (approved credit rules 2026-11-09, P1-2). The flag is a stored,
+    -- purchased fact — never re-derived from the current plan or term mode.
+    retain_data BOOLEAN NOT NULL DEFAULT FALSE,
     consumed_at TIMESTAMPTZ DEFAULT NULL,
     CONSTRAINT chk_cloud_worker_credits_state CHECK (state IN ('available','reserved','consumed','revoked'))
 );
@@ -1577,7 +1581,15 @@ CREATE TABLE IF NOT EXISTS cloud_worker_lifecycles (
     owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     tenant_name VARCHAR(80) NOT NULL UNIQUE,
     package_expires_at TIMESTAMPTZ NOT NULL,
-    delete_after TIMESTAMPTZ NOT NULL,
+    -- NULL delete_after is a retained environment: expiry may pause the
+    -- machine, but nothing may purge its data. Only an explicit user/admin
+    -- deletion stamps a deadline (see retain_data).
+    delete_after TIMESTAMPTZ,
+    -- The durable credit-environment fact (approved credit rules 2026-11-09,
+    -- P1-2). Set once from the purchased credit; renewals, re-terms and
+    -- settlement never lose it, and no plan lookup can turn a legacy row into
+    -- a retained one.
+    retain_data BOOLEAN NOT NULL DEFAULT FALSE,
     state VARCHAR(24) NOT NULL DEFAULT 'active',
     archived_at TIMESTAMPTZ DEFAULT NULL,
     delete_started_at TIMESTAMPTZ DEFAULT NULL,

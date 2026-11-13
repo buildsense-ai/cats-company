@@ -35,10 +35,10 @@ func TestReserveCloudWorkerConfiguredCreditCarriesCreditExpiry(t *testing.T) {
 			mock.ExpectExec(`UPDATE cloud_worker_credits c\s+SET state = CASE`).
 				WithArgs(int64(38)).
 				WillReturnResult(sqlmock.NewResult(0, 0))
-			mock.ExpectQuery(`SELECT c\.id, c\.deployment_profile, c\.billing_mode, c\.expires_at, c\.retention_days, c\.runtime_plan, COALESCE\(NULLIF\(c\.expiry_mode, ''\), 'legacy'\)\s+FROM cloud_worker_credits c`).
+			mock.ExpectQuery(`SELECT c\.id, c\.deployment_profile, c\.billing_mode, c\.expires_at, c\.retention_days, c\.runtime_plan, COALESCE\(NULLIF\(c\.expiry_mode, ''\), 'legacy'\), c\.retain_data\s+FROM cloud_worker_credits c`).
 				WithArgs(int64(38), "", "").
-				WillReturnRows(sqlmock.NewRows([]string{"id", "deployment_profile", "billing_mode", "expires_at", "retention_days", "runtime_plan", "expiry_mode"}).
-					AddRow(int64(7), "private_nat", "month", tc.value, tc.retention, "pro", "legacy"))
+				WillReturnRows(sqlmock.NewRows([]string{"id", "deployment_profile", "billing_mode", "expires_at", "retention_days", "runtime_plan", "expiry_mode", "retain_data"}).
+					AddRow(int64(7), "private_nat", "month", tc.value, tc.retention, "pro", "legacy", false))
 			mock.ExpectExec(`UPDATE cloud_worker_credits\s+SET state = 'reserved', reservation_ref = \$2`).
 				WithArgs(int64(7), "create-38-1").
 				WillReturnResult(sqlmock.NewResult(0, 1))

@@ -737,11 +737,16 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	if cloudWorkerProfile == types.CloudWorkerPackedShared {
 		inviteExpiryMode = types.CloudWorkerExpiryFollowPlan
 	}
+	// A credit invite (the plan sells model credit, so the invite carries a gift
+	// allowance) provisions a credit environment: the worker it opens keeps its
+	// files and history after the invite's window ends. A legacy CNY/token invite
+	// carries 0 units and keeps the historical cleanup schedule.
+	inviteRetainData := inviteCreditUnits > 0
 	for ordinal := 1; ordinal <= cloudWorkerCredits; ordinal++ {
 		if _, err := tx.Exec(`
-			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode, retention_days, runtime_plan, expiry_mode)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), workerExpires, cloudWorkerProfile, cloudWorkerBilling, retentionDays, cloudWorkerRuntimePlan, types.CloudWorkerExpiryModeOrDefault(inviteExpiryMode)); err != nil {
+			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode, retention_days, runtime_plan, expiry_mode, retain_data)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), workerExpires, cloudWorkerProfile, cloudWorkerBilling, retentionDays, cloudWorkerRuntimePlan, types.CloudWorkerExpiryModeOrDefault(inviteExpiryMode), inviteRetainData); err != nil {
 			return nil, fmt.Errorf("create invite cloud worker credit: %w", err)
 		}
 	}

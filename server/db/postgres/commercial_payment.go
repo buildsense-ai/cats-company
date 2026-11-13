@@ -649,7 +649,15 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 			if profile == types.CloudWorkerPackedShared {
 				expiryMode = types.CloudWorkerExpiryFollowPlan
 			}
-			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt, profile, retention, runtimePlan, expiryMode); err != nil {
+			// The retention intent comes from the order's own snapshot, never from
+			// the current plan row: a plan can be edited or retired while paid
+			// orders and their credits stay live. plan_model_credit_units > 0 is
+			// exactly "the buyer paid with model credit", so the environment this
+			// credit provisions keeps its files and history after the window ends
+			// (approved credit rules 2026-11-09, P1-2). A legacy budget package
+			// snapshots 0 and keeps its historical cleanup schedule.
+			retainData := order.PlanModelCreditUnits > 0
+			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt, profile, retention, runtimePlan, expiryMode, retainData); err != nil {
 				return nil, false, err
 			}
 		}

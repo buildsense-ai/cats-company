@@ -125,6 +125,14 @@ type CloudWorkerCreditSelection struct {
 	// Empty or legacy means the historical behaviour: the create path derives
 	// the term from the credit's paid window exactly as it always did.
 	ExpiryMode string
+	// RetainData marks a credit bought with paid model credit: the worker it
+	// provisions is a credit environment, so its files and history survive the
+	// end of the paid window (approved credit rules 2026-11-09, P1-2). It
+	// travels with the credit and is snapshotted onto the lifecycle row, so a
+	// later lapse, revocation or plan change cannot lose it. Legacy plans
+	// (model_credit_units = 0) and operator grants carry false and keep the
+	// historical cleanup schedule.
+	RetainData bool
 }
 
 func NormalizeCloudWorkerProfile(profile string) (string, bool) {
