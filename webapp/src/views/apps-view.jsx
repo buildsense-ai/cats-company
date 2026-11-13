@@ -399,7 +399,7 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
       ? (visibleApps.length > 0
         ? failedAgentUIDs.length === agents.length
           ? '应用列表暂时无法刷新，已保留上次加载的应用。'
-          : '部分 Agent 的应用加载失败，已保留可用的应用。'
+          : ''
         : '共享应用暂时无法加载，请重试。')
       : '');
   const loadingSummary = loading && loadingAgentCount > 0

@@ -349,7 +349,7 @@ describe('AppsView', () => {
     });
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
     expect(titles()).toEqual(['Saturday 演示应用']);
-    expect(container.querySelector('[role="alert"]').textContent).toContain('部分 Agent');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
     await selectAgent('开发者');
     expect(titles()).toEqual([]);
     expect(container.querySelector('[role="alert"]').textContent).toContain('这个 Agent');
@@ -524,7 +524,7 @@ describe('AppsView', () => {
     });
     await act(async () => { container.querySelector('.cc-apps-refresh').click(); });
     expect(titles()).toEqual(['好友应用']);
-    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
     mocks.listArtifactApps.mockRejectedValue(Object.assign(new Error('no access'), { status: 403 }));
     await act(async () => { container.querySelector('.cc-apps-refresh').click(); });
     expect(titles()).toEqual([]);
