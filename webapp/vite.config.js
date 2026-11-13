@@ -121,7 +121,7 @@ export default defineConfig({
     fs: {
       allow: [
         searchForWorkspaceRoot(process.cwd()),
-        realpathSync(new URL('./node_modules', import.meta.url)),
+        realpathSync('./node_modules'),
       ],
     },
   },

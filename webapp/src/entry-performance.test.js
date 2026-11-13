@@ -18,7 +18,7 @@ const viteConfig = readSource('vite.config.js');
 
 describe('entry bundle split', () => {
   it('loads the local backend target from Vite env files before using the retired mock fallback', () => {
-    expect(viteConfig).toContain("import { defineConfig, loadEnv } from 'vite';");
+    expect(viteConfig).toMatch(/import \{[^}]*\bloadEnv\b[^}]*\} from 'vite';/);
     expect(viteConfig).toContain("const localEnv = loadEnv('development', process.cwd(), '');");
     expect(viteConfig).toContain('|| localEnv.VITE_BACKEND_TARGET');
   });
