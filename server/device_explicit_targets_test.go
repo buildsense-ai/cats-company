@@ -37,7 +37,8 @@ func TestDeviceTargetAuthorizationWireCompatibility(t *testing.T) {
 			if hasExplicit != (version == "1") {
 				t.Fatal("explicit envelope escaped the v2 gate")
 			}
-			if _, err := hub.userDevices.confirmDeviceSelection(7, session, "b", "test", ""); err != nil {
+			revision := identity["device_selection"].(*DeviceSelection).Revision
+			if _, err := hub.userDevices.confirmDeviceSelection(7, session, "b", "test", revision); err != nil {
 				t.Fatal(err)
 			}
 			for _, text := range []string{"读取桌面", "在 a 上读取", "两台都读取", "不要操作 a", "你上次为什么操作 a"} {
@@ -301,7 +302,7 @@ func TestExplicitTargetsWithoutDefaultAndWithOfflineDefault(t *testing.T) {
 		}
 	}
 	session := buildCatsCoSessionKey("grp_1", "group", "usr42", 7)
-	if _, err := r.confirmDeviceSelection(7, session, "a", "user_confirmation", ""); err != nil {
+	if _, err := r.confirmDeviceSelection(7, session, "a", "user_confirmation", ctx.Selection.Revision); err != nil {
 		t.Fatal(err)
 	}
 	ctx = r.turnContextForOwnerDevices(7, 7, "grp_1", "group", 42, "cloud", []UserDevice{b}, []UserDevice{a})

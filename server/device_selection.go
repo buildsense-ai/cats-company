@@ -74,11 +74,7 @@ func (h *DeviceHandler) HandleConversationSelection(w http.ResponseWriter, r *ht
 	if r.Method == http.MethodGet {
 		// A versioned empty slot prevents a very old first-selection POST from
 		// becoming valid again after the preference retention window expires.
-		current, err := h.registry().selectionRecord(actor, session)
-		if err == nil && current.Revision == "" {
-			_, err = h.registry().confirmDeviceSelection(actor, session, current.DeviceID, "selection_snapshot", "")
-		}
-		if err != nil && !errors.Is(err, errDeviceSelectionConflict) {
+		if _, err := h.registry().ensureDeviceSelectionRevision(actor, session); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "selection store unavailable"})
 			return
 		}

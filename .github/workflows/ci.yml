@@ -57,6 +57,9 @@ jobs:
       - name: Test authorization-only storage concurrency
         run: go test -race ./server ./server/cmd -run '^TestDeviceAuthorization' -count=1
 
+      - name: Test first-message device authorization concurrency
+        run: go test -race ./server -run '^Test(ExplicitDeviceGrantBeforeFirstPickerRead|ConcurrentFirstDeviceMessages|FirstDeviceRevision)' -count=1
+
       - name: Test race-sensitive concurrency
         run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|CaptureTransport|CaptureDispatcher|RepairSourceTransport|UploadTransport|Peer|CommitClient|CommitDispatcher|HumanCommit|CancellationTransport|CancellationDispatcher)|TestPublicationDescription(Copy|Derivation|Validation|ReleasePlan|ReleaseAuthorize)|Test(Read|Validate|Accept|Continue|Plan|Authorize|Record)ConfirmedPublicationDescription' -count=1
 
