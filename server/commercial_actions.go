@@ -236,6 +236,9 @@ func (h *CloudWorkerHandler) prepareCommercialActionWorker(w http.ResponseWriter
 		return true
 	}
 	if state == "created" || state == "kept" {
+		if state == "kept" && h.confirmCommercialKeptRetention(w, uid, worker, v) {
+			return true
+		}
 		writeJSON(w, 200, map[string]interface{}{"worker_status": state, "uid": worker})
 		return true
 	}
@@ -248,6 +251,9 @@ func (h *CloudWorkerHandler) prepareCommercialActionWorker(w http.ResponseWriter
 		if len(workers) > 0 {
 			if err = store.KeepCommercialOperationWorker(uid, types.CommercialActionSource(uid, v.Operation.OperationID), workers[0].UID); err != nil {
 				writeJSON(w, 500, map[string]string{"error": "failed to retain existing worker"})
+				return true
+			}
+			if h.confirmCommercialKeptRetention(w, uid, workers[0].UID, v) {
 				return true
 			}
 			writeJSON(w, 200, map[string]interface{}{"worker_status": "kept", "uid": workers[0].UID})
