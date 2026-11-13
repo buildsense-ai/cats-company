@@ -895,6 +895,14 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 		err = h.syncer.ValidatePurchase(ctx, uid, plan)
 		cancel()
 		if err != nil {
+			// A plan that is unusable on its own (mixed credit/budget, tier off
+			// the priced ladder, credit sold without the relay settlement
+			// channel) cannot be fixed by retrying, so it is answered like an
+			// unavailable plan. Relay-side failures keep the retryable answer.
+			if errors.Is(err, errCommercialPlanNotPurchasable) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "commercial plan is unavailable"})
+				return
+			}
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "套餐额度暂时无法同步，请稍后重试"})
 			return
 		}
