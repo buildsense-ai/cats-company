@@ -3,8 +3,37 @@ package postgres
 import (
 	"fmt"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
+
+// ListAgentSelectionMetadata uses the accepted relationship's timestamp for
+// shared agents and the creation timestamp for the viewer's own agents.
+func (a *Adapter) ListAgentSelectionMetadata(viewerUID int64) (map[int64]store.AgentSelectionMetadata, error) {
+	rows, err := a.db.Query(
+		`SELECT u.id, COALESCE(b.tenant_name, '') <> '',
+		        CASE WHEN b.owner_id = $1 THEN u.created_at ELSE f.updated_at END
+		 FROM users u
+		 LEFT JOIN bot_config b ON b.user_id = u.id
+		 LEFT JOIN friends f ON f.to_user_id = u.id AND f.from_user_id = $2 AND f.status = 'accepted'
+		 WHERE u.account_type = 'bot' AND (b.owner_id = $3 OR f.id IS NOT NULL)`,
+		viewerUID, viewerUID, viewerUID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list agent selection metadata: %w", err)
+	}
+	defer rows.Close()
+	metadata := make(map[int64]store.AgentSelectionMetadata)
+	for rows.Next() {
+		var uid int64
+		var facts store.AgentSelectionMetadata
+		if err := rows.Scan(&uid, &facts.IsCloud, &facts.AddedAt); err != nil {
+			return nil, fmt.Errorf("scan agent selection metadata: %w", err)
+		}
+		metadata[uid] = facts
+	}
+	return metadata, rows.Err()
+}
 
 // CreateFriendRequest creates a new friend request.
 func (a *Adapter) CreateFriendRequest(fromUID, toUID int64, message string) (int64, error) {

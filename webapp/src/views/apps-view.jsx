@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import SlidingSegments from '../widgets/sliding-segments';
+import ToolbarSearch from '../widgets/toolbar-search';
 import {
   AppWindow,
   ArrowLeft,
@@ -8,10 +10,8 @@ import {
   MoreHorizontal,
   Pencil,
   RefreshCw,
-  Search,
   Share2,
   Star,
-  X,
 } from 'lucide-react';
 import { api } from '../api';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
@@ -399,7 +399,7 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
       ? (visibleApps.length > 0
         ? failedAgentUIDs.length === agents.length
           ? '应用列表暂时无法刷新，已保留上次加载的应用。'
-          : '部分 Agent 的应用加载失败，已保留可用的应用。'
+          : ''
         : '共享应用暂时无法加载，请重试。')
       : '');
   const loadingSummary = loading && loadingAgentCount > 0
@@ -491,21 +491,18 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
       </header>
       <div className="cc-apps-toolbar">
         <div className="cc-apps-toolbar-filters">
-          <div className="cc-apps-scope" role="group" aria-label="应用范围">
+          <SlidingSegments value={manageableOnly ? 'manageable' : favoritesOnly ? 'favorites' : 'all'} className="cc-apps-scope" role="group" aria-label="应用范围">
             <button type="button" aria-pressed={!manageableOnly && !favoritesOnly} onClick={() => { setManageableOnly(false); setFavoritesOnly(false); }}>全部应用</button>
-            <button type="button" aria-pressed={favoritesOnly} onClick={() => { setManageableOnly(false); setFavoritesOnly(true); }}><Star size={15} aria-hidden="true" />收藏</button>
+            <button type="button" aria-pressed={favoritesOnly} onClick={() => { setManageableOnly(false); setFavoritesOnly(true); }}>收藏</button>
             <button type="button" aria-pressed={manageableOnly} onClick={() => { setManageableOnly(true); setFavoritesOnly(false); }}>我可管理</button>
-          </div>
+          </SlidingSegments>
         </div>
-        <div className="cc-apps-toolbar-actions">
-          <div className="cc-library-search" role="search">
-            <Search size={16} aria-hidden="true" />
-            <input type="search" aria-label="搜索应用" placeholder="搜索应用…" value={query} onChange={(event) => setQuery(event.target.value)} />
-            {query && <button type="button" aria-label="清除应用搜索" title="清除" onClick={() => setQuery('')}><X size={15} aria-hidden="true" /></button>}
-          </div>
-        <button type="button" className="cc-apps-refresh" onClick={loadApps} disabled={loading} aria-label="刷新应用列表" title="刷新应用列表">
-          <RefreshCw size={17} aria-hidden="true" className={loading ? 'is-spinning' : ''} />
-        </button>
+        <div className="cc-apps-toolbar-actions cc-skillhub-navigation-tools">
+          <ToolbarSearch id="cc-apps-search-input" label="搜索应用" clearLabel="清除应用搜索"
+            className="cc-library-search cc-skillhub-added-search" value={query} onChange={setQuery} />
+          <button type="button" className="cc-apps-refresh icon-button" onClick={loadApps} disabled={loading} aria-label="刷新应用列表" title="刷新应用列表">
+            <RefreshCw size={16} aria-hidden="true" className={loading ? 'is-spinning' : ''} />
+          </button>
         </div>
       </div>
 

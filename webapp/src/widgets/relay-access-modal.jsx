@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import SlidingSegments from './sliding-segments';
 import { AlertTriangle, ArrowUpRight, BadgeCheck, BadgePercent, Check, ChevronDown, Cloud, Copy, Cpu, CreditCard, ExternalLink, Gift, History, KeyRound, Percent, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
@@ -1749,7 +1750,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
             </div>
 
             <div className="relay-access-billing-toolbar">
-              <div
+              <SlidingSegments value={commercialView}
                 className="relay-access-billing-tabs"
                 role="tablist"
                 aria-label="套餐信息"
@@ -1782,9 +1783,9 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                   订单记录
                   {commercialOrders.length > 0 && <span>{commercialOrders.length}</span>}
                 </button>
-              </div>
+              </SlidingSegments>
               {commercialView === 'orders' && commercialOrders.length > 0 && availableOrderFilters.length > 1 && (
-                <div className="relay-access-order-filters" role="group" aria-label="筛选订单">
+                <SlidingSegments value={orderFilter} className="relay-access-order-filters" role="group" aria-label="筛选订单">
                   {availableOrderFilters.map((filter) => (
                     <button
                       type="button"
@@ -1799,7 +1800,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                       {filter.label}
                     </button>
                   ))}
-                </div>
+                </SlidingSegments>
               )}
             </div>
 
@@ -2214,7 +2215,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
               </button>
             </header>
             <div className="relay-access-plan-modal-body">
-              <div
+              <SlidingSegments value={planChooserAudience}
                 className={`relay-access-plan-audience-tabs${teamPlanContent ? ' has-team' : ''}`}
                 role="tablist"
                 aria-label="选择方案类型"
@@ -2256,7 +2257,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                 >
                   企业
                 </button>
-              </div>
+              </SlidingSegments>
               {planChooserAudience === 'personal' ? (
                 <div
                   id="relay-access-personal-plan-panel"

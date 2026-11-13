@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, CircleAlert, FileText, Image, Smartphone, X } from 'lucide-react';
+import { CircleAlert, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
@@ -34,12 +34,37 @@ import QRCode from './qr-code';
 
 const MAX_DROPPED_FILES = 200;
 const PHONE_UPLOAD_POLL_INTERVAL_MS = 2000;
+const AGENT_WHEEL_ROW_HEIGHT = 28;
+
+const agentWheelAppearance = (distance) => ({
+  opacity: Math.max(0.2, 1 - distance * 0.5),
+  transform: `scale(${1 - Math.min(2, distance) * 0.08})`,
+});
+
+function updateAgentWheelAppearance(track, scrollTop) {
+  const position = scrollTop / AGENT_WHEEL_ROW_HEIGHT;
+  Array.from(track.children).forEach((option, index) => {
+    const appearance = agentWheelAppearance(Math.abs(index - position));
+    option.style.opacity = appearance.opacity;
+    option.style.transform = appearance.transform;
+  });
+}
+
+const sortAgentsForNewTask = (agents) => [...agents].sort((left, right) => {
+  const cloudPriority = Number(right.is_cloud === true || Boolean(right.tenant_name))
+    - Number(left.is_cloud === true || Boolean(left.tenant_name));
+  if (cloudPriority) return cloudPriority;
+  const ownerPriority = Number(right.relation === 'owner') - Number(left.relation === 'owner');
+  if (ownerPriority) return ownerPriority;
+  return (Date.parse(right.added_at) || 0) - (Date.parse(left.added_at) || 0);
+});
 const AUTHENTICATION_MESSAGE = '登录验证未通过，请重新登录。';
 const UPLOAD_AUTHENTICATION_MESSAGE = '登录验证未通过，请重新登录后重试上传。';
 const isAuthenticationError = (error) => Number(error?.status) === 401
   || /^unauthorized$/i.test(String(error?.message || '').trim());
 
 export default function EmptyTaskComposer({
+  heading = null,
   className = 'cc-empty-composer-wrap',
   placeholder = '输入指令，我帮您完成',
   initialAgent,
@@ -72,7 +97,6 @@ export default function EmptyTaskComposer({
   const [agentsError, setAgentsError] = useState('');
   const [selectedAgentId, setSelectedAgentId] = useState(initialAgentId);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
-  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState(initialDraftAttachments);
   const [attachmentStatus, setAttachmentStatus] = useState(null);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
@@ -83,6 +107,11 @@ export default function EmptyTaskComposer({
   const [phoneUploadError, setPhoneUploadError] = useState('');
 
   const textareaRef = useRef(null);
+  const agentScrollRef = useRef(null);
+  const agentWheelScrollingRef = useRef(false);
+  const agentWheelTimerRef = useRef(null);
+  const agentWheelFrameRef = useRef(null);
+  const agentWheelTargetRef = useRef(null);
   const imageInputRef = useRef(null);
   const fileInputRef = useRef(null);
   const mountedRef = useRef(true);
@@ -97,6 +126,118 @@ export default function EmptyTaskComposer({
   const phoneUploadFileKeysRef = useRef(new Set());
   const phoneUploadSyncRef = useRef(null);
   const sentDraftRef = useRef(false);
+
+  useEffect(() => {
+    return () => clearTimeout(agentWheelTimerRef.current);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (agentWheelScrollingRef.current || !agentScrollRef.current) return;
+    const index = agents.findIndex((agent) => agentKey(agent) === String(selectedAgentId || ''));
+    if (index >= 0) {
+      agentScrollRef.current.scrollTop = index * AGENT_WHEEL_ROW_HEIGHT;
+      updateAgentWheelAppearance(agentScrollRef.current, index * AGENT_WHEEL_ROW_HEIGHT);
+    }
+  }, [agents, selectedAgentId]);
+
+  const selectAgent = useCallback((agent) => {
+    if (isSubmitting || !agent) return;
+    clearTimeout(agentWheelTimerRef.current);
+    agentWheelScrollingRef.current = false;
+    cancelAnimationFrame(agentWheelFrameRef.current);
+    agentWheelFrameRef.current = null;
+    agentWheelTargetRef.current = null;
+    const index = agentsRef.current.findIndex((candidate) => agentKey(candidate) === agentKey(agent));
+    if (agentScrollRef.current && index >= 0) {
+      agentScrollRef.current.scrollTop = index * AGENT_WHEEL_ROW_HEIGHT;
+      updateAgentWheelAppearance(agentScrollRef.current, index * AGENT_WHEEL_ROW_HEIGHT);
+    }
+    const key = agentKey(agent);
+    if (key === String(selectedAgentIdRef.current || '')) return;
+    selectedAgentIdRef.current = key;
+    setSelectedAgentId(key);
+    setAttachmentStatus(null);
+  }, [isSubmitting]);
+
+  const confirmCenteredAgent = useCallback(() => {
+    const track = agentScrollRef.current;
+    if (!track || agentsRef.current.length === 0) return null;
+    const index = Math.max(0, Math.min(agentsRef.current.length - 1,
+      Math.round(track.scrollTop / AGENT_WHEEL_ROW_HEIGHT)));
+    const agent = agentsRef.current[index];
+    selectAgent(agent);
+    return agent;
+  }, [selectAgent]);
+
+  useEffect(() => {
+    const track = agentScrollRef.current;
+    if (!track) return undefined;
+    let lastWheelTime = 0;
+    let lastWheelDirection = 1;
+    let previousFrameTime = 0;
+    let wheelPosition = track.scrollTop;
+    let wheelTickDelta = 0;
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    const animateWheel = (time) => {
+      const elapsed = Math.min(64, time - previousFrameTime);
+      previousFrameTime = time;
+      const settling = time - lastWheelTime >= 100;
+      agentWheelTargetRef.current = Math.min(agentWheelTargetRef.current,
+        Math.max(0, (agentsRef.current.length - 1) * AGENT_WHEEL_ROW_HEIGHT));
+      // Keep fractional motion between frames. Browsers can round scrollTop
+      // to physical pixels, which otherwise stalls the last few pixels.
+      const distance = agentWheelTargetRef.current - wheelPosition;
+      wheelPosition += reducedMotion?.matches || Math.abs(distance) <= 1
+        ? distance : distance * (1 - Math.exp(-elapsed / 22));
+      track.scrollTop = wheelPosition;
+      updateAgentWheelAppearance(track, wheelPosition);
+      if (settling && Math.abs(agentWheelTargetRef.current - wheelPosition) <= 1) {
+        track.scrollTop = agentWheelTargetRef.current;
+        confirmCenteredAgent();
+        return;
+      }
+      agentWheelFrameRef.current = requestAnimationFrame(animateWheel);
+    };
+    const handleWheel = (event) => {
+      if (!event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+      event.preventDefault();
+      if (isSubmitting || agentsRef.current.length === 0) return;
+      clearTimeout(agentWheelTimerRef.current);
+      agentWheelScrollingRef.current = true;
+      const direction = Math.sign(event.deltaY);
+      // A wheel notch selects an item regardless of browser zoom or the OS
+      // scroll-distance setting. Preserve combined native ticks when available.
+      const nativeDelta = Math.abs(event.wheelDeltaY || event.wheelDelta || 0);
+      if (nativeDelta > 0) wheelTickDelta = Math.min(wheelTickDelta || nativeDelta, nativeDelta);
+      const steps = nativeDelta > 0 ? Math.max(1, Math.round(nativeDelta / wheelTickDelta)) : 1;
+      const currentTarget = agentWheelFrameRef.current === null || direction !== lastWheelDirection
+        ? Math.round(track.scrollTop / AGENT_WHEEL_ROW_HEIGHT) * AGENT_WHEEL_ROW_HEIGHT
+        : agentWheelTargetRef.current;
+      const maxPosition = (agentsRef.current.length - 1) * AGENT_WHEEL_ROW_HEIGHT;
+      agentWheelTargetRef.current = Math.max(0, Math.min(maxPosition,
+        currentTarget + direction * steps * AGENT_WHEEL_ROW_HEIGHT));
+      lastWheelDirection = direction;
+      lastWheelTime = performance.now();
+      if (agentWheelFrameRef.current === null) {
+        wheelPosition = track.scrollTop;
+        previousFrameTime = lastWheelTime;
+        agentWheelFrameRef.current = requestAnimationFrame(animateWheel);
+      }
+    };
+    track.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      track.removeEventListener('wheel', handleWheel);
+      cancelAnimationFrame(agentWheelFrameRef.current);
+      agentWheelFrameRef.current = null;
+      agentWheelTargetRef.current = null;
+      agentWheelScrollingRef.current = false;
+      const index = agentsRef.current.findIndex((agent) => agentKey(agent) === selectedAgentIdRef.current);
+      if (index >= 0) {
+        track.scrollTop = index * AGENT_WHEEL_ROW_HEIGHT;
+        updateAgentWheelAppearance(track, index * AGENT_WHEEL_ROW_HEIGHT);
+      }
+    };
+  }, [confirmCenteredAgent, isSubmitting]);
 
   const persistDraft = useCallback(() => {
     // Capture both values before either write. Store subscribers are notified
@@ -295,6 +436,23 @@ export default function EmptyTaskComposer({
         const response = await api.getAgents();
         if (cancelled || !mountedRef.current) return;
         let nextAgents = Array.isArray(response?.agents) ? response.agents : [];
+        // Older servers omit selection metadata. Their bot roster still knows
+        // which owned assistants are cloud-hosted, so use those facts meanwhile.
+        if (nextAgents.some((agent) => typeof agent.is_cloud !== 'boolean')) {
+          const botsResponse = api.getMyBots ? await api.getMyBots().catch(() => null) : null;
+          if (cancelled || !mountedRef.current) return;
+          const botsByKey = new Map((botsResponse?.bots || []).map((bot) => [agentKey(bot), bot]));
+          nextAgents = nextAgents.map((agent) => {
+            const bot = botsByKey.get(agentKey(agent));
+            if (!bot) return agent;
+            return {
+              ...agent,
+              tenant_name: bot.tenant_name,
+              added_at: agent.added_at || (agent.relation === 'owner' ? bot.created_at : undefined),
+            };
+          });
+        }
+        nextAgents = sortAgentsForNewTask(nextAgents);
         const preferredAgent = initialAgentRef.current;
         const preferredKey = agentKey(preferredAgent);
         if (preferredKey && !nextAgents.some((agent) => agentKey(agent) === preferredKey)) {
@@ -657,12 +815,12 @@ export default function EmptyTaskComposer({
   const handleSend = useCallback(async () => {
     if (sendInFlightRef.current || isUploadingAttachment) return;
 
-    const agent = agentsRef.current.find(
+    const agent = agentWheelScrollingRef.current ? confirmCenteredAgent() : agentsRef.current.find(
       (candidate) => agentKey(candidate) === String(selectedAgentIdRef.current || ''),
     );
     if (!agent) {
       setAttachmentStatus({ tone: 'error', message: '请先选择一个 Agent。' });
-      setAgentPickerOpen(true);
+      agentScrollRef.current?.querySelector('[role="radio"]')?.focus();
       return;
     }
     if (
@@ -684,7 +842,6 @@ export default function EmptyTaskComposer({
     sendInFlightRef.current = true;
     setIsSubmitting(true);
     setAttachmentMenuOpen(false);
-    setAgentPickerOpen(false);
     setAttachmentStatus({ tone: 'info', message: '正在创建任务并发送...' });
 
     let messageSent = false;
@@ -764,7 +921,7 @@ export default function EmptyTaskComposer({
       sendInFlightRef.current = false;
       if (mountedRef.current) setIsSubmitting(false);
     }
-  }, [clearDraftAfterSend, isUploadingAttachment, onAcquireTaskTransition, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
+  }, [clearDraftAfterSend, confirmCenteredAgent, isUploadingAttachment, onAcquireTaskTransition, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
 
   const handleKeyDown = useCallback((event) => {
     const nativeEvent = event.nativeEvent || event;
@@ -794,36 +951,75 @@ export default function EmptyTaskComposer({
     </div>
   );
 
-  const agentMenu = agentPickerOpen ? (
-    <div className="v3-agent-picker-menu" role="listbox" aria-label="选择 Agent">
-      {agentsLoading ? (
-        <div className="v3-picker-empty">正在加载 Agent...</div>
-      ) : agents.length === 0 ? (
-        <div className="v3-picker-empty">{agentsError || '暂无可用 Agent'}</div>
-      ) : agents.map((agent) => {
+  const selectedAgentIndex = agents.findIndex((agent) => agentKey(agent) === String(selectedAgentId || ''));
+  const agentSelector = (
+    <section
+      className="cc-new-task-agent-selector"
+      aria-label="选择任务助手"
+      style={{ '--cc-agent-wheel-row-height': `${AGENT_WHEEL_ROW_HEIGHT}px` }}
+    >
+      <div className="cc-new-task-agent-wheel" data-busy={isSubmitting || undefined}>
+        <div className="cc-new-task-agent-wheel-focus" aria-hidden="true" />
+      <div
+        ref={agentScrollRef}
+        className="cc-new-task-agent-scroll"
+        role="radiogroup"
+        aria-label="任务助手"
+        aria-busy={agentsLoading}
+        onScroll={(event) => {
+          if (isSubmitting || agents.length === 0 || agentWheelFrameRef.current !== null) return;
+          updateAgentWheelAppearance(event.currentTarget, event.currentTarget.scrollTop);
+          const selectedIndex = agents.findIndex(agent => agentKey(agent) === selectedAgentIdRef.current);
+          if (Math.abs(event.currentTarget.scrollTop - selectedIndex * AGENT_WHEEL_ROW_HEIGHT) <= 1) return;
+          agentWheelScrollingRef.current = true;
+          clearTimeout(agentWheelTimerRef.current);
+          agentWheelTimerRef.current = setTimeout(confirmCenteredAgent, 150);
+        }}
+        onKeyDown={(event) => {
+          if (isSubmitting || agents.length === 0) return;
+          const current = agentWheelScrollingRef.current
+            ? Math.round(event.currentTarget.scrollTop / AGENT_WHEEL_ROW_HEIGHT) : selectedAgentIndex;
+          let next = current;
+          if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (current + 1) % agents.length;
+          else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (current - 1 + agents.length) % agents.length;
+          else if (event.key === 'Home') next = 0;
+          else if (event.key === 'End') next = agents.length - 1;
+          else return;
+          event.preventDefault();
+          selectAgent(agents[next]);
+          event.currentTarget.querySelectorAll('[role="radio"]')[next]?.focus();
+        }}
+      >
+      {agents.length === 0 ? (
+        <div className="cc-new-task-agent-scroll-empty" role="status">
+          {agentsLoading ? '正在加载助手…' : '暂无可用助手'}
+        </div>
+      ) : agents.map((agent, index) => {
         const key = agentKey(agent);
         const name = agent.display_name || agent.username || 'Agent';
         const selected = key === String(selectedAgentId || '');
         return (
           <button
             type="button"
-            role="option"
-            aria-selected={selected}
-            className={selected ? 'selected' : ''}
+            role="radio"
+            aria-checked={selected}
+            aria-label={name}
+            style={agentWheelAppearance(Math.abs(index - selectedAgentIndex))}
+            title={name}
+            tabIndex={selected ? 0 : -1}
+            disabled={isSubmitting}
+            className={`cc-new-task-agent-option${selected ? ' is-selected' : ''}`}
             key={key}
-            onClick={() => {
-              selectedAgentIdRef.current = key;
-              setSelectedAgentId(key);
-              setAgentPickerOpen(false);
-              setAttachmentStatus(null);
-            }}
+            onClick={() => selectAgent(agent)}
           >
-            <span>{name}</span>{selected && <Check size={15} />}
+            <span className="cc-new-task-agent-option-name">{name}</span>
           </button>
         );
       })}
-    </div>
-  ) : null;
+      </div>
+      </div>
+    </section>
+  );
 
   const uploadAuthenticationFailed = attachmentStatus?.kind === 'authentication';
   const composerErrorNotice = uploadAuthenticationFailed
@@ -898,6 +1094,14 @@ export default function EmptyTaskComposer({
 
   return (
     <>
+      {heading ? (
+        <div className="cc-empty-task-heading">
+          <div className="cc-empty-task-heading-content">
+            {heading}
+            {agentSelector}
+          </div>
+        </div>
+      ) : agentSelector}
       <ChatComposer
         className={className}
         textareaRef={textareaRef}
@@ -916,19 +1120,12 @@ export default function EmptyTaskComposer({
         attachmentOpen={attachmentMenuOpen}
         attachmentDisabled={isUploadingAttachment || isSubmitting}
         onAttachmentToggle={() => {
-          setAgentPickerOpen(false);
           setAttachmentMenuOpen((open) => !open);
         }}
         attachmentMenu={attachmentMenu}
         agentName={selectedAgentName}
-        agentOpen={agentPickerOpen}
         agentDisabled={isSubmitting}
         agentPickerVisible={false}
-        onAgentToggle={() => {
-          setAttachmentMenuOpen(false);
-          setAgentPickerOpen((open) => !open);
-        }}
-        agentMenu={agentMenu}
         onSend={handleSend}
         sendDisabled={
           isSubmitting
@@ -938,7 +1135,6 @@ export default function EmptyTaskComposer({
         }
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
-          setAgentPickerOpen(false);
         }}
         attachments={pendingAttachments}
         attachmentRemovalDisabled={isSubmitting}

@@ -73,9 +73,12 @@ vi.mock('../utils/theme-access', () => ({
 }));
 
 vi.mock('./sidepanel-view', () => ({
-  default: ({ activeTopic, additionalSidebarTools, onSelectTopic, onStartAgentTask, onOpenCloudArtifacts }) => (
+  default: ({ activeTopic, additionalSidebarTools, onSelectTopic, onStartAgentTask, onOpenCloudArtifacts, onNewTask }) => (
     <nav data-visible-topic={activeTopic || ''}>
       {additionalSidebarTools}
+      <button type="button" onClick={() => onNewTask({ projectId: 12, projectName: 'Website' })}>
+        项目内新建任务
+      </button>
       <button
         type="button"
         onClick={() => onSelectTopic({
@@ -258,6 +261,31 @@ function setCachedUser(createdAt) {
   mocks.getMe.mockResolvedValue(profile);
   localStorage.setItem('oc_user', JSON.stringify(profile));
 }
+
+test('opens the inline new-task page and updates its Agent without losing the project context', async () => {
+  await act(async () => renderWorkspace());
+  await selectTestConversation();
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '项目内新建任务'));
+  });
+  expect(mocks.emptyProps).not.toBeNull();
+  const draftKey = mocks.emptyProps.draftKey;
+  await act(async () => {
+    mocks.emptyProps.onSelectedAgentChange({ uid: 22, display_name: '运营助手' });
+  });
+  expect(mocks.emptyProps.initialAgent.uid).toBe(22);
+  await act(async () => {
+    mocks.emptyProps.onSelectedAgentChange({ uid: 23, display_name: '代码助手' });
+  });
+  expect(mocks.emptyProps.initialAgent.uid).toBe(23);
+  expect(mocks.emptyProps.draftKey).toBe(draftKey);
+  expect(mocks.emptyProps.composerDraftStore.taskContextDrafts.get(draftKey)).toMatchObject({
+    agent: { uid: 23 }, projectId: 12, projectName: 'Website',
+  });
+  expect(api.createGroup).not.toHaveBeenCalled();
+  expect(api.sendMessage).not.toHaveBeenCalled();
+});
 
 test('only marks the displayed conversation active and retains each tool browse state', async () => {
   await act(async () => renderWorkspace());

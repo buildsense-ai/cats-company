@@ -1,4 +1,5 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import SlidingSegments from './sliding-segments';
 import { Search, UsersRound, X } from 'lucide-react';
 import { api } from '../api';
 import t from '../i18n';
@@ -30,24 +31,6 @@ export default function CreateGroup({
   const dialogRef = useRef(null);
   const nameInputRef = useRef(null);
   const memberTabsRef = useRef(null);
-  const [memberIndicator, setMemberIndicator] = useState({ left: 0, width: 0 });
-  useLayoutEffect(() => {
-    const tabs = memberTabsRef.current;
-    const active = tabs?.querySelector('.active');
-    if (!active) return undefined;
-    const measure = () => {
-      const left = active.offsetLeft;
-      const width = active.offsetWidth;
-      setMemberIndicator(previous => previous.left === left && previous.width === width
-        ? previous : { left, width });
-    };
-    measure();
-    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
-    observer?.observe(tabs);
-    tabs.querySelectorAll('button').forEach(button => observer?.observe(button));
-    window.addEventListener('resize', measure);
-    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
-  }, [memberType]);
   useDialogBehavior(dialogRef, { onClose, initialFocusRef: nameInputRef });
 
   useEffect(() => {
@@ -182,7 +165,7 @@ export default function CreateGroup({
               <div className="oc-member-search">
                 <Search size={15} strokeWidth={1.8} />
                 <input data-cc-focus-group="true" aria-label="搜索成员" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索成员" />
-                <div ref={memberTabsRef} className="oc-segmented-control cc-member-type-tabs" role="tablist" aria-label="成员类型"
+                <SlidingSegments value={memberType} ref={memberTabsRef} className="oc-segmented-control cc-member-type-tabs" role="tablist" aria-label="成员类型"
                   onKeyDown={(event) => {
                     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
                     event.preventDefault();
@@ -190,8 +173,6 @@ export default function CreateGroup({
                     setMemberType(next);
                     memberTabsRef.current?.querySelector(`#cc-member-type-${next}`)?.focus();
                   }}>
-                  <span className="cc-member-type-indicator" aria-hidden="true"
-                    style={{ width: memberIndicator.width, transform: `translateX(${memberIndicator.left}px)` }} />
                   <button
                     type="button"
                     role="tab" id="cc-member-type-friends" aria-selected={memberType === 'friends'}
@@ -210,7 +191,7 @@ export default function CreateGroup({
                   >
                     Agent
                   </button>
-                </div>
+                </SlidingSegments>
               </div>
               <div className="oc-member-picker-list" id="cc-member-type-panel" role="tabpanel" aria-labelledby={`cc-member-type-${memberType}`}>
                 {filteredMembers.map((member) => {

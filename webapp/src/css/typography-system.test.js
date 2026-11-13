@@ -47,10 +47,12 @@ describe('CatsCo typography system', () => {
     expect(agentStoreSource).not.toContain("fontFamily: 'monospace'");
   });
 
-  it('limits explicit numeric font weights to the four product tiers', () => {
-    const explicitWeights = [...allCss.matchAll(/font-weight:\s*(\d{3})/g)]
+  it('keeps the four product weight tiers with a light welcome-heading exception', () => {
+    const productCss = allCss.replace(/\.cc-empty-task h1\s*\{[^}]*\}/g, '');
+    const explicitWeights = [...productCss.matchAll(/font-weight:\s*(\d{3})/g)]
       .map((match) => Number(match[1]));
     expect(new Set(explicitWeights)).toEqual(new Set([400, 500, 600, 700]));
+    expect(catscoCss).toMatch(/\.cc-empty-task h1\s*\{[^}]*font-weight:\s*300;/);
     expect(catscoCss).toContain('--cc-font-weight-regular: 400;');
     expect(catscoCss).toContain('--cc-font-weight-medium: 500;');
     expect(catscoCss).toContain('--cc-font-weight-brand: 550;');

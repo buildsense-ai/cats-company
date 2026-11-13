@@ -1,4 +1,5 @@
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import SlidingSegments from './sliding-segments';
 import { createPortal } from 'react-dom';
 import { api, getWebSocketURL } from '../api';
 import t from '../i18n';
@@ -2128,7 +2129,7 @@ export default function AgentStoreModal({
                     <span className="cc-agent-skill-disclosure-action">{skillSectionOpen ? '收起' : selectedSkills.length ? '管理技能' : '添加技能'}<ChevronDown size={14} aria-hidden="true" /></span>
                   </button>
                   {skillSectionOpen && <div className="cc-agent-skill-card" id="cc-agent-create-skills">
-                  <div
+                  <SlidingSegments value={skillPanelTab}
                     className="cc-agent-skill-tabs"
                     role="tablist"
                     aria-label="Skill 分类"
@@ -2162,7 +2163,7 @@ export default function AgentStoreModal({
                       <span>可用</span>
                       <span className="cc-agent-skill-tab-count">{availableSkills.length}</span>
                     </button>
-                  </div>
+                  </SlidingSegments>
                   <div className="cc-agent-skill-sections">
                     {skillSyncNotice && (
                       <div className="cc-agent-skill-sync-feedback" role="status">

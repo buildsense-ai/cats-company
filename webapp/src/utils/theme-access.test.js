@@ -78,6 +78,18 @@ describe('theme access', () => {
     expect(isLiquidThemeUnlocked(storage)).toBe(true);
   });
 
+  it('preserves the liquid workspace identity when changing between themes', () => {
+    expect(applyDocumentTheme('liquid')).toBe('liquid');
+    expect(document.documentElement.dataset.theme).toBe('liquid');
+    expect(document.documentElement.dataset.liquidVariant).toBeUndefined();
+    applyDocumentTheme('liquid-green');
+    expect(document.documentElement.dataset.theme).toBe('liquid');
+    applyDocumentTheme('light');
+    expect(document.documentElement.dataset.theme).toBe('light');
+    delete document.documentElement.dataset.theme;
+    delete document.documentElement.dataset.liquidVariant;
+  });
+
   it('restores access from an already saved liquid theme after a refresh', () => {
     const values = new Map([[THEME_STORAGE_KEY, 'liquid-green']]);
     const storage = {

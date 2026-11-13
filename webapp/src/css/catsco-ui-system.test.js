@@ -880,6 +880,34 @@ describe('CatsCo shell styling', () => {
     expect(activeHoverRule).not.toContain('var(--v3-primary)');
   });
 
+  it('keeps the composer border faint while using its surface for focus feedback', () => {
+    const composerRule = ruleFor('.v3-composer-box');
+    const focusRule = ruleFor('.v3-composer-box:focus-within');
+    const metalRule = ruleFor('html:not([data-theme="liquid"]) .v3-composer-box::before');
+    const metalFocusRule = ruleFor('html:not([data-theme="liquid"]) .v3-composer-box:focus-within::before');
+
+    expect(composerRule).toContain('border: 1px solid color-mix(in srgb, var(--cc-text) 2%, transparent);');
+    expect(composerRule).toContain('background-color 160ms ease');
+    expect(focusRule).toContain('background-color: color-mix(in srgb, var(--cc-panel) 98%, white);');
+    expect(focusRule).toContain('border-color: color-mix(in srgb, var(--cc-text) 2%, transparent);');
+    expect(focusRule).toContain('0 2px 12px rgba(0, 0, 0, 0.04)');
+    expect(focusRule).not.toContain('inset');
+    expect(focusRule).not.toContain('outline:');
+    expect(focusRule).not.toContain('padding:');
+    expect(metalRule).toContain('padding: 0.35px;');
+    expect(metalRule).toContain('border-radius: inherit;');
+    expect(metalRule).toContain('mask-composite: exclude;');
+    expect(metalRule).toContain('pointer-events: none;');
+    expect(metalRule).not.toContain('box-shadow:');
+    expect(metalRule).toContain('opacity: 0;');
+    expect(metalRule).not.toContain('animation:');
+    expect(metalRule).toContain('background: conic-gradient(');
+    expect(metalFocusRule).toContain('animation: cc-composer-metal-flow 8s linear infinite;');
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{[^}]*\}[^}]*\.v3-composer-box:focus-within::before \{[^}]*animation: none;/,
+    );
+  });
+
   it('keeps the light liquid composer legible with a single neutral focus border', () => {
     const composerRule = ruleFor('html[data-theme="liquid"] .v3-composer-box');
     const composerFocusRule = ruleFor('html[data-theme="liquid"] .v3-composer-box:focus-within');
@@ -1693,26 +1721,24 @@ describe('CatsCo shell styling', () => {
     expect(themeLineRule).toContain('line-height: 1.35;');
   });
 
-  it('places the empty-task brand mark beside the lighter greeting', () => {
+  it('centers the empty-task greeting without a brand mark', () => {
     const headingRule = ruleFor('.cc-empty-task-heading');
-    const markRule = ruleFor('.cc-empty-task-mark');
     const emptyTaskRule = ruleFor('.cc-empty-task');
+    const appSource = readFileSync(resolve(process.cwd(), 'src/views/tinode-web.jsx'), 'utf8');
 
     expect(ruleFor(':root')).toContain('--cc-empty-task-bg: #f8f8f8;');
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-empty-task-bg: #0f0f0f;');
     expect(emptyTaskRule).toContain('background: var(--cc-empty-task-bg);');
     expect(headingRule).toContain('display: flex;');
-    expect(headingRule).toContain('align-items: flex-end;');
     expect(headingRule).toContain('justify-content: center;');
-    expect(headingRule).toContain('gap: 16px;');
+    expect(headingRule).toContain('text-align: center;');
     expect(headingRule).toContain('margin-bottom: 24px;');
     expect(headingRule).not.toContain('transform:');
-    expect(markRule).toContain('width: 112px;');
-    expect(markRule).toContain('height: 48px;');
-    expect(markRule).toContain('margin: 0;');
+    expect(appSource).not.toContain('catsco-brand-mark cc-empty-task-mark');
     expect(ruleFor('.cc-empty-task h1')).toContain('margin: 0;');
     expect(ruleFor('.cc-empty-task h1')).toContain('font-size: 28px;');
-    expect(ruleFor('.cc-empty-task h1')).toContain('font-weight: 500;');
+    expect(ruleFor('.cc-empty-task h1')).toContain('font-weight: 300;');
+    expect(ruleFor('.cc-empty-task h1')).toContain('letter-spacing: 0.02em;');
     expect(ruleFor('.cc-empty-task h1')).toContain('line-height: 36px;');
   });
 
@@ -2107,9 +2133,7 @@ describe('CatsCo shell styling', () => {
     const sectionsRule = ruleFor('.cc-agent-skill-sections');
     const selectedListRule = ruleFor('.cc-agent-selected-skills');
     const skillTabsRule = ruleFor('.cc-agent-skill-tabs');
-    const skillTabsThumbRule = ruleFor('.cc-agent-skill-tabs::before');
     const skillTabButtonRule = ruleFor('.cc-agent-skill-tabs > button');
-    const availableTabRule = ruleFor(".cc-agent-skill-tabs[data-active-tab='available']::before");
     const skillTabFocusRule = ruleFor('.cc-agent-skill-tabs > button:focus-visible');
     const overlayRule = ruleFor('.cc-agent-skill-picker-overlay');
     const pickerRule = ruleFor('.oc-modal.cc-agent-skill-picker');
@@ -2135,12 +2159,9 @@ describe('CatsCo shell styling', () => {
     expect(skillTabsRule).toContain('border-radius: 999px;');
     expect(skillTabsRule).toContain('width: min(100%, 180px);');
     expect(skillTabsRule).toContain('align-self: start;');
-    expect(skillTabsRule).toContain('padding: 1px;');
-    expect(skillTabsThumbRule).toContain('background: var(--cc-selected);');
-    expect(skillTabsThumbRule).toContain('transition: transform 160ms');
+    expect(skillTabsRule).toContain('padding: 0;');
     expect(skillTabButtonRule).toContain('min-height: 28px;');
     expect(skillTabButtonRule).toContain('font-size: 13px;');
-    expect(availableTabRule).toContain('transform: translateX(100%);');
     expect(skillTabFocusRule).toContain('var(--cc-focus-ring)');
     expect(overlayRule).toContain('z-index: 2300;');
     expect(pickerRule).toContain('height: min(600px, calc(100vh - 32px));');

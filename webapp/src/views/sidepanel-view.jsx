@@ -353,6 +353,7 @@ export default function ChatListView({
   compact = false,
   onManageGroup,
   onStartAgentTask,
+  onNewTask,
   onDeleteHistoryTask,
   onOpenMobileLink,
   onOpenSkillHub,
@@ -1227,6 +1228,13 @@ export default function ChatListView({
   };
 
   const openNewTaskDialog = (project = null) => {
+    if (onNewTask) {
+      onNewTask({
+        projectId: Number(project?.id || 0),
+        projectName: String(project?.name || ''),
+      });
+      return;
+    }
     setNewTaskProject(project);
     setShowNewChat(true);
   };

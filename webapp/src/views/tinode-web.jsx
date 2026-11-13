@@ -1482,9 +1482,9 @@ function TinodeWebApp({ location }) {
     persistComposerDraftStore(composerDraftStoreRef.current);
   }, []);
 
-  const handleStartAgentTask = useCallback((agent, options = {}) => {
-    const agentUid = agent?.uid || agent?.id;
-    if (!agentUid) return;
+  const handleNewTask = useCallback((options = {}) => {
+    const agent = options.agent || null;
+    const agentUid = agent?.uid || agent?.id || 'new-task';
     const projectId = Number(options?.projectId || 0);
     const projectName = projectId > 0 ? String(options?.projectName || '') : '';
     taskDraftSequenceRef.current += 1;
@@ -1502,9 +1502,17 @@ function TinodeWebApp({ location }) {
     setMobileSidebarOpen(false);
   }, [setActiveTopic, syncTaskContextDraft]);
 
+  const handleStartAgentTask = useCallback((agent, options = {}) => {
+    if (!agent?.uid && !agent?.id) return;
+    handleNewTask({ ...options, agent });
+  }, [handleNewTask]);
+
   const handleEmptyTaskSelectedAgentChange = useCallback((agent) => {
     setEmptyTaskSelectedAgent(agent);
     if (!agent) return;
+    setTaskDraft((current) => current && current.agent !== agent
+      ? { ...current, agent }
+      : current);
     const current = readComposerTaskContextDraft(
       composerDraftStoreRef.current,
       NEW_TASK_DRAFT_KEY,
@@ -1776,6 +1784,7 @@ function TinodeWebApp({ location }) {
             }}
             onOpenSearch={() => setSearchOpen(true)}
             onStartAgentTask={handleStartAgentTask}
+            onNewTask={handleNewTask}
             onOpenSkillHub={(agentId, agent) => {
               setSkillHubInitialAgent(agent || { uid: agentId, id: agentId });
               setActiveView('skillhub');
@@ -2310,11 +2319,8 @@ function NoActiveTask({
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
-        <div className="cc-empty-task-heading">
-          <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
-          <h1>{formatEmptyTaskGreeting(user)}</h1>
-        </div>
         <EmptyTaskComposer
+          heading={<h1>{formatEmptyTaskGreeting(user)}</h1>}
           initialAgent={initialAgent}
           composerDraftStore={composerDraftStore}
           draftKey={draftKey}
@@ -2336,6 +2342,7 @@ function SidebarContent({
   onOpenSearch,
   additionalSidebarTools,
   onStartAgentTask,
+  onNewTask,
   onOpenSkillHub,
   onOpenCloudArtifacts,
   newTaskRequest,
@@ -2352,6 +2359,7 @@ function SidebarContent({
       onOpenSearch={onOpenSearch}
       additionalSidebarTools={additionalSidebarTools}
       onStartAgentTask={onStartAgentTask}
+      onNewTask={onNewTask}
       onOpenSkillHub={onOpenSkillHub}
       onOpenCloudArtifacts={onOpenCloudArtifacts}
       newTaskRequest={newTaskRequest}

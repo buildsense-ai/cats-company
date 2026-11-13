@@ -235,6 +235,53 @@ func TestHandleListAgentsIncludesOwnedAndFriendBots(t *testing.T) {
 	}
 }
 
+type agentSelectionTestStore struct {
+	*agentTestStore
+	metadata    map[int64]store.AgentSelectionMetadata
+	metadataErr error
+}
+
+func (s *agentSelectionTestStore) ListAgentSelectionMetadata(viewerUID int64) (map[int64]store.AgentSelectionMetadata, error) {
+	return s.metadata, s.metadataErr
+}
+
+func TestHandleListAgentsIncludesViewerSelectionMetadata(t *testing.T) {
+	addedAt := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	db := &agentSelectionTestStore{
+		agentTestStore: &agentTestStore{
+			ownerBots: []map[string]interface{}{{"id": int64(42), "display_name": "Owned"}},
+			friends:   []*types.User{{ID: 43, DisplayName: "Shared", AccountType: types.AccountBot}},
+		},
+		metadata: map[int64]store.AgentSelectionMetadata{
+			42: {IsCloud: false, AddedAt: addedAt.Add(-time.Hour)},
+			43: {IsCloud: true, AddedAt: addedAt},
+		},
+	}
+	handler := NewAgentHandler(db, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleListAgents(rec, req)
+	var body struct {
+		Agents []AgentSummary `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("decode response: %v; status=%d body=%s", err, rec.Code, rec.Body.String())
+	}
+	if len(body.Agents) != 2 || body.Agents[1].UID != 43 || body.Agents[1].IsCloud == nil || !*body.Agents[1].IsCloud || body.Agents[1].AddedAt == nil || !body.Agents[1].AddedAt.Equal(addedAt) {
+		t.Fatalf("unexpected selection metadata: %+v", body.Agents)
+	}
+	if body.Agents[0].IsCloud == nil || *body.Agents[0].IsCloud || body.Agents[0].AddedAt == nil || !body.Agents[0].AddedAt.Equal(addedAt.Add(-time.Hour)) {
+		t.Fatalf("unexpected owned agent metadata: %+v", body.Agents[0])
+	}
+	db.metadataErr = errors.New("metadata read failed")
+	rec = httptest.NewRecorder()
+	handler.HandleListAgents(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("metadata failure status=%d, want 500", rec.Code)
+	}
+}
+
 func TestHandleListAgentsExcludesDisclosedHumanFriends(t *testing.T) {
 	store := &agentTestStore{
 		friends: []*types.User{

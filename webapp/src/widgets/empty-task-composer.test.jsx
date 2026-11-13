@@ -5,6 +5,7 @@ import { Simulate } from 'react-dom/test-utils';
 vi.mock('../api', () => ({
   api: {
     getAgents: vi.fn(),
+    getMyBots: vi.fn(),
     sendMessage: vi.fn(),
     disbandGroup: vi.fn(),
     uploadFile: vi.fn(),
@@ -51,6 +52,7 @@ describe('EmptyTaskComposer', () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     vi.useFakeTimers();
     api.getAgents.mockReset().mockResolvedValue({ agents });
+    api.getMyBots.mockReset().mockResolvedValue({ bots: [] });
     api.sendMessage.mockReset().mockResolvedValue({ seq_id: 101 });
     api.disbandGroup.mockReset().mockResolvedValue({});
     api.uploadFile.mockReset();
@@ -1227,11 +1229,68 @@ describe('EmptyTaskComposer', () => {
     expect(session.stop).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the Agent picker hidden while preserving automatic Agent selection', async () => {
+  it('shows the selected Agent inline without opening a popup', async () => {
     const { onResolveAgentTopic } = await mountComposer({ initialAgent: agents[1] });
 
     expect(container.querySelector('.v3-agent-picker-button')).toBeNull();
     expect(container.querySelector('.v3-agent-picker-menu')).toBeNull();
+    expect(container.querySelector('[role="radiogroup"][aria-label="任务助手"]')).not.toBeNull();
+    expect(container.querySelector('.cc-new-task-agent-option-check')).toBeNull();
+    expect(container.querySelector('.cc-new-task-agent-selector-label')).toBeNull();
+    expect(container.querySelector('[role="radio"][aria-checked="true"]').getAttribute('aria-label'))
+      .toBe('运营数据助手');
+    expect(onResolveAgentTopic).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the instruction while switching the inline Agent and sends it to that Agent', async () => {
+    const onResolveAgentTopic = vi.fn().mockResolvedValue({ topicId: 'grp_402' });
+    const onSelectedAgentChange = vi.fn();
+    await mountComposer({ onResolveAgentTopic, onSelectedAgentChange });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '整理本周运营数据');
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="radio"][aria-label="运营数据助手"]'));
+    });
+    expect(textarea.value).toBe('整理本周运营数据');
+    expect(onSelectedAgentChange).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 22 }));
+    expect(onResolveAgentTopic).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    await pressEnter(textarea);
+    expect(onResolveAgentTopic).toHaveBeenCalledWith(
+      expect.objectContaining({ uid: 22 }),
+      { text: '整理本周运营数据', attachments: [] },
+    );
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_402', '整理本周运营数据');
+  });
+
+  it('switches the vertical Agent wheel with arrow keys', async () => {
+    const onSelectedAgentChange = vi.fn();
+    await mountComposer({ onSelectedAgentChange });
+    await act(async () => {
+      Simulate.keyDown(container.querySelector('[role="radiogroup"]'), { key: 'ArrowDown' });
+    });
+    expect(onSelectedAgentChange).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 22 }));
+    expect(document.activeElement.getAttribute('aria-label')).toBe('运营数据助手');
+    await act(async () => {
+      Simulate.keyDown(container.querySelector('[role="radiogroup"]'), { key: 'Home' });
+    });
+    expect(onSelectedAgentChange).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 21 }));
+  });
+
+  it('confirms the centered Agent after native scrolling stops', async () => {
+    const onSelectedAgentChange = vi.fn();
+    const { onResolveAgentTopic } = await mountComposer({ onSelectedAgentChange });
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      wheel.scrollTop = 28;
+      Simulate.scroll(wheel);
+    });
+    expect(onSelectedAgentChange).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 21 }));
+    await act(async () => { vi.advanceTimersByTime(150); });
+    expect(onSelectedAgentChange).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 22 }));
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+    expect(wheel.scrollTop).toBe(28);
     expect(onResolveAgentTopic).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
@@ -1243,6 +1302,235 @@ describe('EmptyTaskComposer', () => {
     expect(onSelectedAgentChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ uid: 21, display_name: '代码审查助手' }),
     );
+  });
+
+  it('defaults to an owned cloud Agent, with newest additions first within each priority', async () => {
+    const roster = [
+      { uid: 31, display_name: '本地自建', relation: 'owner', is_cloud: false, added_at: '2026-11-13T10:00:00Z' },
+      { uid: 32, display_name: '新添加云端', relation: 'friend', is_cloud: true, added_at: '2026-11-13T10:00:00Z' },
+      { uid: 33, display_name: '较早自建云端', relation: 'owner', is_cloud: true, added_at: '2026-11-11T10:00:00Z' },
+      { uid: 34, display_name: '最新自建云端', relation: 'owner', is_cloud: true, added_at: '2026-11-12T10:00:00Z' },
+    ];
+    api.getAgents.mockResolvedValue({ agents: roster });
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('最新自建云端');
+    expect([...container.querySelectorAll('[role="radio"]')].map(node => node.getAttribute('aria-label')))
+      .toEqual(['最新自建云端', '较早自建云端', '新添加云端', '本地自建']);
+    expect(api.getMyBots).not.toHaveBeenCalled();
+  });
+
+  it('defaults to the most recently added cloud Agent when none are owned', async () => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { ...agents[0], relation: 'friend', is_cloud: true, added_at: '2026-11-01T00:00:00Z' },
+      { ...agents[1], relation: 'friend', is_cloud: true, added_at: '2026-11-12T00:00:00Z' },
+    ] });
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('keeps an explicit Agent choice even when a higher-priority default is available', async () => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { ...agents[0], relation: 'owner', is_cloud: true, added_at: '2026-11-13T00:00:00Z' },
+      { ...agents[1], relation: 'friend', is_cloud: false, added_at: '2026-11-01T00:00:00Z' },
+    ] });
+    await mountComposer({ initialAgent: agents[1] });
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+    await act(async () => {
+      window.dispatchEvent(new Event('cc:data-changed'));
+      await flushPromises();
+    });
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('uses owned bot cloud metadata on older servers without blocking selection on lookup failure', async () => {
+    api.getMyBots.mockResolvedValueOnce({ bots: [{ ...agents[1], tenant_name: 'my-cloud' }] });
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+    api.getMyBots.mockRejectedValueOnce(new Error('metadata unavailable'));
+    await act(async () => {
+      window.dispatchEvent(new Event('cc:data-changed'));
+      await flushPromises();
+    });
+    expect(container.querySelectorAll('[role="radio"]')).toHaveLength(2);
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('accumulates continuous wheel input and smoothly settles on the centered Agent', async () => {
+    const roster = [...agents, { uid: 23, display_name: '研究助手' }, { uid: 24, display_name: '写作助手' }];
+    api.getAgents.mockResolvedValue({ agents: roster });
+    const onSelectedAgentChange = vi.fn();
+    await mountComposer({ onSelectedAgentChange });
+    onSelectedAgentChange.mockClear();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      for (let i = 0; i < 3; i++) {
+        wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: 80, bubbles: true, cancelable: true }));
+        vi.advanceTimersByTime(16);
+      }
+    });
+    expect(wheel.scrollTop).toBeGreaterThan(0);
+    expect(wheel.scrollTop).toBeLessThan(84);
+    expect(onSelectedAgentChange).not.toHaveBeenCalled();
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(wheel.scrollTop).toBe(84);
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('写作助手');
+    expect(onSelectedAgentChange).toHaveBeenCalledTimes(1);
+    expect(onSelectedAgentChange).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 24 }));
+  });
+
+  it('accumulates every step in a fast wheel gesture', async () => {
+    api.getAgents.mockResolvedValue({ agents: [...agents,
+      ...Array.from({ length: 6 }, (_, index) => ({ uid: index + 23, display_name: `助手${index + 3}` })),
+    ] });
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      for (let step = 0; step < 5; step++) {
+        wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: 1200, bubbles: true, cancelable: true }));
+        vi.advanceTimersByTime(8);
+      }
+      vi.advanceTimersByTime(500);
+    });
+    expect(wheel.scrollTop).toBe(140);
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('助手6');
+  });
+
+  it.each([1, 10, 100, 1200])('moves to the adjacent Agent for one wheel input (pixel delta %s)', async (deltaY) => {
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }));
+      vi.advanceTimersByTime(32);
+    });
+    expect(wheel.scrollTop).toBeGreaterThan(14);
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(wheel.scrollTop).toBe(28);
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('preserves multiple native wheel ticks combined into one event', async () => {
+    api.getAgents.mockResolvedValue({ agents: [...agents,
+      { uid: 23, display_name: '研究助手' }, { uid: 24, display_name: '写作助手' }, { uid: 25, display_name: '设计助手' },
+    ] });
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    for (const wheelDeltaY of [-180, -540]) {
+      await act(async () => {
+        const event = new WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'wheelDeltaY', { value: wheelDeltaY });
+        wheel.dispatchEvent(event);
+        vi.advanceTimersByTime(500);
+      });
+    }
+    expect(wheel.scrollTop).toBe(112);
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('设计助手');
+  });
+
+  it('responds to reversing direction before the wheel finishes settling', async () => {
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: 80, bubbles: true, cancelable: true }));
+      vi.advanceTimersByTime(32);
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: -80, bubbles: true, cancelable: true }));
+      vi.advanceTimersByTime(500);
+    });
+    expect(wheel.scrollTop).toBe(0);
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('代码审查助手');
+  });
+
+  it('cancels wheel momentum when an Agent is chosen explicitly', async () => {
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: 80, bubbles: true, cancelable: true }));
+      vi.advanceTimersByTime(16);
+      Simulate.click(wheel.querySelector('[aria-label="代码审查助手"]'));
+      vi.advanceTimersByTime(500);
+    });
+    expect(wheel.scrollTop).toBe(0);
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('代码审查助手');
+  });
+
+  it.each([1, -1])('keeps the list moving in the input direction while settling (%s)', async (direction) => {
+    const roster = [...agents, { uid: 23, display_name: '研究助手' },
+      { uid: 24, display_name: '写作助手' }, { uid: 25, display_name: '设计助手' }];
+    api.getAgents.mockResolvedValue({ agents: roster });
+    await mountComposer({ initialAgent: direction > 0 ? roster[0] : roster[4] });
+    const wheel = container.querySelector('[role="radiogroup"]');
+    const positions = [wheel.scrollTop];
+    await act(async () => {
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: direction * 100, bubbles: true, cancelable: true }));
+    });
+    for (let frame = 0; frame < 40; frame++) {
+      await act(async () => { vi.advanceTimersByTime(16); });
+      positions.push(wheel.scrollTop);
+    }
+    for (let index = 1; index < positions.length; index++) {
+      expect(direction * (positions[index] - positions[index - 1])).toBeGreaterThanOrEqual(0);
+    }
+    const movements = positions.slice(1).map((position, index) => direction * (position - positions[index]));
+    for (let index = 1; index < movements.length; index++) {
+      expect(movements[index]).toBeLessThanOrEqual(movements[index - 1] + 0.001);
+    }
+    expect(wheel.scrollTop).toBe(direction > 0 ? 28 : 84);
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label'))
+      .toBe(direction > 0 ? '运营数据助手' : '写作助手');
+  });
+
+  it('finishes settling when the browser rounds scroll positions to physical pixels', async () => {
+    api.getAgents.mockResolvedValue({ agents: [...agents,
+      { uid: 23, display_name: '研究助手' }, { uid: 24, display_name: '写作助手' },
+    ] });
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    let scrollTop = 0;
+    Object.defineProperty(wheel, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => { scrollTop = Math.floor(value * 1.5) / 1.5; },
+    });
+    await act(async () => {
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: 1200, bubbles: true, cancelable: true }));
+      vi.advanceTimersByTime(600);
+    });
+    expect(wheel.scrollTop).toBe(28);
+    expect(wheel.style.scrollSnapType).toBe('');
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('interpolates the visual emphasis before confirming a new Agent', async () => {
+    const onSelectedAgentChange = vi.fn();
+    await mountComposer({ onSelectedAgentChange });
+    onSelectedAgentChange.mockClear();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: 80, bubbles: true, cancelable: true }));
+      vi.advanceTimersByTime(16);
+    });
+    const next = wheel.querySelector('[aria-label="运营数据助手"]');
+    expect(Number(next.style.opacity)).toBeGreaterThan(0.5);
+    expect(Number(next.style.opacity)).toBeLessThan(1);
+    expect(onSelectedAgentChange).not.toHaveBeenCalled();
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(Number(next.style.opacity)).toBe(1);
+    expect(onSelectedAgentChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends to the visibly centered Agent if Enter is pressed during scrolling', async () => {
+    const { onResolveAgentTopic } = await mountComposer();
+    await typeInto(container.querySelector('textarea'), '检查当前选中的助手');
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: 80, bubbles: true, cancelable: true }));
+      vi.advanceTimersByTime(32);
+    });
+    expect(wheel.scrollTop).toBeGreaterThan(14);
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('代码审查助手');
+    await pressEnter(container.querySelector('textarea'));
+    expect(onResolveAgentTopic).toHaveBeenCalledWith(expect.objectContaining({ uid: 22 }), {
+      text: '检查当前选中的助手', attachments: [],
+    });
   });
 
   it('creates the selected Agent task from the first instruction, sends, then activates it on Enter', async () => {

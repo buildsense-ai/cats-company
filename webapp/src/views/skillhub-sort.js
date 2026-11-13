@@ -6,8 +6,8 @@ const names = new Intl.Collator('zh-CN-u-co-pinyin', { numeric: true, sensitivit
 
 export function skillSortOptions(section) {
   return [
-    ['time-desc', section === 'added' ? '最近添加' : '最近发布／更新'],
-    ['time-asc', section === 'added' ? '最早添加' : '最早发布／更新'],
+    ['time-desc', section === 'added' ? '最近添加' : '最近发布'],
+    ['time-asc', section === 'added' ? '最早添加' : '最早发布'],
     ['name-asc', '名称 A → Z'],
     ['name-desc', '名称 Z → A'],
   ];
@@ -32,7 +32,7 @@ export function skillAddedTimestamp(skill) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-export function sortSkills(skills, { order = 'time-desc', language = 'source', timeOf, presentationOf = skill => skill }) {
+export function sortSkills(skills, { order = 'time-desc', language = 'source', timeOf, presentationOf = skill => skill, isPriority = () => false }) {
   const byName = (left, right) => names.compare(left.name, right.name);
   const byID = (left, right) => {
     const a = String(left.skill.skillId || '');
@@ -43,7 +43,9 @@ export function sortSkills(skills, { order = 'time-desc', language = 'source', t
     skill,
     name: localizedSkillText(presentationOf(skill), language).name,
     time: timeOf(skill),
+    priority: Number(isPriority(skill)),
   })).sort((left, right) => {
+    if (left.priority !== right.priority) return right.priority - left.priority;
     if (order === 'name-asc' || order === 'name-desc') {
       return byName(left, right) * (order === 'name-desc' ? -1 : 1) || byID(left, right);
     }

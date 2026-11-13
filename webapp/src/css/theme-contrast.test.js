@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { violetAccents } from '../../scripts/liquid-secondary-theme.mjs';
 
 const read = (name) => readFileSync(resolve(process.cwd(), `src/css/${name}.css`), 'utf8');
 const system = read('catsco-ui-system');
@@ -14,6 +15,7 @@ const variants = {
   light: root,
   dark: { ...root, ...themeTokens('dark') },
   liquid: { ...root, ...themeTokens('liquid') },
+  violet: { ...root, ...violetAccents },
   green: { ...root, ...themeTokens('liquid'), ...tokens(green.match(/html[^}]+\{([^}]+)\}/)[1]) },
 };
 
@@ -29,6 +31,11 @@ function contrast(first, second) {
 }
 
 describe('theme surface and primary action contrast', () => {
+  it('reuses light theme surfaces and text for violet, changing only accent tokens', () => {
+    ['--cc-bg', '--cc-panel', '--cc-text', '--cc-text-secondary', '--cc-muted', '--cc-border', '--cc-control-surface']
+      .forEach(name => expect(variants.violet[name]).toBe(variants.light[name]));
+    expect(variants.violet['--cc-accent']).toBe('#5662d9');
+  });
   it.each(Object.entries(variants))('%s keeps popup hierarchy and solid actions readable', (_, theme) => {
     ['--cc-text', '--cc-text-secondary', '--cc-muted'].forEach((name) => {
       expect(contrast(theme[name], theme['--cc-history-panel-bg'])).toBeGreaterThanOrEqual(4.5);

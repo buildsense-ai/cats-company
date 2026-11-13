@@ -386,25 +386,25 @@ function NavigationHarness({ action }) {
   const { navigate } = useMarketplace();
   return <><button onClick={() => navigate(action)}>切换测试 Bot</button><IntroductionEditor target={target} initialHead={head(1)} /></>;
 }
-it('asks before opening the update list with unsaved introduction and respects cancellation', async () => {
-  const showUpdates = vi.fn(); window.confirm.mockReturnValue(false);
+it('asks before switching capability tabs with unsaved introduction and respects cancellation', async () => {
+  const changeSection = vi.fn(); window.confirm.mockReturnValue(false);
   await render(<MarketplaceProvider>
     <SkillHubContent
       agentOptions={[{ value: '42', label: 'Owner Bot', updateCount: 1 }]}
       selectedBotUID='42' definition={{ skills: [] }} activeSection='added'
-      librarySkills={[]} selectedUpdateCount={1} onToggleUpdates={showUpdates}
-      onChangeSection={() => {}} onSelectAgent={() => {}}
+      librarySkills={[]}
+      onChangeSection={changeSection} onSelectAgent={() => {}}
     />
     <IntroductionEditor target={target} initialHead={head(1)} />
   </MarketplaceProvider>);
   await act(async () => Simulate.change(container.querySelector('textarea'), { target: { value: 'unsaved' } }));
-  const updateFilter = container.querySelector('.cc-skillhub-updates-filter');
-  await act(async () => updateFilter.click());
-  expect(showUpdates).not.toHaveBeenCalled();
+  const catalogueTab = container.querySelector('#skillhub-catalogue-tab');
+  await act(async () => catalogueTab.click());
+  expect(changeSection).not.toHaveBeenCalled();
   expect(container.querySelector('textarea').value).toBe('unsaved');
   window.confirm.mockReturnValue(true);
-  await act(async () => updateFilter.click());
-  expect(showUpdates).toHaveBeenCalledTimes(1);
+  await act(async () => catalogueTab.click());
+  expect(changeSection).toHaveBeenCalledWith('catalogue');
 });
 it('asks before switching bots with unsaved introduction and respects cancellation', async () => {
   const navigate = vi.fn(); window.confirm.mockReturnValue(false);

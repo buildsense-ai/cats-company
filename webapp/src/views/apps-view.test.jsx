@@ -202,7 +202,10 @@ describe('AppsView', () => {
 
   test('searches within the selected scope and clears back to the full list', async () => {
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+    expect(container.querySelector('input[aria-label="搜索应用"]')).toBeNull();
+    await act(async () => { container.querySelector('button[aria-label="搜索应用"]').click(); });
     const input = container.querySelector('input[aria-label="搜索应用"]');
+    expect(document.activeElement).toBe(input);
     await act(async () => { Simulate.change(input, { target: { value: 'saturday' } }); });
     expect(titles()).toEqual(['Saturday 演示应用']);
     await selectAgent('开发者');
@@ -210,6 +213,8 @@ describe('AppsView', () => {
     expect(container.textContent).toContain('没有找到匹配的应用');
     await act(async () => { container.querySelector('[aria-label="清除应用搜索"]').click(); });
     expect(titles()).toEqual(['好友应用']);
+    await act(async () => { Simulate.keyDown(input, { key: 'Escape' }); });
+    expect(container.querySelector('input[aria-label="搜索应用"]')).toBeNull();
   });
 
   test('persists favorites per user and intersects favorites with the Agent filter', async () => {
@@ -344,7 +349,7 @@ describe('AppsView', () => {
     });
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
     expect(titles()).toEqual(['Saturday 演示应用']);
-    expect(container.querySelector('[role="alert"]').textContent).toContain('部分 Agent');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
     await selectAgent('开发者');
     expect(titles()).toEqual([]);
     expect(container.querySelector('[role="alert"]').textContent).toContain('这个 Agent');
@@ -451,6 +456,7 @@ describe('AppsView', () => {
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} viewStateRef={viewStateRef} />); });
     await selectAgent('中国传统');
     await act(async () => { [...container.querySelectorAll('.cc-apps-scope button')].find((button) => button.textContent === '我可管理').click(); });
+    await act(async () => { container.querySelector('button[aria-label="搜索应用"]').click(); });
     await act(async () => { Simulate.change(container.querySelector('[aria-label="搜索应用"]'), { target: { value: 'Saturday' } }); });
     const list = container.querySelector('[aria-label="共享应用"]');
     list.scrollTop = 360;
@@ -496,6 +502,7 @@ describe('AppsView', () => {
   test('never restores another account cache or a launch pending for that account', async () => {
     const viewStateRef = { current: null };
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} viewStateRef={viewStateRef} />); });
+    await act(async () => { container.querySelector('button[aria-label="搜索应用"]').click(); });
     await act(async () => { Simulate.change(container.querySelector('[aria-label="搜索应用"]'), { target: { value: 'Saturday' } }); });
     let finishLaunch;
     mocks.requestArtifactLaunch.mockImplementationOnce(() => new Promise((resolve) => { finishLaunch = resolve; }));
@@ -517,7 +524,7 @@ describe('AppsView', () => {
     });
     await act(async () => { container.querySelector('.cc-apps-refresh').click(); });
     expect(titles()).toEqual(['好友应用']);
-    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
     mocks.listArtifactApps.mockRejectedValue(Object.assign(new Error('no access'), { status: 403 }));
     await act(async () => { container.querySelector('.cc-apps-refresh').click(); });
     expect(titles()).toEqual([]);

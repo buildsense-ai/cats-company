@@ -97,6 +97,16 @@ type ConversationNotificationPreferenceStore interface {
 	IsConversationNotificationsMuted(ctx context.Context, userID int64, topicID string) (bool, error)
 }
 
+// AgentSelectionMetadata contains viewer-specific facts for a new task's default.
+type AgentSelectionMetadata struct {
+	IsCloud bool
+	AddedAt time.Time
+}
+
+type AgentSelectionMetadataStore interface {
+	ListAgentSelectionMetadata(viewerUID int64) (map[int64]AgentSelectionMetadata, error)
+}
+
 // FriendStore contains friend relationship persistence operations.
 type FriendStore interface {
 	CreateFriendRequest(fromUID, toUID int64, message string) (int64, error)
