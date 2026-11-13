@@ -1331,6 +1331,33 @@ html[data-theme='dark'] .cc-skillhub-card-illustration[data-icon-key='test'] { -
 .cc-skillhub-page .cc-skillhub-language button:hover:not(:disabled) { border-color: transparent; background: var(--cc-hover); color: var(--cc-text); }
 .cc-skillhub-sort { flex: 0 0 auto; width: 150px; max-width: 100%; }
 .cc-skillhub-page .cc-skillhub-sort-trigger { min-height: 36px; border: 1px solid var(--cc-border); border-radius: 8px; padding: 0 10px; background: var(--cc-control-surface); color: var(--cc-text-secondary); font-size: 12px; white-space: nowrap; }
+
+/* White list-page controls sit over the violet workspace background. */
+:root[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-skillhub-page {
+  background: transparent;
+}
+
+:root[data-theme="liquid"]:not([data-liquid-variant="green"]) :is(
+  .cc-apps-header, .cc-apps-toolbar,
+  .cc-skillhub-header, .cc-skillhub-navigation, .cc-skillhub-category-toolbar
+) {
+  --cc-control-surface: #fff;
+  --cc-hover: #f9f9fb;
+  --cc-selected: #fff;
+  --cc-segment-active-bg: #fff;
+}
+
+:root[data-theme="liquid"]:not([data-liquid-variant="green"]) :is(
+  .cc-apps-scope, .cc-skillhub-tabs, .cc-skillhub-language
+) > .cc-segment-indicator,
+:root[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-skillhub-category-filter button[aria-pressed="true"] {
+  box-shadow: 0 1px 5px rgb(31 31 31 / 12%), 0 0 0 1px rgb(31 31 31 / 5%);
+}
+
+:root[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-skillhub-category-filter button {
+  background: var(--cc-control-surface);
+}
+
 .cc-skillhub-card.is-added { border-color: var(--cc-border-strong); }
 .cc-skillhub-card.is-updatable {
   border-color: color-mix(in srgb, var(--cc-text) 32%, var(--cc-panel));
