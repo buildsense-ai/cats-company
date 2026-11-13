@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import SlidingSegments from '../widgets/sliding-segments';
+import ToolbarSearch from '../widgets/toolbar-search';
 import { createPortal } from 'react-dom';
 import {
   Bot, Check, Clipboard, FolderOpen, Globe, Info, Plus, Trash2,
@@ -260,47 +261,15 @@ function SkillNavigation(props) {
 
 function SkillSearch({ activeSection, addedSkillQuery, onAddedSkillQuery, query, onQueryChange, onSearch, loadingCatalogue }) {
   const added = activeSection === 'added';
-  const value = added ? addedSkillQuery || '' : query || '';
-  const change = added ? onAddedSkillQuery : onQueryChange;
-  const id = added ? 'cc-skillhub-added-search-input' : 'cc-skillhub-search-input';
-  const label = added ? '搜索当前 Agent 能力' : '搜索能力名称';
-  const [expanded, setExpanded] = useState(Boolean(value));
-  const inputRef = useRef(null);
-  const triggerRef = useRef(null);
-  const open = expanded || Boolean(value);
-  useEffect(() => {
-    if (open) inputRef.current?.focus();
-  }, [open]);
-  const collapse = () => {
-    if (value) change('');
-    setExpanded(false);
-    requestAnimationFrame(() => triggerRef.current?.focus());
-  };
-  if (!open) return (
-    <button ref={triggerRef} type='button' className='icon-button cc-skillhub-search-toggle'
-      aria-label={label} title='搜索能力' aria-expanded={false} aria-controls={id}
-      onClick={() => setExpanded(true)}>
-      <Search size={16} aria-hidden='true' />
-    </button>
-  );
-  return (
-    <form className={added ? 'cc-skillhub-added-search' : 'cc-skillhub-search'} role='search'
-      onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); collapse(); } }}
-      onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget) && !value) setExpanded(false); }}
-      onSubmit={(event) => { event.preventDefault(); if (!added) onSearch(value); }}>
-      <Search size={16} aria-hidden='true' />
-      <label className='cc-visually-hidden' htmlFor={id}>{added ? '搜索当前 Agent 能力' : '搜索能力名称'}</label>
-      <div className='cc-skillhub-search-field'>
-        <input ref={inputRef} id={id} name='skillhub-query' type='search' autoComplete='off' value={value} onChange={(event) => change(event.target.value)} placeholder={`${label}…`} />
-        <button type='button' className='cc-skillhub-search-clear'
-          aria-label={value ? (added ? '清除当前 Agent 能力搜索' : '清除搜索内容') : '收起搜索'}
-          title={value ? '清除' : '收起搜索'} onClick={() => {
-            if (value) { change(''); inputRef.current?.focus(); } else collapse();
-          }}><X size={14} aria-hidden='true' /></button>
-      </div>
-      {!added && <button type='submit' className='cc-skillhub-search-submit' disabled={loadingCatalogue} aria-label='搜索能力' title='搜索'><Search size={16} aria-hidden='true' /></button>}
-    </form>
-  );
+  return <ToolbarSearch
+    id={added ? 'cc-skillhub-added-search-input' : 'cc-skillhub-search-input'}
+    label={added ? '搜索当前 Agent 能力' : '搜索能力名称'}
+    clearLabel={added ? '清除当前 Agent 能力搜索' : '清除搜索内容'}
+    className={added ? 'cc-skillhub-added-search' : 'cc-skillhub-search'}
+    value={added ? addedSkillQuery || '' : query || ''}
+    onChange={added ? onAddedSkillQuery : onQueryChange}
+    onSubmit={added ? undefined : onSearch} submitting={loadingCatalogue} submitLabel='搜索能力'
+  />;
 }
 
 function AddedSkills(props) {
