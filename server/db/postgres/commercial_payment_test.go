@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -177,6 +178,7 @@ func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
 	}
 	reopenPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: "adjustment-reopen", Name: "Adjustment Reopen", ModelBudgets: map[string]float64{"gpt-5.6-terra": 300}, DurationDays: 30,
+		CloudWorkerIncluded: true,
 	})
 	if err != nil {
 		t.Fatalf("create reopen plan: %v", err)
@@ -848,6 +850,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		// official packages happen to include one; a new plan defaults to false.
 		CloudWorkerIncluded: true,
 		ModelBudgets:        map[string]float64{"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100, "glm-5.3-flash": 2100, "gpt-5.6-terra": 2100, "gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100}, DurationDays: 30,
+		ModelCreditUnits: 4 * store.ModelCreditUnitsPerCredit,
 	})
 	if err != nil {
 		t.Fatalf("create personal plan: %v", err)
@@ -862,6 +865,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		CloudWorkerRuntimePlan:   types.CloudWorkerRuntimePro,
 		CloudWorkerRetentionDays: 15,
 		ModelBudgets:             map[string]float64{"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-flash": 6300, "glm-5.3-flash": 6300, "gpt-5.6-terra": 6300, "gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300, "chatgpt-image-latest": 300}, DurationDays: 30,
+		ModelCreditUnits: 9 * store.ModelCreditUnitsPerCredit,
 	})
 	if err != nil {
 		t.Fatalf("create pro plan: %v", err)
@@ -1058,6 +1062,10 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if _, err := db.RedeemCommercialInvite(inviteUID, personalInvite.Code); err != nil {
 		t.Fatalf("redeem personal invite: %v", err)
 	}
+	var inviteGiftUnits int64
+	if err := db.db.QueryRow(`SELECT gift_units FROM model_credit_accounts WHERE uid = $1`, inviteUID).Scan(&inviteGiftUnits); err != nil || inviteGiftUnits != 4*store.ModelCreditUnitsPerCredit {
+		t.Fatalf("personal invite gift balance mismatch: units=%d err=%v", inviteGiftUnits, err)
+	}
 	var personalEntitlementID int64
 	if err := db.db.QueryRow(`
 		SELECT id FROM commercial_entitlements
@@ -1079,6 +1087,13 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	inviteSummary, err := db.RedeemCommercialInvite(inviteUID, proInvite.Code)
 	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 6300 {
 		t.Fatalf("invite upgrade did not replace personal quota: summary=%#v err=%v", inviteSummary, err)
+	}
+	if err := db.db.QueryRow(`SELECT gift_units FROM model_credit_accounts WHERE uid = $1`, inviteUID).Scan(&inviteGiftUnits); err != nil || inviteGiftUnits != 13*store.ModelCreditUnitsPerCredit {
+		t.Fatalf("pro invite gift balance mismatch: units=%d err=%v", inviteGiftUnits, err)
+	}
+	var inviteGrantEvents int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM model_credit_ledger_events WHERE uid = $1 AND bucket = 'gift' AND event_type = 'grant' AND event_key LIKE 'grant:invite:%'`, inviteUID).Scan(&inviteGrantEvents); err != nil || inviteGrantEvents != 2 {
+		t.Fatalf("invite gift ledger event count=%d err=%v", inviteGrantEvents, err)
 	}
 	var revokedPersonal, reservedPersonal, availablePro int
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE entitlement_id = $1 AND state = 'revoked'`, personalEntitlementID).Scan(&revokedPersonal); err != nil {

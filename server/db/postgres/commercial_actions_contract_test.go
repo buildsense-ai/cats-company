@@ -216,12 +216,77 @@ func TestPostgresCommercialActionsContract(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			survives, err := cloudWorkerSurvivesRenewal(tx, uid)
+			survives, err := cloudWorkerSurvivesRenewal(tx, uid, types.CloudWorkerPackedShared)
 			_ = tx.Rollback()
 			if err != nil || survives {
 				t.Fatalf("private %s credit suppressed paid renewal credit: %v %v", state, survives, err)
 			}
 		}
+
+		t.Run("dedicated and shared machine entitlements do not block each other", func(t *testing.T) {
+			owner := createGLM53MigrationUser(t, db, "ops-profile-owner")
+			dedicated := createGLM53MigrationUser(t, db, "ops-profile-dedicated")
+			exec(`INSERT INTO bot_config(user_id,owner_id,tenant_name,cloud_deployment) VALUES($1,$2,'dedicated-old','{"profile":"public_ip"}'::jsonb)`, dedicated, owner)
+			exec(`INSERT INTO cloud_worker_lifecycles(worker_uid,owner_uid,tenant_name,package_expires_at,delete_after,state) VALUES($1,$2,'dedicated-old',CURRENT_TIMESTAMP+INTERVAL '30 days',CURRENT_TIMESTAMP+INTERVAL '37 days','active')`, dedicated, owner)
+			check := func(profile string, want bool) {
+				t.Helper()
+				tx, err := db.db.Begin()
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := cloudWorkerSurvivesRenewal(tx, owner, profile)
+				_ = tx.Rollback()
+				if err != nil || got != want {
+					t.Fatalf("profile %s survives=%v want %v: %v", profile, got, want, err)
+				}
+			}
+			check(types.CloudWorkerPackedShared, false)
+			check(types.CloudWorkerPublicIP, true)
+			exec(`UPDATE bot_config SET cloud_deployment='{"profile":"packed_shared"}'::jsonb WHERE user_id=$1`, dedicated)
+			check(types.CloudWorkerPackedShared, true)
+			check(types.CloudWorkerPublicIP, false)
+		})
+		t.Run("paid period extends only its deployment profile", func(t *testing.T) {
+			owner := createGLM53MigrationUser(t, db, "ops-lifecycle-profile-owner")
+			dedicated := createGLM53MigrationUser(t, db, "ops-lifecycle-dedicated")
+			shared := createGLM53MigrationUser(t, db, "ops-lifecycle-shared")
+			exec(`INSERT INTO bot_config(user_id,owner_id,tenant_name,cloud_deployment) VALUES
+				($1,$3,'dedicated-term','{"profile":"public_ip"}'::jsonb),
+				($2,$3,'shared-term','{"profile":"packed_shared"}'::jsonb)`, dedicated, shared, owner)
+			exec(`INSERT INTO cloud_worker_lifecycles(worker_uid,owner_uid,tenant_name,package_expires_at,delete_after,state,expiry_mode) VALUES
+				($1,$3,'dedicated-term',CURRENT_TIMESTAMP+INTERVAL '30 days',CURRENT_TIMESTAMP+INTERVAL '37 days','active','legacy'),
+				($2,$3,'shared-term',CURRENT_TIMESTAMP+INTERVAL '30 days',CURRENT_TIMESTAMP+INTERVAL '37 days','active','legacy')`, dedicated, shared, owner)
+			var dedicatedBefore, sharedBefore time.Time
+			if err := db.db.QueryRow(`SELECT package_expires_at FROM cloud_worker_lifecycles WHERE worker_uid=$1`, dedicated).Scan(&dedicatedBefore); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.db.QueryRow(`SELECT package_expires_at FROM cloud_worker_lifecycles WHERE worker_uid=$1`, shared).Scan(&sharedBefore); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := db.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			paidUntil := time.Now().UTC().AddDate(0, 0, 60)
+			if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, owner, &paidUntil, 7, types.CloudWorkerPackedShared); err != nil {
+				_ = tx.Rollback()
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			var dedicatedAfter, sharedAfter time.Time
+			if err := db.db.QueryRow(`SELECT package_expires_at FROM cloud_worker_lifecycles WHERE worker_uid=$1`, dedicated).Scan(&dedicatedAfter); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.db.QueryRow(`SELECT package_expires_at FROM cloud_worker_lifecycles WHERE worker_uid=$1`, shared).Scan(&sharedAfter); err != nil {
+				t.Fatal(err)
+			}
+			if !dedicatedAfter.Equal(dedicatedBefore) || !sharedAfter.After(sharedBefore) {
+				t.Fatalf("wrong lifecycle rows extended: dedicated %s -> %s, shared %s -> %s", dedicatedBefore, dedicatedAfter, sharedBefore, sharedAfter)
+			}
+		})
+
 		exec(`UPDATE cloud_worker_credits SET state='available' WHERE source_ref=$1`, source)
 		wrong := v.Preview
 		expires := wrong.WorkerExpiresAt.Add(time.Second)

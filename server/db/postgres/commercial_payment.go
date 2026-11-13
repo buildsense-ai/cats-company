@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 )
 
 const commercialPlanColumns = `id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included, plan_tier, cloud_worker_runtime_plan`
+  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included, plan_tier, cloud_worker_runtime_plan, model_credit_units`
 
 // commercialRefundMinRetentionDays bounds the retention window after a refund
 // for lifecycles that predate the per-plan retention column. A refund is a
@@ -79,6 +80,7 @@ func scanCommercialOrder(scanner interface {
 		&order.LastError,
 		&order.CreatedAt,
 		&order.UpdatedAt,
+		&order.PlanModelCreditUnits,
 	); err != nil {
 		return nil, err
 	}
@@ -94,7 +96,7 @@ func scanCommercialOrder(scanner interface {
 const commercialOrderColumns = `id, order_no, uid, plan_id, plan_slug, plan_name, plan_description,
 	plan_duration_days, plan_monthly_budget_cny, plan_model_budgets, amount_fen, currency, channel,
 	status, provider_trade_no, checkout_url, client_request_id, expires_at, paid_at, fulfilled_at,
-	closed_at, refund_request_no, refunded_at, last_error, created_at, updated_at`
+	closed_at, refund_request_no, refunded_at, last_error, created_at, updated_at, plan_model_credit_units`
 
 func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.CommercialOrder, error) {
 	if order == nil || order.UID <= 0 || order.PlanID <= 0 || strings.TrimSpace(order.OrderNo) == "" || strings.TrimSpace(order.ClientRequestID) == "" {
@@ -212,8 +214,8 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 		INSERT INTO commercial_orders(
 			order_no, uid, plan_id, plan_slug, plan_name, plan_description, plan_duration_days,
 			plan_monthly_budget_cny, plan_model_budgets, amount_fen, currency, channel, status,
-			client_request_id, expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, 'created', $13, $14)
+			client_request_id, expires_at, plan_model_credit_units
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, 'created', $13, $14, $15)
 		RETURNING `+commercialOrderColumns,
 		order.OrderNo,
 		order.UID,
@@ -229,6 +231,7 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 		channel,
 		strings.TrimSpace(order.ClientRequestID),
 		expiresAt,
+		plan.ModelCreditUnits,
 	))
 	if err != nil {
 		return nil, fmt.Errorf("create commercial order: %w", err)
@@ -575,6 +578,12 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, order.PlanModelBudgets, periodStartsAt, expiresAt); err != nil {
 		return nil, false, err
 	}
+	// A credit package books its paid credit in this same transaction, so a
+	// fulfilled order and its ledger entry can never disagree. Orders of a
+	// legacy budget package snapshot 0 units and skip the ledger entirely.
+	if err := grantCommercialOrderModelCredit(context.Background(), tx, order, paidAt); err != nil {
+		return nil, false, err
+	}
 	// Whether this package buys a machine is a plan attribute, not a slug list.
 	// Keeping the allow-list here is what made every new package token-only until
 	// someone edited Go.
@@ -583,6 +592,10 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		return nil, false, err
 	}
 	if includesWorker {
+		profile, err := planCloudWorkerDeploymentProfile(tx, order.PlanID)
+		if err != nil {
+			return nil, false, err
+		}
 		// Retention follows the purchased package (7d → 3 days, longer → 7).
 		retention, err := planCloudWorkerRetentionDays(tx, order.PlanID, order.PlanDurationDays)
 		if err != nil {
@@ -596,15 +609,11 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		// first purchase, or a worker whose destroy already started and cannot
 		// be recovered — receives a fresh credit, which the sweep rebuild hook
 		// then spends on a replacement instance.
-		survives, err := cloudWorkerSurvivesRenewal(tx, order.UID)
+		survives, err := cloudWorkerSurvivesRenewal(tx, order.UID, profile)
 		if err != nil {
 			return nil, false, err
 		}
 		if !survives {
-			profile, err := planCloudWorkerDeploymentProfile(tx, order.PlanID)
-			if err != nil {
-				return nil, false, err
-			}
 			// The slot size travels with the credit, not with the create call: a
 			// credit can outlive the plan row it came from (a retired package is
 			// archived while paid credits stay spendable).
@@ -627,7 +636,7 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		// If the user already has a cloud worker, a renewal/upgrade extends the
 		// retention window atomically with the paid entitlement. The worker is
 		// not deleted at the old expiry while a new monthly package is active.
-		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, order.UID, &expiresAt, retention); err != nil {
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, order.UID, &expiresAt, retention, profile); err != nil {
 			return nil, false, err
 		}
 	}
@@ -661,32 +670,28 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 }
 
 // cloudWorkerSurvivesRenewal reports whether a paid order already has a cloud
-// worker to renew or a provisioning credit to spend, in which case fulfillment
-// must not grant another credit.
-//
-// A lifecycle row in any state except a completed deletion means the buyer's
-// single instance still exists and is extended by the same fulfillment. A
-// delete_running row is the one exception: the sweeper already claimed it and
-// the provider destroy script is running outside the database, so the buyer
-// gets a credit for a replacement instead.
-//
-// The credit check matches what ReserveCloudWorkerCredit would hand out: an
-// unspent, unexpired credit is the ticket for one machine that has not been
-// provisioned yet. A credit superseded by an upgrade is already revoked by
-// revokeCommercialPlanTier, so a dead credit can never read as "the buyer
-// already has one" here.
-func cloudWorkerSurvivesRenewal(tx *sql.Tx, uid int64) (bool, error) {
+// worker in the same deployment class to renew, or a matching provisioning
+// credit to spend. Dedicated and shared workers are separate entitlements.
+func cloudWorkerSurvivesRenewal(tx *sql.Tx, uid int64, profile string) (bool, error) {
+	profile, ok := types.NormalizeCloudWorkerProfile(profile)
+	if !ok {
+		return false, fmt.Errorf("invalid cloud worker deployment profile %q", profile)
+	}
 	var survives bool
 	if err := tx.QueryRow(`
-		SELECT EXISTS (
-			SELECT 1 FROM cloud_worker_lifecycles
-			WHERE owner_uid = $1 AND state NOT IN ('deleted', 'delete_running')
-		) OR EXISTS (
-			SELECT 1 FROM cloud_worker_credits
-			WHERE uid = $1 AND state IN ('available', 'reserved')
-			  AND source_ref NOT LIKE 'ops:%'
-			  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-		)`, uid).Scan(&survives); err != nil {
+        SELECT EXISTS (
+            SELECT 1 FROM cloud_worker_lifecycles l
+            WHERE l.owner_uid = $1 AND l.state NOT IN ('deleted', 'delete_running')
+              AND (($2 = 'packed_shared' AND `+cloudWorkerSharedProfileFilter+`)
+                   OR ($2 <> 'packed_shared' AND NOT (`+cloudWorkerSharedProfileFilter+`)))
+        ) OR EXISTS (
+            SELECT 1 FROM cloud_worker_credits
+            WHERE uid = $1 AND state IN ('available', 'reserved')
+              AND source_ref NOT LIKE 'ops:%'
+              AND (($2 = 'packed_shared' AND deployment_profile = 'packed_shared')
+                   OR ($2 <> 'packed_shared' AND deployment_profile <> 'packed_shared'))
+              AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+        )`, uid, profile).Scan(&survives); err != nil {
 		return false, fmt.Errorf("check cloud worker renewal target: %w", err)
 	}
 	return survives, nil
@@ -785,6 +790,12 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 	}
 	if affected == 0 {
 		return nil, false, fmt.Errorf("refund event was already used")
+	}
+	// Credit sold by this order is reversed in the same transaction. A
+	// conservative refusal (already consumed or still held) keeps the refund in
+	// 'refunding' instead of turning spent credit into free credit.
+	if err := reverseCommercialOrderModelCredit(context.Background(), tx, order, refundedAt); err != nil {
+		return nil, false, err
 	}
 	if _, err := tx.Exec(`
 		UPDATE commercial_entitlements

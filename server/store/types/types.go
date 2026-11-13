@@ -81,16 +81,22 @@ type CommercialPlan struct {
 	PlanTier int `json:"plan_tier"`
 	// CloudWorkerRuntimePlan is the shared-fleet slot size this package buys
 	// (light/standard/pro/heavy). Empty means "the fleet default".
-	CloudWorkerRuntimePlan string  `json:"cloud_worker_runtime_plan,omitempty"`
-	ID                     int64   `json:"id"`
-	Slug                   string  `json:"slug"`
-	Name                   string  `json:"name"`
-	Description            string  `json:"description,omitempty"`
-	PriceFen               int64   `json:"price_fen"`
-	Currency               string  `json:"currency"`
-	SaleState              string  `json:"sale_state"`
-	PurchaseLimit          int     `json:"purchase_limit"`
-	MonthlyBudget          float64 `json:"monthly_budget_cny,omitempty"`
+	CloudWorkerRuntimePlan string `json:"cloud_worker_runtime_plan,omitempty"`
+	// ModelCreditUnits is how much paid model credit this package sells, in
+	// integer micro-credit units (1 credit = 1_000_000 units). 0 keeps the
+	// package on the legacy CNY/token budget path and mints no ledger credit,
+	// so the two products can be sold side by side without touching the
+	// existing plans.
+	ModelCreditUnits int64   `json:"model_credit_units,omitempty"`
+	ID               int64   `json:"id"`
+	Slug             string  `json:"slug"`
+	Name             string  `json:"name"`
+	Description      string  `json:"description,omitempty"`
+	PriceFen         int64   `json:"price_fen"`
+	Currency         string  `json:"currency"`
+	SaleState        string  `json:"sale_state"`
+	PurchaseLimit    int     `json:"purchase_limit"`
+	MonthlyBudget    float64 `json:"monthly_budget_cny,omitempty"`
 	// RealCostCNY is the real upstream cost budget behind this plan's points.
 	// Quota conversion uses points / real_cost_cny when set; 0 keeps the
 	// built-in official anchor (or the relay default for custom plans).
@@ -150,6 +156,10 @@ type CommercialOrder struct {
 	// hooks (renew/ensure) and must not be read back as a historic fact, since
 	// the plan can be edited after an order is fulfilled.
 	PlanIncludesWorker bool `json:"-"`
+	// PlanModelCreditUnits snapshots how much paid model credit the order buys.
+	// It is the amount fulfilment grants and the only amount a refund may
+	// reverse, so editing the plan afterwards cannot change a sold order.
+	PlanModelCreditUnits int64 `json:"plan_model_credit_units,omitempty"`
 }
 
 // CommercialPaymentConfirmation is the normalized, verified result emitted by

@@ -360,6 +360,14 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test ./server/db/postgres -run 'TestPostgres(AdminUserSearch|StoreContract|CloudWorkerDeploymentContract|CloudWorkerRuntimeCreditsContract|CloudWorkerLifecycleTermContract|CloudWorkerPackageTermContract|CommercialActionMachineTermPreview|CommercialRefundSettlesSharedWorkerTerms|CommercialAdjustmentSettlesSharedWorkerTerms|CloudWorkerMachineTermChain|CommercialEarlyRenewalKeepsSharedWorkerTerm|CommercialExtendKeepsSharedWorkerTerm|CommercialInviteRedeemSettlesSharedWorkerTerms|CommercialFutureGapDoesNotExtendWorkerTerm|CommercialPlanManagement|CommercialPaymentContract|CommercialAdjustmentContract|CommercialActionsContract|WorkerActionHistorySurvivesRollback|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|CommercialNativeSearchFlashMigrationPreservesManualQuotaAndRollsBack|CommercialRetireV4FlashMigrationPreservesManualQuotaAndRollsBack|CommercialFreeImageModelsMigrationGrantsAndRollsBack|CommercialAutoRenewConfigAndRuns|CommercialRecordsBeyondFirstHundred|CommercialPublicModelsPreserveRenewalAndCustomQuota|CommercialImageModels|CommercialInviteRedeemerUIDs|ArtifactRuntimeEventSequenceFollowsCommitOrder|ArtifactAppMetadataPersistence)' -count=1 -v
 
+      - name: Test PostgreSQL model credit contracts and races
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: |
+          test -n "$CATS_PG_TEST_DSN"
+          go test -race ./server/db/postgres -run '^Test(PostgresModelCredit|ModelCreditEligibility)' -parallel=1 -count=1 -v
+          go test -race ./server ./server/cmd ./server/store -run 'Test.*ModelCredit|^TestDeviceAuthorization' -count=1
+
       - name: Test message search and conversation task run durability
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable

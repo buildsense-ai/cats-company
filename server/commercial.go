@@ -28,6 +28,10 @@ type CommercialStore interface {
 	GetCommercialSummary(uid int64) (*types.CommercialSummary, error)
 }
 
+type commercialInvitePlanUpdater interface {
+	UpdateCommercialInvitePlan(code string, planID int64) (bool, error)
+}
+
 type RelayCommercialHandler struct {
 	store          CommercialStore
 	publicEnabled  bool
@@ -1371,6 +1375,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			SaleState              string             `json:"sale_state"`
 			PurchaseLimit          int                `json:"purchase_limit"`
 			MonthlyBudget          float64            `json:"monthly_budget_cny"`
+			ModelCreditUnits       *int64             `json:"model_credit_units"`
 			RealCostCNY            float64            `json:"real_cost_cny"`
 			ModelBudgets           map[string]float64 `json:"model_budgets"`
 			InternalQuota          int64              `json:"internal_quota_tokens"`
@@ -1448,6 +1453,25 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 		}
 		modelBudgets := parseCommercialBudgets(req.ModelBudgets)
 		existingPlan := h.commercialPlanForSave(store, req.Slug)
+		modelCreditUnits := int64(0)
+		if existingPlan != nil {
+			modelCreditUnits = existingPlan.ModelCreditUnits
+		}
+		if req.ModelCreditUnits != nil {
+			modelCreditUnits = *req.ModelCreditUnits
+		}
+		if modelCreditUnits < 0 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "model_credit_units must be non-negative"})
+			return
+		}
+		if modelCreditUnits > 0 && (req.MonthlyBudget > 0 || len(modelBudgets) > 0) {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "credit plans cannot also configure CNY model budgets"})
+			return
+		}
+		if modelCreditUnits > 0 && req.SaleState == "public" {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "credit plans cannot be public until Relay credit settlement is enabled"})
+			return
+		}
 		if err := h.validateOfficialPaidPlanSave(req.Slug, modelBudgets, existingPlan); err != nil {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -1513,6 +1537,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			SaleState:                    req.SaleState,
 			PurchaseLimit:                req.PurchaseLimit,
 			MonthlyBudget:                req.MonthlyBudget,
+			ModelCreditUnits:             modelCreditUnits,
 			RealCostCNY:                  req.RealCostCNY,
 			ModelBudgets:                 modelBudgets,
 			InternalQuotaTokens:          req.InternalQuota,
@@ -1557,6 +1582,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 		var req struct {
 			Code                   string `json:"code"`
 			CreateOnly             bool   `json:"create_only"`
+			ReplanOnly             bool   `json:"replan_only"`
 			PlanID                 int64  `json:"plan_id"`
 			MaxRedemptions         int    `json:"max_redemptions"`
 			Count                  int    `json:"count"`
@@ -1592,6 +1618,60 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 		}
 		if req.PlanID <= 0 {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "plan_id is required"})
+			return
+		}
+		plans, err := store.ListCommercialPlans(true)
+		if err != nil {
+			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to validate invite plan"})
+			return
+		}
+		planEnabled := false
+		for _, plan := range plans {
+			if plan != nil && plan.ID == req.PlanID && plan.State == 0 {
+				planEnabled = true
+				break
+			}
+		}
+		if !planEnabled {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "plan_id must reference an enabled plan"})
+			return
+		}
+		if req.ReplanOnly {
+			if code == "" || req.CreateOnly || count != 1 {
+				writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "replan requires one existing invite code"})
+				return
+			}
+			plans, err := store.ListCommercialPlans(true)
+			if err != nil {
+				writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to validate invite plan"})
+				return
+			}
+			planEnabled := false
+			for _, plan := range plans {
+				if plan != nil && plan.ID == req.PlanID && plan.State == 0 {
+					planEnabled = true
+					break
+				}
+			}
+			if !planEnabled {
+				writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "plan_id must reference an enabled plan"})
+				return
+			}
+			updater, ok := store.(commercialInvitePlanUpdater)
+			if !ok {
+				writeAccountAdminJSON(w, http.StatusNotImplemented, map[string]string{"error": "invite replan is not supported by this store"})
+				return
+			}
+			updated, err := updater.UpdateCommercialInvitePlan(code, req.PlanID)
+			if err != nil {
+				writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to replan invite"})
+				return
+			}
+			if !updated {
+				writeAccountAdminJSON(w, http.StatusNotFound, map[string]string{"error": "invite code not found"})
+				return
+			}
+			writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "code": code, "plan_id": req.PlanID})
 			return
 		}
 		if req.State != 0 && req.State != 1 {

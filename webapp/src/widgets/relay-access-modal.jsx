@@ -234,13 +234,30 @@ function formatPriceAmountFen(value) {
   return (Number(value || 0) / 100).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
+function formatModelCreditPoints(units) {
+  const points = Number(units || 0) / 1_000_000;
+  return points.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+}
+
 function commercialPlanPresentation(plan) {
-  return COMMERCIAL_PLAN_PRESENTATION[plan?.slug] || {
+  const base = COMMERCIAL_PLAN_PRESENTATION[plan?.slug] || {
     kicker: plan?.sale_state === 'test' ? '内测套餐' : '协作套餐',
     tagline: plan?.name || '稳定协作',
     audience: `${Number(plan?.duration_days || 30)} 天有效`,
     usageLabel: '套餐用量',
   };
+  const units = Number(plan?.model_credit_units || 0);
+  return {
+    ...base,
+    highlights: units > 0 ? [{
+      kind: 'capacity', label: '模型点数', value: formatModelCreditPoints(units), unit: '点',
+    }] : [],
+  };
+}
+function commercialUsageTextForUser(plan, presentation) {
+  const units = Number(plan?.model_credit_units || 0);
+  const points = units > 0 ? ` · ${formatModelCreditPoints(units)} 模型点数` : '';
+  return `${presentation?.usageLabel || '套餐用量'}${points} · ${Number(plan?.duration_days || 30)} 天有效`;
 }
 
 function commercialPlanCycle(plan) {
@@ -390,9 +407,6 @@ function summarizeCommercial(summary) {
   return `${activePackageName(packages)} · ${expiryText}`;
 }
 
-function commercialUsageTextForUser(plan, presentation) {
-  return `${presentation?.usageLabel || '套餐用量'} · ${Number(plan?.duration_days || 30)} 天有效`;
-}
 
 function activeEntitlements(summary) {
   return (summary?.entitlements || []).filter((item) => item.state === 'active');
@@ -655,7 +669,16 @@ function CommercialPlanCards({
         </article>
       )}
       {salePlans.map((plan) => {
-        const presentation = (!plan.useCatalogPresentation && presentationOverrides[plan.slug]) || commercialPlanPresentation(plan);
+        const catalogPresentation = commercialPlanPresentation(plan);
+        const presentationOverride = !plan.useCatalogPresentation ? presentationOverrides[plan.slug] : null;
+        const isOriginalPersonalPlan = ['catsco-basic', 'catsco-standard', 'catsco-advanced'].includes(plan.slug);
+        const presentation = {
+          ...catalogPresentation,
+          ...presentationOverride,
+          highlights: (isOriginalPersonalPlan || Number(plan.model_credit_units) > 0)
+            ? catalogPresentation.highlights
+            : (presentationOverride?.highlights || catalogPresentation.highlights),
+        };
         const planTier = commercialPlanTier(plan);
         const isActivePlan = planTier > 0
           ? activeOfficialPlanTier === planTier

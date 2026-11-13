@@ -11,6 +11,7 @@ import (
 
 func TestCommercialInviteAutomaticallyGeneratesCode(t *testing.T) {
 	store := newCommercialTestStore()
+	store.plans = append(store.plans, &types.CommercialPlan{ID: 1, Slug: "invite-plan", Name: "Invite Plan"})
 	handler := NewAccountAdminHandler(accountTestUserLookup{users: map[int64]*types.User{}}, nil, nil, store)
 	seen := map[string]bool{}
 	for i := 0; i < 10; i++ {

@@ -1,7 +1,8 @@
 import { it } from 'vitest';
 import assert from 'node:assert/strict';
 import { micros, calculateCall, consume, grant, canStart, survivors, nextCycle, proratedUpgrade } from './billing.mjs';
-import { calls, people } from './data.mjs';
+import { creditPlanOffers } from '../../widgets/plans/credit-plan-offers';
+import { calls, people, accountBalances } from './data.mjs';
 it('reconciles metering, allocation, repayment, task eligibility and cycle examples', () => {
 assert.equal(calculateCall({input:1_000_000,cached:1_000_000,output:1_000_000},{input:micros(2),cached:micros(.2),output:micros(3)},9000),micros(4.68));
 const s={monthly:micros(2),gift:micros(3),recharge:micros(4),debt:0};
@@ -15,11 +16,13 @@ const month=grant({...gift.after,monthly:micros(7)},'monthly',micros(60));assert
 assert.deepEqual(survivors([{id:'a',state:'running',startedAt:10},{id:'b',state:'running',startedAt:20},{id:'c',state:'queued',startedAt:30}]).map(x=>x.id),['b']);
 assert.equal(nextCycle('2027-01-31T10:00:00+08:00',31),'2027-02-28T02:00:00.000Z');
 assert.equal(nextCycle('2027-02-28T10:00:00+08:00',31),'2027-03-31T02:00:00.000Z');
-const up=proratedUpgrade({price:micros(99.9),quota:micros(105)},{price:micros(169.9),quota:micros(189)},'2026-11-01T10:00:00+08:00','2026-12-01T10:00:00+08:00','2026-11-16T10:00:00+08:00');assert.deepEqual(up,{price:micros(35),credits:micros(42)});
+const [v2,v3]=creditPlanOffers.slice(1).map(offer=>({price:micros(offer.price_fen/100),quota:micros(offer.monthlyCredits)}));const up=proratedUpgrade(v2,v3,'2026-11-01T10:00:00+08:00','2026-12-01T10:00:00+08:00','2026-11-16T10:00:00+08:00');assert.deepEqual(up,{price:micros(40),credits:micros(5250)});
 assert.equal(new Set(calls.map(x=>x.requestId)).size,calls.length);
 for(const call of calls){assert(Number.isFinite(new Date(call.at).getTime()));if(call.status==='settled'){assert.equal(call.amount,Object.values(call.allocation).reduce((a,b)=>a+b,0));for(const key of ['monthly','gift','recharge'])assert.equal(call.before[key]-call.allocation[key],call.after[key]);assert.equal(call.before.debt+call.allocation.debt,call.after.debt);}}
 assert(calls.some(c=>c.allocation?.debt>0));assert(calls.some(c=>c.status==='pending'));
+assert.deepEqual(creditPlanOffers.map(offer=>[offer.monthlyCredits,offer.discountBps]),[[4000,10000],[12000,10000],[22500,9000]]);
+assert.equal(calls.filter(call=>call.status==='settled').reduce((sum,call)=>sum+call.amount,0),micros(47.963711));
+for(const [uid,balance] of Object.entries(accountBalances)){assert(people.some(person=>person.id===uid));assert(['monthly','gift','recharge','debt'].every(key=>Number.isSafeInteger(balance[key])&&balance[key]>=0));}
 assert.equal(people.length,5);
-
 
 });

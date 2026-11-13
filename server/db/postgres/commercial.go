@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -66,6 +67,7 @@ func scanCommercialPlan(scanner interface {
 		&plan.CloudWorkerIncluded,
 		&plan.PlanTier,
 		&plan.CloudWorkerRuntimePlan,
+		&plan.ModelCreditUnits,
 	); err != nil {
 		return nil, err
 	}
@@ -148,7 +150,7 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 	}
 	rows, err := a.db.Query(`
 		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-			       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included, plan_tier, cloud_worker_runtime_plan
+		       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included, plan_tier, cloud_worker_runtime_plan, model_credit_units
 		FROM commercial_plans
 		` + where + `
 		ORDER BY sort_order ASC, id ASC`)
@@ -185,6 +187,11 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	}
 	if plan.RealCostCNY < 0 {
 		return 0, fmt.Errorf("commercial plan real cost must be non-negative")
+	}
+	// A negative allowance would let a plan sell negative credit; the column is
+	// guarded in SQL too, but rejecting it here keeps the error readable.
+	if plan.ModelCreditUnits < 0 {
+		return 0, fmt.Errorf("commercial plan model credit units must be non-negative")
 	}
 	billing, valid := types.NormalizeCloudWorkerBilling(plan.CloudWorkerBillingMode)
 	if !valid {
@@ -235,9 +242,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	err = a.db.QueryRow(`
 		INSERT INTO commercial_plans(
 			slug, name, description, price_fen, currency, sale_state, purchase_limit,
-			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, auto_update_models, cloud_worker_included, plan_tier, cloud_worker_runtime_plan
+			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, auto_update_models, cloud_worker_included, plan_tier, cloud_worker_runtime_plan, model_credit_units
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -258,7 +265,8 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 			auto_update_models = EXCLUDED.auto_update_models,
 			cloud_worker_included = EXCLUDED.cloud_worker_included,
 			plan_tier = EXCLUDED.plan_tier,
-			cloud_worker_runtime_plan = EXCLUDED.cloud_worker_runtime_plan
+			cloud_worker_runtime_plan = EXCLUDED.cloud_worker_runtime_plan,
+			model_credit_units = EXCLUDED.model_credit_units
 		WHERE commercial_plans.archived_at IS NULL
 		RETURNING id`,
 		strings.TrimSpace(plan.Slug),
@@ -282,6 +290,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		plan.CloudWorkerIncluded,
 		maxInt(plan.PlanTier, 0),
 		runtimePlan,
+		plan.ModelCreditUnits,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create commercial plan: %w", err)
@@ -380,6 +389,15 @@ func (a *Adapter) ListCommercialInviteCodes(limit int) ([]*types.CommercialInvit
 		invites = append(invites, invite)
 	}
 	return invites, rows.Err()
+}
+
+func (a *Adapter) UpdateCommercialInvitePlan(code string, planID int64) (bool, error) {
+	result, err := a.db.Exec(`UPDATE commercial_invite_codes SET plan_id=$2, updated_at=NOW() WHERE code=$1`, strings.ToUpper(strings.TrimSpace(code)), planID)
+	if err != nil {
+		return false, fmt.Errorf("update commercial invite plan: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	return rows > 0, err
 }
 
 func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode) (int64, error) {
@@ -555,13 +573,14 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 
 	var inviteID, planID int64
 	var maxRedemptions, redeemedCount, cloudWorkerCredits, inviteState, planState, durationDays int
+	var planModelCreditUnits int64
 	var expiresAt sql.NullTime
 	var planSlug, planName, cloudWorkerProfile, cloudWorkerBilling, cloudWorkerRuntimePlan string
 	var monthlyBudget float64
 	var budgetsRaw []byte
 	err = tx.QueryRow(`
 		SELECT c.id, c.plan_id, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.cloud_worker_billing_mode, c.state, c.expires_at,
-		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state, p.cloud_worker_runtime_plan
+		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state, p.cloud_worker_runtime_plan, p.model_credit_units
 		FROM commercial_invite_codes c
 		JOIN commercial_plans p ON p.id = c.plan_id
 		WHERE lower(c.code) = lower($1)
@@ -582,6 +601,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		&durationDays,
 		&planState,
 		&cloudWorkerRuntimePlan,
+		&planModelCreditUnits,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("invite code not found")
@@ -682,8 +702,10 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	// against the replaced package. GREATEST keeps a longer paid window, and a
 	// perpetual invite opens the workers that follow the package instead of
 	// leaving them on the previous package's date.
-	if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, entitlementExpires, retentionDays); err != nil {
-		return nil, err
+	if cloudWorkerCredits > 0 {
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, entitlementExpires, retentionDays, cloudWorkerProfile); err != nil {
+			return nil, err
+		}
 	}
 	// The tier activation above revoked whatever package this invite supersedes,
 	// and the extension above only ever grows a window: on its own it keeps a
@@ -693,6 +715,9 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	// perpetual one, or nothing (the worker then expires now, keeps its retention
 	// window and is synced before it is collected). Fixed terms and permanent
 	// grants are left alone: they were sold independently of any package.
+	if err := grantCommercialInviteModelCredit(context.Background(), tx, uid, code, planModelCreditUnits, startsAt); err != nil {
+		return nil, fmt.Errorf("grant invite model credit: %w", err)
+	}
 	if err := settleSharedCloudWorkerFollowPlanTerms(tx, uid, startsAt); err != nil {
 		return nil, err
 	}
