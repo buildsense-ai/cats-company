@@ -6,6 +6,8 @@ vi.mock('../api', () => ({
     getRelayConfig: vi.fn(),
     getRelayKey: vi.fn(),
     getRelayCommercial: vi.fn(),
+    getModelCreditAccount: vi.fn(),
+    getModelCreditLedger: vi.fn(),
     getCommercialCatalog: vi.fn(),
     getCommercialOrders: vi.fn(),
     createCommercialOrder: vi.fn(),
@@ -56,6 +58,8 @@ describe('RelayAccessModal commercial rollout', () => {
       ],
     });
     api.getRelayKey.mockResolvedValue({ key: null });
+    api.getModelCreditAccount.mockResolvedValue({ monthly_units: 0, gift_units: 0, paid_units: 0, debt_units: 0, units_per_credit: 1_000_000 });
+    api.getModelCreditLedger.mockResolvedValue({ events: [] });
     api.getRelayUsage.mockResolvedValue({
       configured: true,
       summary: {
@@ -229,7 +233,7 @@ describe('RelayAccessModal commercial rollout', () => {
     await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} initialPlanChooserOpen />); });
     const chooser = container.querySelector('#relay-access-personal-plan-panel');
     expect([...chooser.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent)).toEqual(['39', '79', '159']);
-    expect([...chooser.querySelectorAll('.relay-access-plan-original-price')].map(el => el.textContent)).toEqual(['109', '189']);
+    expect(chooser.querySelectorAll('.relay-access-plan-original-price')).toHaveLength(0);
     expect([...chooser.querySelectorAll('.relay-access-plan-highlights dd')].map(el => el.textContent)).toEqual(['4000credit', '无优惠', '12000credit', '无优惠', '22500credit', '9 折']);
     expect(chooser.textContent).toContain('3x 入门版额度');
     expect(chooser.textContent).toContain('5x 入门版额度 + 2,500 credit');
@@ -249,6 +253,50 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(findButton('暂未开放购买').disabled).toBe(true);
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
     expect(creditPlanOffers.every(plan => !personalPlanOffers.some(old => old.slug === plan.slug))).toBe(true);
+  });
+
+  it('shows approved monthly credit and discounts from a matching live catalogue', async () => {
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans: creditPlanOffers.map((plan, index) => ({ ...plan, id: 900 + index, model_credit_units: plan.monthlyCredits * 1_000_000 })) });
+    api.getModelCreditAccount.mockResolvedValue({ monthly_units: 3_999_123_456, gift_units: 20_000_000, paid_units: 7_000_000, debt_units: 0, units_per_credit: 1_000_000 });
+    await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} initialPlanChooserOpen />); });
+    const chooser = container.querySelector('#relay-access-personal-plan-panel');
+    expect([...chooser.querySelectorAll('.relay-access-plan-highlights dd')].map(el => el.textContent)).toEqual(['4,000credit', '无优惠', '12,000credit', '无优惠', '22,500credit', '9 折']);
+    const balance = container.querySelector('.relay-access-current-quota');
+    expect(balance.textContent).toContain('4,026.123456 credit');
+    expect(balance.textContent).toContain('月额度 3,999.123456 · 邀请赠送 20 · 充值余额 7 · 欠款 0 credit');
+    expect(container.querySelector('.relay-credit-balance')).toBeNull();
+    expect(creditPlanOffers.map(plan => plan.plan_tier)).toEqual([1, 2, 3]);
+  });
+
+  it('keeps legacy usage visible when the credit lookup fails', async () => {
+    api.getModelCreditAccount.mockRejectedValue(new Error('offline'));
+    await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} />); });
+    const balance = container.querySelector('.relay-access-current-quota');
+    expect(balance.textContent).toContain('25%');
+    expect(balance.textContent).not.toContain('可用 credit');
+  });
+
+  it('keeps a depleted credit subscription in the original quota card and reports read errors', async () => {
+    api.getRelayCommercial.mockResolvedValue({ enabled: true, summary: { uid: 38, entitlements: [{ id: 1, plan_id: 900, state: 'active', model_credit_units: 4_000_000_000 }], plans: [] } });
+    await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} />); });
+    const balance = container.querySelector('.relay-access-current-quota');
+    expect(balance.textContent).toContain('0 credit');
+    expect(container.querySelector('.relay-credit-balance')).toBeNull();
+    api.getModelCreditAccount.mockRejectedValue(new Error('offline'));
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} />); });
+    expect(container.querySelector('.relay-access-current-quota').textContent).toContain('credit 余额读取失败');
+  });
+
+  it.each(['gift depleted', 'subscription expired'])('keeps a known credit account visible at zero balance: %s', async () => {
+    api.getModelCreditAccount.mockResolvedValue({ enabled: true, monthly_units: 0, gift_units: 0, paid_units: 0, debt_units: 0, units_per_credit: 1_000_000 });
+    await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} />); });
+    const balance = container.querySelector('.relay-access-current-quota');
+    expect(balance.textContent).toContain('可用 credit');
+    expect(balance.textContent).toContain('0 credit');
+    expect(balance.textContent).not.toContain('25%');
+    expect(container.querySelector('.relay-credit-balance')).toBeNull();
   });
 
   it('keeps the live catalogue purchasable when no draft offer matches', async () => {

@@ -14,11 +14,13 @@ import (
 )
 
 type modelCreditReaderStub struct {
-	account *store.ModelCreditAccount
-	events  []store.ModelCreditLedgerEvent
-	uid     int64
-	limit   int
-	offset  int
+	account   *store.ModelCreditAccount
+	events    []store.ModelCreditLedgerEvent
+	uid       int64
+	limit     int
+	offset    int
+	enabled   bool
+	allowance int64
 }
 
 func (s *modelCreditReaderStub) GetModelCreditAccount(_ context.Context, uid int64) (*store.ModelCreditAccount, error) {
@@ -34,6 +36,17 @@ func (s *modelCreditReaderStub) ListModelCreditLedgerEvents(_ context.Context, u
 	return s.events, nil
 }
 
+// GetModelCreditEligibility 让 stub 也能回答 credit 身份：账户接口的 enabled/allowed
+// 必须来自资格判定，不能用「有没有余额」自己猜。
+func (s *modelCreditReaderStub) GetModelCreditEligibility(_ context.Context, uid int64) (bool, int, int64, error) {
+	s.uid = uid
+	tier := 0
+	if s.enabled {
+		tier = 3
+	}
+	return s.enabled, tier, s.allowance, nil
+}
+
 func modelCreditRequest(method, target string, uid int64) *http.Request {
 	req := httptest.NewRequest(method, target, nil)
 	if uid > 0 {
@@ -42,10 +55,26 @@ func modelCreditRequest(method, target string, uid int64) *http.Request {
 	return req
 }
 
+// modelCreditAccountPayload 是账户接口响应的测试视图：整数桶 + 身份字段。
+type modelCreditAccountPayload struct {
+	UID            int64 `json:"uid"`
+	Enabled        bool  `json:"enabled"`
+	Allowed        bool  `json:"allowed"`
+	MonthlyUnits   int64 `json:"monthly_units"`
+	GiftUnits      int64 `json:"gift_units"`
+	PaidUnits      int64 `json:"paid_units"`
+	DebtUnits      int64 `json:"debt_units"`
+	UnitsPerCredit int64 `json:"units_per_credit"`
+}
+
 func TestModelCreditAccountRequiresOwnerAndReturnsIntegerBuckets(t *testing.T) {
-	stub := &modelCreditReaderStub{account: &store.ModelCreditAccount{
-		UID: 72, MonthlyUnits: 3_000_000, GiftUnits: 2_000_000, PaidUnits: 5_000_000, DebtUnits: 1_000_000,
-	}}
+	stub := &modelCreditReaderStub{
+		account: &store.ModelCreditAccount{
+			UID: 72, MonthlyUnits: 3_000_000, GiftUnits: 2_000_000, PaidUnits: 5_000_000, DebtUnits: 1_000_000,
+		},
+		enabled:   true,
+		allowance: 9_000_000,
+	}
 	handler := NewModelCreditHandler(stub)
 
 	unauthorized := httptest.NewRecorder()
@@ -59,14 +88,35 @@ func TestModelCreditAccountRequiresOwnerAndReturnsIntegerBuckets(t *testing.T) {
 	if response.Code != http.StatusOK || stub.uid != 72 {
 		t.Fatalf("account response status=%d uid=%d body=%s", response.Code, stub.uid, response.Body.String())
 	}
-	var payload map[string]int64
+	var payload modelCreditAccountPayload
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["monthly_units"] != 3_000_000 || payload["gift_units"] != 2_000_000 ||
-		payload["paid_units"] != 5_000_000 || payload["debt_units"] != 1_000_000 ||
-		payload["units_per_credit"] != store.ModelCreditUnitsPerCredit {
+	if payload.MonthlyUnits != 3_000_000 || payload.GiftUnits != 2_000_000 ||
+		payload.PaidUnits != 5_000_000 || payload.DebtUnits != 1_000_000 ||
+		payload.UnitsPerCredit != store.ModelCreditUnitsPerCredit {
 		t.Fatalf("unexpected account payload: %+v", payload)
+	}
+	// 身份和当期权限是显式字段：前端据此区分 credit 用户与 legacy 老用户。
+	if !payload.Enabled || !payload.Allowed {
+		t.Fatalf("account payload lost the credit identity fields: %+v", payload)
+	}
+}
+
+// 套餐过期：enabled（身份）仍是 true，但 allowed 必须是 false —— 这不是 legacy。
+func TestModelCreditAccountExpiredIdentityStaysEnabled(t *testing.T) {
+	stub := &modelCreditReaderStub{enabled: true, allowance: 0}
+	response := httptest.NewRecorder()
+	NewModelCreditHandler(stub).HandleAccount(response, modelCreditRequest(http.MethodGet, "/api/relay/credits", 75))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload modelCreditAccountPayload
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Enabled || payload.Allowed {
+		t.Fatalf("expired credit account = %+v, want enabled=true allowed=false", payload)
 	}
 }
 
@@ -77,12 +127,16 @@ func TestModelCreditAccountMissingIsZeroWithoutCreatingRow(t *testing.T) {
 	if response.Code != http.StatusOK || stub.uid != 73 {
 		t.Fatalf("missing account response status=%d uid=%d", response.Code, stub.uid)
 	}
-	var payload map[string]int64
+	var payload modelCreditAccountPayload
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["monthly_units"] != 0 || payload["gift_units"] != 0 || payload["paid_units"] != 0 {
+	if payload.MonthlyUnits != 0 || payload.GiftUnits != 0 || payload.PaidUnits != 0 {
 		t.Fatalf("missing account was not represented as zero: %+v", payload)
+	}
+	// 从没进过 credit 的用户：身份 false，接口不会替它建账户（建账户的读路径已修）。
+	if payload.Enabled || payload.Allowed {
+		t.Fatalf("legacy account was reported as credit identity: %+v", payload)
 	}
 }
 

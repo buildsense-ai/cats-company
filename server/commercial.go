@@ -1468,8 +1468,8 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "credit plans cannot also configure CNY model budgets"})
 			return
 		}
-		if modelCreditUnits > 0 && req.SaleState == "public" {
-			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "credit plans cannot be public until Relay credit settlement is enabled"})
+		if modelCreditUnits > 0 && req.SaleState == "public" && !commercialCreditPlanSaleGatesOpen() {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "credit plans can only be public when CATSCO_CREDIT_PLAN_SALE_ENABLED is set and CATSCO_RELAY_CREDIT_PEER_SECRET configures relay credit settlement"})
 			return
 		}
 		if err := h.validateOfficialPaidPlanSave(req.Slug, modelBudgets, existingPlan); err != nil {
@@ -1580,13 +1580,16 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"invites": invites})
 	case http.MethodPost:
 		var req struct {
-			Code                   string `json:"code"`
-			CreateOnly             bool   `json:"create_only"`
-			ReplanOnly             bool   `json:"replan_only"`
-			PlanID                 int64  `json:"plan_id"`
-			MaxRedemptions         int    `json:"max_redemptions"`
-			Count                  int    `json:"count"`
-			CloudWorkerCredits     *int   `json:"cloud_worker_credits"`
+			Code               string `json:"code"`
+			CreateOnly         bool   `json:"create_only"`
+			ReplanOnly         bool   `json:"replan_only"`
+			PlanID             int64  `json:"plan_id"`
+			MaxRedemptions     int    `json:"max_redemptions"`
+			Count              int    `json:"count"`
+			CloudWorkerCredits *int   `json:"cloud_worker_credits"`
+			// Gift credit is the invite's own amount; absent means "the default
+			// 20-credit gift for a credit package, none for a legacy package".
+			ModelCreditUnits       *int64 `json:"model_credit_units"`
 			CloudWorkerProfile     string `json:"cloud_worker_profile"`
 			CloudWorkerBillingMode string `json:"cloud_worker_billing_mode"`
 			State                  int    `json:"state"`
@@ -1691,6 +1694,17 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "cloud_worker_credits must be between 0 and 100"})
 			return
 		}
+		// The invite's gift credit never inherits the plan's monthly allowance;
+		// an absent amount means the default 20-credit gift for a credit package
+		// and "no credit" for a legacy package.
+		creditUnits, creditUnitsInherit := int64(0), req.ModelCreditUnits == nil
+		if req.ModelCreditUnits != nil {
+			creditUnits = *req.ModelCreditUnits
+		}
+		if creditUnits < 0 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "model_credit_units must be non-negative"})
+			return
+		}
 		var expiresAt *time.Time
 		if strings.TrimSpace(req.ExpiresAt) != "" {
 			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(req.ExpiresAt))
@@ -1726,6 +1740,8 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			CloudWorkerCreditsInherit: creditsInherit,
 			CloudWorkerProfile:        profile,
 			CloudWorkerBillingMode:    billing,
+			ModelCreditUnits:          creditUnits,
+			ModelCreditUnitsInherit:   creditUnitsInherit,
 			State:                     req.State,
 			ExpiresAt:                 expiresAt,
 			Note:                      req.Note,

@@ -725,6 +725,11 @@ func main() {
 	if creditExpiryLedger, ok := db.(server.ModelCreditExpiryReleaser); ok {
 		server.StartModelCreditExpiryReaper(commercialServiceCtx, creditExpiryLedger)
 	}
+	if monthlyReconciler, ok := db.(server.ModelCreditMonthlyReconciler); ok {
+		// 月额度按自然月换期：到期作废旧周期剩余额度、下一周期开始时发放。账本事件
+		// 键保证幂等，多实例重复跑不会多发。
+		server.StartModelCreditMonthlyReconciler(commercialServiceCtx, monthlyReconciler)
+	}
 	if commercialRelayManagedStore != nil && relayAdminClient != nil {
 		commercialRelaySyncer = server.NewCommercialRelaySyncer(commercialRelayManagedStore, relayAdminClient, server.CommercialRelaySyncerOptions{
 			EnforceEnabled: relayCommercialEnforceEnabled,
@@ -1258,6 +1263,15 @@ func main() {
 	mux.HandleFunc("/internal/relay/credits/settle", modelCreditHandler.HandleInternalMutation)
 	mux.HandleFunc("/internal/relay/credits/confirm-no-usage", modelCreditHandler.HandleInternalMutation)
 	mux.HandleFunc("/internal/relay/credits/release", modelCreditHandler.HandleInternalMutation)
+	// 原始任务门禁（Relay → CatsCo）：额度/欠款/权限/单任务保留的判定都在服务端一次
+	// 事务里完成，Relay 只把 uid（服务端认证得到）+ action + root task id 递进来。
+	if creditTaskStore, ok := db.(store.ModelCreditTaskStore); ok {
+		creditTaskHandler := server.NewModelCreditTaskHandler(creditTaskStore)
+		mux.Handle("/internal/relay/credit-tasks", creditTaskHandler)
+		mux.Handle("/internal/relay/credits/tasks", creditTaskHandler)
+	} else {
+		log.Printf("model credit task gate disabled: database adapter does not implement ModelCreditTaskStore")
+	}
 	mux.HandleFunc("/api/relay/invite/redeem", ownerAuthWithDB(relayCommercialHandler.HandleRedeemInvite))
 	mux.HandleFunc("/api/relay/commercial/catalog", ownerAuthWithDB(commercialPaymentHandler.HandleCatalog))
 	mux.HandleFunc("/api/relay/commercial/orders", chainHTTP(commercialPaymentHandler.HandleOrders, ownerAuthWithDB, limitHTTPMethod(http.MethodPost, commercialOrderUserLimit)))

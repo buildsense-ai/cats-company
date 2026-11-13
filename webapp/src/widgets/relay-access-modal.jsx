@@ -5,6 +5,7 @@ import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { resolvePlanOffers, salePlansForOffers } from './plans/plan-offers';
 import LoadingState from './loading-state';
+import useModelCreditAccount, { modelCreditQuotaDisplay } from './plans/use-model-credit-account';
 import { restoreDialogFocus } from '../utils/use-dialog-behavior';
 import {
   readStorageValue,
@@ -249,15 +250,16 @@ function commercialPlanPresentation(plan) {
   const units = Number(plan?.model_credit_units || 0);
   return {
     ...base,
-    highlights: units > 0 ? [{
-      kind: 'capacity', label: '模型点数', value: formatModelCreditPoints(units), unit: '点',
-    }] : [],
+    highlights: units > 0 ? [
+      { kind: 'capacity', label: '月额度', value: formatModelCreditPoints(units), unit: 'credit' },
+      { kind: 'discount', label: '模型调用优惠', value: Number(plan.plan_tier) === 3 ? '9 折' : '无优惠' },
+    ] : [],
   };
 }
 function commercialUsageTextForUser(plan, presentation) {
   const units = Number(plan?.model_credit_units || 0);
-  const points = units > 0 ? ` · ${formatModelCreditPoints(units)} 模型点数` : '';
-  return `${presentation?.usageLabel || '套餐用量'}${points} · ${Number(plan?.duration_days || 30)} 天有效`;
+  const points = units > 0 ? ` · ${formatModelCreditPoints(units)} credit` : '';
+  return units > 0 ? `月额度${points} · 当期有效，不结转` : `${presentation?.usageLabel || '套餐用量'} · ${Number(plan?.duration_days || 30)} 天有效`;
 }
 
 function commercialPlanCycle(plan) {
@@ -1124,8 +1126,15 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
   const activePackages = activeEntitlements(commercialSummary);
   const activeOfficialPlanTier = activeCommercialPlanTier(activePackages, salePlans);
   const commercialState = commercialAccountState(commercial, activePackages);
-  const currentResetInfo = usageResetInfo(currentUsage);
-  const currentQuota = currentQuotaDisplay(currentUsage, commercialEnabled);
+  const activeCreditPlans = activePackages.map(item => ({ ...item, creditUnits: Number(item.model_credit_units || item.plan_model_credit_units || [...(commercialSummary?.plans || []), ...catalogPlans].find(plan => entitlementMatchesPlan(item, plan))?.model_credit_units || 0) }));
+  const creditDataEnabled = Boolean(planChooserOffers?.some(plan => plan.monthlyCredits > 0) || activeCreditPlans.some(item => item.creditUnits > 0));
+  const creditState = useModelCreditAccount(usageRevision, creditDataEnabled);
+  const creditAllowance = Math.max(0, ...activeCreditPlans.map(item => item.creditUnits));
+  const hasCreditAccount = creditDataEnabled && (creditState.account?.enabled === true || creditAllowance > 0 || ['monthly', 'gift', 'paid', 'debt'].some(bucket => Number(creditState.account?.[`${bucket}_units`]) > 0));
+  const currentResetInfo = hasCreditAccount ? { detail: '按订阅生效日逐自然月重置' } : usageResetInfo(currentUsage);
+  const currentQuota = hasCreditAccount
+    ? creditState.account ? modelCreditQuotaDisplay(creditState.account, creditAllowance) : { title: '可用 credit', meta: creditState.loading ? '读取中…' : '余额暂未同步', detail: creditState.error, note: '月额度当期有效，不结转。', percent: 0, className: 'inactive' }
+    : currentQuotaDisplay(currentUsage, commercialEnabled);
   const quotaUsedValue = /^已用 (\d+(?:\.\d+)?)(%\+?)$/.exec(currentQuota.meta);
   const checkoutCountdown = commercialOrderCountdown(checkoutOrder, checkoutClock);
   const openOrders = commercialOrders.filter(order => ['created', 'pending', 'paid'].includes(order.status));
@@ -1834,6 +1843,8 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                   <strong>{purchasePlan.name}</strong>
                   <p>{purchasePlan.catalogUnavailable && planPresentationOverrides[purchasePlan.slug]?.purchaseDescription
                     ? planPresentationOverrides[purchasePlan.slug].purchaseDescription
+                    : Number(purchasePlan.model_credit_units || purchasePlan.monthlyCredits) > 0
+                    ? `${formatPriceFen(purchasePlan.price_fen)} / 月，按订阅生效日逐自然月计算；${purchaseIsRenewal ? '提前续费只延长有效期，下一期开始时发放额度' : '本期月额度在套餐生效后发放'}。月额度当期有效，不结转，不自动续费。`
                     : purchaseIsRenewal
                     ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期日顺延 ${Number(purchasePlan.duration_days || 30)} 天；处于到期保留期的云托管员工会自动恢复，已释放的实例无法恢复；不会自动扣款。`
                     : purchaseIsUpgrade

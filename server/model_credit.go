@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -40,8 +41,18 @@ func NewModelCreditHandler(reader ModelCreditReader) *ModelCreditHandler {
 
 var modelCreditPeerSecretPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
+// modelCreditAccountResponse 是 GET /api/relay/credits 的响应。
+//
+// enabled / allowed 是这一轮新增的显式身份字段（旧字段全部保留，向后兼容）：
+//
+//   - enabled 是 credit 身份：这个账户是否进过 credit 体系。真正的 legacy 老用户是
+//     false，前端据此显示老额度说明而不是 credit 余额页。
+//   - allowed 是当期权限：套餐过期后 enabled 仍为 true、allowed 变成 false，这样前端
+//     和 Relay 都不会把「过期」误当成「legacy 免费」。
 type modelCreditAccountResponse struct {
 	UID            int64 `json:"uid"`
+	Enabled        bool  `json:"enabled"`
+	Allowed        bool  `json:"allowed"`
 	MonthlyUnits   int64 `json:"monthly_units"`
 	GiftUnits      int64 `json:"gift_units"`
 	PaidUnits      int64 `json:"paid_units"`
@@ -63,12 +74,30 @@ func (h *ModelCreditHandler) HandleAccount(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "credit account unavailable"})
 		return
 	}
+	response := modelCreditAccountResponse{UID: uid, UnitsPerCredit: store.ModelCreditUnitsPerCredit}
+	// The monthly bucket is only valid for the period `now` falls in: reconcile
+	// before answering so the user never sees a stale period's allowance as
+	// spendable. PostgreSQL implements the hook; other stores just skip it.
+	//
+	// 资格读取顺带完成月额度对账，所以能做到「一次事务既给身份又给当期余额」；没有
+	// 这个能力的存储退回单独对账，身份字段保持 false（=未进 credit 体系）。身份读
+	// 失败不能吞掉余额：退回单独对账并留下日志，别让一次只读把用户的套餐状态说错。
+	if identity, ok := h.store.(ModelCreditEligibilityReader); ok && identity != nil {
+		if enabled, _, allowance, identityErr := identity.GetModelCreditEligibility(r.Context(), uid); identityErr != nil {
+			log.Printf("model credit identity read failed: uid=%d err=%v", uid, identityErr)
+			reconcileModelCreditMonthlyBeforeRead(r.Context(), h.store, uid)
+		} else {
+			response.Enabled = enabled
+			response.Allowed = enabled && allowance > 0
+		}
+	} else {
+		reconcileModelCreditMonthlyBeforeRead(r.Context(), h.store, uid)
+	}
 	account, err := h.store.GetModelCreditAccount(r.Context(), uid)
 	if err != nil && !errors.Is(err, store.ErrModelCreditNotFound) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load credit account"})
 		return
 	}
-	response := modelCreditAccountResponse{UID: uid, UnitsPerCredit: store.ModelCreditUnitsPerCredit}
 	if account != nil {
 		response.MonthlyUnits = account.MonthlyUnits
 		response.GiftUnits = account.GiftUnits
@@ -138,6 +167,9 @@ type modelCreditMutationRequest struct {
 	UID       int64  `json:"uid"`
 	RequestID string `json:"request_id"`
 	Units     int64  `json:"units"`
+	// RootTaskID 是这笔调用所属的原始任务。reserve 必填（缺了就是硬错误，不能绕过
+	// 任务门禁）；settle/release/confirm-no-usage 不用带。
+	RootTaskID string `json:"root_task_id"`
 }
 
 type modelCreditMutationResponse struct {
@@ -176,7 +208,9 @@ func (h *ModelCreditHandler) HandleInternalMutation(w http.ResponseWriter, r *ht
 	var err error
 	switch strings.Trim(strings.TrimSpace(r.URL.Path), "/") {
 	case "internal/relay/credits/reserve":
-		reservation, account, err = h.ledger.ReserveModelCredits(r.Context(), store.ModelCreditReserveInput{UID: input.UID, RequestID: input.RequestID, Units: input.Units})
+		reservation, account, err = h.ledger.ReserveModelCredits(r.Context(), store.ModelCreditReserveInput{
+			UID: input.UID, RequestID: input.RequestID, RootTaskID: input.RootTaskID, Units: input.Units,
+		})
 	case "internal/relay/credits/settle":
 		reservation, account, err = h.ledger.SettleModelCredits(r.Context(), store.ModelCreditSettleInput{UID: input.UID, RequestID: input.RequestID, ActualUnits: input.Units})
 	case "internal/relay/credits/release":
@@ -205,6 +239,12 @@ func (h *ModelCreditHandler) HandleInternalMutation(w http.ResponseWriter, r *ht
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "request conflict"})
 		case errors.Is(err, store.ErrModelCreditNotFound):
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "reservation not found"})
+		case errors.Is(err, store.ErrModelCreditTaskRequired):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "root task id required"})
+		case errors.Is(err, store.ErrModelCreditTaskNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "root task not found"})
+		case errors.Is(err, store.ErrModelCreditTaskNotRunning):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "root task is not running"})
 		default:
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "credit mutation failed"})
 		}
@@ -212,7 +252,14 @@ func (h *ModelCreditHandler) HandleInternalMutation(w http.ResponseWriter, r *ht
 	}
 	response := modelCreditMutationResponse{Reservation: reservation}
 	if account != nil {
-		response.Account = &modelCreditAccountResponse{UID: account.UID, MonthlyUnits: account.MonthlyUnits, GiftUnits: account.GiftUnits, PaidUnits: account.PaidUnits, DebtUnits: account.DebtUnits, UnitsPerCredit: store.ModelCreditUnitsPerCredit}
+		// 能走到这里的用户一定在 credit 模型里（预留/结算都过账本），所以身份是 true，
+		// allowed 表示结算之后还有可花额度。
+		response.Account = &modelCreditAccountResponse{
+			UID: account.UID, Enabled: true, Allowed: account.SpendableUnits() > 0,
+			MonthlyUnits: account.MonthlyUnits, GiftUnits: account.GiftUnits,
+			PaidUnits: account.PaidUnits, DebtUnits: account.DebtUnits,
+			UnitsPerCredit: store.ModelCreditUnitsPerCredit,
+		}
 	}
 	writeJSON(w, http.StatusOK, response)
 }

@@ -37,6 +37,9 @@ const (
 	// only event whose units are negative, so a refund can never look like a
 	// grant in the ledger.
 	ModelCreditEventRefund = "refund"
+	// ModelCreditEventExpire 是月额度跨周期作废：套餐月额度当期有效、不结转，
+	// 余额被清零必须留一条可审计的记录。
+	ModelCreditEventExpire = "expire"
 )
 
 const (
@@ -91,6 +94,20 @@ func ModelCreditGrantEventKey(idempotencyKey string) string {
 	return ModelCreditEventGrant + ":" + idempotencyKey
 }
 
+// ModelCreditDebtRepaymentKey builds the ledger key for repaying arrears out of
+// one grant. It shares the grant's idempotency key, so a replayed grant cannot
+// repay the same debt twice.
+func ModelCreditDebtRepaymentKey(idempotencyKey string) string {
+	return ModelCreditEventDebtRepaid + ":" + idempotencyKey
+}
+
+// ModelCreditDebtAccrualKey builds the ledger key for the arrears one request
+// really ran up. Request ids are unique per user, so a replayed settle can never
+// book the same debt again.
+func ModelCreditDebtAccrualKey(uid int64, requestID string) string {
+	return ModelCreditEventKey(ModelCreditEventDebtAccrued, uid, requestID, ModelCreditBucketDebt)
+}
+
 // ModelCreditAddUnits returns balance+delta, refusing to overflow. A zero delta
 // returns the balance unchanged.
 func ModelCreditAddUnits(balance, delta int64) (int64, bool) {
@@ -103,17 +120,25 @@ func ModelCreditAddUnits(balance, delta int64) (int64, bool) {
 // One row per user holds all four buckets. Buckets are columns rather than
 // per-bucket rows so one FOR UPDATE on the account row serializes every
 // mutation for that user.
+//
+// RetainedTaskID 是全用户唯一的「透支名额」：额度耗尽时只保留最近开始的 running
+// root 任务，它后续的预留可以超出余额（超出部分记真实欠款）。它是账户行上的一列，
+// 因此和余额一起被同一把行锁保护。
 type ModelCreditAccount struct {
-	UID          int64
-	MonthlyUnits int64
-	GiftUnits    int64
-	PaidUnits    int64
-	DebtUnits    int64
-	UpdatedAt    time.Time
+	UID            int64
+	MonthlyUnits   int64
+	GiftUnits      int64
+	PaidUnits      int64
+	DebtUnits      int64
+	RetainedTaskID string
+	UpdatedAt      time.Time
 }
 
 func (a ModelCreditAccount) Validate() error {
 	if a.UID <= 0 || a.MonthlyUnits < 0 || a.GiftUnits < 0 || a.PaidUnits < 0 || a.DebtUnits < 0 {
+		return ErrModelCreditInvalid
+	}
+	if a.RetainedTaskID != "" && ValidateModelCreditTaskID(a.RetainedTaskID) != nil {
 		return ErrModelCreditInvalid
 	}
 	return nil
@@ -175,6 +200,49 @@ func AllocateModelCreditUnits(account ModelCreditAccount, units int64) (ModelCre
 	return split, true
 }
 
+// AllocateModelCreditUnitsPartial 是 AllocateModelCreditUnits 的「能给多少给多少」
+// 版本：透支预算已经发出去的调用只能按当下真实可用的额度扣，剩下的一分钱也不能
+// 凭空消失，必须由调用方记成欠款（docs P0-2.3）。顺序仍然是 monthly -> gift -> paid，
+// 有欠款时 gift 仍然不可用。
+func AllocateModelCreditUnitsPartial(account ModelCreditAccount, units int64) (ModelCreditSplit, int64) {
+	if units <= 0 || account.Validate() != nil {
+		return ModelCreditSplit{}, 0
+	}
+	var split ModelCreditSplit
+	remaining := units
+	if take := min(remaining, account.MonthlyUnits); take > 0 {
+		split.Monthly = take
+		remaining -= take
+	}
+	if account.DebtUnits == 0 {
+		if take := min(remaining, account.GiftUnits); take > 0 {
+			split.Gift = take
+			remaining -= take
+		}
+	}
+	if take := min(remaining, account.PaidUnits); take > 0 {
+		split.Paid = take
+		remaining -= take
+	}
+	return split, remaining
+}
+
+// PlanModelCreditGrant 决定一笔入账里有多少先拿去还欠款（P0-2.4）：monthly 与 paid
+// 先抵债，gift 永不抵债（P0-2.5）。返回还给欠款的额度和真正进入该桶的额度。
+func PlanModelCreditGrant(account ModelCreditAccount, bucket string, units int64) (repay, credited int64, ok bool) {
+	if units <= 0 || account.Validate() != nil {
+		return 0, 0, false
+	}
+	normalized, valid := NormalizeModelCreditGrantBucket(bucket)
+	if !valid {
+		return 0, 0, false
+	}
+	if normalized != ModelCreditBucketGift {
+		repay = min(units, account.DebtUnits)
+	}
+	return repay, units - repay, true
+}
+
 // ConsumeModelCreditSplit takes units from an existing hold in the same
 // monthly -> gift -> paid order the hold was reserved in. Units beyond the hold
 // are ignored here; the caller accounts for that overage separately.
@@ -201,11 +269,16 @@ func ConsumeModelCreditSplit(split ModelCreditSplit, units int64) ModelCreditSpl
 
 // ModelCreditReservation is the per-request hold. SettledUnits records the
 // amount consumed; the lease is a quarantine, not proof that a request ended.
+//
+// RootTaskID 是这笔调用所属的原始任务；UnfundedUnits 是保留任务透支时「没有余额
+// 兜底」的那部分预占：它只有在调用真的用掉时才变成欠款，没用掉就随结算消失。
 type ModelCreditReservation struct {
 	UID                int64
 	RequestID          string
+	RootTaskID         string
 	ReservedUnits      int64
 	Split              ModelCreditSplit
+	UnfundedUnits      int64
 	SettledUnits       *int64
 	State              string
 	CreatedAt          time.Time
@@ -217,9 +290,12 @@ type ModelCreditReservation struct {
 
 func (r ModelCreditReservation) Validate() error {
 	if r.UID <= 0 || !validModelCreditToken(r.RequestID, ModelCreditRequestIDMaxLen) ||
-		r.ReservedUnits <= 0 || r.Split.Total() != r.ReservedUnits ||
-		r.Split.Monthly < 0 || r.Split.Gift < 0 || r.Split.Paid < 0 ||
+		r.ReservedUnits <= 0 || r.Split.Total()+r.UnfundedUnits != r.ReservedUnits ||
+		r.Split.Monthly < 0 || r.Split.Gift < 0 || r.Split.Paid < 0 || r.UnfundedUnits < 0 ||
 		r.LeaseExpiresAt.IsZero() || !r.LeaseExpiresAt.After(r.CreatedAt) {
+		return ErrModelCreditInvalid
+	}
+	if r.RootTaskID != "" && ValidateModelCreditTaskID(r.RootTaskID) != nil {
 		return ErrModelCreditInvalid
 	}
 	switch r.State {
@@ -262,22 +338,31 @@ func (in ModelCreditGrantInput) Validate() error {
 
 // ReserveModelCreditInput holds Units for one request. The request id is the
 // idempotency key of the hold itself.
+//
+// RootTaskID 是必填项：每一笔模型调用都必须挂在已经 start 且当时 allowed 的原始
+// 任务上（P0-3.9），缺了它就是硬错误而不是绕过门禁。旧探针调用同样要补上它。
 type ModelCreditReserveInput struct {
-	UID       int64
-	RequestID string
-	Units     int64
+	UID        int64
+	RequestID  string
+	RootTaskID string
+	Units      int64
 }
 
 func (in ModelCreditReserveInput) Validate() error {
 	if in.UID <= 0 || in.Units <= 0 || !validModelCreditToken(in.RequestID, ModelCreditRequestIDMaxLen) {
 		return ErrModelCreditInvalid
 	}
-	return nil
+	if in.RootTaskID == "" {
+		return ErrModelCreditTaskRequired
+	}
+	return ValidateModelCreditTaskID(in.RootTaskID)
 }
 
 // ModelCreditSettleInput settles a hold against what the request really cost.
 // ActualUnits may be zero (a request that consumed nothing) and may exceed the
-// hold; the excess is only taken when the balance really covers it.
+// hold: the excess is taken from whatever balance is really available now, and
+// anything still uncovered becomes real arrears (P0-2.3/P0-3.2 — a dispatched
+// call must always settle, and the overdraft is the ledger's debt, not a hole).
 type ModelCreditSettleInput struct {
 	UID         int64
 	RequestID   string
@@ -319,22 +404,24 @@ func (in ModelCreditNoUsageConfirmation) Validate() error {
 	return nil
 }
 
-// PostgreSQL only, internal ledger foundation: no registered route, no
-// product/payment/relay wiring and no change to the legacy commercial
-// quota/token paths. Every mutation runs in one database transaction and takes
-// a FOR UPDATE lock on the account row, so concurrent reserves/settles of one
-// user are serialized and the balance can never be over-drawn.
+// PostgreSQL only ledger foundation. Every mutation runs in one database
+// transaction and takes a FOR UPDATE lock on the account row, so concurrent
+// reserves/settles of one user are serialized and the balance cannot be
+// over-drawn by two writers at once.
 //
-// Reserve holds monthly -> gift -> paid and returns ErrModelCreditInsufficient
-// instead of over-drawing. Settle releases the unused hold back to the exact
-// buckets it came from; an overage is deducted only when the balance covers it,
-// otherwise settle fails with ErrModelCreditInsufficient and writes nothing.
-// Settle never creates debt: arrears accounting and the over-draft policy are
-// not wired in this phase, so only an explicit debt entry can raise debt_units.
+// Reserve requires a started root task (RootTaskID) and holds monthly -> gift ->
+// paid, returning ErrModelCreditInsufficient when the request does not fit. The
+// single retained root task of a drained account is the only one allowed to hold
+// more than the balance: the part it cannot fund is stored as unfunded hold units.
+// Settle releases the unused funded hold back to the exact buckets it came from,
+// takes an overage from what is really available, and books whatever remains
+// uncovered — plus any funded shortfall — as real debt (debt_accrued). Grants to
+// monthly/paid repay arrears first; gift never repays.
 //
-// Replays are idempotent: the same request id returns the stored reservation,
-// the same grant key returns the account unchanged, and the same settle with a
-// different actual amount is rejected with ErrModelCreditConflict.
+// Replays are idempotent: the same request id returns the stored reservation and
+// never books debt twice, the same grant key returns the account unchanged, and
+// the same settle with a different actual amount is rejected with
+// ErrModelCreditConflict.
 type ModelCreditLedgerEvent struct {
 	EventKey       string
 	Bucket         string

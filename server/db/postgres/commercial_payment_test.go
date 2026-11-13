@@ -915,7 +915,13 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if err := db.db.QueryRow(`SELECT starts_at, expires_at FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, proOrder.OrderNo).Scan(&proStartsAt, &proExpiresAt); err != nil {
 		t.Fatalf("read pro entitlement dates: %v", err)
 	}
+	// credit 套餐按自然月对日计费（P0-5.1）：一个月只有 30 天时 AddDate(0,0,30) 恰好与
+	// AddDate(0,1,0) 相同，所以这里必须按周期边界算，不能再依赖固定天数。legacy 预算套餐
+	// 仍然保持它们售卖时的固定天数。
 	expectedProExpiresAt := proOrder.PaidAt.UTC().AddDate(0, 0, proOrder.PlanDurationDays)
+	if proOrder.PlanModelCreditUnits > 0 {
+		expectedProExpiresAt = store.ModelCreditMonthlyBoundary(proOrder.PaidAt.UTC(), 1)
+	}
 	if !proStartsAt.Equal(proOrder.PaidAt.UTC()) || !proExpiresAt.Equal(expectedProExpiresAt) {
 		t.Fatalf("pro entitlement did not restart from payment: starts_at=%s expires_at=%s paid_at=%s expected_expires=%s", proStartsAt.UTC().Format(time.RFC3339Nano), proExpiresAt.UTC().Format(time.RFC3339Nano), proOrder.PaidAt.UTC().Format(time.RFC3339Nano), expectedProExpiresAt.Format(time.RFC3339Nano))
 	}
@@ -958,7 +964,12 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if err := db.db.QueryRow(`SELECT starts_at, expires_at FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, personalRenewal.OrderNo).Scan(&renewalStartsAt, &renewalExpiresAt); err != nil {
 		t.Fatalf("read pro renewal dates: %v", err)
 	}
-	if !renewalStartsAt.Equal(proExpiresAt) || !renewalExpiresAt.Equal(proExpiresAt.AddDate(0, 0, personalRenewal.PlanDurationDays)) {
+	expectedRenewalExpiresAt := proExpiresAt.AddDate(0, 0, personalRenewal.PlanDurationDays)
+	if personalRenewal.PlanModelCreditUnits > 0 {
+		// 提前续费只延长有效期到下一个自然月边界，不提前发额度（P0-5.3）。
+		expectedRenewalExpiresAt = store.ModelCreditMonthlyBoundary(proOrder.PaidAt.UTC(), 2)
+	}
+	if !renewalStartsAt.Equal(proExpiresAt) || !renewalExpiresAt.Equal(expectedRenewalExpiresAt) {
 		t.Fatalf("pro renewal did not append a new period: starts=%s expires=%s previous=%s", renewalStartsAt.UTC().Format(time.RFC3339Nano), renewalExpiresAt.UTC().Format(time.RFC3339Nano), proExpiresAt.UTC().Format(time.RFC3339Nano))
 	}
 	for _, blocked := range []struct {
@@ -1031,11 +1042,19 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatalf("an unspent rebuild credit must not be duplicated: count=%d err=%v", availableCredits, err)
 	}
 
-	personalInvite := &types.CommercialInviteCode{Code: "TIER-PERSONAL", PlanID: personalID, MaxRedemptions: 1, CloudWorkerCredits: 2}
+	// 邀请的赠送额度是邀请自己的数量（默认 20 credit），不再从套餐 model_credit_units
+	// 继承；这里的 fixture 显式指定面额，断言才能保持精确。
+	personalInvite := &types.CommercialInviteCode{
+		Code: "TIER-PERSONAL", PlanID: personalID, MaxRedemptions: 1, CloudWorkerCredits: 2,
+		ModelCreditUnits: 4 * store.ModelCreditUnitsPerCredit,
+	}
 	if _, err := db.CreateCommercialInviteCode(personalInvite); err != nil {
 		t.Fatalf("create personal invite: %v", err)
 	}
-	proInvite := &types.CommercialInviteCode{Code: "TIER-PRO", PlanID: proID, MaxRedemptions: 1, CloudWorkerCredits: 1}
+	proInvite := &types.CommercialInviteCode{
+		Code: "TIER-PRO", PlanID: proID, MaxRedemptions: 1, CloudWorkerCredits: 1,
+		ModelCreditUnits: 9 * store.ModelCreditUnitsPerCredit,
+	}
 	if _, err := db.CreateCommercialInviteCode(proInvite); err != nil {
 		t.Fatalf("create pro invite: %v", err)
 	}

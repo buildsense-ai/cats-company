@@ -698,6 +698,7 @@ export const api = {
   updateConversationTitle: (topicId, name) => request('PATCH', '/api/conversations', { topic_id: topicId, name }),
   getRelayConfig: (options = {}) => request('GET', '/api/relay/config', undefined, options),
   getRelayCommercial: (options = {}) => request('GET', '/api/relay/commercial', undefined, options),
+  getModelCreditAccount: (options = {}) => request('GET', '/api/relay/credits', undefined, options),
   redeemRelayInvite: (code) => request('POST', '/api/relay/invite/redeem', { code }),
   getCommercialCatalog: (options = {}) => request('GET', '/api/relay/commercial/catalog', undefined, options),
   getCommercialOrders: (orderNo = '', options = {}) => request('GET', `/api/relay/commercial/orders${orderNo ? `?order_no=${encodeURIComponent(orderNo)}` : ''}`, undefined, options),

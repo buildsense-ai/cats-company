@@ -348,6 +348,7 @@ func scanCommercialInvite(scanner interface {
 		&invite.CreatedByUID,
 		&invite.CreatedAt,
 		&invite.UpdatedAt,
+		&invite.ModelCreditUnits,
 		&redeemerUIDsRaw,
 	); err != nil {
 		return nil, err
@@ -367,7 +368,7 @@ func (a *Adapter) ListCommercialInviteCodes(limit int) ([]*types.CommercialInvit
 	}
 	rows, err := a.db.Query(`
 		SELECT c.id, c.code, c.plan_id, p.slug, p.name, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.cloud_worker_billing_mode, c.state,
-		       c.expires_at, c.note, COALESCE(c.created_by_uid, 0), c.created_at, c.updated_at,
+		       c.expires_at, c.note, COALESCE(c.created_by_uid, 0), c.created_at, c.updated_at, c.model_credit_units,
 		       COALESCE((SELECT jsonb_agg(redeemer ORDER BY redeemer)
 		                 FROM (SELECT DISTINCT e.uid AS redeemer
 		                       FROM commercial_entitlements e
@@ -457,25 +458,46 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 	// Shared containers have no cloud subscription: the plan decides the
 	// package window, so the machine billing mode collapses to month.
 	billing = types.CloudWorkerBillingForProfile(profile, billing)
+	// An invite's gift credit is its own amount, never the bound plan's monthly
+	// allowance: a V3 invite hands out 20 credit, not 22,500. A credit package's
+	// invite defaults to that 20-credit gift; a legacy package's invite keeps 0 and
+	// stays on the CNY/token path, so existing invites and their redeemers are
+	// never migrated into the credit ledger.
+	creditUnits := invite.ModelCreditUnits
+	if invite.ModelCreditUnitsInherit {
+		var planCreditUnits int64
+		if err := a.db.QueryRow(`SELECT model_credit_units FROM commercial_plans WHERE id=$1`, invite.PlanID).Scan(&planCreditUnits); err != nil {
+			return 0, err
+		}
+		if planCreditUnits > 0 {
+			creditUnits = types.CommercialInviteDefaultCreditUnits
+		} else {
+			creditUnits = 0
+		}
+	}
+	if creditUnits < 0 {
+		return 0, fmt.Errorf("commercial invite model credit units must be non-negative")
+	}
 	maxRedemptions := invite.MaxRedemptions
 	if maxRedemptions <= 0 {
 		maxRedemptions = 1
 	}
 	var id int64
 	err := a.db.QueryRow(`
-		INSERT INTO commercial_invite_codes(code, plan_id, max_redemptions, cloud_worker_credits, state, expires_at, note, created_by_uid, cloud_worker_profile, cloud_worker_billing_mode)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, 0), $9, $10)
+		INSERT INTO commercial_invite_codes(code, plan_id, max_redemptions, cloud_worker_credits, state, expires_at, note, created_by_uid, cloud_worker_profile, cloud_worker_billing_mode, model_credit_units)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, 0), $9, $10, $11)
 		ON CONFLICT(code) DO UPDATE SET
 			plan_id = EXCLUDED.plan_id,
 			max_redemptions = EXCLUDED.max_redemptions,
 			cloud_worker_credits = EXCLUDED.cloud_worker_credits,
 			cloud_worker_profile = EXCLUDED.cloud_worker_profile,
 			cloud_worker_billing_mode = EXCLUDED.cloud_worker_billing_mode,
+			model_credit_units = EXCLUDED.model_credit_units,
 			state = EXCLUDED.state,
 			expires_at = EXCLUDED.expires_at,
 			note = EXCLUDED.note,
 			created_by_uid = EXCLUDED.created_by_uid
-		WHERE NOT $11
+		WHERE NOT $12
 		RETURNING id`,
 		strings.ToUpper(strings.TrimSpace(invite.Code)),
 		invite.PlanID,
@@ -487,6 +509,7 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 		invite.CreatedByUID,
 		profile,
 		billing,
+		creditUnits,
 		invite.CreateOnly,
 	).Scan(&id)
 	if err != nil {
@@ -571,16 +594,15 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	}
 	defer tx.Rollback()
 
-	var inviteID, planID int64
+	var inviteID, planID, inviteCreditUnits int64
 	var maxRedemptions, redeemedCount, cloudWorkerCredits, inviteState, planState, durationDays int
-	var planModelCreditUnits int64
 	var expiresAt sql.NullTime
 	var planSlug, planName, cloudWorkerProfile, cloudWorkerBilling, cloudWorkerRuntimePlan string
 	var monthlyBudget float64
 	var budgetsRaw []byte
 	err = tx.QueryRow(`
-		SELECT c.id, c.plan_id, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.cloud_worker_billing_mode, c.state, c.expires_at,
-		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state, p.cloud_worker_runtime_plan, p.model_credit_units
+		SELECT c.id, c.plan_id, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.cloud_worker_billing_mode, c.state, c.expires_at, c.model_credit_units,
+		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state, p.cloud_worker_runtime_plan
 		FROM commercial_invite_codes c
 		JOIN commercial_plans p ON p.id = c.plan_id
 		WHERE lower(c.code) = lower($1)
@@ -594,6 +616,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		&cloudWorkerBilling,
 		&inviteState,
 		&expiresAt,
+		&inviteCreditUnits,
 		&planSlug,
 		&planName,
 		&monthlyBudget,
@@ -601,7 +624,6 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		&durationDays,
 		&planState,
 		&cloudWorkerRuntimePlan,
-		&planModelCreditUnits,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("invite code not found")
@@ -645,13 +667,39 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	if err := validateNoOpenCommercialOfficialOrder(tx, uid, startsAt); err != nil {
 		return nil, err
 	}
-	if err := activateCommercialOfficialPlan(tx, uid, planSlug, startsAt); err != nil {
-		return nil, err
+	// 只有「邀请自带赠送额度」（credit 邀请，默认 20 credit）才是叠加式的权限：它
+	// 加上自己的 gift 和订阅行，但不抢占已付套餐 —— 已付的 V2/V3 继续拥有模型与折扣
+	// （GetModelCreditEligibility 把 order/admin/internal 排在最前，付费行仍是主套餐）。
+	// 这种邀请只在没有任何付费权限时才走档位激活（激活会撤销更低档与免费基线）。
+	//
+	// 老式（CNY/token）邀请保持原有语义不变：它没有自己的 credit 面额，兑换就是换套餐，
+	// 仍然走档位激活并撤销之前的套餐。历史上发出去的邀请码和它们的兑换者因此完全按
+	// 老路径结算，不会被这次改动迁移成 credit 权限。
+	shouldActivate := true
+	if inviteCreditUnits > 0 {
+		paidActive, paidErr := activePaidCommercialEntitlement(tx, uid, startsAt)
+		if paidErr != nil {
+			return nil, paidErr
+		}
+		shouldActivate = !paidActive
 	}
-	var entitlementExpires *time.Time
+	if shouldActivate {
+		if err := activateCommercialOfficialPlan(tx, uid, planSlug, startsAt); err != nil {
+			return nil, err
+		}
+	}
+	// A credit invite is a permission without a fixed term ("体验不设固定天数"):
+	// its allowance is the gift itself, not a timed package, so the entitlement
+	// carries no expiry. Cloud worker credits keep the plan's derived window, so a
+	// redemption still cannot hand out a machine that never expires.
+	workerExpires := (*time.Time)(nil)
 	if durationDays != -1 {
 		expiry := startsAt.AddDate(0, 0, durationDays)
-		entitlementExpires = &expiry
+		workerExpires = &expiry
+	}
+	entitlementExpires := workerExpires
+	if inviteCreditUnits > 0 {
+		entitlementExpires = nil
 	}
 	var entitlementID int64
 	if err := tx.QueryRow(`
@@ -673,7 +721,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		if err := tx.QueryRow(`
 			INSERT INTO commercial_quota_grants(uid, plan_id, invite_code_id, grant_type, model, amount_cny, reset_duration, effective_at, expires_at, source_ref, note)
 			VALUES ($1, $2, $3, 'invite', $4, $5, '1M', $6, $7, $8, $9)
-			RETURNING id`, uid, planID, inviteID, model, amount, startsAt, entitlementExpires, code, "invite "+code).Scan(&grantID); err != nil {
+			RETURNING id`, uid, planID, inviteID, model, amount, startsAt, workerExpires, code, "invite "+code).Scan(&grantID); err != nil {
 			return nil, fmt.Errorf("create invite quota grant: %w", err)
 		}
 		if _, err := tx.Exec(`
@@ -693,7 +741,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		if _, err := tx.Exec(`
 			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode, retention_days, runtime_plan, expiry_mode)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile, cloudWorkerBilling, retentionDays, cloudWorkerRuntimePlan, types.CloudWorkerExpiryModeOrDefault(inviteExpiryMode)); err != nil {
+			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), workerExpires, cloudWorkerProfile, cloudWorkerBilling, retentionDays, cloudWorkerRuntimePlan, types.CloudWorkerExpiryModeOrDefault(inviteExpiryMode)); err != nil {
 			return nil, fmt.Errorf("create invite cloud worker credit: %w", err)
 		}
 	}
@@ -703,7 +751,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	// perpetual invite opens the workers that follow the package instead of
 	// leaving them on the previous package's date.
 	if cloudWorkerCredits > 0 {
-		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, entitlementExpires, retentionDays, cloudWorkerProfile); err != nil {
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, workerExpires, retentionDays, cloudWorkerProfile); err != nil {
 			return nil, err
 		}
 	}
@@ -715,7 +763,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	// perpetual one, or nothing (the worker then expires now, keeps its retention
 	// window and is synced before it is collected). Fixed terms and permanent
 	// grants are left alone: they were sold independently of any package.
-	if err := grantCommercialInviteModelCredit(context.Background(), tx, uid, code, planModelCreditUnits, startsAt); err != nil {
+	if err := grantCommercialInviteModelCredit(context.Background(), tx, uid, code, inviteCreditUnits, startsAt); err != nil {
 		return nil, fmt.Errorf("grant invite model credit: %w", err)
 	}
 	if err := settleSharedCloudWorkerFollowPlanTerms(tx, uid, startsAt); err != nil {
@@ -728,6 +776,23 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		return nil, fmt.Errorf("commit invite redemption: %w", err)
 	}
 	return a.GetCommercialSummary(uid)
+}
+
+// activePaidCommercialEntitlement 报告用户当前是否持有付费/运营发放的生效套餐。
+// 邀请码只在这个值为 false 时才会激活自己的档位：它不能撤销已付的 V2/V3。
+func activePaidCommercialEntitlement(tx *sql.Tx, uid int64, now time.Time) (bool, error) {
+	var active bool
+	if err := tx.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM commercial_entitlements
+			WHERE uid = $1 AND state = 'active'
+			  AND source IN ('order','admin','internal')
+			  AND starts_at <= $2
+			  AND (expires_at IS NULL OR expires_at > $2)
+		)`, uid, now.UTC()).Scan(&active); err != nil {
+		return false, fmt.Errorf("check active paid commercial entitlement: %w", err)
+	}
+	return active, nil
 }
 
 func scanCommercialEntitlement(rows *sql.Rows) (*types.CommercialEntitlement, error) {

@@ -54,11 +54,6 @@ func TestPostgresCloudWorkerIncludedBackfillRunsOnce(t *testing.T) {
 		}
 	}
 
-	// 模拟"运营手动把旧套餐的机器关掉"。
-	if _, err := db.db.Exec(`UPDATE commercial_plans SET cloud_worker_included = FALSE WHERE slug = 'catsco-pro'`); err != nil {
-		t.Fatalf("operator turns the machine off: %v", err)
-	}
-
 	included := func(slug string) bool {
 		t.Helper()
 		var got bool
@@ -66,6 +61,25 @@ func TestPostgresCloudWorkerIncludedBackfillRunsOnce(t *testing.T) {
 			t.Fatalf("read %s: %v", slug, err)
 		}
 		return got
+	}
+
+	// 上面的 CreateSchema 建的已经是"带 cloud_worker_included 列"的表，而两个套餐行
+	// 是它之后才插入的 —— 那条一次性回填当时看到的是空表。所以这里把列删掉，退回
+	// 2026-10-29 之前的结构，再用一次 CreateSchema 模拟真实升级（加列 + 回填）。不这
+	// 样做，下面"重启不许覆盖"的断言根本测不到 guard：personal 只会是列的默认值 FALSE。
+	if _, err := db.db.Exec(`ALTER TABLE commercial_plans DROP COLUMN IF EXISTS cloud_worker_included`); err != nil {
+		t.Fatalf("rewind the worker-included column: %v", err)
+	}
+	if err := db.CreateSchema(); err != nil {
+		t.Fatalf("upgrade schema (simulated boot that adds the column): %v", err)
+	}
+	if !included("catsco-personal") || !included("catsco-pro") {
+		t.Fatal("the one-time backfill did not enable the machine for the two official packages")
+	}
+
+	// 模拟"运营手动把旧套餐的机器关掉"。
+	if _, err := db.db.Exec(`UPDATE commercial_plans SET cloud_worker_included = FALSE WHERE slug = 'catsco-pro'`); err != nil {
+		t.Fatalf("operator turns the machine off: %v", err)
 	}
 
 	// 重启：CreateSchema 走的是 CREATE TABLE IF NOT EXISTS + 一次性回填。
