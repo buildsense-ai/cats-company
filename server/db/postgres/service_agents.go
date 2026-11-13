@@ -669,7 +669,7 @@ func (a *Adapter) FailServiceRun(ctx context.Context, runID, errorText string, r
 	}
 	// running 之外还接受 submitted：准入闸排在占位之前，被闸拒掉的那一单还没人领，
 	// 没有执行方会跟它抢，直接落终态才是如实的（否则它会一直 submitted，被 reaper
-	// 两分钟后当成「没人领」收走，调用方看到的是 orphaned 而不是可重试的失败）。
+	// 两分钟当成「没人领」收走，调用方看到的是 orphaned 而不是可重试的失败）。
 	if state != "running" && state != "submitted" {
 		// 宽容处理（幂等）：已终态/已接管 → 无操作。
 		if err := tx.Commit(); err != nil {
@@ -677,18 +677,23 @@ func (a *Adapter) FailServiceRun(ctx context.Context, runID, errorText string, r
 		}
 		return nil
 	}
+	// 从没派出去过的单（submitted）不可能被「接管」：orphaned 的语义是等别的执行方
+	// 捡起来重跑，而准入闸拒掉的单连租约都没拿过，attempts 永远停在 0。留在 orphaned
+	// 就是永久悬挂——调用方等不到回执，看板把它算成「卡住」，告警每两小时重提醒一次。
+	// 所以只要没派出去过就落终态；retryable 只影响调用方要不要重试，不改变行的状态。
+	terminal := !retryable || state == "submitted"
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE service_runs SET
-			state = CASE WHEN $3 THEN 'orphaned' ELSE 'failed' END,
+			state = CASE WHEN $3 THEN 'failed' ELSE 'orphaned' END,
 			error_text = $2,
 			instance_id = '',
 			lease_expires_at = NULL,
-			finished_at = CASE WHEN $3 THEN finished_at ELSE COALESCE(finished_at, now()) END
-		WHERE run_id = $1`, runID, errorText, retryable); err != nil {
+			finished_at = CASE WHEN $3 THEN COALESCE(finished_at, now()) ELSE finished_at END
+		WHERE run_id = $1`, runID, errorText, terminal); err != nil {
 		return fmt.Errorf("fail service run: %w", err)
 	}
-	if !retryable {
-		// 不可重试失败=终态 → 回执入箱；orphaned 是中间态（等待接管重跑），不产生回执。
+	if terminal {
+		// 终态失败=回执入箱；orphaned 是中间态（等待接管重跑），不产生回执。
 		if err := insertServiceRunReceiptTx(ctx, tx, runID, sessionID, "failed", "", errorText); err != nil {
 			return err
 		}
@@ -796,6 +801,46 @@ func (a *Adapter) ReapExpiredServiceRuns(ctx context.Context) (int, error) {
 	stale.Close()
 	for _, r := range unclaimed {
 		if err := insertServiceRunReceiptTx(ctx, tx, r.runID, r.sessionID, "failed", "", "not_picked_up"); err != nil {
+			return 0, err
+		}
+	}
+
+	// ③ 历史残留：早先被准入闸拒掉的单会停在 orphaned 且 attempts 仍是 0——租约从来没
+	// 拿过，也就没有执行方会认领它。①只扫 running、②只扫 submitted，这一档于是永远
+	// 留着：看板把它算成「卡住」，告警每两小时重提醒一次，而调用方早就拿到拒绝了。
+	// 宽限取 10 分钟（远大于一次准入往返），超时即转终态并补回执。
+	staleOrphans, err := tx.QueryContext(ctx, `
+		UPDATE service_runs SET
+			state = 'failed',
+			error_text = COALESCE(NULLIF(error_text, ''), 'never_dispatched'),
+			finished_at = COALESCE(finished_at, now())
+		WHERE state = 'orphaned' AND attempts = 0
+		  AND created_at < now() - interval '10 minutes'
+		RETURNING run_id, session_id, COALESCE(NULLIF(error_text, ''), 'never_dispatched')`)
+	if err != nil {
+		return 0, fmt.Errorf("reap never-dispatched service runs: %w", err)
+	}
+	type orphanRun struct {
+		runID     string
+		sessionID string
+		errorText string
+	}
+	var orphans []orphanRun
+	for staleOrphans.Next() {
+		var r orphanRun
+		if err := staleOrphans.Scan(&r.runID, &r.sessionID, &r.errorText); err != nil {
+			staleOrphans.Close()
+			return 0, fmt.Errorf("scan never-dispatched service run: %w", err)
+		}
+		orphans = append(orphans, r)
+	}
+	if err := staleOrphans.Err(); err != nil {
+		staleOrphans.Close()
+		return 0, fmt.Errorf("iterate never-dispatched service runs: %w", err)
+	}
+	staleOrphans.Close()
+	for _, r := range orphans {
+		if err := insertServiceRunReceiptTx(ctx, tx, r.runID, r.sessionID, "failed", "", r.errorText); err != nil {
 			return 0, err
 		}
 	}

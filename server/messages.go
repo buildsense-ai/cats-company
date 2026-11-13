@@ -2,7 +2,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -417,26 +416,6 @@ func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, rep
 	// The device directory is rebuilt per recipient on read. Persisting a
 	// client copy would replay a forged rollout signal to later readers.
 	payload.Metadata = metadataWithoutXiaobaRuntime(payload.Metadata)
-	resources := MessageFileResources(&types.Message{Content: payload.StoredContent, ContentBlocks: payload.ContentBlocks, MsgType: payload.StoredType})
-	if len(resources) > 0 {
-		fullStore, ok := db.(store.Store)
-		writer, atomic := db.(store.FileMessageWriter)
-		if !ok || !atomic {
-			return nil, errors.New("file message persistence unavailable")
-		}
-		access := NewFileAccessService(fullStore, nil)
-		for _, resource := range resources {
-			if !access.CanUseResource(context.Background(), uid, resource) {
-				return nil, errors.New("attachment access denied")
-			}
-		}
-		id, duplicate, err := writer.SaveMessageWithFileBindings(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID, payload.Metadata, resources)
-		if err != nil {
-			return nil, err
-		}
-		notifySavedMessage(topicID, duplicate)
-		return &savedMessageResult{ID: id, Duplicate: duplicate}, nil
-	}
 	if metadataStore, ok := db.(store.MessageMetadataStore); ok {
 		id, duplicate, err := metadataStore.SaveMessageWithMetadata(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID, payload.Metadata)
 		if err != nil {

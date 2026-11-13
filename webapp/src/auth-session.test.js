@@ -85,3 +85,25 @@ describe('request status copy', () => {
     }
   });
 });
+
+describe('attachment privacy rollback isolation', () => {
+  test.each(['/api/agents/quota', '/api/conversations/fork', '/api/messages'])(
+    'authenticated GET %s does not wait for media bootstrap or browser locks', async (path) => {
+      const lockRequest = vi.fn(() => new Promise(() => {}));
+      vi.stubGlobal('navigator', { locks: { request: lockRequest } });
+      const fetchMock = vi.fn((url) => {
+        if (String(url).includes('/api/files/media-session')) return new Promise(() => {});
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ready: true }) });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      // A stale in-flight media bootstrap from an old page must not block normal APIs.
+      void fetch('/api/files/media-session');
+      await expect(request('GET', path, undefined, { authToken: 'rollback-test-token', timeoutMs: 100 }))
+        .resolves.toEqual({ ready: true });
+      expect(lockRequest).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1][0]).toBe(path);
+      expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer rollback-test-token');
+    },
+  );
+});

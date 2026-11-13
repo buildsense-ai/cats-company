@@ -6,7 +6,15 @@
 # unsubscribed，再调用 DestroyEcsInstance。fail-closed：删除失败聚合报告。
 #
 # 用法：
-#   destroy-worker.sh --name <tenant> [--dry-run]
+#   destroy-worker.sh --name <tenant>
+#                     [--expected-expires-at <RFC3339|none>]
+#                     [--expected-delete-after <RFC3339>] [--dry-run]
+#
+# --expected-expires-at / --expected-delete-after：platform/destroy.sh 把 sweeper
+# 当时读到的 DB 快照透传给后端（packed 路径在租户锁内复核，对不上返回 skipped）。
+# ECS 路径没有租户锁也没有 DB 可查，这里只校验格式后照常删除——但参数必须接受，
+# 否则平台每一次销毁都在参数解析阶段 exit 2（2026-11-13：bot-ops-* 两条记录因此
+# 卡在 delete_failed，实例一直回收不掉）。
 #
 # 幂等：实例/key pair 不存在按"已清理"处理（exit 0）。
 # 退出码：0=已清理 / 1=失败（fail-closed，聚合报告）/ 2=用法错误 /
@@ -21,19 +29,63 @@ set -Eeuo pipefail
 
 NAME=""
 DRY_RUN=0
+EXPECTED_AT=""
+EXPECTED_DUE=""
 
 usage() {
-  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# 期限只做格式校验：非法值 fail-closed（exit 2），合法值原样接受（见文件头说明）。
+normalize_expected_deadline() { # <value> <label>
+  local v="$1" label="$2" lower
+  [ -n "$v" ] || return 0
+  lower="$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    none|permanent|never) echo "none"; return 0 ;;
+  esac
+  if ! [[ "$v" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt\ ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$ || "$v" =~ ^[0-9]+$ ]]; then
+    echo "error: $label is not a valid timestamp: $v" >&2
+    return 1
+  fi
+  echo "$v"
 }
 
 while (($#)); do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --expected-expires-at) EXPECTED_AT="${2:-}"; shift 2 ;;
+    --expected-delete-after) EXPECTED_DUE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+EXPECTED_AT="$(normalize_expected_deadline "$EXPECTED_AT" "--expected-expires-at")" || exit 2
+EXPECTED_DUE="$(normalize_expected_deadline "$EXPECTED_DUE" "--expected-delete-after")" || exit 2
+
+# 共享集群租户（packed_shared）不属于 ECS 路径。平台按集群登记表
+# （packed/packed-tenants.txt）决定走 packed 还是回退到这里；登记表漂移时共享租户就
+# 会被送进来。这类快照本来就没有 ECS 的 region 字段，走 worker_profile_load 的校验会
+# 直接 exit 2，平台于是每小时重试一条永远不可能成功的删除。ECS 侧没有任何属于它的
+# 实例，按“已清理”收尾，并留一条 warning 把问题交回路由层。
+_snapshot_profile_precheck() {
+  local state_dir raw
+  command -v jq >/dev/null 2>&1 || return 0
+  state_dir="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+  [[ -z "${CTYUN_WORKER_STATE_ROOT:-}" ]] || state_dir="${CTYUN_WORKER_STATE_ROOT%/}/${NAME}"
+  raw="${CATSCO_WORKER_DEPLOYMENT_JSON:-}"
+  if [[ -z "$raw" && -f "$state_dir/deployment.json" && ! -L "$state_dir/deployment.json" ]]; then
+    raw="$(cat "$state_dir/deployment.json" 2>/dev/null || true)"
+  fi
+  [[ -n "$raw" ]] || return 0
+  [[ "$(jq -r '.profile // empty' <<<"$raw" 2>/dev/null || true)" == packed_shared ]] || return 0
+  echo "warning: ${NAME} is packed_shared; the ECS destroy path owns no such instance — reporting not-found (platform routing by packed-tenants.txt drifted)" >&2
+  echo "{\"status\":\"not-found\",\"instance_name\":\"worker-${NAME}\"}"
+  exit 0
+}
+_snapshot_profile_precheck
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worker-deployment-profile.sh"
 worker_profile_load "$NAME"

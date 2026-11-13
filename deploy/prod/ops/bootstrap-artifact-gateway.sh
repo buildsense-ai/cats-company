@@ -17,13 +17,6 @@ CERT_NAME="catsco-artifact-gateway"
 CERT_ROOT="/etc/letsencrypt/live/$CERT_NAME"
 REMOTE_ROOT="/usr/local/lib/catsco-artifact-gateway"
 REMOTE_ENV="/etc/catsco-artifact-gateway/dns.env"
-AUTHORIZATION_URL="${CATSCO_ARTIFACT_AUTHORIZATION_URL:-}"
-ORIGIN_SECRET="${CATSCO_ARTIFACT_ORIGIN_SECRET:-}"
-# Reject incomplete privacy configuration before changing any remote service.
-[[ "$AUTHORIZATION_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9/_-]+$ ]] \
-  || { echo "error: fixed HTTPS CATSCO_ARTIFACT_AUTHORIZATION_URL is required" >&2; exit 2; }
-[[ "$ORIGIN_SECRET" =~ ^[A-Za-z0-9_-]{32,256}$ ]] \
-  || { echo "error: CATSCO_ARTIFACT_ORIGIN_SECRET must be 32-256 base64url characters" >&2; exit 2; }
 
 for file in artifact-gateway-route.mjs volcengine-dns.mjs dns01-certbot-hook.mjs; do
   [[ -f "$OPS_DIR/$file" ]] || { echo "error: missing gateway asset: $file" >&2; exit 2; }
@@ -108,13 +101,11 @@ server {
     listen $HTTPS_PORT ssl;
     listen [::]:$HTTPS_PORT ssl;
     server_name *.$HOST_SUFFIX;
-    error_log /var/log/nginx/error.log crit;
+
     ssl_certificate $CERT_ROOT/fullchain.pem;
     ssl_certificate_key $CERT_ROOT/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 
-
-    location = /artifacts { return 404; }
     location = /__artifact_gateway_health {
         default_type application/json;
         add_header Cache-Control "no-store" always;
@@ -132,24 +123,8 @@ server {
         proxy_read_timeout 15s;
     }
 
-    # The worker validates every request with the fixed application callback,
-    # including bootstrap tokens, then sets its resource cookie and returns 303.
-    location ~ ^/(artifacts|by-agent)/ {
+    location /artifacts/ {
         if (\$catsco_artifact_route_found = 0) { return 404; }
-        access_log off;
-        proxy_set_header X-Catsco-Artifact-Origin-Secret "$ORIGIN_SECRET";
-        proxy_set_header X-Catsco-Artifact-Origin https://\$http_host;
-        proxy_set_header X-Catsco-Artifact-Media "";
-        proxy_set_header X-Catsco-Artifact-Path "";
-        proxy_set_header Cookie \$http_cookie;
-        proxy_set_header Authorization \$http_authorization;
-        proxy_cache off;
-        proxy_no_cache 1;
-        proxy_cache_bypass 1;
-        proxy_intercept_errors off;
-        proxy_hide_header Cache-Control;
-        add_header Cache-Control "no-store" always;
-        add_header Referrer-Policy "no-referrer" always;
         proxy_pass http://\$catsco_artifact_backend;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -163,7 +138,7 @@ server {
 }
 EOF
 )"
-ssh_run "umask 077; cat > /etc/nginx/conf.d/10-catsco-artifact-gateway.conf && chmod 0600 /etc/nginx/conf.d/10-catsco-artifact-gateway.conf && nginx -t && systemctl enable --now nginx && systemctl reload nginx" <<<"$NGINX_CONFIG"
+ssh_run "cat > /etc/nginx/conf.d/10-catsco-artifact-gateway.conf && nginx -t && systemctl enable --now nginx && systemctl reload nginx" <<<"$NGINX_CONFIG"
 
 probe_host="gateway-probe.$HOST_SUFFIX"
 curl --fail --silent --show-error --max-time 15 \

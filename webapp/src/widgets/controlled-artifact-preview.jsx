@@ -4,7 +4,6 @@ import {
   artifactFrameBridgeNonce,
   artifactFrameURLWithBridgeNonce,
 } from '../artifact-context';
-import PrivateArtifactFrame, { isPrivateArtifactFrameURL } from './private-artifact-frame';
 
 export const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals';
 export const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-origin`;
@@ -109,15 +108,13 @@ export default function ControlledArtifactPreview({
   if (!descriptor?.isRemoteArtifact || !url || !file?.artifact_id
     || (sameOrigin && !bridgeNonce)) return null;
 
-  const Frame = isPrivateArtifactFrameURL(url) ? PrivateArtifactFrame : 'iframe';
-
   return (
-    <Frame
+    <iframe
       src={sameOrigin ? artifactFrameURLWithBridgeNonce(url, bridgeNonce) : url}
       className={className}
       title={title}
       sandbox={sameOrigin ? HTML_PREVIEW_SANDBOX : REMOTE_ARTIFACT_PREVIEW_SANDBOX}
-      {...(Frame === PrivateArtifactFrame ? { messageId: file?.annotation_source?.message_id || file?.message_id } : {})}
+      credentialless=""
       referrerPolicy="no-referrer"
       onLoad={handleLoad}
       onError={() => fail('artifact_frame_load_failed')}

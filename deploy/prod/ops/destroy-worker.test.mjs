@@ -1,4 +1,4 @@
-// Tests for deploy/prod/ops/destroy-worker.sh.
+﻿// Tests for deploy/prod/ops/destroy-worker.sh.
 //
 // Runs the real bash script through Git Bash with fake ctyun-cli.
 import { test } from "node:test";
@@ -112,7 +112,7 @@ import path from "node:path";
 import fs from "node:fs";
 const args = process.argv.slice(2);
 // BusyBox-style timeout: accept only -s SIG / -k KILL_SECS (+ short -sSIG/
-// -kSECS). GNU-only long options (--signal/--kill-after) MUST fail — the
+// -kSECS). GNU-only long options (--signal/--kill-after) MUST fail 鈥?the
 // production alpine image ships BusyBox timeout.
 let i = 0;
 while (i < args.length) {
@@ -163,7 +163,7 @@ function setupSandbox(state) {
     ...process.env,
     PATH: `${extraPath}${path.delimiter}${process.env.PATH || ""}`,
     CTYUN_WORKER_REGION_ID: "region-test",
-    // MSYS 形式（/c/...）：脚本里 bash 内建 [[ -f ]] / [[ -d ]] 只认 Unix 路径
+    // MSYS 褰㈠紡锛?c/...锛夛細鑴氭湰閲?bash 鍐呭缓 [[ -f ]] / [[ -d ]] 鍙 Unix 璺緞
     CTYUN_WORKER_STATE_DIR: toMsys(path.join(sandbox, "state")),
     FAKE_STATE: statePath,
     ...extra,
@@ -225,7 +225,7 @@ test("destroy-worker: deletes instance + keypair + state dir", () => {
     instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
     keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
   });
-  // 模拟 provision 留下的 state 目录
+  // 妯℃嫙 provision 鐣欎笅鐨?state 鐩綍
   const st = path.join(sb.sandbox, "state", "bot-a");
   fs.mkdirSync(st, { recursive: true });
   fs.writeFileSync(path.join(st, "id_rsa"), "fake-key");
@@ -502,4 +502,47 @@ test("destroy-worker: a still-present instance keeps key and local retry state",
   const state=JSON.parse(fs.readFileSync(sb.statePath,"utf8"));
   assert.equal(state.keyDeleteAttempts||0,0);
   assert.ok(fs.existsSync(path.join(localState,"retry-marker")));
+});
+
+test("destroy-worker: accepts the platform deadline flags", () => {
+  // platform/destroy.sh 会给后端透传 sweeper 读到的 deadline；ECS 路径必须接受，
+  // 否则每次销毁都在参数解析阶段 exit 2（2026-11-13 bot-ops-* 卡 delete_failed）。
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-ops-x", instanceID: "i-9", state: "running", floatingIP: "10.0.0.9" }],
+    keypairs: [{ keyPairName: "worker-key-bot-ops-x", keyPairID: "kp-9" }],
+  });
+  const r = run(sb, [
+    "--name", "bot-ops-x",
+    "--expected-expires-at", "2026-11-12T01:16:49Z",
+    "--expected-delete-after", "2026-11-12T01:17:09Z",
+  ]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /"status":"destroyed"/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.deletedInstances, ["i-9"]);
+});
+
+test("destroy-worker: rejects a malformed deadline before touching the provider", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+  });
+  const r = run(sb, ["--name", "bot-a", "--expected-expires-at", "not-a-date"]);
+  assert.equal(r.status, 2, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /not a valid timestamp/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal((state.deletedInstances || []).length, 0, "must fail closed and delete nothing");
+});
+test("destroy-worker: a packed_shared snapshot is not ours to destroy", () => {
+  // 平台按 packed-tenants.txt 路由；登记表漂移时共享租户会落到 ECS 分支，而它的快照
+  // 没有 region，历史上这里直接 exit 2，平台每小时重试一条永不成功的删除。
+  const sb = setupSandbox({ instances: [], keypairs: [] });
+  const dir = path.join(sb.sandbox, "state", "bot-shared-x");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "deployment.json"),
+    JSON.stringify({ profile: "packed_shared", env: { CTYUN_WORKER_EXT_IP: "0" } }));
+  const r = run(sb, ["--name", "bot-shared-x"], { CTYUN_WORKER_STATE_ROOT: toMsys(path.join(sb.sandbox, "state")) });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /"status":"not-found"/);
+  assert.match(r.stderr, /packed_shared/);
 });

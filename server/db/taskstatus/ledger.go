@@ -307,9 +307,11 @@ func (l Ledger) MarkStale(topic string, source int64, run string, cutoff time.Ti
 	s.Error = "bot disconnected before terminal task status"
 	s.ExpiresAt = nil
 	s.UpdatedAt = now
-	if s.EventUpdatedAt.Before(now) {
-		s.EventUpdatedAt = now
-	}
+	// Advance the event time only past this run's own last event. Stamping it
+	// with now would outrank a later run's terminal and turn a conversation
+	// whose last turn actually finished into "任务已自动中止" after any
+	// reconnect, which is what most stale aggregates in production were.
+	s.EventUpdatedAt = s.EventUpdatedAt.Add(time.Microsecond)
 	aggregate, err := l.write(tx, s, now)
 	if err != nil {
 		return nil, false, err
@@ -318,6 +320,128 @@ func (l Ledger) MarkStale(topic string, source int64, run string, cutoff time.Ti
 		return nil, false, err
 	}
 	return aggregate, true, nil
+}
+
+// supersededRun names one pending run a newer run of the same source overtook.
+// created_at is the run's durable start order; it is the only ordering a
+// publisher cannot rewrite by re-sending an event with a different clock.
+type supersededRun struct {
+	topic     string
+	source    int64
+	run       string
+	createdAt time.Time
+}
+
+// CloseSuperseded retires pending runs that a newer run of the same topic and
+// source already finished over. A bot abandons a turn whenever the user sends
+// again while it is working, stops it, or when the runtime dies between the
+// running publish and the terminal one; nothing else in the ledger notices,
+// because the disconnected-bot recovery only applies to bots that are offline
+// everywhere. Leaving the row pending hides the newer terminal from every
+// projection until the liveness lease expires (six hours), which the client
+// renders as a task that never finishes.
+func (l Ledger) CloseSuperseded(limit int) ([]*types.ConversationTaskStatus, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := l.DB.Query(l.query(`SELECT s.topic_id, s.source_uid, s.run_id, s.created_at
+		FROM conversation_task_runs s
+		WHERE s.state IN ('running','waiting')
+		AND EXISTS (SELECT 1 FROM conversation_task_runs t
+			WHERE t.topic_id = s.topic_id AND t.source_uid = s.source_uid
+			AND t.state IN ('completed','failed','cancelled','stale')
+			AND t.created_at > s.created_at)
+		ORDER BY s.created_at, s.id LIMIT ?`), limit)
+	if err != nil {
+		return nil, err
+	}
+	var candidates []supersededRun
+	for rows.Next() {
+		var candidate supersededRun
+		if err := rows.Scan(&candidate.topic, &candidate.source, &candidate.run, &candidate.createdAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	var repaired []*types.ConversationTaskStatus
+	for _, candidate := range candidates {
+		projection, updated, err := l.closeSupersededRun(candidate)
+		if err != nil {
+			return repaired, fmt.Errorf("retire superseded run topic=%s source=%d run=%s: %w", candidate.topic, candidate.source, candidate.run, err)
+		}
+		if updated {
+			repaired = append(repaired, projection)
+		}
+	}
+	return repaired, nil
+}
+
+func (l Ledger) closeSupersededRun(candidate supersededRun) (*types.ConversationTaskStatus, bool, error) {
+	tx, err := l.DB.Begin()
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	if err := l.lockTopic(tx, candidate.topic); err != nil {
+		return nil, false, err
+	}
+	s, err := scanStatus(tx.QueryRow(l.query(`SELECT `+columns+` FROM conversation_task_runs
+		WHERE topic_id = ? AND source_uid = ? AND run_id = ?`), candidate.topic, candidate.source, candidate.run))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if s.State != "running" && s.State != "waiting" {
+		return nil, false, nil
+	}
+	// Re-check under the topic lock: the list was read outside this transaction
+	// and the run may have finished, or the newer run may have been replaced.
+	var newer int
+	if err := tx.QueryRow(l.query(`SELECT COUNT(*) FROM conversation_task_runs
+		WHERE topic_id = ? AND source_uid = ? AND created_at > ?
+		AND state IN ('completed','failed','cancelled','stale')`),
+		candidate.topic, candidate.source, candidate.createdAt).Scan(&newer); err != nil {
+		return nil, false, err
+	}
+	if newer == 0 {
+		return nil, false, nil
+	}
+	now, err := l.now(tx)
+	if err != nil {
+		return nil, false, err
+	}
+	s.State = "stale"
+	s.Summary = "上一轮已结束"
+	s.Error = "superseded by a newer run before terminal task status"
+	s.ExpiresAt = nil
+	s.UpdatedAt = now
+	// EventUpdatedAt stays where the abandoned run left it: retirement is a
+	// repair, not a new event, and the newer terminal must win every projection.
+	if _, err := l.write(tx, s, now); err != nil {
+		return nil, false, err
+	}
+	projection, err := scanStatus(tx.QueryRow(l.query(`SELECT `+columns+` FROM conversation_task_runs
+		WHERE topic_id = ? AND source_uid = ? AND (expires_at IS NULL OR expires_at > ?)
+		ORDER BY CASE WHEN state IN ('running','waiting') THEN 0 ELSE 1 END, event_updated_at DESC, id DESC LIMIT 1`),
+		candidate.topic, candidate.source, now))
+	if errors.Is(err, sql.ErrNoRows) {
+		projection, err = s, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return projection, true, nil
 }
 
 func (l Ledger) ListRuns(topic string, before int64, limit int) ([]store.ConversationTaskRun, error) {

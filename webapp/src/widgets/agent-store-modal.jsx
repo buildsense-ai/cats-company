@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import SlidingSegments from './sliding-segments';
 import { createPortal } from 'react-dom';
 import { api, getWebSocketURL } from '../api';
@@ -523,7 +523,9 @@ const botVisibilityDescription = (visibility) => (
     : '别人可以通过名字或 UID 搜索并申请添加。'
 );
 
-function AgentManageSection({ id, title, summary, icon: Icon, open, onToggle, variant = '', children }) {
+const DailyNotesPanel = lazy(() => import('./daily-notes/daily-notes-panel'));
+
+function AgentManageSection({ id, title, summary, icon: Icon, open, onToggle, variant = '', bodyClassName = '', children }) {
   const headingId = `${id}-heading`;
   const contentId = `${id}-content`;
   return (
@@ -547,7 +549,7 @@ function AgentManageSection({ id, title, summary, icon: Icon, open, onToggle, va
       {open && (
         <div
           id={contentId}
-          className="cc-agent-manage-section-body"
+          className={`cc-agent-manage-section-body${bodyClassName ? ` ${bodyClassName}` : ''}`}
           role="region"
           aria-labelledby={headingId}
         >
@@ -2695,6 +2697,21 @@ export default function AgentStoreModal({
                   前往 SkillHub 管理
                 </button>
               </section>
+              </AgentManageSection>
+
+              <AgentManageSection
+                id={`cc-agent-manage-daily-notes-${editingBot.id || editingBot.uid}`}
+                title="Daily Notes"
+                summary="按天整理的工作笔记"
+                icon={BookOpen}
+                open={manageSection === 'daily-notes'}
+                onToggle={() => setManageSection('daily-notes')}
+                variant="tab"
+                bodyClassName="is-daily-notes"
+              >
+                <Suspense fallback={<p className="cc-agent-manage-loading">正在打开 Daily Notes…</p>}>
+                  <DailyNotesPanel key={editingBot.id || editingBot.uid} agentUid={editingBot.id || editingBot.uid} />
+                </Suspense>
               </AgentManageSection>
               </fieldset>
 

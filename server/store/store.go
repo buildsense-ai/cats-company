@@ -272,6 +272,22 @@ type ConversationTaskStatusRecoveryStore interface {
 	MarkConversationTaskStatusStaleIfUnchanged(topicID string, sourceUID int64, runID string, disconnectedAt time.Time, generation uint64) (*types.ConversationTaskStatus, bool, error)
 }
 
+// ConversationTaskStatusSupersedeStore is optional. A bot that keeps serving a
+// conversation after abandoning one of its own turns (superseded by the next
+// message, stopped by the user, or killed before its terminal publish) leaves
+// that run marked running until its liveness lease expires, which is displayed
+// as a task that never finishes. This store retires those runs once a newer run
+// of the same source has reached a terminal state: the ledger can then project
+// the terminal it was hiding.
+type ConversationTaskStatusSupersedeStore interface {
+	// CloseSupersededConversationTaskStatuses marks pending runs that a newer
+	// run of the same topic and source already overtook, and returns the
+	// repaired source projection of each retired run. Retiring a run never
+	// moves its event time forward, so the newer terminal stays the topic's
+	// latest event. limit bounds how many runs one call repairs.
+	CloseSupersededConversationTaskStatuses(limit int) ([]*types.ConversationTaskStatus, error)
+}
+
 // ConversationTaskGenerationStore is optional. It persists a cluster-wide
 // monotonic connection generation per bot so disconnected-task recovery can
 // distinguish a fresh connection generation (possibly on another node) from

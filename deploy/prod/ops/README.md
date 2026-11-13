@@ -94,6 +94,34 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cn/v0/channels  # 缺省 .cn（可显�
 - worker 应用包从私有 TOS 桶下载。生产凭证只授予
   `catsco-worker-release/update/worker/*` 的只读权限，不下发给浏览器或 worker。
 
+### 内网更新包缓存
+
+控制服务器与员工可能处于不同 VPC，普通缓存命中仍会经公网 SSH 跳板传输整个包。
+可在已有跳板上启用独立的私网 HTTP 缓存，无需把 TOS 凭据或员工私钥放到跳板：
+
+```bash
+# 在跳板上执行；填写实际私网地址和员工网段。只监听此私网 IP。
+CATSCO_WORKER_CACHE_LISTEN_IP=<jump-private-ip> \
+CATSCO_WORKER_CACHE_ALLOW_CIDRS=<worker-subnet-cidr>,<packed-subnet-cidr> \
+  bash bootstrap-worker-artifact-cache.sh
+# 在控制服务器 prod.env 中配置，随 server 容器重建生效。
+CATSCO_WORKER_ARTIFACT_MIRROR_URL=http://<jump-private-ip>:19992
+CATSCO_WORKER_ARTIFACT_MIRROR_DIR=/var/cache/catsco-worker-artifacts
+CATSCO_WORKER_ARTIFACT_CACHE_KEEP=3
+```
+
+跳板安全组只需允许员工网段访问 TCP 19992。配置独立位于
+`/etc/nginx/conf.d/20-catsco-worker-cache.conf`，不修改 artifact 网关路由。
+控制面按 `版本/SHA256/文件名` 校验并原子发布缓存，员工从内网下载后再次校验 SHA256。
+首次填充由控制面签发单个对象、有效十分钟的 GET 链接，经 SSH stdin 交给跳板直接从 TOS 下载；
+链接不写文件或日志，永久凭据留在控制面。直接下载失败时可用 SCP 填充，命中后只经 SSH 传小安装脚本。
+缓存不可达、发布或校验失败时自动退回原 SCP 路径。公网部署不启用此路径。
+清空 `CATSCO_WORKER_ARTIFACT_MIRROR_URL` 可停用。URL 只填协议、主机和端口，不带路径。
+两端缓存默认保留最新三版及当前安装版，`CATSCO_WORKER_ARTIFACT_CACHE_KEEP=0` 可关闭回收。
+本地更新持共享锁，镜像下载使用 pin 避免并发回收；异常中断遗留 pin 最多保护一天。
+回收只识别含 worker 包的版本目录，不删除员工 `/opt/catsco/releases`；失败输出 warning。
+更新错误包含 tenant、阶段和阶段耗时。
+
 ### TOS 发布生命周期
 
 控制面展示专用 worker artifact 桶中实际发现的全部 `manifest.json` 发布，不再截断为固定数量。
@@ -142,14 +170,6 @@ https://agent-<uid>.artifacts.catsco.fun:19991/artifacts/...
   -> worker-private-ip:19990/artifacts/...
 ```
 
-Artifact 文件现在必须经过持久化消息权限校验。部署前先完成
-[私有 Artifact 接入](../artifact-privacy.md)：注册人类/机器人认证回调，给 server、
-gateway 和所有 worker 配置同一 `CATSCO_ARTIFACT_ORIGIN_SECRET`，并给 gateway/worker
-配置固定 HTTPS `CATSCO_ARTIFACT_AUTHORIZATION_URL`。现有 provision/reset 不会自动
-注入这两个新增变量，必须配置静态服务的 systemd 环境；缺失时文件请求返回 503。
-网关转发到受保护的 worker，由 worker 每次请求回调服务端；HEAD、Range、JSON、页面子资源均不例外。
-聚合静态 index 一律拒绝，列表发现需改用受保护的 management 元数据接口。
-
 启用前，在生产 `prod.env` 填写 `env.prod.example` 中的 Artifact gateway 参数。
 DNS Access Key 只供网关初始化和证书续签使用，不会注入 worker。然后在 server
 容器中执行一次：
@@ -186,13 +206,12 @@ curl --fail https://gateway-probe.artifacts.catsco.fun:19991/__artifact_gateway_
 /opt/catsco/ops/artifact-gateway-route.sh status <agent-uid>
 curl --fail http://<worker-private-ip>:19990/__artifact_health
 curl --fail https://agent-<agent-uid>.artifacts.catsco.fun:19991/__artifact_health
-# 应返回拒绝状态，不能输出 index 文件；health 成功并不代表文件应公开。
-curl --silent --output /dev/null --write-out '%{http_code}\n' https://agent-<agent-uid>.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
+curl --fail https://agent-<agent-uid>.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
 ```
 
-回滚必须保留文件授权边界，不可恢复匿名 `direct-https`/静态 index 或公共 fallback。
-关闭网关不会删除 Artifact 文件，但旧公网 worker、别名源站和对象存储 ACL 仍需独立
-核查和关闭旁路；仓库配置不能证明生产中不存在其他入口。
+回滚时将 `CATSCO_ARTIFACT_GATEWAY_ENABLED=0` 且
+`CATSCO_WORKER_ARTIFACT_HOST_MODE=`，重新创建 server 容器。旧的公网 worker
+继续使用 Skill 的 `direct-https` 模式；关闭开关不会删除已有 Artifact 文件。
 
 ## 脚本依赖（Dockerfile 已装）
 

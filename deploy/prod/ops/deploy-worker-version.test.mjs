@@ -62,6 +62,18 @@ const command = args.slice(remoteIndex + 1).join(" ");
 const state = JSON.parse(fs.readFileSync(process.env.FAKE_STATE, "utf8"));
 state.sshCalls = state.sshCalls || [];
 state.sshCalls.push(command);
+if (args[remoteIndex] === "root@jump-test") {
+  fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
+  if (command.includes("if test -r") && state.mirrorHit) process.stdout.write(process.env.FIXTURE_SHA + "  cached-file\\n");
+  if (command.includes("curl --fail") && state.mirrorFillFail) process.exit(22);
+  if (command.includes("mv -f") && state.mirrorPublishFail) process.exit(1);
+  process.exit(0);
+}
+if (command.includes("curl --fail")) {
+  state.mirrorDownloads = (state.mirrorDownloads || 0) + 1;
+  fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
+  process.exit(state.mirrorFetchFail || (state.mirrorCorrupt && command.includes("sha256sum -c -")) ? 22 : 0);
+}
 if (command.includes("readlink -f /opt/catsco/current") && command.includes("systemctl is-active --quiet")) {
   fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
   process.exit(state.currentRelease && state.localRelease ? 0 : 1);
@@ -85,6 +97,7 @@ const FAKE_SCP = `
 import fs from "node:fs";
 const state = JSON.parse(fs.readFileSync(process.env.FAKE_STATE, "utf8"));
 state.scpCalls = (state.scpCalls || 0) + 1;
+state.scpTargets = [...(state.scpTargets || []), process.argv.at(-1)];
 fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
 `;
 
@@ -99,6 +112,12 @@ state.manifestDownloads = state.manifestDownloads || 0;
 state.artifactDownloads = state.artifactDownloads || 0;
 state.tosFetchArgs = state.tosFetchArgs || [];
 state.tosFetchArgs.push(args);
+if (args.includes("--presign-key")) {
+  state.presignCalls = (state.presignCalls || 0) + 1;
+  fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
+  process.stdout.write("https://bucket.tos.example/update/package.tar.gz?signature=test");
+  process.exit(0);
+}
 if (key.endsWith("/manifest.json")) {
   state.manifestDownloads += 1;
   fs.writeFileSync(output, JSON.stringify({
@@ -152,6 +171,7 @@ function setupSandbox(state = {}) {
   writeCommand(bin, "scp", FAKE_SCP);
   writeCommand(bin, "tos-fetch", FAKE_TOS_FETCH);
   writeCommand(bin, "timeout", FAKE_TIMEOUT);
+  if (process.platform === "win32") writeCommand(bin, "flock", "process.exit(0);");
 
   const listReleases = path.join(sandbox, "list-releases.sh");
   fs.writeFileSync(listReleases, "#!/usr/bin/env sh\nprintf '%s\\n' '1.4.8\t100' '1.4.9\t200'\n");
@@ -326,7 +346,7 @@ test("deploy-worker-version: prunes the artifact cache to the newest 3 versions"
   for (const v of ["1.4.6", "1.4.7", "1.4.8"]) {
     const d = path.join(sb.cacheDir, v);
     fs.mkdirSync(d, { recursive: true });
-    fs.writeFileSync(path.join(d, "placeholder"), "x");
+    fs.writeFileSync(path.join(d, `catsco-worker-${v}.tar.gz`), "x");
   }
   const r = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
@@ -335,4 +355,63 @@ test("deploy-worker-version: prunes the artifact cache to the newest 3 versions"
     .filter((n) => fs.statSync(path.join(sb.cacheDir, n)).isDirectory())
     .sort();
   assert.deepEqual(left, ["1.4.7", "1.4.8", "1.4.9"], "旧版本应被回收: " + JSON.stringify(left));
+});
+
+function enableMirror(sb) {
+  sb.env.CTYUN_JUMP_IP = "jump-test";
+  sb.env.CATSCO_WORKER_ARTIFACT_MIRROR_URL = "http://192.168.1.3:19992";
+}
+
+test("deploy-worker-version: a warm private mirror avoids artifact SCP", () => {
+  const sb = setupSandbox({ mirrorHit: true });
+  enableMirror(sb);
+  const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+  assert.equal(result.status, 0, result.stderr);
+  const state = readState(sb);
+  assert.equal(state.mirrorDownloads, 1);
+  assert.equal(state.scpCalls, 1, "only the updater script crosses SSH");
+  assert.match(state.scpTargets[0], /\.sh$/);
+  assert.match(result.stderr, /private artifact cache hit/);
+});
+
+test("deploy-worker-version: a cold mirror pulls a signed object and publishes atomically", () => {
+  const sb = setupSandbox();
+  enableMirror(sb);
+  const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+  assert.equal(result.status, 0, result.stderr);
+  const state = readState(sb);
+  assert.equal(state.mirrorDownloads, 1);
+  assert.equal(state.scpCalls, 1, "cold fill downloads on the jump host");
+  assert.equal(state.presignCalls, 1);
+  assert.ok(state.sshCalls.some(command => command.includes("sha256sum -c -") && command.includes("mv -f")));
+});
+
+for (const failure of ["mirrorFetchFail", "mirrorPublishFail", "mirrorCorrupt"]) {
+  test(`deploy-worker-version: ${failure} falls back to the original SCP route`, () => {
+    const sb = setupSandbox({ mirrorHit: failure !== "mirrorPublishFail", [failure]: true });
+    enableMirror(sb);
+    const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /"status":"updated"/);
+    assert.ok(readState(sb).scpTargets.some(target => /root@10\.0\.0\.9:.*\.tar\.gz$/.test(target)));
+  });
+}
+
+test("deploy-worker-version: public workers ignore the private mirror", () => {
+  const sb = setupSandbox();
+  sb.env.CATSCO_WORKER_ARTIFACT_MIRROR_URL = "http://192.168.1.3:19992";
+  const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readState(sb).mirrorDownloads || 0, 0);
+  assert.equal(readState(sb).scpCalls, 2);
+});
+
+test("deploy-worker-version: direct cache fill failure falls back to SCP fill", () => {
+  const sb = setupSandbox({ mirrorFillFail: true });
+  enableMirror(sb);
+  const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readState(sb).scpCalls, 2);
+  assert.match(readState(sb).scpTargets[0], /root@jump-test:.*\.part-/);
+  assert.match(result.stderr, /trying SCP fill/);
 });

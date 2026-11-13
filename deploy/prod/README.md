@@ -263,28 +263,28 @@ With no node registry configured, artifact management keeps using the legacy
 `CATSCO_ARTIFACT_MANAGEMENT_URL` and `CATSCO_ARTIFACT_MANAGEMENT_TOKEN` only
 when direct Artifact discovery is disabled.
 
-Artifact delivery now requires persisted-message authorization; see
-[private artifact delivery](artifact-privacy.md) for server callback integration,
-gateway/worker secrets, browser transport and the mandatory origin audit.
-The historical direct-discovery template was:
+Production enables one-server-per-Agent static discovery by default:
 
 ```env
 CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE=https://agent-{uid}.artifacts.catsco.fun:19991/artifacts
 ```
 
-Protected workers deliberately deny aggregate `artifacts-index.json` reads,
-including HEAD and authenticated requests. Static-only discovery through that
-template therefore fails closed. Configure protected management metadata and
-disable the direct template when migrating to private delivery:
+For Agent `535`, CatsCo reads:
 
-```env
-CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE=
+```text
+https://agent-535.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
 ```
 
-Existing artifact document and subresource paths can remain, but every request
-requires an authenticated actor and server authorization. An old URL does not
-convey access. Do not restore a public index or static fallback to recover list
-discovery. The application filters protected management lists per resource.
+The template must use HTTPS, contain exactly one `{uid}` in the hostname, end
+with `/artifacts`, and use a different origin from `CATSCO_PUBLIC_BASE_URL`.
+Set `CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE=` explicitly to disable this route.
+An unresolved hostname or index HTTP 404 means the Agent has not published an
+Artifact yet and returns an empty list. Connection failures, HTTP 5xx, invalid
+JSON, invalid Artifact URLs, and wrong-host URLs remain errors.
+
+Direct template nodes are list-only: CatsCo projects the selected Agent UID,
+sets `can_delete=false` and `can_restore=false`, and does not send a management
+token to the employee host.
 
 To route each managed Agent to the artifact host on its deployment node, copy
 `deploy/prod/artifact-nodes.example.json` to the persistent secrets directory
@@ -297,23 +297,27 @@ CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
 The JSON maps an Agent UID to one node. Every node declares its public artifact
 base URL. A fully managed node also declares a protected management URL and
 exactly one bearer-token source: `management_token_env` or
-`management_token_file`. Static-only nodes previously read
-`<public_base_url>/by-agent/<uid>/artifacts-index.json`; this aggregate route is
-closed by the private static host. Such nodes require a protected metadata
-service before they can support discovery. The token itself must not be written
-into the JSON. Prefer a separate file under `/run/catsco-secrets` for each managed
-node; the directory is already mounted read-only in the server container.
+`management_token_file`. A static-only node may omit all three management
+fields; CatsCo then reads
+`<public_base_url>/by-agent/<uid>/artifacts-index.json`, verifies that every
+artifact URL stays inside the same Agent namespace, does not offer delete or
+restore, and returns an empty recycle bin. The token itself must not be written
+into the JSON. Prefer a separate file under
+`/run/catsco-secrets` for each managed node; the directory is already mounted
+read-only in the server container.
 Every `public_base_url` must use a different origin (scheme, host, or port) from
 `CATSCO_PUBLIC_BASE_URL`. The server rejects a same-origin registry at startup
 so executable Artifact HTML cannot share the CatsCo application origin.
 Published managed Artifact HTML URLs are part of the opaque-frame bridge
 contract: they must be canonical paths without query/fragment components and
 must serve the final document directly. Do not configure an HTTP redirect from
-an Artifact URL to another document. Verify document reads with authenticated
-transport and redirects disabled; anonymous reads must return no artifact bytes.
-Do not put reusable browser credentials in artifact URLs. See the privacy
-deployment guide for the required human/bot and direct-origin checks.
-For example, install a management token file with restricted permissions:
+an Artifact URL to another document. Before publishing a node, verify a real
+HTML URL with redirects disabled; a 3xx response is a deployment failure:
+
+```bash
+curl --fail --max-redirs 0 --location --silent --show-error --output /dev/null <artifact-url>
+```
+For example:
 
 ```bash
 printf '%s' '<node-b-token>' > /srv/catscompany-prod/secrets/artifact-node-b.token

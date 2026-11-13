@@ -20,7 +20,7 @@ func TestCloudArtifactHandlerRoutesAgentsToConfiguredNodes(t *testing.T) {
 	const tokenB = "node-b-management-token-abcdefghijklmnopqrstuvwxyz"
 	var callsA, callsB int
 	var upstreamA, upstreamB *httptest.Server
-	upstreamA = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamA = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callsA++
 		if r.Method != http.MethodGet || r.URL.Path != "/internal/agents/440/artifacts" {
 			t.Fatalf("node A request = %s %s", r.Method, r.URL.Path)
@@ -31,15 +31,8 @@ func TestCloudArtifactHandlerRoutesAgentsToConfiguredNodes(t *testing.T) {
 		_, _ = w.Write(managedNodeListJSON(upstreamA.URL+"/artifacts", "440", "active"))
 	}))
 	defer upstreamA.Close()
-	upstreamB = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstreamB = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callsB++
-		if r.Method == http.MethodGet {
-			if r.URL.Path != "/internal/agents/310/artifacts" || r.URL.Query().Get("status") != "active" || r.Header.Get("Authorization") != "Bearer "+tokenB {
-				t.Fatalf("node B authorization request = %s %s", r.Method, r.URL)
-			}
-			_, _ = w.Write(managedNodeListJSON(upstreamB.URL+"/artifacts", "310", "active"))
-			return
-		}
 		if r.Method != http.MethodDelete || r.URL.Path != "/internal/agents/310/artifacts/shared-game" {
 			t.Fatalf("node B request = %s %s", r.Method, r.URL.Path)
 		}
@@ -81,10 +74,6 @@ func TestCloudArtifactHandlerRoutesAgentsToConfiguredNodes(t *testing.T) {
 	)
 	handler.nodeRegistry = registry
 	handler.SetStore(twoManagedArtifactAgentsStore())
-	grantLegacyArtifactResources(t, handler, 7,
-		upstreamA.URL+"/artifacts/by-agent/440/shared-game/latest/",
-		upstreamB.URL+"/artifacts/by-agent/310/shared-game/latest/",
-	)
 
 	list := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
@@ -103,15 +92,15 @@ func TestCloudArtifactHandlerRoutesAgentsToConfiguredNodes(t *testing.T) {
 	if deleteResult.Code != http.StatusOK {
 		t.Fatalf("node B delete status = %d, body = %s", deleteResult.Code, deleteResult.Body.String())
 	}
-	if callsA != 1 || callsB != 2 {
-		t.Fatalf("node calls = A:%d B:%d, want A:1 B:2 (authorization and delete)", callsA, callsB)
+	if callsA != 1 || callsB != 1 {
+		t.Fatalf("node calls = A:%d B:%d, want 1 each", callsA, callsB)
 	}
 }
 
 func TestCloudArtifactHandlerListsMappedPublicIndexNode(t *testing.T) {
 	var upstreamCalls int
 	var upstream *httptest.Server
-	upstream = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls++
 		if r.Method != http.MethodGet || r.URL.Path != "/artifacts/by-agent/440/artifacts-index.json" {
 			t.Fatalf("public index request = %s %s", r.Method, r.URL.Path)
@@ -150,7 +139,6 @@ func TestCloudArtifactHandlerListsMappedPublicIndexNode(t *testing.T) {
 	)
 	handler.nodeRegistry = registry
 	handler.SetStore(managedArtifactAgentStore(7, 440, true))
-	grantLegacyArtifactResources(t, handler, 7, upstream.URL+"/artifacts/by-agent/440/lesson-game/latest/")
 
 	active := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
@@ -203,7 +191,7 @@ func TestCloudArtifactHandlerListsMappedPublicIndexNode(t *testing.T) {
 func TestCloudArtifactHandlerIsolatesAgentsOnSharedPublicIndexNode(t *testing.T) {
 	upstreamCalls := map[string]int{}
 	var upstream *httptest.Server
-	upstream = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		agentUID := ""
 		switch r.URL.Path {
 		case "/artifacts/by-agent/440/artifacts-index.json":
@@ -249,10 +237,6 @@ func TestCloudArtifactHandlerIsolatesAgentsOnSharedPublicIndexNode(t *testing.T)
 	)
 	handler.nodeRegistry = registry
 	handler.SetStore(twoManagedArtifactAgentsStore())
-	grantLegacyArtifactResources(t, handler, 7,
-		upstream.URL+"/artifacts/by-agent/440/agent-440-private-report/latest/",
-		upstream.URL+"/artifacts/by-agent/310/agent-310-private-report/latest/",
-	)
 
 	for _, test := range []struct {
 		agentUID   string
@@ -384,7 +368,7 @@ func TestCloudArtifactHandlerCanFallbackUnmappedAgentToLegacy(t *testing.T) {
 	const token = "legacy-management-token-abcdefghijklmnopqrstuvwxyz"
 	var legacyCalls int
 	var legacy *httptest.Server
-	legacy = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	legacy = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		legacyCalls++
 		if r.Method != http.MethodGet || r.URL.Path != "/internal/agents/310/artifacts" {
 			t.Fatalf("legacy request = %s %s", r.Method, r.URL.Path)
@@ -413,7 +397,6 @@ func TestCloudArtifactHandlerCanFallbackUnmappedAgentToLegacy(t *testing.T) {
 	)
 	handler.nodeRegistry = registry
 	handler.SetStore(twoManagedArtifactAgentsStore())
-	grantLegacyArtifactResources(t, handler, 7, legacy.URL+"/artifacts/by-agent/310/shared-game/latest/")
 
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(

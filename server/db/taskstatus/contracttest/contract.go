@@ -20,6 +20,7 @@ type Adapter interface {
 	store.ConversationTaskRunStore
 	store.ConversationTaskStatusOutboxStore
 	store.ConversationTaskStatusRecoveryStore
+	store.ConversationTaskStatusSupersedeStore
 	store.ConversationTaskGenerationStore
 	CreateUser(*types.User) (int64, error)
 	CreateTopic(string, string, int64) error
@@ -119,6 +120,89 @@ func Run(t *testing.T, db *sql.DB, adapter Adapter, postgres bool) {
 		}
 		if _, err := adapter.UpsertConversationTaskStatus(&types.ConversationTaskStatus{TopicID: topic, SourceUID: a, RunID: "a-old", State: "running"}); !errors.Is(err, store.ErrConversationTaskRunTerminal) {
 			t.Fatalf("late progress error=%v", err)
+		}
+	})
+
+	t.Run("newer run retires the pending run it overtook", func(t *testing.T) {
+		topic, a, _ := fixture(t)
+		upsert(t, topic, a, "abandoned", "running")
+		// Two consecutive upserts can share a microsecond; give the durable
+		// start order a gap so this asserts ordering rather than clock luck.
+		shift := `UPDATE conversation_task_runs SET created_at = created_at - INTERVAL '5 seconds' WHERE topic_id = ? AND run_id = 'abandoned'`
+		if !postgres {
+			shift = `UPDATE conversation_task_runs SET created_at = created_at - INTERVAL 5 SECOND WHERE topic_id = ? AND run_id = 'abandoned'`
+		}
+		if _, err := db.Exec(query(shift), topic); err != nil {
+			t.Fatal(err)
+		}
+		upsert(t, topic, a, "next", "running")
+		upsert(t, topic, a, "next", "completed")
+		// Until the sweep runs the abandoned run still outranks the terminal,
+		// which is what a client renders as a task that never finishes after
+		// the reply already landed.
+		if aggregate, err := adapter.GetConversationTaskStatuses([]string{topic}); err != nil || aggregate[topic] == nil ||
+			aggregate[topic].RunID != "abandoned" || aggregate[topic].State != "running" {
+			t.Fatalf("pre-sweep aggregate=%+v err=%v", aggregate[topic], err)
+		}
+		repaired, err := adapter.CloseSupersededConversationTaskStatuses(50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var projection *types.ConversationTaskStatus
+		for _, status := range repaired {
+			if status.TopicID == topic {
+				projection = status
+			}
+		}
+		if projection == nil || projection.RunID != "next" || projection.State != "completed" {
+			t.Fatalf("repaired projection=%+v", projection)
+		}
+		if aggregate, err := adapter.GetConversationTaskStatuses([]string{topic}); err != nil || aggregate[topic] == nil ||
+			aggregate[topic].RunID != "next" || aggregate[topic].State != "completed" {
+			t.Fatalf("post-sweep aggregate=%+v err=%v", aggregate[topic], err)
+		}
+		if source, err := adapter.GetConversationTaskStatusForSource(topic, a); err != nil || source == nil ||
+			source.RunID != "next" || source.State != "completed" {
+			t.Fatalf("source=%+v err=%v", source, err)
+		}
+		runs, err := adapter.ListConversationTaskRuns(topic, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		states := map[string]string{}
+		for _, run := range runs {
+			states[run.RunID] = run.State
+		}
+		if states["abandoned"] != "stale" || states["next"] != "completed" {
+			t.Fatalf("states=%v", states)
+		}
+		// Retiring is a repair: a retired run must not be repaired again.
+		again, err := adapter.CloseSupersededConversationTaskStatuses(50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, status := range again {
+			if status.TopicID == topic {
+				t.Fatalf("retired twice: %+v", status)
+			}
+		}
+	})
+
+	t.Run("terminal for an older run keeps the newer run active", func(t *testing.T) {
+		topic, a, _ := fixture(t)
+		upsert(t, topic, a, "older", "running")
+		upsert(t, topic, a, "newer", "running")
+		upsert(t, topic, a, "older", "completed")
+		if _, err := adapter.CloseSupersededConversationTaskStatuses(50); err != nil {
+			t.Fatal(err)
+		}
+		if source, err := adapter.GetConversationTaskStatusForSource(topic, a); err != nil || source == nil ||
+			source.RunID != "newer" || source.State != "running" {
+			t.Fatalf("source=%+v err=%v", source, err)
+		}
+		if aggregate, err := adapter.GetConversationTaskStatuses([]string{topic}); err != nil || aggregate[topic] == nil ||
+			aggregate[topic].State != "running" {
+			t.Fatalf("aggregate=%+v err=%v", aggregate[topic], err)
 		}
 	})
 
@@ -349,6 +433,37 @@ func Run(t *testing.T, db *sql.DB, adapter Adapter, postgres bool) {
 		}
 		if runs[1].State != "stale" || strings.Contains(runs[1].Summary, "已自动中止") {
 			t.Fatalf("disconnect claimed runtime stopped: %+v", runs[1])
+		}
+	})
+
+	t.Run("recovery keeps a later terminal as the topic status", func(t *testing.T) {
+		topic, a, _ := fixture(t)
+		upsert(t, topic, a, "abandoned", "running")
+		shift := `UPDATE conversation_task_runs SET created_at = created_at - INTERVAL '5 seconds' WHERE topic_id = ? AND run_id = 'abandoned'`
+		if !postgres {
+			shift = `UPDATE conversation_task_runs SET created_at = created_at - INTERVAL 5 SECOND WHERE topic_id = ? AND run_id = 'abandoned'`
+		}
+		if _, err := db.Exec(query(shift), topic); err != nil {
+			t.Fatal(err)
+		}
+		upsert(t, topic, a, "next", "running")
+		upsert(t, topic, a, "next", "completed")
+		generation, err := adapter.BumpBotConnectionGeneration(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The bot disconnects after the newer run already answered. Recovering
+		// the abandoned run must not replace "已完成" with "任务已自动中止".
+		aggregate, updated, err := adapter.MarkConversationTaskStatusStaleIfUnchanged(topic, a, "abandoned", time.Now().UTC().Add(time.Minute), generation)
+		if err != nil || !updated {
+			t.Fatalf("recovery updated=%v err=%v", updated, err)
+		}
+		if aggregate.State != "completed" || aggregate.RunID != "next" {
+			t.Fatalf("recovery outranked a later terminal: %+v", aggregate)
+		}
+		if source, err := adapter.GetConversationTaskStatusForSource(topic, a); err != nil || source == nil ||
+			source.RunID != "next" || source.State != "completed" {
+			t.Fatalf("source=%+v err=%v", source, err)
 		}
 	})
 

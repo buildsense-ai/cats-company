@@ -37,10 +37,9 @@ vi.mock('../components/feedback-system', () => ({
   useFeedback: () => ({ confirm: feedbackConfirm, notify: feedbackNotify }),
 }));
 
-vi.mock('../widgets/chat-message', async importOriginal => ({
+vi.mock('../widgets/chat-message', () => ({
   __esModule: true,
   downloadableMediaURL: (url) => `${url}${url.includes('?') ? '&' : '?'}download=1`,
-  fileMediaMessageIdForPreview: (await importOriginal()).fileMediaMessageIdForPreview,
   default: function MockChatMessage(props) {
     const [workingExpanded, setWorkingExpanded] = React.useState(false);
     const fileBlock = props.message?.content_blocks?.find?.((block) => block.type === 'file');
@@ -4004,6 +4003,23 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'xiaoba-1', state: 'completed',
       updated_at: '2026-10-19T01:01:00Z' } }));
     expect(currentState()).toBe('completed');
+  });
+
+  it('shows a final reply as completed while the terminal task receipt is delayed', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 680, from_uid: 1, type: 'text', content: '执行任务' },
+      // XiaoBa-style working messages do not carry the publisher run id.
+      { id: 681, from_uid: 2, type: 'tool_use', content: 'read' },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    const currentState = () => container.querySelector('[data-working-only="true"]').dataset.executionState;
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'xiaoba-delayed', state: 'running',
+      updated_at: '2026-10-19T01:00:00Z' } }));
+    expect(currentState()).toBe('running');
+    await act(async () => wsHandler({ data: { topic: 'p2p_1_2', from: 'usr2', seq: 682, type: 'text',
+      role: 'assistant', content: '任务结果已完成' } }));
+    expect(currentState()).toBe('replied');
   });
 
   it('keeps an explicit run-keyed group on its own run even when another run finishes', async () => {

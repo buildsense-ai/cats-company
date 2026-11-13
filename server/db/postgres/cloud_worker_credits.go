@@ -647,7 +647,15 @@ func (a *Adapter) ClaimCloudWorkerLifecycleDeletion(id int64) (bool, error) {
 		   -- A worker whose database term is newer than the provider's must be
 		   -- synced first: destroying it would act on a stale decision.
 		   AND NOT sync_pending
-		   AND package_expires_at<=CURRENT_TIMESTAMP AND delete_after<=CURRENT_TIMESTAMP
+		   -- delete_after is the only clock that decides when a worker may be
+		   -- destroyed. Also requiring package_expires_at<=now() deadlocked every
+		   -- explicit deletion: an ops/admin delete schedules delete_after=now()
+		   -- while the paid package still runs to a later date, so the row sat in
+		   -- delete_pending (and paged cloud_worker_cleanup_stuck) until the package
+		   -- itself expired. The expiry-driven path cannot regress from dropping the
+		   -- guard: MarkCloudWorkerLifecyclePending only fires when the package has
+		   -- already expired, and a renewal resets the row to 'active'.
+		   AND delete_after<=CURRENT_TIMESTAMP
 		   AND (state IN ('delete_pending','delete_failed')
 		   OR (state = 'delete_running' AND delete_started_at <= CURRENT_TIMESTAMP - INTERVAL '30 minutes'))`, id)
 	if err != nil {

@@ -232,41 +232,35 @@ export function mediaBaseForHostname(hostname) {
   return MEDIA_HOST_BASES[String(hostname).toLowerCase()] || '';
 }
 
-// Protected uploads use the API host so native media sends its host-only
-// HttpOnly session cookie. Known historical media-host URLs are normalized too.
+// 媒体加速域（/uploads 图片与文件专用）：优先 VITE_MEDIA_BASE 显式配置；
+// 生产环境仅对已知入口域名自动切换（见 MEDIA_HOST_BASES）；
+// 开发环境默认关闭，图片继续按 API_BASE 相对解析（本地联调不受影响）。
+const MEDIA_BASE = (() => {
+  const explicit = String(import.meta.env.VITE_MEDIA_BASE || '').trim();
+  if (explicit) {
+    try {
+      const parsed = new URL(explicit);
+      // 媒体域必须是 https 域名根、不含凭据/查询/锚点（资源路径保持 /uploads/...）。
+      if (
+        parsed.protocol === 'https:'
+        && (parsed.pathname === '' || parsed.pathname === '/')
+        && !parsed.username && !parsed.password && !parsed.search && !parsed.hash
+      ) {
+        return parsed.origin;
+      }
+    } catch {
+      // 非法配置按未配置处理，回退到按入口域名自动选择。
+    }
+  }
+  if (import.meta.env.DEV || typeof window === 'undefined') return '';
+  return mediaBaseForHostname(window.location.hostname);
+})();
 
-export function resolveMediaURL(url, messageId) {
+export function resolveMediaURL(url) {
   if (!url) return '';
-  let resolved = `${API_BASE}${url}`;
-  if (/^https?:\/\//i.test(url)) {
-    resolved = String(url);
-    try {
-      const parsed = new URL(url);
-      const legacyMediaHost = Object.values(MEDIA_HOST_BASES).includes(parsed.origin);
-      if (legacyMediaHost && parsed.pathname.startsWith('/uploads/')) {
-        resolved = `${API_BASE}${parsed.pathname}${parsed.search}${parsed.hash}`;
-      }
-    } catch { /* Preserve unrelated external URLs. */ }
-  }
-  // A historical read can repair its index using the persisted message. This
-  // hint belongs to the transport URL, never the stored attachment payload.
-  if (Number.isSafeInteger(messageId) && messageId > 0) {
-    try {
-      const parsed = new URL(resolved, window.location.origin);
-      const apiURL = new URL(getApiBaseURL());
-      const uploadPrefix = `${apiURL.pathname.replace(/\/$/, '')}/uploads/`;
-      if (parsed.origin === apiURL.origin && parsed.pathname.startsWith(uploadPrefix)) {
-        const hashIndex = resolved.indexOf('#');
-        const hash = hashIndex < 0 ? '' : resolved.slice(hashIndex);
-        const address = hashIndex < 0 ? resolved : resolved.slice(0, hashIndex);
-        const queryIndex = address.indexOf('?');
-        const params = new URLSearchParams(queryIndex < 0 ? '' : address.slice(queryIndex + 1));
-        params.set('message_id', String(messageId));
-        return `${queryIndex < 0 ? address : address.slice(0, queryIndex)}?${params}${hash}`;
-      }
-    } catch { /* A malformed URL cannot carry a read hint. */ }
-  }
-  return resolved;
+  if (/^https?:\/\//i.test(url)) return url;
+  if (MEDIA_BASE && String(url).startsWith('/uploads/')) return `${MEDIA_BASE}${url}`;
+  return `${API_BASE}${url}`;
 }
 
 export function isWSConnected() {
@@ -765,6 +759,8 @@ export const api = {
     request('GET', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/manifest`, undefined, options),
   getKnowledgeWikiWebSocketTicket: (agentUid, options = {}) =>
     request('GET', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/ws-ticket`, undefined, options),
+  queryDailyNotes: (agentUid, query, options = {}) =>
+    request('POST', `/api/agents/${encodeURIComponent(agentUid)}/daily-notes`, query, { timeoutMs: 30_000, ...options }),
   issueKnowledgeWikiHandoff: (agentUid) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/handoff`, {}),
   getAgentQuota: (agentUid) => request('GET', `/api/agents/quota?uid=${encodeURIComponent(agentUid)}`),

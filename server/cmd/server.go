@@ -312,12 +312,6 @@ func startDiagnosticsServer() {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "file-access-backfill" {
-		if err := runFileAccessBackfill(os.Args[2:]); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
 	cfgPath := "tinode.conf"
 	if len(os.Args) > 1 {
 		cfgPath = os.Args[1]
@@ -580,9 +574,6 @@ func main() {
 	deviceConnectorHandler := server.NewDeviceConnectorHandler(db, hub)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
 	uploadHandler.SetStorage(uploadStorage)
-	fileAccess := server.NewFileAccessService(db, hub)
-	uploadHandler.SetFileAccess(fileAccess)
-	fileMediaAuth := server.NewFileMediaAuth(db, hub)
 	tutorialTaskHandler := server.NewTutorialTaskHandler("./uploads", "/uploads")
 	tutorialTaskHandler.SetUploadStorage(uploadStorage)
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
@@ -592,7 +583,6 @@ func main() {
 	cloudArtifactHandler.SetStore(db)
 	cloudArtifactHandler.SetUploadSourceValidator(uploadHandler)
 	cloudArtifactHandler.SetNotifier(hub)
-	cloudArtifactHandler.SetFileAccess(fileAccess)
 	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	hub.SetArtifactTaskIntentResolver(cloudArtifactHandler)
 	hub.SetArtifactRuntimeManifestResolver(cloudArtifactHandler)
@@ -1214,6 +1204,8 @@ func main() {
 	mux.HandleFunc("GET /api/agents/{uid}/knowledge/manifest", agentHandler.WikiAuth(agentHandler.HandleKnowledgeWikiManifest, jwtAuthWithDB(agentHandler.HandleKnowledgeWikiManifest)))
 	mux.HandleFunc("GET /api/agents/{uid}/knowledge/ws-ticket", agentHandler.WikiAuth(agentHandler.HandleKnowledgeWikiWebSocketTicket, jwtAuthWithDB(agentHandler.HandleKnowledgeWikiWebSocketTicket)))
 	mux.HandleFunc("POST /wiki/handoff", agentHandler.HandleKnowledgeWikiHandoff)
+	dailyNotesHandler := server.NewDailyNotesHandler(db, os.Getenv("CATSCO_DAILY_NOTES_BASE_URL"))
+	mux.HandleFunc("POST /api/agents/{uid}/daily-notes", jwtAuthWithDB(dailyNotesHandler.HandleQuery))
 	mux.HandleFunc("/api/agents/", jwtAuthWithDB(cloudArtifactHandler.HandleAgentArtifacts))
 	mux.HandleFunc("/api/topics/", jwtAuthWithDB(cloudArtifactHandler.HandleTopicFiles))
 	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
@@ -1388,11 +1380,7 @@ func main() {
 	mux.HandleFunc("/v1/images/upscale/tasks/", chainHTTP(imageUpscaleHandler.HandleUpscaleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
 	mux.HandleFunc("/v1/images/upscale", chainHTTP(imageUpscaleHandler.HandleUpscale, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/tasks/", chainHTTP(imageGenerationHandler.HandleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
-	mux.HandleFunc("/api/files/media-session", fileMediaAuth.HandleSession)
-	mux.HandleFunc("/api/files/artifact-session", fileMediaAuth.HandleArtifactSession(fileAccess))
-	mux.HandleFunc("/api/artifacts/file-authorization", fileMediaAuth.ArtifactMiddleware(cloudArtifactHandler.HandleFileAuthorization))
-	mux.HandleFunc("/uploads/tutorial/", uploadHandler.HandleServeFile)
-	mux.HandleFunc("/uploads/", fileMediaAuth.UploadMiddleware(fileAccess, uploadHandler.HandleServeFile))
+	mux.HandleFunc("/uploads/", uploadHandler.HandleServeFile)
 
 	if err := readerHandler.ConfigError(); err != nil {
 		log.Printf("Reader proxy is unavailable until configured: %v", err)

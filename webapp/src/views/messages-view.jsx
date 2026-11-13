@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, MessageSquare, Minus, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq, isWSConnected } from '../api';
 import t from '../i18n';
-import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, fileMediaMessageIdForPreview, FilePreviewPanel } from '../widgets/chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import { isCloudWorkerPending } from '../cloud-worker-pending';
@@ -486,7 +486,7 @@ function imageGalleryItems(messages) {
     imageBlocks.forEach((block, blockIndex) => {
       if (block?.type !== 'image' || !block.payload) return;
       const id = imageGalleryItemId(message, blockIndex, block.payload);
-      if (id) items.push({ id, payload: block.payload, message_id: fileMediaMessageIdForPreview(message, block.payload) });
+      if (id) items.push({ id, payload: block.payload });
     });
   });
   return items;
@@ -6313,7 +6313,10 @@ export default function MessagesView({
     if (task && ['completed', 'failed', 'cancelled', 'stale'].includes(task.state)) return task.state;
     const lastWorkingOrder = Math.max(...group.messages.map(message => conversationMessageOrder.get(message.id) ?? -1));
     const replyOrder = conversationReplies.get(group.explicitTurnKey || group.fallbackTurnKey) ?? -1;
-    if (!task && (replyOrder > lastWorkingOrder || group.conversationReplied)) return 'replied';
+    const hasFinalReply = replyOrder > lastWorkingOrder || group.conversationReplied;
+    // The runtime sends the visible reply before its asynchronous terminal
+    // task_status. Do not keep showing an active task after that reply arrives.
+    if (hasFinalReply && (!task || ['running', 'waiting'].includes(task.state))) return 'replied';
     const latest = latestConversationWorking.get(uid) === group;
     const runActive = group.messages.some(message => (
       conversationActivity[`${uid}:${assistantReplyTurnKey(message)}`]
@@ -9252,7 +9255,7 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
   stateRef.current = { item, index, items, onClose, onChange, triggerRef, hasOlder, loadingOlder, onLoadOlder };
   const hasPrevious = index > 0 || (hasOlder && !loadingOlder);
   const hasNext = index < items.length - 1;
-  const imageURL = resolveMediaURL(item.payload?.url || item.payload?.thumbnail, item.message_id);
+  const imageURL = resolveMediaURL(item.payload?.url || item.payload?.thumbnail);
   const downloadURL = downloadableMediaURL(imageURL);
 
   useEffect(() => {
