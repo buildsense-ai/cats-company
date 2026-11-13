@@ -497,7 +497,15 @@ func (a *Adapter) applyCommercialAction(r types.CommercialActionRequest) (*types
 		// The term travels with the credit: the durable action outlives this
 		// transaction, and an operator-requested permanent/follow_plan term must
 		// not be re-derived (as a package window) when the worker is provisioned.
-		if _, err = tx.Exec(`INSERT INTO cloud_worker_credits(uid,source_ref,expires_at,deployment_profile,billing_mode,runtime_plan,retention_days,expiry_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, r.UID, types.CommercialActionSource(r.UID, r.OperationID), p.WorkerExpiresAt, p.DeploymentProfile, p.BillingMode, p.RuntimePlan, retention, types.CloudWorkerExpiryModeOrDefault(p.WorkerExpiryMode)); err != nil {
+		//
+		// retain_data travels with it for the same reason and is likewise read
+		// from the snapshot this action was previewed against: an operation that
+		// puts the account on a credit package opens a credit environment, whose
+		// files and history survive the window (approved credit rules P1-2).
+		// Putting the account on a legacy package (or a token-only plan) opens
+		// nothing of the sort, so it keeps the historical cleanup schedule.
+		retainData := p.TargetPlan != nil && p.TargetPlan.ModelCreditUnits > 0
+		if _, err = tx.Exec(`INSERT INTO cloud_worker_credits(uid,source_ref,expires_at,deployment_profile,billing_mode,runtime_plan,retention_days,expiry_mode,retain_data) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, r.UID, types.CommercialActionSource(r.UID, r.OperationID), p.WorkerExpiresAt, p.DeploymentProfile, p.BillingMode, p.RuntimePlan, retention, types.CloudWorkerExpiryModeOrDefault(p.WorkerExpiryMode), retainData); err != nil {
 			return nil, err
 		}
 	}

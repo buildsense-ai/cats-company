@@ -236,6 +236,7 @@ func (a *Adapter) ReserveCloudWorkerRuntimeCredit(uid int64, reservation, profil
 	var id int64
 	var selectedProfile, selectedBilling, selectedRuntimePlan, selectedExpiryMode string
 	var selectedRetention sql.NullInt64
+	var selectedRetainData bool
 	var selectedExpiresAt sql.NullTime
 	// Which credit to spend is a real money decision, so the order is explicit:
 	//
@@ -265,7 +266,7 @@ func (a *Adapter) ReserveCloudWorkerRuntimeCredit(uid int64, reservation, profil
 		args = append(args, runtimePlan)
 	}
 	err = tx.QueryRow(`
-		SELECT c.id, c.deployment_profile, c.billing_mode, c.expires_at, c.retention_days, c.runtime_plan, COALESCE(NULLIF(c.expiry_mode, ''), 'legacy')
+		SELECT c.id, c.deployment_profile, c.billing_mode, c.expires_at, c.retention_days, c.runtime_plan, COALESCE(NULLIF(c.expiry_mode, ''), 'legacy'), c.retain_data
 		FROM cloud_worker_credits c
 		WHERE c.uid = $1 AND c.state = 'available' AND c.source_ref NOT LIKE 'ops:%' AND ($2 = '' OR c.deployment_profile = $2) AND ($3 = '' OR c.billing_mode = $3)
 		  AND (c.expires_at IS NULL OR c.expires_at > CURRENT_TIMESTAMP)`+runtimeFilter+`
@@ -283,7 +284,7 @@ func (a *Adapter) ReserveCloudWorkerRuntimeCredit(uid int64, reservation, profil
 		  CASE WHEN c.deployment_profile = 'public_ip' THEN 0 ELSE 1 END,
 		  CASE WHEN c.billing_mode = 'month' THEN 0 ELSE 1 END,
 		  c.created_at, c.id
-		FOR UPDATE SKIP LOCKED LIMIT 1`, args...).Scan(&id, &selectedProfile, &selectedBilling, &selectedExpiresAt, &selectedRetention, &selectedRuntimePlan, &selectedExpiryMode)
+		FOR UPDATE SKIP LOCKED LIMIT 1`, args...).Scan(&id, &selectedProfile, &selectedBilling, &selectedExpiresAt, &selectedRetention, &selectedRuntimePlan, &selectedExpiryMode, &selectedRetainData)
 	if err == sql.ErrNoRows {
 		return selection, false, nil
 	}
@@ -299,7 +300,7 @@ func (a *Adapter) ReserveCloudWorkerRuntimeCredit(uid int64, reservation, profil
 	if err := tx.Commit(); err != nil {
 		return selection, false, fmt.Errorf("commit cloud worker credit reservation: %w", err)
 	}
-	selection = types.CloudWorkerCreditSelection{Profile: selectedProfile, BillingMode: selectedBilling, RetentionDays: int(selectedRetention.Int64), RuntimePlan: selectedRuntimePlan, ExpiryMode: types.CloudWorkerExpiryModeOrDefault(selectedExpiryMode)}
+	selection = types.CloudWorkerCreditSelection{Profile: selectedProfile, BillingMode: selectedBilling, RetentionDays: int(selectedRetention.Int64), RuntimePlan: selectedRuntimePlan, ExpiryMode: types.CloudWorkerExpiryModeOrDefault(selectedExpiryMode), RetainData: selectedRetainData}
 	if selectedExpiresAt.Valid {
 		value := selectedExpiresAt.Time.UTC()
 		selection.ExpiresAt = &value
@@ -321,11 +322,12 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 	defer tx.Rollback()
 	var expiresAt sql.NullTime
 	var billing, expiryMode, profile string
+	var retainData bool
 	if err := tx.QueryRow(`
 		UPDATE cloud_worker_credits
 		SET state = 'consumed', worker_uid = $3, consumed_at = CURRENT_TIMESTAMP
 		WHERE uid = $1 AND reservation_ref = $2 AND state = 'reserved'
-		RETURNING expires_at, billing_mode, expiry_mode, deployment_profile`, uid, strings.TrimSpace(reservation), workerUID).Scan(&expiresAt, &billing, &expiryMode, &profile); err != nil {
+		RETURNING expires_at, billing_mode, expiry_mode, deployment_profile, retain_data`, uid, strings.TrimSpace(reservation), workerUID).Scan(&expiresAt, &billing, &expiryMode, &profile, &retainData); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("cloud worker credit reservation not found")
 		}
@@ -334,7 +336,16 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 	// Operator-issued credits may intentionally have no expiry (perpetual
 	// internal grants). They still become consumed, but must not create a
 	// notional immediately-due lifecycle row; package-backed credits always
-	// carry an expiry and retain the normal cleanup schedule.
+	// carry an expiry.
+	//
+	// retain_data is the durable credit-environment fact (approved credit rules
+	// 2026-11-09, P1-2) and it is snapshotted here, never re-derived later: a
+	// package lapse, a revocation or a plan change must not be able to drop it.
+	// For such a row the paid expiry is recorded and delete_after stays NULL —
+	// expiry may pause the machine, but delete_after is what the sweeper and the
+	// cluster fallback reaper read as permission to purge the volume, the state
+	// directory and the backups, and the product never promised that. A legacy
+	// (or operator-issued) credit keeps the schedule it always had.
 	if expiresAt.Valid {
 		if billing == types.CloudWorkerOnDemand {
 			graceDays = 3
@@ -342,17 +353,29 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 		if graceDays <= 0 {
 			graceDays = types.CloudWorkerRetentionDays(0, 0)
 		}
-		deleteAfter := expiresAt.Time.AddDate(0, 0, graceDays)
+		var deleteAfter interface{}
+		if !retainData {
+			deleteAfter = expiresAt.Time.AddDate(0, 0, graceDays)
+		}
 		if _, err := tx.Exec(`
-			INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state, billing_mode, retention_days, expiry_mode, sync_pending)
-			VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, FALSE)
+			INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state, billing_mode, retention_days, expiry_mode, sync_pending, retain_data)
+			VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, FALSE, $9)
 			ON CONFLICT (worker_uid) DO UPDATE SET owner_uid = EXCLUDED.owner_uid,
 			  tenant_name = EXCLUDED.tenant_name, package_expires_at = EXCLUDED.package_expires_at,
-			  delete_after = EXCLUDED.delete_after, billing_mode = EXCLUDED.billing_mode,
+			  -- retain_data is a promise that was already made on this machine. A
+			  -- later legacy (or operator-issued) credit must not withdraw it, and
+			  -- must not schedule the deletion it forbids: the marker is sticky and,
+			  -- while it is set, delete_after stays NULL however the window moves.
+			  -- A brand-new machine has no row yet, so it simply takes the credit's
+			  -- own answer above.
+			  retain_data = cloud_worker_lifecycles.retain_data OR EXCLUDED.retain_data,
+			  delete_after = CASE WHEN cloud_worker_lifecycles.retain_data OR EXCLUDED.retain_data
+			    THEN NULL ELSE EXCLUDED.delete_after END,
+			  billing_mode = EXCLUDED.billing_mode,
 			  retention_days = EXCLUDED.retention_days, expiry_mode = EXCLUDED.expiry_mode,
 			  sync_pending = FALSE, state = 'active', archived_at = NULL,
 			  delete_started_at = NULL, last_error = '', updated_at = CURRENT_TIMESTAMP`,
-			workerUID, uid, strings.TrimSpace(tenantName), expiresAt.Time, deleteAfter, billing, graceDays, types.CloudWorkerExpiryModeOrDefault(expiryMode)); err != nil {
+			workerUID, uid, strings.TrimSpace(tenantName), expiresAt.Time, deleteAfter, billing, graceDays, types.CloudWorkerExpiryModeOrDefault(expiryMode), retainData); err != nil {
 			return fmt.Errorf("register cloud worker lifecycle: %w", err)
 		}
 	} else if profile == types.CloudWorkerPackedShared && types.CloudWorkerExpiryModeOrDefault(expiryMode) != types.CloudWorkerExpiryLegacy {
@@ -362,14 +385,19 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 		// a later re-term or expiry claim would find nothing to act on. Legacy
 		// credits without an expiry keep the historical "no lifecycle" behaviour.
 		if _, err := tx.Exec(`
-			INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state, billing_mode, retention_days, expiry_mode, sync_pending)
-			VALUES ($1, $2, $3, NULL, NULL, 'active', $4, $5, $6, FALSE)
+			INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state, billing_mode, retention_days, expiry_mode, sync_pending, retain_data)
+			VALUES ($1, $2, $3, NULL, NULL, 'active', $4, $5, $6, FALSE, $7)
 			ON CONFLICT (worker_uid) DO UPDATE SET owner_uid = EXCLUDED.owner_uid,
 			  tenant_name = EXCLUDED.tenant_name, package_expires_at = NULL, delete_after = NULL,
 			  billing_mode = EXCLUDED.billing_mode, retention_days = EXCLUDED.retention_days,
-			  expiry_mode = EXCLUDED.expiry_mode, sync_pending = FALSE, state = 'active',
+			  expiry_mode = EXCLUDED.expiry_mode,
+			  -- Same promise as the bounded branch: once this machine is retained, no
+			  -- later credit can withdraw it (the row keeps NULL dates either way, so
+			  -- only the marker itself needs the OR).
+			  retain_data = cloud_worker_lifecycles.retain_data OR EXCLUDED.retain_data,
+			  sync_pending = FALSE, state = 'active',
 			  archived_at = NULL, delete_started_at = NULL, last_error = '', updated_at = CURRENT_TIMESTAMP`,
-			workerUID, uid, strings.TrimSpace(tenantName), billing, graceDays, types.CloudWorkerExpiryModeOrDefault(expiryMode)); err != nil {
+			workerUID, uid, strings.TrimSpace(tenantName), billing, graceDays, types.CloudWorkerExpiryModeOrDefault(expiryMode), retainData); err != nil {
 			return fmt.Errorf("register perpetual cloud worker lifecycle: %w", err)
 		}
 	}
@@ -496,9 +524,14 @@ func extendCloudWorkerLifecyclesWithPaidPeriod(tx *sql.Tx, ownerUID int64, expir
 		    conversion_pending = CASE WHEN l.billing_mode='ondemand' THEN true ELSE l.conversion_pending END,
 		    retention_days = CASE WHEN $3::int > 0 THEN $3::int ELSE l.retention_days END,
 		    -- Renewal keeps the window this row was created with; only rows that
-		    -- predate the column fall back to the legacy 15 days.
-		    delete_after = GREATEST(l.package_expires_at, $2::timestamptz)
-		      + (CASE WHEN $3::int > 0 THEN $3::int WHEN l.retention_days > 0 THEN l.retention_days ELSE 15 END * INTERVAL '1 day'),
+		    -- predate the column fall back to the legacy 15 days. A retained
+		    -- credit environment never acquires a cleanup deadline (approved
+		    -- credit rules P1-2): delete_after is what the sweeper reads as
+		    -- permission to purge its volume, state directory and backups. A
+		    -- legacy shared row keeps the schedule it was sold with.
+		    delete_after = CASE WHEN l.retain_data THEN NULL
+		      ELSE GREATEST(l.package_expires_at, $2::timestamptz)
+		        + (CASE WHEN $3::int > 0 THEN $3::int WHEN l.retention_days > 0 THEN l.retention_days ELSE 15 END * INTERVAL '1 day') END,
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '',
 		    sync_pending = CASE WHEN l.expiry_mode IN ('legacy','follow_plan') AND `+cloudWorkerSharedProfileFilter+` THEN TRUE ELSE l.sync_pending END,
@@ -522,8 +555,11 @@ func (a *Adapter) ExtendCloudWorkerLifecycles(uid int64, expiresAt time.Time, gr
 		UPDATE cloud_worker_lifecycles
 		SET package_expires_at = GREATEST(package_expires_at, $2::timestamptz),
 		    retention_days = CASE WHEN $3::int > 0 THEN $3::int ELSE retention_days END,
-		    delete_after = GREATEST(package_expires_at, $2::timestamptz)
-		      + (CASE WHEN $3::int > 0 THEN $3::int WHEN retention_days > 0 THEN retention_days ELSE 15 END * INTERVAL '1 day'),
+		    -- A retained credit environment follows the paid window but never
+		    -- acquires a cleanup deadline; see CommitCloudWorkerCredit.
+		    delete_after = CASE WHEN retain_data THEN NULL
+		      ELSE GREATEST(package_expires_at, $2::timestamptz)
+		        + (CASE WHEN $3::int > 0 THEN $3::int WHEN retention_days > 0 THEN retention_days ELSE 15 END * INTERVAL '1 day') END,
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '', updated_at = CURRENT_TIMESTAMP
 		-- Never move a deletion already claimed by the sweeper back to active:
@@ -548,8 +584,11 @@ func (a *Adapter) ExtendCloudWorkerLifecycle(id int64, expiresAt time.Time, grac
 		UPDATE cloud_worker_lifecycles
 		SET package_expires_at = GREATEST(package_expires_at, $2::timestamptz),
 		    retention_days = CASE WHEN $3::int > 0 THEN $3::int ELSE retention_days END,
-		    delete_after = GREATEST(package_expires_at, $2::timestamptz)
-		      + (CASE WHEN $3::int > 0 THEN $3::int WHEN retention_days > 0 THEN retention_days ELSE 15 END * INTERVAL '1 day'),
+		    -- A retained credit environment follows the paid window but is
+		    -- never given a cleanup deadline; see CommitCloudWorkerCredit.
+		    delete_after = CASE WHEN retain_data THEN NULL
+		      ELSE GREATEST(package_expires_at, $2::timestamptz)
+		        + (CASE WHEN $3::int > 0 THEN $3::int WHEN retention_days > 0 THEN retention_days ELSE 15 END * INTERVAL '1 day') END,
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '', updated_at = CURRENT_TIMESTAMP
 		-- A per-worker provider sync must never roll a paid window backwards;
@@ -635,16 +674,26 @@ func (a *Adapter) ListCloudWorkerLifecycleDue(now time.Time, limit int) ([]types
 	return records, rows.Err()
 }
 
+// MarkCloudWorkerLifecyclePending archives an expired lifecycle. A zero
+// deleteAfter means "this row has no cleanup deadline on purpose": the credit
+// environment rule keeps the machine's data until an explicit deletion, so the
+// row is archived with delete_after left NULL. ClaimCloudWorkerLifecycleDeletion
+// only ever claims a row whose delete_after has passed, so NULL is a durable
+// "never schedule this" instead of a notional date the next sweep would act on.
 func (a *Adapter) MarkCloudWorkerLifecyclePending(id int64, deleteAfter time.Time) error {
+	var deadline interface{}
+	if !deleteAfter.IsZero() {
+		deadline = deleteAfter.UTC()
+	}
 	_, err := a.db.Exec(`
 		UPDATE cloud_worker_lifecycles
 		SET state = 'delete_pending', archived_at = COALESCE(archived_at, CURRENT_TIMESTAMP),
-		    delete_after = $2, updated_at = CURRENT_TIMESTAMP
+		    delete_after = $2::timestamptz, updated_at = CURRENT_TIMESTAMP
 		-- The due list is a snapshot. A payment can renew the package between
 		-- ListCloudWorkerLifecycleDue and this update. Re-check the expiry under
 		-- the same row update so that stale sweeper work cannot overwrite the
 		-- renewed active state and schedule an already-paid worker for deletion.
-		WHERE id = $1 AND state = 'active' AND package_expires_at <= CURRENT_TIMESTAMP`, id, deleteAfter)
+		WHERE id = $1 AND state = 'active' AND package_expires_at <= CURRENT_TIMESTAMP`, id, deadline)
 	return err
 }
 
@@ -711,7 +760,14 @@ func (a *Adapter) MarkCloudWorkerLifecycleAwaitingRecycle(id int64, note string)
 // whether the machine follows the package, keeps its own window, or has no
 // deadline at all. A dedicated-ECS credit can only be fixed or legacy, which is
 // enforced here rather than trusted from the caller.
-func grantCloudWorkerCredit(tx *sql.Tx, uid int64, sourceRef string, expiresAt time.Time, profile string, retentionDays int, runtimePlan, expiryMode string) error {
+//
+// retainData is the other half of that snapshot: it says the buyer paid with
+// model credit, so the environment this credit provisions keeps its files and
+// history after the paid window ends (approved credit rules 2026-11-09, P1-2).
+// The caller resolves it from the order/entitlement/plan snapshot it already
+// holds; it is deliberately not derived from expiryMode, because a legacy
+// shared package also follows its package and must keep its retention window.
+func grantCloudWorkerCredit(tx *sql.Tx, uid int64, sourceRef string, expiresAt time.Time, profile string, retentionDays int, runtimePlan, expiryMode string, retainData bool) error {
 	if uid <= 0 || strings.TrimSpace(sourceRef) == "" {
 		return fmt.Errorf("invalid cloud worker credit grant")
 	}
@@ -731,9 +787,9 @@ func grantCloudWorkerCredit(tx *sql.Tx, uid int64, sourceRef string, expiresAt t
 		return fmt.Errorf("invalid cloud worker expiry mode for deployment profile")
 	}
 	_, err := tx.Exec(`
-		INSERT INTO cloud_worker_credits(uid, source_ref, expires_at, deployment_profile, retention_days, runtime_plan, expiry_mode)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (source_ref) DO NOTHING`, uid, strings.TrimSpace(sourceRef), expiresAt, profile, retentionDays, runtimePlan, types.CloudWorkerExpiryModeOrDefault(expiryMode))
+		INSERT INTO cloud_worker_credits(uid, source_ref, expires_at, deployment_profile, retention_days, runtime_plan, expiry_mode, retain_data)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (source_ref) DO NOTHING`, uid, strings.TrimSpace(sourceRef), expiresAt, profile, retentionDays, runtimePlan, types.CloudWorkerExpiryModeOrDefault(expiryMode), retainData)
 	if err != nil {
 		return fmt.Errorf("grant cloud worker credit: %w", err)
 	}

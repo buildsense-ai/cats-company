@@ -1634,6 +1634,33 @@ func cloudWorkerProvisionExpiryArgs(profile string, paidUntil time.Time) []strin
 	return []string{"--expires-at", paidUntil.UTC().Format(time.RFC3339)}
 }
 
+// cloudWorkerExpireArgs builds the deployment hook invocation for one expired
+// lifecycle.
+//
+// A retained credit environment (RetainData, approved credit rules 2026-11-09
+// P1-2) keeps its environment, files and history: the paid window may still
+// pause the machine, but the hook must not be handed a data-deletion deadline.
+// `--retain` says exactly that ("suspend, keep everything, no due date");
+// without it the hook applies its own default grace and the cluster's fallback
+// reaper (packed-retention.sh / packed-reap.sh) purges a volume, a state
+// directory and backups the product promised to keep.
+//
+// The flag is the stored purchase fact, not the term mode: a legacy shared plan
+// also follows its package and must keep the retention window it was sold with.
+// A row with no delete_after at all is treated as retained too — it has no due
+// date to hand over, and inventing one here is exactly what would delete the
+// data.
+func cloudWorkerExpireArgs(item CloudWorkerLifecycle) []string {
+	args := []string{"--name", item.TenantName}
+	if item.RetainData || item.DeleteAfter.IsZero() {
+		return append(args, "--retain")
+	}
+	if item.RetentionDays > 0 {
+		args = append(args, "--grace-days", strconv.Itoa(item.RetentionDays))
+	}
+	return args
+}
+
 // cloudWorkerProvisionCycles converts a paid window into whole prepaid months
 // (Tianyi prepaid instances are billed in monthly cycles). One hour of slack
 // keeps a window a few seconds short of a whole month from buying an extra
@@ -1827,6 +1854,12 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	reservedCredit := false
 	var creditExpiresAt *time.Time
 	expiryMode := ""
+	// retainData is the credit environment fact (approved credit rules
+	// 2026-11-09, P1-2), snapshotted on the credit that funds this creation. It
+	// travels to the cluster so its own fallback reaper never invents a deletion
+	// deadline for an environment the product promised to keep. A legacy plan
+	// also uses follow_plan, so the term mode cannot stand in for it.
+	retainData := false
 	// retentionDays comes from the purchased plan's credit (7-day package → 3
 	// days, longer → 7 days); 0 keeps the fleet-wide default.
 	retentionDays := 0
@@ -1853,6 +1886,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		profile, billing, runtimePlan = selected.Profile, selected.BillingMode, selected.RuntimePlan
 		creditExpiresAt, retentionDays = selected.ExpiresAt, selected.RetentionDays
 		expiryMode = selected.ExpiryMode
+		retainData = selected.RetainData
 	} else if configured, ok := h.credits.(cloudWorkerBillingCredits); ok || requestedRuntime != "" {
 		var selected types.CloudWorkerCreditSelection
 		var reserved bool
@@ -1879,6 +1913,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			retentionDays = selected.RetentionDays
 			runtimePlan = selected.RuntimePlan
 			expiryMode = selected.ExpiryMode
+			retainData = selected.RetainData
 		}
 	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 		selected, reserved, reserveErr := profiled.ReserveCloudWorkerProfileCredit(uid, reservation, requestedProfile)
@@ -2083,11 +2118,23 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		} else {
 			provisionArgs = append(provisionArgs, cloudWorkerProvisionExpiryArgs(deployment.Profile, paidUntil)...)
 		}
-		graceDays := retentionDays
-		if graceDays <= 0 {
-			graceDays = 7
+		if retainData {
+			// A credit environment keeps its environment, files and history
+			// after the paid window ends: it is paused, never purged. The
+			// cluster needs to know that at provision time, not only when the
+			// sweeper pauses it — its own fallback reaper reads the tenant's
+			// retain marker and would otherwise invent a deletion deadline the
+			// product never promised. A legacy shared plan also follows its
+			// package, which is why this hangs off the credit's own flag and
+			// not off the term mode.
+			provisionArgs = append(provisionArgs, "--retain")
+		} else {
+			graceDays := retentionDays
+			if graceDays <= 0 {
+				graceDays = 7
+			}
+			provisionArgs = append(provisionArgs, "--grace-days", strconv.Itoa(graceDays))
 		}
-		provisionArgs = append(provisionArgs, "--grace-days", strconv.Itoa(graceDays))
 	}
 	provOut, err := h.runScript(h.provisionScript, provisionArgs...)
 	if err != nil {
@@ -2574,10 +2621,16 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 				// reaper reads it; if it disagrees with delete_after the reaper
 				// either destroys while the platform still expects data to exist
 				// or leaves the instance around long after the platform removed it.
-				expireArgs := []string{"--name", item.TenantName}
-				if item.RetentionDays > 0 {
-					expireArgs = append(expireArgs, "--grace-days", strconv.Itoa(item.RetentionDays))
-				}
+				//
+				// A retained credit environment keeps everything: the paid
+				// window may still pause the machine, but nothing may hand the
+				// cluster a data-deletion deadline for it. `--retain` is the
+				// explicit "suspend, keep everything, no due date" instruction;
+				// without it the hook invents its own default grace and the
+				// cluster's fallback reaper purges an environment the product
+				// promised to keep. The flag comes from the row's stored
+				// retain_data, not from its term mode.
+				expireArgs := cloudWorkerExpireArgs(item)
 				if h.tenantRunsOnPackedShared(item.TenantName) {
 					termStore, ok := h.credits.(sharedCloudWorkerTermStore)
 					if !ok {
@@ -2616,6 +2669,15 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 			} else {
 				markedPending++
 			}
+			continue
+		}
+		// A row with no delete_after was never scheduled for cleanup: a credit
+		// environment keeps its data until an explicit user/admin deletion,
+		// which stamps delete_after itself. ClaimCloudWorkerLifecycleDeletion
+		// already refuses a NULL deadline; this guard states the intent in the
+		// sweep as well, so a later query change cannot start purging retained
+		// environments.
+		if item.DeleteAfter.IsZero() {
 			continue
 		}
 		claimOK, err := store.ClaimCloudWorkerLifecycleDeletion(item.ID)

@@ -474,6 +474,14 @@ type CloudWorkerLifecycle struct {
 	// PackageExpiresAt/DeleteAfter are NULL is permanently open; readers get the
 	// zero time rather than a magic far-future date.
 	ExpiryMode string `json:"expiry_mode,omitempty"`
+	// RetainData is the durable "keep this environment" fact (approved credit
+	// rules 2026-11-09, P1-2): a worker bought with paid model credit keeps its
+	// environment, files and history after the paid window ends — expiry may
+	// pause the machine, but nothing may purge it. It is deliberately NOT
+	// derived from ExpiryMode: a legacy shared package also uses follow_plan,
+	// and legacy rows keep their plan's retention window. Only an explicit
+	// user/admin deletion stamps a deadline for a retained row.
+	RetainData bool `json:"retain_data,omitempty"`
 	// SyncPending reports that the database already holds a newer term than the
 	// provider does. Background sync must bring the provider in line before the
 	// expiry sweeper may destroy the container, so it is also the flag that

@@ -13,7 +13,7 @@ import (
 // timestamp is coalesced so no reader has to special-case a NULL, and the two
 // dates are read as nullable: a permanent worker has no deadline at all, so
 // callers get the zero time instead of a notional far-future placeholder.
-const cloudWorkerLifecycleColumns = `id,worker_uid,owner_uid,tenant_name,package_expires_at,delete_after,state,billing_mode,conversion_pending,billing_action,COALESCE(billing_action_started_at,'epoch'::timestamptz),retention_days,expiry_mode,sync_pending`
+const cloudWorkerLifecycleColumns = `id,worker_uid,owner_uid,tenant_name,package_expires_at,delete_after,state,billing_mode,conversion_pending,billing_action,COALESCE(billing_action_started_at,'epoch'::timestamptz),retention_days,expiry_mode,sync_pending,retain_data`
 
 // cloudWorkerSharedProfileFilter matches the workers the shared container
 // cluster owns. The profile lives in the deployment snapshot because that is
@@ -45,6 +45,7 @@ func scanCloudWorkerLifecycle(row interface{ Scan(...interface{}) error }) (*typ
 		&item.RetentionDays,
 		&item.ExpiryMode,
 		&item.SyncPending,
+		&item.RetainData,
 	); err != nil {
 		return nil, err
 	}
@@ -163,7 +164,7 @@ func (a *Adapter) SetSharedCloudWorkerTerm(id int64, mode string, expiresAt *tim
 	// caller's (possibly older) target.
 	item, err := scanCloudWorkerLifecycle(tx.QueryRow(`
 		UPDATE cloud_worker_lifecycles
-		SET delete_after = CASE WHEN package_expires_at IS NULL THEN NULL
+		SET delete_after = CASE WHEN package_expires_at IS NULL OR retain_data THEN NULL
 		        ELSE package_expires_at + (CASE WHEN $2::int > 0 THEN $2::int WHEN retention_days > 0 THEN retention_days ELSE 15 END * INTERVAL '1 day') END,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
@@ -591,7 +592,11 @@ func settleSharedCloudWorkerFollowPlanTerms(tx *sql.Tx, ownerUID int64, now time
 		if _, err := tx.Exec(`
 			UPDATE cloud_worker_lifecycles l
 			SET package_expires_at = $2::timestamptz,
-			    delete_after = $2::timestamptz + (CASE WHEN l.retention_days > 0 THEN l.retention_days ELSE 15 END * INTERVAL '1 day'),
+		    -- Expiry may pause the machine; it never authorizes deleting the
+		    -- environment's data. A credit environment keeps delete_after NULL,
+		    -- a legacy shared row keeps the retention window it was sold with.
+		    delete_after = CASE WHEN l.retain_data THEN NULL
+		      ELSE $2::timestamptz + (CASE WHEN l.retention_days > 0 THEN l.retention_days ELSE 15 END * INTERVAL '1 day') END,
 			    state = 'active', archived_at = NULL, delete_started_at = NULL,
 			    sync_pending = TRUE, updated_at = CURRENT_TIMESTAMP
 			WHERE l.owner_uid = $1 AND l.expiry_mode = 'follow_plan'
@@ -621,7 +626,10 @@ func settleSharedCloudWorkerFollowPlanTerms(tx *sql.Tx, ownerUID int64, now time
 	if _, err := tx.Exec(`
 		UPDATE cloud_worker_lifecycles l
 		SET package_expires_at = $2::timestamptz,
-		    delete_after = $2::timestamptz + (CASE WHEN l.retention_days > 0 THEN l.retention_days ELSE 15 END * INTERVAL '1 day'),
+		    -- Same rule as the revoked branch: the surviving package sets the
+		    -- paid window; only a legacy row keeps a data-cleanup deadline.
+		    delete_after = CASE WHEN l.retain_data THEN NULL
+		      ELSE $2::timestamptz + (CASE WHEN l.retention_days > 0 THEN l.retention_days ELSE 15 END * INTERVAL '1 day') END,
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    sync_pending = TRUE, updated_at = CURRENT_TIMESTAMP
 		WHERE l.owner_uid = $1 AND l.expiry_mode = 'follow_plan'

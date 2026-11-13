@@ -147,6 +147,40 @@ func sharedCloudWorkerDeadline(item types.CloudWorkerLifecycle) *time.Time {
 	return &value
 }
 
+// sharedCloudWorkerSyncArgs is the platform -> cluster renew invocation for one
+// synced term.
+//
+// A retained credit environment (RetainData, approved credit rules 2026-11-09
+// P1-2) is handed the marker instead of a grace window: a grace window is exactly
+// the deletion deadline the rule forbids, and the cluster's own renew/retention
+// path turns it into a purge date. The marker comes from the durable row, so a
+// retry or a later renewal re-applies it rather than dropping it. A legacy row
+// keeps the exact invocation it always had.
+func sharedCloudWorkerSyncArgs(item types.CloudWorkerLifecycle, expected *time.Time) []string {
+	window := "none"
+	if expected != nil {
+		window = expected.Format(time.RFC3339)
+	}
+	args := []string{"--name", item.TenantName, "--expires-at", window}
+	if item.RetainData {
+		// A retained credit environment is handed the marker instead of a grace
+		// window: the window is exactly the deletion deadline the rule forbids.
+		args = append(args, "--retain")
+	} else {
+		graceDays := item.RetentionDays
+		if graceDays <= 0 {
+			graceDays = 7
+		}
+		args = append(args, "--grace-days", strconv.Itoa(graceDays))
+	}
+	if expected != nil && !expected.After(time.Now().UTC()) {
+		// Revoked or naturally expired package targets must be persisted and
+		// suspended in the same tenant lock, never renewed for a fallback cycle.
+		args = append(args, "--expire-if-due")
+	}
+	return args
+}
+
 func (h *CloudWorkerHandler) syncSharedCloudWorkerTerm(id int64) types.CloudWorkerRenewOutcome {
 	outcome := types.CloudWorkerRenewOutcome{Status: types.CloudWorkerRenewFailed}
 	store, ok := h.credits.(sharedCloudWorkerTermStore)
@@ -161,19 +195,8 @@ func (h *CloudWorkerHandler) syncSharedCloudWorkerTerm(id int64) types.CloudWork
 	}
 	outcome.TenantName = item.TenantName
 	expected := sharedCloudWorkerDeadline(*item)
-	args := []string{"--name", item.TenantName, "--expires-at", "none", "--grace-days", strconv.Itoa(item.RetentionDays)}
-	if item.RetentionDays <= 0 {
-		args[len(args)-1] = "7"
-	}
-	if expected != nil {
-		args[3] = expected.Format(time.RFC3339)
-	}
 	expiring := expected != nil && !expected.After(time.Now().UTC())
-	if expiring {
-		// Revoked or naturally expired package targets must be persisted and
-		// suspended in the same tenant lock, never renewed for a fallback cycle.
-		args = append(args, "--expire-if-due")
-	}
+	args := sharedCloudWorkerSyncArgs(*item, expected)
 	out, runErr := h.runScript(h.renewScript, args...)
 	var result struct {
 		Status    string     `json:"status"`

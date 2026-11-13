@@ -20,7 +20,7 @@ func TestMarkCloudWorkerLifecyclePendingRechecksExpiry(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(`
 		UPDATE cloud_worker_lifecycles
 		SET state = 'delete_pending', archived_at = COALESCE(archived_at, CURRENT_TIMESTAMP),
-		    delete_after = $2, updated_at = CURRENT_TIMESTAMP
+		    delete_after = $2::timestamptz, updated_at = CURRENT_TIMESTAMP
 		-- The due list is a snapshot. A payment can renew the package between
 		-- ListCloudWorkerLifecycleDue and this update. Re-check the expiry under
 		-- the same row update so that stale sweeper work cannot overwrite the
@@ -49,8 +49,11 @@ func TestExtendCloudWorkerLifecyclesDoesNotResurrectDeleteRunning(t *testing.T) 
 		UPDATE cloud_worker_lifecycles
 		SET package_expires_at = GREATEST(package_expires_at, $2::timestamptz),
 		    retention_days = CASE WHEN $3::int > 0 THEN $3::int ELSE retention_days END,
-		    delete_after = GREATEST(package_expires_at, $2::timestamptz)
-		      + (CASE WHEN $3::int > 0 THEN $3::int WHEN retention_days > 0 THEN retention_days ELSE 15 END * INTERVAL '1 day'),
+		    -- A retained credit environment follows the paid window but never
+		    -- acquires a cleanup deadline; see CommitCloudWorkerCredit.
+		    delete_after = CASE WHEN retain_data THEN NULL
+		      ELSE GREATEST(package_expires_at, $2::timestamptz)
+		        + (CASE WHEN $3::int > 0 THEN $3::int WHEN retention_days > 0 THEN retention_days ELSE 15 END * INTERVAL '1 day') END,
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '', updated_at = CURRENT_TIMESTAMP
 		-- Never move a deletion already claimed by the sweeper back to active:
@@ -115,9 +118,9 @@ func TestCommitCloudWorkerCreditAllowsPerpetualManualGrant(t *testing.T) {
 		UPDATE cloud_worker_credits
 		SET state = 'consumed', worker_uid = $3, consumed_at = CURRENT_TIMESTAMP
 		WHERE uid = $1 AND reservation_ref = $2 AND state = 'reserved'
-		RETURNING expires_at, billing_mode, expiry_mode, deployment_profile`)).
+		RETURNING expires_at, billing_mode, expiry_mode, deployment_profile, retain_data`)).
 		WithArgs(int64(784), "create-784-test", int64(928)).
-		WillReturnRows(sqlmock.NewRows([]string{"expires_at", "billing_mode", "expiry_mode", "deployment_profile"}).AddRow(nil, "month", "legacy", "private_nat"))
+		WillReturnRows(sqlmock.NewRows([]string{"expires_at", "billing_mode", "expiry_mode", "deployment_profile", "retain_data"}).AddRow(nil, "month", "legacy", "private_nat", false))
 	mock.ExpectCommit()
 
 	if err := adapter.CommitCloudWorkerCredit(784, "create-784-test", 928, "bot-bot-123-9879", 15); err != nil {
