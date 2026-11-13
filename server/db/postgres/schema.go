@@ -200,6 +200,14 @@ func (a *Adapter) CreateSchema() error {
 		migrateServiceRunLedgerAddBillingState,
 		createServiceRunLedgerIndexes,
 		createServiceAgentSubscriptionsTable,
+		// Credit ledger foundation (migration 000068). PostgreSQL only, not wired
+		// to any route, product, payment or relay path yet.
+		createModelCreditLedgerTables,
+		// Independent credit product (migration 000069): the plan sells paid
+		// model credit, the order snapshots the amount, and the ledger guards
+		// accept the single negative refund row. It runs after the ledger
+		// tables above because it alters their constraints.
+		migrateCommercialModelCreditUnits,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,

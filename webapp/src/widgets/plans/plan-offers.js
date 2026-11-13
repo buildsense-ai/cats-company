@@ -24,9 +24,6 @@ const cloudNote = '云端 AI 员工随套餐有效；到期后保留 15 天，�
 export const planPresentationOverrides = {
   'catsco-basic': {
     kicker: 'CATSCO BASIC', tagline: '轻量日常协作', actionLabel: '获取 CatsCo 基础版',
-    highlights: [
-      { kind: 'capacity', label: 'Token 额度', value: '5 亿', unit: 'Token' },
-    ],
     featuresLabel: false,
     features: [
       { label: 'Office 文件处理', details: ['文档阅读与写作', '表格整理与数据汇总'] },
@@ -39,9 +36,6 @@ export const planPresentationOverrides = {
   },
   'catsco-standard': {
     kicker: 'CATSCO PERSONAL', tagline: '日常工作自动化', actionLabel: '获取 CatsCo 个人版',
-    highlights: [
-      { kind: 'capacity', label: 'Token 额度', value: '约 10 亿', unit: 'Token' },
-    ],
     featuresLabel: false,
     features: [
       { label: '基础版中的全部权益，以及：', emphasis: true },
@@ -55,9 +49,6 @@ export const planPresentationOverrides = {
   },
   'catsco-advanced': {
     kicker: 'CATSCO PRO', tagline: '高频多任务协作', actionLabel: '获取 CatsCo 专业版', pro: true,
-    highlights: [
-      { kind: 'capacity', label: 'Token 额度', value: '约 20 亿', unit: 'Token' },
-    ],
     featuresLabel: false,
     features: [
       { label: '个人版中的全部权益，以及：', emphasis: true },

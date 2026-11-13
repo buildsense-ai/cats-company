@@ -430,6 +430,11 @@ func main() {
 	}
 	accountCenterHandler := server.NewAccountCenterHandler(db, accountServiceVerifier)
 	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db, commercialStore)
+	modelCreditReader, ok := db.(server.ModelCreditReader)
+	if !ok {
+		log.Fatal("database adapter does not support model credit reads")
+	}
+	modelCreditHandler := server.NewModelCreditHandler(modelCreditReader)
 	if creditAdmin, ok := db.(server.CloudWorkerCreditAdminStore); ok {
 		accountAdminHandler.SetCloudWorkerCreditAdmin(creditAdmin)
 	}
@@ -717,6 +722,9 @@ func main() {
 	var commercialRelaySyncer *server.CommercialRelaySyncer
 	commercialServiceCtx, commercialServiceCancel := context.WithCancel(context.Background())
 	defer commercialServiceCancel()
+	if creditExpiryLedger, ok := db.(server.ModelCreditExpiryReleaser); ok {
+		server.StartModelCreditExpiryReaper(commercialServiceCtx, creditExpiryLedger)
+	}
 	if commercialRelayManagedStore != nil && relayAdminClient != nil {
 		commercialRelaySyncer = server.NewCommercialRelaySyncer(commercialRelayManagedStore, relayAdminClient, server.CommercialRelaySyncerOptions{
 			EnforceEnabled: relayCommercialEnforceEnabled,
@@ -1237,6 +1245,19 @@ func main() {
 	mux.HandleFunc("/api/feedback", chainHTTP(feedbackHandler.HandleCreateFeedback, feedbackIPLimit, authWithDB, feedbackUserLimit))
 	mux.HandleFunc("/api/relay/config", ownerAuthWithDB(relayConfigHandler.HandleConfig))
 	mux.HandleFunc("/api/relay/commercial", ownerAuthWithDB(relayCommercialHandler.HandleSummary))
+	mux.HandleFunc("/api/relay/credits", ownerAuthWithDB(modelCreditHandler.HandleAccount))
+	mux.HandleFunc("/api/relay/credits/ledger", ownerAuthWithDB(modelCreditHandler.HandleLedger))
+	modelCreditEligibilityReader, ok := db.(server.ModelCreditEligibilityReader)
+	if !ok {
+		log.Fatal("database adapter does not support model credit eligibility reads")
+	}
+	modelCreditEligibilityHandler := server.NewModelCreditEligibilityHandler(modelCreditEligibilityReader)
+	mux.Handle("/internal/relay/credits/eligibility", modelCreditEligibilityHandler)
+
+	mux.HandleFunc("/internal/relay/credits/reserve", modelCreditHandler.HandleInternalMutation)
+	mux.HandleFunc("/internal/relay/credits/settle", modelCreditHandler.HandleInternalMutation)
+	mux.HandleFunc("/internal/relay/credits/confirm-no-usage", modelCreditHandler.HandleInternalMutation)
+	mux.HandleFunc("/internal/relay/credits/release", modelCreditHandler.HandleInternalMutation)
 	mux.HandleFunc("/api/relay/invite/redeem", ownerAuthWithDB(relayCommercialHandler.HandleRedeemInvite))
 	mux.HandleFunc("/api/relay/commercial/catalog", ownerAuthWithDB(commercialPaymentHandler.HandleCatalog))
 	mux.HandleFunc("/api/relay/commercial/orders", chainHTTP(commercialPaymentHandler.HandleOrders, ownerAuthWithDB, limitHTTPMethod(http.MethodPost, commercialOrderUserLimit)))

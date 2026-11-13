@@ -234,7 +234,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(chooser.textContent).toContain('3x 入门版额度');
     expect(chooser.textContent).toContain('5x 入门版额度 + 2,500 credit');
     expect(chooser.querySelectorAll('.relay-access-plan-name')[2].textContent).toBe('专业版');
-    expect(container.textContent).toContain('充值 1 元 = 100 credit');
+    expect(container.textContent).toContain('充值 1 元 = 1 credit');
     expect(chooser.textContent).toContain('支持 DeepSeek Flash');
     expect(chooser.textContent).not.toContain('仅支持 DeepSeek Flash');
     expect(chooser.textContent).not.toMatch(/token|成本价|scaled credit/i);
@@ -352,7 +352,8 @@ describe('RelayAccessModal commercial rollout', () => {
     // Layout stays identical to the approved preview even before sales open.
     expect([...container.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent)).toEqual(['59', '99', '159']);
     expect(container.querySelector('.relay-access-plan-list-chooser.current-catalog')).not.toBeNull();
-    expect(container.querySelectorAll('.relay-access-plan-row.official.has-highlights')).toHaveLength(3);
+    expect(container.querySelectorAll('.relay-access-plan-highlights')).toHaveLength(0);
+    expect(container.textContent).not.toContain('Token');
     await clickButton('获取 CatsCo 个人版');
     expect(findButton('暂未开放购买').disabled).toBe(true);
     await clickButton('暂未开放购买');
@@ -367,7 +368,8 @@ describe('RelayAccessModal commercial rollout', () => {
     await openPlanChooser();
     const personal = container.querySelector('#relay-access-personal-plan-panel');
     expect(personal.querySelectorAll('.relay-access-plan-row')).toHaveLength(3);
-    expect([...personal.querySelectorAll('.relay-access-plan-highlights dd')].map(el => el.textContent)).toEqual(['5 亿Token', '约 10 亿Token', '约 20 亿Token']);
+    expect(personal.querySelectorAll('.relay-access-plan-highlights')).toHaveLength(0);
+    expect(personal.textContent).not.toContain('Token');
     expect(personal.textContent).not.toContain('团队版');
     expect([...container.querySelectorAll('[aria-label="选择方案类型"] [role="tab"]')].map(tab => tab.textContent.trim())).toEqual(['个人', '团队', '企业']);
     await clickButton('企业');
@@ -388,7 +390,8 @@ describe('RelayAccessModal commercial rollout', () => {
     api.getCommercialCatalog.mockResolvedValue({ enabled: false, channels: [], plans: personalPlanOffers.map((plan, index) => ({ ...plan, id: 890 + index, plan_tier: undefined })) });
     await renderIntegratedPlans();
     await openPlanChooser();
-    expect(container.querySelectorAll('.relay-access-plan-row.official.has-highlights')).toHaveLength(3);
+    expect(container.querySelectorAll('.relay-access-plan-highlights')).toHaveLength(0);
+    expect(container.textContent).not.toContain('Token');
     await clickButton('获取 CatsCo 基础版');
     expect(findButton('暂未开放购买').disabled).toBe(true);
     expect(api.createCommercialOrder).not.toHaveBeenCalled();

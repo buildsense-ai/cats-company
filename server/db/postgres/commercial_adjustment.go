@@ -252,8 +252,18 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 		// GREATEST semantics never shorten a longer remaining window, a shared
 		// fixed term is left alone, and a perpetual package opens follow_plan
 		// workers instead of pinning them to a date.
-		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, adjustment.UID, expiresAt, plan.CloudWorkerRetentionDays); err != nil {
+		includesWorker, err := planIncludesCloudWorker(tx, plan.ID)
+		if err != nil {
 			return nil, err
+		}
+		if includesWorker {
+			profile, err := planCloudWorkerDeploymentProfile(tx, plan.ID)
+			if err != nil {
+				return nil, err
+			}
+			if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, adjustment.UID, expiresAt, plan.CloudWorkerRetentionDays, profile); err != nil {
+				return nil, err
+			}
 		}
 		// The window that was just revoked must not survive the change: settle
 		// follow_plan workers on the replacement package (and expire them when the
@@ -377,8 +387,18 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 		if err := createOperatorPlanGrants(tx, adjustment.UID, plan, operationID, strings.TrimSpace(adjustment.Note), currentExpiry, &newExpiry); err != nil {
 			return nil, err
 		}
-		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, adjustment.UID, &newExpiry, plan.CloudWorkerRetentionDays); err != nil {
+		includesWorker, err := planIncludesCloudWorker(tx, plan.ID)
+		if err != nil {
 			return nil, err
+		}
+		if includesWorker {
+			profile, err := planCloudWorkerDeploymentProfile(tx, plan.ID)
+			if err != nil {
+				return nil, err
+			}
+			if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, adjustment.UID, &newExpiry, plan.CloudWorkerRetentionDays, profile); err != nil {
+				return nil, err
+			}
 		}
 		// A renewal only ever adds time, so this is normally a no-op for a
 		// follow_plan worker - but it also corrects a row whose date outlived a

@@ -188,6 +188,16 @@ func (s *commercialTestStore) CreateCommercialPlan(plan *types.CommercialPlan) (
 	return cp.ID, nil
 }
 
+func (s *commercialTestStore) UpdateCommercialInvitePlan(code string, planID int64) (bool, error) {
+	for _, invite := range s.invites {
+		if strings.EqualFold(invite.Code, code) {
+			invite.PlanID = planID
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *commercialTestStore) ListCommercialInviteCodes(limit int) ([]*types.CommercialInviteCode, error) {
 	out := []*types.CommercialInviteCode{}
 	for _, invite := range s.invites {
@@ -415,6 +425,37 @@ func TestAccountAdminCommercialPlanInviteAndGrant(t *testing.T) {
 	}
 }
 
+func TestAccountAdminCreditPlanConfigurationIsIsolatedFromCNYBilling(t *testing.T) {
+	store := newCommercialTestStore()
+	handler := NewAccountAdminHandler(accountTestUserLookup{users: map[int64]*types.User{}}, nil, nil, store)
+	postPlan := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/plans", strings.NewReader(body))
+		req.RemoteAddr = "127.0.0.1:40200"
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.HandleCommercialPlans(response, req)
+		return response
+	}
+
+	created := postPlan(`{"slug":"credit-draft","name":"Credit draft","price_fen":3900,"currency":"CNY","sale_state":"hidden","model_credit_units":4000000000}`)
+	if created.Code != http.StatusOK || len(store.plans) != 1 || store.plans[0].ModelCreditUnits != 4_000_000_000 {
+		t.Fatalf("credit plan not saved: status=%d body=%s plans=%+v", created.Code, created.Body.String(), store.plans)
+	}
+	updatedWithoutCreditField := postPlan(`{"slug":"credit-draft","name":"Credit draft edited","price_fen":3900,"currency":"CNY","sale_state":"hidden"}`)
+	if updatedWithoutCreditField.Code != http.StatusOK || len(store.plans) != 1 || store.plans[0].ModelCreditUnits != 4_000_000_000 {
+		t.Fatalf("omitting model_credit_units must preserve the existing value: status=%d body=%s plans=%+v", updatedWithoutCreditField.Code, updatedWithoutCreditField.Body.String(), store.plans)
+	}
+
+	dualBudget := postPlan(`{"slug":"credit-dual","name":"Invalid dual budget","sale_state":"hidden","model_credit_units":100,"monthly_budget_cny":1}`)
+	if dualBudget.Code != http.StatusBadRequest || len(store.plans) != 1 {
+		t.Fatalf("dual CNY/credit budget should be rejected: status=%d body=%s", dualBudget.Code, dualBudget.Body.String())
+	}
+
+	publicCredit := postPlan(`{"slug":"credit-public","name":"Not ready for sale","sale_state":"public","model_credit_units":100}`)
+	if publicCredit.Code != http.StatusBadRequest || len(store.plans) != 1 {
+		t.Fatalf("public credit SKU should stay blocked until relay settlement: status=%d body=%s", publicCredit.Code, publicCredit.Body.String())
+	}
+}
 func TestResolveCommercialBonusGrantRequiresActivePackageModelAndBoundedExpiry(t *testing.T) {
 	now := time.Date(2026, 8, 12, 6, 0, 0, 0, time.UTC)
 	firstExpiry := now.Add(10 * 24 * time.Hour)
@@ -951,4 +992,34 @@ func findCommercialRelayUpdate(t *testing.T, dryRun *commercialRelayDryRun, prov
 	}
 	t.Fatalf("proposed update for %s not found: %+v", provider, dryRun.ProposedUpdates)
 	return commercialRelayProviderBudgetUpdate{}
+}
+
+func TestAccountAdminInviteReplanOnlyChangesPlan(t *testing.T) {
+	store := newCommercialTestStore()
+	store.plans = []*types.CommercialPlan{{ID: 1, State: 0}, {ID: 2, State: 0}, {ID: 3, State: 1}}
+	store.invites = []*types.CommercialInviteCode{{
+		ID: 9, Code: "KEEP-ME", PlanID: 1, MaxRedemptions: 10, RedeemedCount: 4,
+		CloudWorkerCredits: 2, CloudWorkerProfile: "packed_shared", State: 1, Note: "legacy config",
+	}}
+	handler := NewAccountAdminHandler(accountTestUserLookup{users: map[int64]*types.User{}}, nil, nil, store)
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/invites", strings.NewReader(body))
+		req.RemoteAddr = "127.0.0.1:40200"
+		rec := httptest.NewRecorder()
+		handler.HandleCommercialInvites(rec, req)
+		return rec
+	}
+	if rec := post(`{"code":"KEEP-ME","plan_id":2,"replan_only":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("replan status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got := store.invites[0]
+	if got.PlanID != 2 || got.MaxRedemptions != 10 || got.RedeemedCount != 4 || got.CloudWorkerCredits != 2 || got.CloudWorkerProfile != "packed_shared" || got.State != 1 || got.Note != "legacy config" {
+		t.Fatalf("replan changed fields beyond plan_id: %+v", got)
+	}
+	if rec := post(`{"code":"KEEP-ME","plan_id":3,"replan_only":true}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("disabled target plan status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got.PlanID != 2 {
+		t.Fatalf("invalid target plan mutated invite: %+v", got)
+	}
 }

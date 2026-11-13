@@ -4,7 +4,7 @@
 html,body,#root{
   margin:0;
   min-height:100%;
-  font-family:var(--cc-font-sans)
+  font-family:var(--cc-font-sans);
 }
 body{
   background:var(--cc-bg);
@@ -48,7 +48,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,su
 
 .usage-app{
   display:flex;
-  min-width:1080px;
+  min-width:0;
   min-height:100vh
 }
 .usage-sidebar{
@@ -343,6 +343,33 @@ h1{
   color:var(--cc-muted);
   margin:10px 0 22px;
   line-height:20px
+}
+.account-balance-panel{
+  margin:0 0 20px;
+  padding-bottom:14px
+}
+.account-balance-panel>header{
+  padding:17px 20px 8px
+}
+.account-balance-panel>header p{
+  margin:4px 0 0;
+  color:var(--cc-muted);
+  font-size:11px;
+  line-height:18px
+}
+.account-balance-panel .usage-balances{
+  margin:8px 20px 0
+}
+.account-balance-total{
+  margin:12px 20px 0;
+  padding-top:10px;
+  border-top:1px solid var(--cc-border);
+  font-size:12px;
+  font-weight:600
+}
+.account-balance-total span{
+  color:var(--cc-muted);
+  font-weight:400
 }
 .chart-grid{
   display:grid;
@@ -1056,18 +1083,222 @@ pre{
   color:var(--cc-muted)
 }
 
-@media(min-width:1600px){
+@media(max-width:1100px){
   .usage-workspace main{
-  padding-left:46px;
-  padding-right:46px
-}
-.chart-grid{
-  grid-template-columns:1.6fr 1fr
-}
-.daily-bars{
-  gap:80px
+    padding:26px 24px 20px
+  }
+  .metric-grid{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    row-gap:22px
+  }
+  .metric:nth-child(2){
+    border-right:0
+  }
+  .metric:nth-child(n+3){
+    padding-top:20px;
+    border-top:1px solid var(--cc-border)
+  }
+  .chart-grid{
+    grid-template-columns:1fr
+  }
+  .daily-bars{
+    gap:16px
+  }
 }
 
+@media(max-width:760px){
+  .usage-app{
+    display:block
+  }
+  .usage-sidebar{
+    position:static;
+    width:auto;
+    padding:12px 16px;
+    border-right:0;
+    border-bottom:1px solid var(--cc-border)
+  }
+  .usage-brand{
+    font-size:19px;
+    padding:0
+  }
+  .usage-brand>span,
+  .sidebar-label,
+  .sidebar-bottom{
+    display:none
+  }
+  .usage-sidebar nav{
+    display:flex;
+    overflow-x:auto;
+    gap:4px;
+    margin-top:12px;
+    scrollbar-width:thin
+  }
+  .usage-sidebar nav button{
+    flex:0 0 auto;
+    padding:9px 10px;
+    gap:7px
+  }
+  .usage-workspace{
+    margin-left:0
+  }
+  .usage-topbar{
+    height:52px;
+    padding:0 18px
+  }
+  .usage-workspace main{
+    padding:22px 18px
+  }
+  .page-heading{
+    align-items:flex-start;
+    flex-direction:column;
+    gap:14px
+  }
+  .demo-note{
+    align-items:flex-start
+  }
+  .filters{
+    align-items:stretch
+  }
+  .search-box{
+    flex-basis:100%
+  }
+  .filters>select{
+    flex:1;
+    max-width:none
+  }
+  .date-range{
+    flex:1
+  }
+  .date-range input{
+    width:0;
+    flex:1
+  }
+  .records-panel>header{
+    align-items:flex-start;
+    flex-direction:column
+  }
+  .record-controls{
+    flex-wrap:wrap
+  }
+  .usage-detail{
+    left:0;
+    right:0;
+    width:auto;
+    border-left:0
+  }
+  .usage-detail>header{
+    padding:18px
+  }
+  .detail-scroll{
+    padding:0 18px
+  }
+  .key-values>div{
+    grid-template-columns:minmax(0,110px) minmax(0,1fr);
+    gap:10px
+  }
+  .usage-detail>footer{
+    padding:12px 18px
+  }
+  .calculator-grid{
+    grid-template-columns:1fr;
+    gap:20px
+  }
+  .source-flow{
+    flex-wrap:wrap;
+    margin:20px 16px
+  }
+  .source-flow>span{
+    flex:1 1 40%;
+    min-width:0
+  }
+  .source-flow>svg{
+    display:none
+  }
+  table{
+    table-layout:fixed
+  }
+  .sources-content table td{
+    overflow-wrap:anywhere
+  }
+}
+
+@media(max-width:480px){
+  .usage-topbar{
+    padding:0 12px
+  }
+  .usage-topbar .tag{
+    display:none
+  }
+  .usage-workspace main{
+    padding:18px 12px
+  }
+  .metric-grid{
+    padding:16px 0
+  }
+  .metric{
+    padding:0 12px
+  }
+  .metric>strong{
+    font-size:24px
+  }
+  .panel>header{
+    padding:17px 15px 0
+  }
+  .daily-bars{
+    gap:6px;
+    padding:20px 12px
+  }
+  .daily-bars>button{
+    width:auto;
+    min-width:0;
+    flex:1
+  }
+  .scenario-buttons{
+    padding:16px 14px
+  }
+  .calculator-grid{
+    padding:0 14px 16px
+  }
+  .input-grid{
+    grid-template-columns:1fr
+  }
+  .rules-grid{
+    grid-template-columns:1fr
+  }
+  .rules-grid>.panel,
+  .source-status{
+    padding:17px 15px
+  }
+  .source-status>div{
+    flex-direction:column;
+    gap:8px
+  }
+  .usage-detail>footer{
+    align-items:flex-start;
+    flex-direction:column
+  }
+  .balance-pair{
+    grid-template-columns:1fr;
+    gap:18px
+  }
+  .calculation-table>div{
+    grid-template-columns:1fr .85fr .8fr;
+    gap:6px;
+    font-size:11px
+  }
+}
+
+@media(min-width:1600px){
+  .usage-workspace main{
+    padding-left:46px;
+    padding-right:46px
+  }
+  .chart-grid{
+    grid-template-columns:1.6fr 1fr
+  }
+  .daily-bars{
+    gap:80px
+  }
 }
 
 @media(prefers-reduced-motion:reduce){

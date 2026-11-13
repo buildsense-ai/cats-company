@@ -452,12 +452,20 @@ func (a *Adapter) ReleaseCloudWorkerCredit(uid int64, reservation string) error 
 // flight. Do not resurrect its row in the database while the cloud destroy
 // script is running; a delete_failed row has no active provider operation and
 // is safe to restore after a successful renewal.
-func extendCloudWorkerLifecyclesWithPaidPeriod(tx *sql.Tx, ownerUID int64, expiresAt *time.Time, retentionDays int) error {
+func extendCloudWorkerLifecyclesWithPaidPeriod(tx *sql.Tx, ownerUID int64, expiresAt *time.Time, retentionDays int, deploymentProfiles ...string) error {
 	if tx == nil || ownerUID <= 0 {
 		return fmt.Errorf("invalid cloud worker lifecycle extension")
 	}
 	if retentionDays < 0 || retentionDays > 90 {
 		return fmt.Errorf("invalid cloud worker retention window")
+	}
+	profile := ""
+	if len(deploymentProfiles) > 0 {
+		var valid bool
+		profile, valid = types.NormalizeCloudWorkerProfile(deploymentProfiles[0])
+		if !valid {
+			return fmt.Errorf("invalid cloud worker deployment profile %q", deploymentProfiles[0])
+		}
 	}
 	if expiresAt == nil {
 		// Perpetual package: only the rows that follow the package change, and
@@ -477,7 +485,7 @@ func extendCloudWorkerLifecyclesWithPaidPeriod(tx *sql.Tx, ownerUID int64, expir
 			    updated_at = CURRENT_TIMESTAMP
 			WHERE l.owner_uid = $1 AND l.expiry_mode = 'follow_plan'
 			  AND l.state IN ('active','delete_pending','delete_failed')
-			  AND `+cloudWorkerSharedProfileFilter, ownerUID, retentionDays); err != nil {
+			  AND ($3 = '' OR (($3 = 'packed_shared' AND `+cloudWorkerSharedProfileFilter+`) OR ($3 <> 'packed_shared' AND NOT (`+cloudWorkerSharedProfileFilter+`))) )`, ownerUID, retentionDays, profile); err != nil {
 			return fmt.Errorf("open cloud worker lifecycles for a perpetual package: %w", err)
 		}
 		return nil
@@ -499,7 +507,8 @@ func extendCloudWorkerLifecyclesWithPaidPeriod(tx *sql.Tx, ownerUID int64, expir
 		-- swap must not shorten time that is still paid for. A shared worker on
 		-- its own fixed term, or a permanent grant, is not extended at all.
 		WHERE l.owner_uid = $1 AND l.state IN ('active','delete_pending','delete_failed')
-		  AND NOT (`+cloudWorkerSharedProfileFilter+` AND l.expiry_mode IN ('fixed','permanent'))`, ownerUID, expiresAt.UTC(), retentionDays); err != nil {
+		  AND ($4 = '' OR (($4 = 'packed_shared' AND `+cloudWorkerSharedProfileFilter+`) OR ($4 <> 'packed_shared' AND NOT (`+cloudWorkerSharedProfileFilter+`))) )
+		  AND NOT (`+cloudWorkerSharedProfileFilter+` AND l.expiry_mode IN ('fixed','permanent'))`, ownerUID, expiresAt.UTC(), retentionDays, profile); err != nil {
 		return fmt.Errorf("extend cloud worker lifecycles: %w", err)
 	}
 	return nil
