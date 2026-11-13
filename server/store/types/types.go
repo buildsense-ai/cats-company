@@ -273,8 +273,10 @@ type CommercialEntitlement struct {
 	State     string     `json:"state"`
 	StartsAt  time.Time  `json:"starts_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	// PeriodAnchorAt is populated by the operations snapshot for credit renewals.
+	PeriodAnchorAt *time.Time `json:"period_anchor_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 // CommercialQuotaGrant is an operator/audit-friendly grant source. The grant

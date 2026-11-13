@@ -109,3 +109,56 @@ func TestCommercialActionWorkerOnlyPreviewDoesNotChangePackage(t *testing.T) {
 		t.Fatal("existing worker must be kept")
 	}
 }
+
+func TestCommercialActionCreditOnlyPreview(t *testing.T) {
+	anchor := time.Date(2027, time.January, 31, 10, 0, 0, 123000, time.UTC)
+	plan := &types.CommercialPlan{ID: 846, Slug: "hidden-credit-v3", SaleState: "hidden", DurationDays: 30, PlanTier: 3, ModelCreditUnits: 22_500_000_000}
+	s := &types.CommercialSummary{Plans: []*types.CommercialPlan{plan}}
+	r := types.CommercialActionRequest{UID: 1677, Intent: "grant_plan", PlanID: plan.ID, WorkerAction: "none", Preview: true, Note: "credit only"}
+	if err := r.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	p, err := buildCommercialActionPreview(r, s, 0, anchor, anchor)
+	february := time.Date(2027, time.February, 28, 10, 0, 0, 123000, time.UTC)
+	if err != nil || !p.CanApply || !p.ExpiresAt.Equal(february) || p.NextTotalCNY != 0 || p.WorkerEffect != "none" {
+		t.Fatalf("credit-only grant: %+v %v", p, err)
+	}
+	if commercialPlanHasQuota(plan) {
+		t.Fatal("credit eligibility leaked into legacy quota validation")
+	}
+	baseToken := p.PreviewToken
+	plan.ModelCreditUnits++
+	p, _ = buildCommercialActionPreview(r, s, 0, anchor, anchor)
+	if p.PreviewToken == baseToken {
+		t.Fatal("preview token did not bind credit allowance")
+	}
+	plan.ModelCreditUnits--
+	for _, mutate := range []func(){func() { plan.State = 1 }, func() { plan.State = 0; plan.ModelCreditUnits = 0 }} {
+		mutate()
+		p, _ = buildCommercialActionPreview(r, s, 0, anchor, anchor)
+		if p.CanApply {
+			t.Fatal("disabled or empty plan was accepted")
+		}
+	}
+	plan.ModelCreditUnits = 22_500_000_000
+	s.Entitlements = []*types.CommercialEntitlement{{ID: 1, PlanID: plan.ID, Source: "admin", State: "active", StartsAt: anchor, ExpiresAt: &february, PeriodAnchorAt: &anchor}}
+	r.Intent = "renew_plan"
+	p, _ = buildCommercialActionPreview(r, s, 0, anchor.Add(time.Hour), anchor.Add(time.Hour))
+	march := time.Date(2027, time.March, 31, 10, 0, 0, 123000, time.UTC)
+	if !p.CanApply || !p.ExpiresAt.Equal(march) || p.NextTotalCNY != 0 || p.WorkerEffect != "none" {
+		t.Fatalf("anchored renewal: %+v", p)
+	}
+	// The original segment is now expired and absent from the snapshot; the
+	// surviving segment must carry January's anchor through February's clamp.
+	s.Entitlements[0].StartsAt = february
+	s.Entitlements[0].ExpiresAt = &march
+	p, _ = buildCommercialActionPreview(r, s, 0, february.Add(time.Hour), february.Add(time.Hour))
+	if !p.CanApply || !p.ExpiresAt.Equal(time.Date(2027, time.April, 30, 10, 0, 0, 123000, time.UTC)) {
+		t.Fatalf("renewal lost original anchor: %+v", p)
+	}
+	r.DurationDays = 30
+	p, _ = buildCommercialActionPreview(r, s, 0, february.Add(time.Hour), february.Add(time.Hour))
+	if p.CanApply {
+		t.Fatal("credit renewal accepted a fixed-day override")
+	}
+}
