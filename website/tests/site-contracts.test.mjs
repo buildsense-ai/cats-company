@@ -266,11 +266,21 @@ test('website credit copy matches the approved credit plan rules', async () => {
     assert.ok(card, `Missing credit card for ${offer.slug}`)
     assert.equal(card[1].replace(/,/g, ''), String(offer.monthlyCredits), `Credit grant drift for ${offer.slug}`)
   }
-  // Credit is a billing balance, not a token estimate, and the retired retention promise must stay gone.
-  assert.doesNotMatch(pricing, /Token 数为估算值|保留 15 天/)
+  // Credit is a billing balance, not a token estimate; retention copy lives in its own contract.
+  assert.doesNotMatch(pricing, /Token 数为估算值/)
   assert.match(pricing, /自然月对日/)
   assert.match(pricing, /DeepSeek 官网价 9 折/)
   assert.match(pricing, /20 credit/)
+})
+
+test('website retention copy follows the approved no-cleanup-deadline rule', async () => {
+  const pricing = await read('src/components/PricingPage.tsx')
+  // docs/credit-plan-rules-20261109.md P1-2: environment, files and history are kept
+  // without a cleanup deadline, and that must not become a permanent, unlimited-storage
+  // or always-running promise.
+  assert.doesNotMatch(pricing, /保留 \d+ 天/)
+  assert.match(pricing, /运行环境、文件与历史对话保留，目前不设置清理期限/)
+  assert.match(pricing, /不构成永久、无限量存储或持续运行的承诺/)
 })
 
 test('login landing page retains invitation context without retired pricing', async () => {
