@@ -667,18 +667,22 @@ func (a *Adapter) FailServiceRun(ctx context.Context, runID, errorText string, r
 		}
 		return nil
 	}
+	// 从没派出去过的单不可能被「接管」（orphaned 靠别的执行方重跑，而它连租约都没拿过，
+	// attempts 永远停在 0），留在 orphaned 就是永久悬挂：没有回执、看板算作卡住。
+	// 只要没派出去过就落终态；retryable 只影响调用方要不要重试。
+	terminal := !retryable || state == "submitted"
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE service_runs SET
-			state = CASE WHEN ? THEN 'orphaned' ELSE 'failed' END,
+			state = CASE WHEN ? THEN 'failed' ELSE 'orphaned' END,
 			error_text = ?,
 			instance_id = '',
 			lease_expires_at = NULL,
-			finished_at = CASE WHEN ? THEN finished_at ELSE COALESCE(finished_at, NOW(6)) END
-		WHERE run_id = ?`, retryable, errorText, retryable, runID); err != nil {
+			finished_at = CASE WHEN ? THEN COALESCE(finished_at, NOW(6)) ELSE finished_at END
+		WHERE run_id = ?`, terminal, errorText, terminal, runID); err != nil {
 		return fmt.Errorf("fail service run: %w", err)
 	}
-	if !retryable {
-		// 不可重试失败=终态 → 回执入箱；orphaned 是中间态，不产生回执。
+	if terminal {
+		// 终态失败=回执入箱；orphaned 是中间态，不产生回执。
 		if err := insertServiceRunReceiptTx(ctx, tx, runID, sessionID, "failed", "", errorText); err != nil {
 			return err
 		}
