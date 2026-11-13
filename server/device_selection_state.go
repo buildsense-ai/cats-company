@@ -111,6 +111,42 @@ func (r *userDeviceRegistry) compareSelection(actor int64, session, expected str
 	return nil
 }
 
+// Establish a version without choosing a default or revoking grants. Both the
+// first explicit-target message and picker GET use this before issuing/reading
+// capabilities, so a late picker cannot invalidate a message already in flight.
+func (r *userDeviceRegistry) ensureDeviceSelectionRevision(actor int64, session string) (deviceSelectionPreference, error) {
+	current, err := r.selectionRecord(actor, session)
+	if err != nil || current.Revision != "" {
+		return current, err
+	}
+	revision, err := randomHex(24)
+	if err != nil {
+		return deviceSelectionPreference{}, err
+	}
+	next := current
+	next.Revision = revision
+	next.Durable = r.selectionStore != nil
+	next.Source = "selection_snapshot"
+	next.UpdatedAt = unixMillis(r.now())
+	next.ExpiresAt = unixMillis(r.now().Add(r.preferenceTTL))
+	if err := r.compareSelection(actor, session, "", next); err != nil {
+		if !errors.Is(err, errDeviceSelectionConflict) {
+			return deviceSelectionPreference{}, err
+		}
+		// Another first message, GET or explicit confirmation won the CAS. Use
+		// its version, including its chosen device; never overwrite it.
+		current, err = r.selectionRecord(actor, session)
+		if err != nil {
+			return deviceSelectionPreference{}, err
+		}
+		if current.Revision == "" {
+			return deviceSelectionPreference{}, errDeviceSelectionConflict
+		}
+		return current, nil
+	}
+	return next, nil
+}
+
 func (r *userDeviceRegistry) confirmDeviceSelection(actor int64, session, device, source, expected string) (deviceSelectionPreference, error) {
 	revision, err := randomHex(24)
 	if err != nil {

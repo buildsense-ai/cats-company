@@ -545,6 +545,17 @@ func (r *userDeviceRegistry) turnContextForOwnerDevicesWithExplicitTargets(actor
 	devices = devicesForOwner(ownerUID, devices)
 	unavailableCandidates = devicesForOwner(ownerUID, unavailableCandidates)
 	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, unavailableCandidates)
+	if ownerUID == actorUID && explicitTargetsEnabled && selection != nil && selection.Revision == "" &&
+		selection.SelectionSource != "selection_store_unavailable" && selection.SelectionSource != "selection_changed" && len(devices) > 0 {
+		if _, err := r.ensureDeviceSelectionRevision(actorUID, selection.SessionKey); err != nil {
+			selection.Status, selection.SelectionSource = DeviceSelectionUnavailable, "selection_store_unavailable"
+			selection.SelectedDevice, selected = nil, nil
+		} else {
+			// Re-read the winner so a concurrent user confirmation is reflected in
+			// both the default snapshot and the explicit grants' revision.
+			selection, selected = r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, unavailableCandidates)
+		}
+	}
 	if selection != nil {
 		selection.OwnerUserID = formatUID(ownerUID)
 	}
