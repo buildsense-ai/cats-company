@@ -4,9 +4,7 @@ import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Loader2, Sett
 import { api } from '../api';
 import {
   formatModelDisplayName,
-  formatRelayUsagePill,
   reasoningEffortLabel,
-  relayUsageTone,
   resolveConversationModelDisplay,
 } from '../utils/relay-usage';
 import CustomSelect from './custom-select';
@@ -381,21 +379,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
     ? modelConfig?.models?.find((model) => model.id === displayedSelection.model_id)
     : null;
   const cloudSelectionActive = displayedSelection && displayedSelection.kind !== 'local';
-  const headerQuota = cloudSelectionActive
-    ? displayedSelection.kind === 'custom'
-      ? '自备模型'
-      : displayedCatalogModel?.quota
-      ? modelQuotaLabel(displayedCatalogModel.quota, 'loaded')
-      : ''
-    : formatRelayUsagePill(agentModelState?.summary, {
-      customLabel: '自备模型',
-      showModel: false,
-    }) || display.meta;
-  const headerTone = cloudSelectionActive
-    ? modelQuotaTone(displayedCatalogModel?.quota)
-    : agentModelState?.summary
-      ? relayUsageTone(agentModelState.summary)
-      : agentModelState?.isBot && agentModelState.state === 'unavailable' ? 'muted' : '';
+  const headerSource = display.meta === '自备模型' ? display.meta : '';
   const headerContext = cloudSelectionActive
     ? displayedSelection.kind === 'custom'
       ? customContextWindow
@@ -425,14 +409,14 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   const accessibleStatus = [
     display.model,
     headerReasoning ? `推理强度 ${headerReasoning}` : '',
-    headerQuota,
+    headerSource,
     applyState,
   ].filter(Boolean).join('；');
   const statusContents = (
     <>
       <span className="v3-current-model-name">{display.model}</span>
       {headerReasoning && <span className="v3-model-reasoning-strength">{headerReasoning}</span>}
-      {headerQuota && <span className={`v3-model-quota ${headerTone}`.trim()}>{headerQuota}</span>}
+      {headerSource && <span className="v3-model-quota muted">{headerSource}</span>}
       {canManageModel && (transitioning
         ? <Loader2 className="v3-model-switch-spinner" size={14} aria-hidden="true" />
         : <ChevronDown className="v3-model-menu-chevron" size={14} aria-hidden="true" />)}

@@ -85,18 +85,20 @@ func (h *AgentHandler) SetRelayUsageDependencies(admin *RelayAdminClient, resolv
 
 // AgentSummary is the lightweight roster item used by the WebApp.
 type AgentSummary struct {
-	ID                    int64  `json:"id"`
-	UID                   int64  `json:"uid"`
-	Username              string `json:"username"`
-	DisplayName           string `json:"display_name"`
-	AvatarURL             string `json:"avatar_url,omitempty"`
-	Relation              string `json:"relation"`
-	TopicID               string `json:"topic_id"`
-	IsBot                 bool   `json:"is_bot"`
-	IsOnline              bool   `json:"is_online"`
-	Visibility            string `json:"visibility,omitempty"`
-	DeploymentStatus      string `json:"deployment_status,omitempty"`
-	CloudArtifactsEnabled bool   `json:"cloud_artifacts_enabled,omitempty"`
+	ID                    int64      `json:"id"`
+	UID                   int64      `json:"uid"`
+	Username              string     `json:"username"`
+	DisplayName           string     `json:"display_name"`
+	AvatarURL             string     `json:"avatar_url,omitempty"`
+	Relation              string     `json:"relation"`
+	TopicID               string     `json:"topic_id"`
+	IsBot                 bool       `json:"is_bot"`
+	IsOnline              bool       `json:"is_online"`
+	Visibility            string     `json:"visibility,omitempty"`
+	DeploymentStatus      string     `json:"deployment_status,omitempty"`
+	CloudArtifactsEnabled bool       `json:"cloud_artifacts_enabled,omitempty"`
+	IsCloud               *bool      `json:"is_cloud,omitempty"`
+	AddedAt               *time.Time `json:"added_at,omitempty"`
 }
 
 type openAgentRequest struct {
@@ -607,6 +609,25 @@ func (h *AgentHandler) visibleAgents(uid int64) ([]AgentSummary, error) {
 		agents = append(agents, agent)
 	}
 
+	if metadataStore, ok := h.db.(store.AgentSelectionMetadataStore); ok {
+		metadata, err := metadataStore.ListAgentSelectionMetadata(uid)
+		if err != nil {
+			return nil, err
+		}
+		for i := range agents {
+			facts, ok := metadata[agents[i].UID]
+			if !ok {
+				continue
+			}
+			isCloud := facts.IsCloud
+			agents[i].IsCloud = &isCloud
+			if !facts.AddedAt.IsZero() {
+				addedAt := facts.AddedAt
+				agents[i].AddedAt = &addedAt
+			}
+		}
+	}
+
 	sort.SliceStable(agents, func(i, j int) bool {
 		if agents[i].Relation != agents[j].Relation {
 			return agents[i].Relation == "owner"
@@ -683,6 +704,7 @@ func (h *AgentHandler) agentFromBotMap(viewerUID int64, bot map[string]interface
 	if displayName == "" {
 		displayName = mapString(bot["username"])
 	}
+	isCloud := mapString(bot["tenant_name"]) != ""
 	agent := AgentSummary{
 		ID:                    uid,
 		UID:                   uid,
@@ -696,6 +718,7 @@ func (h *AgentHandler) agentFromBotMap(viewerUID int64, bot map[string]interface
 		Visibility:            mapString(bot["visibility"]),
 		DeploymentStatus:      mapString(bot["deployment_status"]),
 		CloudArtifactsEnabled: true,
+		IsCloud:               &isCloud,
 	}
 	return agent, true
 }

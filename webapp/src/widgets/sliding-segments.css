@@ -1,0 +1,65 @@
+:root body .cc-sliding-segments {
+  position: relative;
+  isolation: isolate;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cc-segment-radius, var(--cc-radius-md));
+  background: var(--cc-control-surface);
+}
+
+.cc-sliding-segments > .cc-segment-indicator {
+  position: absolute;
+  z-index: 0;
+  inset-block: 0;
+  left: 0;
+  width: 0;
+  border-radius: inherit;
+  background: var(--cc-segment-active-bg, color-mix(in srgb, var(--cc-text) 10%, var(--cc-control-surface)));
+  pointer-events: none;
+}
+
+.cc-sliding-segments[data-segments-ready="true"] > .cc-segment-indicator {
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), width 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+:root body .cc-sliding-segments > button {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent !important;
+  box-shadow: none;
+  transition: color 140ms ease;
+}
+
+:root body .cc-sliding-segments > button:is([aria-selected="true"], [aria-pressed="true"], [aria-checked="true"], .active) {
+  color: var(--cc-segment-active-color, var(--cc-text));
+}
+
+:root body .cc-sliding-segments > button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: -2px;
+}
+
+.cc-member-type-tabs.cc-sliding-segments {
+  --cc-segment-radius: 999px;
+  --cc-segment-active-bg: color-mix(in srgb, var(--cc-accent) 78%, var(--cc-panel));
+  --cc-segment-active-color: #fff;
+}
+
+.cc-agent-skill-tabs.cc-sliding-segments {
+  --cc-segment-radius: 999px;
+  --cc-segment-active-bg: var(--cc-selected);
+}
+
+.relay-access-billing-tabs.cc-sliding-segments,
+.relay-access-plan-audience-tabs.cc-sliding-segments {
+  --cc-segment-active-bg: var(--cc-panel);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-sliding-segments[data-segments-ready="true"] > .cc-segment-indicator,
+  :root body .cc-sliding-segments > button { transition: none; }
+}

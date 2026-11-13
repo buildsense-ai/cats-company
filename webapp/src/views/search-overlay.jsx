@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import SlidingSegments from '../widgets/sliding-segments';
 import { FileText, LoaderCircle, MessageSquareText, Search, X } from 'lucide-react';
 import { api } from '../api';
 
@@ -266,7 +267,7 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
             <X size={19} aria-hidden="true" />
           </button>
         </header>
-        <div className="cc-global-search-tabs" role="group" aria-label="搜索范围">
+        <SlidingSegments value={category} className="cc-global-search-tabs" role="group" aria-label="搜索范围">
           {CATEGORIES.map((item) => (
             <button
               key={item.id}
@@ -278,7 +279,7 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
               {item.label}
             </button>
           ))}
-        </div>
+        </SlidingSegments>
         <span className="oc-visually-hidden" role="status" aria-live="polite">{liveMessage}</span>
         <div
           ref={listRef}

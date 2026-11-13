@@ -1233,7 +1233,6 @@ export default function SkillHubView({
   const [syncingWorkspace, setSyncingWorkspace] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState(restoredView.activeSection || 'added');
-  const [updatesOnly, setUpdatesOnly] = useState(restoredView.updatesOnly === true);
   const [skillAction, setSkillAction] = useState(null);
   const [actionNotice, setActionNotice] = useState('');
   const [devices, setDevices] = useState([]);
@@ -1268,10 +1267,10 @@ export default function SkillHubView({
 
   useEffect(() => {
     Object.assign(browseStateRef.current, {
-      query, addedSkillQuery, activeSection, updatesOnly, catalogue,
+      query, addedSkillQuery, activeSection, catalogue,
       ...(selectedBotUID ? { selectedBotUID } : {}),
     });
-  }, [query, addedSkillQuery, activeSection, updatesOnly, catalogue, selectedBotUID]);
+  }, [query, addedSkillQuery, activeSection, catalogue, selectedBotUID]);
 
   useEffect(() => () => {
     // Responses from a previous visit must not revive state or trigger a
@@ -1291,7 +1290,6 @@ export default function SkillHubView({
     selectedBotUIDRef.current = selectedBotUID;
     if (selectedBotUID && selectedBotUID !== previousBotUIDRef.current) {
       setAddedSkillQuery('');
-      setUpdatesOnly(false);
     }
     if (selectedBotUID) previousBotUIDRef.current = selectedBotUID;
     saveRequestRef.current += 1;
@@ -1447,10 +1445,6 @@ export default function SkillHubView({
       updateCount: ['ready', 'partial'].includes(summary?.status) && Number.isSafeInteger(count) && count > 0 ? count : 0,
     };
   }), [bots, updateSummaryForBot]);
-  const selectedUpdateSummary = updateSummaryForBot(selectedAgent);
-  const selectedUpdateCount = agentOptions.find(agent => agent.value === selectedBotUID)?.updateCount || 0;
-  const selectedUpdateStatus = selectedUpdateSummary?.status || '';
-  const selectedUnavailableSkillIds = selectedUpdateSummary?.unavailableSkillIds || [];
   const loadDevices = useCallback(async (options = {}) => {
     const requestID = ++devicesRequestRef.current;
     const requestedBotUID = selectedBotUIDRef.current;
@@ -2191,11 +2185,6 @@ export default function SkillHubView({
         revision: initiatingRevision,
       });
       if (saved?.ok && initiatingBotUID === selectedBotUIDRef.current) {
-        const updatesComplete = replacing && updatesOnly && selectedUpdateStatus === 'ready'
-          && saved.definition.skills.every((reference) => reference.localOnly || isPrivateSkillHubReference(reference.skillId)
-            || resolveSkillHubUpdateStatus(reference, reference.skillId === targetSkillID
-              ? resolved : addedSkillPresentationByID.get(reference.skillId)?.details) === 'current');
-        if (updatesComplete) setUpdatesOnly(false);
         const refresh = onRefreshSkillHubUpdateSummary?.();
         refresh?.catch?.(() => {});
         const installedName = resolved.displayName || resolved.skillId;
@@ -2204,10 +2193,9 @@ export default function SkillHubView({
         const operationLabel = replacing
           ? `已把 Agent“${agentName}”的 ${installedName} 更新到 ${formatSkillHubVersion(resolved.latestVersion)}`
           : `已为 Agent“${agentName}”添加 ${installedName}`;
-        const completionNotice = updatesComplete ? ' 当前可确认的 Skill 更新已完成，已显示全部能力。' : '';
-        setActionNotice((runtimeApply.status === 'applied'
+        setActionNotice(runtimeApply.status === 'applied'
           ? `${operationLabel}。运行环境已应用。`
-          : `${operationLabel}。运行环境等待应用，请保持 XiaoBa 在线。`) + completionNotice);
+          : `${operationLabel}。运行环境等待应用，请保持 XiaoBa 在线。`);
       }
     } catch (error) {
       if (
@@ -2944,7 +2932,6 @@ export default function SkillHubView({
     onChangeSection={(section) => {
       setActiveSection(section);
       if (section === 'added') {
-        setUpdatesOnly(false);
         setAddedSkillQuery('');
       }
     }}
@@ -2976,7 +2963,6 @@ export default function SkillHubView({
       setRuntimeRouteError('');
       requestedBotSwitchRef.current = nextBotUID;
       setAddedSkillQuery('');
-      setUpdatesOnly(false);
       rememberSkillHubBotUID(user?.uid, nextBotUID);
       localRequestRef.current += 1;
       setSelectedBotUID(nextBotUID);
@@ -2984,25 +2970,16 @@ export default function SkillHubView({
     onShareLocalSkill={shareLocalSkill}
     onSyncWorkspace={syncWorkspaceToAgent}
     onUpdateSkill={updateSkill}
-    onToggleUpdates={() => {
-      setActiveSection('added');
-      setAddedSkillQuery('');
-      setUpdatesOnly((current) => activeSection !== 'added' || !current);
-    }}
     query={query}
     saving={saving}
     selectedAgentName={selectedAgent ? botLabel(selectedAgent) : ''}
     selectedAgentRelation={selectedAgent?.relation || 'owner'}
-    selectedUnavailableSkillIds={selectedUnavailableSkillIds}
     skillHubUpdateDetailsByID={skillHubUpdateSummary?.detailsBySkillID}
-    selectedUpdateCount={selectedUpdateCount}
-    selectedUpdateStatus={selectedUpdateStatus}
     selectedBotUID={selectedBotUID}
     selectedDeviceID={selectedDeviceID}
     sharingSkill={sharingSkill}
     supportsWorkspaceSync={devices.find(device => String(device?.deviceId || '') === String(selectedDeviceID || ''))?.capabilities?.includes(SKILLHUB_DEVICE_TOOLS.syncWorkspace) === true}
     syncingWorkspace={syncingWorkspace}
-    updatesOnly={updatesOnly}
     skillAction={skillAction}
   /></MarketplaceProvider>;
 }

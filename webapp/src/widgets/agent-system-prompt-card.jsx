@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import SlidingSegments from './sliding-segments';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
@@ -275,7 +276,7 @@ export default function AgentSystemPromptCard({ agent }) {
             <span>系统提示词</span>
             <strong>{modeLabel}</strong>
           </div>
-          <div className="cc-agent-behavior-mode" role="group" aria-label="系统提示词模式">
+          <SlidingSegments value={savedPrompt.selected} className="cc-agent-behavior-mode" role="group" aria-label="系统提示词模式">
             <button
               type="button"
               className={savedPrompt.selected === 'default' ? 'active' : ''}
@@ -298,7 +299,7 @@ export default function AgentSystemPromptCard({ agent }) {
               <PencilLine size={14} />
               {savedPrompt.selected === 'custom' ? '编辑内容' : '自定义'}
             </button>
-          </div>
+          </SlidingSegments>
         </div>
       )}
 

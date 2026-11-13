@@ -1,7 +1,8 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import SlidingSegments from '../widgets/sliding-segments';
 import { createPortal } from 'react-dom';
 import {
-  ArrowLeft, Bot, Check, Clipboard, FolderOpen, Globe, Info, Plus, Trash2,
+  Bot, Check, Clipboard, FolderOpen, Globe, Info, Plus, Trash2,
   Activity, AppWindow, AudioLines, BookOpenCheck, BriefcaseBusiness, ChartNoAxesCombined,
   ClipboardCheck, Code2, FileText, FlaskConical, Globe2, GraduationCap, Image as ImageIcon,
   Landmark, Lock, Package, PackageMinus, PanelsTopLeft, Palette, PenLine, Save, ShieldCheck, Sparkles,
@@ -32,16 +33,6 @@ function normalizeSkillSearchValue(value) {
     .toLocaleLowerCase()
     .replace(/\\/g, '/')
     .replace(/\/{2,}/g, '/');
-}
-
-function formatUnavailableSkillHint(skillIds = []) {
-  const ids = [...new Set((Array.isArray(skillIds) ? skillIds : [])
-    .map((skillId) => String(skillId || '').trim())
-    .filter(Boolean))];
-  if (ids.length === 0) return '部分 Skill 暂时无法从 SkillHub 确认更新状态';
-  const shown = ids.slice(0, 3).join('、');
-  const suffix = ids.length > 3 ? ` 等 ${ids.length} 个 Skill` : '';
-  return `部分 Skill 暂时无法从 SkillHub 确认更新状态：${shown}${suffix}`;
 }
 
 export default function SkillHubContent(props) {
@@ -101,8 +92,7 @@ export default function SkillHubContent(props) {
   };
   const {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled,
-    loadingDefinition, onToggleUpdates, saving,
-    selectedUpdateCount, selectedUpdateStatus, skillAction, updatesOnly,
+    loadingDefinition, saving, skillAction,
   } = props;
   // A friend Bot is metadata-only. Keep this guard in the rendering boundary
   // as well as in the Agent-switch handler so stale UI state can never expose
@@ -123,25 +113,22 @@ export default function SkillHubContent(props) {
         </header>
         {definitionError && <div className='cc-skillhub-alert error' role='alert'>{definitionError}</div>}
         {actionNotice && <div className='cc-skillhub-alert success' role='status'>{actionNotice}</div>}
-        {visibleSection === 'custom' ? <CustomSkills {...categorizedProps} onChangeSection={guardedProps.onChangeSection} /> : (
+        <SkillNavigation
+          {...guardedProps}
+          activeSection={visibleSection}
+          addedCount={definition.skills.length}
+          sortOrder={sortOrders[visibleSection]}
+          onSortChange={value => changeSort(visibleSection, value)}
+        />
+        {visibleSection === 'custom' ? <CustomSkills {...categorizedProps} /> : (
           <>
-            <SkillNavigation
-              {...guardedProps}
-              activeSection={visibleSection}
-              addedCount={definition.skills.length}
-              selectedUpdateCount={selectedUpdateCount}
-              selectedUpdateStatus={selectedUpdateStatus}
-              updatesOnly={updatesOnly}
-              onToggleUpdates={() => {
-                const showUpdates = () => { setCategory(''); onToggleUpdates(); };
-                if (navigate) navigate(showUpdates); else showUpdates();
-              }}
-              language={language}
-              onLanguageChange={changeLanguage}
-              sortOrder={sortOrders[visibleSection]}
-              onSortChange={value => changeSort(visibleSection, value)}
-            />
-            <SkillCategoryFilters value={category} onChange={setCategory} showOther={category === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other')} />
+            <div className='cc-skillhub-category-toolbar'>
+              <SkillCategoryFilters value={category} onChange={setCategory} showOther={category === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other')} />
+              <SlidingSegments value={language} className='cc-skillhub-language' role='group' aria-label='能力介绍语言'>
+                <button type='button' aria-pressed={language === 'source'} onClick={() => changeLanguage('source')}>原文</button>
+                <button type='button' aria-pressed={language === 'zh-CN'} onClick={() => changeLanguage('zh-CN')}>中文</button>
+              </SlidingSegments>
+            </div>
             {saving && !loadingDefinition && (
               <div className='cc-skillhub-progress' role='status'>
                 <RefreshCw className='is-spinning' size={14} aria-hidden='true' />
@@ -162,11 +149,10 @@ function readSkillLanguage(uid) {
 }
 
 function AgentContext({
-  activeSection, agentOptions, loadingBots, onSelectAgent, saving, selectedBotUID, sharingSkill, syncingWorkspace,
+  agentOptions, loadingBots, onSelectAgent, saving, selectedBotUID, sharingSkill, syncingWorkspace,
 }) {
   const disabled = loadingBots || agentOptions.length === 0 || Boolean(sharingSkill) || saving || syncingWorkspace;
   const totalUpdates = agentOptions.reduce((total, agent) => total + (agent.updateCount || 0), 0);
-  const selectedUpdates = agentOptions.find(agent => agent.value === selectedBotUID)?.updateCount || 0;
   return (
     <div className='cc-skillhub-agent-context'>
       <label className='cc-skillhub-bot-picker'>
@@ -181,13 +167,6 @@ function AgentContext({
           value={selectedBotUID}
         />
       </label>
-      {totalUpdates > 0 && <p className='cc-skillhub-agent-update-hint' role='status'>
-        {selectedUpdates > 0
-          ? activeSection === 'custom'
-            ? '当前 Agent 有 Skill 可更新，请先点击「返回 Agent 能力总览」，再点击「可更新」。'
-            : '当前 Agent 有 Skill 可更新，点击「可更新」查看。'
-          : '有 Skill 可更新，请点击上方选择器，切换到带数字提醒的 Agent。'}
-      </p>}
     </div>
   );
 }
@@ -238,39 +217,31 @@ function AgentSelect({ agents, disabled, onChange, value }) {
 }
 
 function SkillNavigation(props) {
-  const { activeSection, addedCount, isLocalEnabled, isReadOnly, onChangeSection, onToggleUpdates, selectedUnavailableSkillIds = [], selectedUpdateCount = 0, selectedUpdateStatus = '', updatesOnly = false, onRefreshDefinition, selectedBotUID, loadingDefinition, saving, sharingSkill } = props;
+  const { activeSection, addedCount, isLocalEnabled, onChangeSection, onRefreshDefinition, selectedBotUID, loadingDefinition, saving, sharingSkill } = props;
   return (
     <nav className='cc-skillhub-navigation' aria-label='Agent 能力视图'>
       <div className='cc-skillhub-tabs-actions'>
-        <div className='cc-skillhub-tabs' role='tablist' aria-label='能力管理'>
+        <SlidingSegments value={activeSection} className='cc-skillhub-tabs' role='tablist' aria-label='能力管理'>
           <button type='button' id='skillhub-added-tab' role='tab' aria-selected={activeSection === 'added'} aria-controls='skillhub-added-panel' className={activeSection === 'added' ? 'active' : ''} onClick={() => onChangeSection('added')}>
-            Agent 能力总览 <span>{addedCount}</span>
+            能力总览 <span>{addedCount}</span>
           </button>
           <button type='button' id='skillhub-catalogue-tab' role='tab' aria-selected={activeSection === 'catalogue'} aria-controls='skillhub-catalogue-panel' className={activeSection === 'catalogue' ? 'active' : ''} onClick={() => onChangeSection('catalogue')}>
             能力库
           </button>
-        </div>
-        {!isReadOnly && (selectedUpdateCount > 0 || updatesOnly) && (
-          <button
-            type='button'
-            className={`cc-skillhub-updates-filter${updatesOnly ? ' active' : ''}`}
-            aria-pressed={updatesOnly}
-            onClick={onToggleUpdates}
-          >
-            可更新 <span>{selectedUpdateCount}</span>
-          </button>
-        )}
-        {!isReadOnly && selectedUpdateStatus === 'partial' && (
-          <span className='cc-skillhub-update-uncertain-note' role='status' title={formatUnavailableSkillHint(selectedUnavailableSkillIds)}>
-            部分 Skill 无法确认更新
-          </span>
-        )}
+          {isLocalEnabled && (
+            <button type='button' id='skillhub-custom-tab' role='tab' aria-selected={activeSection === 'custom'}
+              aria-controls='skillhub-custom-panel' className={`cc-skillhub-custom-entry${activeSection === 'custom' ? ' active' : ''}`}
+              onClick={() => onChangeSection('custom')}>
+              运行目录
+            </button>
+          )}
+        </SlidingSegments>
       </div>
-      <div className='cc-skillhub-navigation-tools'>
-        <div className='cc-skillhub-language' role='group' aria-label='能力介绍语言'>
-          <button type='button' aria-pressed={props.language === 'source'} onClick={() => props.onLanguageChange('source')}>原文</button>
-          <button type='button' aria-pressed={props.language === 'zh-CN'} onClick={() => props.onLanguageChange('zh-CN')}>中文</button>
-        </div>
+      {activeSection !== 'custom' && <div className='cc-skillhub-navigation-tools'>
+        <SkillSearch key={activeSection} {...props} />
+        {activeSection === 'added' && <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
+          <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={16} aria-hidden='true' />
+        </button>}
         <CustomSelect
           ariaLabel={`排序：${skillSortOptions(activeSection).find(([value]) => value === props.sortOrder)?.[1]}`}
           className='cc-skillhub-sort'
@@ -280,18 +251,9 @@ function SkillNavigation(props) {
           value={props.sortOrder}
           onValueChange={props.onSortChange}
         >
-          {skillSortOptions(activeSection).map(([value, label]) => <option key={value} value={value}>排序：{label}</option>)}
+          {skillSortOptions(activeSection).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </CustomSelect>
-        <SkillSearch {...props} />
-        {activeSection === 'added' && <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
-          <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={16} aria-hidden='true' />
-        </button>}
-      </div>
-      {isLocalEnabled && (
-        <button type='button' className='cc-skillhub-custom-entry' onClick={() => onChangeSection('custom')}>
-          <Wrench size={14} aria-hidden='true' /> 运行工作区（真实目录）
-        </button>
-      )}
+      </div>}
     </nav>
   );
 }
@@ -301,13 +263,40 @@ function SkillSearch({ activeSection, addedSkillQuery, onAddedSkillQuery, query,
   const value = added ? addedSkillQuery || '' : query || '';
   const change = added ? onAddedSkillQuery : onQueryChange;
   const id = added ? 'cc-skillhub-added-search-input' : 'cc-skillhub-search-input';
+  const label = added ? '搜索当前 Agent 能力' : '搜索能力名称';
+  const [expanded, setExpanded] = useState(Boolean(value));
+  const inputRef = useRef(null);
+  const triggerRef = useRef(null);
+  const open = expanded || Boolean(value);
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+  const collapse = () => {
+    if (value) change('');
+    setExpanded(false);
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+  if (!open) return (
+    <button ref={triggerRef} type='button' className='icon-button cc-skillhub-search-toggle'
+      aria-label={label} title='搜索能力' aria-expanded={false} aria-controls={id}
+      onClick={() => setExpanded(true)}>
+      <Search size={16} aria-hidden='true' />
+    </button>
+  );
   return (
-    <form className={added ? 'cc-skillhub-added-search' : 'cc-skillhub-search'} role='search' onSubmit={(event) => { event.preventDefault(); if (!added) onSearch(value); }}>
+    <form className={added ? 'cc-skillhub-added-search' : 'cc-skillhub-search'} role='search'
+      onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); collapse(); } }}
+      onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget) && !value) setExpanded(false); }}
+      onSubmit={(event) => { event.preventDefault(); if (!added) onSearch(value); }}>
       <Search size={16} aria-hidden='true' />
       <label className='cc-visually-hidden' htmlFor={id}>{added ? '搜索当前 Agent 能力' : '搜索能力名称'}</label>
       <div className='cc-skillhub-search-field'>
-        <input id={id} name='skillhub-query' type='search' autoComplete='off' value={value} onChange={(event) => change(event.target.value)} placeholder={added ? '搜索当前 Agent 能力…' : '搜索能力名称…'} />
-        {value && <button type='button' className='cc-skillhub-search-clear' aria-label={added ? '清除当前 Agent 能力搜索' : '清除搜索内容'} title='清除' onClick={() => change('')}><X size={14} aria-hidden='true' /></button>}
+        <input ref={inputRef} id={id} name='skillhub-query' type='search' autoComplete='off' value={value} onChange={(event) => change(event.target.value)} placeholder={`${label}…`} />
+        <button type='button' className='cc-skillhub-search-clear'
+          aria-label={value ? (added ? '清除当前 Agent 能力搜索' : '清除搜索内容') : '收起搜索'}
+          title={value ? '清除' : '收起搜索'} onClick={() => {
+            if (value) { change(''); inputRef.current?.focus(); } else collapse();
+          }}><X size={14} aria-hidden='true' /></button>
       </div>
       {!added && <button type='submit' className='cc-skillhub-search-submit' disabled={loadingCatalogue} aria-label='搜索能力' title='搜索'><Search size={16} aria-hidden='true' /></button>}
     </form>
@@ -317,7 +306,7 @@ function SkillSearch({ activeSection, addedSkillQuery, onAddedSkillQuery, query,
 function AddedSkills(props) {
   const {
     catalogueByID, definition, definitionReady, loadingDefinition, onChangeSection,
-    saving, selectedBotUID, sharingSkill, isReadOnly, addedSkillQuery, updatesOnly,
+    saving, selectedBotUID, sharingSkill, isReadOnly, addedSkillQuery,
   } = props;
   const formalSkills = definition.skills.filter((skill) => !skill.localOnly);
   const localOnlySkills = definition.skills.filter((skill) => skill.localOnly);
@@ -338,15 +327,16 @@ function AddedSkills(props) {
       skill?.path,
     ].some((value) => normalizeSkillSearchValue(value).includes(normalizedQuery));
   };
-  const isUpdateable = (skill) => !skill.localOnly && isSkillHubUpdateAvailable(
+  const isUpdateable = (skill) => !isReadOnly && !skill.localOnly && isSkillHubUpdateAvailable(
     skill,
     props.addedSkillPresentationByID.get(skill.skillId)?.details,
   );
   const visibleSkills = sortSkills(definition.skills
-    .filter(matches).filter(skill => !updatesOnly || isUpdateable(skill)), {
+    .filter(matches), {
     order: props.sortOrders.added,
     language: props.language,
     timeOf: skillAddedTimestamp,
+    isPriority: isUpdateable,
     presentationOf: skill => {
       const presentation = props.addedSkillPresentationByID.get(skill.skillId);
       return { ...skill, ...presentation?.details, displayName: presentation?.label || skill.displayName || skill.localName || skill.skillId };
@@ -354,17 +344,9 @@ function AddedSkills(props) {
   });
   const visibleSkillCount = visibleSkills.length;
   const totalSkillCount = formalSkills.length + localOnlySkills.length;
-  const unknownAdditionCount = visibleSkills.filter(skill => !skillAddedTimestamp(skill)).length;
   return (
     <section id='skillhub-added-panel' data-loading-region='' className='cc-skillhub-surface cc-skillhub-added' role='tabpanel' aria-labelledby='skillhub-added-tab'>
-      {!loadingDefinition && props.sortOrders.added.startsWith('time-') && unknownAdditionCount > 0 && (
-        <p className='cc-skillhub-addition-notice' role='status'>
-          {unknownAdditionCount === visibleSkillCount
-            ? '这些能力尚无添加时间记录，暂按名称排序；切换最近／最早添加不会改变顺序。'
-            : `${unknownAdditionCount} 项能力尚无添加时间记录，放在末尾并按名称排序。`}
-        </p>
-      )}
-      {selectedBotUID && !loadingDefinition && definition.skills.length > 0 && (normalizedQuery || updatesOnly) && (
+      {selectedBotUID && !loadingDefinition && definition.skills.length > 0 && normalizedQuery && (
         <span className='cc-visually-hidden cc-skillhub-added-search-count' role='status'>{visibleSkillCount} / {totalSkillCount}</span>
       )}
       {!selectedBotUID ? (
@@ -387,12 +369,11 @@ function AddedSkills(props) {
             />
           )}
           {visibleSkillCount === 0 && (
-            <><EmptyState
+            <EmptyState
               icon={<Search size={21} />}
-              title={updatesOnly && !normalizedQuery ? '当前没有可更新的能力' : '没有找到匹配的能力'}
-              copy={updatesOnly && !normalizedQuery ? '当前 Agent 已配置的 Skill 都是最新版本，或暂时无法确认更新状态。' : '试试能力名称、SkillHub ID 或运行目录名。'}
+              title='没有找到匹配的能力'
+              copy='试试能力名称、SkillHub ID 或运行目录名。'
             />
-            {updatesOnly && <button type='button' className='cc-skillhub-back' onClick={() => onChangeSection('added')}>查看全部能力</button>}</>
           )}
         </div>
       )}
@@ -434,7 +415,7 @@ function AddedSkillItem({ addedSkillPresentationByID, categoryOf, definitionRead
   };
 
   return (
-    <article className='cc-skillhub-card cc-skillhub-overview-card cc-skillhub-added-item'>
+    <article className={`cc-skillhub-card cc-skillhub-overview-card cc-skillhub-added-item${updatable ? ' is-updatable' : ''}`}>
       <button ref={triggerRef} type='button' className='cc-skillhub-card-open' aria-label={`查看 ${label} 详情`} aria-haspopup='dialog' onClick={() => setDetailsOpen(true)}>
         <span className='cc-visually-hidden'>查看 {label} 详情</span>
       </button>
@@ -871,7 +852,10 @@ function Catalogue(props) {
     catalogueError, libraryLocalError, librarySkills: legacySkills, loadingCatalogue,
     loadingLibraryLocalSkills,
   } = props;
-  const completeSort = props.sortOrders.catalogue !== 'time-desc';
+  const hasUpdates = !props.isReadOnly && props.definition.skills.some(skill => isSkillHubUpdateAvailable(
+    skill, props.addedSkillPresentationByID?.get(skill.skillId)?.details,
+  ));
+  const completeSort = props.sortOrders.catalogue !== 'time-desc' || hasUpdates;
   const market = useMarketplaceCatalogue(skillSourceQuery(props.query || ''), { loadAll: completeSort });
   const hasMarketPage = (market.enabled || market.cached) && Boolean(market.state?.skills);
   // Render the legacy catalogue immediately while the optional marketplace
@@ -885,6 +869,7 @@ function Catalogue(props) {
     .filter(skill => !props.selectedCategory || props.categoryOf(skill) === props.selectedCategory)
     .filter(skill => !search || [skill.displayName, skill.skillId, localizedSkillText(skill, 'zh-CN').name].some(value => normalizeSkillSearchValue(value).includes(search))), {
     order: props.sortOrders.catalogue, language: props.language, timeOf: skillUploadedTimestamp,
+    isPriority: skill => !props.isReadOnly && isSkillHubUpdateAvailable(props.installedByID.get(skill.skillId), skill),
   });
   const loading = (market.enabled ? Boolean(market.state?.loading) : loadingCatalogue) || loadingLibraryLocalSkills;
   return (
@@ -956,7 +941,7 @@ function CatalogueCard({ categoryOf, onSkillCategoryChange, definitionReady, ins
   const label = localized.name;
   const installedReference = installedByID.get(skill.skillId) || null;
   const installed = Boolean(installedReference);
-  const updatable = isSkillHubUpdateAvailable(installedReference, skill);
+  const updatable = !isReadOnly && isSkillHubUpdateAvailable(installedReference, skill);
   const adding = skillAction?.type === 'add' && skillAction.skillId === skill.skillId;
   const sharing = skill.isLocalSkill && sharingSkill === skill.localSkill?.name;
   const unavailable = skill.isLocalSkill && !skill.canBind
@@ -977,7 +962,7 @@ function CatalogueCard({ categoryOf, onSkillCategoryChange, definitionReady, ins
   const summary = typeof skill.presentationSummary?.summary === 'string' ? skill.presentationSummary.summary : '';
   const description = language === 'zh-CN' ? localized.description : (marketEnabled && summary) || skill.description;
   return (
-    <article className={`cc-skillhub-card${installed ? ' is-added' : ''}`}>
+    <article className={`cc-skillhub-card${installed ? ' is-added' : ''}${updatable ? ' is-updatable' : ''}`}>
       <button ref={detailsTriggerRef} type='button' className='cc-skillhub-card-open' aria-label={`查看 ${label} 详情`} aria-haspopup='dialog' onClick={() => setDetailsOpen(true)}><span className='cc-visually-hidden'>查看 {label} 详情</span></button>
       <div className='cc-skillhub-card-main'>
         <SkillIllustration skill={skill} category={categoryOf(skill)} />
@@ -1061,12 +1046,11 @@ function formatAddedSkillVersion(skill, privateReference) {
 }
 
 function CustomSkills(props) {
-  const { devices, localSkills, localSkillsError, loadingDevices, loadingLocalSkills, localNotice, localSkillsPath, onChangeSection, runtimeRouteError, selectedDeviceID } = props;
+  const { devices, localSkills, localSkillsError, loadingDevices, loadingLocalSkills, localNotice, localSkillsPath, runtimeRouteError, selectedDeviceID } = props;
   return (
-    <section data-loading-region='' className='cc-skillhub-surface cc-skillhub-custom' aria-labelledby='skillhub-custom-title'>
+    <section id='skillhub-custom-panel' role='tabpanel' data-loading-region='' className='cc-skillhub-surface cc-skillhub-custom' aria-labelledby='skillhub-custom-tab'>
       <div className='cc-skillhub-custom-header'>
         <div><span className='cc-skillhub-section-kicker'>开发者工具</span><h2 id='skillhub-custom-title'>运行工作区（真实目录）</h2><p>这里直接读取当前 Agent 对应 XiaoBa 的真实 skills 目录，不是 BotDefinition 配置列表。</p></div>
-        <button type='button' className='cc-skillhub-back' onClick={() => onChangeSection('added')}><ArrowLeft size={15} aria-hidden='true' /> 返回 Agent 能力总览</button>
       </div>
       <CustomToolbar {...props} localSkillsPath={localSkillsPath} />
       {!loadingDevices && devices?.length === 0 && !runtimeRouteError && (

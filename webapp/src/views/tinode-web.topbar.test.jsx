@@ -589,11 +589,13 @@ describe('LocalAssistantBar model selector', () => {
     expect(container.querySelector('button[aria-label="制作对话分享图"]')).toBeNull();
   });
 
-  it('keeps the current model and quota together in the header', async () => {
+  it('shows the current model without a quota percentage in the header', async () => {
     await renderBar();
     const status = container.querySelector('.v3-local-assistant-status');
-    expect(status?.textContent).toBe('minimax-m3剩余 75%');
+    expect(status?.textContent).toBe('minimax-m3');
     expect(status?.getAttribute('aria-label')).toContain('minimax-m3');
+    expect(status?.getAttribute('aria-label')).not.toContain('剩余');
+    expect(status?.querySelector('.v3-model-quota')).toBeNull();
   });
 
   it('renders mobile model context below the conversation title', async () => {
@@ -619,7 +621,8 @@ describe('LocalAssistantBar model selector', () => {
     const status = container.querySelector('.v3-local-assistant-status');
     expect(status?.textContent).toContain('MiniMax M3');
     expect(status?.textContent).not.toContain('上下文');
-    expect(status?.textContent).toContain('剩余 75%');
+    expect(status?.textContent).not.toContain('剩余');
+    expect(status?.querySelector('.v3-model-quota')).toBeNull();
     expect(status?.title).toContain('上下文 1M');
   });
 

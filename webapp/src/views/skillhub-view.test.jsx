@@ -488,7 +488,7 @@ describe('SkillHubView', () => {
   async function openCustomSkills() {
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('运行工作区')));
+        .find((button) => button.textContent.includes('运行目录')));
       await Promise.resolve();
     });
     for (const card of container.querySelectorAll('.cc-skillhub-local-card')) await chooseCategory(card);
@@ -507,6 +507,7 @@ describe('SkillHubView', () => {
     await act(async () => { categoryButton('开发工具').click(); });
     expect(container.querySelectorAll('.cc-skillhub-card')).toHaveLength(1);
     expect(container.querySelector('.cc-skillhub-card h3').textContent).toBe('Code helper');
+    await act(async () => container.querySelector('.cc-skillhub-search-toggle').click());
     await act(async () => { Simulate.change(container.querySelector('#cc-skillhub-search-input'), { target: { value: 'Design' } }); });
     expect(container.querySelectorAll('.cc-skillhub-card')).toHaveLength(0);
     await act(async () => { categoryButton('设计创作').click(); });
@@ -2253,9 +2254,11 @@ describe('SkillHubView', () => {
 
     expect(container.querySelector('h1')?.textContent).toBe('Agent 能力');
     expect(container.querySelector('#skillhub-added-tab')?.getAttribute('aria-selected')).toBe('true');
-    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(3);
     expect(container.querySelector('.cc-skillhub-installed')).toBeNull();
-    expect(container.textContent).toContain('运行工作区（真实目录）');
+    expect(container.querySelector('.cc-skillhub-tabs .cc-skillhub-custom-entry')?.textContent).toContain('运行目录');
+    expect(container.querySelector('.cc-skillhub-custom-entry svg')).toBeNull();
+    expect(container.querySelector('#skillhub-added-tab')?.textContent).not.toContain('Agent');
     expect(container.querySelector('.cc-skillhub-availability')).toBeNull();
     expect(container.textContent).not.toContain('已配置，等待运行环境应用');
     expect(container.textContent).not.toContain('已开启');
@@ -2291,7 +2294,7 @@ describe('SkillHubView', () => {
     await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
     expect([...container.querySelectorAll('.cc-skillhub-card h3')].map(el => el.textContent))
       .toEqual(['tools/new', 'tools/old', 'tools/legacy-new', 'tools/legacy-old']);
-    expect(container.querySelector('.cc-skillhub-addition-notice')?.textContent).toContain('2 项能力尚无添加时间记录');
+    expect(container.querySelector('.cc-skillhub-addition-notice')).toBeNull();
     await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-sort-trigger')); });
     await act(async () => { Simulate.click([...document.querySelectorAll('[role="option"]')].find(el => el.textContent.includes('最早添加'))); });
     expect([...container.querySelectorAll('.cc-skillhub-card h3')].map(el => el.textContent))
@@ -2299,12 +2302,15 @@ describe('SkillHubView', () => {
     expect(container.querySelector('.cc-skillhub-card-runtime')).toBeNull();
   });
 
-  it('explains unchanged time sorting for an entirely undated Agent inventory', async () => {
+  it('sorts an undated Agent inventory without showing a technical notice', async () => {
     await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} />); });
-    expect(container.querySelector('.cc-skillhub-addition-notice')?.textContent)
-      .toContain('切换最近／最早添加不会改变顺序');
+    const names = () => [...container.querySelectorAll('.cc-skillhub-card h3')].map(card => card.textContent);
+    const initialNames = names();
+    expect(initialNames.length).toBeGreaterThan(0);
+    expect(container.querySelector('.cc-skillhub-addition-notice')).toBeNull();
     await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-sort-trigger')); });
     await act(async () => { Simulate.click([...document.querySelectorAll('[role="option"]')].find(el => el.textContent.includes('名称 A → Z'))); });
+    expect(names()).toEqual(initialNames);
     expect(container.querySelector('.cc-skillhub-addition-notice')).toBeNull();
   });
 
@@ -2348,6 +2354,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
 
+    await act(async () => container.querySelector('.cc-skillhub-search-toggle').click());
     const search = container.querySelector('#cc-skillhub-added-search-input');
     expect(search).toBeTruthy();
     expect(container.querySelector('.cc-skillhub-added-search-count')).toBeNull();
@@ -2445,6 +2452,7 @@ describe('SkillHubView', () => {
       .find((item) => item.querySelector('h3')?.textContent === 'web-search');
     expect(localItem).toBeTruthy();
     expect(container.querySelector('.cc-skillhub-content-header')).toBeNull();
+    await act(async () => container.querySelector('.cc-skillhub-search-toggle').click());
     expect(container.querySelector('.cc-skillhub-navigation #cc-skillhub-added-search-input')).toBeTruthy();
     expect(container.querySelector('[aria-label="已配置能力"]')).toBeTruthy();
     expect(container.querySelector('.cc-skillhub-ability-group-heading')).toBeNull();
@@ -3537,14 +3545,8 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector('.cc-skillhub-updates-filter')?.textContent)
-      .toContain('可更新');
-    expect(container.querySelector('.cc-skillhub-updates-filter span')?.textContent)
-      .toBe('1');
-    expect(container.querySelector('.cc-skillhub-update-uncertain-note')?.textContent)
-      .toBe('部分 Skill 无法确认更新');
-    expect(container.querySelector('.cc-skillhub-update-uncertain-note')?.getAttribute('title'))
-      .toContain('removed/skill');
+    expect(container.querySelector('.cc-skillhub-updates-filter')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-update-uncertain-note')).toBeNull();
 
     const trigger = container.querySelector('.cc-skillhub-agent-select-trigger');
     await act(async () => {
@@ -3556,7 +3558,7 @@ describe('SkillHubView', () => {
     expect(selectedOption?.getAttribute('aria-describedby')).toBeNull();
   });
 
-  it('guides users from another Agent to the owner with updates, then opens the update list', async () => {
+  it('guides users to the owner with updates without adding an update filter', async () => {
     api.getMyBots.mockResolvedValue({ bots: [
       { uid: 42, display_name: 'David', relation: 'owner', is_owner: true },
       { uid: 44, display_name: '烙馍村村长', relation: 'owner', is_owner: true },
@@ -3577,7 +3579,7 @@ describe('SkillHubView', () => {
     });
     await openCatalogue();
     expect(container.querySelector('.cc-skillhub-agent-label').textContent).toContain('2');
-    expect(container.querySelector('.cc-skillhub-agent-update-hint').textContent).toContain('切换到带数字提醒的 Agent');
+    expect(container.querySelector('.cc-skillhub-agent-update-hint')).toBeNull();
     expect(container.querySelector('.cc-skillhub-updates-filter')).toBeNull();
     await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-agent-select-trigger')); });
     const options = [...document.body.querySelectorAll('[role="listbox"][aria-label="Agent 列表"] [role="option"]')];
@@ -3589,36 +3591,28 @@ describe('SkillHubView', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(container.querySelector('.cc-skillhub-agent-update-hint').textContent).toContain('点击「可更新」');
+    expect(container.querySelector('.cc-skillhub-agent-update-hint')).toBeNull();
     expect(container.querySelector('.cc-skillhub-agent-select-trigger').getAttribute('aria-label')).toBe('当前 Agent：烙馍村村长，2 个 Skill 可更新');
-    expect(container.querySelector('.cc-skillhub-updates-filter span').textContent).toBe('2');
+    expect(container.querySelector('.cc-skillhub-updates-filter')).toBeNull();
     expect(container.querySelector('#skillhub-catalogue-tab').getAttribute('aria-selected')).toBe('true');
-    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-updates-filter')); });
-    expect(container.querySelector('#skillhub-added-tab').getAttribute('aria-selected')).toBe('true');
-    expect(container.querySelector('.cc-skillhub-updates-filter').getAttribute('aria-pressed')).toBe('true');
     expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
   });
 
-  it.each(['ready', 'partial', 'error'])('keeps an exit from an active update filter when the summary becomes %s with zero updates', async (status) => {
-    const render = (summary) => <SkillHubView user={{ uid: 7 }} skillHubUpdateSummary={{ byBot: { 42: summary } }} />;
+  it.each(['ready', 'partial', 'error'])('ignores a legacy update-only snapshot when the summary becomes %s with zero updates', async (status) => {
+    const viewStateRef = { current: { userUID: '7', activeSection: 'added', updatesOnly: true } };
+    const render = (summary) => <SkillHubView user={{ uid: 7 }} viewStateRef={viewStateRef} skillHubUpdateSummary={{ byBot: { 42: summary } }} />;
     await act(async () => { root.render(render({ status: 'ready', count: 1 })); });
-    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-updates-filter')); });
     await act(async () => { root.render(render({ status, count: 0 })); });
-    expect(container.querySelector('.cc-skillhub-updates-filter')?.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector('.cc-skillhub-added-item')).toBeNull();
-    const exit = [...container.querySelectorAll('button')].find(button => button.textContent === '查看全部能力');
-    expect(exit).toBeTruthy();
-    await act(async () => { Simulate.click(exit); });
     expect(container.querySelector('.cc-skillhub-added-item')).toBeTruthy();
     expect(container.querySelector('.cc-skillhub-updates-filter')).toBeNull();
   });
 
   it.each([
-    { status: 'ready', anotherUpdate: false, failure: false, exits: true },
-    { status: 'ready', anotherUpdate: true, failure: false, exits: false },
-    { status: 'partial', anotherUpdate: false, failure: false, exits: false },
-    { status: 'ready', anotherUpdate: false, failure: true, exits: false },
-  ])('returns to the overview only after the final confirmed successful update: %j', async ({ status, anotherUpdate, failure, exits }) => {
+    { status: 'ready', anotherUpdate: false, failure: false },
+    { status: 'ready', anotherUpdate: true, failure: false },
+    { status: 'partial', anotherUpdate: false, failure: false },
+    { status: 'ready', anotherUpdate: false, failure: true },
+  ])('keeps all cards visible and updates their priority only after a successful update: %j', async ({ status, anotherUpdate, failure }) => {
     const old = id => ({ source: 'skillhub', skillId: id, version: '1.0.0', contentHash: 'a'.repeat(64) });
     const installed = [old('tools/summarize'), old('tools/review')];
     api.getBotDefinitionSkills.mockResolvedValue({ botId: '42', revision: 3, skills: installed });
@@ -3633,17 +3627,14 @@ describe('SkillHubView', () => {
     await act(async () => { root.render(<SkillHubView user={{ uid: 7 }} skillHubUpdateSummary={{
       byBot: { 42: { status, count: anotherUpdate ? 2 : 1 } },
     }} />); });
-    await openCatalogue();
-    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-updates-filter')); });
-    await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-update-action')); });
-    expect(container.querySelector('.cc-skillhub-updates-filter')?.getAttribute('aria-pressed')).toBe(String(!exits));
-    expect(container.textContent.includes('更新已完成，已显示全部能力')).toBe(exits);
-    if (exits) expect(container.querySelectorAll('.cc-skillhub-added-item')).toHaveLength(2);
+    const summaryCard = () => [...container.querySelectorAll('.cc-skillhub-added-item')].find(card => card.querySelector('h3').textContent === 'Summarize');
+    expect(summaryCard().classList.contains('is-updatable')).toBe(true);
+    await act(async () => { Simulate.click(summaryCard().querySelector('.cc-skillhub-update-action')); });
+    expect(container.querySelector('.cc-skillhub-updates-filter')).toBeNull();
+    expect(container.querySelectorAll('.cc-skillhub-added-item')).toHaveLength(2);
+    expect(summaryCard().classList.contains('is-updatable')).toBe(failure);
+    expect(container.querySelectorAll('.is-updatable')).toHaveLength(Number(anotherUpdate) + Number(failure));
     if (failure) expect(container.textContent).toContain('update failed');
-    if (!exits) {
-      await act(async () => { Simulate.click(container.querySelector('#skillhub-added-tab')); });
-      expect(container.querySelectorAll('.cc-skillhub-added-item')).toHaveLength(2);
-    }
   });
 
   it('hides update guidance when no accessible owner has confirmed updates', async () => {
@@ -3665,7 +3656,7 @@ describe('SkillHubView', () => {
     expect(document.body.querySelector('.cc-skillhub-agent-options .cc-skillhub-agent-update-badge')).toBeNull();
   });
 
-  it('points workspace users to the existing return action before the update filter', async () => {
+  it('keeps all three tabs available in the workspace and allows returning to the overview', async () => {
     const changeSection = vi.fn();
     await act(async () => {
       root.render(<SkillHubContent
@@ -3676,10 +3667,13 @@ describe('SkillHubView', () => {
       />);
     });
     expect(container.querySelector('.cc-skillhub-updates-filter')).toBeNull();
-    expect(container.querySelector('.cc-skillhub-agent-update-hint').textContent).toContain('请先点击「返回 Agent 能力总览」');
-    const back = container.querySelector('.cc-skillhub-back');
-    expect(back.textContent).toContain('返回 Agent 能力总览');
-    await act(async () => Simulate.click(back));
+    expect(container.querySelector('.cc-skillhub-agent-update-hint')).toBeNull();
+    expect(container.querySelectorAll('.cc-skillhub-tabs [role="tab"]')).toHaveLength(3);
+    expect(container.querySelector('#skillhub-custom-tab').getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('#skillhub-custom-panel').getAttribute('aria-labelledby')).toBe('skillhub-custom-tab');
+    expect(container.querySelector('.cc-skillhub-back')).toBeNull();
+    const tab = container.querySelector('#skillhub-added-tab');
+    await act(async () => Simulate.click(tab));
     expect(changeSection).toHaveBeenCalledWith('added');
   });
 
@@ -4501,6 +4495,7 @@ describe('SkillHubView', () => {
     await act(async () => root.render(view));
     await act(async () => Simulate.change(container.querySelector('.cc-skillhub-bot-picker select'), { target: { value: '44' } }));
     await openCatalogue();
+    await act(async () => container.querySelector('.cc-skillhub-search-toggle').click());
     await act(async () => {
       Simulate.change(container.querySelector('#cc-skillhub-search-input'), { target: { value: 'Code' } });
       Simulate.click([...container.querySelectorAll('.cc-skillhub-category-filter button')].find(button => button.textContent === '开发工具'));
@@ -4551,7 +4546,8 @@ describe('SkillHubView', () => {
     api.searchSkillHubSkills.mockReturnValue(pending.promise);
     await act(async () => root.render(<SkillHubView user={{ uid: 7 }} viewStateRef={viewStateRef} />));
     await openCatalogue();
-    expect(container.querySelector('#cc-skillhub-search-input').value).toBe('');
+    expect(container.querySelector('#cc-skillhub-search-input')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-search-toggle')).toBeTruthy();
     expect(container.textContent).not.toContain('Private cached skill');
     expect(viewStateRef.current.userUID).toBe('7');
     await act(async () => root.render(null));
@@ -5496,6 +5492,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     await openCatalogue();
+    await act(async () => container.querySelector('.cc-skillhub-search-toggle').click());
     const form = container.querySelector('.cc-skillhub-search');
     const input = form.querySelector('input');
     await act(async () => {

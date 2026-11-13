@@ -3151,6 +3151,33 @@ describe('ChatListView sidebar sections', () => {
     expect(groupRows.some((row) => row.textContent.includes('Release Review Task'))).toBe(false);
   });
 
+  it('opens the new-task page directly when an inline Agent selector is available', async () => {
+    const onNewTask = vi.fn();
+    await mount({ onNewTask });
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-sidebar-new-task-entry'));
+    });
+    expect(onNewTask).toHaveBeenCalledWith({ projectId: 0, projectName: '' });
+    expect(document.body.querySelector('.cc-new-task-dialog')).toBeNull();
+    expect(api.createGroup).not.toHaveBeenCalled();
+    expect(onStartAgentTask).not.toHaveBeenCalled();
+  });
+
+  it('passes the project to the new-task page without opening a picker dialog', async () => {
+    api.getProjects.mockResolvedValue({ projects: [{ id: 12, name: 'Website', task_count: 0 }] });
+    const onNewTask = vi.fn();
+    await mount({ onNewTask });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Website 项目操作"]'));
+    });
+    const item = Array.from(container.querySelectorAll('.cc-project-action-menu [role="menuitem"]'))
+      .find((button) => button.textContent.includes('新建任务'));
+    await act(async () => Simulate.click(item));
+    expect(onNewTask).toHaveBeenCalledWith({ projectId: 12, projectName: 'Website' });
+    expect(document.body.querySelector('.cc-new-task-dialog')).toBeNull();
+    expect(api.createGroup).not.toHaveBeenCalled();
+  });
+
   it('selects an Agent for a new task without creating anything before the first message', async () => {
     await mount();
 

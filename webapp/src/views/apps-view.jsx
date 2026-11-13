@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import SlidingSegments from '../widgets/sliding-segments';
 import {
   AppWindow,
   ArrowLeft,
@@ -491,11 +492,11 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
       </header>
       <div className="cc-apps-toolbar">
         <div className="cc-apps-toolbar-filters">
-          <div className="cc-apps-scope" role="group" aria-label="应用范围">
+          <SlidingSegments value={manageableOnly ? 'manageable' : favoritesOnly ? 'favorites' : 'all'} className="cc-apps-scope" role="group" aria-label="应用范围">
             <button type="button" aria-pressed={!manageableOnly && !favoritesOnly} onClick={() => { setManageableOnly(false); setFavoritesOnly(false); }}>全部应用</button>
             <button type="button" aria-pressed={favoritesOnly} onClick={() => { setManageableOnly(false); setFavoritesOnly(true); }}><Star size={15} aria-hidden="true" />收藏</button>
             <button type="button" aria-pressed={manageableOnly} onClick={() => { setManageableOnly(true); setFavoritesOnly(false); }}>我可管理</button>
-          </div>
+          </SlidingSegments>
         </div>
         <div className="cc-apps-toolbar-actions">
           <div className="cc-library-search" role="search">
