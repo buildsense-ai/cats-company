@@ -65,6 +65,28 @@ done
 EXPECTED_AT="$(normalize_expected_deadline "$EXPECTED_AT" "--expected-expires-at")" || exit 2
 EXPECTED_DUE="$(normalize_expected_deadline "$EXPECTED_DUE" "--expected-delete-after")" || exit 2
 
+# 共享集群租户（packed_shared）不属于 ECS 路径。平台按集群登记表
+# （packed/packed-tenants.txt）决定走 packed 还是回退到这里；登记表漂移时共享租户就
+# 会被送进来。这类快照本来就没有 ECS 的 region 字段，走 worker_profile_load 的校验会
+# 直接 exit 2，平台于是每小时重试一条永远不可能成功的删除。ECS 侧没有任何属于它的
+# 实例，按“已清理”收尾，并留一条 warning 把问题交回路由层。
+_snapshot_profile_precheck() {
+  local state_dir raw
+  command -v jq >/dev/null 2>&1 || return 0
+  state_dir="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+  [[ -z "${CTYUN_WORKER_STATE_ROOT:-}" ]] || state_dir="${CTYUN_WORKER_STATE_ROOT%/}/${NAME}"
+  raw="${CATSCO_WORKER_DEPLOYMENT_JSON:-}"
+  if [[ -z "$raw" && -f "$state_dir/deployment.json" && ! -L "$state_dir/deployment.json" ]]; then
+    raw="$(cat "$state_dir/deployment.json" 2>/dev/null || true)"
+  fi
+  [[ -n "$raw" ]] || return 0
+  [[ "$(jq -r '.profile // empty' <<<"$raw" 2>/dev/null || true)" == packed_shared ]] || return 0
+  echo "warning: ${NAME} is packed_shared; the ECS destroy path owns no such instance — reporting not-found (platform routing by packed-tenants.txt drifted)" >&2
+  echo "{\"status\":\"not-found\",\"instance_name\":\"worker-${NAME}\"}"
+  exit 0
+}
+_snapshot_profile_precheck
+
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worker-deployment-profile.sh"
 worker_profile_load "$NAME"
 
