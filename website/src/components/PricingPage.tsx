@@ -17,21 +17,24 @@ type PricingPlan = {
   tagline: string;
   description: string;
   capacity: string;
+  unit: 'credit' | 'Token';
   features: PlanFeature[];
   note?: string;
 };
 
-// Draft prices mirror webapp/src/widgets/plans/plan-offers.js.
-// The workspace catalogue confirms live prices and availability before purchase.
-const cloudNote = '云端 AI 员工随套餐有效；到期后保留 15 天，期间续费可恢复。';
+// Draft personal prices mirror webapp/src/widgets/plans/credit-plan-offers.js;
+// the team package still mirrors plan-offers.js. The workspace catalogue
+// confirms live prices and availability before purchase.
+const retentionNote = '到期后云端环境保留 7 天，期间续费可恢复。';
 const plans: PricingPlan[] = [{
-  slug: 'catsco-basic',
-  name: '基础版',
-  kicker: 'CATSCO BASIC',
-  price: 59,
+  slug: 'catsco-credit-v1-monthly',
+  name: '入门版',
+  kicker: 'CATSCO V1',
+  price: 39,
   tagline: '轻量日常协作',
   description: '适合提炼资料重点、起草邮件和文案。',
-  capacity: '5 亿',
+  capacity: '4,000',
+  unit: 'credit',
   features: [{
     label: 'Office 文件处理',
     details: ['文档阅读与写作', '表格整理与数据汇总']
@@ -45,17 +48,19 @@ const plans: PricingPlan[] = [{
     label: '文件、图片与成果预览'
   }, {
     label: '任务进度与执行过程查看'
-  }]
+  }],
+  note: '仅支持 DeepSeek Flash，按官方价格扣费，无折扣；' + retentionNote
 }, {
-  slug: 'catsco-standard',
-  name: '个人版',
-  kicker: 'CATSCO PERSONAL',
-  price: 99,
+  slug: 'catsco-credit-v2-monthly',
+  name: '日常版',
+  kicker: 'CATSCO V2',
+  price: 79,
   tagline: '日常工作自动化',
   description: '适合每天整理文件、汇总数据和待办。',
-  capacity: '约 10 亿',
+  capacity: '12,000',
+  unit: 'credit',
   features: [{
-    label: '基础版中的全部权益，以及：',
+    label: '入门版中的全部权益，以及：',
     inherited: true
   }, {
     label: '后台任务，持续执行'
@@ -69,17 +74,18 @@ const plans: PricingPlan[] = [{
   }, {
     label: '任务成果集中管理与分享'
   }],
-  note: cloudNote
+  note: '可使用已开通的全部模型（当前为 DeepSeek Flash），按官方价格扣费，无折扣；' + retentionNote
 }, {
-  slug: 'catsco-advanced',
+  slug: 'catsco-credit-v3-monthly',
   name: '专业版',
-  kicker: 'CATSCO PRO',
+  kicker: 'CATSCO V3',
   price: 159,
   tagline: '高频多任务协作',
   description: '适合多项工作并行、持续推进项目。',
-  capacity: '约 20 亿',
+  capacity: '22,500',
+  unit: 'credit',
   features: [{
-    label: '个人版中的全部权益，以及：',
+    label: '日常版中的全部权益，以及：',
     inherited: true
   }, {
     label: '多任务并行',
@@ -93,7 +99,7 @@ const plans: PricingPlan[] = [{
   }, {
     label: '高峰期优先响应'
   }],
-  note: cloudNote
+  note: '可使用已开通的全部模型，DeepSeek 官网计价 9 折；' + retentionNote
 }];
 const teamPlan: PricingPlan = {
   slug: 'catsco-team',
@@ -103,6 +109,7 @@ const teamPlan: PricingPlan = {
   tagline: '团队协作',
   description: '适合团队共同使用与管理 AI 员工。',
   capacity: '最高 30 亿',
+  unit: 'Token',
   features: []
 };
 const teamBenefits: Array<{
@@ -159,10 +166,12 @@ const comparisonSections: Array<{
 }> = [{
   title: '方案与额度',
   rows: [
-    { label: '方案价格', values: comparisonPlans.map(plan => '¥' + plan.price + ' / 期') },
-    { label: '每期有效期', values: comparisonPlans.map(() => '30 天') },
+    { label: '方案价格', values: comparisonPlans.map(plan => '¥' + plan.price + ' / 月') },
+    { label: '计费周期', values: comparisonPlans.map(plan => plan.unit === 'credit' ? '自然月，按购买日对日' : '30 天') },
     { label: '适合的工作方式', values: comparisonPlans.map(plan => plan.tagline) },
-    { label: '参考用量额度', values: comparisonPlans.map(plan => plan.capacity + ' Token') }
+    { label: '每期额度', values: comparisonPlans.map(plan => plan.capacity + ' ' + plan.unit) },
+    { label: '模型范围', values: ['DeepSeek Flash', '已开通模型（当前 DeepSeek Flash）', '已开通模型（当前 DeepSeek Flash）', '待确认'] },
+    { label: '模型调用优惠', values: ['无折扣', '无折扣', 'DeepSeek 官网价 9 折', '待确认'] }
   ]
 }, {
   title: '日常工作与持续执行',
@@ -191,26 +200,32 @@ function ComparisonCell({ value }: { value: ComparisonValue }) {
   return <span className={value === '待确认' ? 'pricing-comparison-pending' : undefined}>{value}</span>;
 }
 const pricingFaqs = [{
-  question: '基础版、个人版和专业版有什么区别？',
-  answer: '基础版面向资料整理、Office 文件处理和日常写作；个人版增加持续执行的后台任务、授权设备调用和个人工作偏好；专业版进一步提供多任务并行、复杂任务推进、历史工作检索和经验沉淀。套餐详情以工作台购买确认页显示为准。'
+  question: '入门版、日常版和专业版有什么区别？',
+  answer: '三个个人套餐的差异是月额度和模型折扣：入门版 ¥39 / 4,000 credit，日常版 ¥79 / 12,000 credit，专业版 ¥159 / 22,500 credit，只有专业版的模型调用按 DeepSeek 官网价 9 折。当前已开通的模型是 DeepSeek Flash：入门版只支持 DeepSeek Flash，日常版和专业版可使用已开通的全部模型。云端机器与执行能力沿用各档原有说明，套餐详情以工作台购买确认页显示为准。'
 }, {
   question: '价格按月还是按年？',
-  answer: '当前展示基础版 ¥59、个人版 ¥99、专业版 ¥159、团队版 ¥599，每期 30 天，页面简写为“/ 月”。尚未公布年付价格或折扣，也不会在此页发起自动续费。'
+  answer: '个人套餐按月计费，周期按自然月对日计算，没有对应日期时取当月月末，不使用固定 30 天。当前展示入门版 ¥39、日常版 ¥79、专业版 ¥159，团队版 ¥599 仍按 30 天一期。尚未公布年付价格，也不会在此页发起自动续费。'
 }, {
-  question: '页面上的额度如何理解？',
-  answer: '额度是用于估算可用量的参考，实际能完成的工作随所选模型、任务内容和文件长度而变化，不代表固定的任务或对话次数，也不承诺无限使用。额度及计量规则以工作台套餐说明为准。'
+  question: '页面上的 credit 如何理解？',
+  answer: 'credit 是计费额度，不是 token 估算：充值 1 元 = 1 credit，模型调用按模型官方价格与实际用量扣费，再按所购套餐的折扣计价。月额度当期有效，未使用部分不结转；提前续费只延长有效期，不会提前发放下一期额度。扣费顺序为月额度、邀请赠送额度、充值余额。'
+}, {
+  question: '峰谷时段怎么计算？',
+  answer: '模型调用按北京时间区分峰谷：工作日 09:00–12:00 和 14:00–18:00 为峰时，其余时段为谷时；周末和法定节假日全天为谷时，调休补班的周末同样按谷时计算。峰谷费率差异以模型官方公布的价格为准。'
 }, {
   question: '现在可以正式购买或升级吗？',
   answer: '点击套餐按钮即可前往 CatsCo 工作台，查看对应套餐并确认购买或升级。尚未登录时会先进入登录流程，登录后继续所选套餐；实际价格、可售状态和升级规则以工作台显示为准。'
 }, {
+  question: '已有的旧套餐会自动换成 credit 套餐吗？',
+  answer: '不会自动转制。已有套餐按原购买约定继续生效，需要更换时可在工作台自行选择新的 credit 套餐；续费与升级规则以工作台购买确认页为准。'
+}, {
   question: '云端 AI 员工到期后会怎样？',
-  answer: '个人版和专业版的套餐说明为：云端 AI 员工随套餐有效，到期后保留 15 天，期间续费可恢复。具体保留和恢复条件以工作台套餐说明为准。'
+  answer: '个人套餐到期后，云端运行环境保留 7 天，期间续费可恢复；充值余额不随套餐到期清零，但余额本身不自动赋予模型权限，需要有效套餐才能继续使用对应模型。具体保留和恢复条件以工作台套餐说明为准。'
 }, {
   question: '团队版和 Business Start 有什么区别？',
-  answer: '团队版是最多 10 人共同使用和管理 AI 员工的套餐，包含独享服务器、共享知识库和权限管理。Business Start 是 ¥4,999 / 月起的企业落地服务，按约定范围提供环境准备、启动培训、首批场景和 Skill 初始化；复杂集成、私有化和长期支持需另行咨询。'
+  answer: '团队版是最多 10 人共同使用和管理 AI 员工的套餐，包含独享服务器、共享知识库和权限管理，价格与额度按 30 天一期计算。Business Start 是 ¥4,999 / 月起的企业落地服务，按约定范围提供环境准备、启动培训、首批场景和 Skill 初始化；复杂集成、私有化和长期支持需另行咨询。'
 }, {
   question: '邀请码会改变套餐价格吗？',
-  answer: '不会。邀请码用于内测准入和服务容量管理，不是折扣券。已有邀请码可通过页面下方入口前往 CatsCo 工作台登录。'
+  answer: '不会。邀请码兑换 20 credit 赠送额度，独立记账并叠加在付费套餐之上，不替代付费套餐，也不是折扣券，不改变套餐价格；赠送额度不能用于抵扣欠款。已有邀请码可通过页面下方入口前往 CatsCo 工作台登录。'
 }];
 function Price({
   amount
@@ -263,7 +278,7 @@ export function PricingPage() {
               <span className="pricing-kicker">{plan.kicker}</span><h2 id={`${plan.slug}-title`}>{plan.name}</h2>
               <Price amount={plan.price} /><span className="pricing-tagline">{plan.tagline}</span><p className="pricing-description">{plan.description}</p>
               <a className="pricing-plan-action" href={appUrl('/', { open: 'relay', plan: plan.slug, source: 'pricing' })}><PaymentIcon />获取 CatsCo {plan.name}</a>
-              <dl className="pricing-allowances"><div><dt><Icon name="layers" />Token 额度</dt><dd>{plan.capacity}<span>Token</span></dd></div></dl>
+              <dl className="pricing-allowances"><div><dt><Icon name="layers" />月额度</dt><dd>{plan.capacity}<span>{plan.unit}</span></dd></div></dl>
               <div className="pricing-feature-divider" />
               <ul className="pricing-features">{plan.features.map(feature => <li key={feature.label} className={feature.inherited ? 'is-inherited' : undefined}>
                 <Icon name="check" /><div><span>{feature.label}</span>{feature.details && <ul className="pricing-feature-details">{feature.details.map(detail => <li key={detail}>{detail}</li>)}</ul>}</div>
@@ -277,7 +292,7 @@ export function PricingPage() {
             <div className="pricing-team-offer">
               <span className="pricing-kicker">CATSCO TEAM</span><h2 id="pricing-team-title">团队版</h2><p>{teamPlan.description}</p><Price amount={teamPlan.price} />
               <a className="pricing-plan-action" href={appUrl('/', { open: 'relay', plan: teamPlan.slug, source: 'pricing' })}>获取 CatsCo 团队版</a>
-              <dl className="pricing-allowances"><div><dt><Icon name="users" />团队成员</dt><dd>最多 10 人</dd></div><div><dt><Icon name="layers" />Token 额度</dt><dd>{teamPlan.capacity}<span>Token</span></dd></div></dl>
+              <dl className="pricing-allowances"><div><dt><Icon name="users" />团队成员</dt><dd>最多 10 人</dd></div><div><dt><Icon name="layers" />Token 额度</dt><dd>{teamPlan.capacity}<span>{teamPlan.unit}</span></dd></div></dl>
             </div>
             <div className="pricing-team-benefits"><h3>团队协作，从同一个工作空间开始</h3><ul>{teamBenefits.map(item => <li key={item.title}><span className="pricing-benefit-icon"><Icon name={item.icon} /></span><div><strong>{item.title}</strong><p>{item.description}</p></div></li>)}</ul></div>
           </section>
@@ -295,9 +310,9 @@ export function PricingPage() {
             </div>
           </section>
         </div>
-        <p className="pricing-estimate-note">Token 数为估算值，实际可用量随所选模型、任务内容及模型价格变化。点击套餐按钮可前往工作台确认购买，实际价格、额度与权益以工作台显示为准。</p>
+        <p className="pricing-estimate-note">credit 是计费额度，不是 token 估算值：充值 1 元 = 1 credit，模型调用按模型官方价格与实际用量扣费，并按所购套餐的折扣计价。点击套餐按钮可前往工作台确认购买，实际价格、额度与权益以工作台显示为准。</p>
         <section className="pricing-access" aria-labelledby="pricing-access-title">
-          <div><span className="pricing-section-eyebrow">EARLY ACCESS</span><h2 id="pricing-access-title">已有邀请码？</h2><p>邀请码用于内测准入和服务承载管理，不是折扣券，也不会改变正式价格。</p></div>
+          <div><span className="pricing-section-eyebrow">EARLY ACCESS</span><h2 id="pricing-access-title">已有邀请码？</h2><p>邀请码兑换 20 credit 赠送额度，独立记账并叠加在付费套餐之上，不替代套餐、不是折扣券，也不改变套餐价格。</p></div>
           <a href={appLoginUrl({ access: 'invite', source: 'pricing', next: '/?open=relay' })}>使用邀请码登录<Icon name="arrowRight" /></a>
         </section>
         <section className="pricing-comparison" aria-labelledby="pricing-comparison-title">
@@ -305,7 +320,7 @@ export function PricingPage() {
           <p id="pricing-comparison-help" className="pricing-comparison-note">以下为套餐差异参考，实际权益以工作台显示为准。✓ 表示列入方案，— 表示未列入；“待确认”表示权益范围尚未确定。团队版的其他能力仍需单独确认。窄屏可左右滑动查看全部方案。</p>
           <div className="pricing-comparison-scroll" role="region" aria-label="四档方案对比表" aria-describedby="pricing-comparison-help" tabIndex={0}>
             <table className="pricing-comparison-table">
-              <caption className="pricing-sr-only">基础版、个人版、专业版和团队版的价格、额度、工作能力与协作资源对比</caption>
+              <caption className="pricing-sr-only">入门版、日常版、专业版和团队版的价格、额度、工作能力与协作资源对比</caption>
               <colgroup><col />{comparisonPlans.map(plan => <col key={plan.slug} />)}</colgroup>
               <thead><tr><th scope="col">功能</th>{comparisonPlans.map(plan => <th key={plan.slug} scope="col"><span>{plan.name}</span></th>)}</tr></thead>
               {comparisonSections.map(section => <tbody key={section.title}>
