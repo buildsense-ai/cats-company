@@ -6,7 +6,15 @@
 # unsubscribed，再调用 DestroyEcsInstance。fail-closed：删除失败聚合报告。
 #
 # 用法：
-#   destroy-worker.sh --name <tenant> [--dry-run]
+#   destroy-worker.sh --name <tenant>
+#                     [--expected-expires-at <RFC3339|none>]
+#                     [--expected-delete-after <RFC3339>] [--dry-run]
+#
+# --expected-expires-at / --expected-delete-after：platform/destroy.sh 把 sweeper
+# 当时读到的 DB 快照透传给后端（packed 路径在租户锁内复核，对不上返回 skipped）。
+# ECS 路径没有租户锁也没有 DB 可查，这里只校验格式后照常删除——但参数必须接受，
+# 否则平台每一次销毁都在参数解析阶段 exit 2（2026-11-13：bot-ops-* 两条记录因此
+# 卡在 delete_failed，实例一直回收不掉）。
 #
 # 幂等：实例/key pair 不存在按"已清理"处理（exit 0）。
 # 退出码：0=已清理 / 1=失败（fail-closed，聚合报告）/ 2=用法错误 /
@@ -21,19 +29,41 @@ set -Eeuo pipefail
 
 NAME=""
 DRY_RUN=0
+EXPECTED_AT=""
+EXPECTED_DUE=""
 
 usage() {
-  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# 期限只做格式校验：非法值 fail-closed（exit 2），合法值原样接受（见文件头说明）。
+normalize_expected_deadline() { # <value> <label>
+  local v="$1" label="$2" lower
+  [ -n "$v" ] || return 0
+  lower="$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    none|permanent|never) echo "none"; return 0 ;;
+  esac
+  if ! [[ "$v" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt\ ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$ || "$v" =~ ^[0-9]+$ ]]; then
+    echo "error: $label is not a valid timestamp: $v" >&2
+    return 1
+  fi
+  echo "$v"
 }
 
 while (($#)); do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --expected-expires-at) EXPECTED_AT="${2:-}"; shift 2 ;;
+    --expected-delete-after) EXPECTED_DUE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+EXPECTED_AT="$(normalize_expected_deadline "$EXPECTED_AT" "--expected-expires-at")" || exit 2
+EXPECTED_DUE="$(normalize_expected_deadline "$EXPECTED_DUE" "--expected-delete-after")" || exit 2
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worker-deployment-profile.sh"
 worker_profile_load "$NAME"

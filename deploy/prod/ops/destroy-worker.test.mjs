@@ -503,3 +503,33 @@ test("destroy-worker: a still-present instance keeps key and local retry state",
   assert.equal(state.keyDeleteAttempts||0,0);
   assert.ok(fs.existsSync(path.join(localState,"retry-marker")));
 });
+
+test("destroy-worker: accepts the platform deadline flags", () => {
+  // platform/destroy.sh 会给后端透传 sweeper 读到的 deadline；ECS 路径必须接受，
+  // 否则每次销毁都在参数解析阶段 exit 2（2026-11-13 bot-ops-* 卡 delete_failed）。
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-ops-x", instanceID: "i-9", state: "running", floatingIP: "10.0.0.9" }],
+    keypairs: [{ keyPairName: "worker-key-bot-ops-x", keyPairID: "kp-9" }],
+  });
+  const r = run(sb, [
+    "--name", "bot-ops-x",
+    "--expected-expires-at", "2026-11-12T01:16:49Z",
+    "--expected-delete-after", "2026-11-12T01:17:09Z",
+  ]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /"status":"destroyed"/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.deletedInstances, ["i-9"]);
+});
+
+test("destroy-worker: rejects a malformed deadline before touching the provider", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+  });
+  const r = run(sb, ["--name", "bot-a", "--expected-expires-at", "not-a-date"]);
+  assert.equal(r.status, 2, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /not a valid timestamp/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal((state.deletedInstances || []).length, 0, "must fail closed and delete nothing");
+});
