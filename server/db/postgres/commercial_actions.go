@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -52,6 +53,19 @@ func commercialActionSnapshot(tx *sql.Tx, uid int64, now time.Time) (*types.Comm
 	rows.Close()
 	if err != nil {
 		return nil, 0, err
+	}
+	if primary := types.PrimaryCommercialEntitlement(s.Entitlements, now); primary != nil {
+		for _, plan := range s.Plans {
+			if plan.ID == primary.PlanID && plan.ModelCreditUnits > 0 {
+				anchor, ok, err := activeCommercialCreditPackageAnchor(tx, uid, plan.ID, now)
+				if err != nil {
+					return nil, 0, err
+				}
+				if ok {
+					primary.PeriodAnchorAt = &anchor
+				}
+			}
+		}
 	}
 	rows, err = tx.Query(`SELECT id,uid,COALESCE(plan_id,0),COALESCE(invite_code_id,0),grant_type,source_ref,model,amount_cny,
  reset_duration,effective_at,expires_at,revoked_at,note,COALESCE(operator_uid,0),created_at
@@ -108,7 +122,7 @@ func buildCommercialActionPreview(r types.CommercialActionRequest, s *types.Comm
 		plan = byID[r.PlanID]
 		p.TargetPlan = plan
 		p.PackageEffect = "change_plan"
-		if plan == nil || plan.State != 0 || !commercialPlanHasQuota(plan) {
+		if plan == nil || plan.State != 0 || !commercialActionPlanHasQuota(plan) {
 			warn("所选套餐不可用或没有额度")
 			break
 		}
@@ -116,7 +130,7 @@ func buildCommercialActionPreview(r types.CommercialActionRequest, s *types.Comm
 			warn("当前已经使用该套餐，请使用续期")
 		}
 		p.DurationDays = plan.DurationDays
-		p.ExpiresAt = commercialOperatorPlanExpiry(plan, anchor)
+		p.ExpiresAt = commercialActionPlanExpiry(plan, anchor)
 		p.NextTotalCNY = commercialOperatorPlanQuota(plan)
 		for _, g := range s.Grants {
 			if g.PlanID == 0 || (byID[g.PlanID] != nil && byID[g.PlanID].Slug == commercialLegacyPlanSlug) {
@@ -147,13 +161,29 @@ func buildCommercialActionPreview(r types.CommercialActionRequest, s *types.Comm
 		if days == 0 {
 			days = plan.DurationDays
 		}
-		if days <= 0 || days > 3650 {
+		if plan.ModelCreditUnits > 0 && r.DurationDays != 0 {
+			warn("credit 套餐按自然月续期，不支持 duration_days")
+			break
+		}
+		if (plan.ModelCreditUnits <= 0 && days <= 0) || days > 3650 {
 			warn("有限期内部或旧权益需要明确 duration_days")
 			break
 		}
 		p.DurationDays = days
 		p.PreviousExpiresAt = latest
 		v := latest.AddDate(0, 0, days)
+		if plan.ModelCreditUnits > 0 {
+			periodAnchor := primary.StartsAt
+			if primary.PeriodAnchorAt != nil {
+				periodAnchor = *primary.PeriodAnchorAt
+			}
+			var ok bool
+			v, ok = store.ModelCreditMonthlyNextBoundary(periodAnchor, *latest)
+			if !ok {
+				warn("credit 套餐周期锚点无效")
+				break
+			}
+		}
 		p.ExpiresAt = &v
 		// Extension grants start at the previous expiry; currently effective quota
 		// remains unchanged until that segment starts.
@@ -296,6 +326,20 @@ func buildCommercialActionPreview(r types.CommercialActionRequest, s *types.Comm
 	}{r.Fingerprint(), p, s.Entitlements, s.Grants}
 	p.PreviewToken = fmt.Sprintf("%d:%s", anchor.UnixMicro(), types.CommercialActionHash(snapshot))
 	return p, nil
+}
+
+// Credit eligibility belongs to the formal operations path. Legacy quota and
+// trial validation continue to require their original CNY/model budgets.
+func commercialActionPlanHasQuota(plan *types.CommercialPlan) bool {
+	return plan != nil && (plan.ModelCreditUnits > 0 || commercialPlanHasQuota(plan))
+}
+
+func commercialActionPlanExpiry(plan *types.CommercialPlan, anchor time.Time) *time.Time {
+	if plan != nil && plan.ModelCreditUnits > 0 {
+		expiry := store.ModelCreditMonthlyBoundary(anchor, 1)
+		return &expiry
+	}
+	return commercialOperatorPlanExpiry(plan, anchor)
 }
 
 func (a *Adapter) PreviewCommercialAction(r types.CommercialActionRequest) (*types.CommercialActionPreview, error) {
@@ -457,11 +501,15 @@ func (a *Adapter) applyCommercialAction(r types.CommercialActionRequest) (*types
 			return nil, err
 		}
 	}
+	// Monthly credit was reconciled atomically above. Sending this action to
+	// legacy Relay quota sync would reset a CNY cycle or manufacture a baseline
+	// budget, and would make credit-only accounts depend on a legacy Relay key.
+	relaySynced := result == nil || (p.TargetPlan != nil && p.TargetPlan.ModelCreditUnits > 0)
 	requestJSON, _ := json.Marshal(r)
 	previewJSON, _ := json.Marshal(p)
 	resultJSON, _ := json.Marshal(result)
 	v, err := scanCommercialAction(tx.QueryRow(`INSERT INTO commercial_ops_actions(uid,operation_id,fingerprint,request,preview,result,intent,package_applied,relay_synced,worker_status)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING `+commercialActionColumns, r.UID, r.OperationID, r.Fingerprint(), requestJSON, previewJSON, resultJSON, r.Intent, result != nil, result == nil, workerStatus))
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING `+commercialActionColumns, r.UID, r.OperationID, r.Fingerprint(), requestJSON, previewJSON, resultJSON, r.Intent, result != nil, relaySynced, workerStatus))
 	if err != nil {
 		return nil, err
 	}

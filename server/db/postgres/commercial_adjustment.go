@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"math"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -181,8 +183,8 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 		var repeatedExpiresAt sql.NullTime
 		err := tx.QueryRow(`
 			SELECT starts_at, expires_at FROM commercial_entitlements
-			WHERE uid = $1 AND source = 'operator' AND source_ref = $2
-			ORDER BY id DESC LIMIT 1`, adjustment.UID, operationID).Scan(&repeatedStartsAt, &repeatedExpiresAt)
+			WHERE uid = $1 AND (source = 'operator' OR ($3 AND source = 'admin')) AND source_ref = $2
+			ORDER BY id DESC LIMIT 1`, adjustment.UID, operationID, adjustment.OperationsIntent).Scan(&repeatedStartsAt, &repeatedExpiresAt)
 		if err != nil && err != sql.ErrNoRows {
 			return nil, fmt.Errorf("check repeated commercial plan change: %w", err)
 		}
@@ -205,7 +207,7 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 		if err != nil {
 			return nil, fmt.Errorf("load selected commercial plan: %w", err)
 		}
-		if !commercialPlanHasQuota(plan) {
+		if !commercialPlanHasQuota(plan) && !(adjustment.OperationsIntent && plan.ModelCreditUnits > 0) {
 			return nil, commercialAdjustmentError("invalid_plan", "selected commercial plan has no quota")
 		}
 		var samePlan bool
@@ -228,6 +230,12 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 			return nil, err
 		}
 		expiresAt := commercialOperatorPlanExpiry(plan, now)
+		source := "operator"
+		var periodAnchor any
+		if adjustment.OperationsIntent && plan.ModelCreditUnits > 0 {
+			source, periodAnchor = "admin", now
+			expiresAt = commercialActionPlanExpiry(plan, now)
+		}
 		if _, err := tx.Exec(`
 			UPDATE commercial_quota_grants
 			SET expires_at = $3
@@ -238,13 +246,18 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 			return nil, fmt.Errorf("align shared adjustments with replacement plan: %w", err)
 		}
 		if _, err := tx.Exec(`
-			INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
-			VALUES ($1, $2, 'operator', $3, 'active', $4, $5)`,
-			adjustment.UID, plan.ID, operationID, now, expiresAt); err != nil {
+			INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at, period_anchor_at)
+			VALUES ($1, $2, $6, $3, 'active', $4, $5, $7)`,
+			adjustment.UID, plan.ID, operationID, now, expiresAt, source, periodAnchor); err != nil {
 			return nil, fmt.Errorf("create operator commercial entitlement: %w", err)
 		}
 		if err := createOperatorPlanGrants(tx, adjustment.UID, plan, operationID, strings.TrimSpace(adjustment.Note), now, expiresAt); err != nil {
 			return nil, err
+		}
+		if source == "admin" {
+			if _, _, err := reconcileModelCreditMonthlyPeriod(context.Background(), tx, adjustment.UID, now); err != nil {
+				return nil, err
+			}
 		}
 		// A plan change reopens or replaces the paid window; keep cloud-worker
 		// lifecycles on the same paid period so workers are not destroyed while
@@ -292,8 +305,8 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 		var repeatedExpiresAt sql.NullTime
 		err := tx.QueryRow(`
 			SELECT starts_at, expires_at FROM commercial_entitlements
-			WHERE uid = $1 AND source = 'operator' AND source_ref = $2
-			ORDER BY id DESC LIMIT 1`, adjustment.UID, operationID).Scan(&repeatedStartsAt, &repeatedExpiresAt)
+			WHERE uid = $1 AND (source = 'operator' OR ($3 AND source = 'admin')) AND source_ref = $2
+			ORDER BY id DESC LIMIT 1`, adjustment.UID, operationID, adjustment.OperationsIntent).Scan(&repeatedStartsAt, &repeatedExpiresAt)
 		if err != nil && err != sql.ErrNoRows {
 			return nil, fmt.Errorf("check repeated commercial extension: %w", err)
 		}
@@ -370,7 +383,7 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 		if adjustment.OperationsIntent && adjustment.DurationDays > 0 {
 			days = adjustment.DurationDays
 		}
-		if days <= 0 {
+		if days <= 0 && !(adjustment.OperationsIntent && plan.ModelCreditUnits > 0) {
 			return nil, commercialAdjustmentError("unsupported_plan", "an explicit duration is required for this finite entitlement")
 		}
 		currentExpiry := currentExpires.UTC()
@@ -378,14 +391,38 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 			return nil, commercialAdjustmentError("stale_expiry", "package expiry changed after preview; refresh and try again")
 		}
 		newExpiry := currentExpiry.AddDate(0, 0, days)
+		source := "operator"
+		var periodAnchor any
+		if adjustment.OperationsIntent && plan.ModelCreditUnits > 0 {
+			if adjustment.DurationDays != 0 && adjustment.DurationDays != plan.DurationDays {
+				return nil, commercialAdjustmentError("invalid_request", "credit renewals require a natural month")
+			}
+			anchor, ok, err := activeCommercialCreditPackageAnchor(tx, adjustment.UID, plan.ID, now)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, commercialAdjustmentError("invalid_request", "credit subscription anchor is missing")
+			}
+			newExpiry, ok = store.ModelCreditMonthlyNextBoundary(anchor, currentExpiry)
+			if !ok {
+				return nil, commercialAdjustmentError("invalid_request", "credit subscription anchor is invalid")
+			}
+			source, periodAnchor = "admin", anchor
+		}
 		if _, err := tx.Exec(`
-			INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
-			VALUES ($1, $2, 'operator', $3, 'active', $4, $5)`,
-			adjustment.UID, currentPlanID, operationID, currentExpiry, newExpiry); err != nil {
+			INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at, period_anchor_at)
+			VALUES ($1, $2, $6, $3, 'active', $4, $5, $7)`,
+			adjustment.UID, currentPlanID, operationID, currentExpiry, newExpiry, source, periodAnchor); err != nil {
 			return nil, fmt.Errorf("create renewal extension entitlement: %w", err)
 		}
 		if err := createOperatorPlanGrants(tx, adjustment.UID, plan, operationID, strings.TrimSpace(adjustment.Note), currentExpiry, &newExpiry); err != nil {
 			return nil, err
+		}
+		if source == "admin" {
+			if _, _, err := reconcileModelCreditMonthlyPeriod(context.Background(), tx, adjustment.UID, now); err != nil {
+				return nil, err
+			}
 		}
 		includesWorker, err := planIncludesCloudWorker(tx, plan.ID)
 		if err != nil {
