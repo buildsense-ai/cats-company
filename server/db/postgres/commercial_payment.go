@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -569,10 +570,29 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		return nil, false, err
 	}
 
+	// A credit package bills in anchored natural months (docs/credit-plan-rules
+	// P0-5): the paid window ends at the next month boundary of the subscription's
+	// original anchor, so an early renewal only extends it (the next period's
+	// allowance is granted when that boundary is reached, never on payment) and
+	// 1/31 → 2/28 → 3/31 never drifts to the 28th. Legacy budget packages keep the
+	// fixed duration they were sold with.
 	expiresAt := periodStartsAt.AddDate(0, 0, order.PlanDurationDays)
+	var entitlementAnchor any
+	if order.PlanModelCreditUnits > 0 {
+		anchor := paidAt
+		if existing, ok, err := activeCommercialCreditPackageAnchor(tx, order.UID, order.PlanID, paidAt); err != nil {
+			return nil, false, err
+		} else if ok {
+			anchor = existing
+		}
+		if boundary, ok := store.ModelCreditMonthlyNextBoundary(anchor, periodStartsAt); ok {
+			expiresAt = boundary
+		}
+		entitlementAnchor = anchor
+	}
 	if _, err := tx.Exec(`
-		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
-		VALUES ($1, $2, 'order', $3, 'active', $4, $5)`, order.UID, order.PlanID, order.OrderNo, periodStartsAt, expiresAt); err != nil {
+		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at, period_anchor_at)
+		VALUES ($1, $2, 'order', $3, 'active', $4, $5, $6)`, order.UID, order.PlanID, order.OrderNo, periodStartsAt, expiresAt, entitlementAnchor); err != nil {
 		return nil, false, fmt.Errorf("create order entitlement: %w", err)
 	}
 	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, order.PlanModelBudgets, periodStartsAt, expiresAt); err != nil {

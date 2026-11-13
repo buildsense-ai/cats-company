@@ -69,8 +69,43 @@ func TestModelCreditEligibilityReturnsPrimaryPlanFieldsOnly(t *testing.T) {
 	if response.Code != http.StatusOK || stub.uid != 42 {
 		t.Fatalf("status=%d uid=%d body=%s", response.Code, stub.uid, response.Body.String())
 	}
-	if body := response.Body.String(); body != `{"enabled":true,"model_credit_units":9000000,"plan_tier":3}`+"\n" {
+	if body := response.Body.String(); body != `{"allowed":true,"enabled":true,"model_credit_units":9000000,"plan_tier":3}`+"\n" {
 		t.Fatalf("unexpected eligibility payload: %s", body)
+	}
+}
+
+// enabled 是「进过 credit 体系」的身份，allowed 是「此刻还有 credit 权限」。
+// 过期套餐必须回答 enabled=true / allowed=false：Relay 只有看到 enabled=false（真正
+// 的 legacy 老用户）才允许回落到老额度路径，否则过期就等于被免费放行。
+func TestModelCreditEligibilitySeparatesIdentityFromCurrentPermission(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	t.Setenv("CATSCO_RELAY_CREDIT_PEER_SECRET", secret)
+	for _, test := range []struct {
+		name     string
+		stub     *modelCreditEligibilityStub
+		wantBody string
+	}{
+		{
+			name:     "expired plan keeps the identity but denies permission",
+			stub:     &modelCreditEligibilityStub{enabled: true, tier: 0, allowance: 0},
+			wantBody: `{"allowed":false,"enabled":true,"model_credit_units":0,"plan_tier":0}` + "\n",
+		},
+		{
+			name:     "never enrolled legacy user is disabled",
+			stub:     &modelCreditEligibilityStub{enabled: false, tier: 0, allowance: 0},
+			wantBody: `{"allowed":false,"enabled":false,"model_credit_units":0,"plan_tier":0}` + "\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			NewModelCreditEligibilityHandler(test.stub).ServeHTTP(response, eligibilityRequest(http.MethodPost, `{"uid":42}`, "Bearer "+secret))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if body := response.Body.String(); body != test.wantBody {
+				t.Fatalf("payload = %s, want %s", body, test.wantBody)
+			}
+		})
 	}
 }
 

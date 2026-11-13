@@ -11,11 +11,21 @@ import (
 	"time"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 func modelCreditMigration(t *testing.T, direction string) string {
 	t.Helper()
 	b, err := os.ReadFile("../migrations/postgres/000068_model_credit_ledger." + direction + ".sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func modelCreditTaskMigration(t *testing.T, direction string) string {
+	t.Helper()
+	b, err := os.ReadFile("../migrations/postgres/000071_model_credit_tasks." + direction + ".sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +62,29 @@ func TestModelCreditLedgerMigrationMatchesStartup(t *testing.T) {
 	end := strings.Index(statements[start:], "\n\t}")
 	if start < 0 || end < 0 || !strings.Contains(statements[start:start+end], "\t\tcreateModelCreditLedgerTables,") {
 		t.Fatal("CreateSchema does not run createModelCreditLedgerTables")
+	}
+	if !strings.Contains(statements[start:start+end], "\t\tmigrateModelCreditTasks,") {
+		t.Fatal("CreateSchema does not run migrateModelCreditTasks (migration 000071)")
+	}
+}
+
+// 000071 的启动副本必须和编号迁移一致，并且回滚要能真的把 root 任务表与两列删掉。
+func TestModelCreditTaskMigrationMatchesStartup(t *testing.T) {
+	up := strings.Join(strings.Fields(modelCreditTaskMigration(t, "up")), " ")
+	if up != strings.Join(strings.Fields(migrateModelCreditTasks), " ") {
+		t.Fatal("000071_model_credit_tasks.up.sql differs from migrateModelCreditTasks")
+	}
+	down := modelCreditTaskMigration(t, "down")
+	for _, want := range []string{
+		"DROP TABLE IF EXISTS model_credit_tasks;",
+		"DROP COLUMN IF EXISTS retained_task_id;",
+		"DROP COLUMN IF EXISTS root_task_id;",
+		"DROP COLUMN IF EXISTS unfunded_units;",
+		"DROP CONSTRAINT IF EXISTS chk_model_credit_reservations_bucket_total;",
+	} {
+		if !strings.Contains(down, want) {
+			t.Fatalf("000071 down migration is missing %q", want)
+		}
 	}
 }
 
@@ -99,6 +132,49 @@ func modelCreditFund(t *testing.T, db *Adapter, uid int64, bucket string, units 
 	return account
 }
 
+// modelCreditTestPermission 给 uid 一个有效的模型权限，来源是邀请（invite）：
+// 邀请订阅不发月额度，所以不会像 order/admin 订阅那样把用例里精确的月额度余额改掉，
+// 但它足以让任务门禁认为「权限有效」。
+func modelCreditTestPermission(t *testing.T, db *Adapter, uid int64) {
+	t.Helper()
+	slug := fmt.Sprintf("credit-task-test-%d", time.Now().UnixNano())
+	planID, err := db.CreateCommercialPlan(&types.CommercialPlan{
+		Slug:             slug,
+		Name:             "Credit task test",
+		PriceFen:         3900,
+		Currency:         "CNY",
+		SaleState:        "hidden",
+		DurationDays:     30,
+		PlanTier:         1,
+		ModelCreditUnits: 4_000 * store.ModelCreditUnitsPerCredit,
+	})
+	if err != nil {
+		t.Fatalf("create credit task test plan: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
+		VALUES ($1, $2, 'invite', $3, 'active', $4, NULL)`,
+		uid, planID, "INVITE-"+slug, time.Now().UTC().Add(-24*time.Hour)); err != nil {
+		t.Fatalf("insert credit task permission: %v", err)
+	}
+}
+
+// modelCreditTestTask 启动一个原始任务，并确认它当下是 allowed 的。账本预留必须挂在
+// 这样一个任务上（缺少 root 或任务已暂停都会被拒绝）。
+func modelCreditTestTask(t *testing.T, db *Adapter, uid int64, taskID string) *store.ModelCreditTaskDecision {
+	t.Helper()
+	decision, err := db.ApplyModelCreditTask(context.Background(), store.ModelCreditTaskInput{
+		UID: uid, TaskID: taskID, Action: store.ModelCreditTaskActionStart,
+	})
+	if err != nil {
+		t.Fatalf("start root task %s: %v", taskID, err)
+	}
+	if !decision.Enabled || !decision.Allowed || decision.State != store.ModelCreditTaskRunning {
+		t.Fatalf("root task %s was not allowed to start: %+v", taskID, decision)
+	}
+	return decision
+}
+
 func sameModelCreditBuckets(a, b *store.ModelCreditAccount) bool {
 	return a != nil && b != nil && a.UID == b.UID && a.MonthlyUnits == b.MonthlyUnits &&
 		a.GiftUnits == b.GiftUnits && a.PaidUnits == b.PaidUnits && a.DebtUnits == b.DebtUnits
@@ -106,7 +182,8 @@ func sameModelCreditBuckets(a, b *store.ModelCreditAccount) bool {
 
 func sameModelCreditHold(a, b *store.ModelCreditReservation) bool {
 	if a == nil || b == nil || a.UID != b.UID || a.RequestID != b.RequestID ||
-		a.ReservedUnits != b.ReservedUnits || a.Split != b.Split || a.State != b.State {
+		a.ReservedUnits != b.ReservedUnits || a.Split != b.Split || a.State != b.State ||
+		a.RootTaskID != b.RootTaskID || a.UnfundedUnits != b.UnfundedUnits {
 		return false
 	}
 	if (a.SettledUnits == nil) != (b.SettledUnits == nil) {
@@ -118,7 +195,8 @@ func sameModelCreditHold(a, b *store.ModelCreditReservation) bool {
 func TestPostgresModelCreditReserveSettleIsIdempotent(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
-	ctx, uid := context.Background(), int64(900001)
+	ctx := context.Background()
+	uid := modelCreditTestUser(t, db, "credit-ledger")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketMonthly, 5, "seed-monthly")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketGift, 3, "seed-gift")
 	seeded := modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 2, "seed-paid")
@@ -133,22 +211,29 @@ func TestPostgresModelCreditReserveSettleIsIdempotent(t *testing.T) {
 	}); !errors.Is(err, store.ErrModelCreditConflict) {
 		t.Fatalf("conflicting grant key accepted: %v", err)
 	}
-	hold, held, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "req-1", Units: 7})
+	modelCreditTestPermission(t, db, uid)
+	modelCreditTestTask(t, db, uid, "root-idempotent")
+	hold, held, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "req-1", RootTaskID: "root-idempotent", Units: 7})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hold.Split != (store.ModelCreditSplit{Monthly: 5, Gift: 2}) || hold.State != store.ModelCreditReservationReserved || hold.SettledUnits != nil {
+	if hold.Split != (store.ModelCreditSplit{Monthly: 5, Gift: 2}) || hold.State != store.ModelCreditReservationReserved ||
+		hold.SettledUnits != nil || hold.RootTaskID != "root-idempotent" || hold.UnfundedUnits != 0 {
 		t.Fatalf("hold %+v", hold)
 	}
 	if held.MonthlyUnits != 0 || held.GiftUnits != 1 || held.PaidUnits != 2 {
 		t.Fatalf("balance after hold %+v", held)
 	}
-	replayedHold, replayedBalance, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "req-1", Units: 7})
+	replayedHold, replayedBalance, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "req-1", RootTaskID: "root-idempotent", Units: 7})
 	if err != nil || !sameModelCreditHold(replayedHold, hold) || !sameModelCreditBuckets(replayedBalance, held) {
 		t.Fatalf("reserve replay held twice: %v %+v", err, replayedBalance)
 	}
-	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "req-1", Units: 6}); !errors.Is(err, store.ErrModelCreditConflict) {
+	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "req-1", RootTaskID: "root-idempotent", Units: 6}); !errors.Is(err, store.ErrModelCreditConflict) {
 		t.Fatalf("conflicting reserve accepted: %v", err)
+	}
+	// 同一个 request id 换个 root 重放也必须冲突：一笔调用不能同时属于两个任务。
+	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "req-1", RootTaskID: "root-other", Units: 7}); !errors.Is(err, store.ErrModelCreditConflict) {
+		t.Fatalf("reserve replay under another root accepted: %v", err)
 	}
 	settled, afterSettle, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "req-1", ActualUnits: 6})
 	if err != nil {
@@ -166,7 +251,7 @@ func TestPostgresModelCreditReserveSettleIsIdempotent(t *testing.T) {
 	if err != nil || !sameModelCreditHold(replayedSettled, settled) || !sameModelCreditBuckets(replayedAfter, afterSettle) {
 		t.Fatalf("settle replay charged twice: %v %+v", err, replayedAfter)
 	}
-	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "req-1", Units: 7}); !errors.Is(err, store.ErrModelCreditConflict) {
+	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "req-1", RootTaskID: "root-idempotent", Units: 7}); !errors.Is(err, store.ErrModelCreditConflict) {
 		t.Fatalf("reserve replay after settlement accepted: %v", err)
 	}
 	if _, _, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "req-1", ActualUnits: 5}); !errors.Is(err, store.ErrModelCreditConflict) {
@@ -195,46 +280,62 @@ func TestPostgresModelCreditReserveSettleIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestPostgresModelCreditSettleOverageNeverOverdraws(t *testing.T) {
+// 预留阶段不许超支（除了唯一的保留任务），但已经派发出去的调用在结算时超出预占/余额
+// 必须落成真实欠款，而且重复结算不能再记一次（P0-2.3/P0-3.2）。
+func TestPostgresModelCreditSettleOverageBooksRealDebt(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
-	ctx, uid := context.Background(), int64(900002)
+	ctx := context.Background()
+	uid := modelCreditTestUser(t, db, "credit-ledger")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 10, "seed-paid")
-	if _, held, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "over-1", Units: 4}); err != nil || held.PaidUnits != 6 {
+	modelCreditTestPermission(t, db, uid)
+	modelCreditTestTask(t, db, uid, "root-overage")
+	if _, held, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "over-1", RootTaskID: "root-overage", Units: 4}); err != nil || held.PaidUnits != 6 {
 		t.Fatalf("hold %v %+v", err, held)
 	}
-	if _, after, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "over-1", ActualUnits: 6}); err != nil || after.PaidUnits != 4 {
+	if _, after, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "over-1", ActualUnits: 6}); err != nil || after.PaidUnits != 4 || after.DebtUnits != 0 {
 		t.Fatalf("covered overage %v %+v", err, after)
 	}
-	if _, held, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "over-2", Units: 4}); err != nil || held.PaidUnits != 0 {
+	if _, held, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "over-2", RootTaskID: "root-overage", Units: 4}); err != nil || held.PaidUnits != 0 {
 		t.Fatalf("second hold %v %+v", err, held)
 	}
-	if _, _, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "over-2", ActualUnits: 10}); !errors.Is(err, store.ErrModelCreditInsufficient) {
-		t.Fatalf("uncovered overage accepted: %v", err)
+	// 余额 0 时结算 10：预占的 4 从 hold 扣，剩下 6 一分钱都收不到，只能记欠款。
+	settled, after, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "over-2", ActualUnits: 10})
+	if err != nil {
+		t.Fatalf("dispatched overage must settle instead of failing: %v", err)
 	}
-	account, err := db.GetModelCreditAccount(ctx, uid)
-	if err != nil || account.PaidUnits != 0 || account.DebtUnits != 0 {
-		t.Fatalf("failed settle changed the account: %v %+v", err, account)
+	if settled.State != store.ModelCreditReservationSettled || after.PaidUnits != 0 || after.DebtUnits != 6 {
+		t.Fatalf("overage debt %+v %+v", settled, after)
 	}
-	hold, err := db.GetModelCreditReservation(ctx, uid, "over-2")
-	if err != nil || hold.State != store.ModelCreditReservationReserved || hold.SettledUnits != nil {
-		t.Fatalf("failed settle changed the hold: %v %+v", err, hold)
+	replayedSettled, replayedAfter, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "over-2", ActualUnits: 10})
+	if err != nil || !sameModelCreditHold(replayedSettled, settled) || !sameModelCreditBuckets(replayedAfter, after) {
+		t.Fatalf("settle replay booked debt twice: %v %+v", err, replayedAfter)
 	}
-	if _, after, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "over-2", ActualUnits: 4}); err != nil || after.PaidUnits != 0 {
-		t.Fatalf("retry under the hold %v %+v", err, after)
+	var debtEvents int
+	var debtUnits int64
+	if err := db.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(units), 0) FROM model_credit_ledger_events
+		WHERE uid = $1 AND event_type = 'debt_accrued'`, uid).Scan(&debtEvents, &debtUnits); err != nil {
+		t.Fatal(err)
+	}
+	if debtEvents != 1 || debtUnits != 6 {
+		t.Fatalf("debt ledger rows=%d units=%d, want one row of 6", debtEvents, debtUnits)
 	}
 }
 
+// 有欠款时赠送额度既不能抵债，也不能被花掉；结算超支只会让欠款变大。
 func TestPostgresModelCreditGiftNeverCoversArrears(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
-	ctx, uid := context.Background(), int64(900003)
+	ctx := context.Background()
+	uid := modelCreditTestUser(t, db, "credit-ledger")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketGift, 5, "seed-gift")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 5, "seed-paid")
+	modelCreditTestPermission(t, db, uid)
+	modelCreditTestTask(t, db, uid, "root-arrears")
 	if _, err := db.db.Exec(`UPDATE model_credit_accounts SET debt_units = 2 WHERE uid = $1`, uid); err != nil {
 		t.Fatal(err)
 	}
-	hold, held, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "debt-1", Units: 4})
+	hold, held, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "debt-1", RootTaskID: "root-arrears", Units: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,26 +345,30 @@ func TestPostgresModelCreditGiftNeverCoversArrears(t *testing.T) {
 	if held.GiftUnits != 5 || held.PaidUnits != 1 || held.DebtUnits != 2 {
 		t.Fatalf("balance after hold %+v", held)
 	}
-	if _, held, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "debt-2", Units: 1}); err != nil || held.PaidUnits != 0 {
+	if _, held, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "debt-2", RootTaskID: "root-arrears", Units: 1}); err != nil || held.PaidUnits != 0 {
 		t.Fatalf("draining the paid bucket %v %+v", err, held)
 	}
-	if _, _, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "debt-1", ActualUnits: 6}); !errors.Is(err, store.ErrModelCreditInsufficient) {
-		t.Fatalf("gift was spent while the account owes arrears: %v", err)
+	settled, after, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "debt-1", ActualUnits: 6})
+	if err != nil {
+		t.Fatalf("settle: %v", err)
 	}
-	account, err := db.GetModelCreditAccount(ctx, uid)
-	if err != nil || account.GiftUnits != 5 || account.DebtUnits != 2 {
-		t.Fatalf("arrears or gift changed: %v %+v", err, account)
+	// 预占 4 全部来自 paid；多出的 2 想在 gift 里找钱，但有欠款时 gift 不可用，
+	// 于是这 2 变成新的欠款。
+	if settled.State != store.ModelCreditReservationSettled {
+		t.Fatalf("reservation state %q", settled.State)
 	}
-	if _, after, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "debt-1", ActualUnits: 4}); err != nil || after.GiftUnits != 5 || after.DebtUnits != 2 {
-		t.Fatalf("settle within the hold %v %+v", err, after)
+	if after.GiftUnits != 5 || after.PaidUnits != 0 || after.DebtUnits != 4 {
+		t.Fatalf("arrears or gift changed: %+v", after)
 	}
 }
 
 func TestPostgresModelCreditConcurrentReserveNeverOverdraws(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
-	uid := int64(900004)
+	uid := modelCreditTestUser(t, db, "credit-ledger")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 250, "seed-paid")
+	modelCreditTestPermission(t, db, uid)
+	modelCreditTestTask(t, db, uid, "root-race")
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	successes := 0
@@ -274,7 +379,7 @@ func TestPostgresModelCreditConcurrentReserveNeverOverdraws(t *testing.T) {
 			defer wg.Done()
 			<-start
 			_, _, err := db.ReserveModelCredits(context.Background(), store.ModelCreditReserveInput{
-				UID: uid, RequestID: fmt.Sprintf("race-%d", i), Units: 100,
+				UID: uid, RequestID: fmt.Sprintf("race-%d", i), RootTaskID: "root-race", Units: 100,
 			})
 			switch {
 			case err == nil:
@@ -305,11 +410,15 @@ func TestPostgresModelCreditConcurrentReserveNeverOverdraws(t *testing.T) {
 func TestPostgresModelCreditReleaseRestoresReservationIdempotently(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
-	ctx, uid := context.Background(), int64(900008)
+	ctx := context.Background()
+	uid := modelCreditTestUser(t, db, "credit-ledger")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketMonthly, 3, "release-monthly")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketGift, 2, "release-gift")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 4, "release-paid")
-	hold, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "release-1", Units: 7})
+	// 人工补发的月额度没有订阅周期，释放时必须原样退回，不能被跨期规则吃掉。
+	modelCreditTestPermission(t, db, uid)
+	modelCreditTestTask(t, db, uid, "root-release")
+	hold, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "release-1", RootTaskID: "root-release", Units: 7})
 	if err != nil || hold.Split != (store.ModelCreditSplit{Monthly: 3, Gift: 2, Paid: 2}) {
 		t.Fatalf("reserve before release: %v %+v", err, hold)
 	}
@@ -339,32 +448,45 @@ func TestPostgresModelCreditReleaseRestoresReservationIdempotently(t *testing.T)
 	if _, _, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "release-1", ActualUnits: 0}); !errors.Is(err, store.ErrModelCreditConflict) {
 		t.Fatalf("settle after release accepted: %v", err)
 	}
-	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "release-1", Units: 7}); !errors.Is(err, store.ErrModelCreditConflict) {
+	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "release-1", RootTaskID: "root-release", Units: 7}); !errors.Is(err, store.ErrModelCreditConflict) {
 		t.Fatalf("reserve replay after release accepted: %v", err)
 	}
 }
+
 func TestPostgresModelCreditRequestIDsAreScopedPerUser(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
 	ctx := context.Background()
-	for _, uid := range []int64{900006, 900007} {
+	uids := []int64{
+		modelCreditTestUser(t, db, "credit-scope-a"),
+		modelCreditTestUser(t, db, "credit-scope-b"),
+	}
+	for _, uid := range uids {
 		modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 10, fmt.Sprintf("seed-paid-%d", uid))
-		if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "shared-request", Units: 4}); err != nil {
+		modelCreditTestPermission(t, db, uid)
+		modelCreditTestTask(t, db, uid, fmt.Sprintf("root-shared-%d", uid))
+		if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{
+			UID: uid, RequestID: "shared-request", RootTaskID: fmt.Sprintf("root-shared-%d", uid), Units: 4,
+		}); err != nil {
 			t.Fatalf("reserve for uid %d: %v", uid, err)
 		}
 	}
-	for _, uid := range []int64{900006, 900007} {
+	for _, uid := range uids {
 		if _, account, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "shared-request", ActualUnits: 3}); err != nil || account.PaidUnits != 7 {
 			t.Fatalf("settle for uid %d: %v %+v", uid, err, account)
 		}
 	}
 }
+
 func TestPostgresModelCreditLedgerDatabaseGuards(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
-	ctx, uid := context.Background(), int64(900005)
+	ctx := context.Background()
+	uid := modelCreditTestUser(t, db, "credit-ledger")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 5, "seed-paid")
-	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "guard-1", Units: 5}); err != nil {
+	modelCreditTestPermission(t, db, uid)
+	modelCreditTestTask(t, db, uid, "root-guard")
+	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "guard-1", RootTaskID: "root-guard", Units: 5}); err != nil {
 		t.Fatal(err)
 	}
 	for _, query := range []string{
@@ -377,11 +499,19 @@ func TestPostgresModelCreditLedgerDatabaseGuards(t *testing.T) {
 		`INSERT INTO model_credit_ledger_events (event_key, uid, bucket, event_type, units, monthly_balance, gift_balance, paid_balance, debt_balance) VALUES ('reserve:guard-1:paid', $1, 'paid', 'reserve', 1, 0, 0, 0, 0)`,
 		`INSERT INTO model_credit_ledger_events (event_key, uid, bucket, event_type, units, monthly_balance, gift_balance, paid_balance, debt_balance) VALUES ('grant:bad key', $1, 'paid', 'grant', 1, 0, 0, 0, 0)`,
 		`INSERT INTO model_credit_reservations (uid, request_id, reserved_units, monthly_units, gift_units, paid_units) VALUES ($1, 'bad request', 1, 1, 0, 0)`,
+		// 透支预占必须等于「预占 - 三个消费桶」，不能凭空多出来。
+		`INSERT INTO model_credit_reservations (uid, request_id, reserved_units, monthly_units, gift_units, paid_units, unfunded_units, lease_expires_at) VALUES ($1, 'bad-unfunded', 5, 1, 0, 0, 0, CURRENT_TIMESTAMP + interval '1 hour')`,
+		`INSERT INTO model_credit_tasks (root_task_id, uid, state, started_at, started_seq) VALUES ('bad task', $1, 'running', CURRENT_TIMESTAMP, 99)`,
+		`UPDATE model_credit_accounts SET retained_task_id = 'bad task id!' WHERE uid = $1`,
 		`DELETE FROM model_credit_accounts WHERE uid = $1`,
 	} {
 		if _, err := db.db.Exec(query, uid); err == nil {
 			t.Fatalf("SQL guard accepted %q", query)
 		}
+	}
+	// 000071 的 root 任务表依赖账户表，回滚必须先撤掉它（部署时也是倒序执行）。
+	if _, err := db.db.Exec(modelCreditTaskMigration(t, "down")); err != nil {
+		t.Fatalf("task down migration: %v", err)
 	}
 	if _, err := db.db.Exec(modelCreditMigration(t, "down")); err != nil {
 		t.Fatalf("down migration: %v", err)
@@ -395,16 +525,22 @@ func TestPostgresModelCreditLedgerDatabaseGuards(t *testing.T) {
 	if _, err := db.db.Exec(modelCreditMigration(t, "up")); err != nil {
 		t.Fatalf("up migration after rollback: %v", err)
 	}
+	if _, err := db.db.Exec(modelCreditTaskMigration(t, "up")); err != nil {
+		t.Fatalf("task up migration after rollback: %v", err)
+	}
 }
 
 func TestPostgresModelCreditExpiryRequiresNoUsageAndPreservesLateSettle(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
-	ctx, uid := context.Background(), int64(900009)
+	ctx := context.Background()
+	uid := modelCreditTestUser(t, db, "credit-ledger")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 20, "expiry-seed")
+	modelCreditTestPermission(t, db, uid)
+	modelCreditTestTask(t, db, uid, "root-expiry")
 	now := time.Now().UTC()
 
-	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "expiry-unconfirmed", Units: 5}); err != nil {
+	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "expiry-unconfirmed", RootTaskID: "root-expiry", Units: 5}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.db.Exec(`UPDATE model_credit_reservations SET created_at = $3, lease_expires_at = $4 WHERE uid = $1 AND request_id = $2`, uid, "expiry-unconfirmed", now.Add(-store.ModelCreditReservationLease-time.Minute), now.Add(-time.Minute)); err != nil {
@@ -424,7 +560,7 @@ func TestPostgresModelCreditExpiryRequiresNoUsageAndPreservesLateSettle(t *testi
 		t.Fatalf("settle after expiry release accepted: %v", err)
 	}
 
-	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "expiry-late-usage", Units: 5}); err != nil {
+	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{UID: uid, RequestID: "expiry-late-usage", RootTaskID: "root-expiry", Units: 5}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.db.Exec(`UPDATE model_credit_reservations SET created_at = $3, lease_expires_at = $4 WHERE uid = $1 AND request_id = $2`, uid, "expiry-late-usage", now.Add(-store.ModelCreditReservationLease-time.Minute), now.Add(-time.Minute)); err != nil {
@@ -440,11 +576,13 @@ func TestPostgresModelCreditExpiryRequiresNoUsageAndPreservesLateSettle(t *testi
 		t.Fatalf("sweep released settled request (%d): %v", count, err)
 	}
 }
+
 func TestPostgresModelCreditLedgerListingPaginatesAndScopesByUID(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
 	ctx := context.Background()
-	const uid, otherUID = int64(900010), int64(900011)
+	uid := modelCreditTestUser(t, db, "ledger-page")
+	otherUID := modelCreditTestUser(t, db, "ledger-page-other")
 	for _, key := range []string{"ledger-a", "ledger-b", "ledger-c"} {
 		modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 1, key)
 	}
@@ -472,4 +610,22 @@ func TestPostgresModelCreditLedgerListingPaginatesAndScopesByUID(t *testing.T) {
 	if secondPage[0].EventKey != firstPage[1].EventKey {
 		t.Fatal("adjacent pages skipped or duplicated an event")
 	}
+}
+
+// modelCreditTestUser 建一个真实用户：commercial_entitlements.uid 有外键，所以权限
+// 必须挂在真实用户上，不能用裸 uid 造。
+func modelCreditTestUser(t *testing.T, db *Adapter, prefix string) int64 {
+	t.Helper()
+	name := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	uid, err := db.CreateUser(&types.User{
+		Username:    name,
+		Email:       name + "@example.test",
+		DisplayName: name,
+		AccountType: types.AccountHuman,
+		PassHash:    []byte(name + "-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create %s user: %v", prefix, err)
+	}
+	return uid
 }

@@ -208,6 +208,14 @@ func (a *Adapter) CreateSchema() error {
 		// accept the single negative refund row. It runs after the ledger
 		// tables above because it alters their constraints.
 		migrateCommercialModelCreditUnits,
+		// 月额度自然月周期（migration 000070）：订阅的日锚点、邀请自己的赠送额度、
+		// 以及账本的 expire 事件。它必须排在 069 之后，因为它重建了 069 的
+		// event_type / request_id 约束。
+		migrateModelCreditMonthlyPeriods,
+		// 原始任务门禁 + 单任务保留（migration 000071）：root 任务表、账户上的透支
+		// 名额、以及预留的 root/unfunded 列。它必须排在 068 之后，因为它改了
+		// model_credit_reservations 的合计约束。
+		migrateModelCreditTasks,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,

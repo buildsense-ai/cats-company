@@ -214,6 +214,12 @@ type CommercialManagedRelayBudget struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// CommercialInviteDefaultCreditUnits is the gift amount a credit invite hands out
+// when the operator does not choose one: 20 credit, in integer micro-credit units
+// (1 credit = 1_000_000). It is deliberately independent of the bound plan's
+// monthly allowance, so a V3 invite is not a 22,500-credit giveaway.
+const CommercialInviteDefaultCreditUnits int64 = 20 * 1000 * 1000
+
 // CommercialInviteCode grants a plan entitlement when redeemed by a user.
 type CommercialInviteCode struct {
 	CloudWorkerBillingMode string  `json:"cloud_worker_billing_mode"`
@@ -240,6 +246,19 @@ type CommercialInviteCode struct {
 	CreatedByUID              int64      `json:"created_by_uid,omitempty"`
 	CreatedAt                 time.Time  `json:"created_at"`
 	UpdatedAt                 time.Time  `json:"updated_at"`
+	// ModelCreditUnits is the invite's own gift amount, in integer micro-credit
+	// units (1 credit = 1_000_000). It is deliberately independent of the bound
+	// plan's monthly allowance: a V3 invite hands out 20 credit, not 22,500.
+	// 0 keeps the invite on the legacy CNY/token path and grants no credit, so
+	// existing invites and their redeeming users are never migrated into the
+	// credit ledger.
+	ModelCreditUnits int64 `json:"model_credit_units,omitempty"`
+	// ModelCreditUnitsInherit says the caller did not choose the gift amount, so
+	// the store derives it from the bound plan: a credit package's invite hands
+	// out the default 20-credit gift, a legacy package's invite hands out none.
+	// Not serialized, for the same reason as CloudWorkerCreditsInherit: an absent
+	// field means "inherit", an explicit 0 means "no credit".
+	ModelCreditUnitsInherit bool `json:"-"`
 }
 
 // CommercialEntitlement is a user's active or historical package assignment.

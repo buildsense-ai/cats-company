@@ -106,7 +106,7 @@ func TestModelCreditGrantInputValidation(t *testing.T) {
 }
 
 func TestModelCreditReserveAndSettleInputValidation(t *testing.T) {
-	reserve := ModelCreditReserveInput{UID: 3, RequestID: "req-123", Units: 7}
+	reserve := ModelCreditReserveInput{UID: 3, RequestID: "req-123", RootTaskID: "root-123", Units: 7}
 	if err := reserve.Validate(); err != nil {
 		t.Fatalf("valid reserve rejected: %v", err)
 	}
@@ -124,9 +124,16 @@ func TestModelCreditReserveAndSettleInputValidation(t *testing.T) {
 		}},
 		{"request_with_space", func(in ModelCreditReserveInput) ModelCreditReserveInput { in.RequestID = "req 1"; return in }},
 		{"request_with_unicode", func(in ModelCreditReserveInput) ModelCreditReserveInput { in.RequestID = "请求1"; return in }},
+		{"missing_root", func(in ModelCreditReserveInput) ModelCreditReserveInput { in.RootTaskID = ""; return in }},
+		{"root_with_space", func(in ModelCreditReserveInput) ModelCreditReserveInput { in.RootTaskID = "root 1"; return in }},
+		{"long_root", func(in ModelCreditReserveInput) ModelCreditReserveInput {
+			in.RootTaskID = strings.Repeat("r", ModelCreditTaskIDMaxLen+1)
+			return in
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := tc.mutate(reserve).Validate(); !errors.Is(err, ErrModelCreditInvalid) {
+			// 缺 root 是「必填」错误而不是「格式非法」：两者都是 400，但语义不同。
+			if err := tc.mutate(reserve).Validate(); !errors.Is(err, ErrModelCreditInvalid) && !errors.Is(err, ErrModelCreditTaskRequired) {
 				t.Fatalf("invalid reserve accepted: %v", err)
 			}
 		})
@@ -275,5 +282,66 @@ func TestModelCreditAddUnitsRejectsOverflow(t *testing.T) {
 	}
 	if got, ok := ModelCreditAddUnits(max, 0); !ok || got != max {
 		t.Fatalf("max balance with zero delta = %d,%v", got, ok)
+	}
+}
+
+// 欠款只能由月额度和付费余额偿还：赠送额度永不抵债（P0-2.5）。
+func TestModelCreditGrantRepaysArrearsOnlyFromMonthlyAndPaid(t *testing.T) {
+	account := ModelCreditAccount{UID: 5, MonthlyUnits: 1_000_000, GiftUnits: 2_000_000, PaidUnits: 3_000_000, DebtUnits: 4_000_000}
+	if _, credited, ok := PlanModelCreditGrant(account, ModelCreditBucketGift, 2_500_000); !ok || credited != 2_500_000 {
+		t.Fatalf("gift grant repaid arrears: ok=%v credited=%d", ok, credited)
+	}
+	repay, credited, ok := PlanModelCreditGrant(account, ModelCreditBucketPaid, 2_500_000)
+	if !ok || repay != 2_500_000 || credited != 0 {
+		t.Fatalf("paid grant must repay arrears first: ok=%v repay=%d credited=%d", ok, repay, credited)
+	}
+	repay, credited, ok = PlanModelCreditGrant(account, ModelCreditBucketMonthly, 9_000_000)
+	if !ok || repay != 4_000_000 || credited != 5_000_000 {
+		t.Fatalf("monthly grant above arrears must split: ok=%v repay=%d credited=%d", ok, repay, credited)
+	}
+	if _, _, ok := PlanModelCreditGrant(account, ModelCreditBucketDebt, 1); ok {
+		t.Fatal("debt bucket accepted a grant")
+	}
+}
+
+// 透支预留只扣当下真实可用的部分，剩余必须显式报给调用方去记欠款。
+func TestModelCreditPartialAllocationReportsTheUnfundedRemainder(t *testing.T) {
+	account := ModelCreditAccount{UID: 5, MonthlyUnits: 2, GiftUnits: 3, PaidUnits: 4}
+	if split, remaining := AllocateModelCreditUnitsPartial(account, 6); remaining != 0 || split != (ModelCreditSplit{Monthly: 2, Gift: 3, Paid: 1}) {
+		t.Fatalf("covered allocation split=%+v remaining=%d", split, remaining)
+	}
+	if split, remaining := AllocateModelCreditUnitsPartial(account, 10); remaining != 1 || split != (ModelCreditSplit{Monthly: 2, Gift: 3, Paid: 4}) {
+		t.Fatalf("partial allocation split=%+v remaining=%d", split, remaining)
+	}
+	// 有欠款时赠送额度不可用，缺口全部留给欠款。
+	indebted := ModelCreditAccount{UID: 5, GiftUnits: 5, DebtUnits: 1}
+	if split, remaining := AllocateModelCreditUnitsPartial(indebted, 4); remaining != 4 || split.Total() != 0 {
+		t.Fatalf("gift covered arrears while indebted: split=%+v remaining=%d", split, remaining)
+	}
+	if _, remaining := AllocateModelCreditUnitsPartial(account, 0); remaining != 0 {
+		t.Fatalf("zero request reported a remainder: %d", remaining)
+	}
+}
+
+func TestModelCreditDebtKeysAreRequestScoped(t *testing.T) {
+	if got := ModelCreditDebtRepaymentKey("grant-1"); got != "debt_repaid:grant-1" {
+		t.Fatalf("repayment key %q", got)
+	}
+	if got := ModelCreditDebtAccrualKey(9, "req-1"); got != "debt_accrued:9:req-1:debt" {
+		t.Fatalf("accrual key %q", got)
+	}
+	if ModelCreditDebtAccrualKey(9, "req-1") == ModelCreditDebtAccrualKey(9, "req-2") {
+		t.Fatal("two requests share one debt key")
+	}
+}
+
+func TestModelCreditTaskIDValidation(t *testing.T) {
+	if err := ValidateModelCreditTaskID("0f8fad5b-d9cb-469f-a165-70867728950e"); err != nil {
+		t.Fatalf("uuid root rejected: %v", err)
+	}
+	for _, bad := range []string{"", "root 1", "根任务", strings.Repeat("r", ModelCreditTaskIDMaxLen+1)} {
+		if err := ValidateModelCreditTaskID(bad); !errors.Is(err, ErrModelCreditInvalid) {
+			t.Fatalf("invalid root accepted: %q", bad)
+		}
 	}
 }

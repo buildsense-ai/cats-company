@@ -383,7 +383,19 @@ func (h *CommercialPaymentHandler) saleChannelAvailable(uid int64, channel strin
 
 func (h *CommercialPaymentHandler) planVisibleFor(uid int64, plan *types.CommercialPlan) bool {
 	if plan == nil || plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 ||
-		!strings.EqualFold(plan.Currency, "CNY") || plan.MonthlyBudget > 0 || !commercialModelBudgetsConfigured(plan.ModelBudgets) {
+		!strings.EqualFold(plan.Currency, "CNY") {
+		return false
+	}
+	switch {
+	case commercialCreditOnlyPlan(plan):
+		// A credit-only package is sellable only when the operator switched it on
+		// and the relay credit settlement channel is configured; otherwise it must
+		// not appear in the catalog and must not accept orders. The legacy budget
+		// path and the credit path stay mutually exclusive.
+		if !commercialCreditPlanSellable(plan) {
+			return false
+		}
+	case plan.MonthlyBudget > 0 || !commercialModelBudgetsConfigured(plan.ModelBudgets):
 		return false
 	}
 	switch plan.SaleState {
@@ -400,7 +412,7 @@ func commercialPlanHasBenefits(plan *types.CommercialPlan) bool {
 	if plan == nil {
 		return false
 	}
-	if plan.MonthlyBudget > 0 {
+	if plan.MonthlyBudget > 0 || plan.ModelCreditUnits > 0 {
 		return true
 	}
 	for _, amount := range plan.ModelBudgets {
