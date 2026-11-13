@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { personalPlanOffers, teamPlanOffer } from '../../webapp/src/widgets/plans/plan-offers.js'
+import { creditPlanOffers } from '../../webapp/src/widgets/plans/credit-plan-offers.js'
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 
@@ -106,9 +107,9 @@ test('home and pricing conversion copy follows current page briefs', async () =>
   assert.match(footer, /href: GITHUB_URL/)
   assert.match(header, /href=\{GITHUB_URL\}/)
   assert.match(siteLinks, /GITHUB_URL = 'https:\/\/github\.com\/buildsense-ai'/)
-  assert.match(pricing, /slug: 'catsco-basic'/)
-  assert.match(pricing, /slug: 'catsco-standard'/)
-  assert.match(pricing, /slug: 'catsco-advanced'/)
+  assert.match(pricing, /slug: 'catsco-credit-v1-monthly'/)
+  assert.match(pricing, /slug: 'catsco-credit-v2-monthly'/)
+  assert.match(pricing, /slug: 'catsco-credit-v3-monthly'/)
   assert.match(pricing, /slug: 'catsco-team'/)
   assert.match(pricing, /service=business-start|service: 'business-start'/)
   assert.match(login, /appLoginUrl/)
@@ -250,12 +251,26 @@ test('website draft prices match the platform offer source', async () => {
   const offers = [...pricing.matchAll(/slug: '([^']+)',\s+name: '[^']+',\s+kicker: '[^']+',\s+price: (\d+)/g)]
   const prices = new Map(offers.map(([, slug, price]) => [slug, Number(price) * 100]))
   assert.equal(offers.length, prices.size, 'Website offer slugs must be unique')
-  const platformOffers = [...personalPlanOffers, teamPlanOffer]
+  const platformOffers = [...creditPlanOffers, teamPlanOffer]
   assert.equal(prices.size, 4, 'Check all four website package prices')
   assert.equal(prices.size, platformOffers.length)
   for (const offer of platformOffers) {
     assert.equal(prices.get(offer.slug), offer.price_fen, `Draft price drift for ${offer.slug}`)
   }
+})
+
+test('website credit copy matches the approved credit plan rules', async () => {
+  const pricing = await read('src/components/PricingPage.tsx')
+  for (const offer of creditPlanOffers) {
+    const card = pricing.match(new RegExp(`slug: '${offer.slug}',[\\s\\S]*?capacity: '([\\d,]+)',\\s+unit: 'credit'`))
+    assert.ok(card, `Missing credit card for ${offer.slug}`)
+    assert.equal(card[1].replace(/,/g, ''), String(offer.monthlyCredits), `Credit grant drift for ${offer.slug}`)
+  }
+  // Credit is a billing balance, not a token estimate, and the retired retention promise must stay gone.
+  assert.doesNotMatch(pricing, /Token 数为估算值|保留 15 天/)
+  assert.match(pricing, /自然月对日/)
+  assert.match(pricing, /DeepSeek 官网价 9 折/)
+  assert.match(pricing, /20 credit/)
 })
 
 test('login landing page retains invitation context without retired pricing', async () => {
