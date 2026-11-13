@@ -1446,7 +1446,7 @@ export default function CloudArtifactsPanel({
                     title: gatewayPreview.title || gatewayPreview.id,
                   },
                 }); }}
-                sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
+                sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals allow-downloads"
                 referrerPolicy="no-referrer"
                 style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}
               />
