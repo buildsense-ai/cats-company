@@ -25,7 +25,7 @@ type PricingPlan = {
 // Draft personal prices mirror webapp/src/widgets/plans/credit-plan-offers.js;
 // the team package still mirrors plan-offers.js. The workspace catalogue
 // confirms live prices and availability before purchase.
-const retentionNote = '到期后云端环境保留 7 天，期间续费可恢复。';
+const retentionNote = '到期后运行环境、文件与历史对话保留，目前不设置清理期限；续费后按所购套餐继续使用。';
 const plans: PricingPlan[] = [{
   slug: 'catsco-credit-v1-monthly',
   name: '入门版',
@@ -219,7 +219,7 @@ const pricingFaqs = [{
   answer: '不会自动转制。已有套餐按原购买约定继续生效，需要更换时可在工作台自行选择新的 credit 套餐；续费与升级规则以工作台购买确认页为准。'
 }, {
   question: '云端 AI 员工到期后会怎样？',
-  answer: '个人套餐到期后，云端运行环境保留 7 天，期间续费可恢复；充值余额不随套餐到期清零，但余额本身不自动赋予模型权限，需要有效套餐才能继续使用对应模型。具体保留和恢复条件以工作台套餐说明为准。'
+  answer: '个人套餐到期后，运行环境、文件与历史对话仍然保留，目前不设置清理期限，也不会因额度耗尽或套餐到期删除已有数据；这不构成永久、无限量存储或持续运行的承诺。续费后按所购套餐的额度和权限继续使用，充值余额不随套餐到期清零，但余额本身不自动赋予模型权限。具体以工作台套餐说明为准。'
 }, {
   question: '团队版和 Business Start 有什么区别？',
   answer: '团队版是最多 10 人共同使用和管理 AI 员工的套餐，包含独享服务器、共享知识库和权限管理，价格与额度按 30 天一期计算。Business Start 是 ¥4,999 / 月起的企业落地服务，按约定范围提供环境准备、启动培训、首批场景和 Skill 初始化；复杂集成、私有化和长期支持需另行咨询。'
