@@ -234,10 +234,8 @@ func (h *CommercialPaymentHandler) fulfillCommercialOrder(orderNo string, confir
 	return fulfilled, changed, nil
 }
 
-// cloudWorkerTierForOrder resolves the shared-fleet tier the fulfilled order
-// bought. Fulfilment does not carry the tier on the order row, so this reads the
-// plan the order was placed for and falls back to the account's current
-// entitlement (an operator change_plan does not create an order).
+// cloudWorkerTierForOrder resolves the machine tier of the purchased product.
+// Current retail credit plans do not purchase machine upgrades.
 func (h *CommercialPaymentHandler) cloudWorkerTierForOrder(order *types.CommercialOrder) string {
 	if h == nil || h.store == nil || order == nil {
 		return ""
@@ -247,13 +245,9 @@ func (h *CommercialPaymentHandler) cloudWorkerTierForOrder(order *types.Commerci
 		log.Printf("commercial payment: plan tier lookup failed uid=%d order=%s: %v", order.UID, order.OrderNo, err)
 		return ""
 	}
-	if tier := planRuntimeTier(summary.Plans, order.PlanID); tier != "" {
-		return tier
-	}
-	if summary.CurrentEntitlement != nil {
-		return planRuntimeTier(summary.Plans, summary.CurrentEntitlement.PlanID)
-	}
-	return ""
+	// Resolve only the product actually purchased. Falling back to a different
+	// current entitlement could resize machines for an unrelated order.
+	return planRuntimeTier(summary.Plans, order.PlanID)
 }
 
 // planRuntimeTier returns the shared-fleet tier of the plan with the given id.
@@ -263,6 +257,11 @@ func planRuntimeTier(plans []*types.CommercialPlan, planID int64) string {
 	}
 	for _, plan := range plans {
 		if plan != nil && plan.ID == planID {
+			// Retail V1/V2/V3 purchases grant the same light creation credit;
+			// model-credit upgrades do not resize any existing machine.
+			if commercialRetailCreditPlan(plan.Slug) {
+				return ""
+			}
 			return strings.TrimSpace(plan.CloudWorkerRuntimePlan)
 		}
 	}
