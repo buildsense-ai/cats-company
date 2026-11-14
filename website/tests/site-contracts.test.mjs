@@ -269,18 +269,31 @@ test('website credit copy matches the approved credit plan rules', async () => {
   // Credit is a billing balance, not a token estimate; retention copy lives in its own contract.
   assert.doesNotMatch(pricing, /Token 数为估算值/)
   assert.match(pricing, /自然月对日/)
-  assert.match(pricing, /DeepSeek 官网价 9 折/)
+  assert.match(pricing, /平台模型费率基础上享 9 折/)
+  assert.match(pricing, /1 元对应 100 credit/)
+  assert.match(pricing, /2（含平台服务费）/)
+  assert.match(pricing, /独立余额充值暂未开放/)
   assert.match(pricing, /20 credit/)
+  // Retired card copy: the cards used to say calls are billed at the official
+  // price and that V3 is 10% off the DeepSeek list price. Both are wrong — the
+  // platform rate is 2x the applicable official price, and the 9 折 applies on
+  // top of that platform rate. Keep the old wording from coming back.
+  assert.doesNotMatch(pricing, /按官方价格扣费|官方价格扣费|官方价扣费/)
+  assert.doesNotMatch(pricing, /官网计价 9 折|官网价 9 折|官网价格 9 折|DeepSeek 官网价/)
+  // Each card must carry the platform-rate basis and its own discount tier.
+  assert.match(pricing, /按官方适用价 × 2（含平台服务费）计费，无折扣/)
+  assert.match(pricing, /在官方适用价 × 2（含平台服务费）的平台费率基础上享 9 折/)
+  assert.match(pricing, /'平台费率，无折扣'/)
+  assert.match(pricing, /'平台费率 9 折'/)
 })
 
-test('website retention copy follows the approved no-cleanup-deadline rule', async () => {
+test('website retention distinguishes ordinary deadlines from retained environments', async () => {
   const pricing = await read('src/components/PricingPage.tsx')
-  // docs/credit-plan-rules-20261109.md P1-2: environment, files and history are kept
-  // without a cleanup deadline, and that must not become a permanent, unlimited-storage
-  // or always-running promise.
-  assert.doesNotMatch(pricing, /保留 \d+ 天/)
-  assert.match(pricing, /运行环境、文件与历史对话保留，目前不设置清理期限/)
-  assert.match(pricing, /不构成永久、无限量存储或持续运行的承诺/)
+  assert.match(pricing, /数据保留截止和剩余时间/)
+  assert.match(pricing, /删除后原机器无法恢复/)
+  assert.match(pricing, /已有特别保留规则的 credit 环境到期暂停/)
+  assert.match(pricing, /显式删除仍有效/)
+  assert.match(pricing, /不表示免费持续运行或永久无限量存储/)
 })
 
 test('login landing page retains invitation context without retired pricing', async () => {

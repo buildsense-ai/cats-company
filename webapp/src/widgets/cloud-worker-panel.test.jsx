@@ -136,26 +136,29 @@ describe('CloudWorkerPanel', () => {
     });
     const text = container.textContent;
     expect(text).toContain('到期时间');
-    expect(text).toContain('还剩 10 天');
-    expect(text).toContain('停服后保留');
+    // Remaining time is shown in days + hours, never as a rounded-away "-1 天".
+    expect(text).toMatch(/还剩 \d+ 天 \d+ 小时/);
+    // retention_days is a rule of thumb, not this machine's real deadline.
+    expect(text).toContain('停服后通常 7 天');
+    expect(text).not.toContain('数据保留截止');
     expect(text).toContain('通过平台连接');
   });
-
   test('marks an expiry within 7 days as urgent', async () => {
     const inThreeDays = new Date(Date.now() + 3 * 86400000).toISOString();
     await renderPanel({
       workers: [worker({ backend: 'packed', package_expires_at: inThreeDays })],
     });
-    const strong = Array.from(container.querySelectorAll('.cc-cloud-worker-meta b'))
-      .find((el) => el.textContent.includes('还剩 3 天'));
-    expect(strong).toBeTruthy();
-    expect(strong.style.color).not.toBe('');
+    const expiryValue = Array.from(container.querySelectorAll('.cc-cloud-worker-meta b'))
+      .find((el) => /还剩 \d+ 天 \d+ 小时/.test(el.textContent));
+    expect(expiryValue).toBeTruthy();
+    // 3 days out is inside the 7-day renewal window, so the value is flagged.
+    expect(expiryValue.style.color).not.toBe('');
   });
-
   test('does not invent an expiry when the lifecycle row is missing', async () => {
     await renderPanel({ workers: [worker({ backend: 'packed' })] });
     expect(container.textContent).not.toContain('到期时间');
     expect(container.textContent).not.toContain('停服后保留');
+    expect(container.textContent).not.toContain('数据保留截止');
   });
 
   test('mixed ECS and shared workers keep separate identities and expiry dates while creation remains available', async () => {
@@ -333,17 +336,78 @@ describe('CloudWorkerPanel', () => {
     expect(container.textContent).not.toContain('15 天保留期');
     expect(container.textContent).not.toContain('续费后会自动恢复');
     if (retain_data) {
+      // A retained environment is not deleted by expiry, is not free compute
+      // while paused, and only an explicit delete removes it.
       expect(container.textContent).toContain('文件和历史记录继续保留');
+      expect(container.textContent).toContain('不会因套餐到期自动删除');
+      expect(container.textContent).toContain('不等同免费算力');
+      expect(container.textContent).toContain('显式删除');
       expect(container.textContent).not.toContain('7 天');
     } else {
-      expect(container.textContent).toContain('停服后保留 7 天');
+      expect(container.textContent).toContain('停服后通常保留 7 天');
+    }
+  });
+
+  test('shows the real data-retention deadline with non-negative remaining days and hours', async () => {
+    const deletesInTwoDays = new Date(Date.now() + 2 * 86400000 + 3 * 3600000).toISOString();
+    await renderPanel({
+      workers: [worker({
+        deployment_profile: 'packed_shared',
+        cloud_status: 'shelved',
+        package_expires_at: new Date(Date.now() - 86400000).toISOString(),
+        delete_after: deletesInTwoDays,
+        retention_days: 3,
+      })],
+    });
+    const text = container.textContent;
+    expect(text).toContain('数据保留截止');
+    expect(text).toMatch(/数据保留截止 \d{4}-\d{2}-\d{2}（还剩 2 天 \d+ 小时）/);
+    // An already-passed expiry never renders a negative remaining time.
+    expect(text).toContain('机器到期时间');
+    expect(text).toContain('（已过期）');
+    expect(text).not.toMatch(/还剩 -\d+/);
+  });
+
+  test('shows the backend lifecycle state and expiry mode next to the expiry', async () => {
+    await renderPanel({
+      workers: [worker({
+        package_expires_at: '2030-01-01T00:00:00Z',
+        lifecycle_state: 'active',
+        expiry_mode: 'follow_plan',
+      })],
+    });
+    expect(container.textContent).toContain('计费期内');
+    expect(container.textContent).toContain('随套餐期限');
+  });
+
+  test('refreshes the remaining time once a minute and cleans the timer up on unmount', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2030-01-01T00:00:00Z'));
+      const expires = '2030-01-04T00:00:00Z';
+      await renderPanel({ workers: [worker({ package_expires_at: expires })] });
+      expect(container.textContent).toContain('还剩 3 天 0 小时');
+      await act(async () => {
+        vi.advanceTimersByTime(60 * 60 * 1000);
+      });
+      expect(container.textContent).toContain('还剩 2 天 23 小时');
+      const clearSpy = vi.spyOn(globalThis, 'clearInterval');
+      await act(async () => { root.unmount(); });
+      expect(clearSpy).toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      clearSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
     }
   });
 
   test('marks unsubscribed instances as unrecoverable', async () => {
-    await renderPanel({ workers: [worker({ cloud_status: 'unsubscribed' })] });
+    await renderPanel({ workers: [worker({ cloud_status: 'unsubscribed', retain_data: true, retention_days: 7 })] });
     expect(container.textContent).toContain('已释放');
     expect(container.textContent).toContain('请联系支持清理旧记录');
+    // A deleted/released machine must not keep a retention or renewal promise.
+    expect(container.textContent).not.toContain('不会因套餐到期自动删除');
+    expect(container.textContent).not.toContain('停服后通常 7 天');
   });
 
   test('shows expired trial retention and blocks actions while saving stopped', async () => {

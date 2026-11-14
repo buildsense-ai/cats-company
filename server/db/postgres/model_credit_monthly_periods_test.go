@@ -321,10 +321,29 @@ func createCreditMonthlyTestUser(t *testing.T, db *Adapter, prefix string) int64
 
 func insertCreditMonthlyTestEntitlement(t *testing.T, db *Adapter, uid, planID int64, source, sourceRef string, startsAt, expiresAt, anchor time.Time) {
 	t.Helper()
+	if source == "order" {
+		insertCreditMonthlyTestOrderSnapshot(t, db, uid, planID, sourceRef)
+	}
 	if _, err := db.db.Exec(`
 		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at, period_anchor_at)
 		VALUES ($1, $2, $3, $4, 'active', $5, $6, $7)`,
 		uid, planID, source, sourceRef, startsAt, expiresAt, anchor); err != nil {
 		t.Fatalf("insert %s entitlement: %v", source, err)
+	}
+}
+
+// insertCreditMonthlyTestOrderSnapshot 建一条真实的订单快照行。order 来源的权益现在
+// 按 commercial_orders.plan_model_credit_units 读额度（订单行缺失就 fail closed），
+// 所以 fixture 不能只插权益。快照取套餐当下的额度，等价于「下单那一刻的套餐」。
+func insertCreditMonthlyTestOrderSnapshot(t *testing.T, db *Adapter, uid, planID int64, orderNo string) {
+	t.Helper()
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_orders(order_no, uid, plan_id, plan_slug, plan_name,
+			plan_duration_days, amount_fen, currency, channel, status, client_request_id,
+			plan_model_credit_units)
+		SELECT $1, $2, p.id, p.slug, p.name, p.duration_days, GREATEST(p.price_fen, 1),
+		       p.currency, 'test', 'fulfilled', $1, p.model_credit_units
+		FROM commercial_plans p WHERE p.id = $3`, orderNo, uid, planID); err != nil {
+		t.Fatalf("seed order snapshot %s: %v", orderNo, err)
 	}
 }

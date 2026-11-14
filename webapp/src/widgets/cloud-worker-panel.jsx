@@ -13,6 +13,15 @@ import {
   Zap,
 } from 'lucide-react';
 import { isCloudWorkerPending } from '../cloud-worker-pending';
+import {
+  MINUTE_MS,
+  expiryModeLabel,
+  formatDate,
+  isUrgentExpiry,
+  lifecycleStateLabel,
+  remainingLabel,
+  remainingUntil,
+} from './cloud-worker-lifecycle';
 
 const CLOUD_STATUS_META = {
   provisioning: { label: '实例创建中', tone: 'info' },
@@ -56,9 +65,13 @@ const isSharedWorker = (worker) => worker.deployment_profile === 'packed_shared'
 const cloudLifecycleHint = (worker) => {
   const normalized = String(worker.cloud_status || '').toLowerCase();
   if (['shelve', 'shelved', 'expired', 'freezing', 'frozen'].includes(normalized)) {
-    if (worker.retain_data) return '机器已暂停，文件和历史记录继续保留；恢复运行请联系管理员。';
-    const retention = worker.retention_days > 0 ? `停服后保留 ${worker.retention_days} 天；` : '';
-    return `机器已到期或暂停，${retention}请在套餐页确认可续费的同类机器权益，或联系管理员单独延长机器期限。`;
+    // retain_data 是后端写死的「不因套餐到期删数据」承诺：暂停只是停算力，
+    // 既不是免费算力，也不会自己清理，只有显式删除才真的删。
+    if (worker.retain_data) {
+      return '机器已暂停：文件和历史记录继续保留，不会因套餐到期自动删除；暂停期间不提供算力，不等同免费算力；需要清理时请显式删除。';
+    }
+    const retention = worker.retention_days > 0 ? `普通机器停服后通常保留 ${worker.retention_days} 天，` : '';
+    return `机器已到期或暂停，${retention}实际以这台机器自己的到期与保留截止为准；请在套餐页确认可续费的同类机器权益，或联系管理员单独延长机器期限。`;
   }
   if (['unsubscribed', 'released', 'deleted'].includes(normalized)) {
     return '云托管员工已经释放，无法通过续费恢复；请联系支持清理旧记录。';
@@ -70,24 +83,6 @@ const cloudActionsBlocked = (status) => (
   ['shelve', 'shelved', 'expired', 'freezing', 'frozen', 'unsubscribed', 'released', 'deleted', 'missing']
     .includes(String(status || '').toLowerCase())
 );
-
-// 到期时间的展示口径：面板只把后端的 RFC3339 转成可读日期 + 剩余天数。
-// 剩余天数在 7 天内标红 —— 这是用户真正需要被提醒的时刻（续费窗口）。
-const formatExpiryDate = (iso) => {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
-};
-
-const daysUntil = (iso) => {
-  if (!iso) return null;
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return null;
-  return Math.ceil((t - Date.now()) / 86400000);
-};
 
 const parseVersion = (value) => {
   const match = String(value || '').trim().replace(/^v/i, '').match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
@@ -159,6 +154,13 @@ export default function CloudWorkerPanel({
   const [resetInputs, setResetInputs] = useState({});
   const [resetErrors, setResetErrors] = useState({});
   const focusedWorkerRef = useRef(null);
+  // 到期 / 保留截止的剩余天小时每分钟重算一次；卸载时清掉计时器，
+  // 面板关闭后不留后台 interval。
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), MINUTE_MS);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Missing action metadata means an older backend; preserve compatibility
   // during a rolling web/server deployment. Explicit false always disables.
@@ -401,6 +403,9 @@ export default function CloudWorkerPanel({
               const actionName = activeAction.name === worker.tenant_name
                 ? activeAction.action
                 : (remoteActing ? worker.cloud_operation_action : '');
+              // 已释放/已删除的机器不再有可续费恢复的期限，也不再谈保留承诺。
+              const releasedWorker = ['unsubscribed', 'released', 'deleted']
+                .includes(String(shownStatus || '').toLowerCase());
               const currentVersion = parseVersion(worker.app_version);
               const upgradeVersions = currentVersion
                 ? releaseVersions.filter((version) => compareVersions(version, worker.app_version) > 0)
@@ -451,23 +456,35 @@ export default function CloudWorkerPanel({
                     <span>应用版本 <b>{worker.app_version || '暂未读取'}</b></span>
                     <span>基础镜像 <b>{worker.cloud_version || '暂未读取'}</b></span>
                     {worker.package_expires_at && (() => {
-                      const left = daysUntil(worker.package_expires_at);
-                      const urgent = left !== null && left <= 7;
+                      const span = remainingUntil(worker.package_expires_at, nowMs);
+                      const urgent = isUrgentExpiry(span);
+                      const stateLabel = lifecycleStateLabel(worker.lifecycle_state);
+                      const modeLabel = expiryModeLabel(worker.expiry_mode);
                       return (
                         <span>
                           机器到期时间{' '}
                           <b style={urgent ? { color: 'var(--v3-danger, #d33)' } : undefined}>
-                            {formatExpiryDate(worker.package_expires_at)}
-                            {left !== null ? `（还剩 ${left} 天）` : ''}
+                            {formatDate(worker.package_expires_at)}
+                            {span.known ? `（${remainingLabel(span)}）` : ''}
                           </b>
+                          {[stateLabel, modeLabel].filter(Boolean).map(label => ` · ${label}`).join('')}
                         </span>
                       );
                     })()}
-                    {worker.retain_data ? (
-                      <span>停服后保留 <b>文件和历史记录</b></span>
-                    ) : worker.retention_days > 0 && (
-                      <span>停服后保留 <b>{worker.retention_days} 天</b></span>
-                    )}
+                    {/* 数据保留截止只认后端给的 delete_after；没有真实截止时不编一个
+                        日期，只说明这一台按什么规则处理。已释放/已删除不再谈保留。 */}
+                    {worker.delete_after ? (() => {
+                      const span = remainingUntil(worker.delete_after, nowMs);
+                      return (
+                        <span>
+                          数据保留截止 <b>{formatDate(worker.delete_after)}（{remainingLabel(span)}）</b>
+                        </span>
+                      );
+                    })() : releasedWorker ? null : worker.retain_data ? (
+                      <span>数据保留 <b>不会因套餐到期自动删除</b></span>
+                    ) : worker.retention_days > 0 ? (
+                      <span>数据保留 <b>普通机器停服后通常 {worker.retention_days} 天，以逐台截止为准</b></span>
+                    ) : null}
                     {isSharedWorker(worker) && (
                       <span>连接方式 <b>通过平台连接（共享集群无 SSH / 无公网 IP）</b></span>
                     )}
@@ -638,6 +655,9 @@ export default function CloudWorkerPanel({
 
       <p className="cc-cloud-footnote">
         <CheckCircle2 size={13} /> 更新与回滚只切换应用并保留数据；重置会在原实例内按所选镜像重装系统盘并清空数据。
+      </p>
+      <p className="cc-cloud-footnote">
+        <CheckCircle2 size={13} /> 到期与数据保留以每台机器自己的截止时间为准，剩余时间每分钟刷新；普通机器的保留窗口通常比存量机器短，存量保留承诺保持不变。
       </p>
     </div>
   );

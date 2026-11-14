@@ -18,7 +18,7 @@ export const creditPlanPresentation = Object.fromEntries(creditPlanOffers.map((o
     actionLabel: `获取 CatsCo ${offer.name}`,
     highlights: [{ kind: 'capacity', label: '月额度', value: String(offer.monthlyCredits), unit: 'credit' }, { kind: 'discount', label: '模型调用优惠', value: offer.discountBps === 10000 ? '无优惠' : `${offer.discountBps / 1000} 折` }],
     featuresLabel: false, features: [{ label: plan.focus, details: plan.details }, ...plan.examples],
-    purchaseDescription: `¥${offer.price_fen / 100} / 月，每周期 ${offer.monthlyCredits} credit。按自然月对日计算，月额度当期有效，不结转；环境、文件和历史对话暂不设置清理期限。`,
+    purchaseDescription: `¥${offer.price_fen / 100} / 月，每周期 ${offer.monthlyCredits} credit。按自然月对日计算，月额度当期有效，不结转；提前续费不提前补额。机器期限单独显示，已保留环境到期暂停、暂不自动清理，显式删除仍有效。`,
   }];
 }));
-export const creditPlanNote = '月额度当期有效，不结转；充值 1 元 = 1 credit。模型调用按官方价格、实际用量及套餐折扣扣费。';
+export const creditPlanNote = '月额度当期有效，不结转；1 元对应 100 credit，独立余额充值暂未开放。模型调用按官方适用价格 × 2（含平台服务费）× 实际用量 × 套餐折扣，再换算为 credit。';

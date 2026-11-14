@@ -5,7 +5,7 @@ import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { resolvePlanOffers, salePlansForOffers } from './plans/plan-offers';
 import LoadingState from './loading-state';
-import useModelCreditAccount, { modelCreditQuotaDisplay } from './plans/use-model-credit-account';
+import useModelCreditAccount, { MODEL_CREDIT_LEGACY_NOTICE, modelCreditIdentity, modelCreditQuotaDisplay } from './plans/use-model-credit-account';
 import { restoreDialogFocus } from '../utils/use-dialog-behavior';
 import {
   readStorageValue,
@@ -37,7 +37,7 @@ const COMMERCIAL_PLAN_PRESENTATION = {
       '个人 Skill 与使用偏好持续沉淀',
       '常规响应优先级',
       '含 1 次云托管员工创建权益',
-      '云托管员工随套餐有效；到期后保留 15 天，期间续费可恢复',
+      '云托管员工随套餐有效；到期与数据保留以单台机器自己的截止时间为准，普通机器通常保留 7 天',
     ],
   },
   'catsco-pro': {
@@ -55,7 +55,7 @@ const COMMERCIAL_PLAN_PRESENTATION = {
       '高峰期更高响应优先级',
       '更宽松的公平使用边界',
       '含 1 次云托管员工创建权益',
-      '云托管员工随套餐有效；到期后保留 15 天，期间续费可恢复',
+      '云托管员工随套餐有效；到期与数据保留以单台机器自己的截止时间为准，普通机器通常保留 7 天',
     ],
   },
   'catsco-trial-3d': {
@@ -1126,14 +1126,27 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
   const activePackages = activeEntitlements(commercialSummary);
   const activeOfficialPlanTier = activeCommercialPlanTier(activePackages, salePlans);
   const commercialState = commercialAccountState(commercial, activePackages);
+  // 身份只认后端字段（enabled / allowed）。商品是否带 model_credit_units 不能
+  // 决定一个人是不是 credit 账户：存量老用户卖的就是旧额度商品，按商品推断会
+  // 把他们的旧额度藏起来。所以所有账号都读一次 credit 接口，再决定显示哪套额度。
   const activeCreditPlans = activePackages.map(item => ({ ...item, creditUnits: Number(item.model_credit_units || item.plan_model_credit_units || [...(commercialSummary?.plans || []), ...catalogPlans].find(plan => entitlementMatchesPlan(item, plan))?.model_credit_units || 0) }));
-  const creditDataEnabled = Boolean(planChooserOffers?.some(plan => plan.monthlyCredits > 0) || activeCreditPlans.some(item => item.creditUnits > 0));
-  const creditState = useModelCreditAccount(usageRevision, creditDataEnabled);
+  const creditState = useModelCreditAccount(usageRevision);
+  const creditIdentity = modelCreditIdentity(creditState.account);
   const creditAllowance = Math.max(0, ...activeCreditPlans.map(item => item.creditUnits));
-  const hasCreditAccount = creditDataEnabled && (creditState.account?.enabled === true || creditAllowance > 0 || ['monthly', 'gift', 'paid', 'debt'].some(bucket => Number(creditState.account?.[`${bucket}_units`]) > 0));
-  const currentResetInfo = hasCreditAccount ? { detail: '按订阅生效日逐自然月重置' } : usageResetInfo(currentUsage);
+  // blocked（enabled=true, allowed=false）仍然是 credit 账户：余额照常显示，只是
+  // 「当期可用」为否。allowed=false 不能当成到期结论，也可能是权限被收回。
+  const hasCreditAccount = creditIdentity.enabled;
+  const creditNotice = creditState.error
+    ? creditState.error
+    : (creditIdentity.known && !creditIdentity.enabled ? MODEL_CREDIT_LEGACY_NOTICE : '');
+  const currentResetInfo = hasCreditAccount
+    ? { cycle: true, detail: '月额度按订阅生效日锚定的自然月刷新，不结转；提前续费不会提前补额。' }
+    : usageResetInfo(currentUsage);
+  const currentResetText = currentResetInfo.cycle
+    ? currentResetInfo.detail
+    : `下次重置时间：${String(currentResetInfo.detail || '').replace(/^下次\s*/, '')}`;
   const currentQuota = hasCreditAccount
-    ? creditState.account ? modelCreditQuotaDisplay(creditState.account, creditAllowance) : { title: '可用 credit', meta: creditState.loading ? '读取中…' : '余额暂未同步', detail: creditState.error, note: '月额度当期有效，不结转。', percent: 0, className: 'inactive' }
+    ? modelCreditQuotaDisplay(creditState.account, creditAllowance, creditIdentity)
     : currentQuotaDisplay(currentUsage, commercialEnabled);
   const quotaUsedValue = /^已用 (\d+(?:\.\d+)?)(%\+?)$/.exec(currentQuota.meta);
   const checkoutCountdown = commercialOrderCountdown(checkoutOrder, checkoutClock);
@@ -1776,9 +1789,31 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                 <i style={{ width: `${Math.min(100, Math.max(0, currentQuota.percent))}%` }} />
               </div>
               <div className="relay-access-current-quota-cycle">
-                <span className="relay-access-current-quota-note">{currentQuota.note}</span>
-                <span>下次重置时间：{currentResetInfo.detail.replace(/^下次\s*/, '')}</span>
+                {!hasCreditAccount && <span className="relay-access-current-quota-note">{currentQuota.note}</span>}
+                <span>{currentResetText}</span>
               </div>
+              {hasCreditAccount && currentQuota.buckets && (
+                <div className="relay-access-current-quota-cycle">
+                  <span className="relay-access-current-quota-note">{currentQuota.buckets}</span>
+                </div>
+              )}
+              {hasCreditAccount && currentQuota.status && (
+                <div className="relay-access-current-quota-cycle">
+                  <span className="relay-access-current-quota-note">{currentQuota.status}</span>
+                </div>
+              )}
+              {/* 周期行只用后端给的 monthly_period_starts_at/ends_at、subscription_expires_at、
+                  next_refresh_at：没有月周期的账号（legacy / 邀请码）这里为空，不编日期，也不推算月份。 */}
+              {hasCreditAccount && currentQuota.period && (
+                <div className="relay-access-current-quota-cycle">
+                  <span className="relay-access-current-quota-note">{currentQuota.period}</span>
+                </div>
+              )}
+              {creditNotice && (
+                <div className="relay-access-current-quota-cycle">
+                  <span className="relay-access-current-quota-note">{creditNotice}</span>
+                </div>
+              )}
             </div>
 
             <div className="relay-access-billing-toolbar">
@@ -1846,10 +1881,10 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                     : Number(purchasePlan.model_credit_units || purchasePlan.monthlyCredits) > 0
                     ? `${formatPriceFen(purchasePlan.price_fen)} / 月，按订阅生效日逐自然月计算；${purchaseIsRenewal ? '提前续费只延长有效期，下一期开始时发放额度' : '本期月额度在套餐生效后发放'}。月额度当期有效，不结转，不自动续费。`
                     : purchaseIsRenewal
-                    ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期日顺延 ${Number(purchasePlan.duration_days || 30)} 天；处于到期保留期的云托管员工会自动恢复，已释放的实例无法恢复；不会自动扣款。`
+                    ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期日顺延 ${Number(purchasePlan.duration_days || 30)} 天；不会自动扣款。云托管员工是否恢复取决于它自己的状态：仍在数据保留期内的到期暂停机器，续费后可以恢复运行；已释放或已删除的实例无法恢复；人工暂停的机器不会因续费自动恢复，需要联系管理员处理。`
                     : purchaseIsUpgrade
                     ? `${formatPriceFen(purchasePlan.price_fen)}，支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 ${Number(purchasePlan.duration_days || 30)} 天，额度按新套餐重置。`
-                    : `${formatPriceFen(purchasePlan.price_fen)}，每期 ${Number(purchasePlan.duration_days || 30)} 天，不自动续费。${purchaseIncludesCloudWorker ? '已创建的云托管员工到期后保留 15 天，期间续费即可恢复。' : ''}`}</p>
+                    : `${formatPriceFen(purchasePlan.price_fen)}，每期 ${Number(purchasePlan.duration_days || 30)} 天，不自动续费。${purchaseIncludesCloudWorker ? '已创建的云托管员工以单台机器自己的到期与数据保留截止为准：普通机器到期后通常保留 7 天，期间续费可恢复；存量机器的保留承诺保持不变。' : ''}`}</p>
                   {purchasePlan.catalogUnavailable && <p>此套餐暂未开放购买，开放后可在这里完成支付。</p>}
                 </div>
                 <div className="relay-access-purchase-confirm-actions">

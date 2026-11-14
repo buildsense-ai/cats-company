@@ -90,6 +90,8 @@ func TestPostgresModelCreditTaskExpiredPlanIsBlockedNotLegacy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create plan: %v", err)
 	}
+	// order 来源的权益按订单快照读额度：身份判定要有真实订单行，否则 fail closed。
+	insertCreditMonthlyTestOrderSnapshot(t, db, uid, planID, "ORDER-EXPIRED")
 	expired := time.Now().UTC().Add(-48 * time.Hour)
 	if _, err := db.db.Exec(`
 		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)

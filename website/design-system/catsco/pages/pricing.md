@@ -1,5 +1,7 @@
 # CatsCo Pricing Page Override
 
+> Current product rules (2026-11-14): personal plans use V1 ¥39/4,000 credit, V2 ¥79/12,000, V3 ¥159/22,500 per anchored natural month. All include the same shared light machine; model-plan changes do not resize existing machines. 1 CNY corresponds to 100 credit; independent balance top-up is not open. User model charges equal applicable official CNY cost × 2 (platform service included) × tier factor × 100 credit/CNY; V3 factor is 0.9. Ordinary machine retention follows its actual deadline (usually 7 days); existing retain-data environments pause without automatic cleanup. The older price/quota examples below are historical design references, not current sales terms.
+
 ## Source and scope
 
 The page presents platform packages and links to their authenticated purchase confirmation. Reference implementation: `webapp/src/widgets/plans/`, including `catsco-plans-modal.jsx`, `plan-offers.js`, `plan-chooser.css`, `enterprise-team.*`, and `enterprise-services.*`. `webapp/src/dev/README.md` and the default E layout in `plans-preview.jsx` describe the composition. Paths are relative to the repository root.

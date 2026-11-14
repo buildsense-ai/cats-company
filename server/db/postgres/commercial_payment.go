@@ -23,6 +23,13 @@ const commercialPlanColumns = `id, slug, name, description, price_fen, currency,
 // being destroyed in the next sweep tick.
 const commercialRefundMinRetentionDays = 3
 
+// commercialCreditSubscriptionDurationDays is the only duration a credit
+// subscription may be sold with. Its allowance is granted per natural month, so
+// fulfilment always bills one month; selling a longer term would hand the buyer
+// a window shorter than the one advertised. Legacy CNY/token packages keep their
+// own free-form durations.
+const commercialCreditSubscriptionDurationDays = 30
+
 func (a *Adapter) GetCommercialPlan(id int64) (*types.CommercialPlan, error) {
 	if id <= 0 {
 		return nil, fmt.Errorf("invalid commercial plan id")
@@ -154,6 +161,13 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 		!commercialPlanHasPositiveBudget(plan) && store.ModelCreditTaskPlanTierTrusted(plan.PlanTier)
 	if plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 || plan.MonthlyBudget > 0 || (!commercialPlanHasPositiveModelBudget(plan) && !creditOnly) {
 		return nil, fmt.Errorf("commercial plan is not purchasable")
+	}
+	// A credit package is a monthly subscription: fulfilment bills exactly one
+	// natural month, so any other duration would sell a term the buyer never
+	// receives. Refuse the order here instead of silently rewriting it, and the
+	// plan-management upsert below refuses to put such a package on sale at all.
+	if plan.ModelCreditUnits > 0 && plan.DurationDays != commercialCreditSubscriptionDurationDays {
+		return nil, fmt.Errorf("credit plans are sold as %d-day monthly subscriptions", commercialCreditSubscriptionDurationDays)
 	}
 	if err := validateCommercialOfficialPlanPurchase(tx, order.UID, plan.Slug, time.Now().UTC()); err != nil {
 		return nil, err
@@ -472,32 +486,98 @@ func (a *Adapter) CloseExpiredCommercialOrders(limit int) (int64, error) {
 	return count, nil
 }
 
-// activeCommercialOfficialPlanExpiry returns the latest expiry for the
-// currently active official tier. It is used to turn a same-plan purchase
-// into a true renewal period instead of an overlapping 30-day entitlement.
-func activeCommercialOfficialPlanExpiry(tx *sql.Tx, uid int64, slug string, now time.Time) (time.Time, bool, error) {
-	var expiresAt sql.NullTime
-	err := tx.QueryRow(`
-		SELECT e.expires_at
+// commercialPaidChainEnd returns the end of the continuous paid window of one
+// plan tier that starts at `now`. It walks every still-live period of that tier,
+// not just the one covering `now`: stacked early renewals therefore accumulate
+// (period 1 → period 2 → period 3) instead of each new purchase restarting from
+// the first expiry, which used to create overlapping entitlements and a second
+// allowance in the same month. The tier — not the plan row or its slug — is what
+// "the same product" means, so a re-listed package on the same rung renews the
+// same chain. Perpetual rows (expires_at IS NULL) never join a chain: there is no
+// finite moment a paid period could be appended after.
+func commercialPaidChainEnd(tx *sql.Tx, uid int64, tier int, now time.Time) (time.Time, bool, error) {
+	if tier <= 0 {
+		return time.Time{}, false, nil
+	}
+	rows, err := tx.Query(`
+		SELECT e.starts_at, e.expires_at
 		FROM commercial_entitlements e
 		JOIN commercial_plans p ON p.id = e.plan_id
 		WHERE e.uid = $1 AND e.state = 'active'
-		  AND e.starts_at <= $2
-		  AND (e.expires_at IS NULL OR e.expires_at > $2)
-		  AND p.slug = $3
-		ORDER BY e.expires_at DESC NULLS LAST, e.id DESC
-		FOR UPDATE OF e
-		LIMIT 1`, uid, now, strings.TrimSpace(slug)).Scan(&expiresAt)
+		  AND p.plan_tier = $2
+		  AND e.expires_at IS NOT NULL
+		  AND e.expires_at > $3
+		ORDER BY e.starts_at, e.expires_at, e.id
+		FOR UPDATE OF e`, uid, tier, now.UTC())
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("load commercial paid chain: %w", err)
+	}
+	defer rows.Close()
+	var chainEnd time.Time
+	active := false
+	for rows.Next() {
+		var startsAt, expiresAt time.Time
+		if err := rows.Scan(&startsAt, &expiresAt); err != nil {
+			return time.Time{}, false, fmt.Errorf("scan commercial paid chain: %w", err)
+		}
+		if !active {
+			if startsAt.After(now) {
+				// Periods are ordered by start, so nothing later can cover `now`.
+				break
+			}
+			if !expiresAt.After(now) {
+				continue
+			}
+			active, chainEnd = true, expiresAt
+			continue
+		}
+		if startsAt.After(chainEnd) {
+			// A gap ends the chain: the buyer let this tier lapse.
+			break
+		}
+		if expiresAt.After(chainEnd) {
+			chainEnd = expiresAt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return time.Time{}, false, fmt.Errorf("read commercial paid chain: %w", err)
+	}
+	if !active {
+		return time.Time{}, false, nil
+	}
+	return chainEnd, true, nil
+}
+
+// commercialPaidChainAnchor returns the natural-month anchor of the paid window
+// the new period continues. Same-tier purchases inherit it even when they renew
+// through a different plan row or slug, so the day-of-month and the once-per-
+// period allowance survive a package being re-listed under a new id.
+func commercialPaidChainAnchor(tx *sql.Tx, uid int64, tier int, now time.Time) (time.Time, bool, error) {
+	if tier <= 0 {
+		return time.Time{}, false, nil
+	}
+	var anchor sql.NullTime
+	err := tx.QueryRow(`
+		SELECT COALESCE(e.period_anchor_at, e.starts_at)
+		FROM commercial_entitlements e
+		JOIN commercial_plans p ON p.id = e.plan_id
+		WHERE e.uid = $1 AND e.state = 'active'
+		  AND p.plan_tier = $2
+		  AND e.starts_at <= $3
+		  AND (e.expires_at IS NULL OR e.expires_at > $3)
+		ORDER BY CASE WHEN e.source IN ('order','admin','internal') THEN 0 ELSE 1 END,
+		         e.expires_at DESC NULLS LAST, e.id DESC
+		LIMIT 1`, uid, tier, now.UTC()).Scan(&anchor)
 	if err == sql.ErrNoRows {
 		return time.Time{}, false, nil
 	}
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("load active commercial renewal period: %w", err)
+		return time.Time{}, false, fmt.Errorf("load credit chain period anchor: %w", err)
 	}
-	if !expiresAt.Valid {
-		return time.Time{}, true, nil
+	if !anchor.Valid {
+		return time.Time{}, false, nil
 	}
-	return expiresAt.Time, true, nil
+	return anchor.Time, true, nil
 }
 
 func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error) {
@@ -533,6 +613,14 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	if paidAt.IsZero() {
 		paidAt = time.Now().UTC()
 	}
+	// A credit subscription is only ever sold as a 30-day monthly product, and the
+	// order snapshot decides — not the live plan row — so an order taken before
+	// this rule existed (or before an operator edited the plan) fails here instead
+	// of being fulfilled as a shorter term than it advertised.
+	if order.PlanModelCreditUnits > 0 && order.PlanDurationDays != commercialCreditSubscriptionDurationDays {
+		return nil, false, fmt.Errorf("credit subscription order %s was sold for %d days, want a %d-day monthly product",
+			order.OrderNo, order.PlanDurationDays, commercialCreditSubscriptionDurationDays)
+	}
 	result, err := tx.Exec(`
 		INSERT INTO commercial_payment_events(channel, event_id, order_no, provider_trade_no, event_type, payload_hash, status)
 		VALUES ($1, $2, $3, $4, 'payment_success', $5, 'processed')
@@ -553,20 +641,37 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	if affected == 0 {
 		return nil, false, fmt.Errorf("payment event was already used")
 	}
-	// A purchase of the currently active official tier is a renewal. Start
-	// that new period at the existing entitlement expiry so early renewals do
-	// not discard paid time. Upgrades still start immediately at payment time;
-	// an expired plan has no active period and also starts immediately.
+	// Serialise the same buyer's fulfilments before reading the paid chain.
+	// CommercialPaidChainEnd walks the tier's live periods, and two orders of one
+	// uid could otherwise read the same chain tail: a first purchase has no
+	// entitlement row to lock at all, and even with rows present the
+	// SELECT ... FOR UPDATE inside the chain query works from a snapshot taken
+	// before the other transaction committed its next segment, so each order
+	// would append its month on top of the *previously* stored expiry. Taking the
+	// tier advisory lock here (transaction-scoped, released on commit, and
+	// re-entrant so activateCommercialOfficialPlan may take it again) makes the
+	// waiting transaction run its chain query in a fresh statement snapshot that
+	// sees the committed segment.
+	if err := lockCommercialOfficialPlanTier(tx, order.UID); err != nil {
+		return nil, false, err
+	}
+	// A purchase of the tier the buyer already holds is a renewal: the new period
+	// is appended after that tier's whole continuous paid chain (stacked early
+	// renewals accumulate instead of overlapping each other), and that holds when
+	// the buyer renews through a different plan row or slug on the same rung — the
+	// rung, not the slug or the plan id, is what "the same product" means.
+	// Upgrades still start immediately at payment time; a lapsed tier has no
+	// active period and also starts now.
 	periodStartsAt := paidAt
 	orderTier, tierErr := planTierForSlug(tx, order.PlanSlug)
 	if tierErr != nil {
 		return nil, false, tierErr
 	}
 	if orderTier > 0 {
-		if currentExpiry, active, expiryErr := activeCommercialOfficialPlanExpiry(tx, order.UID, order.PlanSlug, paidAt); expiryErr != nil {
-			return nil, false, expiryErr
-		} else if active && currentExpiry.After(periodStartsAt) {
-			periodStartsAt = currentExpiry
+		if chainEnd, active, chainErr := commercialPaidChainEnd(tx, order.UID, orderTier, paidAt); chainErr != nil {
+			return nil, false, chainErr
+		} else if active && chainEnd.After(periodStartsAt) {
+			periodStartsAt = chainEnd
 		}
 	}
 	if err := activateCommercialOfficialPlan(tx, order.UID, order.PlanSlug, paidAt); err != nil {
@@ -582,8 +687,19 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	expiresAt := periodStartsAt.AddDate(0, 0, order.PlanDurationDays)
 	var entitlementAnchor any
 	if order.PlanModelCreditUnits > 0 {
+		// The natural-month anchor follows the paid window this period continues,
+		// including a renewal through a different plan row on the same rung: that
+		// is what keeps one allowance per period and 1/31 → 2/28 → 3/31 intact.
+		// Re-anchoring on the payment day is exactly what shortened the window and
+		// granted a second allowance inside the month that was already paid for.
 		anchor := paidAt
-		if existing, ok, err := activeCommercialCreditPackageAnchor(tx, order.UID, order.PlanID, paidAt); err != nil {
+		if orderTier > 0 {
+			if existing, ok, err := commercialPaidChainAnchor(tx, order.UID, orderTier, paidAt); err != nil {
+				return nil, false, err
+			} else if ok {
+				anchor = existing
+			}
+		} else if existing, ok, err := activeCommercialCreditPackageAnchor(tx, order.UID, order.PlanID, paidAt); err != nil {
 			return nil, false, err
 		} else if ok {
 			anchor = existing
@@ -601,11 +717,20 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, order.PlanModelBudgets, periodStartsAt, expiresAt); err != nil {
 		return nil, false, err
 	}
-	// A credit package books its paid credit in this same transaction, so a
-	// fulfilled order and its ledger entry can never disagree. Orders of a
-	// legacy budget package snapshot 0 units and skip the ledger entirely.
-	if err := grantCommercialOrderModelCredit(context.Background(), tx, order, paidAt); err != nil {
-		return nil, false, err
+	// A credit package sells a monthly allowance, not a lump of spendable paid
+	// balance: the period that starts at payment is booked here, in the very
+	// same transaction, by the reconciler the sweeper and the read paths use.
+	// That is what holds a subscription to one grant per natural month
+	// (P0-2/P0-5). Booking the amount into the paid bucket as well gave every
+	// new buyer the same units twice, and turned an early renewal into an
+	// immediate top-up. A renewal period starts at the previous expiry (see
+	// above), so reconciling at payment time grants nothing for it; the next
+	// period's allowance is granted when that period begins. Legacy budget
+	// packages snapshot 0 units and stay off the ledger entirely.
+	if order.PlanModelCreditUnits > 0 {
+		if _, _, err := reconcileModelCreditMonthlyPeriod(context.Background(), tx, order.UID, paidAt); err != nil {
+			return nil, false, err
+		}
 	}
 	// Whether this package buys a machine is a plan attribute, not a slug list.
 	// Keeping the allow-list here is what made every new package token-only until
@@ -822,17 +947,39 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 	if affected == 0 {
 		return nil, false, fmt.Errorf("refund event was already used")
 	}
-	// Credit sold by this order is reversed in the same transaction. A
-	// conservative refusal (already consumed or still held) keeps the refund in
-	// 'refunding' instead of turning spent credit into free credit.
-	if err := reverseCommercialOrderModelCredit(context.Background(), tx, order, refundedAt); err != nil {
+	// Credit this order really booked is released in the same transaction. Only
+	// a legacy order put its units straight into the paid bucket, so only a
+	// legacy order has something there to reverse; a subscription order's
+	// allowance is the monthly grant of its period, and demanding a paid grant
+	// it never created would leave every refund of a new order stuck in
+	// 'refunding'. A conservative refusal (already consumed or still held) is
+	// unchanged: it still keeps the refund incomplete instead of turning spent
+	// credit into free credit.
+	bookedPaidCredit, err := commercialOrderCreditGrantBooked(context.Background(), tx, order.OrderNo)
+	if err != nil {
 		return nil, false, err
+	}
+	if bookedPaidCredit {
+		if err := reverseCommercialOrderModelCredit(context.Background(), tx, order, refundedAt); err != nil {
+			return nil, false, err
+		}
 	}
 	if _, err := tx.Exec(`
 		UPDATE commercial_entitlements
 		SET state = 'revoked'
 		WHERE uid = $1 AND source = 'order' AND source_ref = $2 AND state <> 'revoked'`, order.UID, order.OrderNo); err != nil {
 		return nil, false, fmt.Errorf("revoke refunded entitlement: %w", err)
+	}
+	if order.PlanModelCreditUnits > 0 && !bookedPaidCredit {
+		// The paid grant path is retired, so the refund settles the monthly
+		// permission instead of a paid balance: reconcile against what survives
+		// the revocation. A still-running renewal period keeps the allowance it
+		// was granted, and when nothing is left the refunded period's unused
+		// allowance is expired rather than staying spendable on a package the
+		// buyer no longer holds.
+		if _, _, err := reconcileModelCreditMonthlyPeriod(context.Background(), tx, order.UID, refundedAt); err != nil {
+			return nil, false, err
+		}
 	}
 	grantRows, err := tx.Query(`
 		SELECT id, model, amount_cny
