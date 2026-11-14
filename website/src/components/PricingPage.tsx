@@ -49,7 +49,7 @@ const plans: PricingPlan[] = [{
   }, {
     label: '任务进度与执行过程查看'
   }],
-  note: '当前支持 DeepSeek Flash，按官方价格计费，无折扣；' + retentionNote
+  note: '当前支持 DeepSeek Flash，按套餐费率计费，无折扣；' + retentionNote
 }, {
   slug: 'catsco-credit-v2-monthly',
   name: '日常版',
@@ -74,7 +74,7 @@ const plans: PricingPlan[] = [{
   }, {
     label: '任务成果集中管理与分享'
   }],
-  note: '当前支持 DeepSeek Flash，按官方价格计费，无折扣；' + retentionNote
+  note: '当前支持 DeepSeek Flash，按套餐费率计费，无折扣；' + retentionNote
 }, {
   slug: 'catsco-credit-v3-monthly',
   name: '专业版',
@@ -99,7 +99,7 @@ const plans: PricingPlan[] = [{
   }, {
     label: '高峰期优先响应'
   }],
-  note: '当前支持 DeepSeek Flash，按官方价格享 9 折；' + retentionNote
+  note: '当前支持 DeepSeek Flash，享套餐费率 9 折；' + retentionNote
 }];
 const teamPlan: PricingPlan = {
   slug: 'catsco-team',
@@ -171,7 +171,7 @@ const comparisonSections: Array<{
     { label: '适合的工作方式', values: comparisonPlans.map(plan => plan.tagline) },
     { label: '每期额度', values: comparisonPlans.map(plan => plan.capacity + ' ' + plan.unit) },
     { label: '模型范围', values: ['DeepSeek Flash', '已开通模型（当前 DeepSeek Flash）', '已开通模型（当前 DeepSeek Flash）', '待确认'] },
-    { label: '模型调用优惠', values: ['无折扣', '无折扣', '官方价格 9 折', '待确认'] }
+    { label: '模型调用优惠', values: ['无折扣', '无折扣', '套餐费率 9 折', '待确认'] }
   ]
 }, {
   title: '日常工作与持续执行',
@@ -201,13 +201,13 @@ function ComparisonCell({ value }: { value: ComparisonValue }) {
 }
 const pricingFaqs = [{
   question: '入门版、日常版和专业版有什么区别？',
-  answer: '三个个人套餐的差异是月额度和模型折扣：入门版 ¥39 / 4,000 credit，日常版 ¥79 / 12,000 credit，专业版 ¥159 / 22,500 credit。模型调用按官方价格计费，专业版享 9 折。当前支持 DeepSeek Flash；三档均附带相同规格的共享云端机器，已有机器档位不会随模型套餐自动变更。套餐详情以工作台购买确认页显示为准。'
+  answer: '三个个人套餐的差异是月额度和模型折扣：入门版 ¥39 / 4,000 credit，日常版 ¥79 / 12,000 credit，专业版 ¥159 / 22,500 credit。模型调用按套餐费率计费，专业版享 9 折。当前支持 DeepSeek Flash；三档均附带相同规格的共享云端机器，已有机器档位不会随模型套餐自动变更。套餐详情以工作台购买确认页显示为准。'
 }, {
   question: '价格按月还是按年？',
   answer: '个人套餐按月计费，周期按自然月对日计算，没有对应日期时取当月月末，不使用固定 30 天。当前展示入门版 ¥39、日常版 ¥79、专业版 ¥159，团队版 ¥599 仍按 30 天一期。尚未公布年付价格，也不会在此页发起自动续费。'
 }, {
   question: '页面上的 credit 如何理解？',
-  answer: '1 元对应 100 credit，模型调用按官方价格、实际用量及套餐折扣扣费。月额度当期有效，不结转；提前续费只延长有效期，不提前补额。扣费顺序为月额度、邀请赠送额度、付费余额。独立余额充值暂未开放。'
+  answer: '1 元对应 100 credit，模型调用按实际用量及套餐费率扣费。月额度当期有效，不结转；提前续费只延长有效期，不提前补额。扣费顺序为月额度、邀请赠送额度、付费余额。独立余额充值暂未开放。'
 }, {
   question: '峰谷时段怎么计算？',
   answer: '模型调用按北京时间区分峰谷：工作日 09:00–12:00 和 14:00–18:00 为峰时，其余时段为谷时；周末和法定节假日全天为谷时，调休补班的周末同样按谷时计算。峰谷费率差异以模型官方公布的价格为准。'
@@ -310,7 +310,7 @@ export function PricingPage() {
             </div>
           </section>
         </div>
-        <p className="pricing-estimate-note">月额度当期有效，不结转；1 元对应 100 credit。模型调用按官方价格、实际用量及套餐折扣扣费。</p>
+        <p className="pricing-estimate-note">月额度当期有效，不结转；1 元对应 100 credit。模型调用按实际用量及套餐费率扣费。</p>
         <section className="pricing-access" aria-labelledby="pricing-access-title">
           <div><span className="pricing-section-eyebrow">EARLY ACCESS</span><h2 id="pricing-access-title">已有邀请码？</h2><p>邀请码兑换 20 credit 赠送额度，独立记账并叠加在付费套餐之上，不替代套餐、不是折扣券，也不改变套餐价格。</p></div>
           <a href={appLoginUrl({ access: 'invite', source: 'pricing', next: '/?open=relay' })}>使用邀请码登录<Icon name="arrowRight" /></a>
