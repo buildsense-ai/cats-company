@@ -269,13 +269,13 @@ test('website credit copy matches the approved credit plan rules', async () => {
   // Credit is a billing balance, not a token estimate; retention copy lives in its own contract.
   assert.doesNotMatch(pricing, /Token 数为估算值/)
   assert.match(pricing, /自然月对日/)
-  assert.match(pricing, /按官方价格享 9 折/)
+  assert.match(pricing, /享套餐费率 9 折/)
   assert.match(pricing, /1 元对应 100 credit/)
   assert.match(pricing, /独立余额充值暂未开放/)
   assert.match(pricing, /20 credit/)
-  assert.doesNotMatch(pricing, /平台费率|平台服务费|官方适用价 × 2/)
-  assert.match(pricing, /按官方价格计费，无折扣/)
-  assert.match(pricing, /'官方价格 9 折'/)
+  assert.doesNotMatch(pricing, /官方价格|官方原价|平台服务费|×\s*(?:1\.8|2)/)
+  assert.match(pricing, /按套餐费率计费，无折扣/)
+  assert.match(pricing, /'套餐费率 9 折'/)
 })
 
 test('website retention distinguishes ordinary deadlines from retained environments', async () => {
