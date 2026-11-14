@@ -227,6 +227,17 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	if durationDays == 0 {
 		durationDays = 30
 	}
+	// A credit package is a monthly subscription: its allowance is granted per
+	// natural-month period and fulfilment bills exactly one month, so any other
+	// duration would put a package on sale whose term the buyer never receives.
+	// Refuse it here — this is the upsert the plan-management screen uses — rather
+	// than silently rewriting the term at fulfilment. Perpetual (-1) stays legal
+	// because it is never sold: CreateCommercialOrder refuses duration <= 0 and
+	// operators only hand it out through invites/assignments. Legacy CNY/token
+	// packages, trials and invites keep their free-form durations.
+	if plan.ModelCreditUnits > 0 && durationDays > 0 && durationDays != commercialCreditSubscriptionDurationDays {
+		return 0, fmt.Errorf("credit plans must be sold as %d-day monthly subscriptions", commercialCreditSubscriptionDurationDays)
+	}
 	tokenQuotaDuration, err := normalizeCommercialTokenQuotaDuration(plan.TokenQuotaDuration, durationDays)
 	if err != nil {
 		return 0, err

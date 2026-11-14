@@ -32,9 +32,9 @@ func (a *Adapter) GetModelCreditEligibility(ctx context.Context, uid int64) (boo
 	var tier int
 	var allowance int64
 	err = a.db.QueryRowContext(ctx, `
-		SELECT p.plan_tier, p.model_credit_units
+		SELECT p.plan_tier, `+modelCreditEntitlementUnitsSQL+`
 		FROM commercial_entitlements e
-		JOIN commercial_plans p ON p.id = e.plan_id
+		JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
 		WHERE e.uid = $1
 		  AND e.state = 'active'
 		  AND e.starts_at <= CURRENT_TIMESTAMP
@@ -43,6 +43,11 @@ func (a *Adapter) GetModelCreditEligibility(ctx context.Context, uid int64) (boo
 		-- baseline) may add gift credit but must never displace an active paid
 		-- V2/V3 tier. Within the same class the highest tier wins, then the
 		-- longest remaining period.
+		--
+		-- The allowance is the order snapshot for an order-sourced entitlement
+		-- (modelCreditEntitlementUnitsSQL), never the plan's live column: zeroing
+		-- or editing a package must not cancel an allowance the buyer already paid
+		-- for, and must not turn them into a legacy account.
 		ORDER BY
 		  CASE WHEN e.source IN ('order','admin','internal') THEN 0 ELSE 1 END ASC,
 		  p.plan_tier DESC,

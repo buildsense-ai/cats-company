@@ -25,7 +25,7 @@ type PricingPlan = {
 // Draft personal prices mirror webapp/src/widgets/plans/credit-plan-offers.js;
 // the team package still mirrors plan-offers.js. The workspace catalogue
 // confirms live prices and availability before purchase.
-const retentionNote = '到期后运行环境、文件与历史对话保留，目前不设置清理期限；续费后按所购套餐继续使用。';
+const retentionNote = '机器到期暂停；数据保留截止以工作台逐台显示为准。已有特别保留的环境暂不自动清理，显式删除仍有效。';
 const plans: PricingPlan[] = [{
   slug: 'catsco-credit-v1-monthly',
   name: '入门版',
@@ -49,7 +49,7 @@ const plans: PricingPlan[] = [{
   }, {
     label: '任务进度与执行过程查看'
   }],
-  note: '仅支持 DeepSeek Flash，按官方价格扣费，无折扣；' + retentionNote
+  note: '当前支持 DeepSeek Flash，按官方适用价 × 2（含平台服务费）计费，无折扣；' + retentionNote
 }, {
   slug: 'catsco-credit-v2-monthly',
   name: '日常版',
@@ -74,7 +74,7 @@ const plans: PricingPlan[] = [{
   }, {
     label: '任务成果集中管理与分享'
   }],
-  note: '可使用已开通的全部模型（当前为 DeepSeek Flash），按官方价格扣费，无折扣；' + retentionNote
+  note: '当前支持 DeepSeek Flash，按官方适用价 × 2（含平台服务费）计费，无折扣；' + retentionNote
 }, {
   slug: 'catsco-credit-v3-monthly',
   name: '专业版',
@@ -99,7 +99,7 @@ const plans: PricingPlan[] = [{
   }, {
     label: '高峰期优先响应'
   }],
-  note: '可使用已开通的全部模型，DeepSeek 官网计价 9 折；' + retentionNote
+  note: '当前支持 DeepSeek Flash，在官方适用价 × 2（含平台服务费）的平台费率基础上享 9 折；' + retentionNote
 }];
 const teamPlan: PricingPlan = {
   slug: 'catsco-team',
@@ -171,7 +171,7 @@ const comparisonSections: Array<{
     { label: '适合的工作方式', values: comparisonPlans.map(plan => plan.tagline) },
     { label: '每期额度', values: comparisonPlans.map(plan => plan.capacity + ' ' + plan.unit) },
     { label: '模型范围', values: ['DeepSeek Flash', '已开通模型（当前 DeepSeek Flash）', '已开通模型（当前 DeepSeek Flash）', '待确认'] },
-    { label: '模型调用优惠', values: ['无折扣', '无折扣', 'DeepSeek 官网价 9 折', '待确认'] }
+    { label: '模型调用优惠', values: ['平台费率，无折扣', '平台费率，无折扣', '平台费率 9 折', '待确认'] }
   ]
 }, {
   title: '日常工作与持续执行',
@@ -201,13 +201,13 @@ function ComparisonCell({ value }: { value: ComparisonValue }) {
 }
 const pricingFaqs = [{
   question: '入门版、日常版和专业版有什么区别？',
-  answer: '三个个人套餐的差异是月额度和模型折扣：入门版 ¥39 / 4,000 credit，日常版 ¥79 / 12,000 credit，专业版 ¥159 / 22,500 credit，只有专业版的模型调用按 DeepSeek 官网价 9 折。当前已开通的模型是 DeepSeek Flash：入门版只支持 DeepSeek Flash，日常版和专业版可使用已开通的全部模型。云端机器与执行能力沿用各档原有说明，套餐详情以工作台购买确认页显示为准。'
+  answer: '三个个人套餐的差异是月额度和模型折扣：入门版 ¥39 / 4,000 credit，日常版 ¥79 / 12,000 credit，专业版 ¥159 / 22,500 credit，专业版在平台模型费率基础上享 9 折。平台模型费率为官方适用价格的 2 倍，已包含平台服务费。当前已开通 credit 计费的模型为 DeepSeek Flash；三档均附带相同规格的共享云端机器，已有机器档位不会随模型套餐自动变更。套餐详情以工作台购买确认页显示为准。'
 }, {
   question: '价格按月还是按年？',
   answer: '个人套餐按月计费，周期按自然月对日计算，没有对应日期时取当月月末，不使用固定 30 天。当前展示入门版 ¥39、日常版 ¥79、专业版 ¥159，团队版 ¥599 仍按 30 天一期。尚未公布年付价格，也不会在此页发起自动续费。'
 }, {
   question: '页面上的 credit 如何理解？',
-  answer: 'credit 是计费额度，不是 token 估算：充值 1 元 = 1 credit，模型调用按模型官方价格与实际用量扣费，再按所购套餐的折扣计价。月额度当期有效，未使用部分不结转；提前续费只延长有效期，不会提前发放下一期额度。扣费顺序为月额度、邀请赠送额度、充值余额。'
+  answer: 'credit 是计费额度：1 元对应 100 credit，独立余额充值暂未开放。模型消费按官方适用人民币价格 × 实际用量 × 2（含平台服务费）× 套餐折扣，再以每元 100 credit 换算。月额度当期有效，不结转；提前续费只延长有效期，不提前补额或额外赠送同额付费余额。扣费顺序为月额度、邀请赠送额度、付费余额；旧套餐账号仍显示原额度，新版余额与当前模型权限分别显示。'
 }, {
   question: '峰谷时段怎么计算？',
   answer: '模型调用按北京时间区分峰谷：工作日 09:00–12:00 和 14:00–18:00 为峰时，其余时段为谷时；周末和法定节假日全天为谷时，调休补班的周末同样按谷时计算。峰谷费率差异以模型官方公布的价格为准。'
@@ -219,7 +219,7 @@ const pricingFaqs = [{
   answer: '不会自动转制。已有套餐按原购买约定继续生效，需要更换时可在工作台自行选择新的 credit 套餐；续费与升级规则以工作台购买确认页为准。'
 }, {
   question: '云端 AI 员工到期后会怎样？',
-  answer: '个人套餐到期后，运行环境、文件与历史对话仍然保留，目前不设置清理期限，也不会因额度耗尽或套餐到期删除已有数据；这不构成永久、无限量存储或持续运行的承诺。续费后按所购套餐的额度和权限继续使用，充值余额不随套餐到期清零，但余额本身不自动赋予模型权限。具体以工作台套餐说明为准。'
+  answer: '机器运行期限与数据保留期限分别计算。普通机器到期先暂停，通常留出 7 天续费窗口，实际以工作台逐台显示的数据保留截止和剩余时间为准；过期后可能清理，删除后原机器无法恢复。已有特别保留规则的 credit 环境到期暂停，文件与历史暂不自动清理，显式删除仍有效。这不表示免费持续运行或永久无限量存储。存量独立云主机与特别期限按原记录执行。'
 }, {
   question: '团队版和 Business Start 有什么区别？',
   answer: '团队版是最多 10 人共同使用和管理 AI 员工的套餐，包含独享服务器、共享知识库和权限管理，价格与额度按 30 天一期计算。Business Start 是 ¥4,999 / 月起的企业落地服务，按约定范围提供环境准备、启动培训、首批场景和 Skill 初始化；复杂集成、私有化和长期支持需另行咨询。'
@@ -310,7 +310,7 @@ export function PricingPage() {
             </div>
           </section>
         </div>
-        <p className="pricing-estimate-note">credit 是计费额度，不是 token 估算值：充值 1 元 = 1 credit，模型调用按模型官方价格与实际用量扣费，并按所购套餐的折扣计价。点击套餐按钮可前往工作台确认购买，实际价格、额度与权益以工作台显示为准。</p>
+        <p className="pricing-estimate-note">1 元对应 100 credit，独立余额充值暂未开放。模型消费按官方适用人民币价格 × 实际用量 × 2（含平台服务费）× 套餐折扣，再换算为 credit；专业版在平台费率基础上九折。点击套餐按钮前往工作台确认购买，实际价格、额度与权益以工作台显示为准。</p>
         <section className="pricing-access" aria-labelledby="pricing-access-title">
           <div><span className="pricing-section-eyebrow">EARLY ACCESS</span><h2 id="pricing-access-title">已有邀请码？</h2><p>邀请码兑换 20 credit 赠送额度，独立记账并叠加在付费套餐之上，不替代套餐、不是折扣券，也不改变套餐价格。</p></div>
           <a href={appLoginUrl({ access: 'invite', source: 'pricing', next: '/?open=relay' })}>使用邀请码登录<Icon name="arrowRight" /></a>

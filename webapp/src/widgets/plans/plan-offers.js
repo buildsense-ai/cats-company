@@ -16,7 +16,7 @@ export const personalPlanOffers = [
   { id: -159, slug: 'catsco-advanced', name: '专业版', description: '适合多项工作并行、持续推进项目。', price_fen: 15900, currency: 'CNY', sale_state: 'public', duration_days: 30, plan_tier: 3 },
 ];
 
-const cloudNote = '云端 AI 员工随套餐有效；到期后保留 15 天，期间续费可恢复。';
+const cloudNote = '云端 AI 员工运行期限与数据保留期限分别显示；请在该台机器的数据保留截止前续费，删除后原机器无法恢复。';
 // Presentation is keyed by slug, which is fine: it is copy, and losing it means
 // a card falls back to the catalogue's own text. Behaviour (which card is a
 // renewal, which refuses a downgrade) must never be keyed by slug — the server

@@ -22,6 +22,15 @@ type ModelCreditReader interface {
 	ListModelCreditLedgerEvents(ctx context.Context, uid int64, limit, offset int) ([]store.ModelCreditLedgerEvent, error)
 }
 
+// ModelCreditPeriodReader 是「月额度窗口」的存储面（可选能力，PostgreSQL 提供）。
+//
+// GetModelCreditPeriod 返回当下生效的那条 credit 订阅所在的自然月周期，以及下一
+// 期额度是否已经被已付订阅覆盖。没有月订阅（邀请/免费/legacy）时返回 (nil, nil)：
+// 调用方不得据此编造周期或刷新时间。
+type ModelCreditPeriodReader interface {
+	GetModelCreditPeriod(ctx context.Context, uid int64, now time.Time) (*store.ModelCreditPeriod, error)
+}
+
 type modelCreditLedgerMutator interface {
 	ReserveModelCredits(context.Context, store.ModelCreditReserveInput) (*store.ModelCreditReservation, *store.ModelCreditAccount, error)
 	SettleModelCredits(context.Context, store.ModelCreditSettleInput) (*store.ModelCreditReservation, *store.ModelCreditAccount, error)
@@ -58,6 +67,13 @@ type modelCreditAccountResponse struct {
 	PaidUnits      int64 `json:"paid_units"`
 	DebtUnits      int64 `json:"debt_units"`
 	UnitsPerCredit int64 `json:"units_per_credit"`
+	// 月额度周期与下一次确定刷新时间：都由存储按订阅自己的锚点算，前端不要自己
+	// 按 +1 个月推算。没有月订阅（legacy/邀请/免费）时这四个字段整体缺省；订阅
+	// 到期后刷新要等续费，此时 next_refresh_at 为 nil，其余字段仍然描述当下这一期。
+	MonthlyPeriodStartsAt *time.Time `json:"monthly_period_starts_at,omitempty"`
+	MonthlyPeriodEndsAt   *time.Time `json:"monthly_period_ends_at,omitempty"`
+	SubscriptionExpiresAt *time.Time `json:"subscription_expires_at,omitempty"`
+	NextRefreshAt         *time.Time `json:"next_refresh_at,omitempty"`
 }
 
 func (h *ModelCreditHandler) HandleAccount(w http.ResponseWriter, r *http.Request) {
@@ -79,19 +95,38 @@ func (h *ModelCreditHandler) HandleAccount(w http.ResponseWriter, r *http.Reques
 	// before answering so the user never sees a stale period's allowance as
 	// spendable. PostgreSQL implements the hook; other stores just skip it.
 	//
-	// 资格读取顺带完成月额度对账，所以能做到「一次事务既给身份又给当期余额」；没有
-	// 这个能力的存储退回单独对账，身份字段保持 false（=未进 credit 体系）。身份读
-	// 失败不能吞掉余额：退回单独对账并留下日志，别让一次只读把用户的套餐状态说错。
+	// Identity failures must not turn an existing credit user into a legacy
+	// account in the UI. Return a retryable error rather than false identity.
 	if identity, ok := h.store.(ModelCreditEligibilityReader); ok && identity != nil {
 		if enabled, _, allowance, identityErr := identity.GetModelCreditEligibility(r.Context(), uid); identityErr != nil {
 			log.Printf("model credit identity read failed: uid=%d err=%v", uid, identityErr)
-			reconcileModelCreditMonthlyBeforeRead(r.Context(), h.store, uid)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "credit identity unavailable"})
+			return
 		} else {
 			response.Enabled = enabled
 			response.Allowed = enabled && allowance > 0
 		}
 	} else {
 		reconcileModelCreditMonthlyBeforeRead(r.Context(), h.store, uid)
+	}
+	// 月额度周期是可选能力：PostgreSQL 按订阅自身锚点给出当期窗口与下一次确定
+	// 刷新时间。读失败要返回可重试错误——用零值回答会把「有订阅」说成「没有」，
+	// 前端会据此错误地提示续费。
+	if periods, ok := h.store.(ModelCreditPeriodReader); ok && periods != nil {
+		period, periodErr := periods.GetModelCreditPeriod(r.Context(), uid, time.Now().UTC())
+		if periodErr != nil {
+			log.Printf("model credit period read failed: uid=%d err=%v", uid, periodErr)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "credit period unavailable"})
+			return
+		}
+		if period != nil {
+			startsAt := period.MonthlyPeriodStartsAt.UTC()
+			endsAt := period.MonthlyPeriodEndsAt.UTC()
+			response.MonthlyPeriodStartsAt = &startsAt
+			response.MonthlyPeriodEndsAt = &endsAt
+			response.SubscriptionExpiresAt = period.SubscriptionExpiresAt
+			response.NextRefreshAt = period.NextRefreshAt
+		}
 	}
 	account, err := h.store.GetModelCreditAccount(r.Context(), uid)
 	if err != nil && !errors.Is(err, store.ErrModelCreditNotFound) {

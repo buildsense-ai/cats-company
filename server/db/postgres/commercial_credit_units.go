@@ -13,9 +13,21 @@ import (
 )
 
 // An order may sell paid model credit in addition to (or instead of) the legacy
-// CNY/token budget. The amount is snapshotted on the order, so the ledger is
-// driven by what the buyer really paid for and never by the plan's current
-// value.
+// CNY/token budget. What an order sells is snapshotted on the order, so the
+// ledger is driven by what the buyer really paid for and never by the plan's
+// current value.
+//
+// A credit package is a subscription: its allowance belongs to a natural-month
+// period and is booked into the monthly bucket by
+// reconcileModelCreditMonthlyPeriod, once per period, inside the payment
+// transaction. Charging the order's units into the paid bucket as well gave
+// every new buyer the amount twice and made an early renewal top up
+// immediately, so no order books paid credit any more.
+//
+// The refund direction therefore only sees the legacy image: orders fulfilled
+// before that change did book paid credit, and their reversal stays exactly as
+// conservative as it was. A subscription order is refunded by revoking its
+// entitlement and reconciling the monthly permission that survives.
 //
 // Both directions run inside the caller's payment/refund transaction and use a
 // deterministic event key, which is the ledger primary key: a replayed callback
@@ -46,50 +58,32 @@ func commercialOrderCreditRefundKey(orderNo string) string {
 	return store.ModelCreditEventRefund + ":order:" + strings.TrimSpace(orderNo)
 }
 
-// grantCommercialOrderModelCredit credits the paid bucket with the amount the
-// order snapshotted. It is a no-op for an order that sells no credit, and a
-// replayed call with the same amount returns without booking again.
-func grantCommercialOrderModelCredit(ctx context.Context, tx *sql.Tx, order *types.CommercialOrder, now time.Time) error {
-	if order == nil || order.PlanModelCreditUnits <= 0 {
-		return nil
+// commercialOrderCreditGrantBooked reports whether this order booked paid
+// credit, which is what decides how a refund releases it. Legacy orders put the
+// sold units straight into the paid bucket; a subscription order only receives
+// the monthly allowance of its period, so it has no paid grant to reverse and a
+// refund must not demand one.
+func commercialOrderCreditGrantBooked(ctx context.Context, tx *sql.Tx, orderNo string) (bool, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	if orderNo == "" {
+		return false, nil
 	}
-	key := commercialOrderCreditGrantKey(order.OrderNo)
+	key := commercialOrderCreditGrantKey(orderNo)
 	if len(key) > store.ModelCreditEventKeyMaxLen {
-		return fmt.Errorf("order model credit grant key is too long: %w", store.ErrModelCreditInvalid)
+		return false, fmt.Errorf("order model credit grant key is too long: %w", store.ErrModelCreditInvalid)
 	}
-	account, err := lockModelCreditAccount(ctx, tx, order.UID)
-	if err != nil {
-		return err
+	var booked bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM model_credit_ledger_events WHERE event_key = $1)`, key).Scan(&booked); err != nil {
+		return false, fmt.Errorf("read order model credit grant %s: %w", key, err)
 	}
-	booked, err := readCommercialOrderCreditEvent(ctx, tx, key)
-	switch {
-	case err == nil:
-		if booked.uid != order.UID || booked.bucket != store.ModelCreditBucketPaid ||
-			booked.eventType != store.ModelCreditEventGrant || booked.units != order.PlanModelCreditUnits {
-			return fmt.Errorf("order model credit grant %s conflicts with the booked event: %w", key, store.ErrModelCreditConflict)
-		}
-		// Replay: the purchase credit is already booked, so nothing is added.
-		return nil
-	case errors.Is(err, sql.ErrNoRows):
-	default:
-		return err
-	}
-	paid, ok := store.ModelCreditAddUnits(account.PaidUnits, order.PlanModelCreditUnits)
-	if !ok {
-		return fmt.Errorf("order model credit grant overflows the paid bucket: %w", store.ErrModelCreditInvalid)
-	}
-	account.PaidUnits = paid
-	if err := saveModelCreditAccount(ctx, tx, account, now); err != nil {
-		return err
-	}
-	return recordModelCreditEvent(ctx, tx, key, account, store.ModelCreditEventGrant,
-		store.ModelCreditBucketPaid, order.PlanModelCreditUnits, nil)
+	return booked, nil
 }
 
-// reverseCommercialOrderModelCredit takes the purchased credit back out of the
-// paid bucket. It is deliberately conservative: once any of that credit could
-// have been spent, the refund is refused instead of clawing back money the
-// buyer no longer holds.
+// reverseCommercialOrderModelCredit takes paid credit that a legacy order booked
+// back out of the paid bucket. It is deliberately conservative: once any of that
+// credit could have been spent, the refund is refused instead of clawing back
+// money the buyer no longer holds.
 func reverseCommercialOrderModelCredit(ctx context.Context, tx *sql.Tx, order *types.CommercialOrder, now time.Time) error {
 	if order == nil || order.PlanModelCreditUnits <= 0 {
 		return nil

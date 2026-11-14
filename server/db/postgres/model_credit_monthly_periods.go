@@ -76,6 +76,27 @@ CREATE INDEX IF NOT EXISTS idx_commercial_entitlements_period_anchor
 // 保持一致：邀请/免费/历史基线都不发月额度。
 const modelCreditMonthlyGrantableSourcesSQL = `('order','admin','internal')`
 
+// modelCreditEntitlementUnitsSQL 是「这条权益此刻值多少 credit」的唯一口径：
+//
+//   - order：用关联订单卖出的快照（commercial_orders.plan_model_credit_units）。
+//     卖出去的东西不能因为后台改套餐、把套餐额度清零就被改写——否则一次商品编辑
+//     就能删掉已付用户的月额度，或者把他变成 legacy。
+//   - 其它来源（admin/internal/invite/free/trial/manual）：没有订单，按套餐现值。
+//     邀请码是权限+赠送额度，不是月额度来源；月额度发放另有来源白名单
+//     （modelCreditMonthlyGrantableSourcesSQL），所以这里保留权限口径不变。
+//
+// 订单行缺失时 COALESCE 给出 0：fail closed，绝不凭套餐现值凭空发额度。
+const modelCreditEntitlementUnitsSQL = `CASE
+			WHEN e.source = 'order' THEN COALESCE(o.plan_model_credit_units, 0)
+			ELSE p.model_credit_units END`
+
+// modelCreditEntitlementOrderJoinSQL 把订单快照挂到 order 来源的权益上。uid/plan_id
+// 也参与匹配：source_ref 只有在同一个买家、同一个套餐下才被当作订单号。
+const modelCreditEntitlementOrderJoinSQL = `
+		LEFT JOIN commercial_orders o
+		       ON e.source = 'order' AND o.order_no = e.source_ref
+		      AND o.uid = e.uid AND o.plan_id = e.plan_id`
+
 type modelCreditMonthlyEntitlement struct {
 	id        int64
 	planID    int64
@@ -88,19 +109,22 @@ type modelCreditMonthlyEntitlement struct {
 
 // loadModelCreditMonthlyEntitlement 取用户当前应发月额度的订阅（最高档优先）。
 // 邀请码/免费订阅被排除：它们只是权限，不是月额度来源。
+//
+// 额度用 modelCreditEntitlementUnitsSQL 解析：订单来源读的是卖出时的快照，所以
+// 后台改套餐（含把 model_credit_units 清零）不会改写已付用户的当期额度来源。
 func loadModelCreditMonthlyEntitlement(ctx context.Context, tx *sql.Tx, uid int64, now time.Time) (*modelCreditMonthlyEntitlement, error) {
 	ent := modelCreditMonthlyEntitlement{}
 	err := tx.QueryRowContext(ctx, `
-		SELECT e.id, e.plan_id, p.plan_tier, p.model_credit_units, e.starts_at,
+		SELECT e.id, e.plan_id, p.plan_tier, `+modelCreditEntitlementUnitsSQL+`, e.starts_at,
 		       COALESCE(e.period_anchor_at, e.starts_at), e.expires_at
 		FROM commercial_entitlements e
-		JOIN commercial_plans p ON p.id = e.plan_id
+		JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
 		WHERE e.uid = $1
 		  AND e.state = 'active'
 		  AND e.starts_at <= $2
 		  AND (e.expires_at IS NULL OR e.expires_at > $2)
-		  AND p.model_credit_units > 0
 		  AND e.source IN `+modelCreditMonthlyGrantableSourcesSQL+`
+		  AND `+modelCreditEntitlementUnitsSQL+` > 0
 		ORDER BY p.plan_tier DESC, e.expires_at DESC NULLS LAST, e.starts_at DESC, e.id DESC
 		LIMIT 1`, uid, now.UTC()).Scan(
 		&ent.id, &ent.planID, &ent.tier, &ent.units, &ent.startsAt, &ent.anchorAt, &ent.expiresAt)
@@ -352,12 +376,12 @@ func (a *Adapter) ReconcileModelCreditMonthlyPeriods(ctx context.Context, now ti
 		SELECT uid FROM (
 			SELECT e.uid AS uid
 			FROM commercial_entitlements e
-			JOIN commercial_plans p ON p.id = e.plan_id
+			JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
 			WHERE e.state = 'active'
 			  AND e.starts_at <= $1
 			  AND (e.expires_at IS NULL OR e.expires_at > $1)
-			  AND p.model_credit_units > 0
 			  AND e.source IN `+modelCreditMonthlyGrantableSourcesSQL+`
+			  AND `+modelCreditEntitlementUnitsSQL+` > 0
 			UNION
 			SELECT ac.uid FROM model_credit_accounts ac WHERE ac.monthly_units > 0
 		) candidates
@@ -438,4 +462,77 @@ func activeCommercialCreditPackageAnchor(tx *sql.Tx, uid, planID int64, now time
 		return time.Time{}, false, nil
 	}
 	return anchor.Time, true, nil
+}
+
+// GetModelCreditPeriod 回答 GET /api/relay/credits 需要的两个事实：用户此刻所在的
+// 月额度窗口，以及下一期额度是否已经被某条已付订阅覆盖。
+//
+// 它是只读的：不建账户、不发额度、不改权益，也不做对账。窗口来自
+// loadModelCreditMonthlyEntitlement 的口径（已开始、未过期、可发月额度的来源），
+// 周期用这条订阅自己的锚点算（store.ModelCreditMonthlyPeriodAt），所以和真正发放
+// 额度用的是同一套边界，1/31 → 2/28 → 3/31 不会漂移。
+//
+// 提前续费写的是「将来才开始」的权益行，loadModelCreditMonthlyEntitlement 看不到
+// 它，因此 SubscriptionExpiresAt 永远是当下这一段的到期时间，而不是续费之后的；
+// 续费只让 NextRefreshAt 变成可以确定。没有月订阅（邀请/免费/legacy）时返回
+// (nil, nil)，不编造周期。
+func (a *Adapter) GetModelCreditPeriod(ctx context.Context, uid int64, now time.Time) (*store.ModelCreditPeriod, error) {
+	if uid <= 0 {
+		return nil, store.ErrModelCreditInvalid
+	}
+	now = now.UTC()
+	tx, err := a.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin model credit period read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ent, err := loadModelCreditMonthlyEntitlement(ctx, tx, uid, now)
+	if err != nil {
+		return nil, err
+	}
+	if ent == nil {
+		return nil, nil
+	}
+	periodStart, periodEnd, ok := store.ModelCreditMonthlyPeriodAt(ent.anchorAt, now)
+	if !ok {
+		return nil, nil
+	}
+	period := &store.ModelCreditPeriod{
+		MonthlyPeriodStartsAt: periodStart.UTC(),
+		MonthlyPeriodEndsAt:   periodEnd.UTC(),
+	}
+	if ent.expiresAt.Valid {
+		expiresAt := ent.expiresAt.Time.UTC()
+		period.SubscriptionExpiresAt = &expiresAt
+	}
+	covered, err := commercialMonthlySubscriptionCovers(ctx, tx, uid, periodEnd)
+	if err != nil {
+		return nil, err
+	}
+	if covered {
+		refreshAt := periodEnd.UTC()
+		period.NextRefreshAt = &refreshAt
+	}
+	return period, nil
+}
+
+// commercialMonthlySubscriptionCovers 判断 at 时刻是否有一条付过钱的月订阅在生效：
+// 来源集合与发放一致（order/admin/internal），套餐卖 model credit，且窗口覆盖 at。
+// 恰好在本期边界到期的订阅不算覆盖——那正是「要先续费才会刷新」的情形。
+func commercialMonthlySubscriptionCovers(ctx context.Context, tx *sql.Tx, uid int64, at time.Time) (bool, error) {
+	var covers bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM commercial_entitlements e
+			JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
+			WHERE e.uid = $1
+			  AND e.state = 'active'
+			  AND e.source IN `+modelCreditMonthlyGrantableSourcesSQL+`
+			  AND e.starts_at <= $2
+			  AND (e.expires_at IS NULL OR e.expires_at > $2)
+			  AND `+modelCreditEntitlementUnitsSQL+` > 0
+		)`, uid, at.UTC()).Scan(&covers); err != nil {
+		return false, fmt.Errorf("check model credit monthly refresh coverage: %w", err)
+	}
+	return covers, nil
 }

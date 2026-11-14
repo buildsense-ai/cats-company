@@ -34,8 +34,8 @@ func (a *Adapter) modelCreditTaskEnabled(ctx context.Context, uid int64) (bool, 
 	var enabled bool
 	if err := a.db.QueryRowContext(ctx, `
 		SELECT EXISTS (SELECT 1 FROM commercial_entitlements e
-		               JOIN commercial_plans p ON p.id = e.plan_id
-		               WHERE e.uid = $1 AND p.model_credit_units > 0)
+		               JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
+		               WHERE e.uid = $1 AND `+modelCreditEntitlementUnitsSQL+` > 0)
 		    OR EXISTS (SELECT 1 FROM model_credit_ledger_events ev WHERE ev.uid = $1)
 		    OR EXISTS (SELECT 1 FROM model_credit_accounts ac WHERE ac.uid = $1
 		               AND (ac.monthly_units > 0 OR ac.gift_units > 0
@@ -52,12 +52,12 @@ func modelCreditTaskPermitted(ctx context.Context, tx *sql.Tx, uid int64, now ti
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM commercial_entitlements e
-			JOIN commercial_plans p ON p.id = e.plan_id
+			JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
 			WHERE e.uid = $1
 			  AND e.state = 'active'
 			  AND e.starts_at <= $2
 			  AND (e.expires_at IS NULL OR e.expires_at > $2)
-			  AND p.model_credit_units > 0)`, uid, now.UTC()).Scan(&permitted); err != nil {
+			  AND `+modelCreditEntitlementUnitsSQL+` > 0)`, uid, now.UTC()).Scan(&permitted); err != nil {
 		return false, fmt.Errorf("load model credit task permission: %w", err)
 	}
 	return permitted, nil
@@ -88,12 +88,12 @@ func modelCreditTaskPlanTier(ctx context.Context, tx *sql.Tx, uid int64, now tim
 	err := tx.QueryRowContext(ctx, `
 		SELECT p.plan_tier
 		FROM commercial_entitlements e
-		JOIN commercial_plans p ON p.id = e.plan_id
+		JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
 		WHERE e.uid = $1
 		  AND e.state = 'active'
 		  AND e.starts_at <= $2
 		  AND (e.expires_at IS NULL OR e.expires_at > $2)
-		  AND p.model_credit_units > 0
+		  AND `+modelCreditEntitlementUnitsSQL+` > 0
 		ORDER BY
 		  CASE WHEN e.source IN ('order','admin','internal') THEN 0 ELSE 1 END ASC,
 		  p.plan_tier DESC,

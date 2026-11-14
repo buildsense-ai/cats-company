@@ -29,6 +29,10 @@ func TestModelCreditEligibilityUsesCurrentPrimaryEntitlement(t *testing.T) {
 		}
 	}
 	now := time.Now().UTC()
+	// order 来源的权益按订单快照（commercial_orders.plan_model_credit_units）读额度，
+	// 所以 fixture 必须落下真实的订单行；没有订单行就 fail closed（额度 0）。
+	insertCreditMonthlyTestOrderSnapshot(t, db, uid, paidPlan, "eligibility-paid")
+	insertCreditMonthlyTestOrderSnapshot(t, db, uid, futurePlan, "eligibility-future")
 	if _, err := db.db.ExecContext(ctx, `INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at) VALUES
 		($1, $2, 'free', '', 'active', $3, NULL),
 		($1, $4, 'order', 'eligibility-paid', 'active', $3, $3 + interval '30 days'),
@@ -43,12 +47,29 @@ func TestModelCreditEligibilityUsesCurrentPrimaryEntitlement(t *testing.T) {
 	if _, err := db.db.ExecContext(ctx, `UPDATE commercial_plans SET model_credit_units = 0 WHERE id = $1`, paidPlan); err != nil {
 		t.Fatal(err)
 	}
-	// 面额清零 = 权限消失，但身份不变：enabled 仍然是 true，只是没有可花额度，
-	// 而且没有回落到免费套餐（tier 仍是付费行的 3）。
+	// 把套餐额度清零：已卖出的订单快照不受影响（改商品不能删掉已付用户的额度），
+	// 身份、档位和 primary 选择都不变，也不回落到免费套餐。
 	enabled, tier, units, err = db.GetModelCreditEligibility(ctx, uid)
-	if err != nil || !enabled || tier != 3 || units != 0 {
-		t.Fatalf("zero allowance primary must keep the identity and answer no permission without falling back: (%v,%d,%d,%v)",
+	if err != nil || !enabled || tier != 3 || units != 9000000 {
+		t.Fatalf("zeroing a plan rewrote an order snapshot: (%v,%d,%d,%v), want (true,3,9000000)",
 			enabled, tier, units, err)
+	}
+	// 没有订单行的 order 权益 fail closed：即使套餐现值很高，也不能据此给出额度。
+	// 这里用更高档（tier 4）的套餐，确认它被选中但额度是 0，而不是套餐现值。
+	var orphanPlan int64
+	if err := db.db.QueryRowContext(ctx, `INSERT INTO commercial_plans(slug, name, plan_tier, model_credit_units)
+		VALUES ($1, $2, 4, $3) RETURNING id`, "eligibility-orphan", "Orphan", int64(7_000_000)).Scan(&orphanPlan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.ExecContext(ctx, `INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
+		VALUES ($1, $2, 'order', 'eligibility-orphan', 'active', $3::timestamptz, $3::timestamptz + interval '30 days')`,
+		uid, orphanPlan, now); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, tier, orphanUnits, err := db.GetModelCreditEligibility(ctx, uid); err != nil ||
+		!enabled || tier != 4 || orphanUnits != 0 {
+		t.Fatalf("an order entitlement without an order row = (%v,%d,%d,%v), want (true,4,0): fail closed",
+			enabled, tier, orphanUnits, err)
 	}
 }
 
@@ -96,6 +117,7 @@ func TestModelCreditReadsDoNotEnrollLegacyUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
+	insertCreditMonthlyTestOrderSnapshot(t, db, uid, expiredPlanID, "eligibility-expired")
 	if _, err := db.db.ExecContext(ctx, `INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
 		VALUES ($1, $2, 'order', 'eligibility-expired', 'active', $3, $4)`,
 		uid, expiredPlanID, now.AddDate(0, -2, 0), now.AddDate(0, -1, 0)); err != nil {

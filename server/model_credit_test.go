@@ -14,13 +14,14 @@ import (
 )
 
 type modelCreditReaderStub struct {
-	account   *store.ModelCreditAccount
-	events    []store.ModelCreditLedgerEvent
-	uid       int64
-	limit     int
-	offset    int
-	enabled   bool
-	allowance int64
+	account     *store.ModelCreditAccount
+	events      []store.ModelCreditLedgerEvent
+	uid         int64
+	limit       int
+	offset      int
+	enabled     bool
+	allowance   int64
+	identityErr error
 }
 
 func (s *modelCreditReaderStub) GetModelCreditAccount(_ context.Context, uid int64) (*store.ModelCreditAccount, error) {
@@ -44,7 +45,7 @@ func (s *modelCreditReaderStub) GetModelCreditEligibility(_ context.Context, uid
 	if s.enabled {
 		tier = 3
 	}
-	return s.enabled, tier, s.allowance, nil
+	return s.enabled, tier, s.allowance, s.identityErr
 }
 
 func modelCreditRequest(method, target string, uid int64) *http.Request {
@@ -137,6 +138,15 @@ func TestModelCreditAccountMissingIsZeroWithoutCreatingRow(t *testing.T) {
 	// 从没进过 credit 的用户：身份 false，接口不会替它建账户（建账户的读路径已修）。
 	if payload.Enabled || payload.Allowed {
 		t.Fatalf("legacy account was reported as credit identity: %+v", payload)
+	}
+}
+
+func TestModelCreditAccountIdentityFailureDoesNotReportLegacy(t *testing.T) {
+	stub := &modelCreditReaderStub{enabled: true, identityErr: errors.New("identity read failed")}
+	response := httptest.NewRecorder()
+	NewModelCreditHandler(stub).HandleAccount(response, modelCreditRequest(http.MethodGet, "/api/relay/credits", 75))
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"enabled":false`) {
+		t.Fatalf("identity failure status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

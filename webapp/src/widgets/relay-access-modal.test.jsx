@@ -58,7 +58,9 @@ describe('RelayAccessModal commercial rollout', () => {
       ],
     });
     api.getRelayKey.mockResolvedValue({ key: null });
-    api.getModelCreditAccount.mockResolvedValue({ monthly_units: 0, gift_units: 0, paid_units: 0, debt_units: 0, units_per_credit: 1_000_000 });
+    // The endpoint answers for every account. A backend-disabled identity is a
+    // legacy account: it keeps the old quota card plus an explicit explanation.
+    api.getModelCreditAccount.mockResolvedValue({ enabled: false, allowed: false, monthly_units: 0, gift_units: 0, paid_units: 0, debt_units: 0, units_per_credit: 1_000_000 });
     api.getModelCreditLedger.mockResolvedValue({ events: [] });
     api.getRelayUsage.mockResolvedValue({
       configured: true,
@@ -203,7 +205,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
     expect(container.textContent).toContain('确认购买');
     expect(container.textContent).toContain(plan.name);
-    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('云托管员工到期后保留 15 天');
+    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('普通机器到期后通常保留 7 天');
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 
@@ -238,7 +240,10 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(chooser.textContent).toContain('3x 入门版额度');
     expect(chooser.textContent).toContain('5x 入门版额度 + 2,500 credit');
     expect(chooser.querySelectorAll('.relay-access-plan-name')[2].textContent).toBe('专业版');
-    expect(container.textContent).toContain('充值 1 元 = 1 credit');
+    // 充值口径由商品配置决定（此处不写死兑换比例）；能确定的只有「独立余额
+    // 充值暂未开放」，也就是说这里不能出现任何充值入口或假按钮。
+    expect(container.textContent).toContain('独立余额充值暂未开放');
+    expect(container.textContent).not.toMatch(/立即充值|余额充值入口/);
     expect(chooser.textContent).toContain('支持 DeepSeek Flash');
     expect(chooser.textContent).not.toContain('仅支持 DeepSeek Flash');
     expect(chooser.textContent).not.toMatch(/token|成本价|scaled credit/i);
@@ -257,15 +262,77 @@ describe('RelayAccessModal commercial rollout', () => {
 
   it('shows approved monthly credit and discounts from a matching live catalogue', async () => {
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans: creditPlanOffers.map((plan, index) => ({ ...plan, id: 900 + index, model_credit_units: plan.monthlyCredits * 1_000_000 })) });
-    api.getModelCreditAccount.mockResolvedValue({ monthly_units: 3_999_123_456, gift_units: 20_000_000, paid_units: 7_000_000, debt_units: 0, units_per_credit: 1_000_000 });
+    api.getModelCreditAccount.mockResolvedValue({
+      enabled: true, allowed: true, monthly_units: 3_999_123_456, gift_units: 20_000_000, paid_units: 7_000_000, debt_units: 0, units_per_credit: 1_000_000,
+      monthly_period_starts_at: '2026-11-01T12:00:00Z',
+      monthly_period_ends_at: '2026-12-01T12:00:00Z',
+      subscription_expires_at: '2026-12-01T12:00:00Z',
+      next_refresh_at: '2026-12-01T12:00:00Z',
+    });
     await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} initialPlanChooserOpen />); });
     const chooser = container.querySelector('#relay-access-personal-plan-panel');
     expect([...chooser.querySelectorAll('.relay-access-plan-highlights dd')].map(el => el.textContent)).toEqual(['4,000credit', '无优惠', '12,000credit', '无优惠', '22,500credit', '9 折']);
     const balance = container.querySelector('.relay-access-current-quota');
     expect(balance.textContent).toContain('4,026.123456 credit');
-    expect(balance.textContent).toContain('月额度 3,999.123456 · 邀请赠送 20 · 充值余额 7 · 欠款 0 credit');
+    // 四个桶各自列出来，用户才知道扣的是哪一笔。
+    expect(balance.textContent).toContain('月额度 3,999.123456 credit · 邀请赠送 20 credit · 付费余额 7 credit · 欠款 0 credit');
+    expect(balance.textContent).toContain('credit 账户：已启用');
+    expect(balance.textContent).toContain('当期可用：是');
+    // 没有独立余额充值商品/入口时只说明，不给假按钮。
+    expect(balance.textContent).toContain('独立余额充值暂未开放');
+    expect(balance.textContent).not.toContain('充值余额入口');
+    expect(balance.textContent).toContain('月额度按订阅生效日锚定的自然月刷新，不结转；提前续费不会提前补额。');
+    // 周期行只翻译后端字段：当前窗口、订阅截止、下一次确定刷新。
+    expect(balance.textContent).toContain('本期 2026-11-01 至 2026-12-01');
+    expect(balance.textContent).toContain('订阅截止 2026-12-01');
+    expect(balance.textContent).toContain('下次刷新 2026-12-01');
+    expect(balance.textContent).not.toContain('本期结束后需续费');
+    expect(balance.textContent).not.toContain('充值余额');
     expect(container.querySelector('.relay-credit-balance')).toBeNull();
     expect(creditPlanOffers.map(plan => plan.plan_tier)).toEqual([1, 2, 3]);
+  });
+
+  it('asks for a renewal instead of inventing the next period when the backend sends no next refresh', async () => {
+    api.getModelCreditAccount.mockResolvedValue({
+      enabled: true, allowed: true, monthly_units: 1_000_000, gift_units: 0, paid_units: 0, debt_units: 0, units_per_credit: 1_000_000,
+      monthly_period_starts_at: '2026-11-01T12:00:00Z',
+      monthly_period_ends_at: '2026-12-01T12:00:00Z',
+      subscription_expires_at: '2026-12-01T12:00:00Z',
+    });
+    await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} />); });
+    const balance = container.querySelector('.relay-access-current-quota');
+    expect(balance.textContent).toContain('本期 2026-11-01 至 2026-12-01');
+    expect(balance.textContent).toContain('订阅截止 2026-12-01');
+    expect(balance.textContent).toContain('本期结束后需续费才会有下一期额度');
+    // 没有 next_refresh_at 就不显示一个自己算出来的刷新日期。
+    expect(balance.textContent).not.toContain('下次刷新');
+  });
+
+  it('keeps the old quota and explains it when the backend says the account is not credit-enabled', async () => {
+    await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} />); });
+    const balance = container.querySelector('.relay-access-current-quota');
+    expect(balance.textContent).toContain('25%');
+    expect(balance.textContent).toContain('当前使用旧套餐额度，尚未启用 credit 账户');
+    expect(balance.textContent).not.toContain('可用 credit');
+    // 身份不看商品，只看后端：每个账号都会读一次 credit 接口。
+    expect(api.getModelCreditAccount).toHaveBeenCalled();
+  });
+
+  it('keeps an unavailable credit balance visible without claiming the plan expired', async () => {
+    api.getModelCreditAccount.mockResolvedValue({ enabled: true, allowed: false, monthly_units: 0, gift_units: 12_000_000, paid_units: 5_000_000, debt_units: 0, units_per_credit: 1_000_000 });
+    await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} />); });
+    const balance = container.querySelector('.relay-access-current-quota');
+    expect(balance.textContent).toContain('credit 余额（当前模型权限不可用）');
+    expect(balance.textContent).toContain('17 credit');
+    expect(balance.textContent).toContain('credit 账户：已启用');
+    expect(balance.textContent).toContain('当期可用：否（当前模型权限不可用）');
+    // allowed=false 不等于套餐到期：只提示核对有效期与权限状态，不承诺续费自动恢复。
+    expect(balance.textContent).toContain('请检查套餐有效期及权限状态');
+    expect(balance.textContent).not.toMatch(/套餐已到期|套餐到期|续费后恢复|自动恢复|会恢复可用/);
+    // 后端没给周期字段时不编周期，也不催一个不存在的续费日期。
+    expect(balance.textContent).not.toContain('本期');
+    expect(balance.textContent).not.toMatch(/订阅截止|下次刷新/);
+    expect(balance.textContent).not.toContain('25%');
   });
 
   it('keeps legacy usage visible when the credit lookup fails', async () => {
@@ -277,7 +344,7 @@ describe('RelayAccessModal commercial rollout', () => {
   });
 
   it('keeps a depleted credit subscription in the original quota card and reports read errors', async () => {
-    api.getRelayCommercial.mockResolvedValue({ enabled: true, summary: { uid: 38, entitlements: [{ id: 1, plan_id: 900, state: 'active', model_credit_units: 4_000_000_000 }], plans: [] } });
+    api.getModelCreditAccount.mockResolvedValue({ enabled: true, allowed: true, monthly_units: 0, gift_units: 0, paid_units: 0, debt_units: 0, units_per_credit: 1_000_000 });
     await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} />); });
     const balance = container.querySelector('.relay-access-current-quota');
     expect(balance.textContent).toContain('0 credit');
@@ -290,7 +357,7 @@ describe('RelayAccessModal commercial rollout', () => {
   });
 
   it.each(['gift depleted', 'subscription expired'])('keeps a known credit account visible at zero balance: %s', async () => {
-    api.getModelCreditAccount.mockResolvedValue({ enabled: true, monthly_units: 0, gift_units: 0, paid_units: 0, debt_units: 0, units_per_credit: 1_000_000 });
+    api.getModelCreditAccount.mockResolvedValue({ enabled: true, allowed: true, monthly_units: 0, gift_units: 0, paid_units: 0, debt_units: 0, units_per_credit: 1_000_000 });
     await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} />); });
     const balance = container.querySelector('.relay-access-current-quota');
     expect(balance.textContent).toContain('可用 credit');
@@ -1242,9 +1309,14 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
 
     await clickButton('续费');
-    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('续费后从当前套餐到期日顺延 30 天');
-    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('到期保留期的云托管员工会自动恢复');
-    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('已释放的实例无法恢复');
+    const confirm = container.querySelector('.relay-access-purchase-confirm');
+    expect(confirm?.textContent).toContain('续费后从当前套餐到期日顺延 30 天');
+    // 机器恢复取决于它自己的状态，不能无条件承诺「续费就自动恢复」。
+    expect(confirm?.textContent).toContain('云托管员工是否恢复取决于它自己的状态');
+    expect(confirm?.textContent).toContain('仍在数据保留期内的到期暂停机器，续费后可以恢复运行');
+    expect(confirm?.textContent).toContain('已释放或已删除的实例无法恢复');
+    expect(confirm?.textContent).toContain('人工暂停的机器不会因续费自动恢复');
+    expect(confirm?.textContent).not.toContain('到期保留期的云托管员工会自动恢复');
   });
 
   it('offers Basic users an immediate Standard upgrade with explicit reset timing', async () => {
