@@ -240,9 +240,9 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(chooser.textContent).toContain('3x 入门版额度');
     expect(chooser.textContent).toContain('5x 入门版额度 + 2,500 credit');
     expect(chooser.querySelectorAll('.relay-access-plan-name')[2].textContent).toBe('专业版');
-    // 充值口径由商品配置决定（此处不写死兑换比例）；能确定的只有「独立余额
-    // 充值暂未开放」，也就是说这里不能出现任何充值入口或假按钮。
-    expect(container.textContent).toContain('独立余额充值暂未开放');
+    expect(container.textContent).toContain('1 元对应 100 credit');
+    expect(container.textContent).toContain('模型调用按官方价格、实际用量及套餐折扣扣费。');
+    expect(chooser.textContent).not.toMatch(/平台服务费|× 2/);
     expect(container.textContent).not.toMatch(/立即充值|余额充值入口/);
     expect(chooser.textContent).toContain('支持 DeepSeek Flash');
     expect(chooser.textContent).not.toContain('仅支持 DeepSeek Flash');
