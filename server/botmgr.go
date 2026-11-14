@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -276,6 +277,29 @@ func (h *BotHandler) createBotAccount(ownerUID int64, req BotRegisterRequest) (*
 		return nil, http.StatusBadRequest, fmt.Errorf("description max 500 chars")
 	}
 
+	// 新 credit 体系的邀请会顺带开一台机器 bot，这台 bot 的请求走 credit 计价。
+	// MiniMax/GLM 目前不在 credit 计价范围内，所以留空模型会让它落到全局默认
+	// minimax-m3，relay 侧就报 503（credit request could not be accounted）。
+	// 这里给 credit owner 建的全新 bot 指定一个已支持 credit 的 catalog 模型；
+	// 显式 req.Model / req.APIEndpoint（老的自定义请求）一律不动。
+	var creditModel *types.BotDefinitionModel
+	if strings.TrimSpace(req.Model) == "" && strings.TrimSpace(req.APIEndpoint) == "" {
+		if identity, ok := h.db.(ModelCreditEligibilityReader); ok && identity != nil {
+			enabled, _, _, eligErr := identity.GetModelCreditEligibility(context.Background(), ownerUID)
+			if eligErr != nil {
+				// Fail closed：身份读不出来就不建，否则可能开出一台请求算不了账的机器。
+				return nil, http.StatusInternalServerError, fmt.Errorf("credit identity unavailable")
+			}
+			if enabled {
+				if !h.supportsBotModelInitialization() {
+					return nil, http.StatusInternalServerError, fmt.Errorf("model configuration unavailable")
+				}
+				model := creditBotInitialModel()
+				creditModel = &model
+			}
+		}
+	}
+
 	existing, err := h.db.GetUserByUsername(req.Username)
 	if err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("database error")
@@ -310,6 +334,14 @@ func (h *BotHandler) createBotAccount(ownerUID int64, req BotRegisterRequest) (*
 	if err := h.db.SaveBotConfigWithOwner(uid, ownerUID, req.APIEndpoint, req.Model); err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("config save failed")
 	}
+	if creditModel != nil {
+		// SaveBotConfigWithOwner 会写一份默认 definition（catalog/minimax-m3），
+		// 所以这里必须把 desired 模型显式改写；失败不能返回成功，否则用户拿到的
+		// 仍是一台请求算不了账的机器。
+		if err := h.applyBotInitialModel(uid, *creditModel); err != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("model config save failed")
+		}
+	}
 	if profiles, ok := h.db.(store.BotProfileStore); ok {
 		if err := profiles.UpdateBotProfile(uid, &role, &description); err != nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("profile save failed")
@@ -322,6 +354,41 @@ func (h *BotHandler) createBotAccount(ownerUID int64, req BotRegisterRequest) (*
 	}
 
 	return &createBotResult{UID: uid, Username: req.Username, APIKey: apiKey}, 0, nil
+}
+
+// creditBotInitialModel 返回 credit 体系里新建 bot 的初始 catalog 选择。
+// 模型元数据取自既有的 DeepSeek catalog helper，避免在创建路径里另抄一份常量。
+func creditBotInitialModel() types.BotDefinitionModel {
+	item := deepSeekModelCatalogItem()
+	return types.BotDefinitionModel{
+		Kind:            botModelKindCatalog,
+		ModelID:         item.ID,
+		ReasoningEffort: item.DefaultReasoningEffort,
+	}
+}
+
+// supportsBotModelInitialization 报告存储能否落下一份正式的模型定义。正式 adapter
+// （PostgreSQL/MySQL）两个接口都实现；能力缺失时必须报错，不能假装成功。
+func (h *BotHandler) supportsBotModelInitialization() bool {
+	if _, ok := h.db.(store.BotDefinitionStore); ok {
+		return true
+	}
+	_, ok := h.db.(store.BotModelConfigStore)
+	return ok
+}
+
+// applyBotInitialModel 写入 bot 的 desired 模型定义，优先走 canonical definition，
+// 与 owner 侧保存模型选择的路径一致（见 saveDesiredCatalogModelRevision）。
+func (h *BotHandler) applyBotInitialModel(botUID int64, model types.BotDefinitionModel) error {
+	if definitions, ok := h.db.(store.BotDefinitionStore); ok {
+		_, err := definitions.UpdateBotDefinitionModel(botUID, -1, model)
+		return err
+	}
+	if models, ok := h.db.(store.BotModelConfigStore); ok {
+		_, err := models.SaveBotDesiredModelConfig(botUID, model.Kind, model.ModelID, model.ReasoningEffort, "")
+		return err
+	}
+	return fmt.Errorf("model configuration unavailable")
 }
 
 // HandleCreateBot handles POST /api/bots — authenticated user creates a bot they own.
