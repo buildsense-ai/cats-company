@@ -1,6 +1,6 @@
 # CatsCo Pricing Page Override
 
-> Current product rules (2026-11-14): personal plans use V1 ¥39/4,000 credit, V2 ¥79/12,000, V3 ¥159/22,500 per anchored natural month. All include the same shared light machine; model-plan changes do not resize existing machines. 1 CNY corresponds to 100 credit; independent balance top-up is not open. User model charges equal applicable official CNY cost × 2 (platform service included) × tier factor × 100 credit/CNY; V3 factor is 0.9. Ordinary machine retention follows its actual deadline (usually 7 days); existing retain-data environments pause without automatic cleanup. The older price/quota examples below are historical design references, not current sales terms.
+> Current product rules (2026-11-14): personal plans use V1 ¥39/4,000 credit, V2 ¥79/12,000, V3 ¥159/22,500 per anchored natural month. All include the same shared light machine; model-plan changes do not resize existing machines. 1 CNY corresponds to 100 credit; independent balance top-up is not open. Model calls currently use applicable official prices with no platform markup; V3 receives 10% off. Keep the visible credit note brief. Ordinary machine retention follows its actual deadline (usually 7 days); existing retain-data environments pause without automatic cleanup. The older price/quota examples below are historical design references, not current sales terms.
 
 ## Source and scope
 

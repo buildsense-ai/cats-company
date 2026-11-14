@@ -269,22 +269,13 @@ test('website credit copy matches the approved credit plan rules', async () => {
   // Credit is a billing balance, not a token estimate; retention copy lives in its own contract.
   assert.doesNotMatch(pricing, /Token 数为估算值/)
   assert.match(pricing, /自然月对日/)
-  assert.match(pricing, /平台模型费率基础上享 9 折/)
+  assert.match(pricing, /按官方价格享 9 折/)
   assert.match(pricing, /1 元对应 100 credit/)
-  assert.match(pricing, /2（含平台服务费）/)
   assert.match(pricing, /独立余额充值暂未开放/)
   assert.match(pricing, /20 credit/)
-  // Retired card copy: the cards used to say calls are billed at the official
-  // price and that V3 is 10% off the DeepSeek list price. Both are wrong — the
-  // platform rate is 2x the applicable official price, and the 9 折 applies on
-  // top of that platform rate. Keep the old wording from coming back.
-  assert.doesNotMatch(pricing, /按官方价格扣费|官方价格扣费|官方价扣费/)
-  assert.doesNotMatch(pricing, /官网计价 9 折|官网价 9 折|官网价格 9 折|DeepSeek 官网价/)
-  // Each card must carry the platform-rate basis and its own discount tier.
-  assert.match(pricing, /按官方适用价 × 2（含平台服务费）计费，无折扣/)
-  assert.match(pricing, /在官方适用价 × 2（含平台服务费）的平台费率基础上享 9 折/)
-  assert.match(pricing, /'平台费率，无折扣'/)
-  assert.match(pricing, /'平台费率 9 折'/)
+  assert.doesNotMatch(pricing, /平台费率|平台服务费|官方适用价 × 2/)
+  assert.match(pricing, /按官方价格计费，无折扣/)
+  assert.match(pricing, /'官方价格 9 折'/)
 })
 
 test('website retention distinguishes ordinary deadlines from retained environments', async () => {
