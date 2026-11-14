@@ -511,13 +511,13 @@ func TestCommercialActionPreviewTokenIgnoresMachineTerm(t *testing.T) {
 		Entitlements:  []*types.CommercialEntitlement{{ID: 1, UID: request.UID, PlanID: 2, Source: "order", State: "active", StartsAt: now.Add(-time.Hour), ExpiresAt: &expiry}},
 		TotalsByModel: map[string]float64{},
 	}
-	withoutTerm, err := buildCommercialActionPreview(request, base, 0, anchor, now)
+	withoutTerm, err := buildCommercialActionPreview(request, base, nil, anchor, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	withTerm := *base
 	withTerm.CloudWorkerPackageTerm = &types.CloudWorkerPackageTerm{EntitlementID: 1, PlanID: 2, RetentionDays: 7}
-	withMachine, err := buildCommercialActionPreview(request, &withTerm, 0, anchor, now)
+	withMachine, err := buildCommercialActionPreview(request, &withTerm, nil, anchor, now)
 	if err != nil {
 		t.Fatal(err)
 	}

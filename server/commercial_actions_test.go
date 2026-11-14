@@ -114,8 +114,21 @@ type commercialWorkerActionTestCredits struct {
 	kept, reserved    int
 	completed, queued int
 	workerUID         int64
-	reserveOK         bool
-	reconcileError    error
+	// keptWorker is the machine the last adoption targeted, so a test can assert
+	// which machine of several candidates the operation picked.
+	keptWorker int64
+	keepError  error
+	lifecycles []CloudWorkerLifecycle
+	// lifecycleError simulates the lifecycle store being unavailable: the machine
+	// set genuinely cannot be classified then, so an ensure must stop instead of
+	// reading that as "this account has no machine".
+	lifecycleError error
+	reserveOK      bool
+	reconcileError error
+}
+
+func (s *commercialWorkerActionTestCredits) ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error) {
+	return s.lifecycles, s.lifecycleError
 }
 
 func (s *commercialWorkerActionTestCredits) AcquireCommercialWorkerOwnerGate(int64) (func(), bool, error) {
@@ -136,9 +149,10 @@ func (s *commercialWorkerActionTestCredits) CompleteCommercialOperationWorker(_ 
 	s.workerUID = worker
 	return nil
 }
-func (s *commercialWorkerActionTestCredits) KeepCommercialOperationWorker(int64, string, int64) error {
+func (s *commercialWorkerActionTestCredits) KeepCommercialOperationWorker(_ int64, _ string, worker int64) error {
 	s.kept++
-	return nil
+	s.keptWorker = worker
+	return s.keepError
 }
 func TestCommercialActionWorkerEnsureKeptAndAdditionalExactCredit(t *testing.T) {
 	h, s := newCloudWorkerTestHandlerCfg(CloudWorkerConfig{CreateQuota: "42=99"})

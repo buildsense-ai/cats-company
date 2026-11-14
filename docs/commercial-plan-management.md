@@ -34,3 +34,13 @@ Expiry first pauses the original container. Its data remains available until the
 The protected operator billing endpoint accepts `action: set_term` with `tenant_name`, `expiry_mode`, an absolute future `expires_at` for fixed terms, and a required reason in `note`. It stores the target before calling the cluster. A remote failure leaves `sync_pending`; `action: sync_term` retries that same target and the original machine without charging, buying another cycle or creating a replacement. A missing container cannot report successful renewal. The platform also retries pending synchronization with backoff.
 
 Shared lifecycle operations use the control-plane entry point and tenant operation lock. Expiry and deletion compare the expected deadline again under the lock; an older collection task must skip a newly renewed machine. Retention timers are enabled only on the control plane and removed from other members. Publish the cluster scripts and platform adapters before CatsCompany, then publish the Relay dashboard. Existing ECS subscription billing is unchanged.
+
+## Mixed ECS and shared machines
+
+An account may own dedicated ECS and shared workers at the same time. User creation spends an available machine credit; owning an ECS worker does not prevent spending a shared credit. Model credits, legacy model budgets and machine creation credits remain separate.
+
+Independent `add_worker` operations require an explicit deployment choice in the dashboard. `additional` always appends one machine and preserves the model package, existing machine configuration and each existing deadline. `ensure` adopts only the requested deployment class: `private_nat` and `public_ip` are dedicated ECS, while `packed_shared` is shared. If only the other class exists, it creates the requested class alongside it. Renewals remain scoped to the entitled machine class.
+
+Preview tokens bind worker identities and recorded profiles. Execution reads them again, and adoption checks owner and deployment class inside the database transaction. Unknown recorded profiles fail closed. Retrying a submitted task uses its original operation ID and parameters.
+
+The advanced manual creation-credit endpoint only grants credits for later consumption; its saved expiry is not an instruction to follow future package changes. Use the commercial action flow for explicit shared `follow_plan`, `fixed` or `permanent` machine terms.

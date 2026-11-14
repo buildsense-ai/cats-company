@@ -230,6 +230,7 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 		        COALESCE(b.skill_mutation_mode, 'owner_only') as skill_mutation_mode, u.created_at
 		 FROM users u LEFT JOIN bot_config b ON u.id = b.user_id
 		 WHERE u.account_type = 'bot' AND b.owner_id = $1
+		   AND NOT EXISTS (SELECT 1 FROM cloud_worker_lifecycles l WHERE l.worker_uid=u.id AND l.state='deleted')
 		 ORDER BY u.created_at`,
 		ownerID,
 	)

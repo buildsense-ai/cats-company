@@ -20,6 +20,7 @@ describe('CloudWorkerPanel', () => {
     app_version: '1.4.9',
     cloud_version: '1.4.8',
     cloud_image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
+    deployment_profile: 'private_nat',
     created_time: new Date().toISOString(),
     ...overrides,
   });
@@ -122,10 +123,10 @@ describe('CloudWorkerPanel', () => {
     expect(badge.textContent).toContain('共享机');
   });
 
-  test('does not label a dedicated ECS worker', async () => {
+  test('labels a dedicated ECS worker without marking it as shared', async () => {
     await renderPanel({ workers: [worker()] });
-    expect(container.querySelector('.cc-cloud-worker-backend')).toBeNull();
-    expect(container.textContent).not.toContain('共享机');
+    expect(container.querySelector('.cc-cloud-worker-backend').textContent).toBe('独享 ECS');
+    expect(container.querySelector('.cc-cloud-worker-name').textContent).not.toContain('共享机');
   });
 
   test('shows expiry, retention and the no-SSH note for a packed worker', async () => {
@@ -155,6 +156,18 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({ workers: [worker({ backend: 'packed' })] });
     expect(container.textContent).not.toContain('到期时间');
     expect(container.textContent).not.toContain('停服后保留');
+  });
+
+  test('mixed ECS and shared workers keep separate identities and expiry dates while creation remains available', async () => {
+    await renderPanel({ workers: [worker({id:982,username:'ecs',tenant_name:'ecs',backend:'ctyun',package_expires_at:'2030-01-01T00:00:00Z'}),worker({id:1619,username:'shared',tenant_name:'shared',backend:'packed',package_expires_at:'2030-02-01T00:00:00Z'})] });
+    const cards=container.querySelectorAll('.cc-cloud-worker');
+    expect(cards).toHaveLength(2);
+    expect(cards[0].textContent).toContain('独享 ECS');
+    expect(cards[1].textContent).toContain('共享机');
+    expect(cards[0].textContent).toContain('2030');
+    expect(cards[1].textContent).toContain('2030');
+    expect(container.querySelector('.cc-cloud-create-card input')).toBeTruthy();
+    expect(container.textContent).toContain('各自保留原配置与期限');
   });
 
   test('updates connection status when the roster refreshes', async () => {
@@ -188,8 +201,8 @@ describe('CloudWorkerPanel', () => {
   test('blocks creation when quota is exhausted', async () => {
     await renderPanel({ quota: { enabled: true, total: 1, used: 1, remaining: 0 } });
     expect(container.querySelector('.cc-cloud-create-card input')).toBeNull();
-    expect(container.textContent).toContain('云托管员工创建权益已用完，暂时无法继续创建');
     expect(container.textContent).toContain('云托管员工创建权益已用完');
+    expect(container.textContent).toContain('购买含共享机器的套餐，或联系管理员单独补发机器权益');
     expect(container.textContent).not.toContain('可创建 0/1');
   });
 
@@ -300,12 +313,31 @@ describe('CloudWorkerPanel', () => {
       releases: [{ version: '1.4.10' }, { version: '1.4.8' }],
     });
     expect(container.textContent).toContain('冻结保留中');
-    expect(container.textContent).toContain('请在套餐页续费，续费后会自动恢复');
+    expect(container.textContent).toContain('确认可续费的同类机器权益');
+    expect(container.textContent).not.toContain('15 天保留期');
     const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
     expect(buttons.find((el) => el.textContent.includes('更新')).disabled).toBe(true);
     expect(buttons.find((el) => el.textContent.includes('回滚')).disabled).toBe(true);
     expect(buttons.find((el) => el.textContent.includes('重置')).disabled).toBe(true);
     expect(container.querySelector('.cc-agent-card-delete')).toBeNull();
+  });
+
+  test('uses registered shared identity while provider status is unavailable', async () => {
+    await renderPanel({ workers: [worker({ backend: '', deployment_profile: 'packed_shared', cloud_status: 'unavailable' })] });
+    expect(container.querySelector('.cc-cloud-worker-backend').textContent).toBe('共享机');
+    expect(container.textContent).toContain('通过平台连接');
+  });
+
+  test.each([false, true])('uses actual retention facts for retained=%s shared workers', async (retain_data) => {
+    await renderPanel({ workers: [worker({ deployment_profile: 'packed_shared', cloud_status: 'shelved', retention_days: 7, retain_data })] });
+    expect(container.textContent).not.toContain('15 天保留期');
+    expect(container.textContent).not.toContain('续费后会自动恢复');
+    if (retain_data) {
+      expect(container.textContent).toContain('文件和历史记录继续保留');
+      expect(container.textContent).not.toContain('7 天');
+    } else {
+      expect(container.textContent).toContain('停服后保留 7 天');
+    }
   });
 
   test('marks unsubscribed instances as unrecoverable', async () => {

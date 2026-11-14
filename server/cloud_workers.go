@@ -622,11 +622,14 @@ type cloudWorkerSummary struct {
 	UpdateAvailable bool   `json:"update_available,omitempty"`
 	// Backend is "packed" for the shared-container fleet and empty for a
 	// dedicated ECS instance, so clients can label the two distinctly.
-	Backend         string `json:"backend,omitempty"`
-	OperationID     string `json:"operation_id,omitempty"`
-	OperationAction string `json:"operation_action,omitempty"`
-	OperationStatus string `json:"operation_status,omitempty"`
-	TrialNotice     string `json:"trial_notice,omitempty"`
+	Backend           string `json:"backend,omitempty"`
+	DeploymentProfile string `json:"deployment_profile,omitempty"`
+	RetainData        bool   `json:"retain_data,omitempty"`
+	BillingAction     string `json:"-"`
+	OperationID       string `json:"operation_id,omitempty"`
+	OperationAction   string `json:"operation_action,omitempty"`
+	OperationStatus   string `json:"operation_status,omitempty"`
+	TrialNotice       string `json:"trial_notice,omitempty"`
 	// 到期与保留期（来自 cloud_worker_lifecycles）。
 	//
 	// 共享集群的租户没有公网 IP、也没有 SSH —— 面板上真正要回答的问题是
@@ -664,10 +667,12 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 	if store, ok := h.credits.(interface {
 		ListCloudWorkerLifecycles(int64) ([]types.CloudWorkerLifecycle, error)
 	}); ok {
-		if rows, err := store.ListCloudWorkerLifecycles(uid); err == nil {
-			for _, row := range rows {
-				lifecycleByTenant[row.TenantName] = row
-			}
+		rows, err := store.ListCloudWorkerLifecycles(uid)
+		if err != nil {
+			return nil, fmt.Errorf("list worker lifecycles: %w", err)
+		}
+		for _, row := range rows {
+			lifecycleByTenant[row.TenantName] = row
 		}
 	}
 	bots, err := h.db.ListBotsByOwner(uid)
@@ -680,8 +685,16 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 		if tenantName == "" {
 			continue
 		}
+		if lifecycle, ok := lifecycleByTenant[tenantName]; ok && lifecycle.State == "deleted" {
+			continue
+		}
+		profile, err := h.cloudWorkerProfileForTenant(tenantName)
+		if err != nil {
+			return nil, err
+		}
 		w := cloudWorkerSummary{
-			TenantName: tenantName,
+			TenantName:        tenantName,
+			DeploymentProfile: profile,
 		}
 		if id, ok := b["id"].(int64); ok {
 			w.UID = id
@@ -711,6 +724,8 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 			w.RetentionDays = lifecycle.RetentionDays
 			w.LifecycleState = lifecycle.State
 			w.BillingMode = lifecycle.BillingMode
+			w.RetainData = lifecycle.RetainData
+			w.BillingAction = lifecycle.BillingAction
 		}
 		workers = append(workers, w)
 	}
