@@ -692,6 +692,7 @@ function ArtifactFullscreenSession({ params, gatewayFile = null }) {
         <ControlledArtifactPreview
           file={file}
           descriptor={descriptor}
+          allowDownloads={Boolean(gatewayFile)}
           className="artifact-fullscreen-viewer-frame"
           title={file.name || 'CatsCo Artifact'}
           onBindingChange={handleBindingChange}

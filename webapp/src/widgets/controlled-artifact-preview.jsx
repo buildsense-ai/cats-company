@@ -22,6 +22,7 @@ export default function ControlledArtifactPreview({
   descriptor,
   className = 'v3-file-preview-frame',
   title = 'Cloud Artifact Preview',
+  allowDownloads = false,
   onBindingChange,
   onReady,
   onError,
@@ -113,7 +114,7 @@ export default function ControlledArtifactPreview({
       src={sameOrigin ? artifactFrameURLWithBridgeNonce(url, bridgeNonce) : url}
       className={className}
       title={title}
-      sandbox={sameOrigin ? HTML_PREVIEW_SANDBOX : REMOTE_ARTIFACT_PREVIEW_SANDBOX}
+      sandbox={`${sameOrigin ? HTML_PREVIEW_SANDBOX : REMOTE_ARTIFACT_PREVIEW_SANDBOX}${allowDownloads ? ' allow-downloads' : ''}`}
       credentialless=""
       referrerPolicy="no-referrer"
       onLoad={handleLoad}

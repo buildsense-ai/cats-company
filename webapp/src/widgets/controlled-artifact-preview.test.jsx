@@ -25,6 +25,22 @@ afterEach(async () => {
   container.remove();
 });
 
+test.each([false, true])('opts into downloads without changing origin isolation (sameOrigin=%s)', async (sameOrigin) => {
+  const previewFile = { ...file, url: sameOrigin ? `${window.location.origin}/artifacts/lesson-game/v2/` : file.url };
+  const descriptor = { isRemoteArtifact: true, isSameOriginRemoteArtifact: sameOrigin, url: previewFile.url };
+  const render = async (allowDownloads) => act(async () => {
+    root.render(<ControlledArtifactPreview file={previewFile} descriptor={descriptor} allowDownloads={allowDownloads} />);
+  });
+  await render(undefined);
+  const sandbox = container.querySelector('iframe').getAttribute('sandbox');
+  expect(sandbox.split(' ')).not.toContain('allow-downloads');
+  expect(sandbox.split(' ').includes('allow-same-origin')).toBe(!sameOrigin);
+  await render(true);
+  expect(container.querySelector('iframe').getAttribute('sandbox')).toBe(`${sandbox} allow-downloads`);
+  await render(false);
+  expect(container.querySelector('iframe').getAttribute('sandbox')).toBe(sandbox);
+});
+
 test('reports a bound cross-origin Artifact only after its iframe loads', async () => {
   const onBindingChange = vi.fn();
   const onReady = vi.fn();

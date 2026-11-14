@@ -426,6 +426,7 @@ describe('AppsView', () => {
     await act(async () => { container.querySelector('[aria-label="打开应用 好友应用"]').click(); });
     await act(async () => { finish['friend-demo']({ launch_url: 'https://artifact.catsco.cc/friend-demo/?code=new' }); });
     expect(container.querySelector('iframe').title).toBe('好友应用');
+    expect(container.querySelector('iframe').getAttribute('sandbox').split(' ')).toContain('allow-downloads');
     await act(async () => { finish['saturday-demo']({ launch_url: 'https://artifact.catsco.cc/saturday-demo/?code=old' }); });
     expect(container.querySelector('iframe').title).toBe('好友应用');
   });
