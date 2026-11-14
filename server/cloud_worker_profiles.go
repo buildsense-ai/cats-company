@@ -40,9 +40,17 @@ type cloudWorkerBillingCredits interface {
 	GrantCloudWorkerConfiguredCredits(int64, int, string, *time.Time, string, string) (int, error)
 }
 
-type cloudWorkerDeploymentStore interface {
-	SetCloudWorkerDeployment(int64, types.CloudWorkerDeployment) error
+// cloudWorkerDeploymentReader is the read side of the deployment store: what an
+// existing machine's recorded profile is. It is a separate interface from the
+// writer because callers that only classify a machine (the operator action path)
+// must not start depending on the ability to persist a new deployment.
+type cloudWorkerDeploymentReader interface {
 	GetCloudWorkerDeployment(string) (*types.CloudWorkerDeployment, error)
+}
+
+type cloudWorkerDeploymentStore interface {
+	cloudWorkerDeploymentReader
+	SetCloudWorkerDeployment(int64, types.CloudWorkerDeployment) error
 	ListCloudWorkerDeployments() (map[string]types.CloudWorkerDeployment, error)
 }
 
@@ -141,7 +149,7 @@ func (h *CloudWorkerHandler) deploymentForProfile(profile string) (types.CloudWo
 }
 
 func (h *CloudWorkerHandler) deploymentForTenant(tenant string) (types.CloudWorkerDeployment, error) {
-	if data, ok := h.db.(cloudWorkerDeploymentStore); ok && tenant != "" {
+	if data, ok := h.db.(cloudWorkerDeploymentReader); ok && tenant != "" {
 		value, err := data.GetCloudWorkerDeployment(tenant)
 		if err != nil {
 			return types.CloudWorkerDeployment{}, fmt.Errorf("load worker deployment: %w", err)
@@ -151,6 +159,38 @@ func (h *CloudWorkerHandler) deploymentForTenant(tenant string) (types.CloudWork
 		}
 	}
 	return h.deploymentForProfile(types.CloudWorkerPrivateNAT)
+}
+
+// cloudWorkerProfileForTenant resolves the deployment profile recorded for an
+// existing machine.
+//
+// Two cases must not be confused. A machine created before the deployment column
+// existed carries no profile and is the historical private-NAT ECS worker — the
+// same reading the payment renewal rules and bot_config's own default apply. An
+// explicitly recorded profile this build does not know is an error instead of a
+// default: it decides which product the machine belongs to, and guessing it is
+// what would let an operation adopt the wrong machine.
+func (h *CloudWorkerHandler) cloudWorkerProfileForTenant(tenant string) (string, error) {
+	tenant = strings.TrimSpace(tenant)
+	if tenant == "" {
+		return "", fmt.Errorf("cloud worker has no tenant name")
+	}
+	reader, ok := h.db.(cloudWorkerDeploymentReader)
+	if !ok {
+		return types.CloudWorkerPrivateNAT, nil
+	}
+	value, err := reader.GetCloudWorkerDeployment(tenant)
+	if err != nil {
+		return "", fmt.Errorf("load worker deployment for %s: %w", tenant, err)
+	}
+	if value == nil || strings.TrimSpace(value.Profile) == "" {
+		return types.CloudWorkerPrivateNAT, nil
+	}
+	profile, valid := types.NormalizeCloudWorkerProfile(value.Profile)
+	if !valid {
+		return "", fmt.Errorf("worker %s has an unsupported deployment profile %q", tenant, value.Profile)
+	}
+	return profile, nil
 }
 
 // tenantRunsOnPackedShared reports whether a tenant lives inside the shared

@@ -16,50 +16,50 @@ import (
 
 // Preview and commit use the same snapshot reader. The apply reader runs inside
 // the serializable ledger transaction, never in an unguarded HTTP preflight.
-func commercialActionSnapshot(tx *sql.Tx, uid int64, now time.Time) (*types.CommercialSummary, int, error) {
+func commercialActionSnapshot(tx *sql.Tx, uid int64, now time.Time) (*types.CommercialSummary, []types.CommercialActionWorker, error) {
 	s := &types.CommercialSummary{UID: uid}
 	rows, err := tx.Query(`SELECT ` + commercialPlanColumns + ` FROM commercial_plans ORDER BY id`)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	for rows.Next() {
 		p, e := scanCommercialPlan(rows)
 		if e != nil {
 			rows.Close()
-			return nil, 0, e
+			return nil, nil, e
 		}
 		s.Plans = append(s.Plans, p)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	rows, err = tx.Query(`SELECT e.id,e.uid,e.plan_id,p.slug,p.name,e.source,e.source_ref,e.state,e.starts_at,e.expires_at,e.created_at,e.updated_at
  FROM commercial_entitlements e JOIN commercial_plans p ON p.id=e.plan_id
  WHERE e.uid=$1 AND e.state='active' AND (e.expires_at IS NULL OR e.expires_at>$2) ORDER BY e.id`, uid, now)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	for rows.Next() {
 		e, x := scanCommercialEntitlement(rows)
 		if x != nil {
 			rows.Close()
-			return nil, 0, x
+			return nil, nil, x
 		}
 		s.Entitlements = append(s.Entitlements, e)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	if primary := types.PrimaryCommercialEntitlement(s.Entitlements, now); primary != nil {
 		for _, plan := range s.Plans {
 			if plan.ID == primary.PlanID && plan.ModelCreditUnits > 0 {
 				anchor, ok, err := activeCommercialCreditPackageAnchor(tx, uid, plan.ID, now)
 				if err != nil {
-					return nil, 0, err
+					return nil, nil, err
 				}
 				if ok {
 					primary.PeriodAnchorAt = &anchor
@@ -72,13 +72,13 @@ func commercialActionSnapshot(tx *sql.Tx, uid int64, now time.Time) (*types.Comm
  FROM commercial_quota_grants WHERE uid=$1 AND effective_at<=$2 AND revoked_at IS NULL
  AND (expires_at IS NULL OR expires_at>$2) ORDER BY id`, uid, now)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	for rows.Next() {
 		g, e := scanCommercialQuotaGrant(rows)
 		if e != nil {
 			rows.Close()
-			return nil, 0, e
+			return nil, nil, e
 		}
 		s.Grants = append(s.Grants, g)
 		s.TotalCNY += commercialQuotaGrantSignedAmount(g)
@@ -86,25 +86,53 @@ func commercialActionSnapshot(tx *sql.Tx, uid int64, now time.Time) (*types.Comm
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	// The machine-granting package is resolved by the same statement the
 	// settlement and the operator preview use, so this snapshot cannot disagree
 	// with either of them about when the account's worker expires.
 	machineTerm, err := queryCloudWorkerMachineTerm(tx, uid, now)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	if machineTerm != nil {
 		s.CloudWorkerPackageTerm = machineTerm.packageTerm()
 	}
-	var count int
-	err = tx.QueryRow(`SELECT COUNT(*) FROM bot_config WHERE owner_id=$1 AND COALESCE(tenant_name,'')<>''`, uid).Scan(&count)
-	return s, count, err
+	workers, err := commercialActionWorkers(tx, uid)
+	return s, workers, err
 }
 
-func buildCommercialActionPreview(r types.CommercialActionRequest, s *types.CommercialSummary, count int, anchor, now time.Time) (*types.CommercialActionPreview, error) {
-	p := &types.CommercialActionPreview{UID: r.UID, Intent: r.Intent, CanApply: true, Warnings: []string{}, WorkerAction: r.WorkerAction, WorkerCount: count, PackageEffect: "none", WorkerEffect: "none", CurrentTotalCNY: s.TotalCNY, NextTotalCNY: s.TotalCNY}
+// commercialActionWorkers reads the machines the owner still holds. Identity and
+// deployment profile both matter: the preview token and the keep decision are
+// about which machine this is, not how many there are. Rows written before the
+// deployment column existed carry no profile and stay the historical private-NAT
+// ECS worker; a profile this build does not know is an error, never a default.
+func commercialActionWorkers(tx *sql.Tx, uid int64) ([]types.CommercialActionWorker, error) {
+	rows, err := tx.Query(`SELECT b.user_id, COALESCE(b.cloud_deployment->>'profile',''), COALESCE(l.state,''), COALESCE(l.billing_action,'')
+ FROM bot_config b LEFT JOIN cloud_worker_lifecycles l ON l.worker_uid=b.user_id
+ WHERE b.owner_id=$1 AND COALESCE(b.tenant_name,'')<>'' AND COALESCE(l.state,'')<>'deleted' ORDER BY b.user_id`, uid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var workers []types.CommercialActionWorker
+	for rows.Next() {
+		var worker types.CommercialActionWorker
+		if err := rows.Scan(&worker.UID, &worker.Profile, &worker.LifecycleState, &worker.BillingAction); err != nil {
+			return nil, err
+		}
+		profile, valid := types.NormalizeCloudWorkerProfile(worker.Profile)
+		if !valid {
+			return nil, commercialAdjustmentError("invalid_request", fmt.Sprintf("worker %d has an unsupported deployment profile %q", worker.UID, worker.Profile))
+		}
+		worker.Profile = profile
+		workers = append(workers, worker)
+	}
+	return workers, rows.Err()
+}
+
+func buildCommercialActionPreview(r types.CommercialActionRequest, s *types.CommercialSummary, workers []types.CommercialActionWorker, anchor, now time.Time) (*types.CommercialActionPreview, error) {
+	p := &types.CommercialActionPreview{UID: r.UID, Intent: r.Intent, CanApply: true, Warnings: []string{}, WorkerAction: r.WorkerAction, WorkerCount: len(workers), PackageEffect: "none", WorkerEffect: "none", CurrentTotalCNY: s.TotalCNY, NextTotalCNY: s.TotalCNY}
 	warn := func(message string) { p.CanApply = false; p.Warnings = append(p.Warnings, message) }
 	byID := map[int64]*types.CommercialPlan{}
 	for _, v := range s.Plans {
@@ -190,26 +218,59 @@ func buildCommercialActionPreview(r types.CommercialActionRequest, s *types.Comm
 		p.NextTotalCNY = s.TotalCNY
 	}
 	if r.WorkerAction != "none" {
-		p.WorkerEffect = "create_one"
-		if r.WorkerAction == "ensure" {
-			p.WorkerEffect = "ensure_one"
-			if count > 0 {
-				p.WorkerEffect = "keep_existing"
-				p.Warnings = append(p.Warnings, "保留已有机器，不自动升降档或增加机器")
-			}
-		}
+		packageIntent := r.Intent == "grant_plan" || r.Intent == "renew_plan"
+		// The deployment this operation acts on decides which existing machine it
+		// may keep, so the profile is resolved before the effect is chosen: a
+		// package intent takes its profile from the package being applied, a
+		// machine intent from the operator request.
 		p.DeploymentProfile = r.DeploymentProfile
 		p.BillingMode = r.BillingMode
 		p.RuntimePlan = r.RuntimePlan
 		// Empty keeps the historical preview shape (and therefore the historical
 		// preview token) for every request written before the field existed.
 		p.WorkerExpiryMode = r.WorkerExpiryMode
-		if r.Intent == "grant_plan" || r.Intent == "renew_plan" {
-			if plan != nil {
-				p.DeploymentProfile, _ = types.NormalizeCloudWorkerProfile(plan.CloudWorkerDeploymentProfile)
-				p.BillingMode = types.CloudWorkerBillingForProfile(p.DeploymentProfile, plan.CloudWorkerBillingMode)
-				p.RuntimePlan = plan.CloudWorkerRuntimePlan
+		if packageIntent && plan != nil {
+			p.DeploymentProfile, _ = types.NormalizeCloudWorkerProfile(plan.CloudWorkerDeploymentProfile)
+			p.BillingMode = types.CloudWorkerBillingForProfile(p.DeploymentProfile, plan.CloudWorkerBillingMode)
+			p.RuntimePlan = plan.CloudWorkerRuntimePlan
+		}
+		if _, ok := types.CloudWorkerDeploymentClass(p.DeploymentProfile); !ok {
+			// An explicit deployment this build does not know cannot be adopted or
+			// provisioned safely, and defaulting it to one of the known classes
+			// would silently pick a product for the buyer.
+			warn("机器部署类型未知，无法安全执行")
+		}
+		matching, machines := commercialActionClassifyWorkers(p.DeploymentProfile, workers)
+		p.WorkerMatchingCount, p.WorkerMachines = matching, machines
+		p.WorkerEffect = "create_one"
+		if r.WorkerAction == "ensure" {
+			p.WorkerEffect = "ensure_one"
+			adoptable := false
+			for _, worker := range workers {
+				class, _ := worker.DeploymentClass()
+				requested, _ := types.CloudWorkerDeploymentClass(p.DeploymentProfile)
+				if class == requested && types.CloudWorkerCanBeAdopted(worker.LifecycleState, worker.BillingAction) {
+					adoptable = true
+				}
 			}
+			switch {
+			case matching > 0 && !adoptable:
+				warn("同类机器正在删除或处理账务，请先核对机器状态后重试")
+			case matching > 0:
+				// The snapshot order is the deterministic one, so the first machine
+				// of this class is the one adopted. No existing machine is
+				// reconfigured, rebuilt or re-tiered.
+				p.WorkerEffect = "keep_existing"
+				p.Warnings = append(p.Warnings, "保留已有机器，不自动升降档或增加机器")
+			case p.WorkerCount > 0:
+				// Machines exist, but none of them is this operation's product.
+				// Keeping one would hand the buyer a machine of another kind, and
+				// an ensure may not migrate or re-tier it, so one matching machine
+				// is created next to them.
+				p.Warnings = append(p.Warnings, fmt.Sprintf("现有 %d 台机器属于其他部署类型，本次将新增一台匹配的机器；不会迁移、重建或升降档现有机器", p.WorkerCount))
+			}
+		}
+		if packageIntent {
 			p.WorkerExpiresAt = p.ExpiresAt
 			if r.WorkerExpiresAt != nil {
 				if p.ExpiresAt != nil {
@@ -328,6 +389,31 @@ func buildCommercialActionPreview(r types.CommercialActionRequest, s *types.Comm
 	return p, nil
 }
 
+// commercialActionClassifyWorkers reports how many of the account's machines are
+// of the requested deployment class, and pins every machine's identity into the
+// preview so the token cannot survive a machine being swapped for another one of
+// the same count. The class is the same definition a paid renewal uses: both ECS
+// profiles are one class, the shared container fleet is the other.
+func commercialActionClassifyWorkers(profile string, workers []types.CommercialActionWorker) (int, []string) {
+	if len(workers) == 0 {
+		return 0, nil
+	}
+	requested, requestedOK := types.CloudWorkerDeploymentClass(profile)
+	matching := 0
+	machines := make([]string, 0, len(workers))
+	for _, worker := range workers {
+		identity := fmt.Sprintf("%d:%s", worker.UID, worker.Profile)
+		if worker.LifecycleState != "" || worker.BillingAction != "" {
+			identity += ":" + worker.LifecycleState + ":" + worker.BillingAction
+		}
+		machines = append(machines, identity)
+		if class, ok := worker.DeploymentClass(); requestedOK && ok && class == requested {
+			matching++
+		}
+	}
+	return matching, machines
+}
+
 // Credit eligibility belongs to the formal operations path. Legacy quota and
 // trial validation continue to require their original CNY/model budgets.
 func commercialActionPlanHasQuota(plan *types.CommercialPlan) bool {
@@ -359,11 +445,11 @@ func (a *Adapter) PreviewCommercialAction(r types.CommercialActionRequest) (*typ
 		return nil, commercialAdjustmentError("not_found", "commercial user not found")
 	}
 	now := time.Now().UTC()
-	s, n, err := commercialActionSnapshot(tx, r.UID, now)
+	s, workers, err := commercialActionSnapshot(tx, r.UID, now)
 	if err != nil {
 		return nil, err
 	}
-	return buildCommercialActionPreview(r, s, n, now.Truncate(time.Microsecond), now)
+	return buildCommercialActionPreview(r, s, workers, now.Truncate(time.Microsecond), now)
 }
 
 const commercialActionColumns = `uid,operation_id,intent,status,package_applied,relay_synced,worker_status,worker_uid,error,request,preview,result,lease`
@@ -460,11 +546,11 @@ func (a *Adapter) applyCommercialAction(r types.CommercialActionRequest) (*types
 	if e != nil || anchor.After(now) || now.Sub(anchor) > 15*time.Minute {
 		return nil, commercialAdjustmentError("stale_preview", "preview expired; refresh preview")
 	}
-	s, n, err := commercialActionSnapshot(tx, r.UID, now)
+	s, workers, err := commercialActionSnapshot(tx, r.UID, now)
 	if err != nil {
 		return nil, err
 	}
-	p, err := buildCommercialActionPreview(r, s, n, anchor, now)
+	p, err := buildCommercialActionPreview(r, s, workers, anchor, now)
 	if err != nil {
 		return nil, err
 	}

@@ -145,6 +145,36 @@ func NormalizeCloudWorkerProfile(profile string) (string, bool) {
 	return profile, false
 }
 
+// Deployment classes group the deployment profiles that are the same product to
+// the buyer: both ECS profiles buy a dedicated instance, while the shared
+// container cluster is a different machine that a package change must never be
+// spent on or measured against.
+//
+// This is the class the payment renewal rules already use
+// (cloudWorkerSurvivesRenewal and extendCloudWorkerLifecyclesWithPaidPeriod
+// match 'packed_shared' against everything else): one definition so the
+// operator action path cannot disagree with a paid renewal.
+const (
+	CloudWorkerClassDedicated = "dedicated"
+	CloudWorkerClassShared    = "shared"
+)
+
+// CloudWorkerDeploymentClass reports which machine class a deployment profile
+// belongs to. An empty profile is the historical private-NAT ECS worker, the
+// same reading the checkout path applies to rows written before the column
+// existed. An explicit profile this build does not know is not guessed: the
+// caller has to fail closed rather than adopt a machine of an unknown product.
+func CloudWorkerDeploymentClass(profile string) (string, bool) {
+	normalized, valid := NormalizeCloudWorkerProfile(profile)
+	if !valid {
+		return "", false
+	}
+	if normalized == CloudWorkerPackedShared {
+		return CloudWorkerClassShared, true
+	}
+	return CloudWorkerClassDedicated, true
+}
+
 // Shared-fleet runtime tiers. These must match the packed manager's
 // plib_plan_values so a package's density assumption survives the hand-off:
 // light 100 / standard 200 / pro 400 / heavy 800 CPU weight.

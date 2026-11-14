@@ -51,10 +51,14 @@ const displayStatus = (worker) => (isCloudWorkerPending(worker)
   ? 'provisioning'
   : worker?.cloud_status);
 
-const cloudLifecycleHint = (status) => {
-  const normalized = String(status || '').toLowerCase();
-  if (['expired', 'freezing', 'frozen'].includes(normalized)) {
-    return '套餐已到期，云托管员工正处于 15 天保留期；请在套餐页续费，续费后会自动恢复。';
+const isSharedWorker = (worker) => worker.deployment_profile === 'packed_shared' || worker.backend === 'packed';
+
+const cloudLifecycleHint = (worker) => {
+  const normalized = String(worker.cloud_status || '').toLowerCase();
+  if (['shelve', 'shelved', 'expired', 'freezing', 'frozen'].includes(normalized)) {
+    if (worker.retain_data) return '机器已暂停，文件和历史记录继续保留；恢复运行请联系管理员。';
+    const retention = worker.retention_days > 0 ? `停服后保留 ${worker.retention_days} 天；` : '';
+    return `机器已到期或暂停，${retention}请在套餐页确认可续费的同类机器权益，或联系管理员单独延长机器期限。`;
   }
   if (['unsubscribed', 'released', 'deleted'].includes(normalized)) {
     return '云托管员工已经释放，无法通过续费恢复；请联系支持清理旧记录。';
@@ -267,7 +271,7 @@ export default function CloudWorkerPanel({
     hasPendingWorker ? (
       <p className="cc-cloud-quota-wait"><RefreshCw size={13} /> 已有云托管员工尚未上线（正在创建中或当前离线）；上线后即可使用。</p>
     ) : (
-      <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云托管员工创建权益已用完，暂时无法继续创建</p>
+      <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云托管员工创建权益已用完；可购买含共享机器的套餐，或联系管理员单独补发机器权益。</p>
     )
   ) : (
     <>
@@ -351,7 +355,7 @@ export default function CloudWorkerPanel({
             )}
             {!creating && !createError && (
               <p className="cc-cloud-create-hint">
-                创建后会为该员工提供云端运行环境并自动完成部署，无需配置身份 Key。
+                按可用创建权益提供对应的云端运行环境并自动部署。已有 ECS 和共享机各自保留原配置与期限。
               </p>
             )}
           </>
@@ -390,7 +394,7 @@ export default function CloudWorkerPanel({
               const isFocusedWorker = workerKey === focusedWorkerKey;
               const meta = statusMeta(displayStatus(worker));
               const shownStatus = displayStatus(worker);
-              const lifecycleHint = worker.trial_notice || cloudLifecycleHint(worker.cloud_status);
+              const lifecycleHint = worker.trial_notice || cloudLifecycleHint(worker);
               const managementBlocked = cloudActionsBlocked(worker.cloud_status);
               const remoteActing = worker.cloud_operation_status === 'running';
               const acting = activeAction.name === worker.tenant_name || remoteActing;
@@ -426,11 +430,9 @@ export default function CloudWorkerPanel({
                       <strong>{worker.display_name}</strong>
                       <small>
                         @{worker.username} · uid {id}
-                        {worker.backend === 'packed' && (
-                          <span className="cc-cloud-worker-backend" title="运行在共享集群容器里（内测），不是独享 ECS 实例">
-                            共享机 · 内测
-                          </span>
-                        )}
+                        <span className="cc-cloud-worker-backend" title={isSharedWorker(worker) ? '运行在共享集群中，机器期限独立显示' : '机器形态以已登记配置为准'}>
+                          {isSharedWorker(worker) ? '共享机' : worker.deployment_profile || worker.backend ? '独享 ECS' : '机器形态待确认'}
+                        </span>
                       </small>
                     </div>
                     <span className={`cc-cloud-worker-status ${meta.tone}`}>
@@ -453,7 +455,7 @@ export default function CloudWorkerPanel({
                       const urgent = left !== null && left <= 7;
                       return (
                         <span>
-                          到期时间{' '}
+                          机器到期时间{' '}
                           <b style={urgent ? { color: 'var(--v3-danger, #d33)' } : undefined}>
                             {formatExpiryDate(worker.package_expires_at)}
                             {left !== null ? `（还剩 ${left} 天）` : ''}
@@ -461,10 +463,12 @@ export default function CloudWorkerPanel({
                         </span>
                       );
                     })()}
-                    {worker.retention_days > 0 && (
+                    {worker.retain_data ? (
+                      <span>停服后保留 <b>文件和历史记录</b></span>
+                    ) : worker.retention_days > 0 && (
                       <span>停服后保留 <b>{worker.retention_days} 天</b></span>
                     )}
-                    {worker.backend === 'packed' && (
+                    {isSharedWorker(worker) && (
                       <span>连接方式 <b>通过平台连接（共享集群无 SSH / 无公网 IP）</b></span>
                     )}
                     {!worker.app_version && !worker.cloud_version && !worker.cloud_image_id && (

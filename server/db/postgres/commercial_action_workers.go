@@ -140,6 +140,12 @@ func (a *Adapter) CompleteCommercialOperationWorker(uid int64, source string, wo
 //     machine really is this owner's live worker with a tenant identity —
 //     stamping a retention promise on another customer's machine would be worse
 //     than not stamping it at all;
+//   - the credit and the machine must be the same deployment class. A
+//     shared-container credit and a dedicated ECS credit buy different
+//     machines, so adopting across that boundary would spend a paid
+//     entitlement on a product the buyer did not buy. The class is read from the
+//     rows themselves, in this transaction, and an explicitly recorded profile
+//     this build does not know fails closed instead of being defaulted;
 //   - only a credit that says "credit environment" (retain_data) writes
 //     anything: a legacy or operator-issued credit keeps the schedule it always
 //     had, and worker_action=none never reaches this method;
@@ -152,26 +158,64 @@ func (a *Adapter) KeepCommercialOperationWorker(uid int64, source string, worker
 	if uid <= 0 || worker <= 0 || strings.TrimSpace(source) == "" {
 		return fmt.Errorf("invalid operation keep target")
 	}
+	source = strings.TrimSpace(source)
 	tx, err := a.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin operation keep: %w", err)
 	}
 	defer tx.Rollback()
+	// Both rows are locked here rather than left to one UPDATE ... WHERE EXISTS:
+	// the deployment class is part of the admission rule, so it has to be decided
+	// from the same rows the marker is written to.
+	var creditProfile, creditState string
 	var retainData bool
-	err = tx.QueryRow(`
-		UPDATE cloud_worker_credits c
-		SET state = 'revoked', worker_uid = $3, operation_completed = TRUE, reservation_ref = '', reserved_at = NULL
-		WHERE c.uid = $1 AND c.source_ref = $2 AND c.state IN ('available','queued','reserved')
-		  AND EXISTS (
-		      SELECT 1 FROM bot_config b
-		      WHERE b.user_id = $3 AND b.owner_id = $1 AND COALESCE(b.tenant_name, '') <> ''
-		  )
-		RETURNING c.retain_data`, uid, strings.TrimSpace(source), worker).Scan(&retainData)
-	if err == sql.ErrNoRows {
+	if err = tx.QueryRow(`SELECT deployment_profile, state, retain_data FROM cloud_worker_credits
+		WHERE uid = $1 AND source_ref = $2 FOR UPDATE`, uid, source).Scan(&creditProfile, &creditState, &retainData); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("operation keep marker not recorded")
+		}
+		return fmt.Errorf("read operation keep credit: %w", err)
+	}
+	if creditState != "available" && creditState != "queued" && creditState != "reserved" {
 		return fmt.Errorf("operation keep marker not recorded")
 	}
+	creditClass, err := cloudWorkerProfileClass(creditProfile)
 	if err != nil {
-		return err
+		return fmt.Errorf("operation keep credit: %w", err)
+	}
+	var workerProfile string
+	if err = tx.QueryRow(`SELECT COALESCE(cloud_deployment->>'profile','') FROM bot_config
+		WHERE user_id = $1 AND owner_id = $2 AND COALESCE(tenant_name, '') <> '' FOR UPDATE`, worker, uid).Scan(&workerProfile); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("operation keep target %d is not this owner's cloud worker", worker)
+		}
+		return fmt.Errorf("read operation keep target: %w", err)
+	}
+	workerClass, err := cloudWorkerProfileClass(workerProfile)
+	if err != nil {
+		return fmt.Errorf("operation keep target %d: %w", worker, err)
+	}
+	if workerClass != creditClass {
+		return fmt.Errorf("operation keep target %d is a %s worker but the operation credit is %s", worker, workerClass, creditClass)
+	}
+	var lifecycleState, billingAction string
+	err = tx.QueryRow(`SELECT state, billing_action FROM cloud_worker_lifecycles
+		WHERE worker_uid=$1 AND owner_uid=$2 FOR UPDATE`, worker, uid).Scan(&lifecycleState, &billingAction)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("read operation keep lifecycle: %w", err)
+	}
+	if (err == sql.ErrNoRows && retainData) || !types.CloudWorkerCanBeAdopted(lifecycleState, billingAction) {
+		return fmt.Errorf("operation keep target %d is not available for adoption", worker)
+	}
+	res, err := tx.Exec(`
+		UPDATE cloud_worker_credits
+		SET state = 'revoked', worker_uid = $3, operation_completed = TRUE, reservation_ref = '', reserved_at = NULL
+		WHERE uid = $1 AND source_ref = $2 AND state IN ('available','queued','reserved')`, uid, source, worker)
+	if err != nil {
+		return fmt.Errorf("record operation keep marker: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("operation keep marker not recorded")
 	}
 	if retainData {
 		res, err := tx.Exec(`
@@ -195,4 +239,21 @@ func (a *Adapter) KeepCommercialOperationWorker(uid int64, source string, worker
 		return fmt.Errorf("commit operation keep: %w", err)
 	}
 	return nil
+}
+
+// cloudWorkerProfileClass maps a stored deployment profile onto the deployment
+// class the keep rules compare. An empty profile is the historical private-NAT
+// ECS default (the column is NOT NULL DEFAULT 'private_nat'), while an explicit
+// profile this build does not know is an error: guessing the class is exactly
+// what would let a credit be spent on the wrong machine.
+func cloudWorkerProfileClass(profile string) (string, error) {
+	normalized, valid := types.NormalizeCloudWorkerProfile(profile)
+	if !valid {
+		return "", fmt.Errorf("unsupported deployment profile %q", profile)
+	}
+	class, ok := types.CloudWorkerDeploymentClass(normalized)
+	if !ok {
+		return "", fmt.Errorf("unsupported deployment profile %q", profile)
+	}
+	return class, nil
 }

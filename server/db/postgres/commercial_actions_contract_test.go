@@ -512,6 +512,183 @@ func TestPostgresCommercialActionsContract(t *testing.T) {
 		}
 		release()
 	})
+
+	t.Run("ensure binds machine identity and deployment class", func(t *testing.T) {
+		uid := createGLM53MigrationUser(t, db, "ops-class")
+		machine := createGLM53MigrationUser(t, db, "ops-class-shared")
+		exec(`INSERT INTO bot_config(user_id,owner_id,tenant_name,cloud_deployment) VALUES($1,$2,'ops-class-shared','{"profile":"packed_shared"}'::jsonb)`, machine, uid)
+		normalize := func(r types.CommercialActionRequest) types.CommercialActionRequest {
+			t.Helper()
+			if err := r.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}
+		// A dedicated operation must not adopt the shared machine: it provisions
+		// one of its own class and says so in the preview.
+		dedicated := normalize(types.CommercialActionRequest{UID: uid, Intent: "ensure_worker", DeploymentProfile: types.CloudWorkerPrivateNAT, DurationDays: 3, Preview: true, Note: "class", OperationID: "class-dedicated"})
+		p, err := db.PreviewCommercialAction(dedicated)
+		if err != nil || !p.CanApply {
+			t.Fatalf("dedicated preview: %+v %v", p, err)
+		}
+		if p.WorkerCount != 1 || p.WorkerMatchingCount != 0 || p.WorkerEffect != "ensure_one" {
+			t.Fatalf("a shared machine was counted as adoptable by a dedicated operation: %+v", p)
+		}
+		dedicated.Preview, dedicated.PreviewToken = false, p.PreviewToken
+		if v := apply(dedicated); v.Operation.WorkerStatus != "pending" {
+			t.Fatalf("dedicated operation did not queue a machine: %+v", v.Operation)
+		}
+		if n := count(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid=$1 AND deployment_profile='private_nat'`, uid); n != 1 {
+			t.Fatalf("dedicated operation minted %d dedicated credits", n)
+		}
+		if n := count(`SELECT COUNT(*) FROM bot_config WHERE owner_id=$1 AND cloud_deployment->>'profile'='packed_shared'`, uid); n != 1 {
+			t.Fatalf("the cross-class operation changed the shared machine: %d", n)
+		}
+		// The same package class is adoptable, and the machine set is part of the
+		// preview token: replacing the machine one-for-one invalidates it.
+		shared := normalize(types.CommercialActionRequest{UID: uid, Intent: "ensure_worker", DeploymentProfile: types.CloudWorkerPackedShared, DurationDays: 3, Preview: true, Note: "class shared", OperationID: "class-shared"})
+		p, err = db.PreviewCommercialAction(shared)
+		if err != nil || !p.CanApply || p.WorkerMatchingCount != 1 || p.WorkerEffect != "keep_existing" {
+			t.Fatalf("shared machine was not adoptable: %+v %v", p, err)
+		}
+		shared.Preview, shared.PreviewToken = false, p.PreviewToken
+		replacement := createGLM53MigrationUser(t, db, "ops-class-shared-2")
+		exec(`INSERT INTO bot_config(user_id,owner_id,tenant_name,cloud_deployment) VALUES($1,$2,'ops-class-shared-2','{"profile":"packed_shared"}'::jsonb)`, replacement, uid)
+		exec(`DELETE FROM bot_config WHERE user_id=$1`, machine)
+		if _, err = db.ApplyCommercialAction(shared); err == nil {
+			t.Fatal("a preview survived its machine being replaced by another one of the same count")
+		}
+		expectCode(err, "stale_preview")
+		// Switching the machine's backend is the same kind of change.
+		shared.Preview, shared.PreviewToken = true, ""
+		fresh, err := db.PreviewCommercialAction(shared)
+		if err != nil || !fresh.CanApply {
+			t.Fatalf("fresh preview: %+v %v", fresh, err)
+		}
+		shared.Preview, shared.PreviewToken = false, fresh.PreviewToken
+		exec(`UPDATE bot_config SET cloud_deployment='{"profile":"private_nat"}'::jsonb WHERE user_id=$1`, replacement)
+		if _, err = db.ApplyCommercialAction(shared); err == nil {
+			t.Fatal("a preview survived its machine changing deployment profile")
+		}
+		expectCode(err, "stale_preview")
+		if n := count(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid=$1 AND deployment_profile='packed_shared'`, uid); n != 0 {
+			t.Fatalf("a stale preview minted %d shared credits", n)
+		}
+	})
+
+	// A finished deletion leaves the bot_config row behind (purging files and the
+	// account row are separate steps), so the lifecycle row is what decides whether
+	// a machine still exists. Such a machine must not be counted, adopted, or left
+	// making an operation believe the account already has one.
+	t.Run("a deleted machine is not a live machine", func(t *testing.T) {
+		uid := createGLM53MigrationUser(t, db, "ops-deleted-live")
+		machine := createGLM53MigrationUser(t, db, "ops-deleted-machine")
+		exec(`UPDATE users SET account_type='bot' WHERE id=$1`, machine)
+		exec(`INSERT INTO bot_config(user_id,owner_id,tenant_name,cloud_deployment) VALUES($1,$2,'ops-deleted-machine','{"profile":"packed_shared"}'::jsonb)`, machine, uid)
+		exec(`INSERT INTO cloud_worker_lifecycles(worker_uid,owner_uid,tenant_name,package_expires_at,delete_after,state)
+			VALUES($1,$2,'ops-deleted-machine',CURRENT_TIMESTAMP+INTERVAL '30 days',CURRENT_TIMESTAMP+INTERVAL '37 days','active')`, machine, uid)
+		r := ensureWorkerRequest(t, uid, types.CloudWorkerPackedShared, "deleted machine", "deleted-machine")
+		p, err := db.PreviewCommercialAction(r)
+		if err != nil || !p.CanApply || p.WorkerCount != 1 || p.WorkerMatchingCount != 1 || p.WorkerEffect != "keep_existing" {
+			t.Fatalf("live machine preview: %+v %v", p, err)
+		}
+		exec(`UPDATE cloud_worker_lifecycles SET state='deleted' WHERE worker_uid=$1`, machine)
+		if bots, err := db.ListBotsByOwner(uid); err != nil || len(bots) != 0 {
+			t.Fatalf("a deleted machine's residual bot was listed as live: %d %v", len(bots), err)
+		}
+		if n := count(`SELECT COUNT(*) FROM bot_config WHERE owner_id=$1`, uid); n != 1 {
+			t.Fatalf("the residual bot row disappeared: %d", n)
+		}
+		p, err = db.PreviewCommercialAction(r)
+		if err != nil || !p.CanApply || p.WorkerCount != 0 || p.WorkerMatchingCount != 0 || p.WorkerEffect != "ensure_one" {
+			t.Fatalf("deleted machine still counted as adoptable: %+v %v", p, err)
+		}
+		r.Preview, r.PreviewToken = false, p.PreviewToken
+		if v := apply(r); v.Operation.WorkerStatus != "pending" {
+			t.Fatalf("the operation did not provision for an account without a machine: %+v", v.Operation)
+		}
+		if n := count(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid=$1 AND deployment_profile='packed_shared'`, uid); n != 1 {
+			t.Fatalf("the operation minted %d shared credits", n)
+		}
+	})
+
+	// The preview pins the machine set it saw. A count alone cannot tell the
+	// previewed machine from a different one of the same class, and the lifecycle
+	// state and billing claim are part of that identity: a machine being deleted or
+	// re-termed is not the machine the preview promised to keep.
+	t.Run("a machine's lifecycle state and billing claim invalidate the preview", func(t *testing.T) {
+		uid := createGLM53MigrationUser(t, db, "ops-machine-state")
+		machine := createGLM53MigrationUser(t, db, "ops-machine-state-bot")
+		exec(`INSERT INTO bot_config(user_id,owner_id,tenant_name,cloud_deployment) VALUES($1,$2,'ops-machine-state-bot','{"profile":"packed_shared"}'::jsonb)`, machine, uid)
+		exec(`INSERT INTO cloud_worker_lifecycles(worker_uid,owner_uid,tenant_name,package_expires_at,state)
+			VALUES($1,$2,'ops-machine-state-bot',CURRENT_TIMESTAMP+INTERVAL '30 days','active')`, machine, uid)
+		r := ensureWorkerRequest(t, uid, types.CloudWorkerPackedShared, "machine state", "machine-state")
+		p, err := db.PreviewCommercialAction(r)
+		if err != nil || !p.CanApply || p.WorkerEffect != "keep_existing" {
+			t.Fatalf("active machine preview: %+v %v", p, err)
+		}
+		r.Preview, r.PreviewToken = false, p.PreviewToken
+		exec(`UPDATE cloud_worker_lifecycles SET state='delete_pending' WHERE worker_uid=$1`, machine)
+		if _, err = db.ApplyCommercialAction(r); err == nil {
+			t.Fatal("a preview survived its machine's lifecycle state changing")
+		}
+		expectCode(err, "stale_preview")
+		// A billing claim is the same kind of change: another worker already owns
+		// this machine's next term.
+		r.Preview, r.PreviewToken = true, ""
+		if p, err = db.PreviewCommercialAction(r); err != nil || !p.CanApply {
+			t.Fatalf("delete_pending machine preview: %+v %v", p, err)
+		}
+		r.Preview, r.PreviewToken = false, p.PreviewToken
+		exec(`UPDATE cloud_worker_lifecycles SET billing_action='expire' WHERE worker_uid=$1`, machine)
+		if _, err = db.ApplyCommercialAction(r); err == nil {
+			t.Fatal("a preview survived a billing claim being taken on its machine")
+		}
+		expectCode(err, "stale_preview")
+		// A destroy in flight is not adoptable at all: the preview says so and no
+		// token issued before it can be applied.
+		exec(`UPDATE cloud_worker_lifecycles SET state='delete_running', billing_action='' WHERE worker_uid=$1`, machine)
+		r.Preview, r.PreviewToken = true, ""
+		blocked, err := db.PreviewCommercialAction(r)
+		if err != nil || blocked.CanApply || len(blocked.Warnings) == 0 {
+			t.Fatalf("a machine being destroyed was still adoptable: %+v %v", blocked, err)
+		}
+		r.Preview, r.PreviewToken = false, blocked.PreviewToken
+		if _, err = db.ApplyCommercialAction(r); err == nil {
+			t.Fatal("an operation applied against a machine that is not adoptable")
+		}
+		expectCode(err, "stale_preview")
+		if n := count(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid=$1`, uid); n != 0 {
+			t.Fatalf("a refused machine operation minted %d credits", n)
+		}
+	})
+
+	// An explicit profile this build does not know is not guessed: the machine
+	// cannot be classified, so the preview fails instead of quietly treating the
+	// account as machine-less and buying another one.
+	t.Run("an unknown recorded machine profile fails the preview", func(t *testing.T) {
+		uid := createGLM53MigrationUser(t, db, "ops-unknown-profile")
+		machine := createGLM53MigrationUser(t, db, "ops-unknown-profile-bot")
+		exec(`INSERT INTO bot_config(user_id,owner_id,tenant_name,cloud_deployment) VALUES($1,$2,'ops-unknown-profile-bot','{"profile":"mystery_fleet"}'::jsonb)`, machine, uid)
+		r := ensureWorkerRequest(t, uid, types.CloudWorkerPackedShared, "unknown profile", "unknown-profile")
+		p, err := db.PreviewCommercialAction(r)
+		if err == nil {
+			t.Fatalf("an unclassifiable machine was accepted: %+v", p)
+		}
+		expectCode(err, "invalid_request")
+	})
+}
+
+// ensureWorkerRequest is the operator "keep the machine this account already has"
+// request the machine-state contracts act on: the machine set is re-read from the
+// database, so the request itself only carries the deployment class.
+func ensureWorkerRequest(t *testing.T, uid int64, profile, note, operationID string) types.CommercialActionRequest {
+	t.Helper()
+	r := types.CommercialActionRequest{UID: uid, Intent: "ensure_worker", DeploymentProfile: profile, DurationDays: 3, Preview: true, Note: note, OperationID: operationID}
+	if err := r.Normalize(); err != nil {
+		t.Fatalf("normalize %s: %v", operationID, err)
+	}
+	return r
 }
 
 func boolInt(v bool) int {

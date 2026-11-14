@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -243,20 +244,24 @@ func (h *CloudWorkerHandler) prepareCommercialActionWorker(w http.ResponseWriter
 		return true
 	}
 	if v.Request.WorkerAction == "ensure" {
-		workers, err := h.cloudWorkersOfOwner(uid)
+		// The preview is not trusted here: the machine set is re-read and
+		// re-classified at execution time, so a stale preview cannot make this
+		// operation adopt a machine of another deployment class.
+		target, found, err := h.commercialActionEnsureTarget(uid, v.Preview.DeploymentProfile)
 		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "failed to read owner workers"})
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "code": "cloud_worker_reconciliation_required"})
 			return true
 		}
-		if len(workers) > 0 {
-			if err = store.KeepCommercialOperationWorker(uid, types.CommercialActionSource(uid, v.Operation.OperationID), workers[0].UID); err != nil {
-				writeJSON(w, 500, map[string]string{"error": "failed to retain existing worker"})
+		if found {
+			if err = store.KeepCommercialOperationWorker(uid, types.CommercialActionSource(uid, v.Operation.OperationID), target); err != nil {
+				log.Printf("[cloud-worker] operation keep for uid %d worker %d rejected: %v", uid, target, err)
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "failed to retain existing worker", "code": "cloud_worker_keep_rejected"})
 				return true
 			}
-			if h.confirmCommercialKeptRetention(w, uid, workers[0].UID, v) {
+			if h.confirmCommercialKeptRetention(w, uid, target, v) {
 				return true
 			}
-			writeJSON(w, 200, map[string]interface{}{"worker_status": "kept", "uid": workers[0].UID})
+			writeJSON(w, 200, map[string]interface{}{"worker_status": "kept", "uid": target})
 			return true
 		}
 	}
@@ -267,6 +272,59 @@ func (h *CloudWorkerHandler) prepareCommercialActionWorker(w http.ResponseWriter
 		return true
 	}
 	return false
+}
+
+// commercialActionEnsureTarget answers the only question an ensure may ask:
+// which of this owner's machines, if any, is an instance of the requested
+// deployment class. A shared-container worker and a dedicated ECS instance are
+// different products, so the first machine in the roster is only adoptable when
+// its class matches; otherwise the operation has to provision one.
+//
+// Two rules keep that safe:
+//   - every machine's recorded profile is resolved and an unresolvable one is an
+//     error, never a silent "this account has no machine" (which would buy a
+//     second machine behind a failed lookup);
+//   - a machine whose lifecycle is already shutting down is not silently skipped
+//     either. It is not adoptable (the destroy is a decision already made), and
+//     creating a second one next to it would bill twice for the same product, so
+//     the operation stops for a human instead.
+func (h *CloudWorkerHandler) commercialActionEnsureTarget(uid int64, requested string) (int64, bool, error) {
+	class, valid := types.CloudWorkerDeploymentClass(requested)
+	if !valid {
+		return 0, false, fmt.Errorf("unsupported operation deployment profile %q", requested)
+	}
+	workers, err := h.cloudWorkersOfOwner(uid)
+	if err != nil {
+		return 0, false, fmt.Errorf("failed to read owner workers: %w", err)
+	}
+	sort.Slice(workers, func(i, j int) bool { return workers[i].UID < workers[j].UID })
+	var unavailable int64
+	for _, worker := range workers {
+		if worker.LifecycleState == "deleted" {
+			continue
+		}
+		profile := worker.DeploymentProfile
+		workerClass, valid := types.CloudWorkerDeploymentClass(profile)
+		if !valid {
+			return 0, false, fmt.Errorf("worker %d has an unsupported deployment profile %q", worker.UID, profile)
+		}
+		if workerClass != class {
+			continue
+		}
+		if !types.CloudWorkerCanBeAdopted(worker.LifecycleState, worker.BillingAction) {
+			if unavailable == 0 {
+				unavailable = worker.UID
+			}
+			continue
+		}
+		// The roster order is the existing deterministic one: the first machine
+		// of this class is the one adopted.
+		return worker.UID, true, nil
+	}
+	if unavailable != 0 {
+		return 0, false, fmt.Errorf("worker %d is a %s worker that is unavailable for adoption; confirm its lifecycle and billing state before provisioning another one", unavailable, class)
+	}
+	return 0, false, nil
 }
 
 // A small in-memory response sink lets durable work reuse all of HandleCreate:

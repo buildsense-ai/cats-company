@@ -161,6 +161,43 @@ func CommercialActionUsername(uid int64, operationID string) string {
 	return "ops-" + CommercialActionHash(fmt.Sprintf("%d:%s", uid, operationID))[:20]
 }
 
+// CommercialActionWorker is one existing machine the action snapshot read. The
+// operator action needs more than a count: a shared-container worker and a
+// dedicated ECS instance are different products, so "keep the machine this
+// account already has" is only answerable once every machine's identity and
+// deployment profile are known.
+//
+// Both fields take part in the preview token, which is why a machine replaced by
+// another one of the same deployment class (same count, different buyer-owned
+// identity) or a machine switched to another backend invalidates a stale
+// preview instead of being accepted as "there is still one machine".
+type CommercialActionWorker struct {
+	UID            int64  `json:"uid"`
+	Profile        string `json:"profile"`
+	LifecycleState string `json:"lifecycle_state,omitempty"`
+	BillingAction  string `json:"billing_action,omitempty"`
+}
+
+// DeploymentClass reports the machine class (dedicated/shared) of this worker.
+// An unknown recorded profile is reported as such instead of being guessed.
+func (w CommercialActionWorker) DeploymentClass() (string, bool) {
+	return CloudWorkerDeploymentClass(w.Profile)
+}
+
+// Missing lifecycle rows retain the historical ECS behavior. Once recorded,
+// only states before physical deletion and without a billing claim are adoptable.
+func CloudWorkerCanBeAdopted(state, billingAction string) bool {
+	if strings.TrimSpace(billingAction) != "" {
+		return false
+	}
+	switch strings.TrimSpace(state) {
+	case "", "active", "delete_pending", "delete_failed":
+		return true
+	default:
+		return false
+	}
+}
+
 type CommercialActionPreview struct {
 	UID               int64           `json:"uid"`
 	Intent            string          `json:"intent"`
@@ -174,10 +211,28 @@ type CommercialActionPreview struct {
 	DurationDays      int             `json:"duration_days"`
 	WorkerAction      string          `json:"worker_action"`
 	WorkerCount       int             `json:"worker_count"`
-	WorkerExpiresAt   *time.Time      `json:"worker_expires_at"`
-	DeploymentProfile string          `json:"deployment_profile"`
-	BillingMode       string          `json:"billing_mode"`
-	RuntimePlan       string          `json:"runtime_plan"`
+	// WorkerCount is every machine the account owns; WorkerMatchingCount is how
+	// many of them belong to the deployment class of DeploymentProfile. They are
+	// separate numbers because "the account already has a machine" is not the
+	// same question as "the account already has a machine this operation may
+	// keep": an ECS-only account must not turn a shared operation into
+	// keep_existing, and the other way round.
+	//
+	// Both machine fields are omitempty on purpose. An action that sees no
+	// machine (and every package-only action) keeps the historical JSON shape,
+	// and therefore the durable preview token an already-journaled request was
+	// written with; only an account that really owns machines adds their
+	// identity, which is exactly what a stale preview has to notice.
+	WorkerMatchingCount int `json:"worker_matching_count,omitempty"`
+	// WorkerMachines pins the identity ("<uid>:<profile>") of every machine the
+	// snapshot saw. A count cannot distinguish "the machine that was previewed"
+	// from "a different machine of the same type", so replacing machines
+	// one-for-one used to keep a stale preview valid.
+	WorkerMachines    []string   `json:"worker_machines,omitempty"`
+	WorkerExpiresAt   *time.Time `json:"worker_expires_at"`
+	DeploymentProfile string     `json:"deployment_profile"`
+	BillingMode       string     `json:"billing_mode"`
+	RuntimePlan       string     `json:"runtime_plan"`
 	// WorkerExpiryMode mirrors the request. Empty means the request predates
 	// the field, so the preview keeps its historical shape and token.
 	WorkerExpiryMode string  `json:"worker_expiry_mode,omitempty"`
