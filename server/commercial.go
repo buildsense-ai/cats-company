@@ -1528,6 +1528,10 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported cloud worker runtime plan"})
 			return
 		}
+		if !commercialRetailWorkerConfigurationValid(req.Slug, cloudWorkerIncluded, deploymentProfile, runtimePlan) {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "V1/V2/V3 retail plans must include a packed_shared light worker; machine upgrades are separate"})
+			return
+		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
 			Slug:                         req.Slug,
 			Name:                         req.Name,

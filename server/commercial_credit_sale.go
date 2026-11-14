@@ -53,5 +53,25 @@ func commercialCreditOnlyPlan(plan *types.CommercialPlan) bool {
 // commercialCreditPlanSellable 是 credit-only 套餐的销售门禁：产品本身合法，
 // 并且运营开关与 relay 结算通道都已就绪。
 func commercialCreditPlanSellable(plan *types.CommercialPlan) bool {
-	return commercialCreditOnlyPlan(plan) && commercialCreditPlanSaleGatesOpen()
+	return commercialCreditOnlyPlan(plan) && commercialCreditPlanSaleGatesOpen() &&
+		commercialRetailWorkerConfigurationValid(plan.Slug, plan.CloudWorkerIncluded, plan.CloudWorkerDeploymentProfile, plan.CloudWorkerRuntimePlan)
+}
+
+// The current retail model-credit ladder includes the same 1/20 shared worker.
+// Larger machine tiers are separate future purchases; team and custom plans keep
+// their own resource configuration.
+func commercialRetailCreditPlan(slug string) bool {
+	switch strings.TrimSpace(slug) {
+	case "catsco-credit-v1-monthly", "catsco-credit-v2-monthly", "catsco-credit-v3-monthly":
+		return true
+	default:
+		return false
+	}
+}
+
+func commercialRetailWorkerConfigurationValid(slug string, included bool, profile, runtimePlan string) bool {
+	if !commercialRetailCreditPlan(slug) {
+		return true
+	}
+	return included && strings.TrimSpace(profile) == "packed_shared" && strings.TrimSpace(runtimePlan) == "light"
 }
