@@ -200,6 +200,7 @@ describe('CloudArtifactsPanel', () => {
     api.requestArtifactLaunch.mockResolvedValue({ launch_url: 'https://app.example/_launch/code' });
     await act(async () => root.render(<TestPanel initialTab="gateway" initialApp={app} />));
     const frame = container.querySelector('iframe');
+    expect(frame.getAttribute('sandbox').split(' ')).toContain('allow-downloads');
     const post = vi.spyOn(frame.contentWindow, 'postMessage');
     await act(async () => Simulate.load(frame));
     expect(container.textContent).toContain('尚未交接');

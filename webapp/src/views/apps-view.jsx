@@ -454,7 +454,7 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
             <ExternalLink size={16} aria-hidden="true" /><span>新页面打开</span>
           </button>
         </div>
-        <iframe className="cc-apps-viewer-frame" src={selectedApp.viewerURL || selectedApp.url} title={pageTitle} sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals" referrerPolicy="no-referrer" />
+        <iframe className="cc-apps-viewer-frame" src={selectedApp.viewerURL || selectedApp.url} title={pageTitle} sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals allow-downloads" referrerPolicy="no-referrer" />
         {detachDialog}
       </section>
     );

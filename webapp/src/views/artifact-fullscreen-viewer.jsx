@@ -173,7 +173,7 @@ function GatewayApplicationViewer({ params }) {
         <p role="status">这是分享的应用，以访客方式浏览。登录后可以把它加入自己的会话。</p>
       )}
       <iframe className="artifact-fullscreen-viewer-frame" title={loaded.title} src={loaded.browseURL}
-        sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals" referrerPolicy="no-referrer" />
+        sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals allow-downloads" referrerPolicy="no-referrer" />
     </main>
   );
   if (loaded) return <ArtifactFullscreenSession params={loaded.params} gatewayFile={loaded.file} />;
@@ -692,6 +692,7 @@ function ArtifactFullscreenSession({ params, gatewayFile = null }) {
         <ControlledArtifactPreview
           file={file}
           descriptor={descriptor}
+          allowDownloads={Boolean(gatewayFile)}
           className="artifact-fullscreen-viewer-frame"
           title={file.name || 'CatsCo Artifact'}
           onBindingChange={handleBindingChange}

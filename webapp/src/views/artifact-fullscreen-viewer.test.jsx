@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 const mocks = vi.hoisted(() => ({
   sessionReady: false,
+  realPreview: false,
   wsHandler: null,
   getCloudArtifacts: vi.fn(),
   listArtifactApps: vi.fn(),
@@ -117,8 +118,9 @@ vi.mock('../widgets/chat-message', () => ({
   }),
 }));
 
-vi.mock('../widgets/controlled-artifact-preview', () => ({
-  default: function MockControlledArtifactPreview({ file, onBindingChange }) {
+vi.mock('../widgets/controlled-artifact-preview', async (importOriginal) => {
+  const { default: RealControlledArtifactPreview } = await importOriginal();
+  function MockControlledArtifactPreview({ file, onBindingChange }) {
     const binding = React.useMemo(() => ({
       frame: { contentWindow: mocks.frameWindow },
       artifactId: file.artifact_id,
@@ -137,8 +139,13 @@ vi.mock('../widgets/controlled-artifact-preview', () => ({
       };
     }, [binding, onBindingChange]);
     return <iframe title="mock-artifact" data-url={file.url} />;
-  },
-}));
+  }
+  return {
+    default: (props) => mocks.realPreview
+      ? <RealControlledArtifactPreview {...props} />
+      : <MockControlledArtifactPreview {...props} />,
+  };
+});
 
 import ArtifactFullscreenViewer from './artifact-fullscreen-viewer';
 import { createArtifactPreviewMessage } from '../artifact-preview-coordinator';
@@ -214,6 +221,7 @@ describe('ArtifactFullscreenViewer', () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     channels.length = 0;
     mocks.sessionReady = false;
+    mocks.realPreview = false;
     mocks.wsHandler = null;
     mocks.runtimeBindingChange = null;
     mocks.runtimeBinding = null;
@@ -263,6 +271,21 @@ describe('ArtifactFullscreenViewer', () => {
     container.remove();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+  });
+
+  it.each([true, false])('uses the real iframe download policy for gateway mode=%s', async (gateway) => {
+    mocks.realPreview = true;
+    const target = gateway
+      ? { ...location, search: '?mode=gateway&topic=p2p_1_440&agent=440&artifact=risk-register' }
+      : location;
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={target} />);
+      await flushPromises(20);
+    });
+    const frame = container.querySelector('iframe');
+    expect(frame).not.toBeNull();
+    expect(frame.src).toContain(gateway ? '/_launch/fresh-code' : '/risk-register/v2/');
+    expect(frame.getAttribute('sandbox').split(' ').includes('allow-downloads')).toBe(gateway);
   });
 
   it('hosts gateway tasks without an opener or sidebar coordination and resolves the latest version', async () => {
@@ -334,6 +357,7 @@ describe('ArtifactFullscreenViewer', () => {
       await flushPromises(20);
     });
     expect(container.querySelector('iframe')?.src).toContain('/_launch/fresh-code');
+    expect(container.querySelector('iframe').getAttribute('sandbox').split(' ')).toContain('allow-downloads');
     // A gateway-only app opens straight into the frame, with no browse-only
     // notice above it.
     expect(container.querySelector('[role="status"]')).toBeNull();
