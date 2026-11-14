@@ -463,6 +463,19 @@ func (r *cloudWorkerMachineTermRow) packageTerm() *types.CloudWorkerPackageTerm 
 //     out machine credits against a token-only plan;
 //   - only an active entitlement counts; a revoked or expired one is not a grant.
 //
+// The window column is not simply e.expires_at. A credit invite is a lasting
+// model permission with no term of its own ("体验不设固定天数"), so its
+// entitlement is written with a NULL expiry - while the machine credit it hands
+// out still ends with the invite's package window. Read alone, that NULL answered
+// "no deadline at all": the summary reported a machine that never expires and the
+// redemption's settlement wrote package_expires_at = NULL, a worker no sweeper
+// would ever collect. The machine window is therefore derived from the invite's
+// own duration (the same instant the redemption wrote into the credit) rather
+// than from the credit row, which is marked consumed by provisioning while the
+// time it bought does not change. A perpetual package (duration -1) keeps
+// granting a machine with no deadline, and a non-invite source keeps whatever
+// expiry it was sold with, including none at all.
+//
 // The "not started yet" cut is deliberately absent. An early renewal - and the
 // operator extension that mirrors it - appends a segment that starts at the
 // previous period's expiry, i.e. in the future, so a query that dropped those
@@ -473,16 +486,25 @@ func (r *cloudWorkerMachineTermRow) packageTerm() *types.CloudWorkerPackageTerm 
 // the first gap, so a package bought for next month still authorizes nothing
 // today.
 const cloudWorkerMachineTermQuery = `
-	SELECT e.id, e.plan_id, e.starts_at, e.expires_at, p.cloud_worker_retention_days, p.duration_days
+	SELECT e.id, e.plan_id, e.starts_at,
+	       COALESCE(e.expires_at, machine_invite.window_end) AS expires_at,
+	       p.cloud_worker_retention_days, p.duration_days
 	FROM commercial_entitlements e
 	JOIN commercial_plans p ON p.id = e.plan_id
+	-- One read of the invite row decides both whether an invite grants a machine
+	-- and how long that machine lasts, so the two cannot disagree.
+	LEFT JOIN LATERAL (
+		SELECT TRUE AS grants_machine,
+		       CASE WHEN p.duration_days <> -1
+		            THEN e.starts_at + (p.duration_days * INTERVAL '1 day') END AS window_end
+		FROM commercial_invite_codes ic
+		WHERE e.source = 'invite' AND ic.code = e.source_ref AND ic.cloud_worker_credits > 0
+		LIMIT 1
+	) machine_invite ON TRUE
 	WHERE e.uid = $1 AND e.state = 'active'
 	  AND e.source NOT IN ('free', 'legacy')
-	  AND (p.cloud_worker_included
-	       OR (e.source = 'invite' AND EXISTS (
-	            SELECT 1 FROM commercial_invite_codes ic
-	            WHERE ic.code = e.source_ref AND ic.cloud_worker_credits > 0)))
-	ORDER BY e.starts_at, e.expires_at DESC NULLS LAST, e.id`
+	  AND (p.cloud_worker_included OR machine_invite.grants_machine)
+	ORDER BY e.starts_at, expires_at DESC NULLS LAST, e.id`
 
 // rowQuerier is the slice of *sql.DB / *sql.Tx this query needs, so the read
 // path and the transactional write path share one statement instead of two
