@@ -33,11 +33,13 @@ var (
 // uid from it; this handler only binds the Agent and keeps the selector to
 // the Daily Notes lane, so no CatsLog operator credential is involved.
 type DailyNotesHandler struct {
-	db      store.Store
-	baseURL string
-	client  *http.Client
-	timeout time.Duration
-	maxBody int64
+	db         store.Store
+	baseURL    string
+	client     *http.Client
+	timeout    time.Duration
+	maxBody    int64
+	queryPath  string
+	buildQuery func(*http.Request, int64) ([]byte, bool)
 }
 
 // NewDailyNotesHandler returns a handler for the CatsLog server at baseURL.
@@ -78,7 +80,11 @@ func (h *DailyNotesHandler) HandleQuery(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "daily_notes_not_found"})
 		return
 	}
-	upstreamQuery, ok := dailyNotesUpstreamQuery(r, agentUID)
+	buildQuery := h.buildQuery
+	if buildQuery == nil {
+		buildQuery = dailyNotesUpstreamQuery
+	}
+	upstreamQuery, ok := buildQuery(r, agentUID)
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
@@ -91,7 +97,11 @@ func (h *DailyNotesHandler) HandleQuery(w http.ResponseWriter, r *http.Request) 
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, h.baseURL+dailyNotesQueryPath, bytes.NewReader(upstreamQuery))
+	queryPath := h.queryPath
+	if queryPath == "" {
+		queryPath = dailyNotesQueryPath
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, h.baseURL+queryPath, bytes.NewReader(upstreamQuery))
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "daily_notes_unavailable"})
 		return

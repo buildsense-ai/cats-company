@@ -66,7 +66,7 @@ function clipLabel(context, text, width) {
 
 // rightInset is the width covered by the floating reader, so fitting and
 // centring use the part of the canvas that is actually visible.
-export default function DailyNotesNetwork({ layout, model, matches, selectedId, onSelect, rightInset: requestedInset = 0, maxFitZoom = 1.6 }) {
+export default function DailyNotesNetwork({ layout, model, matches, selectedId, onSelect, rightInset: requestedInset = 0, maxFitZoom = 1.6, ariaLabel, legend }) {
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const viewRef = useRef({ x: 0, y: 0, k: 1 });
@@ -509,7 +509,7 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
         ref={canvasRef}
         role="img"
         tabIndex={-1}
-        aria-label={`笔记图谱：${model.entries.size} 条笔记，按来源会话分为 ${layout.regions.length} 组。可在列表视图中逐条阅读。`}
+        aria-label={ariaLabel || `笔记图谱：${model.entries.size} 条笔记，按来源会话分为 ${layout.regions.length} 组。可在列表视图中逐条阅读。`}
         data-cursor={hover.id || hover.region >= 0 ? 'pointer' : 'grab'}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -542,10 +542,12 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
         onPointerLeave={() => setHover({ id: '', region: -1 })}
       />
       <div className="cc-daily-notes-network-legend" aria-hidden="true">
+        {legend || <>
         <span><i className="is-entry" /><i className="is-entry is-second" />笔记（同色同来源，越淡越旧）</span>
         <span><i className="is-link" />笔记关系</span>
         <span><i className="is-correct" />更正</span>
         <span><i className="is-bridge" />引用其他会话</span>
+        </>}
       </div>
       <div className="cc-daily-notes-network-controls" style={{ right: rightInset + 12 }}>
         <button type="button" className="oc-btn oc-btn-default" aria-label="放大" title="放大" onClick={() => zoomAt(1.25)}><Plus size={15} aria-hidden="true" /></button>

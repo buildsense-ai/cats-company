@@ -2087,6 +2087,28 @@ describe('MessagesView composer draft isolation', () => {
     writeFileSync(dir + '/timeline-' + showThinking + '.json', JSON.stringify({ showThinking, sources: sources.length, finalReplyVisible: true }));
   });
 
+  it.each([true, false])('keeps saved Branch sources in the timeline with showThinking=%s', async (showThinking) => {
+    sourceJourney.enabled = true;
+    localStorage.setItem('cc_show_thinking', String(showThinking));
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    const { default: capture } = await import('../../../server/testdata/memory-branch.v1.json');
+    const messages = capture.events.map((payload, index) => ({
+      id: 73 + index, from_uid: 2, type: 'text', content: '',
+      content_blocks: [{ type: 'memory_branch', payload }],
+      created_at: '2026-07-01T00:00:0' + index + 'Z',
+    }));
+    api.getMessages.mockResolvedValueOnce({ messages });
+    api.getFriends.mockResolvedValueOnce({ friends: [{ id: 2, display_name: 'Agent', is_bot: true }] });
+    await mountTopic(root, 'p2p_1_2', { topicName: 'Agent' });
+    await act(async () => { await flushPromises(); });
+    const sources = container.querySelectorAll('.cc-memory-source');
+    expect(sources).toHaveLength(capture.events.at(-1).nodes.length);
+    expect(container.textContent).toContain('回答中明确引用 1 份');
+    const dir = '/tmp/catsco-branch-sources';
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(dir + '/timeline-' + showThinking + '.json', JSON.stringify({ showThinking, sources: sources.length, answerRefs: 1 }));
+  });
+
   it('keeps sender metadata on the first visible reply when thinking is hidden', async () => {
     localStorage.setItem('cc_show_thinking', 'false');
     api.getMessages.mockResolvedValueOnce({

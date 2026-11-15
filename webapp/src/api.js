@@ -760,6 +760,8 @@ export const api = {
     request('GET', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/manifest`, undefined, options),
   getKnowledgeWikiWebSocketTicket: (agentUid, options = {}) =>
     request('GET', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/ws-ticket`, undefined, options),
+  readMemorySource: (agentUid, query, options = {}) =>
+    request('POST', `/api/agents/${encodeURIComponent(agentUid)}/memory-sources`, query, { timeoutMs: 30_000, ...options }),
   queryDailyNotes: (agentUid, query, options = {}) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/daily-notes`, query, { timeoutMs: 30_000, ...options }),
   issueKnowledgeWikiHandoff: (agentUid) =>

@@ -44,7 +44,8 @@ export { downloadableMediaURL } from '../utils/media-download';
 import { previewPageURL, sharePreviewLink } from './preview-share';
 import { normalizeGatewayAnnotations } from '../gateway-annotations';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
-import DiaryToolResult from './diary-tool-result';
+import TurnSources from './turn-sources';
+import { latestMemoryBranches } from './memory-branch';
 import { diaryAgentUID, diaryToolView } from './diary-sources';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
@@ -339,7 +340,9 @@ function groupBlocks(messages) {
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    if (msg.type === 'thinking') {
+    if (msg.type === 'memory_branch') {
+      items.push({ type: 'memory_branch', payload: msg.content });
+    } else if (msg.type === 'thinking') {
       items.push({ type: 'thinking', text: msg.content });
     } else if (msg.type === 'tool_use') {
       const toolId = msg.metadata?.id || msg.metadata?.tool_call_id || msg.metadata?.tool_use_id;
@@ -398,6 +401,10 @@ function groupContentBlocks(blocks) {
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
+    if (block.type === 'memory_branch') {
+      items.push({ type: 'memory_branch', payload: block.payload });
+      continue;
+    }
     if (block.type === 'thinking') {
       const text = block.thinking || block.text || block.content || '';
       const subAgentEvent = subAgentEventFromBlock(block, text);
@@ -672,6 +679,7 @@ function contentBlocksFromMessage(msg) {
     }));
   }
 
+  if (msg?.type === 'memory_branch') return [{ type: 'memory_branch', payload: msg.content }];
   if (msg?.type === 'thinking') {
     return [{ type: 'thinking', thinking: messageContentText(msg.content), metadata: msg.metadata || null }];
   }
@@ -724,7 +732,9 @@ function groupWorkingMessages(messages) {
 // Keep the timeline visibility decision aligned with the source renderer,
 // including saved content blocks and tool-result pairing/validation.
 export function hasWorkingSources(messages) {
-  return groupWorkingMessages(messages).some((item) => item.type === 'tool_pair' && diaryToolView(item));
+  const blocks = groupWorkingMessages(messages);
+  return latestMemoryBranches(blocks).length > 0
+    || blocks.some((item) => item.type === 'tool_pair' && diaryToolView(item));
 }
 
 function subAgentStatusText(status, isError) {
@@ -949,6 +959,7 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
     return view ? [{ item, view }] : [];
   }), [safeBlocks]);
   const detailBlocks = safeBlocks.flatMap((item) => {
+    if (item.type === 'memory_branch') return [];
     if (item === planItem) return [];
     // Diary navigation lives outside execution details; preserve its attached
     // reasoning in details and its user-facing progress in the conversation.
@@ -968,7 +979,8 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
   const running = executionState ? executionState === 'running' : !complete && !stopped;
   const streamingNarrative = replyStreaming || progressMessages.some((item, index) => item.streaming || revealingNarratives[index]);
   const lastTool = [...safeBlocks].reverse().find((item) => item.type === 'tool_pair');
-  const summary = plan
+  const sourceOnly = safeBlocks.every(item => item.type === 'memory_branch');
+  const summary = sourceOnly ? '记忆探索' : plan
     ? `${completedPlanSteps}/${plan.steps.length}${!complete && lastTool?.name && lastTool.name !== 'update_plan' ? ` · ${lastTool.name}` : ''}`
     : `${safeBlocks.length} 步${lastTool?.name && lastTool.name !== 'catslog_knowledge_recall' ? ` · ${lastTool.name}` : diaryItems.length ? ' · 查阅日记' : ''}`;
 
@@ -1044,7 +1056,7 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
           {statusContent}
         </div>
       ))}
-      {diaryItems.map(({ item, view }, index) => <DiaryToolResult key={item.id || index} item={item} view={view} agentUid={agentUid} />)}
+      <TurnSources diaryItems={diaryItems} blocks={safeBlocks} agentUid={agentUid} />
       {!open && planContent}
       {open && hasDetails && (
         <div
@@ -1460,7 +1472,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
             </div>
           )}
 
-          {!isSelf && (showThinking || executionState || workingBlocks.some((item) => item.type === 'tool_pair' && diaryToolView(item))) && (
+          {!isSelf && (showThinking || executionState || latestMemoryBranches(workingBlocks).length > 0 || workingBlocks.some((item) => item.type === 'tool_pair' && diaryToolView(item))) && (
             <WorkingProcess blocks={workingBlocks} agentUid={diaryAgentUID(message.from_uid)} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} showDetails={showThinking} />
           )}
 

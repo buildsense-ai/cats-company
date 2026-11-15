@@ -1219,6 +1219,7 @@ func main() {
 	mux.HandleFunc("POST /wiki/handoff", agentHandler.HandleKnowledgeWikiHandoff)
 	dailyNotesHandler := server.NewDailyNotesHandler(db, os.Getenv("CATSCO_DAILY_NOTES_BASE_URL"))
 	mux.HandleFunc("POST /api/agents/{uid}/daily-notes", jwtAuthWithDB(dailyNotesHandler.HandleQuery))
+	mux.HandleFunc("POST /api/agents/{uid}/memory-sources", jwtAuthWithDB(dailyNotesHandler.HandleMemoryRead))
 	mux.HandleFunc("/api/agents/", jwtAuthWithDB(cloudArtifactHandler.HandleAgentArtifacts))
 	mux.HandleFunc("/api/topics/", jwtAuthWithDB(cloudArtifactHandler.HandleTopicFiles))
 	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
