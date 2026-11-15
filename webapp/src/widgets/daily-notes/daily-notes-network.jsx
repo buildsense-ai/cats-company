@@ -66,11 +66,12 @@ function clipLabel(context, text, width) {
 
 // rightInset is the width covered by the floating reader, so fitting and
 // centring use the part of the canvas that is actually visible.
-export default function DailyNotesNetwork({ layout, model, matches, selectedId, onSelect, rightInset: requestedInset = 0 }) {
+export default function DailyNotesNetwork({ layout, model, matches, selectedId, onSelect, rightInset: requestedInset = 0, maxFitZoom = 1.6 }) {
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const viewRef = useRef({ x: 0, y: 0, k: 1 });
   const fittedRef = useRef(false);
+  const fittedSizeRef = useRef('');
   const dragRef = useRef(null);
   const frameRef = useRef(0);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -375,10 +376,10 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     if (!size.width || !layout.nodes.length) return;
     const pad = 40;
     const width = Math.max(200, size.width - rightInset);
-    const k = Math.max(MIN_ZOOM, Math.min(1.6, (width - pad * 2) / Math.max(1, maxX - minX), (size.height - pad * 2) / Math.max(1, maxY - minY)));
+    const k = Math.max(MIN_ZOOM, Math.min(maxFitZoom, (width - pad * 2) / Math.max(1, maxX - minX), (size.height - pad * 2) / Math.max(1, maxY - minY)));
     viewRef.current = { k, x: width / 2 - ((minX + maxX) / 2) * k, y: size.height / 2 - ((minY + maxY) / 2) * k };
     schedule();
-  }, [layout, size, rightInset, schedule]);
+  }, [layout, size, rightInset, maxFitZoom, schedule]);
 
   useEffect(() => {
     const element = wrapRef.current;
@@ -401,16 +402,19 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
     canvas.style.height = `${size.height}px`;
   }, [size]);
 
-  // Fit when the first pages arrive and again once loading finishes; later
-  // changes keep the reader's view.
+  // Fit on first load, completed loading, and viewport changes. A desktop
+  // camera must not leave the notes off-screen when the chat becomes narrow.
+  // Other changes keep the reader's camera and manual zoom.
   const nodeCount = layout.nodes.length;
   useEffect(() => {
     if (!size.width || !nodeCount) return;
-    if (!fittedRef.current || fittedRef.current === 'partial') {
+    const fittedSize = `${size.width}:${size.height}:${rightInset}`;
+    if (!fittedRef.current || fittedRef.current === 'partial' || fittedSizeRef.current !== fittedSize) {
       fittedRef.current = layout.complete ? true : 'partial';
+      fittedSizeRef.current = fittedSize;
       fit();
     }
-  }, [fit, nodeCount, layout.complete, size.width]);
+  }, [fit, nodeCount, layout.complete, size.width, size.height, rightInset]);
 
   useEffect(() => {
     schedule();
@@ -504,6 +508,7 @@ export default function DailyNotesNetwork({ layout, model, matches, selectedId, 
       <canvas
         ref={canvasRef}
         role="img"
+        tabIndex={-1}
         aria-label={`笔记图谱：${model.entries.size} 条笔记，按来源会话分为 ${layout.regions.length} 组。可在列表视图中逐条阅读。`}
         data-cursor={hover.id || hover.region >= 0 ? 'pointer' : 'grab'}
         onPointerDown={(event) => {

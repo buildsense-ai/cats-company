@@ -25,6 +25,7 @@ const (
 var (
 	dailyNotesDocumentID = regexp.MustCompile(`^akd-[0-9a-f]{24}$`)
 	dailyNotesEntryID    = regexp.MustCompile(`^ake-[0-9a-f]{24}$`)
+	dailyNotesRevision   = regexp.MustCompile(`^akr-[0-9a-f]{64}$`)
 )
 
 // DailyNotesHandler serves an owner the CatsLog Daily Notes of their own
@@ -56,6 +57,7 @@ type dailyNotesRequest struct {
 	Cursor     string `json:"cursor,omitempty"`
 	DocumentID string `json:"document_id,omitempty"`
 	EntryID    string `json:"entry_id,omitempty"`
+	Revision   string `json:"revision,omitempty"`
 }
 
 // HandleQuery handles POST /api/agents/{uid}/daily-notes.
@@ -151,7 +153,7 @@ func dailyNotesUpstreamQuery(r *http.Request, agentUID int64) ([]byte, bool) {
 	upstream := map[string]any{"agent_id": formatUID(agentUID), "operation": q.Operation}
 	switch q.Operation {
 	case "graph":
-		if q.DocumentID != "" || q.EntryID != "" {
+		if q.DocumentID != "" || q.EntryID != "" || q.Revision != "" {
 			return nil, false
 		}
 		graph := map[string]string{"lane": "diaries"}
@@ -160,10 +162,13 @@ func dailyNotesUpstreamQuery(r *http.Request, agentUID int64) ([]byte, bool) {
 		}
 		upstream["graph"] = graph
 	case "read":
-		if !dailyNotesDocumentID.MatchString(q.DocumentID) || (q.EntryID != "" && !dailyNotesEntryID.MatchString(q.EntryID)) {
+		if !dailyNotesDocumentID.MatchString(q.DocumentID) || (q.EntryID != "" && !dailyNotesEntryID.MatchString(q.EntryID)) || (q.Revision != "" && !dailyNotesRevision.MatchString(q.Revision)) {
 			return nil, false
 		}
 		read := map[string]string{"document_id": q.DocumentID}
+		if q.Revision != "" {
+			read["revision"] = q.Revision
+		}
 		if q.EntryID != "" {
 			read["entry_id"] = q.EntryID
 		}
