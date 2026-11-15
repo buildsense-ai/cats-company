@@ -1,0 +1,500 @@
+{
+  "schema": "catsco.memory_branch.fixture.v1",
+  "provenance": "Actual AgentTurnController → MemorySearchBranchSession → queue drain; scripted local provider; synthetic data; external provider calls=0.",
+  "events": [
+    {
+      "schema": "catsco.memory_branch.v1",
+      "branch_run_id": "memory-mwi10rsm-fe0c79e1",
+      "origin_turn_id": "episode:1:74664a10",
+      "sequence": 1,
+      "status": "running",
+      "nodes": [],
+      "edges": [],
+      "read_refs": [],
+      "injected_refs": [],
+      "answer_refs": []
+    },
+    {
+      "schema": "catsco.memory_branch.v1",
+      "branch_run_id": "memory-mwi10rsm-fe0c79e1",
+      "origin_turn_id": "episode:1:74664a10",
+      "sequence": 2,
+      "status": "running",
+      "nodes": [
+        {
+          "id": "6f6ac7bb378e66f6b178012f",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "330ef14f9755aa9da064003f",
+          "kind": "condition",
+          "label": "适用条件",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "8bcb51bf707084ce2a981ee0",
+          "kind": "omission",
+          "label": "已知缺口",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "e37643bf036508ba5daf06a9",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "c4d4a210b758544254648d30",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "b6a6aa90dc0ebb6de7b2a603",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "977fa6b6a439584e945ce3a9",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "2157193831ff676f1042e9e4",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "9645114605bb0b6fd9069ef8",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "db1fa7a5f90cb715a85d51f3",
+          "from": "330ef14f9755aa9da064003f",
+          "to": "6f6ac7bb378e66f6b178012f",
+          "kind": "qualifies"
+        },
+        {
+          "id": "96bf2b0a82cd313787fc6a86",
+          "from": "8bcb51bf707084ce2a981ee0",
+          "to": "6f6ac7bb378e66f6b178012f",
+          "kind": "omits"
+        }
+      ],
+      "read_refs": [
+        "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+      ],
+      "injected_refs": [],
+      "answer_refs": []
+    },
+    {
+      "schema": "catsco.memory_branch.v1",
+      "branch_run_id": "memory-mwi10rsm-fe0c79e1",
+      "origin_turn_id": "episode:1:74664a10",
+      "sequence": 3,
+      "status": "ready",
+      "nodes": [
+        {
+          "id": "6f6ac7bb378e66f6b178012f",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "330ef14f9755aa9da064003f",
+          "kind": "condition",
+          "label": "适用条件",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "8bcb51bf707084ce2a981ee0",
+          "kind": "omission",
+          "label": "已知缺口",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "e37643bf036508ba5daf06a9",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "c4d4a210b758544254648d30",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "b6a6aa90dc0ebb6de7b2a603",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "977fa6b6a439584e945ce3a9",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "2157193831ff676f1042e9e4",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "9645114605bb0b6fd9069ef8",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "db1fa7a5f90cb715a85d51f3",
+          "from": "330ef14f9755aa9da064003f",
+          "to": "6f6ac7bb378e66f6b178012f",
+          "kind": "qualifies"
+        },
+        {
+          "id": "96bf2b0a82cd313787fc6a86",
+          "from": "8bcb51bf707084ce2a981ee0",
+          "to": "6f6ac7bb378e66f6b178012f",
+          "kind": "omits"
+        }
+      ],
+      "read_refs": [
+        "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+      ],
+      "injected_refs": [],
+      "answer_refs": []
+    },
+    {
+      "schema": "catsco.memory_branch.v1",
+      "branch_run_id": "memory-mwi10rsm-fe0c79e1",
+      "origin_turn_id": "episode:1:74664a10",
+      "sequence": 4,
+      "status": "injected",
+      "nodes": [
+        {
+          "id": "6f6ac7bb378e66f6b178012f",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "330ef14f9755aa9da064003f",
+          "kind": "condition",
+          "label": "适用条件",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "8bcb51bf707084ce2a981ee0",
+          "kind": "omission",
+          "label": "已知缺口",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "e37643bf036508ba5daf06a9",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "c4d4a210b758544254648d30",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "b6a6aa90dc0ebb6de7b2a603",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "977fa6b6a439584e945ce3a9",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "2157193831ff676f1042e9e4",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "9645114605bb0b6fd9069ef8",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "db1fa7a5f90cb715a85d51f3",
+          "from": "330ef14f9755aa9da064003f",
+          "to": "6f6ac7bb378e66f6b178012f",
+          "kind": "qualifies"
+        },
+        {
+          "id": "96bf2b0a82cd313787fc6a86",
+          "from": "8bcb51bf707084ce2a981ee0",
+          "to": "6f6ac7bb378e66f6b178012f",
+          "kind": "omits"
+        }
+      ],
+      "read_refs": [
+        "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+      ],
+      "injected_refs": [
+        "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+      ],
+      "answer_refs": [],
+      "consumed_turn_id": "episode:1:74664a10",
+      "observation_id": "memory-mwi10rsr-867ce1d5"
+    },
+    {
+      "schema": "catsco.memory_branch.v1",
+      "branch_run_id": "memory-mwi10rsm-fe0c79e1",
+      "origin_turn_id": "episode:1:74664a10",
+      "sequence": 5,
+      "status": "answered",
+      "nodes": [
+        {
+          "id": "6f6ac7bb378e66f6b178012f",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "330ef14f9755aa9da064003f",
+          "kind": "condition",
+          "label": "适用条件",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "8bcb51bf707084ce2a981ee0",
+          "kind": "omission",
+          "label": "已知缺口",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "e37643bf036508ba5daf06a9",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "c4d4a210b758544254648d30",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "b6a6aa90dc0ebb6de7b2a603",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "977fa6b6a439584e945ce3a9",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "2157193831ff676f1042e9e4",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        },
+        {
+          "id": "9645114605bb0b6fd9069ef8",
+          "kind": "assertion",
+          "label": "记忆断言",
+          "ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b",
+          "reader": {
+            "kind": "projection",
+            "projection_ref": "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "db1fa7a5f90cb715a85d51f3",
+          "from": "330ef14f9755aa9da064003f",
+          "to": "6f6ac7bb378e66f6b178012f",
+          "kind": "qualifies"
+        },
+        {
+          "id": "96bf2b0a82cd313787fc6a86",
+          "from": "8bcb51bf707084ce2a981ee0",
+          "to": "6f6ac7bb378e66f6b178012f",
+          "kind": "omits"
+        }
+      ],
+      "read_refs": [
+        "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+      ],
+      "injected_refs": [
+        "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+      ],
+      "answer_refs": [
+        "ref_3e2d3fb9376d30eaae2d127f0dc7c58fafd6edc07bc217df4537eb2ab1388a9b"
+      ],
+      "consumed_turn_id": "episode:1:74664a10",
+      "observation_id": "memory-mwi10rsr-867ce1d5"
+    }
+  ]
+}
