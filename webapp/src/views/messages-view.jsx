@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, MessageSquare, Minus, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq, isWSConnected } from '../api';
 import t from '../i18n';
-import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel, hasWorkingSources } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import { isCloudWorkerPending } from '../cloud-worker-pending';
@@ -7352,7 +7352,7 @@ export default function MessagesView({
             </div>
           );
           if (group.type === 'working') {
-            if (!showThinking && !liquidConversation) return null;
+            if (!showThinking && !liquidConversation && !hasWorkingSources(group.messages)) return null;
             return (
               <div
                 key={group.renderKey}
