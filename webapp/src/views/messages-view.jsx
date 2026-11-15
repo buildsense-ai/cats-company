@@ -18,6 +18,9 @@ import PublicationRepairPanel from '../widgets/skillhub-publication-repair-panel
 import { useConversationFork } from '../utils/use-conversation-fork';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
 import PwaDownloadLink from '../widgets/pwa-download-link';
+import {
+  buildOfficeUpdateMessage, countChangedOps, officeBytesToFile, OFFICE_SAVE_NOTICE,
+} from '../office/save.js';
 import ImageViewport from '../widgets/image-viewport';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
@@ -2537,6 +2540,81 @@ export default function MessagesView({
       if (gatewayAnnotationHostRef.current === host) gatewayAnnotationHostRef.current = null;
     };
   }, []);
+
+  /**
+   * Persist an edited Office document as a new attachment message.
+   *
+   * Attachments are immutable on the server: saving uploads again and appends a message that
+   * points at the new file. That is what makes the previous version still reachable, and it
+   * is why this never tries to rewrite the message the file came from.
+   *
+   * After the message lands, the preview is retargeted at the new attachment so the user sees
+   * the version they just saved rather than the stale one they opened.
+   */
+  const handleOfficeSave = useCallback(async (saved) => {
+    if (!saved?.bytes) return null;
+    const topic = String(activeTopicRef.current || '');
+    if (!topic) return null;
+
+    try {
+      const originalName = saved.fileName || previewFile?.name || 'presentation.pptx';
+      const family = /\.docx$/i.test(originalName) ? 'docx' : 'pptx';
+      const file = officeBytesToFile(saved.bytes, originalName, family);
+      const uploaded = await api.uploadFile(file, 'file');
+      const message = buildOfficeUpdateMessage({
+        uploaded,
+        originalName,
+        family,
+        slideCount: saved.slideCount,
+        changedParts: countChangedOps(saved.changes),
+      });
+
+      const result = await api.sendMessage(topic, {
+        type: 'text',
+        content: message.content,
+        content_blocks: message.content_blocks,
+      });
+
+      if (result && historyMessageID(result)) {
+        const { visibleMessages } = normalizeHistoryMessages([{
+          ...result,
+          created_at: result.created_at || new Date().toISOString(),
+        }]);
+        if (visibleMessages.length) {
+          const cacheKey = historyCacheKey(user.uid, topic);
+          const cached = historyCacheRef.current.get(cacheKey);
+          if (cached) {
+            cacheHistoryPage(historyCacheRef.current, cacheKey, {
+              ...cached, messages: mergeMessages(cached.messages, visibleMessages),
+            });
+          }
+          if (activeTopicRef.current === topic) {
+            setMessages(current => mergeMessages(current, visibleMessages));
+          }
+        }
+      }
+
+      // Retarget the open preview so the panel shows the saved bytes, not the old attachment.
+      setPreviewFileWithFocus({
+        ...(previewFile || {}),
+        name: message.payload.name,
+        url: message.payload.url,
+        file_key: message.payload.file_key,
+        size: message.payload.size,
+        mime_type: message.payload.mime_type,
+        annotation_source: undefined,
+      });
+
+      feedback.notify({ tone: 'success', message: OFFICE_SAVE_NOTICE });
+      window.dispatchEvent(new Event('cc:data-changed'));
+      return { ...message.payload, messageId: historyMessageID(result) };
+    } catch {
+      // The previews interpret a falsy result as "local bytes exist, publishing failed".
+      // Returning null keeps pending bytes retryable and produces the specified notice instead
+      // of reporting a generic write failure after the local file was already built.
+      return null;
+    }
+  }, [feedback, previewFile, setPreviewFileWithFocus, user.uid]);
 
   const handleFileAnnotationSent = useCallback((result, sourceTopic) => {
     if (!result || !historyMessageID(result) || result.topic_id !== sourceTopic
@@ -7979,6 +8057,7 @@ export default function MessagesView({
               allowWorkspaceFullscreen
               annotationApi={api}
               onFileAnnotationSent={handleFileAnnotationSent}
+              onOfficeSave={handleOfficeSave}
             />
           </div>
         )}

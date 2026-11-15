@@ -18,6 +18,8 @@ import {
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
+import OfficePreview from '../office/ui/OfficePreview';
+import WordPreview from '../office/ui/WordPreview';
 import HTMLFilePreview from './html-file-preview';
 import FileAnnotationEditor from './file-annotation-editor';
 import VideoFilePreview from './video-file-preview';
@@ -59,6 +61,11 @@ const TEXT_FILE_EXTENSIONS = new Set(['TXT', 'JSON', 'MD', 'CSV', 'JS', 'JSX', '
 const PREVIEW_FILE_EXTENSIONS = new Set(['PDF', ...TEXT_FILE_EXTENSIONS]);
 const IMAGE_FILE_EXTENSIONS = new Set(['AVIF', 'BMP', 'GIF', 'HEIC', 'JPEG', 'JPG', 'PNG', 'SVG', 'WEBP']);
 const SPREADSHEET_FILE_EXTENSIONS = new Set(['CSV', 'XLS', 'XLSX']);
+// Office documents get a canvas preview through the office module instead of a
+// download-only card. Only the XML formats qualify: the legacy binary .doc/.ppt
+// cannot be parsed in the browser, so they keep falling back to download.
+const OFFICE_SLIDE_EXTENSIONS = new Set(['PPTX']);
+const OFFICE_DOCUMENT_EXTENSIONS = new Set(['DOCX']);
 const SPREADSHEET_MIME_TYPES = new Set([
   'text/csv',
   'application/csv',
@@ -1843,12 +1850,31 @@ function TextContent({ content, softStream = false, replyArrival, immediateRevea
   const reveal = useReplyReveal(receivedText, softStream, { arrival: replyArrival, immediate: immediateReveal });
   React.useLayoutEffect(() => { onRevealChange?.(reveal.animate); }, [onRevealChange, reveal.animate]);
   const text = reveal.animate ? reveal.parts.slice(0, reveal.count).join('') : receivedText;
-  const matchedArtifacts = useMemo(() => findKnownArtifactsInText(text, knownArtifacts), [knownArtifacts, text]);
-  const plainText = useMemo(() => removeKnownArtifactURLs(text, matchedArtifacts), [matchedArtifacts, text]);
-  const renderableTable = useMemo(() => hasRenderableTable(text), [text]);
+  // Every structural decision below is taken from the whole reply, never from the
+  // characters revealed so far.
+  //
+  // A decision that flips while the reply is still arriving does not adjust the
+  // bubble: it swaps one render branch for another, so React unmounts the body and
+  // builds a new one — and everything inside starts over. That is the flicker. Two
+  // decisions flipped that way: whether the reply is Markdown at all, and whether a
+  // published link turns into a card. The card is now matched against the complete
+  // text, so it appears once and stays; the Markdown decision likewise no longer
+  // depends on how much text has been revealed.
+  const matchedArtifacts = useMemo(
+    () => findKnownArtifactsInText(receivedText, knownArtifacts),
+    [receivedText, knownArtifacts],
+  );
+  // The link is hidden from its first character rather than once it is complete.
+  // Waiting for completion made the paragraph shrink by an entire URL in a single
+  // tick, which read as the message jumping between "has a link" and "has a card".
+  const plainText = useMemo(
+    () => removeKnownArtifactURLs(text, matchedArtifacts, { includePartial: reveal.animate }),
+    [matchedArtifacts, reveal.animate, text],
+  );
+  const renderableTable = useMemo(() => hasRenderableTable(receivedText), [receivedText]);
   const plainTextTableLike = useMemo(() => (
-    !renderableTable && hasPlainTextTableLikeBlock(text)
-  ), [renderableTable, text]);
+    !renderableTable && hasPlainTextTableLikeBlock(receivedText)
+  ), [renderableTable, receivedText]);
   const plainTextParagraphs = useMemo(() => (
     // Presentation-only normalization: plain-text paragraphs start flush left.
     // Preserve line breaks and whitespace within each paragraph.
@@ -1858,14 +1884,16 @@ function TextContent({ content, softStream = false, replyArrival, immediateRevea
 
   const markdownHtml = useMemo(() => {
     if (plainTextTableLike) return null;
-    if (!shouldRenderMarkdown(text, { plainTextTables: true })) return null;
+    if (!shouldRenderMarkdown(receivedText, { plainTextTables: true })) return null;
     try {
-      return decorateArtifactMarkdown(renderSafeMarkdown(text, { plainTextTables: true }), matchedArtifacts);
+      // Built from the whole reply so the HTML only changes when the reply itself
+      // does, instead of on every revealed character.
+      return decorateArtifactMarkdown(renderSafeMarkdown(receivedText, { plainTextTables: true }), matchedArtifacts);
     } catch (e) {
       console.error('Markdown parse error:', e);
       return null;
     }
-  }, [matchedArtifacts, plainTextTableLike, text]);
+  }, [matchedArtifacts, plainTextTableLike, receivedText]);
   const markdownClassName = useMemo(() => (
     renderableTable ? 'oc-markdown oc-markdown-table' : 'oc-markdown'
   ), [renderableTable]);
@@ -1873,7 +1901,13 @@ function TextContent({ content, softStream = false, replyArrival, immediateRevea
   if (markdownHtml) {
     return (
       <>
-        <FadingMarkdown html={markdownHtml} enabled={reveal.animate} receivedVisible className={markdownClassName} />
+        {/* The markup comes from the whole reply, so it stays the same while the
+            reply arrives; only the number of drawn characters grows. Building the
+            markup from the revealed prefix instead re-parsed the Markdown on every
+            new character, and a half-typed "**" or "[" parses differently from the
+            finished text — so the body was replaced, not extended. */}
+        <FadingMarkdown html={markdownHtml} enabled={reveal.animate}
+          visibleCount={reveal.animate ? reveal.count : null} className={markdownClassName} />
         <ArtifactMessageCards
           artifacts={matchedArtifacts}
           onPreviewFile={onPreviewFile}
@@ -2025,13 +2059,25 @@ function decorateArtifactMarkdown(html, artifacts) {
   return template.innerHTML;
 }
 
-function removeKnownArtifactURLs(text, artifacts) {
+function removeKnownArtifactURLs(text, artifacts, { includePartial = false } = {}) {
   const value = String(text || '');
   const knownURLs = new Set(
     (artifacts || []).map((artifact) => normalizeArtifactURL(artifact?.url)).filter(Boolean),
   );
-  const matches = extractHTTPURLTokens(value).filter((token) => knownURLs.has(token.normalizedURL));
-  if (matches.length === 0) return value.replace(/[ \t]+(?=\r?$)/gm, '').trimEnd();
+  // A reply that is still arriving exposes the artifact link one character at a
+  // time. Hiding it only once it is complete makes the paragraph shrink by the
+  // whole link in a single tick, which is a visible jump and the reason the card
+  // seemed to appear and disappear. Hiding the link from its first character
+  // keeps the paragraph growing monotonically, which is also what the finished
+  // message shows.
+  const matches = extractHTTPURLTokens(value).filter((token) => (
+    knownURLs.has(token.normalizedURL)
+    || (includePartial && [...knownURLs].some((known) => known.startsWith(token.normalizedURL)))
+  ));
+  if (matches.length === 0) {
+    const trimmed = includePartial ? value.replace(/https?:\/\/?$/i, '') : value;
+    return trimmed.replace(/[ \t]+(?=\r?$)/gm, '').trimEnd();
+  }
 
   let cursor = 0;
   let result = '';
@@ -2447,10 +2493,21 @@ function isDocxFile(payload, ext = fileExtension(payload)) {
     mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 }
 
+function isPptxFile(payload, ext = fileExtension(payload)) {
+  const mime = fileMimeType(payload);
+  return OFFICE_SLIDE_EXTENSIONS.has(ext) ||
+    mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+}
+
+function isOfficePreviewFile(payload, ext = fileExtension(payload)) {
+  return isPptxFile(payload, ext) || isDocxFile(payload, ext);
+}
+
 function isPreviewableFile(payload, ext = fileExtension(payload)) {
   const mime = fileMimeType(payload);
   if (isImageFile(payload, ext) || isInlineVideoFile(payload, ext)) return true;
   if (isSpreadsheetPreviewFile(payload, ext)) return true;
+  if (isOfficePreviewFile(payload, ext)) return true;
   if (PREVIEW_FILE_EXTENSIONS.has(ext) || isPdfFile(payload, ext)) return true;
   return mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml';
 }
@@ -2480,11 +2537,18 @@ function artifactMeta(payload, ext = fileExtension(payload)) {
       subtitle: '报告文件',
     };
   }
+  if (isPptxFile(payload, ext)) {
+    return {
+      label: 'PPT',
+      className: 'report',
+      subtitle: '可预览与编辑的演示文稿',
+    };
+  }
   if (isDocxFile(payload, ext)) {
     return {
       label: 'Word',
       className: 'document',
-      subtitle: '可下载的文档',
+      subtitle: '可预览与编辑的文档',
     };
   }
   if (isSpreadsheetFile(payload, ext)) {
@@ -2592,6 +2656,10 @@ export function previewFileDescriptor(payload) {
   // MessagePort so a later navigation cannot receive result payloads.
   const isRemoteArtifact = isManagedRemoteArtifact;
   const spreadsheetKind = isCsvFile(payload, ext) ? 'csv' : isXlsxFile(payload, ext) ? 'xlsx' : '';
+  // Office documents render through the office canvas. `officeFamily` selects the
+  // parser; nothing else in the preview path needs to know which one it is.
+  const isOffice = isOfficePreviewFile(payload, ext);
+  const officeFamily = isPptxFile(payload, ext) ? 'pptx' : (isDocxFile(payload, ext) ? 'docx' : '');
   const canPreview = isManagedRemoteArtifact
     ? true
     : isPreviewableFile(payload, ext) && isTrustedPreviewURL(url);
@@ -2606,6 +2674,8 @@ export function previewFileDescriptor(payload) {
     isHtml,
     isMarkdown,
     isSpreadsheet,
+    isOffice,
+    officeFamily,
     isRemoteArtifact,
     isSameOriginRemoteArtifact,
     spreadsheetKind,
@@ -3012,6 +3082,7 @@ export function FilePreviewPanel({
   allowWorkspaceFullscreen = false,
   annotationApi,
   onFileAnnotationSent,
+  onOfficeSave,
 }) {
   const [fileAnnotationMode, setFileAnnotationMode] = useState(false);
   const fileContentRef = useRef(null);
@@ -3066,6 +3137,8 @@ export function FilePreviewPanel({
   const isHtml = descriptor?.isHtml || false;
   const isMarkdown = descriptor?.isMarkdown || false;
   const isSpreadsheet = descriptor?.isSpreadsheet || false;
+  const isOffice = descriptor?.isOffice || false;
+  const officeFamily = descriptor?.officeFamily || '';
   const isRemoteArtifact = descriptor?.isRemoteArtifact || false;
   const shareType = isPdf ? 'PDF' : isHtml ? 'HTML' : isMarkdown ? 'Markdown' : '文件';
   const meta = descriptor?.meta || artifactMeta(file || {});
@@ -3328,7 +3401,9 @@ export function FilePreviewPanel({
       window.clearTimeout(shareResetTimerRef.current);
       shareResetTimerRef.current = null;
     }
-    if (!file || !descriptor?.canPreview || isPdf || isImage || isVideo || isRemoteArtifact) {
+    // Office documents fetch and parse themselves inside OfficePreview; letting the
+    // text loader run would download the same bytes twice and decode a zip as UTF-8.
+    if (!file || !descriptor?.canPreview || isPdf || isImage || isVideo || isOffice || isRemoteArtifact) {
       setLoadingText(false);
       return () => {
         cancelled = true;
@@ -3377,7 +3452,7 @@ export function FilePreviewPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [currentRemoteArtifactKey, descriptor?.canPreview, file, isImage, isVideo, isPdf, isRemoteArtifact, isSpreadsheet, url]);
+  }, [currentRemoteArtifactKey, descriptor?.canPreview, file, isImage, isOffice, isVideo, isPdf, isRemoteArtifact, isSpreadsheet, url]);
 
   useEffect(() => {
     if (!preview) return undefined;
@@ -3747,6 +3822,21 @@ export function FilePreviewPanel({
             ) : (
               <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
             )
+          ) : isOffice && officeFamily === 'docx' ? (
+            <WordPreview
+              key={descriptor.key}
+              file={file}
+              url={fetchableMediaURL(url)}
+              onSave={onOfficeSave}
+            />
+          ) : isOffice ? (
+            <OfficePreview
+              key={descriptor.key}
+              file={file}
+              url={fetchableMediaURL(url)}
+              family={officeFamily}
+              onSave={onOfficeSave}
+            />
           ) : loadingText ? (
             <LoadingState kind="document" label="正在打开文件" className="v3-file-preview-state" />
           ) : previewError ? (

@@ -4153,7 +4153,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('video.oc-rich-video-thumb').getAttribute('src')).toBe('/uploads/files/second.mp4');
   });
 
-  it('marks DOCX as downloadable without claiming browser preview support', async () => {
+  it('offers an in-browser preview for DOCX instead of a download-only card', async () => {
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -4179,8 +4179,10 @@ describe('ChatMessage rich file rendering', () => {
 
     expect(container.querySelector('.v3-attachment-name').textContent).toBe('handout.docx');
     expect(container.querySelector('.v3-attachment-size').textContent).toContain('Word');
+    // DOCX moved from download-only to the office canvas. The download link stays, so
+    // a user who wants the original file is not worse off than before.
     const previewButton = container.querySelector('button.v3-artifact-action');
-    expect(previewButton.disabled).toBe(true);
+    expect(previewButton.disabled).toBe(false);
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toBe('/uploads/files/handout.docx?download=1&name=handout.docx');
   });
 
