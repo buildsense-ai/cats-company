@@ -1868,7 +1868,18 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 		displayType = "text"
 	}
 
+	if displayType == "memory_branch" {
+		clean, ok := normalizedMemoryBranch(displayContent)
+		if !ok {
+			return nil, errors.New("invalid memory branch snapshot")
+		}
+		displayContent = clean
+		storedContent = normalizeContentText(clean)
+	}
 	blocks := sanitizeContentBlocks(req.ContentBlocks)
+	if displayType == "memory_branch" {
+		blocks = nil
+	}
 	metadata := sanitizeMessageMap(req.Metadata)
 	// Single ingestion choke point for HTTP, WebSocket and channel paths. The
 	// device directory is server-generated and recipient-gated, so a client
@@ -2036,7 +2047,7 @@ func isTransientRuntimePayload(payload *normalizedMessagePayload) bool {
 
 func isStructuredDisplayType(displayType string) bool {
 	switch displayType {
-	case "thinking", "tool_use", "tool_result":
+	case "thinking", "tool_use", "tool_result", "memory_branch":
 		return true
 	default:
 		return false
@@ -2046,6 +2057,12 @@ func isStructuredDisplayType(displayType string) bool {
 func buildStructuredContentBlocks(displayType string, content interface{}, metadata map[string]interface{}) []types.ContentBlock {
 	text := normalizeContentText(content)
 	switch displayType {
+	case "memory_branch":
+		payload, ok := content.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		return []types.ContentBlock{{Type: "memory_branch", Payload: payload}}
 	case "thinking":
 		return []types.ContentBlock{{Type: "thinking", Thinking: text}}
 	case "tool_use":
