@@ -44,6 +44,8 @@ export { downloadableMediaURL } from '../utils/media-download';
 import { previewPageURL, sharePreviewLink } from './preview-share';
 import { normalizeGatewayAnnotations } from '../gateway-annotations';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
+import DiaryToolResult from './diary-tool-result';
+import { diaryAgentUID, diaryToolView } from './diary-sources';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -370,7 +372,7 @@ function groupBlocks(messages) {
       } else {
         // Fallback: match with first unfulfilled tool_pair
         for (const item of items) {
-          if (item.type === 'tool_pair' && item.result === null) {
+          if (item.type === 'tool_pair' && item.result === null && !(toolId && item.name === 'catslog_knowledge_recall')) {
             item.result = msg.content;
             item.isError = msg.metadata?.is_error || false;
             matched = true;
@@ -485,7 +487,7 @@ function groupContentBlocks(blocks) {
         matched = true;
       } else {
         for (const item of items) {
-          if (item.type === 'tool_pair' && item.result === null) {
+          if (item.type === 'tool_pair' && item.result === null && !(toolId && item.name === 'catslog_knowledge_recall')) {
             item.result = resultText;
             item.isError = !!block.is_error;
             matched = true;
@@ -926,7 +928,7 @@ function WorkingPlanCard({ item }) {
   );
 }
 
-function WorkingProcess({ blocks, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, showDetails = true }) {
+function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, showDetails = true }) {
   const liquidConversation = useLiquidConversation();
   const [revealingNarratives, setRevealingNarratives] = useState({});
   const [open, setOpen] = useState(false);
@@ -935,10 +937,21 @@ function WorkingProcess({ blocks, complete: completeOverride = false, stopped = 
   const safeBlocks = blocks || [];
   const planItem = latestWorkingPlanItem(safeBlocks);
   const plan = planItem ? planFromUpdatePlanTool(planItem) : null;
-  const detailBlocks = safeBlocks.filter((item) => item !== planItem);
+  const diaryItems = useMemo(() => safeBlocks.flatMap((item) => {
+    if (item.type !== 'tool_pair') return [];
+    const view = diaryToolView(item);
+    return view ? [{ item, view }] : [];
+  }), [safeBlocks]);
+  const detailBlocks = safeBlocks.flatMap((item) => {
+    if (item === planItem) return [];
+    // Diary navigation lives outside execution details; preserve its attached
+    // reasoning in details and its user-facing progress in the conversation.
+    if (diaryItems.some((diary) => diary.item === item)) return (item.narratives || []).filter((narrative) => narrative.type === 'thinking');
+    return [item];
+  });
   // Only explicit user-facing progress messages become conversation bubbles.
   // Keep reasoning blocks, raw tool outputs and subagent logs in the details.
-  const progressMessages = detailBlocks.flatMap((item) => (
+  const progressMessages = safeBlocks.filter((item) => item !== planItem).flatMap((item) => (
     item.type === 'assistant_text' ? [item] : (item.narratives || [])
   )).filter((item) => item.type === 'assistant_text' && item.text?.trim());
   const hasDetails = showDetails && detailBlocks.length > 0;
@@ -948,10 +961,10 @@ function WorkingProcess({ blocks, complete: completeOverride = false, stopped = 
   const statusLabel = executionState ? EXECUTION_LABELS[executionState] : stopped ? '已停止' : complete ? '已完成' : '正在执行';
   const running = executionState ? executionState === 'running' : !complete && !stopped;
   const streamingNarrative = replyStreaming || progressMessages.some((item, index) => item.streaming || revealingNarratives[index]);
-  const lastTool = [...detailBlocks].reverse().find((item) => item.type === 'tool_pair');
+  const lastTool = [...safeBlocks].reverse().find((item) => item.type === 'tool_pair');
   const summary = plan
     ? `${completedPlanSteps}/${plan.steps.length}${!complete && lastTool?.name && lastTool.name !== 'update_plan' ? ` · ${lastTool.name}` : ''}`
-    : `${detailBlocks.length} 步${lastTool?.name ? ` · ${lastTool.name}` : ''}`;
+    : `${safeBlocks.length} 步${lastTool?.name && lastTool.name !== 'catslog_knowledge_recall' ? ` · ${lastTool.name}` : diaryItems.length ? ' · 查阅日记' : ''}`;
 
   const statusContent = (
     <>
@@ -1025,6 +1038,7 @@ function WorkingProcess({ blocks, complete: completeOverride = false, stopped = 
           {statusContent}
         </div>
       ))}
+      {diaryItems.map(({ item, view }, index) => <DiaryToolResult key={item.id || index} item={item} view={view} agentUid={agentUid} />)}
       {!open && planContent}
       {open && hasDetails && (
         <div
@@ -1440,8 +1454,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
             </div>
           )}
 
-          {!isSelf && (showThinking || executionState) && (
-            <WorkingProcess blocks={workingBlocks} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} showDetails={showThinking} />
+          {!isSelf && (showThinking || executionState || workingBlocks.some((item) => item.type === 'tool_pair' && diaryToolView(item))) && (
+            <WorkingProcess blocks={workingBlocks} agentUid={diaryAgentUID(message.from_uid)} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} showDetails={showThinking} />
           )}
 
           {workingAnnotationDoc && <GatewayAnnotationCard doc={workingAnnotationDoc} />}
