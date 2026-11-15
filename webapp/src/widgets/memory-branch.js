@@ -60,7 +60,14 @@ export function verifiedMemoryDetail(page, reader) {
   }
   const source = page?.source;
   if (!source || source.status !== 'read' || source.coverage !== 'complete' || source.truncated || source.missing || source.revoked || typeof source.text !== 'string'
-    || Object.entries(reader.anchor).some(([key, value]) => source.anchor?.[key] !== value)) throw new Error('来源身份或完整性核验失败，未显示正文。');
+    || Object.entries(reader.anchor).some(([key, value]) => {
+      const actual = source.anchor?.[key];
+      if (key !== 'revision') return actual !== value;
+      // CatsLog normalizes source revisions to bare SHA-256 digests. Only
+      // the optional canonical prefix may differ; identity stays exact.
+      const expected = typeof value === 'string' ? value.replace(/^sha256:/, '') : '';
+      return !revision.test(expected) || typeof actual !== 'string' || actual.replace(/^sha256:/, '') !== expected;
+    })) throw new Error('来源身份或完整性核验失败，未显示正文。');
   const context = source.projection_context;
   if (!context) return { nodes: [{ kind: source.anchor.kind, text: source.text }], conditions: [], omissions: [], coverage: source.coverage };
   if (context.contract_version !== 'memory-graph/3' || !nodeRows(context.nodes)) throw new Error('记忆图谱不完整，未显示正文。');

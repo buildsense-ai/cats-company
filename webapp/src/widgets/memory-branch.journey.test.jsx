@@ -106,6 +106,33 @@ it('B6: changing selected source aborts and ignores a late response even when tr
   evidence.push({ journey: 'selection race', ignoredLateResponse: true });
 });
 
+// A canonical revision prefix must not refuse a valid source, while a
+// different digest or another anchor identity must still clear the body.
+it.each([
+  ['bare digest', '', revision, 'query-record', true],
+  ['canonical prefix', 'sha256:', revision, 'query-record', true],
+  ['different digest', 'sha256:', 'c'.repeat(64), 'query-record', false],
+  ['different identity', 'sha256:', revision, 'another-record', false],
+])('pinned session source: %s', async (scenario, prefix, returnedRevision, returnedID, accepted) => {
+  const event = structuredClone(graph);
+  const anchor = { kind: 'session_query', id: 'query-record', session_id: 'session-1', stream_id: 'stream-1', revision: prefix + revision };
+  event.nodes = [{ ...graph.nodes[0], kind: 'session_query', reader: { kind: 'source', anchor } }];
+  event.edges = [];
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify({ source: {
+    status: 'read', coverage: 'complete', truncated: false, missing: false, revoked: false,
+    anchor: { ...anchor, id: returnedID, revision: returnedRevision }, text: 'Complete pinned session source',
+  } }), { status: 200 }));
+  await render([event]); await click(container.querySelector('.cc-memory-source'));
+  const reader = globalThis.document.querySelector('[aria-label="记忆来源详情"]');
+  expect(JSON.parse(fetch.mock.calls[0][1].body).anchor).toEqual(anchor);
+  if (accepted) expect(reader.textContent).toContain('Complete pinned session source');
+  else {
+    expect(reader.textContent).toContain('来源身份或完整性核验失败');
+    expect(reader.querySelector('.cc-diary-prose')).toBeNull();
+  }
+  evidence.push({ journey: 'canonical source revision', scenario, accepted });
+});
+
 it('B9: unknown version and invalid graph endpoints never render rich source navigation', async () => {
   await render([{ ...graph, schema: 'catsco.memory_branch.v99' }]);
   expect(container.querySelector('.cc-memory-source')).toBeNull();
