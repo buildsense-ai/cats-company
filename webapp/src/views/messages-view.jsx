@@ -116,7 +116,7 @@ const TYPING_TIMEOUT_MS = 10000;
 // that mentions two applications settles on one instead of flicking between them.
 const MENTION_OPEN_SETTLE_MS = 260;
 const PREVIEW_COMPOSER_TEXT_DRAG_HOLD_MS = 140;
-const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
+const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result', 'memory_branch']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const MAX_DROPPED_FILES = 200;
 const LONG_PASTE_CHAR_THRESHOLD = 4000;
