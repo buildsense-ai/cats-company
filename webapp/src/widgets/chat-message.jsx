@@ -721,6 +721,12 @@ function groupWorkingMessages(messages) {
   return groupContentBlocks(blocks);
 }
 
+// Keep the timeline visibility decision aligned with the source renderer,
+// including saved content blocks and tool-result pairing/validation.
+export function hasWorkingSources(messages) {
+  return groupWorkingMessages(messages).some((item) => item.type === 'tool_pair' && diaryToolView(item));
+}
+
 function subAgentStatusText(status, isError) {
   if (isError) return '失败';
   switch (status) {

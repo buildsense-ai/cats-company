@@ -1,10 +1,11 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const { artifactRefreshPreviewObserved, feedbackConfirm, feedbackNotify, screenshotRequest, useRealScreenshotHost, legacyCapabilityOwner } = vi.hoisted(() => ({
+const { sourceJourney, artifactRefreshPreviewObserved, feedbackConfirm, feedbackNotify, screenshotRequest, useRealScreenshotHost, legacyCapabilityOwner } = vi.hoisted(() => ({
+  sourceJourney: { enabled: false },
   artifactRefreshPreviewObserved: vi.fn(),
   feedbackConfirm: vi.fn(async () => true),
   feedbackNotify: vi.fn(),
@@ -37,10 +38,14 @@ vi.mock('../components/feedback-system', () => ({
   useFeedback: () => ({ confirm: feedbackConfirm, notify: feedbackNotify }),
 }));
 
-vi.mock('../widgets/chat-message', () => ({
+vi.mock('../widgets/chat-message', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
   __esModule: true,
+  hasWorkingSources: actual.hasWorkingSources,
   downloadableMediaURL: (url) => `${url}${url.includes('?') ? '&' : '?'}download=1`,
   default: function MockChatMessage(props) {
+    if (sourceJourney.enabled) return <actual.default {...props} />;
     const [workingExpanded, setWorkingExpanded] = React.useState(false);
     const fileBlock = props.message?.content_blocks?.find?.((block) => block.type === 'file');
     const imageBlock = props.message?.content_blocks?.find?.((block) => block.type === 'image');
@@ -239,7 +244,8 @@ vi.mock('../widgets/chat-message', () => ({
       downloadURL: file?.url || '',
     };
   },
-}));
+  };
+});
 
 vi.mock('../widgets/avatar', () => ({
   default: function MockAvatar() {
@@ -903,6 +909,7 @@ describe('MessagesView composer draft isolation', () => {
   let originalIntersectionObserver;
 
   beforeEach(() => {
+    sourceJourney.enabled = false;
     global.IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
     sessionStorage.clear();
@@ -2053,6 +2060,31 @@ describe('MessagesView composer draft isolation', () => {
     const message = container.querySelector('.mock-chat-message[data-message-id="72"]');
     expect(message?.dataset.senderName).toBe('Design Agent');
     expect(message?.dataset.senderAvatar).toBe('/uploads/design-agent.png');
+  });
+
+  // Failure mode: the timeline drops a source-bearing working group before
+  // ChatMessage can render its sources with execution details disabled.
+  it.each([true, false])('keeps Diary sources in the timeline with showThinking=%s', async (showThinking) => {
+    sourceJourney.enabled = true;
+    localStorage.setItem('cc_show_thinking', String(showThinking));
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    const { workingMessages } = await import('../dev/fixtures/diary-sources');
+    const diary = workingMessages().map((message, index) => ({
+      ...message, id: 73 + index, seq_id: 73 + index, from_uid: 2,
+      topic_id: 'p2p_1_2', created_at: '2026-07-01T00:00:0' + index + 'Z',
+    }));
+    api.getMessages.mockResolvedValueOnce({ messages: [...diary, {
+      id: 75, from_uid: 2, type: 'text', content: 'Final reply', created_at: '2026-07-01T00:00:03Z',
+    }] });
+    api.getFriends.mockResolvedValueOnce({ friends: [{ id: 2, display_name: 'Agent', is_bot: true }] });
+    await mountTopic(root, 'p2p_1_2', { topicName: 'Agent' });
+    await act(async () => { await flushPromises(); });
+    const sources = container.querySelectorAll('.cc-diary-node');
+    expect(sources).toHaveLength(2);
+    expect(container.textContent).toContain('Final reply');
+    const dir = '/tmp/catsco-diary-sources';
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(dir + '/timeline-' + showThinking + '.json', JSON.stringify({ showThinking, sources: sources.length, finalReplyVisible: true }));
   });
 
   it('keeps sender metadata on the first visible reply when thinking is hidden', async () => {
