@@ -1590,6 +1590,22 @@ describe('AgentStoreModal', () => {
     expect(api.generateBotInviteCode).not.toHaveBeenCalled();
   });
 
+  test('offers to generate an invite code when the bot never had one (404)', async () => {
+    api.getMyBots.mockResolvedValue({ bots: [{ id: 42, display_name: 'Reviewer', relation: 'owner' }] });
+    // 服务端对“还没有邀请码”返回 404；这不是读取失败，必须是可生成状态。
+    api.getBotInviteCode.mockRejectedValue(Object.assign(new Error('invite code not found'), { status: 404 }));
+    api.generateBotInviteCode.mockResolvedValue({ code: 'FRESH-CODE' });
+    await act(async () => {
+      root.render(<AgentStoreModal onClose={vi.fn()} user={{ uid: 7 }} />);
+    });
+    const generate = container.querySelector('[aria-label="生成邀请码"]');
+    expect(generate).not.toBeNull();
+    expect(container.querySelector('[aria-label="重试读取邀请码"]')).toBeNull();
+    await act(async () => { Simulate.click(generate); });
+    expect(api.generateBotInviteCode).toHaveBeenCalledWith(42);
+    expect(container.textContent).toContain('FRESH-CODE');
+  });
+
   test('does not let an older roster request replace a newer one', async () => {
     let resolveOldBots;
     api.getMyBots.mockImplementationOnce(() => new Promise((resolve) => { resolveOldBots = resolve; }))
