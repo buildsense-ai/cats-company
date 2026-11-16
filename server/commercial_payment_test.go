@@ -1717,7 +1717,7 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 	if got := store.startsAt.Format(time.RFC3339Nano); got != "2026-08-01T08:30:00.123456789Z" {
 		t.Fatalf("reset anchor changed: %s", got)
 	}
-	if posted["monthly_budget"] != float64(2200) || posted["usage_window_start"] != "2026-08-01T08:30:00Z" {
+	if posted["monthly_budget"] != float64(2500) || posted["usage_window_start"] != "2026-08-01T08:30:00Z" {
 		t.Fatalf("shared policy mismatch: %#v", posted)
 	}
 	if len(state.Limits.ModelScopes) != 4 || state.Limits.FreeTerraTrial.Enabled {

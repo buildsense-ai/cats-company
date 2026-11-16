@@ -92,6 +92,7 @@ func TestCommercialOpsWriteIsAuditedWithoutRequestBody(t *testing.T) {
 	admin.SetCommercialModelCatalog(newStubCommercialModelCatalog(t, []string{
 		"MiniMax-M2.7", "MiniMax-M3", "deepseek-flash", "glm-5.3-flash", "gpt-5.6-terra",
 		"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+		"gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
 		"chatgpt-image-latest",
 	}))
 	handler := NewCommercialOpsHandler(admin, commercialOpsTestVerifier{service: AccountService{

@@ -43,6 +43,40 @@ func TestCommercialRelayBaselineTreatsNewKeySeedAsFree(t *testing.T) {
 	}
 }
 
+// TestCommercialRelayBaselineUpgradesThe25ImageGeneration pins the 000073 cut:
+// a key seeded while the image lane held the 2.5 family reports nine models and
+// 2200, and the shared-pool representation of the new generation repeats 2500
+// on every model. Both have to stay Free and upgrade to the twelve-model
+// baseline instead of being frozen as the legacy "内部保留套餐".
+func TestCommercialRelayBaselineUpgradesThe25ImageGeneration(t *testing.T) {
+	if len(commercialRelayFreeBudgets) != 12 || commercialRelayBudgetTotal(commercialRelayFreeBudgets) != 2500 {
+		t.Fatalf("free pool = %d models / %v, want twelve models / 2500",
+			len(commercialRelayFreeBudgets), commercialRelayBudgetTotal(commercialRelayFreeBudgets))
+	}
+	profile, budgets := commercialRelayBaseline(relayUserWithBudgets(2200, commercialRelayV5EraFreeBudgets))
+	if profile != commercialRelayBaselineProfileFree || !commercialRelayBudgetsMatch(budgets, commercialRelayFreeBudgets) {
+		t.Fatalf("2.5 era pool: profile=%q budgets=%v", profile, budgets)
+	}
+	// The shared-pool representation of both generations (every model entry
+	// repeats the pool total) is detected before the per-model baseline.
+	shared := make(map[string]float64, len(commercialRelayV5EraFreeBudgets))
+	for model := range commercialRelayV5EraFreeBudgets {
+		shared[model] = 2200
+	}
+	if upgraded, ok := commercialRelaySharedPoolFreeUpgrade(2200, shared); !ok ||
+		!commercialRelayBudgetsMatch(upgraded, commercialRelayFreeBudgets) {
+		t.Fatalf("shared 2200 pool: ok=%v budgets=%v", ok, upgraded)
+	}
+	shared = make(map[string]float64, len(commercialRelayFreeBudgets))
+	for model := range commercialRelayFreeBudgets {
+		shared[model] = 2500
+	}
+	if upgraded, ok := commercialRelaySharedPoolFreeUpgrade(2500, shared); !ok ||
+		!commercialRelayBudgetsMatch(upgraded, commercialRelayFreeBudgets) {
+		t.Fatalf("shared 2500 pool: ok=%v budgets=%v", ok, upgraded)
+	}
+}
+
 func TestCommercialRelayBaselineUpgradesSeedPlusExtraFreeModels(t *testing.T) {
 	// A key may resolve one or two image providers as well; the seed stays the
 	// anchor, extra Free models at Free prices do not disqualify it.
