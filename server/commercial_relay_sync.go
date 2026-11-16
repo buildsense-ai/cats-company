@@ -759,9 +759,28 @@ var commercialRelayV4EraFreeBudgets = map[string]float64{
 	"chatgpt-image-latest":   100,
 }
 
+// commercialRelayV5EraFreeBudgets is the Free pool generation of the 2.5
+// image line: nine models totalling 2200, before the 2.6 image family
+// (gpt-image-2.6, -flare, -sunburst) joined the pool. Relay keys created
+// before 000073 report this shape; they are still recognized as Free and
+// upgraded to the current baseline instead of being frozen as legacy.
+var commercialRelayV5EraFreeBudgets = map[string]float64{
+	"MiniMax-M2.7":           1000,
+	"MiniMax-M3":             500,
+	"deepseek-flash":         100,
+	"glm-5.3-flash":          100,
+	"gpt-image-2":            100,
+	"gpt-image-2.5":          100,
+	"gpt-image-2.5-flare":    100,
+	"gpt-image-2.5-sunburst": 100,
+	"chatgpt-image-latest":   100,
+}
+
 // commercialRelayFreeBudgets is the Free baseline pool, including the image
 // lane since 000024 so every public plan can use image generation. DeepSeek
 // V4 Flash was retired on 2026-09-23 and is no longer part of any pool.
+// The 2.6 image family (000073) follows the Free image precedent: 100 per
+// model, which brings the pool to twelve models and 2500.
 var commercialRelayFreeBudgets = map[string]float64{
 	"MiniMax-M2.7":           1000,
 	"MiniMax-M3":             500,
@@ -772,6 +791,9 @@ var commercialRelayFreeBudgets = map[string]float64{
 	"gpt-image-2.5-flare":    100,
 	"gpt-image-2.5-sunburst": 100,
 	"chatgpt-image-latest":   100,
+	"gpt-image-2.6":          100,
+	"gpt-image-2.6-flare":    100,
+	"gpt-image-2.6-sunburst": 100,
 }
 
 // commercialRelayLegacyFreeBudgets is the pre-image-lane Free pool, kept so
@@ -858,6 +880,7 @@ func commercialRelayKnownFreePoolModels() map[string]bool {
 		commercialRelayGlmEraFreeBudgets,
 		commercialRelayLegacyFreeBudgets,
 		commercialRelayV4EraFreeBudgets,
+		commercialRelayV5EraFreeBudgets,
 		commercialRelayFreeBudgets,
 	} {
 		for model := range pool {
@@ -891,6 +914,7 @@ func commercialRelaySharedPoolFreeUpgrade(sharedLimit float64, budgets map[strin
 	knownTotal := nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayGlmEraFreeBudgets)) ||
 		nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayLegacyFreeBudgets)) ||
 		nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayV4EraFreeBudgets)) ||
+		nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayV5EraFreeBudgets)) ||
 		nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayFreeBudgets))
 	if !knownTotal {
 		return nil, false
@@ -1074,11 +1098,13 @@ func commercialRelayBaseline(relayUser *commercialRelayUsageUser) (string, map[s
 		return commercialRelayBaselineProfileFree, budgets
 	}
 	// Relay keys created before the image lane opened still carry an older
-	// Free pool (the six-model V4-era set, the five models after the DeepSeek
-	// Flash add-on, or the four models in the GLM era). Recognize every
-	// generation as Free and upgrade it to the current baseline so older
-	// keys are not frozen out of the new models.
+	// Free pool (the nine-model 2.5 image set before 000073, the six-model
+	// V4-era set, the five models after the DeepSeek Flash add-on, or the four
+	// models in the GLM era). Recognize every generation as Free and upgrade
+	// it to the current baseline so older keys are not frozen out of the new
+	// models.
 	if commercialRelayBudgetsMatch(budgets, commercialRelayV4EraFreeBudgets) ||
+		commercialRelayBudgetsMatch(budgets, commercialRelayV5EraFreeBudgets) ||
 		commercialRelayBudgetsMatch(budgets, commercialRelayLegacyFreeBudgets) ||
 		commercialRelayBudgetsMatch(budgets, commercialRelayGlmEraFreeBudgets) {
 		return commercialRelayBaselineProfileFree, commercialRelayFreeBudgetsCopy()

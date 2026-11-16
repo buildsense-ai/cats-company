@@ -17,13 +17,14 @@ func TestReconcilePlanOwnSharesKeepsThePlansAllocation(t *testing.T) {
 		"deepseek-flash": 100, "glm-5.3-flash": 100,
 		"chatgpt-image-latest": 100, "gpt-image-2": 100, "gpt-image-2.5": 100,
 		"gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100,
+		"gpt-image-2.6": 100, "gpt-image-2.6-flare": 100, "gpt-image-2.6-sunburst": 100,
 	}
 	models, amounts := reconcilePlanOwnShares(plan)
-	if len(models) != 9 {
-		t.Fatalf("models=%v, want the plan's nine", models)
+	if len(models) != 12 {
+		t.Fatalf("models=%v, want the plan's twelve", models)
 	}
 	// Sorted for a stable grant order across restarts.
-	if models[0] != "MiniMax-M2.7" || models[8] != "gpt-image-2.5-sunburst" {
+	if models[0] != "MiniMax-M2.7" || models[11] != "gpt-image-2.6-sunburst" {
 		t.Fatalf("models are not sorted: %v", models)
 	}
 	for model, want := range plan {
@@ -31,9 +32,9 @@ func TestReconcilePlanOwnSharesKeepsThePlansAllocation(t *testing.T) {
 			t.Fatalf("%s = %v, want the plan's own %v", model, got, want)
 		}
 	}
-	// An even split would give every model 2200/9 = 244.44 and quietly change
+	// An even split would give every model 2500/12 = 208.33 and quietly change
 	// what a repaired holder is allowed to spend per model.
-	if amounts["MiniMax-M2.7"] == roundBudget(2200.0/9) {
+	if amounts["MiniMax-M2.7"] == roundBudget(2500.0/12) {
 		t.Fatal("the plan's own allocation was replaced by an even split")
 	}
 }

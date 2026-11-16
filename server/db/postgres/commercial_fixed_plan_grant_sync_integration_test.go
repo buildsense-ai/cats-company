@@ -24,7 +24,7 @@ func TestPostgresCommercialFixedPlanGrantsFollowThePlan(t *testing.T) {
 
 	// The Free plan is created by its own migration rather than CreateSchema, so
 	// the fixture seeds the same shape the live plan has.
-	livePlan := `{"MiniMax-M2.7":1000,"MiniMax-M3":500,"deepseek-flash":100,"glm-5.3-flash":100,"chatgpt-image-latest":100,"gpt-image-2":100,"gpt-image-2.5":100,"gpt-image-2.5-flare":100,"gpt-image-2.5-sunburst":100}`
+	livePlan := `{"MiniMax-M2.7":1000,"MiniMax-M3":500,"deepseek-flash":100,"glm-5.3-flash":100,"chatgpt-image-latest":100,"gpt-image-2":100,"gpt-image-2.5":100,"gpt-image-2.5-flare":100,"gpt-image-2.5-sunburst":100,"gpt-image-2.6":100,"gpt-image-2.6-flare":100,"gpt-image-2.6-sunburst":100}`
 	planID := seedGLM53MigrationPlan(t, db, commercialFreePlanSlug, "Free", livePlan)
 	plan := decodeModelBudgets([]byte(livePlan))
 	if len(plan) < 2 {
