@@ -155,7 +155,10 @@ func (h *BotHandler) HandleListBots(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list bots"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"bots": bots})
+	if bots == nil {
+		bots = []map[string]interface{}{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"bots": bots, "ownership_contract": "catslog-agent-owners/1"})
 }
 
 // HandleToggleBot handles POST /api/admin/bots/:id/toggle

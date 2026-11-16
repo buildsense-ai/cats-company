@@ -67,7 +67,7 @@ func (a *Adapter) ListBots() ([]map[string]interface{}, error) {
 		`SELECT u.id, u.username, u.display_name, u.avatar_url, u.state,
 		        COALESCE(b.api_endpoint, '') as api_endpoint,
 		        COALESCE(b.model, '') as model,
-		        COALESCE(b.enabled, 1) as enabled
+		        COALESCE(b.enabled, 1) as enabled, COALESCE(b.owner_id, 0) as owner_id
 		 FROM users u LEFT JOIN bot_config b ON u.id = b.user_id
 		 WHERE u.account_type = 'bot'
 		 ORDER BY u.created_at`,
@@ -81,9 +81,10 @@ func (a *Adapter) ListBots() ([]map[string]interface{}, error) {
 	for rows.Next() {
 		var id int64
 		var username, displayName, avatarURL, apiEndpoint, model string
+		var ownerID int64
 		var state int
 		var enabled bool
-		if err := rows.Scan(&id, &username, &displayName, &avatarURL, &state, &apiEndpoint, &model, &enabled); err != nil {
+		if err := rows.Scan(&id, &username, &displayName, &avatarURL, &state, &apiEndpoint, &model, &enabled, &ownerID); err != nil {
 			return nil, err
 		}
 		bots = append(bots, map[string]interface{}{
@@ -95,6 +96,7 @@ func (a *Adapter) ListBots() ([]map[string]interface{}, error) {
 			"api_endpoint": apiEndpoint,
 			"model":        model,
 			"enabled":      enabled,
+			"owner_id":     ownerID,
 		})
 	}
 	return bots, rows.Err()
