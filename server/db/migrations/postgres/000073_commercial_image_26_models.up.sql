@@ -1,20 +1,35 @@
 -- Add the 2.6 image family (gpt-image-2.6, gpt-image-2.6-flare,
 -- gpt-image-2.6-sunburst) to the Free pool and to the paid image packages.
--- Each new image model carries 100 CNY, the per-model image amount 000021 and
--- 000024 established (Personal 100 / Pro 300 at the time, Free 100), so the
--- advertised totals rise by 300 per package: Free 2200 -> 2500.
+-- Free gains the three models at 100 CNY each, the per-model image amount
+-- 000024 established, which takes the Free pool from 2200 to 2500.
 --
--- Only the three new keys are written. The plans' other budgets are preserved
--- with the jsonb || operator, because the stored maps have been edited in place:
--- production catsco-free currently sells a single MiniMax-M3 budget in the
--- control plane, and a literal rewrite would silently revert that data.
+-- The paid packages keep their advertised total. Relay's plan reconcile runs at
+-- server start and re-splits that total across every catalog model, so the 2.6
+-- keys normally already exist when this migration runs (Personal ~733 each,
+-- Pro 2200, internal ~3334). The paid grant loop below therefore only adds the
+-- allowances the package is still missing.
+--
+-- Only missing keys are written: an operator can edit a plan's budgets in place
+-- (production catsco-free stores a single MiniMax-M3 key today), so a literal
+-- rewrite or an unconditional overwrite would revert real data.
 --
 -- Take a transaction-scoped advisory lock so two concurrent runs cannot both
 -- pass the NOT EXISTS guards below and double the grants.
 SELECT pg_advisory_xact_lock(hashtextextended('catsco_commercial_image_26_models_v1', 0));
 
+-- Add only the keys that are still missing. The plan reconcile runs at server
+-- start and already splits a plan's existing total across every catalog model,
+-- so on a live deployment the three keys usually exist by the time this runs
+-- (at the plan's equal share). Overwriting them with a literal 100 would shrink
+-- the package's advertised total, so each key keeps whatever value it holds.
 UPDATE commercial_plans
-SET model_budgets = model_budgets || '{"gpt-image-2.6":100,"gpt-image-2.6-flare":100,"gpt-image-2.6-sunburst":100}'::jsonb
+SET model_budgets = model_budgets
+    || CASE WHEN model_budgets ? 'gpt-image-2.6'
+            THEN '{}'::jsonb ELSE '{"gpt-image-2.6":100}'::jsonb END
+    || CASE WHEN model_budgets ? 'gpt-image-2.6-flare'
+            THEN '{}'::jsonb ELSE '{"gpt-image-2.6-flare":100}'::jsonb END
+    || CASE WHEN model_budgets ? 'gpt-image-2.6-sunburst'
+            THEN '{}'::jsonb ELSE '{"gpt-image-2.6-sunburst":100}'::jsonb END
 WHERE slug IN ('catsco-free', 'catsco-personal', 'catsco-pro', 'catsco-internal-all-models-50k');
 
 -- Free: one free grant per new image model for every active free entitlement,
