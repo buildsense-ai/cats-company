@@ -13,11 +13,13 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-// catalogTestModels is the shape the relay publishes after gpt-6-sol landed.
+// catalogTestModels is the shape the relay publishes after gpt-6-sol and the
+// 2.6 image family landed.
 var catalogTestModels = []string{
 	"MiniMax-M2.7", "MiniMax-M3", "deepseek-flash", "glm-5.3-flash",
 	"gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-sol",
 	"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+	"gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
 	"chatgpt-image-latest",
 }
 
@@ -112,8 +114,8 @@ func TestCommercialImageLaneStaysOutOfTheUserCatalog(t *testing.T) {
 			}
 		}
 	}
-	if imageModels != 5 {
-		t.Fatalf("the relay catalog carries five image lane models, found %d", imageModels)
+	if imageModels != 8 {
+		t.Fatalf("the relay catalog carries eight image lane models, found %d", imageModels)
 	}
 }
 

@@ -66,9 +66,13 @@ function updateAgentWheelAppearance(track, scrollTop) {
   });
 }
 
+// A shared assistant runs remotely for the viewer even when its owner
+// self-hosts it. is_cloud describes platform hosting, not local availability.
+const isRemoteTaskAgent = (agent) => agent.relation === 'friend'
+  || agent.is_cloud === true || Boolean(agent.tenant_name);
+
 const sortAgentsForNewTask = (agents) => [...agents].sort((left, right) => {
-  const cloudPriority = Number(right.is_cloud === true || Boolean(right.tenant_name))
-    - Number(left.is_cloud === true || Boolean(left.tenant_name));
+  const cloudPriority = Number(isRemoteTaskAgent(right)) - Number(isRemoteTaskAgent(left));
   if (cloudPriority) return cloudPriority;
   const ownerPriority = Number(right.relation === 'owner' || right.is_owner === true)
     - Number(left.relation === 'owner' || left.is_owner === true);
@@ -488,7 +492,10 @@ export default function EmptyTaskComposer({
         setAgentsError('');
       }
       try {
-        const response = await api.getAgents();
+        const [response, taskHistory] = await Promise.all([
+          api.getAgents(),
+          userId && api.getGroups ? api.getGroups().catch(() => null) : Promise.resolve(null),
+        ]);
         if (cancelled || !mountedRef.current) return;
         let nextAgents = Array.isArray(response?.agents) ? response.agents : [];
         // Older servers omit selection metadata. Their bot roster still knows
@@ -508,9 +515,9 @@ export default function EmptyTaskComposer({
           });
         }
         nextAgents = sortAgentsForNewTask(nextAgents);
-        const lastTaskAgentId = readLastTaskAgent(userId);
+        const lastTaskAgentId = readLastTaskAgent(userId, taskHistory?.groups);
         const lastCloudAgent = nextAgents.find((agent) => agentKey(agent) === lastTaskAgentId
-          && (agent.is_cloud === true || Boolean(agent.tenant_name)));
+          && isRemoteTaskAgent(agent));
         const preferredAgent = initialAgentRef.current;
         const preferredKey = agentKey(preferredAgent);
         if (preferredKey && !nextAgents.some((agent) => agentKey(agent) === preferredKey)) {

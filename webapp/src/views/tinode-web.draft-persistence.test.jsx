@@ -262,6 +262,16 @@ function setCachedUser(createdAt) {
   localStorage.setItem('oc_user', JSON.stringify(profile));
 }
 
+test.each([false, true])('restores the saved Agent only for a draft with content (%s)', async (withContent) => {
+  sessionStorage.setItem('catsco_composer_drafts:v1:1', JSON.stringify({
+    inputDrafts: withContent ? [['new-task', '真实草稿']] : [],
+    taskContextDrafts: [['new-task', { agent: { uid: 99 }, projectId: 0, projectName: '' }]],
+    updatedAt: Date.now(),
+  }));
+  await act(async () => renderWorkspace());
+  expect(mocks.emptyProps.initialAgent?.uid || null).toBe(withContent ? 99 : null);
+});
+
 test('opens the inline new-task page and updates its Agent without losing the project context', async () => {
   await act(async () => renderWorkspace());
   await selectTestConversation();
