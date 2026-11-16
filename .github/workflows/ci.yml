@@ -265,6 +265,15 @@ jobs:
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW fsync"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW synchronous_commit"
 
+      # Pre-create the trigram extension: CREATE EXTENSION IF NOT EXISTS is not
+      # atomic across concurrent sessions, so two parallel tests can collide on
+      # pg_extension_name_index. Installing it once up front removes the race and
+      # the permission-denied fallback path.
+      - name: Prepare PostgreSQL message search extension
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pg_trgm"
+
       - name: Test PostgreSQL SkillHub publication entries (A At/Au/Ca/Cl/Id)
         if: matrix.part == 'entries-a'
         env:
@@ -370,6 +379,25 @@ jobs:
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "SELECT pg_reload_conf()"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW fsync"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW synchronous_commit"
+
+      # Pre-create the trigram extension: CREATE EXTENSION IF NOT EXISTS is not
+      # atomic across concurrent sessions, so two parallel tests can collide on
+      # pg_extension_name_index. Installing it once up front removes the race and
+      # the permission-denied fallback path.
+      - name: Prepare PostgreSQL message search extension
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pg_trgm"
+
+      # The conversation-task durability cases create MySQL triggers, so this leg
+      # needs log_bin_trust_function_creators set before its tests run. The store
+      # leg sets it later on purpose: its restricted-schema case asserts the
+      # default (denied) state first.
+      - name: Configure MySQL trigger prerequisite for durability cases
+        if: matrix.part == 'durability'
+        env:
+          MYSQL_CONTAINER_ID: ${{ job.services.mysql.id }}
+        run: docker exec -e MYSQL_PWD=catsco_root_test "$MYSQL_CONTAINER_ID" mysql -uroot -e 'SET GLOBAL log_bin_trust_function_creators = 1'
 
       - name: Test PostgreSQL model credit contracts and races
         if: matrix.part == 'credit'
