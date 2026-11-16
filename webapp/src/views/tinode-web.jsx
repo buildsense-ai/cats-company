@@ -106,6 +106,9 @@ import {
 import {
   collectSkillHubUpdateSummary,
   createEmptySkillHubUpdateSummary,
+  readSeenSkillHubUpdates,
+  writeSeenSkillHubUpdates,
+  skillHubSeenUpdatesKey,
   SKILLHUB_UPDATE_REFRESH_INTERVAL_MS,
 } from '../utils/skillhub-update-summary';
 import {
@@ -489,6 +492,11 @@ function TinodeWebApp({ location }) {
     composerDraftStoreRef.current,
     NEW_TASK_DRAFT_KEY,
   );
+  const hasPersistedTaskPayload = Boolean(
+    readComposerInputDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY).trim()
+    || readComposerAttachmentDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY).length
+    || readComposerPhoneUploadSession(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY)?.session_id,
+  );
 
   useEffect(() => {
     composerDraftStoreRef.current?.activate?.();
@@ -649,7 +657,8 @@ function TinodeWebApp({ location }) {
   const [activeAgentState, setActiveAgentState] = useState(null);
   const activeTopicId = activeTopic?.topicId || '';
   const visibleTopicId = activeView === 'chats' && !showOnboardingPreview ? activeTopicId : '';
-  const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent;
+  const restoredTaskAgent = hasPersistedTaskPayload ? persistedTaskContext?.agent : null;
+  const draftAgent = taskDraft ? taskDraft.agent : emptyTaskSelectedAgent || restoredTaskAgent;
   const draftAgentUID = Number(draftAgent?.uid || draftAgent?.id || 0);
   const modelContextId = activeTopicId || (draftAgentUID > 0 ? `draft:${taskDraft?.key || draftAgentUID}` : '');
   const modelContext = activeTopic || (modelContextId ? { topicId: modelContextId, isGroup: false } : null);
@@ -676,7 +685,7 @@ function TinodeWebApp({ location }) {
     activeAgentState,
     taskDraft,
     emptyTaskSelectedAgent,
-    persistedTaskContext?.agent,
+    restoredTaskAgent,
   );
   const mobileModelInfo = buildMobileModelInfo(
     currentModelName,
@@ -1559,7 +1568,7 @@ function TinodeWebApp({ location }) {
 
   const startStandaloneAnnotation = useCallback(async (app, { signal } = {}) => {
     const request = standaloneRequestRef.current;
-    const agent = emptyTaskSelectedAgent || taskDraft?.agent || persistedTaskContext?.agent;
+    const agent = draftAgent;
     const agentUid = Number(agent?.uid || agent?.id || 0);
     if (!request || !agentUid || agentUid !== Number(request.agentUid)
       || (app.agent && Number(app.agent) !== agentUid)) {
@@ -1588,7 +1597,7 @@ function TinodeWebApp({ location }) {
       window.dispatchEvent(new Event('cc:data-changed'));
     } finally { transition.release(); }
   }, [acquireDraftTaskTransition, activateResolvedTopic, createDraftAgentTaskTopic,
-    emptyTaskSelectedAgent, persistedTaskContext?.agent, taskDraft, user?.uid]);
+    draftAgent, taskDraft, user?.uid]);
 
   // The old composer's layout cleanup flushes its latest input before this
   // effect. Transfer that flushed draft, then invalidate late upload callbacks.
@@ -1799,8 +1808,11 @@ function TinodeWebApp({ location }) {
             additionalSidebarTools={(
               <>
                 <SkillHubSidebarButton
+                  key={user?.uid}
+                  userUid={user?.uid}
                   active={activeView === 'skillhub'}
-                  updateCount={skillHubUpdateSummary.total}
+                  updatesLoaded={skillHubUpdateSummary.userUid === String(user?.uid)}
+                  updateKeys={skillHubUpdateSummary.userUid === String(user?.uid) ? skillHubUpdateSummary.updateKeys : []}
                   onClick={() => {
                     setSkillHubInitialAgent(null);
                     setActiveView('skillhub');
@@ -1946,7 +1958,7 @@ function TinodeWebApp({ location }) {
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
                     user={user}
-                    initialAgent={taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent}
+                    initialAgent={draftAgent}
                     composerDraftStore={composerDraftStoreRef.current}
                     draftKey={NEW_TASK_DRAFT_KEY}
                     onSelectedAgentChange={handleEmptyTaskSelectedAgentChange}
@@ -2291,7 +2303,7 @@ function resolveDisplayedActiveAgent(
     return activeAgentState?.topicId === activeTopicId ? activeAgentState.agent : null;
   }
 
-  const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskAgent;
+  const draftAgent = taskDraft ? taskDraft.agent : emptyTaskSelectedAgent || persistedTaskAgent;
   const uid = Number(draftAgent?.uid || draftAgent?.id || 0);
   if (uid <= 0) return null;
 
@@ -2373,22 +2385,48 @@ function SidebarContent({
   );
 }
 
-function SkillHubSidebarButton({ active, onClick, updateCount = 0 }) {
-  const count = Number.isSafeInteger(Number(updateCount)) && Number(updateCount) > 0
-    ? Number(updateCount)
-    : 0;
+export function SkillHubSidebarButton({ active, onClick, userUid, updateKeys = [], updatesLoaded = false }) {
+  const [seenState, setSeenState] = useState(() => ({ userUid, keys: readSeenSkillHubUpdates(userUid) }));
+  const seenKeys = useMemo(() => seenState.userUid === userUid
+    ? seenState.keys : readSeenSkillHubUpdates(userUid), [seenState, userUid]);
+  const pendingReadUserRef = useRef(null);
+  const acknowledge = useCallback((keys) => {
+    const next = [...new Set([...seenKeys, ...keys])];
+    writeSeenSkillHubUpdates(userUid, next);
+    setSeenState({ userUid, keys: next });
+  }, [seenKeys, userUid]);
+  useEffect(() => {
+    if (pendingReadUserRef.current !== userUid || !updatesLoaded) return;
+    pendingReadUserRef.current = null;
+    acknowledge(updateKeys);
+  }, [acknowledge, updateKeys, updatesLoaded, userUid]);
+  useEffect(() => {
+    const handleStorage = (event) => {
+      if (event.key === null || event.key === skillHubSeenUpdatesKey(userUid)) {
+        setSeenState({ userUid, keys: readSeenSkillHubUpdates(userUid) });
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, [userUid]);
+  const seen = new Set(seenKeys);
+  const count = pendingReadUserRef.current === userUid ? 0 : updateKeys.filter((key) => !seen.has(key)).length;
   return (
     <button
       type="button"
       className={`cc-sidebar-primary cc-sidebar-skillhub-entry${active ? ' active' : ''}`}
-      onClick={onClick}
+      onClick={() => {
+        pendingReadUserRef.current = updatesLoaded ? null : userUid;
+        acknowledge(updateKeys);
+        onClick?.();
+      }}
       aria-label="打开 SkillHub"
       aria-current={active ? 'page' : undefined}
-      title={count > 0 ? `SkillHub：${count} 个 Skill 可更新` : 'SkillHub'}
+      title={count > 0 ? `SkillHub：${count} 个新更新` : 'SkillHub'}
     >
       <Package size={17} />
       <span>SkillHub</span>
-      {count > 0 && <span className="cc-skillhub-sidebar-update-badge" aria-label={`${count} 个 Skill 可更新`}>{count}</span>}
+      {count > 0 && <span className="cc-skillhub-sidebar-update-badge" aria-label={`${count} 个新更新`}>{count}</span>}
     </button>
   );
 }

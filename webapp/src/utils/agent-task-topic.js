@@ -3,8 +3,17 @@ import { readStorageValue, writeStorageValue } from './storage-access';
 
 const LAST_TASK_AGENT_PREFIX = 'catsco_last_task_agent:v1:';
 
-export function readLastTaskAgent(userId) {
+export function readLastTaskAgent(userId, groups) {
   if (!userId) return '';
+  if (Array.isArray(groups)) {
+    const lastTask = groups.filter((group) => String(group.owner_id) === String(userId)
+      && (group.kind === 'agent_task' || group.is_agent_task === true))
+      .sort((left, right) => (Date.parse(right.created_at) || 0) - (Date.parse(left.created_at) || 0)
+        || Number(right.id) - Number(left.id))[0];
+    if (lastTask && Array.isArray(lastTask.agent_ids)) {
+      return lastTask.agent_ids.length === 1 ? String(lastTask.agent_ids[0]) : '';
+    }
+  }
   return readStorageValue(`${LAST_TASK_AGENT_PREFIX}${userId}`) || '';
 }
 

@@ -4,8 +4,26 @@ import {
   resolveSkillHubEntry,
 } from './skillhub-entry';
 import { normalizeOwnedBots } from './owned-bots';
+import { readStorageValue, writeStorageValue } from './storage-access';
 
 export const SKILLHUB_UPDATE_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
+
+export const skillHubSeenUpdatesKey = (userUid) => userUid ? `catsco_skillhub_seen_updates:v1:${userUid}` : '';
+
+export function readSeenSkillHubUpdates(userUid) {
+  if (!userUid) return [];
+  try {
+    const stored = JSON.parse(readStorageValue(skillHubSeenUpdatesKey(userUid)) || '[]');
+    return Array.isArray(stored) ? stored.filter((key) => typeof key === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeSeenSkillHubUpdates(userUid, keys) {
+  if (!userUid) return;
+  writeStorageValue(skillHubSeenUpdatesKey(userUid), JSON.stringify(keys));
+}
 
 function botUID(bot) {
   return String(bot?.uid ?? bot?.id ?? '').trim();
@@ -104,6 +122,7 @@ export async function collectSkillHubUpdateSummary({
   }
 
   let total = 0;
+  const updateKeys = [];
   for (const entry of definitions) {
     if (!entry.ok) {
       byBot[entry.botUID] = { count: null, status: 'unavailable' };
@@ -112,10 +131,14 @@ export async function collectSkillHubUpdateSummary({
     const unavailableSkillIds = [...new Set(entry.skills
       .filter((skill) => !details.get(skill.skillId))
       .map((skill) => skill.skillId))];
-    const count = entry.skills.reduce((sum, skill) => (
-      sum + (details.get(skill.skillId)
-        && isSkillHubUpdateAvailable(skill, details.get(skill.skillId)) ? 1 : 0)
-    ), 0);
+    const count = entry.skills.reduce((sum, skill) => {
+      const latest = details.get(skill.skillId);
+      if (!latest || !isSkillHubUpdateAvailable(skill, latest)) return sum;
+      updateKeys.push(JSON.stringify([
+        entry.botUID, skill.skillId, latest.latestVersion, String(latest.contentHash || '').toLowerCase(),
+      ]));
+      return sum + 1;
+    }, 0);
     byBot[entry.botUID] = unavailableSkillIds.length > 0
       ? { count, status: 'partial', unavailableSkillIds }
       : { count, status: 'ready' };
@@ -123,6 +146,8 @@ export async function collectSkillHubUpdateSummary({
   }
 
   return {
+    userUid: String(userUid || ''),
+    updateKeys,
     total,
     byBot,
     detailsBySkillID,
@@ -130,5 +155,5 @@ export async function collectSkillHubUpdateSummary({
 }
 
 export function createEmptySkillHubUpdateSummary() {
-  return { total: 0, byBot: {}, detailsBySkillID: {} };
+  return { total: 0, byBot: {}, detailsBySkillID: {}, userUid: '', updateKeys: [] };
 }
