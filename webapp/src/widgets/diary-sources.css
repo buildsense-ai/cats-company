@@ -72,6 +72,7 @@
 .cc-diary-reader ::selection { color: var(--cc-text); background: var(--cc-selected); }
 .cc-diary-graph-wrap { margin-top: 10px; }
 .cc-diary-graph-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--cc-text-secondary); }
+.cc-diary-graph-toolbar .cc-daily-notes-views { flex-shrink: 0; white-space: nowrap; }
 .cc-diary-source-graph { position: relative; min-width: 0; margin-top: 8px; }
 .cc-diary-source-graph > .cc-daily-notes-network { height: 300px; border-radius: 6px; }
 .cc-diary-source-graph canvas { outline-offset: -3px; }

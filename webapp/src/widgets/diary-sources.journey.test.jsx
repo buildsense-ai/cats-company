@@ -19,6 +19,10 @@ import { anchor, documentId, revision, nextRevision, entries, readPage, searchRe
 //    relations may connect them, and a search page never invents edges.
 // D9 the graph uses the Agent Settings Canvas renderer and source-cluster
 //    layout; missing source metadata must never become guessed session groups.
+// D10 Diary graphs mount only after both the process and its tool step open;
+//     closing either must release the graph/reader and abort pending reads.
+// D11 a pending→completed result must stay collapsed; selecting a step opens
+//     only that call, including when reasoning visibility is disabled.
 // The journey uses the real ChatMessage, reader, Markdown and authenticated API
 // client; only the HTTP boundary is a fixture. Browser screenshots supplement it.
 const evidence = [];
@@ -28,8 +32,14 @@ const settle = async () => { await act(async () => { for (let i = 0; i < 12; i +
 const click = async (el) => { expect(el).toBeTruthy(); await act(async () => el.click()); await settle(); };
 const sourceButtons = () => [...container.querySelectorAll('.cc-diary-source')];
 const reader = () => document.querySelector('[aria-label="日记引用详情"]');
-const render = async (messages = workingMessages(), extra = {}) => {
+const render = async (messages = workingMessages(), extra = {}, expand = true) => {
   await act(async () => root.render(<ChatMessage message={{ id: 3, from_uid: 'usr574', content: '', created_at: '2026-11-15T10:00:00Z' }} workingMessages={messages} workingOnly workingComplete senderIsBot senderName="小八" isSelf={false} showThinking={false} {...extra} />));
+  if (expand) {
+    const process = container.querySelector('.v3-working-toggle[aria-expanded="false"]');
+    if (process) await click(process);
+    const step = [...container.querySelectorAll('.v3-wpi-tool-header.is-toggle[aria-expanded="false"]')].find(button => button.textContent.includes('catslog_knowledge_recall'));
+    if (step) await click(step);
+  }
 };
 
 beforeEach(() => {
@@ -64,6 +74,7 @@ it('D1/D2: search → exact version read → keyboard close, without claiming a 
   expect(reader().textContent).toContain('引用时版本');
   await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
   expect(reader()).toBeNull(); expect(document.activeElement).toBe(button);
+  expect(container.querySelector('.v3-working-toggle').getAttribute('aria-expanded')).toBe('true');
   evidence.push({ journey: 'search/read/close', request: requests[0].body, body: 'exact version', restoredFocus: true });
 });
 
@@ -157,4 +168,73 @@ it('D5: authorization refusal never reveals the tool body; failed reads can retr
   await click(retry);
   expect(reader().textContent).toContain('数据库变更向后兼容');
   evidence.push({ journey: 'refusal/retry', refusedBody: false, retry: 'success' });
+});
+
+it('D10: process → selected Diary shell → graph; collapsing unmounts it without reading bodies', async () => {
+  await render(workingMessages(), {}, false);
+  expect(container.querySelector('.cc-diary-tool')).toBeNull();
+  expect(container.querySelector('canvas')).toBeNull();
+  expect(requests).toHaveLength(0);
+  const process = container.querySelector('.v3-working-toggle');
+  await click(process);
+  expect(container.querySelector('canvas')).toBeNull();
+  const step = container.querySelector('.v3-wpi-tool-header.is-toggle');
+  expect(step.getAttribute('aria-expanded')).toBe('false');
+  await click(step);
+  expect(sourceButtons()).toHaveLength(2);
+  expect(container.querySelector('canvas')).toBeTruthy();
+  expect(requests).toHaveLength(0);
+  await click(step);
+  expect(container.querySelector('canvas')).toBeNull();
+  await click(step); await click(process);
+  expect(container.querySelector('.cc-diary-tool')).toBeNull();
+  evidence.push({ journey: 'two-stage disclosure', initialCanvases: 0, expandedProcessCanvases: 0, selectedToolCanvases: 1, eagerReads: 0 });
+});
+
+it('D11: a pending Diary result stays collapsed when it completes and hides attached reasoning', async () => {
+  const pending = [{ id: 0, from_uid: 'usr574', type: 'thinking', content: 'PRIVATE_REASONING_SENTINEL' }, workingMessages()[0]];
+  await render(pending, {}, false);
+  await click(container.querySelector('.v3-working-toggle'));
+  expect(container.textContent).not.toContain('PRIVATE_REASONING_SENTINEL');
+  expect(container.querySelector('canvas')).toBeNull();
+  await render([pending[0], ...workingMessages()], {}, false);
+  const step = container.querySelector('.v3-wpi-tool-header.is-toggle');
+  expect(step.getAttribute('aria-expanded')).toBe('false');
+  expect(container.querySelector('canvas')).toBeNull();
+  await click(step);
+  expect(sourceButtons()).toHaveLength(2);
+  expect(container.textContent).not.toContain('PRIVATE_REASONING_SENTINEL');
+  evidence.push({ journey: 'streaming completion', staysCollapsed: true, hiddenReasoningDisclosed: false });
+});
+
+it('D11: selecting one Diary call does not mount graphs for the other calls', async () => {
+  const second = workingMessages(searchResult, 'search').map(message => ({ ...message, id: message.id + 10, metadata: message.type === 'tool_use' ? { ...message.metadata, id: 'diary-second' } : { ...message.metadata, tool_use_id: 'diary-second' } }));
+  await render([...workingMessages(), ...second], {}, false);
+  await click(container.querySelector('.v3-working-toggle'));
+  const steps = [...container.querySelectorAll('.v3-wpi-tool-header.is-toggle')];
+  expect(steps).toHaveLength(2);
+  await click(steps[1]);
+  expect(container.querySelectorAll('.cc-diary-tool')).toHaveLength(1);
+  expect(container.textContent).toContain('找到 2 条笔记');
+  expect(container.textContent).not.toContain('已返回 2 条笔记正文');
+  expect(steps[0].getAttribute('aria-expanded')).toBe('false');
+  expect(requests).toHaveLength(0);
+  evidence.push({ journey: 'per-call disclosure', calls: 2, mountedGraphs: 1 });
+});
+
+it('D10: closing the process aborts an open private read and removes its portal', async () => {
+  let finish;
+  fetch.mockImplementationOnce((url, options) => {
+    requests.push({ signal: options.signal });
+    return new Promise(resolve => { finish = resolve; });
+  });
+  await render(); await click(sourceButtons()[0]);
+  expect(reader()).toBeTruthy();
+  await click(container.querySelector('.v3-working-toggle'));
+  expect(requests[0].signal.aborted).toBe(true);
+  expect(reader()).toBeNull();
+  finish(jsonResponse(readPage())); await settle();
+  expect(reader()).toBeNull();
+  expect(container.querySelector('canvas')).toBeNull();
+  evidence.push({ journey: 'collapse cancels read', aborted: true, stalePortal: false });
 });

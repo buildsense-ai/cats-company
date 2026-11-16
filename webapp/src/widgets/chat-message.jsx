@@ -44,7 +44,8 @@ export { downloadableMediaURL } from '../utils/media-download';
 import { previewPageURL, sharePreviewLink } from './preview-share';
 import { normalizeGatewayAnnotations } from '../gateway-annotations';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
-import TurnSources from './turn-sources';
+import DiaryToolResult from './diary-tool-result';
+import MemoryBranchSources from './memory-branch-sources';
 import { latestMemoryBranches } from './memory-branch';
 import { diaryAgentUID, diaryToolView } from './diary-sources';
 
@@ -769,13 +770,13 @@ function toolResultSizeLabel(value) {
   return `${(value.length / 1000).toFixed(value.length >= 10000 ? 0 : 1)}k 字符`;
 }
 
-function WorkingToolStep({ item, orphan = false }) {
+function WorkingToolStep({ item, orphan = false, agentUid, diaryView, showNarratives = true }) {
   const [open, setOpen] = useState(false);
   const result = orphan ? item.content : item.result;
   const hasResult = result != null && (typeof result !== 'string' || result.length > 0);
   const name = orphan ? '工具结果' : (item.name || 'Tool');
   const resultID = `tool-result-${useId().replace(/:/g, '')}`;
-  const narratives = item.narratives || [];
+  const narratives = showNarratives ? item.narratives || [] : [];
 
   if (!hasResult) {
     return (
@@ -823,9 +824,11 @@ function WorkingToolStep({ item, orphan = false }) {
         </button>
         {open && (
           <div id={resultID} className="v3-wpi-tool-result">
-            <div className="v3-wpi-code-block result">
-              <pre><code>{serializeToolResult(result)}</code></pre>
-            </div>
+            {diaryView ? <DiaryToolResult item={item} view={diaryView} agentUid={agentUid} /> : (
+              <div className="v3-wpi-code-block result">
+                <pre><code>{serializeToolResult(result)}</code></pre>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -958,20 +961,19 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
     const view = diaryToolView(item);
     return view ? [{ item, view }] : [];
   }), [safeBlocks]);
-  const detailBlocks = safeBlocks.flatMap((item) => {
-    if (item.type === 'memory_branch') return [];
-    if (item === planItem) return [];
-    // Diary navigation lives outside execution details; preserve its attached
-    // reasoning in details and its user-facing progress in the conversation.
-    if (diaryItems.some((diary) => diary.item === item)) return (item.narratives || []).filter((narrative) => narrative.type === 'thinking');
-    return [item];
+  const memoryEvents = useMemo(() => latestMemoryBranches(safeBlocks), [safeBlocks]);
+  const detailBlocks = safeBlocks.filter((item) => {
+    if (item.type === 'memory_branch' || item === planItem) return false;
+    // Source inspection stays available with reasoning hidden, but only the
+    // selected tool may mount its graph, reader, and private-read effects.
+    return showDetails || diaryItems.some((diary) => diary.item === item);
   });
   // Only explicit user-facing progress messages become conversation bubbles.
   // Keep reasoning blocks, raw tool outputs and subagent logs in the details.
   const progressMessages = safeBlocks.filter((item) => item !== planItem).flatMap((item) => (
     item.type === 'assistant_text' ? [item] : (item.narratives || [])
   )).filter((item) => item.type === 'assistant_text' && item.text?.trim());
-  const hasDetails = showDetails && detailBlocks.length > 0;
+  const hasDetails = detailBlocks.length > 0;
   const completedPlanSteps = plan?.steps?.filter((step) => step.status === 'completed').length || 0;
   const complete = executionState ? ['replied', 'completed'].includes(executionState) : completeOverride || isPlanComplete(plan);
   const finished = complete || stopped || ['failed', 'cancelled'].includes(executionState);
@@ -1056,7 +1058,7 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
           {statusContent}
         </div>
       ))}
-      <TurnSources diaryItems={diaryItems} blocks={safeBlocks} agentUid={agentUid} />
+      {memoryEvents.length > 0 && <MemoryBranchSources events={memoryEvents} agentUid={agentUid} />}
       {!open && planContent}
       {open && hasDetails && (
         <div
@@ -1077,7 +1079,7 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
                 return <SubAgentWorkingGroup key={i} item={item} />;
               }
               if (item.type === 'tool_pair') {
-                return <WorkingToolStep key={i} item={item} />;
+                return <WorkingToolStep key={i} item={item} agentUid={agentUid} diaryView={diaryItems.find(diary => diary.item === item)?.view} showNarratives={showDetails} />;
               }
               if (item.type === 'tool_result_orphan') {
                 return <WorkingToolStep key={i} item={item} orphan />;

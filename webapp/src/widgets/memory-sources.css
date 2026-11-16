@@ -1,9 +1,3 @@
-.cc-turn-sources { min-width: 0; }
-.cc-turn-source-tabs { display: flex; align-items: center; gap: 4px; margin-top: 10px; border-bottom: 1px solid var(--cc-border); }
-.cc-turn-source-tabs button { border: 0; background: transparent; color: var(--cc-text-secondary); padding: 9px 12px; font: inherit; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; }
-.cc-turn-source-tabs button[aria-selected="true"] { color: var(--cc-text); border-bottom-color: var(--cc-accent-text); }
-.cc-turn-source-tabs button:hover { background: var(--cc-hover); }
-.cc-turn-source-tabs button:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: -2px; }
 .cc-memory-summary { color: var(--cc-text-secondary); font-size: 12px; margin: 3px 0 10px; line-height: 1.6; }
 .cc-memory-detail-node { margin-top: 24px; }
 .cc-memory-detail-node h3 { font-size: 13px; color: var(--cc-text-secondary); margin: 0 0 8px; line-height: 1.5; }
