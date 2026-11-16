@@ -11,6 +11,7 @@ vi.mock('../api', () => ({
     getCommercialCatalog: vi.fn(),
     getCommercialOrders: vi.fn(),
     createCommercialOrder: vi.fn(),
+    createCreditTopupOrder: vi.fn(),
     cancelCommercialOrder: vi.fn(),
     confirmCommercialTestPayment: vi.fn(),
     claimCommercialTrial: vi.fn(),
@@ -104,6 +105,24 @@ describe('RelayAccessModal commercial rollout', () => {
     });
     container.remove();
     vi.clearAllMocks();
+  });
+
+  test('uses the topup endpoint with an exact amount and preserves the request on timeout', async () => {
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, plans: [], channels: [{ id: 'alipay_page', label: '支付宝' }],
+      credit_topup: { enabled: true, min_amount_fen: 100, max_amount_fen: 1000000, credits_per_cny: 100, presets_fen: [1000, 5000] } });
+    api.createCreditTopupOrder.mockRejectedValueOnce(Object.assign(new Error('timeout'), { code: 'REQUEST_TIMEOUT' }))
+      .mockResolvedValueOnce({ order: { order_no: 'topup-a', kind: 'credit_topup', amount_fen: 5000, plan_name: '充值 5,000 点', status: 'pending', channel: 'alipay_page' } });
+    await renderModal();
+    const press = async label => act(async () => { [...container.querySelectorAll('button')].find(button => button.textContent === label).click(); });
+    await press('支付宝充值');
+    expect(container.querySelector('[aria-label="确认充值点数"]').textContent).toContain('不附带机器');
+    await press('确认并前往支付宝');
+    const first = api.createCreditTopupOrder.mock.calls[0];
+    expect(first[0]).toBe(5000);
+    await press('确认并前往支付宝');
+    expect(api.createCreditTopupOrder.mock.calls[1][1]).toBe(first[1]);
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('topup-a');
   });
 
   async function renderModal(input = {}) {
@@ -279,7 +298,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(balance.textContent).toContain('credit 账户：已启用');
     expect(balance.textContent).toContain('当期可用：是');
     // 没有独立余额充值商品/入口时只说明，不给假按钮。
-    expect(balance.textContent).toContain('独立余额充值暂未开放');
+    expect(balance.textContent).toContain('独立充值以支付页开放状态为准');
     expect(balance.textContent).not.toContain('充值余额入口');
     expect(balance.textContent).toContain('月额度按订阅生效日锚定的自然月刷新，不结转；提前续费不会提前补额。');
     // 周期行只翻译后端字段：当前窗口、订阅截止、下一次确定刷新。

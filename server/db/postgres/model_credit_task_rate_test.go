@@ -113,7 +113,10 @@ func TestPostgresModelCreditTaskPlanTierSnapshotIsStable(t *testing.T) {
 }
 
 // 运行中套餐到期：任务继续跑（status 仍 allowed），reserve 仍然成功 —— 这就是「按到期前
-// 费率跑到结束」的执行点；同一时刻新 root 开始、以及 paused 任务的 resume 都必须被拒。
+// 费率跑到结束」的执行点。过期后新 root 的权限由「有效套餐 或 付费余额」决定：
+//   - 还有独立充值的付费余额：按 Relay 梯度的第 1 档允许开始（充值本身是权限）；
+//   - 零余额（没充值，或者充值已花光）：仍然失败关闭（entitlement_expired），
+//     gift 不能凭空给权限，也不能靠新 root 绕过。
 func TestPostgresModelCreditTaskRunningSurvivesPlanExpiry(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
@@ -146,13 +149,29 @@ func TestPostgresModelCreditTaskRunningSurvivesPlanExpiry(t *testing.T) {
 		t.Fatalf("a running task must keep reserving after the plan expired: %v", err)
 	}
 
-	// 同一个用户此刻新建 root：权限已失效，必须被拒（不能靠新 root 绕过）。
-	fresh := modelCreditTaskStartDecision(t, db, uid, "expiry-new-root")
-	if fresh.Allowed || fresh.Reason != store.ModelCreditTaskReasonEntitlementExpired {
-		t.Fatalf("new root after expiry = %+v, want denied entitlement_expired", fresh)
+	// 过期但还有付费余额：新 root 按第 1 档允许，不能因为套餐没了就把充值的钱锁死。
+	fresh := modelCreditTaskStartDecision(t, db, uid, "expiry-paid-root")
+	if !fresh.Allowed || fresh.State != store.ModelCreditTaskRunning || fresh.Reason != store.ModelCreditTaskReasonOK {
+		t.Fatalf("new root with paid balance after expiry = %+v, want allowed", fresh)
 	}
-	if fresh.PlanTier != 0 {
-		t.Fatalf("denied start reported plan tier %d, want 0 (no trusted snapshot)", fresh.PlanTier)
+	if fresh.PlanTier != store.ModelCreditTaskPlanTierMin {
+		t.Fatalf("paid-only start reported tier %d, want the ladder minimum %d", fresh.PlanTier, store.ModelCreditTaskPlanTierMin)
+	}
+
+	// 零余额（没有独立充值）的过期账户：新 root 必须失败关闭，不许猜档位。
+	emptyUID := modelCreditTestUser(t, db, "credit-expiry-empty")
+	emptyPlanID := modelCreditTestPermissionTier(t, db, emptyUID, 1)
+	if _, err := db.db.Exec(`
+		UPDATE commercial_entitlements SET expires_at = $3
+		WHERE uid = $1 AND plan_id = $2`, emptyUID, emptyPlanID, time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	empty := modelCreditTaskStartDecision(t, db, emptyUID, "expiry-empty-root")
+	if empty.Allowed || empty.Reason != store.ModelCreditTaskReasonEntitlementExpired {
+		t.Fatalf("new root after expiry with zero balance = %+v, want denied entitlement_expired", empty)
+	}
+	if empty.PlanTier != 0 {
+		t.Fatalf("denied start reported plan tier %d, want 0 (no trusted snapshot)", empty.PlanTier)
 	}
 }
 

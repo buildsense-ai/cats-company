@@ -1343,3 +1343,180 @@ func TestCustomModelUpdateWithNewKeySucceedsWhenStoredCiphertextCannotDecrypt(t 
 		t.Fatalf("decrypted key mismatch: %q", decoded.APIKey)
 	}
 }
+
+// creditAwareQuotaStore 同时提供老套餐摘要和 credit 资格读取（生产里的 PostgreSQL
+// 适配器两样都有）。只有这种存储才会让 bot 目录/保存权限改按 credit 资格判定。
+type creditAwareQuotaStore struct {
+	summary    *types.CommercialSummary
+	summaryErr error
+	enabled    bool
+	tier       int
+	allowance  int64
+	eligErr    error
+	calls      int
+}
+
+func (s *creditAwareQuotaStore) GetCommercialSummary(int64) (*types.CommercialSummary, error) {
+	return s.summary, s.summaryErr
+}
+
+func (s *creditAwareQuotaStore) GetModelCreditEligibility(context.Context, int64) (bool, int, int64, error) {
+	s.calls++
+	if s.eligErr != nil {
+		return false, 0, 0, s.eligErr
+	}
+	return s.enabled, s.tier, s.allowance, nil
+}
+
+// 新规则：只有付费余额、没有套餐的 credit 用户按 tier1 可消费，但机器能选的模型
+// 必须和 GetModelCreditEligibility 一致 —— 只有已开通 credit 计费的模型，不能因为
+// 老额度路径「没有 quota」就把整个目录放出去。
+func TestOwnerModelCatalogRestrictsPaidOnlyCreditUserToCreditModels(t *testing.T) {
+	quota := &creditAwareQuotaStore{
+		// 没有老套餐额度：旧逻辑在商业额度灰度里正是这样把全部模型放开的。
+		summary:   &types.CommercialSummary{TotalsByModel: map[string]float64{}},
+		enabled:   true,
+		tier:      store.ModelCreditTaskPlanTierMin,
+		allowance: 4_000 * store.ModelCreditUnitsPerCredit,
+	}
+	handler := NewBotModelConfigHandler(nil, nil)
+	handler.SetCommercialQuotaSource(quota, true, nil)
+
+	catalog, quotaError := handler.catalogWithUsage(context.Background(), 7, false)
+	if quotaError != "" {
+		t.Fatalf("quota error=%q", quotaError)
+	}
+	if len(catalog) != 1 || catalog[0].ID != deepSeekPublicModelID || !catalog[0].Available {
+		t.Fatalf("paid-only credit catalog=%#v, want only %s available", catalog, deepSeekPublicModelID)
+	}
+	if quota.calls == 0 {
+		t.Fatal("catalog did not consult credit eligibility for a credit account")
+	}
+	for _, model := range []string{"gpt-6.1-sol", "minimax-m3", "minimax-m2.7", "glm-5.3-flash"} {
+		if allowed, err := handler.catalogModelAllowed(context.Background(), 7, model); err != nil || allowed {
+			t.Fatalf("model %s allowed=%v err=%v, want denied for a credit-only account", model, allowed, err)
+		}
+	}
+	if allowed, err := handler.catalogModelAllowed(context.Background(), 7, deepSeekPublicModelID); err != nil || !allowed {
+		t.Fatalf("credit-billed model allowed=%v err=%v, want allowed", allowed, err)
+	}
+}
+
+// 套餐过期且没有付费余额（gift 不凭空授权）：目录里没有任何可选项，老额度也不能
+// 把高级模型放回来。当前已保存的模型仍然可见，但被禁用并说明原因。
+func TestOwnerModelCatalogDeniesExpiredCreditUser(t *testing.T) {
+	quota := &creditAwareQuotaStore{
+		// 历史老额度还在：过期 credit 用户不得靠它回落到老模型目录。
+		summary: &types.CommercialSummary{TotalsByModel: map[string]float64{"MiniMax-M3": 500}},
+		enabled: true,
+		tier:    store.ModelCreditTaskPlanTierNone,
+	}
+	handler := NewBotModelConfigHandler(nil, nil)
+	handler.SetCommercialQuotaSource(quota, true, nil)
+
+	catalog, quotaError := handler.catalogWithUsageForCurrent(context.Background(), 7, 0, false, "minimax-m3")
+	if quotaError == "" {
+		t.Fatal("an expired credit account must explain why the catalog is empty")
+	}
+	if len(catalog) != 1 || catalog[0].ID != "minimax-m3" {
+		t.Fatalf("expired credit catalog=%#v, want only the current model", catalog)
+	}
+	if catalog[0].Available || !strings.Contains(catalog[0].UnavailableReason, "没有可用的模型额度") {
+		t.Fatalf("expired current model=%#v, want disabled with a reason", catalog[0])
+	}
+	if allowed, err := handler.catalogModelAllowed(context.Background(), 7, deepSeekPublicModelID); err != nil || allowed {
+		t.Fatalf("expired account allowed=%v err=%v, want denied", allowed, err)
+	}
+}
+
+// 保存路径同样按 credit 资格：高级模型 403，已开通 credit 计费的模型可以保存。
+func TestOwnerModelSelectionRequiresCreditPermission(t *testing.T) {
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{43: {RuntimeProtocol: botModelRuntimeProtocol}},
+	}
+	quota := &creditAwareQuotaStore{
+		enabled:   true,
+		tier:      2,
+		allowance: 12_000 * store.ModelCreditUnitsPerCredit,
+	}
+	handler := NewBotModelConfigHandler(db, db)
+	handler.SetCommercialQuotaSource(quota, true, nil)
+	patch := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+		rec := httptest.NewRecorder()
+		handler.HandleOwnerConfig(rec, req)
+		return rec
+	}
+
+	if rec := patch(`{"model_id":"gpt-6.1-sol","reasoning_effort":"medium"}`); rec.Code != http.StatusForbidden ||
+		!strings.Contains(rec.Body.String(), `"code":"model_not_in_plan"`) {
+		t.Fatalf("advanced model status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if db.models[43].Revision != 0 {
+		t.Fatalf("forbidden selection changed config: %#v", db.models[43])
+	}
+	if rec := patch(`{"model_id":"deepseek-flash","reasoning_effort":"high"}`); rec.Code != http.StatusOK {
+		t.Fatalf("credit model status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := db.models[43]; got.ModelID != deepSeekPublicModelID || got.Revision != 1 {
+		t.Fatalf("credit model save=%#v, want the credit-billed model saved once", got)
+	}
+}
+
+// 资格读不出来就失败关闭：目录仅保留当前模型（禁用），保存直接拒绝，不猜范围。
+func TestOwnerModelPermissionsFailClosedWhenCreditEligibilityUnavailable(t *testing.T) {
+	quota := &creditAwareQuotaStore{eligErr: errors.New("database unavailable")}
+	handler := NewBotModelConfigHandler(nil, nil)
+	handler.SetCommercialQuotaSource(quota, true, nil)
+
+	catalog, quotaError := handler.catalogWithUsageForCurrent(context.Background(), 7, 0, false, deepSeekPublicModelID)
+	if quotaError == "" {
+		t.Fatal("a failed eligibility read must be reported, not answered as a full catalog")
+	}
+	if len(catalog) != 1 || catalog[0].Available || !strings.Contains(catalog[0].UnavailableReason, "无法确认") {
+		t.Fatalf("catalog=%#v, want the current model disabled", catalog)
+	}
+	if allowed, err := handler.catalogModelAllowed(context.Background(), 7, deepSeekPublicModelID); err == nil || allowed {
+		t.Fatalf("allowed=%v err=%v, want a hard error so the save fails closed", allowed, err)
+	}
+}
+
+// 存储不支持 credit 资格读取（legacy 部署/老 store）时保持原有全目录行为。
+func TestOwnerModelCatalogKeepsLegacyPathWithoutCreditIdentity(t *testing.T) {
+	handler := NewBotModelConfigHandler(nil, nil)
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{
+		summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}},
+	}, true, nil)
+
+	catalog, quotaError := handler.catalogWithUsage(context.Background(), 7, false)
+	if quotaError != "" {
+		t.Fatalf("quota error=%q", quotaError)
+	}
+	if len(catalog) != len(botModelCatalog) {
+		t.Fatalf("legacy catalog=%d entries, want the full pool %d", len(catalog), len(botModelCatalog))
+	}
+}
+
+// credit 资格的模型范围按档位/余额判定，任何一环不可信都失败关闭。
+func TestBotModelCreditPermissionModelAllowed(t *testing.T) {
+	cases := []struct {
+		name       string
+		permission botModelCreditPermission
+		model      string
+		want       bool
+	}{
+		{"paid only tier1", botModelCreditPermission{known: true, enabled: true, tier: 1, allowance: 4_000}, deepSeekPublicModelID, true},
+		{"gift only grants nothing", botModelCreditPermission{known: true, enabled: true, tier: 0, allowance: 0}, deepSeekPublicModelID, false},
+		{"expired plan grants nothing", botModelCreditPermission{known: true, enabled: true, tier: 0, allowance: 0}, deepSeekPublicModelID, false},
+		{"trusted tier still denies advanced models", botModelCreditPermission{known: true, enabled: true, tier: 3, allowance: 1}, "gpt-6.1-sol", false},
+		{"untrusted tier fails closed", botModelCreditPermission{known: true, enabled: true, tier: 0, allowance: 1}, deepSeekPublicModelID, false},
+		{"legacy credit alias resolves", botModelCreditPermission{known: true, enabled: true, tier: 1, allowance: 1}, "deepseek-v4-flash", true},
+	}
+	for _, testCase := range cases {
+		if got := testCase.permission.modelAllowed(testCase.model); got != testCase.want {
+			t.Fatalf("%s: modelAllowed(%s)=%v, want %v", testCase.name, testCase.model, got, testCase.want)
+		}
+	}
+}

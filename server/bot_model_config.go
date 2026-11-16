@@ -290,7 +290,7 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported model or reasoning effort"})
 				return
 			}
-			allowed, quotaErr := h.catalogModelAllowed(ownerUID, model.ID)
+			allowed, quotaErr := h.catalogModelAllowed(r.Context(), ownerUID, model.ID)
 			if quotaErr != nil {
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 					"error": "commercial quota is unavailable",
@@ -848,8 +848,22 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 		catalog[i].Runtime = catalogRuntimeDescriptorForBot(botUID, catalog[i].ID)
 	}
 
+	credit, creditErr := h.creditPermission(ctx, ownerUID)
+	if creditErr != nil {
+		// 资格读不出来就不猜模型范围：只保留当前模型（禁用）让用户看到现状，
+		// 绝不把高级模型放给一个权限不明的账户。
+		return catalogWithUnavailableCurrent(catalog, currentModelID, botModelCreditUnavailableReason), "模型权限暂时无法同步"
+	}
+	creditUser := credit.known && credit.enabled
 	var commercialSummary *types.CommercialSummary
-	if h.commercialQuotaEnforced(ownerUID) {
+	if creditUser {
+		// credit 身份的账户只按 credit 资格给范围：套餐过期、或者既没有月额度也
+		// 没有付费余额，就是没有可选的模型，绝不能回落到老 CNY 额度的全模型目录。
+		if !credit.spendable() {
+			return catalogWithUnavailableCurrent(catalog, currentModelID, botModelCreditNoPermissionReason), "当前账户暂无模型额度"
+		}
+		catalog = catalogForCreditPermission(catalog, credit, currentModelID)
+	} else if h.commercialQuotaEnforced(ownerUID) {
 		var summaryErr error
 		commercialSummary, summaryErr = h.commercialStore.GetCommercialSummary(ownerUID)
 		if summaryErr != nil {
@@ -860,6 +874,11 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 		}
 	}
 	if !includeUsage {
+		return catalog, ""
+	}
+	if creditUser {
+		// credit 用户的余额在 credit 账本（/api/relay/credits），relay 按模型记的
+		// CNY 预算对他们没有意义：这里不给条目编造额度，也不必打 relay。
 		return catalog, ""
 	}
 	if h.relayAdmin == nil {
@@ -915,7 +934,103 @@ func catalogRuntimeDescriptor(model botModelCatalogItem) *botModelRuntimeDescrip
 	return d
 }
 
-func (h *BotModelConfigHandler) catalogModelAllowed(ownerUID int64, modelID string) (bool, error) {
+// botModelCreditPermission 是 BotModelConfigHandler 对「credit 身份 + 当期权限」的
+// 判定，字段含义与 GetModelCreditEligibility 的三个返回值一致：
+//   - known=false：这个存储不支持 credit 资格读取（老 store / 灰度之外的部署），
+//     调用方保持原来的老额度行为。
+//   - enabled 是身份：套餐过期后仍然是 true，真正的 legacy 老用户才是 false。
+//   - tier/allowance 是当下主套餐的档位与可用额度；没有生效套餐但有付费余额时
+//     由存储给出 Relay 梯度的第 1 档和付费余额，套餐过期且余额为零时 allowance=0。
+type botModelCreditPermission struct {
+	known     bool
+	enabled   bool
+	tier      int
+	allowance int64
+}
+
+const (
+	// botModelCreditNoPermissionReason 是 credit 用户没有可消费权限时逐模型给出的
+	// 原因：套餐过期或余额为零时目录里没有任何可选项。
+	botModelCreditNoPermissionReason = "当前账户没有可用的模型额度，续费或充值后再选择"
+	// botModelCreditUnavailableReason 是 credit 资格读不出来时的原因（失败关闭）。
+	botModelCreditUnavailableReason = "模型权限暂时无法确认"
+)
+
+// spendable 报告这个账户此刻有没有真的 credit 模型权限。没有月额度也没有付费
+// 余额（allowance=0），或者档位不在 1..3（Relay 算不出费率、会拒绝执行）时一律
+// 当作没有权限：绝不能在这里猜一个范围把模型放出去。
+func (p botModelCreditPermission) spendable() bool {
+	return p.known && p.enabled && p.allowance > 0 && store.ModelCreditTaskPlanTierTrusted(p.tier)
+}
+
+// modelAllowed 报告 credit 用户能不能选这个目录模型。模型范围复用现有套餐定义：
+// credit 计费目前只开通了 DeepSeek Flash（docs/credit-plan-rules-20261109.md
+// P0-1.5，V1/V2/V3 三档范围相同；botmgr 给 credit 新机器指定初始模型时用的也是
+// 这一条），所以这里不另造价格表或模型表。tier 只做可信性校验 —— 档位不可信
+// 时 Relay 无法计价，保存一个选不动的模型等于骗用户。
+func (p botModelCreditPermission) modelAllowed(modelID string) bool {
+	if !p.spendable() {
+		return false
+	}
+	target := normalizeRelayModelName(resolveLegacyCatalogModelID(modelID))
+	return target != "" && target == normalizeRelayModelName(deepSeekPublicModelID)
+}
+
+// creditPermission 读 owner 的 credit 资格。只有存储同时提供套餐摘要与资格读取
+// （PostgreSQL 适配器两样都有）时才启用 credit 判定；否则 known=false，调用方保持
+// 原来的老额度路径，legacy 用户行为不变。
+func (h *BotModelConfigHandler) creditPermission(ctx context.Context, uid int64) (botModelCreditPermission, error) {
+	if h == nil || h.commercialStore == nil || uid <= 0 {
+		return botModelCreditPermission{}, nil
+	}
+	reader, ok := h.commercialStore.(ModelCreditEligibilityReader)
+	if !ok || reader == nil {
+		return botModelCreditPermission{}, nil
+	}
+	enabled, tier, allowance, err := reader.GetModelCreditEligibility(ctx, uid)
+	if err != nil {
+		return botModelCreditPermission{known: true}, err
+	}
+	return botModelCreditPermission{known: true, enabled: enabled, tier: tier, allowance: allowance}, nil
+}
+
+// catalogForCreditPermission 把目录收窄到 credit 资格允许的模型。和付费套餐的老
+// 路径一样：当前已保存的模型即使不再允许也要留着（禁用 + 原因），否则用户看不到
+// 自己正在跑什么，也不知道为什么保不进去。
+func catalogForCreditPermission(
+	catalog []botModelCatalogItem,
+	credit botModelCreditPermission,
+	currentModelID string,
+) []botModelCatalogItem {
+	current := normalizeRelayModelName(resolveLegacyCatalogModelID(currentModelID))
+	filtered := make([]botModelCatalogItem, 0, len(catalog))
+	for _, item := range catalog {
+		if credit.modelAllowed(item.ID) {
+			filtered = append(filtered, item)
+			continue
+		}
+		if current != "" && normalizeRelayModelName(item.ID) == current {
+			item.Available = false
+			item.UnavailableReason = "当前套餐不包含该模型，切换后不可再选"
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+// catalogModelAllowed 是这个 owner 此刻能不能选某个目录模型。credit 身份的账户
+// 以 credit 资格为准（和 GetModelCreditEligibility 同一口径）；只有 legacy 老用户
+// 才走原来的套餐 CNY 额度路径。
+func (h *BotModelConfigHandler) catalogModelAllowed(ctx context.Context, ownerUID int64, modelID string) (bool, error) {
+	credit, creditErr := h.creditPermission(ctx, ownerUID)
+	if creditErr != nil {
+		return false, creditErr
+	}
+	if credit.known && credit.enabled {
+		// credit 身份不再回落到老额度：套餐过期、或者既没有月额度也没有付费余额
+		// 就是拒绝，不能让老额度把高级模型放回来。
+		return credit.modelAllowed(modelID), nil
+	}
 	if !h.commercialQuotaEnforced(ownerUID) {
 		return true, nil
 	}

@@ -66,6 +66,7 @@ func scanCommercialOrder(scanner interface {
 		&order.OrderNo,
 		&order.UID,
 		&order.PlanID,
+		&order.Kind,
 		&order.PlanSlug,
 		&order.PlanName,
 		&order.PlanDescription,
@@ -101,7 +102,7 @@ func scanCommercialOrder(scanner interface {
 	return &order, nil
 }
 
-const commercialOrderColumns = `id, order_no, uid, plan_id, plan_slug, plan_name, plan_description,
+const commercialOrderColumns = `id, order_no, uid, COALESCE(plan_id, 0), kind, plan_slug, plan_name, plan_description,
 	plan_duration_days, plan_monthly_budget_cny, plan_model_budgets, amount_fen, currency, channel,
 	status, provider_trade_no, checkout_url, client_request_id, expires_at, paid_at, fulfilled_at,
 	closed_at, refund_request_no, refunded_at, last_error, created_at, updated_at, plan_model_credit_units`
@@ -617,7 +618,7 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	// order snapshot decides — not the live plan row — so an order taken before
 	// this rule existed (or before an operator edited the plan) fails here instead
 	// of being fulfilled as a shorter term than it advertised.
-	if order.PlanModelCreditUnits > 0 && order.PlanDurationDays != commercialCreditSubscriptionDurationDays {
+	if order.Kind != types.CommercialOrderKindCreditTopup && order.PlanModelCreditUnits > 0 && order.PlanDurationDays != commercialCreditSubscriptionDurationDays {
 		return nil, false, fmt.Errorf("credit subscription order %s was sold for %d days, want a %d-day monthly product",
 			order.OrderNo, order.PlanDurationDays, commercialCreditSubscriptionDurationDays)
 	}
@@ -640,6 +641,13 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	}
 	if affected == 0 {
 		return nil, false, fmt.Errorf("payment event was already used")
+	}
+	// A top-up sells ledger units, not a package: the whole fulfilment is one
+	// idempotent booking into the paid bucket. No entitlement, no quota grant,
+	// no trial, no machine, and nothing that could move an existing package
+	// window — that separation is the product, not an optimisation.
+	if order.Kind == types.CommercialOrderKindCreditTopup {
+		return a.fulfillCommercialTopupOrder(tx, order, paidAt)
 	}
 	// Serialise the same buyer's fulfilments before reading the paid chain.
 	// CommercialPaidChainEnd walks the tier's live periods, and two orders of one
@@ -1026,6 +1034,9 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 		WHERE uid = $1 AND source_ref = $2 AND state IN ('available','reserved','consumed')`, order.UID, "order:"+order.OrderNo); err != nil {
 		return nil, false, fmt.Errorf("revoke refunded cloud worker credit: %w", err)
 	}
+	// A top-up refund is a credit reversal, nothing more: it must not reschedule
+	// a machine the buyer also owns, because no package window moved for it.
+	if order.Kind != types.CommercialOrderKindCreditTopup {
 	// Cloud workers follow the paid window: after a refund the owner is rolled
 	// back to whatever paid time survives, or the worker is scheduled for
 	// cleanup when nothing remains. A refunded trial must not auto-convert to
@@ -1068,6 +1079,7 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 		  AND NOT (`+cloudWorkerSharedProfileFilter+` AND l.expiry_mode IN ('fixed','permanent','follow_plan'))`,
 		order.UID, rollbackUntil, commercialRefundMinRetentionDays); err != nil {
 		return nil, false, fmt.Errorf("roll back cloud worker lifecycles after refund: %w", err)
+	}
 	}
 	// The refunded entitlement is already revoked at this point, so this settles
 	// follow_plan workers on what the buyer really still holds: the surviving

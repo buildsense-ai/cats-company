@@ -44,7 +44,7 @@ describe('credit account content', () => {
     await act(async () => root.render(<Probe />));
     const content = JSON.parse(container.textContent);
     expect(content.meta).toBe('4,026.123456 credit');
-    // 付费余额桶不叫「充值余额」：独立充值未开放，桶名不能让人以为现在能充。
+    // 付费桶包含充值和其他已入账额度，保持账本原有名称。
     expect(MODEL_CREDIT_PAID_LABEL).toBe('付费余额');
     expect(content.buckets).toBe('月额度 3,999.123456 credit · 邀请赠送 20 credit · 付费余额 7 credit · 欠款 2.5 credit');
     expect(content.note).toContain('月额度 3,999.123456 · 邀请赠送 20 · 付费余额 7 · 欠款 2.5 credit');
@@ -55,11 +55,11 @@ describe('credit account content', () => {
     expect(content.className).toBe('danger');
   });
 
-  it('shows enabled and allowed separately and states that top-up is not open yet', async () => {
+  it('shows enabled and allowed separately and defers top-up availability to checkout', async () => {
     await act(async () => root.render(<Probe />));
     const content = JSON.parse(container.textContent);
     expect(content.status).toBe(`${'credit 账户：已启用 · 当期可用：是'} · ${MODEL_CREDIT_TOPUP_NOTICE}`);
-    expect(MODEL_CREDIT_TOPUP_NOTICE).toBe('独立余额充值暂未开放');
+    expect(MODEL_CREDIT_TOPUP_NOTICE).toBe('独立充值以支付页开放状态为准');
     expect(content.identity).toMatchObject({ known: true, enabled: true, allowed: true, state: 'active' });
   });
 

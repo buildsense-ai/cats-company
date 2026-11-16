@@ -45,8 +45,11 @@ func (a *Adapter) modelCreditTaskEnabled(ctx context.Context, uid int64) (bool, 
 	return enabled, nil
 }
 
-// modelCreditTaskPermitted 判断此刻是否还有有效的模型权限：只有仍然有效的、带
-// model credit 的订阅才算。余额本身不是权限（P0-4.4/P0-4.5）。
+// modelCreditTaskPermitted 判断此刻是否还有有效的模型权限：仍然有效的、带
+// model credit 的订阅，或者账户里还有花钱买来的 paid 点数（独立充值）。余额本身
+// 不是权限（P0-4.4/P0-4.5）—— 那条规则针对的是有期限的月额度，而 paid 桶是用户
+// 用真金白银买的永久余额，没有套餐也能花。gift（邀请赠送）不算权限，legacy 用户
+// 没有账户行、paid = 0 时保持原来的失败关闭行为。
 func modelCreditTaskPermitted(ctx context.Context, tx *sql.Tx, uid int64, now time.Time) (bool, error) {
 	var permitted bool
 	if err := tx.QueryRowContext(ctx, `
@@ -57,7 +60,10 @@ func modelCreditTaskPermitted(ctx context.Context, tx *sql.Tx, uid int64, now ti
 			  AND e.state = 'active'
 			  AND e.starts_at <= $2
 			  AND (e.expires_at IS NULL OR e.expires_at > $2)
-			  AND `+modelCreditEntitlementUnitsSQL+` > 0)`, uid, now.UTC()).Scan(&permitted); err != nil {
+			  AND `+modelCreditEntitlementUnitsSQL+` > 0)
+		OR EXISTS (
+			SELECT 1 FROM model_credit_accounts ac
+			WHERE ac.uid = $1 AND ac.paid_units > 0)`, uid, now.UTC()).Scan(&permitted); err != nil {
 		return false, fmt.Errorf("load model credit task permission: %w", err)
 	}
 	return permitted, nil
@@ -102,6 +108,20 @@ func modelCreditTaskPlanTier(ctx context.Context, tx *sql.Tx, uid int64, now tim
 		  e.id DESC
 		LIMIT 1`, uid, now.UTC()).Scan(&tier)
 	if errors.Is(err, sql.ErrNoRows) {
+		// 没有生效订阅但有独立充值：paid 点数按 Relay 梯度默认的第 1 档计价。
+		// 只有真的花钱买过（paid > 0）才给档位，legacy 用户仍然拿不到可信快照
+		// （失败关闭），所以充值不会把老账户变成 credit 账户。
+		var paid int64
+		if paidErr := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(paid_units, 0) FROM model_credit_accounts WHERE uid = $1`, uid).Scan(&paid); paidErr != nil {
+			if errors.Is(paidErr, sql.ErrNoRows) {
+				return store.ModelCreditTaskPlanTierNone, nil
+			}
+			return store.ModelCreditTaskPlanTierNone, fmt.Errorf("load model credit task plan tier: %w", paidErr)
+		}
+		if paid > 0 {
+			return store.ModelCreditTaskPlanTierMin, nil
+		}
 		return store.ModelCreditTaskPlanTierNone, nil
 	}
 	if err != nil {

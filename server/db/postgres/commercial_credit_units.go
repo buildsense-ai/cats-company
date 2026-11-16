@@ -58,6 +58,14 @@ func commercialOrderCreditRefundKey(orderNo string) string {
 	return store.ModelCreditEventRefund + ":order:" + strings.TrimSpace(orderNo)
 }
 
+// commercialOrderArrearsRepaymentKey is the ledger key a grant of this order
+// used when it repaid arrears. Repaying debt spends the bought credit for good
+// — the debt is gone — so a refund must treat that row as consumption instead
+// of handing the money back (and it never re-opens the debt).
+func commercialOrderArrearsRepaymentKey(orderNo string) string {
+	return store.ModelCreditDebtRepaymentKey("order:" + strings.TrimSpace(orderNo))
+}
+
 // commercialOrderCreditGrantBooked reports whether this order booked paid
 // credit, which is what decides how a refund releases it. Legacy orders put the
 // sold units straight into the paid bucket; a subscription order only receives
@@ -109,20 +117,40 @@ func reverseCommercialOrderModelCredit(ctx context.Context, tx *sql.Tx, order *t
 	default:
 		return err
 	}
-	// One query answers both questions the reversal has to ask before it may
-	// touch the balance: is the purchase grant really booked, and has any paid
-	// credit been consumed or held since then.
-	var settledSinceGrant, openPaidHolds int64
+	// One query answers every question the reversal has to ask before it may
+	// touch the balance, and it runs after lockModelCreditAccount, so all the
+	// checks and the write below share the same account row lock:
+	//   - is the purchase grant really booked;
+	//   - has any paid credit been consumed since then;
+	//   - does a model-call reservation still hold paid credit;
+	//   - does a machine upgrade still hold paid credit (its hold is booked in
+	//     the same paid ledger, so it is spent money just like a reservation);
+	//   - did this very order repay arrears — repaying debt is consumption, the
+	//     credit is gone and reversing it would hand back money the buyer
+	//     already used.
+	// Any of them refusing keeps the refund incomplete for an operator instead
+	// of turning spent credit into free credit. Nothing here restores arrears:
+	// a refund only ever moves the paid bucket, so a top-up that paid off debt
+	// cannot be refunded at all.
+	var settledSinceGrant, openPaidHolds, openMachineUpgradeHolds, repaidArrears int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM model_credit_ledger_events e
 			 WHERE e.uid = $1 AND e.bucket = 'paid' AND e.event_type = 'settle'
 			   AND e.created_at >= g.created_at),
 			(SELECT COUNT(*) FROM model_credit_reservations r
-			 WHERE r.uid = $1 AND r.state = 'reserved' AND r.paid_units > 0)
+			 WHERE r.uid = $1 AND r.state = 'reserved' AND r.paid_units > 0),
+			(SELECT COUNT(*) FROM cloud_worker_machine_upgrades u
+			 WHERE u.uid = $1 AND u.held AND NOT u.settled
+			   AND EXISTS (SELECT 1 FROM model_credit_ledger_events m
+			               WHERE m.uid = u.uid AND m.request_id = u.operation_id
+			                 AND m.event_type = 'reserve' AND m.bucket = 'paid')),
+			(SELECT COUNT(*) FROM model_credit_ledger_events d
+			 WHERE d.uid = $1 AND d.event_key = $3)
 		FROM model_credit_ledger_events g
-		WHERE g.event_key = $2`, order.UID, commercialOrderCreditGrantKey(order.OrderNo)).
-		Scan(&settledSinceGrant, &openPaidHolds); err != nil {
+		WHERE g.event_key = $2`, order.UID, commercialOrderCreditGrantKey(order.OrderNo),
+		commercialOrderArrearsRepaymentKey(order.OrderNo)).
+		Scan(&settledSinceGrant, &openPaidHolds, &openMachineUpgradeHolds, &repaidArrears); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: order %s", ErrCommercialOrderCreditGrantMissing, order.OrderNo)
 		}
@@ -135,6 +163,14 @@ func reverseCommercialOrderModelCredit(ctx context.Context, tx *sql.Tx, order *t
 	if openPaidHolds > 0 {
 		return fmt.Errorf("%w: %d open reservation(s) still hold paid credit of uid %d",
 			ErrCommercialOrderCreditSpent, openPaidHolds, order.UID)
+	}
+	if openMachineUpgradeHolds > 0 {
+		return fmt.Errorf("%w: %d machine upgrade(s) still hold paid credit of uid %d",
+			ErrCommercialOrderCreditSpent, openMachineUpgradeHolds, order.UID)
+	}
+	if repaidArrears > 0 {
+		return fmt.Errorf("%w: order %s already repaid arrears, so its credit is spent",
+			ErrCommercialOrderCreditSpent, order.OrderNo)
 	}
 	if account.PaidUnits < order.PlanModelCreditUnits {
 		return fmt.Errorf("%w: paid bucket holds %d units, order %s sold %d",
