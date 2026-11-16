@@ -128,6 +128,17 @@ func TestPostgresModelCreditEligibilityTopupOnly(t *testing.T) {
 	if err != nil || !enabled || tier != store.ModelCreditTaskPlanTierMin || allowance != 1200*CommercialTopupUnitsPerFen {
 		t.Fatalf("legacy package must not shadow paid balance: enabled=%v tier=%d allowance=%d err=%v", enabled, tier, allowance, err)
 	}
+	// 同一旧套餐来自真实订单时，零点数快照也不能遮住充值余额。
+	insertCreditMonthlyTestOrderSnapshot(t, db, topupUID, legacyPlan, "legacy-active-order")
+	if _, err := db.db.Exec(`UPDATE commercial_entitlements SET source = 'order', source_ref = 'legacy-active-order'
+		WHERE uid = $1 AND plan_id = $2`, topupUID, legacyPlan); err != nil {
+		t.Fatal(err)
+	}
+	enabled, tier, allowance, err = db.GetModelCreditEligibility(ctx, topupUID)
+	if err != nil || !enabled || tier != store.ModelCreditTaskPlanTierMin || allowance != 1200*CommercialTopupUnitsPerFen {
+		t.Fatalf("legacy order must not shadow paid balance: enabled=%v tier=%d allowance=%d err=%v", enabled, tier, allowance, err)
+	}
+
 	tx, err := db.db.Begin()
 	if err != nil {
 		t.Fatal(err)

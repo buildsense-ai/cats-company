@@ -42,7 +42,10 @@ func (a *Adapter) GetModelCreditEligibility(ctx context.Context, uid int64) (boo
 		  AND e.state = 'active'
 		  AND e.starts_at <= CURRENT_TIMESTAMP
 		  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
-		  AND `+modelCreditEntitlementUnitsSQL+` > 0
+		  AND (`+modelCreditEntitlementUnitsSQL+` > 0 OR (e.source = 'order' AND o.id IS NULL))
+		-- Only a confirmed zero-credit legacy entitlement may be skipped for
+		-- top-up-only access. A missing order snapshot must keep its primary
+		-- slot with zero allowance so damaged order data fails closed.
 		-- Paid packages own the primary slot: an invite code (or a free/legacy
 		-- baseline) may add gift credit but must never displace an active paid
 		-- V2/V3 tier. Within the same class the highest tier wins, then the
