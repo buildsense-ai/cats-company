@@ -22,7 +22,16 @@ function check(name, expression) {
   console.log(`PASS ${name}`);
   return value;
 }
-function open(query = '') { cli('open', `${base}${query}`, '--window', 'background'); cli('wait', 'selector', '.cc-diary-preview'); }
+function click(selector) { cli('eval', `(()=>{const node=document.querySelector(${JSON.stringify(selector)});if(!node)throw new Error('missing control');node.focus();node.click();return {clicked:true};})()`); }
+function openSteps() { click('.v3-working-toggle'); }
+function openDiary() { click('.v3-wpi-tool-header.is-toggle'); }
+function open(query = '', expand = true) {
+  cli('open', `${base}${query}`, '--window', 'foreground'); cli('wait', 'selector', '.cc-diary-preview');
+  if (expand) {
+    cli('eval', `(()=>{document.querySelector('.v3-working-toggle')?.click();return {opened:true};})()`);
+    cli('eval', `(()=>{document.querySelector('.v3-wpi-tool-header.is-toggle')?.click();return {opened:true};})()`);
+  }
+}
 function screenshot(name, width = 1280, height = 900) { cli('screenshot', resolve(dir, name), '--width', String(width), '--height', String(height)); }
 function paintCurrent() {
   const output = cli('eval', '({width:innerWidth,height:innerHeight})');
@@ -30,14 +39,18 @@ function paintCurrent() {
   screenshot('canvas-ready.png', size.width, size.height);
 }
 function clickNote() {
-  cli('wait', 'selector', 'canvas');
-  // The background browser needs a capture to paint its current camera.
-  paintCurrent();
-  cli('click', '.cc-diary-tool canvas');
+  click('button[aria-label="列表视图"]');
+  click('.cc-diary-node');
 }
 try {
   if (!resume) {
-  open();
+  open('', false);
+  check('collapsed process allocates no Diary graph', `({ok:!document.querySelector('.cc-diary-tool')&&!document.querySelector('canvas')&&window.__diaryPreviewLog.length===0,canvases:document.querySelectorAll('canvas').length,reads:window.__diaryPreviewLog.length})`);
+  screenshot('collapsed-desktop.png'); screenshot('collapsed-mobile.png', 390, 844);
+  openSteps();
+  check('expanded process still defers Diary graph', `({ok:!document.querySelector('canvas')&&document.querySelector('.v3-wpi-tool-header.is-toggle').getAttribute('aria-expanded')==='false'})`);
+  screenshot('process-mobile.png', 390, 844);
+  openDiary();
   cli('wait', 'selector', 'canvas');
   check('Agent Settings Canvas renderer', `({ok:!!document.querySelector('.cc-daily-notes-network canvas')&&document.querySelectorAll('.cc-daily-notes-network-controls button').length===3&&document.querySelectorAll('.cc-diary-node').length===2,label:document.querySelector('canvas').getAttribute('aria-label')})`);
   screenshot('desktop-graph.png');
@@ -47,17 +60,20 @@ try {
   screenshot('desktop-reader.png');
   screenshot('mobile-reader.png', 390, 844);
   cli('keys', 'Escape');
-  check('keyboard close', `({ok:!document.querySelector('.cc-diary-reader')&&document.activeElement.tagName==='CANVAS',focus:document.activeElement.tagName})`);
+  check('keyboard close', `({ok:!document.querySelector('.cc-diary-reader')&&document.activeElement.classList.contains('cc-diary-node')&&document.querySelector('.v3-working-toggle').getAttribute('aria-expanded')==='true',focus:document.activeElement.tagName})`);
+  openSteps();
+  check('collapse releases graph and reader', `({ok:!document.querySelector('canvas')&&!document.querySelector('.cc-diary-tool')&&!document.querySelector('.cc-diary-reader')})`);
   open('?mode=many');
   check('independent search hits', `({ok:document.querySelectorAll('.cc-diary-node').length===8&&window.__diaryPreviewLog.length===0,nodes:document.querySelectorAll('.cc-diary-node').length,searchOnly:document.body.innerText.includes('仅搜索命中')})`);
   screenshot('desktop-search-nodes.png');
   screenshot('mobile-search-nodes.png', 390, 844);
-  cli('click', '--role', 'button', '--name', '列表视图');
+  check('nested mobile view controls stay on one line', `(()=>{const buttons=[...document.querySelectorAll('.cc-daily-notes-views button')];const lines=buttons.map(button=>{const range=document.createRange();range.selectNodeContents(button.lastChild);return range.getClientRects().length;});return {ok:buttons.length===2&&lines.every(count=>count===1)&&document.documentElement.scrollWidth<=innerWidth,lines,overflow:document.documentElement.scrollWidth>innerWidth};})()`);
+  click('button[aria-label="列表视图"]');
   check('list alternative', `({ok:document.querySelectorAll('.cc-diary-source-list .cc-diary-node').length===8&&!document.querySelector('canvas'),listNodes:document.querySelectorAll('.cc-diary-source-list .cc-diary-node').length})`);
   open('?theme=dark&mode=many');
   screenshot('dark-search-nodes.png');
-  cli('click', '--role', 'button', '--name', '列表视图');
-  cli('click', '.cc-diary-tool .cc-diary-node', '--nth', '1');
+  click('button[aria-label="列表视图"]');
+  click('.cc-diary-tool .cc-diary-node');
   cli('wait', 'selector', '.cc-diary-prose');
   screenshot('dark-reader.png');
   open('?refused=1');
@@ -78,10 +94,10 @@ try {
   screenshot('settings-style-clusters-desktop.png');
   paintCurrent();
   cli('eval', '({before:!!(window.__diaryCanvasBefore=document.querySelector("canvas").toDataURL())})');
-  cli('click', '--role', 'button', '--name', '放大');
+  click('button[aria-label="放大"]');
   paintCurrent();
   check('shared camera zoom', `({ok:document.querySelector('canvas').toDataURL()!==window.__diaryCanvasBefore})`);
-  cli('click', '--role', 'button', '--name', '显示全部');
+  click('button[aria-label="显示全部"]');
   screenshot('settings-style-clusters-mobile.png', 390, 844);
   // D10: resizing the same mounted graph must keep both source clusters
   // visible; a stale desktop camera leaves the second cluster off-canvas.

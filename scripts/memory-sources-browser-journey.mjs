@@ -34,10 +34,13 @@ try {
   check('keyboard close restores source focus', `({ok:!document.querySelector('.cc-diary-reader')&&document.activeElement.classList.contains('cc-memory-source'),focus:document.activeElement.className})`);
   open('?mode=saved'); cli('wait', 'selector', 'canvas');
   check('stored block replay', `({ok:document.querySelector('canvas').getAttribute('aria-label').includes('18 个节点，4 条真实关系')&&document.body.innerText.includes('已加入主 Agent 上下文')})`);
-  open('?mode=combined'); cli('eval', `(()=>{const tab=document.querySelector('[role=tab][id$="-memory"]');tab.focus();tab.click();return {clicked:true};})()`);
-  check('one turn sources with Diary and Memory tabs', `({ok:document.querySelector('[aria-label="本轮来源"]')&&document.querySelector('[role="tab"][aria-selected="true"]').innerText==='记忆探索'&&document.querySelector('[aria-label="记忆探索"]')&&document.querySelectorAll('[role="tab"]').length===2})`);
-  shot('desktop-combined.png'); cli('eval', `(()=>{document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}));return {key:'ArrowLeft'};})()`);
-  check('keyboard source tab navigation', `({ok:document.querySelector('[role="tab"][aria-selected="true"]').innerText==='日记'&&!document.querySelector('[aria-label="记忆探索"]')})`);
+  open('?mode=combined');
+  check('Diary stays inside its own collapsed tool', `({ok:!document.querySelector('[aria-label="日记查阅"]')&&!!document.querySelector('[aria-label="记忆探索"]')&&document.querySelector('.v3-working-toggle').getAttribute('aria-expanded')==='false'})`);
+  click('.v3-working-toggle');
+  check('opening process keeps Diary deferred', `({ok:!document.querySelector('[aria-label="日记查阅"]')&&document.querySelector('.v3-wpi-tool-header.is-toggle').getAttribute('aria-expanded')==='false'})`);
+  click('.v3-wpi-tool-header.is-toggle');
+  check('selected Diary tool and Branch sources coexist', `({ok:!!document.querySelector('[aria-label="日记查阅"]')&&!!document.querySelector('[aria-label="记忆探索"]')&&document.querySelectorAll('canvas').length===2})`);
+  shot('desktop-combined.png');
   open('?mode=ready');
   check('read is not injection', `({ok:document.body.innerText.includes('等待主 Agent 接收')&&!document.body.innerText.includes('已加入主 Agent 上下文')&&!document.body.innerText.includes('回答中明确引用')})`);
   open('?mode=empty');
