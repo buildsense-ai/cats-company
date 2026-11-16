@@ -1183,8 +1183,20 @@ export default function AgentStoreModal({
         return next;
       });
       setInviteReadStates((previous) => ({ ...previous, [botId]: 'ready' }));
-    } catch {
+    } catch (error) {
       if (requestId !== rosterRequestRef.current) return;
+      // 404 = 这个助手还没有邀请码，是正常空态：按钮要显示「生成邀请码」。
+      // 以前这里把所有失败都记成 error，于是从没生成过的助手永远显示「重试读取」，
+      // 点一下只是再 GET 一次 404，永远走不到生成。其它错误（403/500/网络）才是真失败。
+      if (error?.status === 404) {
+        setGeneratedInviteCodes((previous) => {
+          const next = { ...previous };
+          delete next[botId];
+          return next;
+        });
+        setInviteReadStates((previous) => ({ ...previous, [botId]: 'ready' }));
+        return;
+      }
       setInviteReadStates((previous) => ({ ...previous, [botId]: 'error' }));
     }
   };
