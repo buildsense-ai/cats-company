@@ -6,6 +6,7 @@ vi.mock('../api', () => ({
   api: {
     getAgents: vi.fn(),
     getMyBots: vi.fn(),
+    getGroups: vi.fn(),
     sendMessage: vi.fn(),
     disbandGroup: vi.fn(),
     uploadFile: vi.fn(),
@@ -54,6 +55,7 @@ describe('EmptyTaskComposer', () => {
     vi.useFakeTimers();
     api.getAgents.mockReset().mockResolvedValue({ agents });
     api.getMyBots.mockReset().mockResolvedValue({ bots: [] });
+    api.getGroups.mockReset().mockResolvedValue({ groups: [] });
     api.sendMessage.mockReset().mockResolvedValue({ seq_id: 101 });
     api.disbandGroup.mockReset().mockResolvedValue({});
     api.uploadFile.mockReset();
@@ -1367,10 +1369,64 @@ describe('EmptyTaskComposer', () => {
     expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
   });
 
+  it('uses the latest created account task when browser memory is absent or stale', async () => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { ...agents[0], relation: 'owner', is_cloud: true },
+      { ...agents[1], relation: 'friend', is_cloud: true },
+    ] });
+    rememberLastTaskAgent('7', agents[0]);
+    api.getGroups.mockResolvedValue({ groups: [
+      { id: 101, owner_id: 7, kind: 'agent_task', agent_ids: [21], created_at: '2026-11-01T10:00:00Z', last_time: '2026-11-16T10:00:00Z' },
+      { id: 102, owner_id: 7, kind: 'agent_task', agent_ids: [22], created_at: '2026-11-15T10:00:00Z' },
+      { id: 103, owner_id: 8, kind: 'agent_task', agent_ids: [21], created_at: '2026-11-16T10:00:00Z' },
+      { id: 104, owner_id: 7, kind: 'standard', agent_ids: [21], created_at: '2026-11-16T11:00:00Z' },
+    ] });
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('reuses a shared self-hosted assistant from the latest account task', async () => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { uid: 1532, display_name: '云准助手', relation: 'friend', is_cloud: true },
+      { uid: 586, display_name: '理中客', relation: 'friend', is_cloud: false },
+    ] });
+    rememberLastTaskAgent('7', { uid: 1532 });
+    api.getGroups.mockResolvedValue({ groups: [
+      { id: 7318, owner_id: 7, kind: 'agent_task', agent_ids: [1532], created_at: '2026-11-16T05:01:38Z' },
+      { id: 7326, owner_id: 7, kind: 'agent_task', agent_ids: [586], created_at: '2026-11-16T05:59:40Z' },
+    ] });
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('理中客');
+  });
+
+  it('falls back to owned cloud when the latest created account task used a local Agent', async () => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { ...agents[0], relation: 'owner', is_cloud: true },
+      { ...agents[1], relation: 'owner', is_cloud: false },
+    ] });
+    rememberLastTaskAgent('7', agents[1]);
+    api.getGroups.mockResolvedValue({ groups: [
+      { id: 101, owner_id: 7, kind: 'agent_task', agent_ids: [22], created_at: '2026-11-15T10:00:00Z' },
+    ] });
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('代码审查助手');
+  });
+
+  it('uses browser memory when account task history cannot be loaded', async () => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { ...agents[0], relation: 'owner', is_cloud: true },
+      { ...agents[1], relation: 'friend', is_cloud: true },
+    ] });
+    rememberLastTaskAgent('7', agents[1]);
+    api.getGroups.mockRejectedValueOnce(new Error('history unavailable'));
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
   it.each(['missing', 'local', 'other-account'])('falls back to owned cloud Agents for an unusable last-task preference (%s)', async (reason) => {
     api.getAgents.mockResolvedValue({ agents: [
       { ...agents[0], relation: 'owner', is_cloud: true },
-      { ...agents[1], relation: 'friend', is_cloud: reason !== 'local' },
+      { ...agents[1], relation: reason === 'local' ? 'owner' : 'friend', is_cloud: reason !== 'local' },
     ] });
     rememberLastTaskAgent(reason === 'other-account' ? '8' : '7', reason === 'missing' ? { uid: 999 } : agents[1]);
     await mountComposer();
