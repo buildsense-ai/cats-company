@@ -26,10 +26,18 @@ jobs:
       - name: Test compatibility gate
         run: python3 -m unittest deploy/xiaoba-client-compatibility_test.py
 
+  # Split into unit/race legs: the unit suite and the -race cases are
+  # independent, and serially each costs about 90s of the backend job. The job
+  # id stays the same, so the release gate keeps using needs.backend.result
+  # (matrix results aggregate across legs).
   backend:
-    name: Backend tests
+    name: Backend tests (${{ matrix.part }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [unit, race]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -40,37 +48,44 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      # setup-go 只缓存模块和工具链，不缓存 GOCACHE。冷启动时 race 二进制要从零
-      # 编译整棵依赖树（2~3 分钟），这是 CI 里最大的一块固定开销。GOCACHE 是内容
-      # 寻址缓存，跨 run 复用安全；key 按 job 分开，避免几个 job 互相挤占。
+      # setup-go caches modules and the toolchain but not GOCACHE. A cold race
+      # build compiles the whole dependency tree (2-3 min); GOCACHE is
+      # content-addressed, so sharing one key across both legs is safe.
       - name: Cache Go build
         uses: actions/cache@v4
         with:
           path: ~/.cache/go-build
-          key: go-build-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum') }}
+          key: go-build-${{ runner.os }}-backend-${{ hashFiles('go.sum') }}
           restore-keys: |
-            go-build-${{ runner.os }}-${{ github.job }}-
+            go-build-${{ runner.os }}-backend-
 
       - name: Test backend
+        if: matrix.part == 'unit'
         run: go test ./server/... ./cmd/tos-fetch
 
+      - name: Scan Go vulnerabilities
+        if: matrix.part == 'unit'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
       - name: Test authorization-only storage concurrency
+        if: matrix.part == 'race'
         run: go test -race ./server ./server/cmd -run '^TestDeviceAuthorization' -count=1
 
       - name: Test first-message device authorization concurrency
+        if: matrix.part == 'race'
         run: go test -race ./server -run '^Test(ExplicitDeviceGrantBeforeFirstPickerRead|ConcurrentFirstDeviceMessages|FirstDeviceRevision)' -count=1
 
       - name: Test race-sensitive concurrency
+        if: matrix.part == 'race'
         run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|CaptureTransport|CaptureDispatcher|RepairSourceTransport|UploadTransport|Peer|CommitClient|CommitDispatcher|HumanCommit|CancellationTransport|CancellationDispatcher)|TestPublicationDescription(Copy|Derivation|Validation|ReleasePlan|ReleaseAuthorize)|Test(Read|Validate|Accept|Continue|Plan|Authorize|Record)ConfirmedPublicationDescription' -count=1
 
       - name: Test status-only reconciliation concurrency
+        if: matrix.part == 'race'
         run: go test -race ./server -run '^TestSkillHubPublicationDescriptionReconcile' -count=1
 
       - name: Test restricted repair model coordinator concurrency
+        if: matrix.part == 'race'
         run: go test -race ./server -run '^TestPublicationRepairModel' -count=1
-
-      - name: Scan Go vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
   publication_repair_source_paired:
     name: Publication repair source paired contract
@@ -189,10 +204,19 @@ jobs:
   # 避免 4~5 分钟的单步把整体墙钟拖到 9 分钟。
   # publication 套件（88 个用例，全部并行化）是 DB 契约里最重的一块，
   # 单独成 job 与 backend_db 并行，避免它串在所有其他契约后面拉长关键路径。
+  # 142 publication cases ran serially inside one 217s step, the critical path of
+  # the whole run. Split by the first two letters of each test name into three
+  # disjoint halves-plus (checked by ci/shard_coverage.py), with the race
+  # contracts as a fourth leg. The job id stays the same, so the release gate
+  # keeps using needs.backend_publication.result.
   backend_publication:
-    name: Backend publication contracts
+    name: Backend publication contracts (${{ matrix.part }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [entries-a, entries-b, entries-c, race]
     services:
       postgres:
         image: postgres:18-alpine
@@ -204,9 +228,9 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U catsco -d cats_test"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 20
 
     steps:
       - name: Checkout
@@ -218,16 +242,16 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      # setup-go 只缓存模块和工具链，不缓存 GOCACHE。冷启动时 race 二进制要从零
-      # 编译整棵依赖树（2~3 分钟），这是 CI 里最大的一块固定开销。GOCACHE 是内容
-      # 寻址缓存，跨 run 复用安全；key 按 job 分开，避免几个 job 互相挤占。
+      # setup-go caches modules and the toolchain but not GOCACHE. GOCACHE is
+      # content-addressed, so one key shared by all legs is safe and the first
+      # leg warms the rest.
       - name: Cache Go build
         uses: actions/cache@v4
         with:
           path: ~/.cache/go-build
-          key: go-build-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum') }}
+          key: go-build-${{ runner.os }}-backend-publication-${{ hashFiles('go.sum') }}
           restore-keys: |
-            go-build-${{ runner.os }}-${{ github.job }}-
+            go-build-${{ runner.os }}-backend-publication-
 
       - name: Tune PostgreSQL for throwaway CI data
         env:
@@ -241,26 +265,56 @@ jobs:
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW fsync"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW synchronous_commit"
 
-      - name: Test PostgreSQL SkillHub publication entries
+      # Pre-create the trigram extension: CREATE EXTENSION IF NOT EXISTS is not
+      # atomic across concurrent sessions, so two parallel tests can collide on
+      # pg_extension_name_index. Installing it once up front removes the race and
+      # the permission-denied fallback path.
+      - name: Prepare PostgreSQL message search extension
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pg_trgm"
+
+      - name: Test PostgreSQL SkillHub publication entries (A At/Au/Ca/Cl/Id)
+        if: matrix.part == 'entries-a'
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: go test ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1
+        run: go test ./server/db/postgres -run '^TestPostgresSkillHubPublication(At|Au|Ca|Cl|Id)' -count=1
 
-      # 五个 -race 步骤合并成一次调用。同一个包每跑一次 go test -race 都要重新
-      # 链接 race 二进制（单次 30~60 秒），这五步里绝大部分时间花在重复链接上，
-      # 而不是跑用例。合并后仍覆盖同样的用例：并发/竞态热点 + 四个终态契约。
-      # 失败时 -v 会把出错的用例名列出来，定位粒度不变。
+      - name: Test PostgreSQL SkillHub publication entries (B Co/De)
+        if: matrix.part == 'entries-b'
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: go test ./server/db/postgres -run '^TestPostgresSkillHubPublication(Co|De)' -count=1
+
+      - name: Test PostgreSQL SkillHub publication entries (C In/Mi/Ow/Pe/Ra/Re/So/Up)
+        if: matrix.part == 'entries-c'
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: go test ./server/db/postgres -run '^TestPostgresSkillHubPublication(In|Mi|Ow|Pe|Ra|Re|So|Up)' -count=1
+
+      # Five -race contracts in one invocation: each extra `go test -race` call
+      # relinks the race binary (30-60s), so merging them still covers the same
+      # cases without paying the link cost five times.
       - name: Test PostgreSQL SkillHub publication race-sensitive contracts
+        if: matrix.part == 'race'
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: |
           test -n "$CATS_PG_TEST_DSN"
           go test -race ./server/db/postgres -count=1 -v -run '^(TestPostgresSkillHubPublication.*(Concurren|Race|Fencing|Atomic|Replay|Recovery)|TestPostgresSkillHubPublicationDescriptionReleaseOutcomeHistoricalRead|TestPostgresSkillHubPublicationRepairModel(Call|Execution)|TestPostgresSkillHubPublicationDescriptionTerminal|TestPostgresSkillHubPublicationDescriptionReconcile)$'
-
+  # Thirteen contract steps ran serially for 312s, the slowest job in the run.
+  # Split into three legs: credit (model-credit races, 123s), durability
+  # (message search + conversation task durability, 76s) and store (the rest).
+  # The job id stays the same, so the release gate keeps using
+  # needs.backend_db.result (aggregated across legs).
   backend_db:
-    name: Backend DB contracts
+    name: Backend DB contracts (${{ matrix.part }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [credit, durability, store]
     services:
       postgres:
         image: postgres:18-alpine
@@ -272,9 +326,9 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U catsco -d cats_test"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 20
       mysql:
         image: mysql:8.0
         env:
@@ -286,9 +340,9 @@ jobs:
           - 3306:3306
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 -ucatsco -pcatsco_test"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 20
 
     steps:
       - name: Checkout
@@ -300,20 +354,20 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      # setup-go 只缓存模块和工具链，不缓存 GOCACHE。冷启动时 race 二进制要从零
-      # 编译整棵依赖树（2~3 分钟），这是 CI 里最大的一块固定开销。GOCACHE 是内容
-      # 寻址缓存，跨 run 复用安全；key 按 job 分开，避免几个 job 互相挤占。
+      # setup-go caches modules and the toolchain but not GOCACHE. GOCACHE is
+      # content-addressed, so one key shared by all legs is safe and the first
+      # leg warms the rest.
       - name: Cache Go build
         uses: actions/cache@v4
         with:
           path: ~/.cache/go-build
-          key: go-build-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum') }}
+          key: go-build-${{ runner.os }}-backend-db-${{ hashFiles('go.sum') }}
           restore-keys: |
-            go-build-${{ runner.os }}-${{ github.job }}-
+            go-build-${{ runner.os }}-backend-db-
 
-      # 这些契约测试对每个用例都执行完整 migration（大量 DDL/COMMIT）。
-      # CI 库是纯临时的，关掉 fsync/WAL 持久化可显著缩短提交延迟，
-      # 不改变任何断言语义（崩溃恢复能力不在本 job 的验证范围内）。
+      # These contracts run a full migration per case (heavy DDL/COMMIT). The CI
+      # database is disposable, so dropping fsync/WAL durability cuts commit
+      # latency without changing any assertion (crash recovery is not in scope).
       - name: Tune PostgreSQL for throwaway CI data
         env:
           PG_CONTAINER_ID: ${{ job.services.postgres.id }}
@@ -326,7 +380,46 @@ jobs:
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW fsync"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW synchronous_commit"
 
+      # Pre-create the trigram extension: CREATE EXTENSION IF NOT EXISTS is not
+      # atomic across concurrent sessions, so two parallel tests can collide on
+      # pg_extension_name_index. Installing it once up front removes the race and
+      # the permission-denied fallback path.
+      - name: Prepare PostgreSQL message search extension
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pg_trgm"
+
+      # The conversation-task durability cases create MySQL triggers, so this leg
+      # needs log_bin_trust_function_creators set before its tests run. The store
+      # leg sets it later on purpose: its restricted-schema case asserts the
+      # default (denied) state first.
+      - name: Configure MySQL trigger prerequisite for durability cases
+        if: matrix.part == 'durability'
+        env:
+          MYSQL_CONTAINER_ID: ${{ job.services.mysql.id }}
+        run: docker exec -e MYSQL_PWD=catsco_root_test "$MYSQL_CONTAINER_ID" mysql -uroot -e 'SET GLOBAL log_bin_trust_function_creators = 1'
+
+      - name: Test PostgreSQL model credit contracts and races
+        if: matrix.part == 'credit'
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: |
+          test -n "$CATS_PG_TEST_DSN"
+          go test -race ./server/db/postgres -run '^Test(PostgresModelCredit|ModelCreditEligibility|PostgresCreditSubscriptionPaymentGrantsMonthlyOnly)' -parallel=1 -count=1 -v
+          go test -race ./server ./server/cmd ./server/store -run 'Test.*ModelCredit|^TestDeviceAuthorization' -count=1
+
+      - name: Test message search and conversation task run durability
+        if: matrix.part == 'durability'
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+          CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
+        run: |
+          go test ./server/db/postgres ./server/db/mysql -run '^Test(Postgres|MySQL)MessageSearch(VisibleText|NativeIndex|IndexMigration|GramMigration|GramContainment|WithoutExtensionPrivileges)$' -count=1 -v
+          go test ./server/db/postgres ./server/db/mysql -run '^Test(PostgresConversationTaskRun|MySQLConversationTask)' -count=1 -v
+          go test -race ./server -run '^TestConversationTaskStatus(Delivery|History|Postgres)' -count=1 -v
+
       - name: Verify restricted MySQL schema failure
+        if: matrix.part == 'store'
         env:
           MYSQL_CONTAINER_ID: ${{ job.services.mysql.id }}
           CATS_SESSION_FORK_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
@@ -336,6 +429,7 @@ jobs:
           go test ./server/db/mysql -run '^TestSessionForkMySQLRestrictedSchema$' -count=1 -v
 
       - name: Configure dedicated CI MySQL trigger prerequisite
+        if: matrix.part == 'store'
         env:
           MYSQL_CONTAINER_ID: ${{ job.services.mysql.id }}
         run: |
@@ -345,6 +439,7 @@ jobs:
           test "$(docker exec -e MYSQL_PWD=catsco_root_test "$MYSQL_CONTAINER_ID" mysql -uroot -Nse 'SELECT @@GLOBAL.log_bin, @@GLOBAL.log_bin_trust_function_creators')" = $'1\t1'
 
       - name: Test MySQL session fork contract
+        if: matrix.part == 'store'
         env:
           CATS_SESSION_FORK_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
         run: |
@@ -352,6 +447,7 @@ jobs:
           go test ./server/db/mysql -run '^TestSessionForkMySQL' -count=1 -v
 
       - name: Test PostgreSQL session fork contract
+        if: matrix.part == 'store'
         env:
           CATS_SESSION_FORK_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: |
@@ -359,19 +455,13 @@ jobs:
           go test ./server/db/postgres -run '^TestSessionForkPostgres' -count=1 -v
 
       - name: Test PostgreSQL store contract
+        if: matrix.part == 'store'
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test ./server/db/postgres -run 'TestPostgres(AdminUserSearch|StoreContract|CloudWorkerDeploymentContract|CloudWorkerRuntimeCreditsContract|CloudWorkerLifecycleTermContract|CloudWorkerPackageTermContract|CommercialActionMachineTermPreview|CommercialRefundSettlesSharedWorkerTerms|CommercialAdjustmentSettlesSharedWorkerTerms|CloudWorkerMachineTermChain|CommercialEarlyRenewalKeepsSharedWorkerTerm|CommercialExtendKeepsSharedWorkerTerm|CommercialInviteRedeemSettlesSharedWorkerTerms|CreditInviteKeepsMachineWindow|CommercialFutureGapDoesNotExtendWorkerTerm|CommercialPlanManagement|CommercialPaymentContract|CommercialAdjustmentContract|CommercialActionsContract|WorkerActionHistorySurvivesRollback|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|CommercialNativeSearchFlashMigrationPreservesManualQuotaAndRollsBack|CommercialRetireV4FlashMigrationPreservesManualQuotaAndRollsBack|CommercialFreeImageModelsMigrationGrantsAndRollsBack|CommercialAutoRenewConfigAndRuns|CommercialRecordsBeyondFirstHundred|CommercialPublicModelsPreserveRenewalAndCustomQuota|CommercialImageModels|CommercialInviteRedeemerUIDs|ArtifactRuntimeEventSequenceFollowsCommitOrder|ArtifactAppMetadataPersistence)' -count=1 -v
 
-      - name: Test PostgreSQL model credit contracts and races
-        env:
-          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: |
-          test -n "$CATS_PG_TEST_DSN"
-          go test -race ./server/db/postgres -run '^Test(PostgresModelCredit|ModelCreditEligibility|PostgresCreditSubscriptionPaymentGrantsMonthlyOnly)' -parallel=1 -count=1 -v
-          go test -race ./server ./server/cmd ./server/store -run 'Test.*ModelCredit|^TestDeviceAuthorization' -count=1
-
       - name: Test PostgreSQL credit top-up and paid machine upgrades
+        if: matrix.part == 'credit'
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: |
@@ -379,21 +469,14 @@ jobs:
           go test -race ./server/db/postgres -run '^TestPostgres(CreditTopup|MachineUpgrade|MachinePlanTerm)' -parallel=1 -count=1 -v
           go test -race ./server -run '^Test(MachineUpgrade|CommercialTopup)' -count=1
 
-      - name: Test message search and conversation task run durability
-        env:
-          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-          CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
-        run: |
-          go test ./server/db/postgres ./server/db/mysql -run '^Test(Postgres|MySQL)MessageSearch(VisibleText|NativeIndex|IndexMigration|GramMigration|GramContainment|WithoutExtensionPrivileges)$' -count=1 -v
-          go test ./server/db/postgres ./server/db/mysql -run '^Test(PostgresConversationTaskRun|MySQLConversationTask)' -count=1 -v
-          go test -race ./server -run '^TestConversationTaskStatus(Delivery|History|Postgres)' -count=1 -v
-
       - name: Test PostgreSQL multi-device selection contract
+        if: matrix.part == 'store'
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test ./server/db/postgres -run '^TestDeviceSelection' -count=1 -v
 
       - name: Test PostgreSQL SkillHub dispatcher recovery
+        if: matrix.part == 'store'
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: |
@@ -401,21 +484,25 @@ jobs:
           go test -race ./server -run '^TestSkillHubPublication(DeliveryPostgres|CaptureTransportPostgres|CaptureDispatcher|PeerCommitPostgres|DescriptionReleaseHistoryPostgres)' -count=1 -v
 
       - name: Test PostgreSQL service agent store
+        if: matrix.part == 'store'
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test ./server/db/postgres -run '^TestService' -count=1 -v
 
       - name: Test MySQL Artifact Runtime and application metadata
+        if: matrix.part == 'store'
         env:
           CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
         run: go test ./server/db/mysql -run 'TestMySQL(ArtifactRuntimeEventSequenceFollowsCommitOrder|AdminUserSearch|ArtifactAppMetadataPersistence)' -count=1 -v
 
       - name: Test MySQL service agent store
+        if: matrix.part == 'store'
         env:
           CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
         run: go test ./server/db/mysql -run '^TestMySQLService' -count=1 -v
 
       - name: Test MySQL multi-device selection contract
+        if: matrix.part == 'store'
         env:
           CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
         run: go test ./server/db/mysql -run '^TestDeviceSelection' -count=1 -v
