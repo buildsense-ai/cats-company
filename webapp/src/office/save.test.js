@@ -1,18 +1,26 @@
 // Save linkage.
 //
-// The claim under test: saving produces a message that 小八 will read as the current version,
-// and the original attachment is left untouched. Both are structural facts about the payload,
-// so they can be asserted without a server.
+// The claim under test: a quiet save leaves the conversation untouched, while an explicit
+// sync produces exactly the message that 小八 will read as the current version. Both are
+// structural facts about the payload, so they can be asserted without a server.
 
 import { describe, it, expect } from 'vitest';
 import {
-  buildOfficeUpdateMessage, countChangedOps, officeBytesToFile, officeSavedFileName,
-  OFFICE_SAVE_NOTICE,
+  buildFileVersionBindingRequest, buildOfficeUpdateMessage, countChangedOps, officeBytesToFile,
+  officeSavedFileName, OFFICE_SAVE_NOTICE, OFFICE_SYNC_NOTICE,
 } from './save.js';
 
-it('keeps the save notice explicit about the new attachment and what 小八 reads', () => {
+it('keeps the quiet-save notice explicit that 小八 has not seen the new version', () => {
   expect(OFFICE_SAVE_NOTICE).toBe(
-    '已保存为新版本。会话里出现的新附件就是这一版，小八读到的也是这一版',
+    '已保存最新版，但尚未发给小八；会话里仍是旧附件',
+  );
+  expect(OFFICE_SAVE_NOTICE).not.toContain('出现的新附件');
+  expect(OFFICE_SAVE_NOTICE).toContain('尚未发给小八');
+});
+
+it('keeps the explicit-sync notice tied to the new attachment', () => {
+  expect(OFFICE_SYNC_NOTICE).toBe(
+    '已同步给小八。会话里出现的新附件就是这一版，小八读到的也是这一版',
   );
 });
 
@@ -111,6 +119,46 @@ describe('bytes to file', () => {
   it('rejects empty bytes instead of uploading an empty file', () => {
     expect(() => officeBytesToFile(new Uint8Array(0), 'x.pptx')).toThrow('没有可保存的内容');
     expect(() => officeBytesToFile(null, 'x.pptx')).toThrow('没有可保存的内容');
+  });
+});
+
+describe('version binding request', () => {
+  const SOURCE = {
+    topic_id: 'p2p_7_9',
+    source_message_id: 71,
+    source_attachment_index: 0,
+    source_file_key: 'source.pptx',
+  };
+
+  it('normalizes the source triple and latest upload into the POST body', () => {
+    expect(buildFileVersionBindingRequest(SOURCE, UPLOAD, ' p2p_7_9 ')).toEqual({
+      topic_id: 'p2p_7_9',
+      source_message_id: 71,
+      source_attachment_index: 0,
+      source_file_key: 'source.pptx',
+      latest_file_key: 'abc123.pptx',
+      latest_url: '/uploads/files/abc123.pptx',
+      latest_name: '季度复盘.pptx',
+      latest_size: 48123,
+      latest_mime_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    });
+  });
+
+  it('rejects a missing source identity instead of inventing one', () => {
+    expect(() => buildFileVersionBindingRequest(null, UPLOAD)).toThrow('版本绑定缺少来源或最新版本');
+  });
+
+  it('rejects incomplete source fields before an upload can claim a server binding', () => {
+    expect(() => buildFileVersionBindingRequest({ ...SOURCE, source_file_key: '' }, UPLOAD))
+      .toThrow('版本绑定字段不完整');
+    expect(() => buildFileVersionBindingRequest({ ...SOURCE, source_message_id: 0 }, UPLOAD))
+      .toThrow('版本绑定字段不完整');
+  });
+
+  it('only binds docx or pptx latest files', () => {
+    expect(() => buildFileVersionBindingRequest(SOURCE, {
+      ...UPLOAD, file_key: 'abc123.pdf', url: '/uploads/files/abc123.pdf', name: 'abc123.pdf',
+    })).toThrow('最新版本不是 Office 文档');
   });
 });
 

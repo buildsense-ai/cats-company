@@ -5,14 +5,13 @@
 // code path for "user typed a value" and "AI changed a field", and it means no
 // pixel-to-XML inference ever has to happen.
 //
-// Two draft shapes exist because text and style are written by different functions:
-//   draft.paragraphs  full paragraph list, text edits
-//   draft.styles      per-paragraph style patches, keyed by index
-// Splitting them lets a text edit and a style edit on the same paragraph both survive
-// until save, without one overwriting the other.
+// Each element carries one paragraph list and one per-paragraph style map. The maps are
+// keyed by slide/element in OfficePreview, so switching selection never shares text between
+// elements.
 
 import React, { useState } from 'react';
 import { SHAPE_KINDS } from '../pptx/model.js';
+import LocalDraftTextarea from './LocalDraftTextarea.jsx';
 
 function Field({ label, value, onChange, type = 'text', hint, disabled, min, max, step }) {
   return (
@@ -53,10 +52,6 @@ export function alignValue(value) {
   return 'l';
 }
 
-function paragraphsOf(shape, draft) {
-  return draft?.paragraphs || shape?.textBody?.paragraphs || [];
-}
-
 /** Merge draft style patches over the paragraph's parsed style for display. */
 function styledParagraph(para, stylePatch) {
   if (!stylePatch) return para;
@@ -70,11 +65,11 @@ function styledParagraph(para, stylePatch) {
   return merged;
 }
 
-function TextFields({ shape, draft, onDraftChange, onStyleChange, disabled }) {
-  const paragraphs = paragraphsOf(shape, draft);
+function TextFields({ shape, paragraphs: draftParagraphs, styles, onDraftChange, onStyleChange, disabled }) {
+  const paragraphs = draftParagraphs || shape?.textBody?.paragraphs || [];
   const [activeIndex, setActiveIndex] = useState(0);
   const safeIndex = Math.min(activeIndex, Math.max(paragraphs.length - 1, 0));
-  const active = styledParagraph(paragraphs[safeIndex] || {}, draft?.styles?.[safeIndex]);
+  const active = styledParagraph(paragraphs[safeIndex] || {}, styles?.[safeIndex]);
 
   if (paragraphs.length === 0) {
     return (
@@ -89,20 +84,20 @@ function TextFields({ shape, draft, onDraftChange, onStyleChange, disabled }) {
     <div className="office-field-group">
       <div className="office-field-group-title">文字</div>
       {paragraphs.map((para, index) => (
-        <label key={index} className="office-field">
+        <label key={`${shape?.elId || 'shape'}:${index}`} className="office-field">
           <span className="office-field-label">
             第 {index + 1} 段
             {para.level ? ` · 层级 ${para.level}` : ''}
             {para.text.length > 40 ? ` · ${para.text.length} 字` : ''}
           </span>
-          <textarea
+          <LocalDraftTextarea
             rows={2}
             disabled={disabled}
             value={para.text}
             onFocus={() => setActiveIndex(index)}
-            onChange={event => {
+            onCommit={(text) => {
               const next = paragraphs.map((item, i) => (
-                i === index ? { ...item, text: event.target.value } : item
+                i === index ? { ...item, text } : item
               ));
               onDraftChange?.({ paragraphs: next });
             }}
@@ -264,7 +259,7 @@ function TableFields({ shape }) {
 }
 
 export default function PropertyPanel({
-  shape, draft, draftBox, disabled = false, readOnly = false,
+  shape, paragraphs, styles, draftBox, disabled = false, readOnly = false,
   onDraftChange, onStyleChange, onBoxChange, onAlignToSlide, onDelete,
 }) {
   // `readOnly` remains a real posture, not dead code: Word documents reuse this panel
@@ -298,7 +293,8 @@ export default function PropertyPanel({
       {(shape.kind === SHAPE_KINDS.TEXT || shape.kind === SHAPE_KINDS.FRAME) ? (
         <TextFields
           shape={shape}
-          draft={draft}
+          paragraphs={paragraphs}
+          styles={styles}
           onDraftChange={onDraftChange}
           onStyleChange={onStyleChange}
           disabled={locked}

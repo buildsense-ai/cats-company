@@ -169,7 +169,7 @@ function TableBlock({ block, selected, activeCell, onSelect, onCellSelect }) {
                       // table stays selected as the enclosing block; the cell is the edit target.
                       event.stopPropagation();
                       onSelect?.(block.id, event);
-                      onCellSelect?.(cell);
+                      onCellSelect?.(cell, block.id);
                     }}
                     style={{
                       border: '1px solid #b9bec8',

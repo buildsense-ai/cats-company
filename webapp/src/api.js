@@ -1100,6 +1100,23 @@ export const api = {
   uploadFile: async (file, type = 'file') => {
     return uploadRawFile(`/api/upload?type=${type}&${RAW_UPLOAD_QUERY}`, file, { authToken: getToken() });
   },
+  upsertFileVersionBinding: (binding) => request('POST', '/api/files/version-bindings', binding),
+  getFileVersionBinding: async (source) => {
+    const topicID = String(source?.topic_id || '').trim();
+    const messageID = Number(source?.source_message_id || 0);
+    const attachmentIndex = Number(source?.source_attachment_index ?? -1);
+    const query = new URLSearchParams({
+      topic_id: topicID,
+      source_message_id: String(messageID),
+      source_attachment_index: String(attachmentIndex),
+    });
+    try {
+      return await request('GET', `/api/files/version-bindings?${query.toString()}`);
+    } catch (error) {
+      if (error?.status === 404) return null;
+      throw error;
+    }
+  },
   createMobileUploadSession: async (topic) => request('POST', '/api/mobile-upload/sessions', { topic }),
   getMobileUploadSession: async (sessionId) => request('GET', `/api/mobile-upload/sessions/${encodeURIComponent(sessionId)}`),
   uploadMobileSessionFile: (sessionId, file, type = 'file') => uploadRawFile(

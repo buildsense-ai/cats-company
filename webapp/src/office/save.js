@@ -1,14 +1,15 @@
-// Save linkage: turn edited bytes into a new attachment message.
+// Save linkage: turn edited bytes into a quiet version pointer, or an explicit sync message.
 //
 // The server never mutates an attachment. Uploading again produces a new `file_key`, and the
 // old attachment stays addressable, which is what makes "改错了还能退回上一版" true rather
 // than aspirational. So saving is: upload → append a message that points at the new file.
 //
 // This module is pure on purpose. The upload and the send are side effects that need a live
-// session, but the shape of the message is what actually decides whether 小八 reads the new
-// version next turn, and that can be asserted without a server.
+// session, but the shape of the message is what decides whether 小八 reads the new version
+// next turn. The message is built only when the user explicitly asks to sync.
 
-export const OFFICE_SAVE_NOTICE = '已保存为新版本。会话里出现的新附件就是这一版，小八读到的也是这一版';
+export const OFFICE_SAVE_NOTICE = '已保存最新版，但尚未发给小八；会话里仍是旧附件';
+export const OFFICE_SYNC_NOTICE = '已同步给小八。会话里出现的新附件就是这一版，小八读到的也是这一版';
 
 /**
  * Normalise the name of the saved file.
@@ -96,4 +97,42 @@ export function officeBytesToFile(bytes, name, family = 'pptx') {
 export function countChangedOps(changes) {
   if (!Array.isArray(changes)) return 0;
   return changes.filter(change => change && typeof change.op === 'string').length;
+}
+
+function cleanString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function positiveInteger(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function nonNegativeInteger(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/** Build the exact body for POST /api/files/version-bindings. */
+export function buildFileVersionBindingRequest(source, latest, topicId = source?.topic_id) {
+  if (!source || !latest) throw new Error('版本绑定缺少来源或最新版本');
+  const body = {
+    topic_id: cleanString(topicId || source.topic_id),
+    source_message_id: positiveInteger(source.source_message_id),
+    source_attachment_index: nonNegativeInteger(source.source_attachment_index),
+    source_file_key: cleanString(source.source_file_key),
+    latest_file_key: cleanString(latest.file_key),
+    latest_url: cleanString(latest.url),
+    latest_name: cleanString(latest.name || latest.file_key),
+    latest_size: Number(latest.size) || 0,
+    latest_mime_type: cleanString(latest.mime_type),
+  };
+  if (!body.topic_id || body.source_message_id === null
+    || body.source_attachment_index === null || !body.source_file_key
+    || !body.latest_file_key || !body.latest_url || !body.latest_name
+    || !body.latest_mime_type) {
+    throw new Error('版本绑定字段不完整');
+  }
+  if (!/\.(docx|pptx)$/i.test(body.latest_file_key)) throw new Error('最新版本不是 Office 文档');
+  return body;
 }

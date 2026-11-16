@@ -339,14 +339,14 @@ export default function EditableCanvas({
         onHover={onHover}
         imageUrls={imageUrls}
       />
-      {selectedShape ? (
+      {selectedShape && !readOnly ? (
         <SelectionOverlay
           shape={selectedShape}
           box={selectedBox}
           slideSize={slideSize}
           onDragStart={handleDragStart}
           onHandleDown={handleHandleDown}
-          showHandles={!readOnly}
+          showHandles
         />
       ) : null}
       {guidePercent?.x !== undefined ? <Guide orientation="v" position={guidePercent.x} /> : null}

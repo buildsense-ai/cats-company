@@ -290,6 +290,26 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.image-viewport-percentage').textContent).not.toBe('—');
   });
 
+  it('hides file annotations while the displayed Office file is unsynced', async () => {
+    const file = {
+      type: 'image', name: 'preview.png', url: '/uploads/images/preview.png', mime_type: 'image/png',
+      annotation_source: { topic_id: 'p2p_1_2', message_id: 30, attachment_index: 0, file_key: 'source.pptx' },
+      office_version_unsynced: true,
+    };
+    await act(async () => {
+      root.render(<FilePreviewPanel file={file} annotationApi={{}} onClose={vi.fn()} />);
+      await flushAsync();
+    });
+    expect(container.querySelector('.file-annotation-editor')).toBeNull();
+
+    await act(async () => {
+      root.render(<FilePreviewPanel file={{ ...file, office_version_unsynced: false }}
+        annotationApi={{}} onClose={vi.fn()} />);
+      await flushAsync();
+    });
+    expect(container.querySelector('.file-annotation-editor')).not.toBeNull();
+  });
+
   it('normalizes a disconnected media endpoint instead of showing the browser error', async () => {
     global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
 

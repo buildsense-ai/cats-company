@@ -73,14 +73,35 @@
 
 .office-preview-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr) 6px var(--office-panel-width, 300px);
   min-height: 0;
   flex: 1 1 auto;
+}
+
+.office-panel-resizer,
+[data-office-panel-resizer] {
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  background: #eef0f4;
+  border-left: 1px solid #e2e4e9;
+  border-right: 1px solid #e2e4e9;
+  outline: none;
+}
+
+.office-panel-resizer:hover,
+.office-panel-resizer:focus-visible,
+[data-office-panel-resizer]:hover,
+[data-office-panel-resizer]:focus-visible {
+  background: #b9c9f8;
+  border-color: #8ea9f5;
 }
 
 @media (max-width: 900px) {
   .office-preview-body { grid-template-columns: 1fr; }
   .office-preview-side { border-left: none; border-top: 1px solid #e2e4e9; }
+  .office-panel-resizer,
+  [data-office-panel-resizer] { display: none; }
 }
 
 .office-preview-stage {

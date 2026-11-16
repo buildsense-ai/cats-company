@@ -17,11 +17,18 @@ import {
 } from '../docx/write.js';
 import { applyInsertImage } from '../docx/insert.js';
 import { BLOCK_KINDS, ALIGNMENTS, blockPreview, cmToTwips, twipsToCm } from '../docx/model.js';
-import { applyWordDraft } from './word-draft-render.js';
+import { applyWordDraft, wordCellDraftKey } from './word-draft-render.js';
 import { OFFICE_SAVE_NOTICE } from '../save.js';
+import { OFFICE_SYNC_NOTICE } from '../version-binding.js';
+import LocalDraftTextarea from './LocalDraftTextarea.jsx';
+import {
+  officePanelWidthFromPointer, readOfficePanelWidth, saveOfficePanelWidth,
+} from './office-panel-width.js';
 import '../../styles/office-preview.css';
 
 export const DOCX_PREVIEW_MAX_BYTES = 60 * 1024 * 1024;
+
+const EMPTY_WORD_DRAFT = { texts: {}, styles: {}, props: {}, cells: {} };
 
 const ALIGN_LABELS = [
   { value: 'left', label: '左' },
@@ -30,24 +37,35 @@ const ALIGN_LABELS = [
   { value: 'both', label: '两端' },
 ];
 
-function applyDraftsToXml(xml, { block, cell, text, style, props, cellText }) {
+function applyDraftsToXml(xml, model, draft) {
   const before = xml;
-  if (cellText !== null && cell) {
-    xml = applyTableCellText(xml, cell, cellText);
-  }
-  if (block && block.kind !== BLOCK_KINDS.TABLE) {
-    // Each writer scans the XML it is handed, but the earlier draft still uses the block's path
-    // rather than offsets from the previous pass. Reusing only the stable path avoids applying
-    // run/style edits to byte ranges that shifted when the paragraph text was replaced.
+  const texts = draft?.texts || {};
+  const styles = draft?.styles || {};
+  const props = draft?.props || {};
+  const cells = draft?.cells || {};
+  for (const block of model?.blocks || []) {
+    if (block.kind === BLOCK_KINDS.TABLE) {
+      for (const cell of block.cells || []) {
+        const key = wordCellDraftKey(block.id, cell.row, cell.col);
+        if (Object.prototype.hasOwnProperty.call(cells, key)) {
+          xml = applyTableCellText(xml, cell, cells[key]);
+        }
+      }
+      continue;
+    }
+    if (block.kind !== BLOCK_KINDS.PARAGRAPH) continue;
     const target = { id: block.id, path: block.path };
-    if (text !== null && text !== block.text) {
-      xml = applyParagraphText(xml, target, text);
+    const hasText = Object.prototype.hasOwnProperty.call(texts, block.id);
+    const hasStyle = Object.prototype.hasOwnProperty.call(styles, block.id);
+    const hasProps = Object.prototype.hasOwnProperty.call(props, block.id);
+    if (hasText && texts[block.id] !== block.text) {
+      xml = applyParagraphText(xml, target, texts[block.id]);
     }
-    if (Object.keys(style).length > 0) {
-      xml = applyRunStyle(xml, target, style);
+    if (hasStyle && Object.keys(styles[block.id] || {}).length > 0) {
+      xml = applyRunStyle(xml, target, styles[block.id]);
     }
-    if (Object.keys(props).length > 0) {
-      xml = applyParagraphProperties(xml, target, props);
+    if (hasProps && Object.keys(props[block.id] || {}).length > 0) {
+      xml = applyParagraphProperties(xml, target, props[block.id]);
     }
   }
   return { xml, changed: xml !== before };
@@ -80,7 +98,7 @@ function BlockList({ blocks, selectedId, onSelect }) {
 
 function BlockPanel({
   block, text, onTextChange, style, onStyleChange, onAlign, onIndent, onDelete,
-  activeCell, onCellSelect, onCellTextChange, disabled, props,
+  activeCell, onCellSelect, onCellTextChange, cellText, disabled, props,
 }) {
   if (!block) {
     return (
@@ -93,7 +111,7 @@ function BlockPanel({
   if (block.kind === BLOCK_KINDS.TABLE) {
     // Cell text is edited one cell at a time. Whole-table editing would mean a grid of inputs and
     // a merge model, and the common case here is fixing one number in one cell.
-    const cell = activeCell || block.cells[0] || null;
+    const cell = activeCell?.blockId === block.id ? activeCell : (block.cells?.[0] || null);
     return (
       <div className="office-props" data-office-el={block.id}>
         <div className="office-props-head">
@@ -128,9 +146,10 @@ function BlockPanel({
           </div>
           <label className="office-field">
             <span className="office-field-label">内容</span>
-            <textarea rows={3} disabled={disabled || !cell}
-              value={cell?.text ?? ''}
-              onChange={event => onCellTextChange?.(event.target.value)} />
+            <LocalDraftTextarea key={cell ? `${block.id}:${cell.row}:${cell.col}` : block.id}
+              rows={3} disabled={disabled || !cell}
+              value={cellText ?? cell?.text ?? ''}
+              onCommit={(value) => onCellTextChange?.(value)} />
           </label>
           {cell?.mergeContinue ? (
             <p className="office-field-note">这个单元格是纵向合并的延续格，改动不会显示在页面上。</p>
@@ -158,11 +177,12 @@ function BlockPanel({
         <div className="office-field-group-title">文字</div>
         <label className="office-field">
           <span className="office-field-label">段落内容</span>
-          <textarea
+          <LocalDraftTextarea
+            key={block.id}
             rows={4}
             disabled={disabled}
             value={text ?? block.text}
-            onChange={event => onTextChange?.(event.target.value)}
+            onCommit={(value) => onTextChange?.(value)}
           />
         </label>
       </div>
@@ -238,36 +258,55 @@ function BlockPanel({
   );
 }
 
-export default function WordPreview({ file, url, onSave }) {
+export default function WordPreview({
+  file, url, onSave, onSync, latestVersion,
+}) {
   const [status, setStatus] = useState('loading');
   const [model, setModel] = useState(null);
   const [error, setError] = useState('');
   const [selectedId, setSelectedId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
-  const [draftText, setDraftText] = useState(null);
-  const [draftStyle, setDraftStyle] = useState({});
-  const [draftProps, setDraftProps] = useState({});
-  // Cell editing is its own draft: it targets a cell inside a table block, and the paragraph draft
-  // has no meaning for a table. Keeping them apart also means selecting a different cell does not
-  // resurrect a pending paragraph edit.
+  const [draft, setDraft] = useState(EMPTY_WORD_DRAFT);
   const [activeCell, setActiveCell] = useState(null);
-  const [draftCellText, setDraftCellText] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(() => readOfficePanelWidth());
   const pendingBytesRef = useRef(null);
   const [hasPending, setHasPending] = useState(false);
   const imageInputRef = useRef(null);
   const abortRef = useRef(null);
 
-  const dirty = draftText !== null || Object.keys(draftStyle).length > 0
-    || Object.keys(draftProps).length > 0 || draftCellText !== null || hasPending;
+  const dirty = Object.keys(draft.texts).length > 0 || Object.keys(draft.styles).length > 0
+    || Object.keys(draft.props).length > 0 || Object.keys(draft.cells).length > 0 || hasPending;
 
   const adopt = useCallback((next) => {
     setModel(next);
-    setDraftText(null);
-    setDraftStyle({});
-    setDraftProps({});
-    setDraftCellText(null);
+    setDraft(EMPTY_WORD_DRAFT);
   }, []);
+
+  const resetDraft = useCallback(() => setDraft(EMPTY_WORD_DRAFT), []);
+
+  useEffect(() => {
+    setEditing(false);
+  }, [url]);
+
+  const startPanelResize = useCallback((event) => {
+    if (typeof window === 'undefined' || window.innerWidth < 900) return;
+    const startX = event.clientX;
+    const startWidth = panelWidth;
+    const move = (moveEvent) => {
+      setPanelWidth(officePanelWidthFromPointer(startWidth, startX, moveEvent.clientX));
+    };
+    const finish = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      setPanelWidth((value) => saveOfficePanelWidth(value));
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+  }, [panelWidth]);
 
   useEffect(() => {
     let cancelled = false;
@@ -280,9 +319,8 @@ export default function WordPreview({ file, url, onSave }) {
     setModel(null);
     setSelectedId(null);
     setNotice('');
-    setDraftText(null);
-    setDraftStyle({});
-    setDraftProps({});
+    setDraft(EMPTY_WORD_DRAFT);
+    setActiveCell(null);
 
     if (!url) {
       setStatus('error');
@@ -326,62 +364,65 @@ export default function WordPreview({ file, url, onSave }) {
     [model, selectedId],
   );
 
-  // Selection change drops the drafts: they are keyed to one block, and applying them to the
-  // next selection would write one paragraph's text onto another.
+  // Selection only changes which element the panel edits. Drafts are keyed by block/cell and
+  // remain visible when the user switches away and back.
   useEffect(() => {
-    setDraftText(null);
-    setDraftStyle({});
-    setDraftProps({});
     setNotice('');
   }, [selectedId]);
+
+  const selectedText = selectedId ? draft.texts[selectedId] : undefined;
+  const selectedStyle = selectedId ? draft.styles[selectedId] : undefined;
+  const selectedProps = selectedId ? draft.props[selectedId] : undefined;
+  const selectedTableCell = useMemo(() => {
+    if (selectedBlock?.kind !== BLOCK_KINDS.TABLE) return null;
+    if (activeCell?.blockId === selectedBlock.id
+      && (selectedBlock.cells || []).some(cell => cell.row === activeCell.row && cell.col === activeCell.col)) {
+      return activeCell;
+    }
+    return selectedBlock.cells?.[0] || null;
+  }, [activeCell, selectedBlock]);
+  const selectedCellKey = selectedTableCell
+    ? wordCellDraftKey(selectedTableCell.blockId || selectedBlock.id,
+      selectedTableCell.row, selectedTableCell.col)
+    : '';
+  const selectedCellText = selectedCellKey
+    && Object.prototype.hasOwnProperty.call(draft.cells, selectedCellKey)
+    ? draft.cells[selectedCellKey]
+    : undefined;
 
   const effectiveStyle = useMemo(() => {
     const first = selectedBlock?.runs?.[0] || {};
     return {
-      bold: draftStyle.bold !== undefined ? draftStyle.bold : Boolean(first.bold),
-      italic: draftStyle.italic !== undefined ? draftStyle.italic : Boolean(first.italic),
-      underline: draftStyle.underline !== undefined ? draftStyle.underline : Boolean(first.underline),
-      size: draftStyle.size !== undefined ? draftStyle.size : (first.size || 0),
-      color: draftStyle.color !== undefined ? draftStyle.color : (first.color || ''),
-      align: draftProps.align !== undefined ? draftProps.align : (selectedBlock?.align || 'left'),
+      bold: selectedStyle?.bold !== undefined ? selectedStyle.bold : Boolean(first.bold),
+      italic: selectedStyle?.italic !== undefined ? selectedStyle.italic : Boolean(first.italic),
+      underline: selectedStyle?.underline !== undefined ? selectedStyle.underline : Boolean(first.underline),
+      size: selectedStyle?.size !== undefined ? selectedStyle.size : (first.size || 0),
+      color: selectedStyle?.color !== undefined ? selectedStyle.color : (first.color || ''),
+      align: selectedProps?.align !== undefined ? selectedProps.align : (selectedBlock?.align || 'left'),
     };
-  }, [draftProps.align, draftStyle, selectedBlock]);
+  }, [selectedBlock, selectedProps?.align, selectedStyle]);
 
   const effectiveProps = useMemo(() => ({
-    indLeftCm: draftProps.indLeftCm !== undefined
-      ? draftProps.indLeftCm
+    indLeftCm: selectedProps?.indLeftCm !== undefined
+      ? selectedProps.indLeftCm
       : twipsToCm(selectedBlock?.indLeftTwips || 0),
-    indFirstCm: draftProps.indFirstCm !== undefined
-      ? draftProps.indFirstCm
+    indFirstCm: selectedProps?.indFirstCm !== undefined
+      ? selectedProps.indFirstCm
       : twipsToCm(selectedBlock?.indFirstTwips || 0),
-  }), [draftProps.indFirstCm, draftProps.indLeftCm, selectedBlock]);
+  }), [selectedBlock, selectedProps?.indFirstCm, selectedProps?.indLeftCm]);
 
-  const renderedModel = useMemo(() => applyWordDraft(model, selectedId, {
-    text: draftText,
-    style: draftStyle,
-    props: draftProps,
-    cell: draftCellText !== null && activeCell && selectedBlock?.kind === BLOCK_KINDS.TABLE
-      ? { row: activeCell.row, col: activeCell.col, text: draftCellText }
-      : null,
-  }), [activeCell, draftCellText, draftProps, draftStyle, draftText, model, selectedBlock, selectedId]);
+  const renderedModel = useMemo(() => applyWordDraft(model, draft), [draft, model]);
 
   const applyToBytes = useCallback(async () => {
     if (!model) return null;
     const xml = await model.pkg.text(model.part);
-    const prepared = applyDraftsToXml(xml, {
-      block: selectedBlock,
-      cell: activeCell,
-      text: draftText,
-      style: draftStyle,
-      props: draftProps,
-      cellText: draftCellText,
-    });
+    const prepared = applyDraftsToXml(xml, model, draft);
     if (!prepared.changed) return null;
 
     const problems = validateDocumentPart(prepared.xml);
     if (problems.length > 0) throw new Error(`写入前的检查未通过：${problems.join('；')}`);
     return { xml: prepared.xml };
-  }, [activeCell, draftCellText, draftProps, draftStyle, draftText, model, selectedBlock]);
+  }, [draft, model]);
 
   /**
    * Persist the visible drafts onto a model and return the reparsed result.
@@ -390,23 +431,16 @@ export default function WordPreview({ file, url, onSave }) {
    * adopt that reparsed model, which silently reverted any text/style/cell change the user had
    * not saved yet. Applying the drafts to the intermediate model keeps both kinds of edit.
    */
-  const persistDrafts = useCallback(async (sourceModel, block, cell) => {
+  const persistDrafts = useCallback(async (sourceModel) => {
     const xml = await sourceModel.pkg.text(sourceModel.part);
-    const prepared = applyDraftsToXml(xml, {
-      block,
-      cell,
-      text: draftText,
-      style: draftStyle,
-      props: draftProps,
-      cellText: draftCellText,
-    });
+    const prepared = applyDraftsToXml(xml, sourceModel, draft);
     if (!prepared.changed) return { model: sourceModel, bytes: null };
     const problems = validateDocumentPart(prepared.xml);
     if (problems.length > 0) throw new Error(`写入前的检查未通过：${problems.join('；')}`);
     sourceModel.pkg.setText(sourceModel.part, prepared.xml);
     const bytes = await sourceModel.pkg.save();
     return { model: await parseDocx(bytes), bytes };
-  }, [draftCellText, draftProps, draftStyle, draftText]);
+  }, [draft]);
 
   /** Write locally and re-parse, so the canvas shows exactly what the bytes now say. */
   const commit = useCallback(async (mutate, successNote) => {
@@ -414,28 +448,29 @@ export default function WordPreview({ file, url, onSave }) {
     setSaving(true);
     setNotice('');
     try {
-      let xml = await model.pkg.text(model.part);
+      // Structural operations cannot share a batch with text drafts. Flush every draft to a
+      // fresh model first, then mutate that exact model and re-parse once.
+      const flushed = await persistDrafts(model);
+      const target = flushed.model;
+      const xml = await target.pkg.text(target.part);
       const next = await mutate(xml);
       if (!next || next === xml) {
+        if (flushed.bytes) {
+          pendingBytesRef.current = flushed.bytes;
+          setHasPending(true);
+          adopt(target);
+          if (successNote) setNotice(successNote);
+          return flushed.bytes;
+        }
         setNotice('没有产生改动');
         return;
       }
       const problems = validateDocumentPart(next);
       if (problems.length > 0) throw new Error(`写入前的检查未通过：${problems.join('；')}`);
 
-      model.pkg.setText(model.part, next);
-      const structuralBytes = await model.pkg.save();
-      let reparsed = await parseDocx(structuralBytes);
-      // Block ids are path-derived and survive an insertion/deletion elsewhere. Re-finding the
-      // edited block in the structural result lets drafts apply against positions that are valid
-      // in the new XML instead of offsets from the pre-mutation model.
-      const draftBlock = selectedId
-        ? reparsed.blocks.find(block => block.id === selectedId) || null
-        : null;
-      const draftCell = draftBlock?.kind === BLOCK_KINDS.TABLE ? activeCell : null;
-      const flushed = await persistDrafts(reparsed, draftBlock, draftCell);
-      const bytes = flushed.bytes || structuralBytes;
-      if (flushed.bytes) reparsed = flushed.model;
+      target.pkg.setText(target.part, next);
+      const bytes = await target.pkg.save();
+      const reparsed = await parseDocx(bytes);
       pendingBytesRef.current = bytes;
       setHasPending(true);
       adopt(reparsed);
@@ -447,7 +482,7 @@ export default function WordPreview({ file, url, onSave }) {
     } finally {
       setSaving(false);
     }
-  }, [activeCell, adopt, model, persistDrafts, saving, selectedId]);
+  }, [adopt, model, persistDrafts, saving]);
 
   const handleSave = useCallback(async () => {
     if (!model || saving) return;
@@ -460,13 +495,14 @@ export default function WordPreview({ file, url, onSave }) {
     try {
       const prepared = await applyToBytes();
       let bytes = pendingBytesRef.current;
+      let reparsed = null;
       if (prepared) {
         const problems = validateDocumentPart(prepared.xml);
         if (problems.length > 0) throw new Error(`写入前的检查未通过：${problems.join('；')}`);
 
         model.pkg.setText(model.part, prepared.xml);
         bytes = await model.pkg.save();
-        adopt(await parseDocx(bytes));
+        reparsed = await parseDocx(bytes);
       }
       if (!bytes) {
         setNotice('没有可写入的改动');
@@ -479,9 +515,10 @@ export default function WordPreview({ file, url, onSave }) {
         changes: [{ op: 'docx-edit' }],
       });
       if (onSave && !published) {
-        setNotice('已写入本地，但没能存进会话，请重试保存');
+        setNotice('已写入本地，但最新版未保存成功，请重试保存');
         return;
       }
+      if (reparsed) adopt(reparsed);
       pendingBytesRef.current = null;
       setHasPending(false);
       setNotice(OFFICE_SAVE_NOTICE);
@@ -491,6 +528,24 @@ export default function WordPreview({ file, url, onSave }) {
       setSaving(false);
     }
   }, [adopt, applyToBytes, dirty, file?.name, model, onSave, saving]);
+
+  const handleSync = useCallback(async () => {
+    if (saving || !latestVersion || !onSync) return;
+    setSaving(true);
+    setNotice('');
+    try {
+      const synced = await onSync({
+        latestVersion,
+        fileName: file?.name,
+        changes: [{ op: 'docx-edit' }],
+      });
+      setNotice(synced ? OFFICE_SYNC_NOTICE : '同步失败，请重试');
+    } catch (err) {
+      setNotice(`同步失败：${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [file?.name, latestVersion, onSync, saving]);
 
   const handleInsertParagraph = useCallback(async () => {
     const anchor = selectedBlock;
@@ -520,11 +575,15 @@ export default function WordPreview({ file, url, onSave }) {
   }, [commit, model, selectedBlock]);
 
   /** Selecting a cell inside a table block. The table itself stays selected as the block. */
-  const handleCellSelect = useCallback((cell) => {
-    setActiveCell(cell);
-    setDraftCellText(null);
+  const handleCellSelect = useCallback((cell, blockId) => {
+    const block = model?.blocks?.find(item => item.id === blockId)
+      || model?.blocks?.find(item => item.id === selectedId && item.kind === BLOCK_KINDS.TABLE
+        && (item.cells || []).some(entry => entry.row === cell.row && entry.col === cell.col));
+    if (!block) return;
+    setSelectedId(block.id);
+    setActiveCell({ blockId: block.id, row: cell.row, col: cell.col });
     setNotice(`已选中第 ${cell.row + 1} 行第 ${cell.col + 1} 列`);
-  }, []);
+  }, [model, selectedId]);
 
   /**
    * Insert a picture.
@@ -542,11 +601,7 @@ export default function WordPreview({ file, url, onSave }) {
       const ext = (picked.name.split('.').pop() || 'png').toLowerCase();
       // Keep edits that are still drafts, then add the picture to that intermediate model.
       // Otherwise inserting the picture would visibly revert the paragraph or cell underneath it.
-      const draftBlock = selectedId
-        ? model.blocks.find(block => block.id === selectedId) || null
-        : null;
-      const draftCell = draftBlock?.kind === BLOCK_KINDS.TABLE ? activeCell : null;
-      const flushed = await persistDrafts(model, draftBlock, draftCell);
+      const flushed = await persistDrafts(model);
       const target = flushed.model;
       await applyInsertImage(target, { bytes, ext, name: picked.name, widthCm: 12 });
 
@@ -564,7 +619,7 @@ export default function WordPreview({ file, url, onSave }) {
     } finally {
       setSaving(false);
     }
-  }, [activeCell, adopt, model, persistDrafts, saving, selectedId]);
+  }, [adopt, model, persistDrafts, saving]);
 
   if (status === 'loading') {
     return <div className="office-preview-state">正在解析文档…</div>;
@@ -575,17 +630,22 @@ export default function WordPreview({ file, url, onSave }) {
   if (!model) return null;
 
   return (
-    <div className="office-preview">
+    <div className="office-preview" data-office-mode={editing ? 'edit' : 'readonly'}
+      style={{ '--office-panel-width': `${panelWidth}px` }}>
       <div className="office-preview-toolbar">
         <span className="office-page-label">
           {model.blocks.length} 块 · {model.outline.length} 个标题
         </span>
         <span className="office-toolbar-divider" />
-        <button type="button" className="office-page-btn" disabled={saving}
+        <button type="button" className="office-page-btn" data-office-edit-toggle=""
+          disabled={saving} onClick={() => setEditing(value => !value)}>
+          {editing ? '完成' : '编辑'}
+        </button>
+        <button type="button" className="office-page-btn" disabled={!editing || saving}
           onClick={handleInsertParagraph}>插入段落</button>
-        <button type="button" className="office-page-btn" disabled={saving || !selectedBlock}
+        <button type="button" className="office-page-btn" disabled={!editing || saving || !selectedBlock}
           onClick={handleDeleteBlock}>删除段落</button>
-        <button type="button" className="office-page-btn" disabled={saving}
+        <button type="button" className="office-page-btn" disabled={!editing || saving}
           onClick={() => imageInputRef.current?.click?.()}>插入图片</button>
         <input
           ref={imageInputRef}
@@ -601,6 +661,10 @@ export default function WordPreview({ file, url, onSave }) {
         />
         <span className="office-toolbar-spacer" />
         {dirty ? <span className="office-dirty">已修改</span> : null}
+        <button type="button" className="office-page-btn" data-office-sync=""
+          disabled={!latestVersion || saving || !onSync} onClick={handleSync}>
+          同步给小八
+        </button>
         <button type="button" className="office-save-btn" disabled={saving}
           onClick={handleSave}>
           {saving ? '写入中…' : '写入文档'}
@@ -618,30 +682,63 @@ export default function WordPreview({ file, url, onSave }) {
             onSelect={setSelectedId}
             onHover={() => {}}
             activeCell={activeCell}
-            onCellSelect={handleCellSelect}
+            onCellSelect={editing ? handleCellSelect : undefined}
           />
         </div>
+        <div className="office-panel-resizer" data-office-panel-resizer=""
+          role="separator" aria-orientation="vertical" tabIndex={0}
+          onPointerDown={startPanelResize}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+            event.preventDefault();
+            const delta = event.key === 'ArrowLeft' ? 16 : -16;
+            setPanelWidth((value) => saveOfficePanelWidth(value + delta));
+          }} />
         <div className="office-preview-side">
           <BlockList blocks={renderedModel.blocks} selectedId={selectedId} onSelect={setSelectedId} />
           <BlockPanel
             block={selectedBlock}
-            text={draftText}
+            text={selectedText}
             style={effectiveStyle}
             props={effectiveProps}
-            onTextChange={setDraftText}
-            onStyleChange={(patch) => setDraftStyle(current => ({ ...current, ...patch }))}
-            onAlign={(align) => setDraftProps(current => ({ ...current, align }))}
-            onIndent={({ leftCm, firstCm }) => setDraftProps((current) => {
-              const next = { ...current };
-              if (leftCm !== undefined) next.indLeftCm = leftCm;
-              if (firstCm !== undefined) next.indFirstCm = firstCm;
-              return next;
-            })}
+            onTextChange={(value) => {
+              if (!selectedId) return;
+              setDraft(current => ({ ...current,
+                texts: { ...current.texts, [selectedId]: value } }));
+            }}
+            onStyleChange={(patch) => {
+              if (!selectedId) return;
+              setDraft(current => ({ ...current, styles: {
+                ...current.styles,
+                [selectedId]: { ...(current.styles[selectedId] || {}), ...patch },
+              } }));
+            }}
+            onAlign={(align) => {
+              if (!selectedId) return;
+              setDraft(current => ({ ...current, props: {
+                ...current.props,
+                [selectedId]: { ...(current.props[selectedId] || {}), align },
+              } }));
+            }}
+            onIndent={({ leftCm, firstCm }) => {
+              if (!selectedId) return;
+              setDraft(current => {
+                const next = { ...(current.props[selectedId] || {}) };
+                if (leftCm !== undefined) next.indLeftCm = leftCm;
+                if (firstCm !== undefined) next.indFirstCm = firstCm;
+                return { ...current, props: { ...current.props, [selectedId]: next } };
+              });
+            }}
             onDelete={handleDeleteBlock}
-            activeCell={activeCell}
+            activeCell={selectedTableCell}
             onCellSelect={handleCellSelect}
-            onCellTextChange={setDraftCellText}
-            disabled={saving}
+            cellText={selectedCellText}
+            onCellTextChange={(value) => {
+              if (!selectedCellKey) return;
+              setDraft(current => ({ ...current,
+                cells: { ...current.cells, [selectedCellKey]: value } }));
+            }}
+            disabled={saving || !editing}
           />
         </div>
       </div>

@@ -1320,6 +1320,74 @@ describe('upload transport', () => {
   });
 });
 
+describe('file version binding transport', () => {
+  let apiModule;
+
+  const response = (status, data) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: vi.fn().mockResolvedValue(data),
+    text: vi.fn().mockResolvedValue(JSON.stringify(data)),
+  });
+
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    sessionStorage.clear();
+    apiModule = await import('./api');
+    apiModule.setToken('binding-token');
+  });
+
+  afterEach(() => {
+    apiModule.disconnectWS();
+    vi.restoreAllMocks();
+  });
+
+  test('POSTs the complete binding body to the version-bindings route', async () => {
+    const binding = {
+      topic_id: 'p2p_7_9', source_message_id: 71, source_attachment_index: 0,
+      source_file_key: 'source.pptx', latest_file_key: 'latest.pptx',
+      latest_url: '/uploads/files/latest.pptx', latest_name: 'latest.pptx',
+      latest_size: 8192, latest_mime_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    };
+    global.fetch = vi.fn().mockResolvedValue(response(200, { id: 3, ...binding }));
+
+    await expect(apiModule.api.upsertFileVersionBinding(binding)).resolves.toMatchObject({ id: 3 });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url, options] = global.fetch.mock.calls[0];
+    expect(url).toBe('/api/files/version-bindings');
+    expect(options.method).toBe('POST');
+    expect(options.body).toBe(JSON.stringify(binding));
+    expect(options.headers).toMatchObject({
+      Authorization: 'Bearer binding-token',
+      'Content-Type': 'application/json',
+    });
+  });
+
+  test('GETs the binding by the source triple', async () => {
+    global.fetch = vi.fn().mockResolvedValue(response(200, {
+      id: 3, latest_file_key: 'latest.pptx', latest_url: '/uploads/files/latest.pptx',
+    }));
+
+    await expect(apiModule.api.getFileVersionBinding({
+      topic_id: 'p2p_7_9', source_message_id: 71, source_attachment_index: 0,
+    })).resolves.toMatchObject({ latest_file_key: 'latest.pptx' });
+
+    const [url, options] = global.fetch.mock.calls[0];
+    expect(url).toBe('/api/files/version-bindings?topic_id=p2p_7_9&source_message_id=71&source_attachment_index=0');
+    expect(options.method).toBe('GET');
+    expect(options.headers).toMatchObject({ Authorization: 'Bearer binding-token' });
+  });
+
+  test('returns null for a 404 binding lookup instead of a fabricated latest version', async () => {
+    global.fetch = vi.fn().mockResolvedValue(response(404, { error: 'file_version_binding_not_found' }));
+    await expect(apiModule.api.getFileVersionBinding({
+      topic_id: 'p2p_7_9', source_message_id: 71, source_attachment_index: 0,
+    })).resolves.toBeNull();
+  });
+});
+
 describe('direct remote response errors', () => {
   let apiModule;
 

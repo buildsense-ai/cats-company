@@ -174,6 +174,8 @@ vi.mock('../widgets/chat-message', async (importOriginal) => {
     onOpenRemoteArtifactFullscreen,
     workspaceFullscreen,
     onToggleWorkspaceFullscreen,
+    onOfficeSave,
+    onOfficeSync,
   }) {
     onRemoteArtifactFrameChange?.(file?.artifact_frame_binding || null);
     React.useEffect(() => {
@@ -183,6 +185,8 @@ vi.mock('../widgets/chat-message', async (importOriginal) => {
       <aside
         className="mock-file-preview"
         data-url={file?.url || ''}
+        data-annotation-source={JSON.stringify(file?.annotation_source || null)}
+        data-office-unsynced={String(Boolean(file?.office_version_unsynced))}
         data-pending-url={pendingRemoteArtifactFile?.url || ''}
         data-background-class={backgroundRef?.current?.className || ''}
       >
@@ -225,6 +229,24 @@ vi.mock('../widgets/chat-message', async (importOriginal) => {
           </button>
         )}
         <button type="button" className="mock-close-preview" onClick={onClose}>close</button>
+        {onOfficeSave && (
+          <button type="button" className="mock-office-save"
+            onClick={() => onOfficeSave({
+              bytes: new Uint8Array([1, 2, 3]), fileName: file?.name || 'presentation.pptx',
+              slideCount: 1, changes: [{ op: 'text' }],
+            })}>
+            save office draft
+          </button>
+        )}
+        {onOfficeSync && (
+          <button type="button" className="mock-office-sync"
+            onClick={() => onOfficeSync({
+              latestVersion: file?.office_latest, fileName: file?.name,
+              slideCount: 1, changes: [{ op: 'text' }],
+            })}>
+            sync office draft
+          </button>
+        )}
       </aside>
     );
   },
@@ -299,6 +321,8 @@ vi.mock('../api', () => ({
     getArtifactTask: vi.fn(),
     failArtifactTask: vi.fn(),
     sendMessage: vi.fn(),
+    upsertFileVersionBinding: vi.fn(),
+    getFileVersionBinding: vi.fn(),
     sendArtifactAnnotations: vi.fn(),
     revokeArtifactOpenBinding: vi.fn(async () => ({})),
     uploadFile: vi.fn(),
@@ -939,6 +963,8 @@ describe('MessagesView composer draft isolation', () => {
     api.getArtifactTask.mockResolvedValue({});
     api.failArtifactTask.mockResolvedValue({ ok: true });
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
+    api.upsertFileVersionBinding.mockResolvedValue(null);
+    api.getFileVersionBinding.mockResolvedValue(null);
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudWorkers.mockResolvedValue({ workers: [] });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
@@ -5252,6 +5278,102 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(workspace.style.getPropertyValue('--v3-file-preview-width')).toBe('760px');
     expect(localStorage.getItem('cc_file_preview_width_v1')).toBe('760');
+  });
+
+  it('quiet-saves Office edits without a message, then explicitly syncs exactly the latest file', async () => {
+    const source = {
+      topic_id: 'p2p_1_2', source_message_id: 30, source_attachment_index: 0,
+      source_file_key: 'source.pptx',
+    };
+    const latest = {
+      file_key: 'latest.pptx', url: '/uploads/files/latest.pptx', name: 'deck.pptx', size: 64,
+      mime_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    };
+    api.getMessages.mockResolvedValueOnce({ messages: [{
+      id: 30, from_uid: 2, content: '[文件] deck.pptx',
+      content_blocks: [{ type: 'file', payload: {
+        name: 'deck.pptx', url: '/uploads/files/source.pptx', file_key: 'source.pptx', size: 32,
+        mime_type: latest.mime_type,
+        annotation_source: { topic_id: 'p2p_1_2', message_id: 30, attachment_index: 0, file_key: 'source.pptx' },
+      } }],
+      created_at: '2026-06-12T00:00:00Z',
+    }] });
+    api.uploadFile.mockResolvedValueOnce(latest);
+    api.upsertFileVersionBinding.mockResolvedValueOnce({ id: 9, ...latest });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-open-preview'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(api.getFileVersionBinding).toHaveBeenCalledWith(source));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-office-save'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(api.upsertFileVersionBinding).toHaveBeenCalledTimes(1));
+    expect(api.uploadFile).toHaveBeenCalledWith(expect.any(File), 'file');
+    expect(api.upsertFileVersionBinding).toHaveBeenCalledWith({
+      topic_id: 'p2p_1_2', source_message_id: 30, source_attachment_index: 0,
+      source_file_key: 'source.pptx', latest_file_key: 'latest.pptx',
+      latest_url: '/uploads/files/latest.pptx', latest_name: 'deck.pptx',
+      latest_size: 64, latest_mime_type: latest.mime_type,
+    });
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(container.querySelector('.mock-file-preview').getAttribute('data-url')).toBe(latest.url);
+    expect(container.querySelector('.mock-file-preview').getAttribute('data-office-unsynced')).toBe('true');
+
+    api.sendMessage.mockResolvedValueOnce({
+      id: 501, topic_id: 'p2p_1_2', from_uid: 1, content: 'synced', msg_type: 'text',
+      content_blocks: [], created_at: '2026-06-12T00:01:00Z',
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-office-sync'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+    const [, synced] = api.sendMessage.mock.calls[0];
+    expect(synced.type).toBe('text');
+    expect(synced.content_blocks).toHaveLength(2);
+    expect(synced.content_blocks[1]).toMatchObject({ type: 'file', payload: latest });
+    expect(container.querySelector('.mock-file-preview').getAttribute('data-office-unsynced')).toBe('false');
+    expect(JSON.parse(container.querySelector('.mock-file-preview').getAttribute('data-annotation-source'))).toEqual({
+      topic_id: 'p2p_1_2', message_id: 501, attachment_index: 0,
+    });
+  });
+
+  it('quiet-saves an attachment without a source locally and never fabricates a binding', async () => {
+    const latest = {
+      file_key: 'latest.docx', url: '/uploads/files/latest.docx', name: 'handout.docx', size: 40,
+      mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+    api.getMessages.mockResolvedValueOnce({ messages: [{
+      id: 31, from_uid: 2, content: '[文件] handout.docx',
+      content_blocks: [{ type: 'file', payload: {
+        name: 'handout.docx', url: '/uploads/files/handout.docx', file_key: 'handout.docx', size: 20,
+        mime_type: latest.mime_type,
+      } }],
+      created_at: '2026-06-12T00:00:00Z',
+    }] });
+    api.uploadFile.mockResolvedValueOnce(latest);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-open-preview'));
+      await flushPromises();
+    });
+    expect(api.getFileVersionBinding).not.toHaveBeenCalled();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-office-save'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(api.uploadFile).toHaveBeenCalledTimes(1));
+    expect(api.upsertFileVersionBinding).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(container.querySelector('.mock-file-preview').getAttribute('data-url')).toBe(latest.url);
+    expect(container.querySelector('.mock-file-preview').getAttribute('data-office-unsynced')).toBe('false');
   });
 
   it('opens cloud artifact management in the preview area and previews a selected artifact there', async () => {

@@ -19,8 +19,12 @@ import { useConversationFork } from '../utils/use-conversation-fork';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
 import PwaDownloadLink from '../widgets/pwa-download-link';
 import {
-  buildOfficeUpdateMessage, countChangedOps, officeBytesToFile, OFFICE_SAVE_NOTICE,
+  OFFICE_SAVE_NOTICE,
 } from '../office/save.js';
+import {
+  performExplicitOfficeSync, performQuietOfficeSave, resolveLatestOfficeVersion,
+  OFFICE_SYNC_NOTICE,
+} from '../office/version-binding.js';
 import ImageViewport from '../widgets/image-viewport';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
@@ -871,6 +875,7 @@ export default function MessagesView({
   const [commandActiveIndex, setCommandActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const previewResolveTokenRef = useRef(0);
   const [previewExpanded, setPreviewExpanded] = useState(false);
   const [previewContextOpen, setPreviewContextOpen] = useState(false);
   const [previewComposerMinimized, setPreviewComposerMinimized] = useState(false);
@@ -1590,7 +1595,7 @@ export default function MessagesView({
     artifactPreviewCoordinatorRef.current?.claimSidebar();
   }, [cancelArtifactViewerHandoff]);
 
-  const setPreviewFileWithFocus = useCallback((file) => {
+  const applyPreviewFileWithFocus = useCallback((file) => {
     if (artifactRefFromPreviewFile(file, Number(file?.artifact_agent_uid || 0))) {
       claimArtifactSidebarControl();
     }
@@ -1605,6 +1610,11 @@ export default function MessagesView({
     activeArtifactFrameRef.current = null;
     setPreviewFile(file);
   }, [claimArtifactSidebarControl, invalidateArtifactSnapshot]);
+
+  const setPreviewFileWithFocus = useCallback((file) => {
+    previewResolveTokenRef.current += 1;
+    applyPreviewFileWithFocus(file);
+  }, [applyPreviewFileWithFocus]);
 
   const handleRemoteArtifactFrameChange = useCallback((binding) => {
     const activeBinding = artifactBindingMatchesFocus(
@@ -2542,14 +2552,9 @@ export default function MessagesView({
   }, []);
 
   /**
-   * Persist an edited Office document as a new attachment message.
-   *
-   * Attachments are immutable on the server: saving uploads again and appends a message that
-   * points at the new file. That is what makes the previous version still reachable, and it
-   * is why this never tries to rewrite the message the file came from.
-   *
-   * After the message lands, the preview is retargeted at the new attachment so the user sees
-   * the version they just saved rather than the stale one they opened.
+   * Persist an Office edit quietly: upload, then store a durable source→latest pointer. No
+   * message is appended, so search, 小八's context and the conversation stay unchanged until
+   * the user explicitly asks to sync.
    */
   const handleOfficeSave = useCallback(async (saved) => {
     if (!saved?.bytes) return null;
@@ -2559,42 +2564,71 @@ export default function MessagesView({
     try {
       const originalName = saved.fileName || previewFile?.name || 'presentation.pptx';
       const family = /\.docx$/i.test(originalName) ? 'docx' : 'pptx';
-      const file = officeBytesToFile(saved.bytes, originalName, family);
-      const uploaded = await api.uploadFile(file, 'file');
-      const message = buildOfficeUpdateMessage({
-        uploaded,
-        originalName,
+      const result = await performQuietOfficeSave({
+        file: previewFile,
+        bytes: saved.bytes,
+        fileName: originalName,
         family,
-        slideCount: saved.slideCount,
-        changedParts: countChangedOps(saved.changes),
+        topicId: topic,
+        uploadFile: api.uploadFile,
+        upsertBinding: api.upsertFileVersionBinding,
       });
 
-      const result = await api.sendMessage(topic, {
-        type: 'text',
-        content: message.content,
-        content_blocks: message.content_blocks,
-      });
+      const nextFile = {
+        ...(previewFile || {}),
+        ...(result.nextFile || {}),
+        annotation_source: undefined,
+        office_version_unsynced: Boolean(result.source),
+      };
+      setPreviewFileWithFocus(nextFile);
+      feedback.notify({ tone: 'success', message: result.notice || OFFICE_SAVE_NOTICE });
+      window.dispatchEvent(new Event('cc:data-changed'));
+      return {
+        ...result.latest,
+        localOnly: result.localOnly,
+        notice: result.notice || OFFICE_SAVE_NOTICE,
+      };
+    } catch {
+      // A falsy result keeps drafts and pending bytes retryable.
+      return null;
+    }
+  }, [feedback, previewFile, setPreviewFileWithFocus]);
 
-      if (result && historyMessageID(result)) {
-        const { visibleMessages } = normalizeHistoryMessages([{
-          ...result,
-          created_at: result.created_at || new Date().toISOString(),
-        }]);
-        if (visibleMessages.length) {
-          const cacheKey = historyCacheKey(user.uid, topic);
-          const cached = historyCacheRef.current.get(cacheKey);
-          if (cached) {
-            cacheHistoryPage(historyCacheRef.current, cacheKey, {
-              ...cached, messages: mergeMessages(cached.messages, visibleMessages),
-            });
-          }
-          if (activeTopicRef.current === topic) {
-            setMessages(current => mergeMessages(current, visibleMessages));
-          }
+  const handleOfficeSync = useCallback(async (request = {}) => {
+    const topic = String(activeTopicRef.current || '');
+    const latestVersion = request.latestVersion || previewFile?.office_latest;
+    if (!topic || !latestVersion) return null;
+    const originalName = request.fileName || previewFile?.name || latestVersion.name || 'presentation.pptx';
+    const family = /\.docx$/i.test(originalName) || /\.docx$/i.test(latestVersion.name || '')
+      ? 'docx' : 'pptx';
+    try {
+      const { message, result } = await performExplicitOfficeSync({
+        file: previewFile,
+        latestVersion,
+        family,
+        topicId: topic,
+        sendMessage: api.sendMessage,
+        slideCount: request.slideCount,
+        changes: request.changes || [],
+      });
+      const messageID = historyMessageID(result);
+      if (!messageID) return null;
+      const { visibleMessages } = normalizeHistoryMessages([{
+        ...result,
+        created_at: result.created_at || new Date().toISOString(),
+      }]);
+      if (visibleMessages.length) {
+        const cacheKey = historyCacheKey(user.uid, topic);
+        const cached = historyCacheRef.current.get(cacheKey);
+        if (cached) {
+          cacheHistoryPage(historyCacheRef.current, cacheKey, {
+            ...cached, messages: mergeMessages(cached.messages, visibleMessages),
+          });
+        }
+        if (activeTopicRef.current === topic) {
+          setMessages(current => mergeMessages(current, visibleMessages));
         }
       }
-
-      // Retarget the open preview so the panel shows the saved bytes, not the old attachment.
       setPreviewFileWithFocus({
         ...(previewFile || {}),
         name: message.payload.name,
@@ -2602,16 +2636,15 @@ export default function MessagesView({
         file_key: message.payload.file_key,
         size: message.payload.size,
         mime_type: message.payload.mime_type,
-        annotation_source: undefined,
+        annotation_source: { topic_id: topic, message_id: messageID, attachment_index: 0 },
+        office_latest: undefined,
+        office_version_source: undefined,
+        office_version_unsynced: false,
       });
-
-      feedback.notify({ tone: 'success', message: OFFICE_SAVE_NOTICE });
+      feedback.notify({ tone: 'success', message: OFFICE_SYNC_NOTICE });
       window.dispatchEvent(new Event('cc:data-changed'));
-      return { ...message.payload, messageId: historyMessageID(result) };
+      return { ...message.payload, messageId: messageID };
     } catch {
-      // The previews interpret a falsy result as "local bytes exist, publishing failed".
-      // Returning null keeps pending bytes retryable and produces the specified notice instead
-      // of reporting a generic write failure after the local file was already built.
       return null;
     }
   }, [feedback, previewFile, setPreviewFileWithFocus, user.uid]);
@@ -2634,15 +2667,22 @@ export default function MessagesView({
     window.dispatchEvent(new Event('cc:data-changed'));
   }, [feedback, user.uid]);
 
-  const openFilePreview = useCallback((file) => {
+  const openFilePreview = useCallback(async (file) => {
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
     setCloudArtifactsReturnOpen(false);
     setPendingArtifactRefresh(null);
-    setPreviewFileWithFocus(file);
-  }, [setPreviewFileWithFocus]);
+    const token = previewResolveTokenRef.current + 1;
+    previewResolveTokenRef.current = token;
+    applyPreviewFileWithFocus(file);
+    if (!file) return;
+    const resolved = await resolveLatestOfficeVersion(file, api.getFileVersionBinding);
+    if (previewResolveTokenRef.current !== token) return;
+    applyPreviewFileWithFocus(resolved);
+  }, [applyPreviewFileWithFocus]);
 
   const closeSidePanel = useCallback(() => {
+    previewResolveTokenRef.current += 1;
     pendingGatewayAnnotationStartRef.current = null;
     cancelArtifactViewerHandoff();
     setPendingArtifactRefresh(null);
@@ -8058,6 +8098,7 @@ export default function MessagesView({
               annotationApi={api}
               onFileAnnotationSent={handleFileAnnotationSent}
               onOfficeSave={handleOfficeSave}
+              onOfficeSync={handleOfficeSync}
             />
           </div>
         )}

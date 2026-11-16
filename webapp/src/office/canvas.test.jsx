@@ -14,8 +14,8 @@ import SlideCanvas from './pptx/render.jsx';
 import DocxCanvas from './docx/render.jsx';
 import ElementList from './ui/ElementList.jsx';
 import EditableCanvas from './ui/EditableCanvas.jsx';
-import { applyDraftToSlide } from './ui/draft-render.js';
-import { applyWordDraft } from './ui/word-draft-render.js';
+import { applyDraftToSlide, officeDraftKey } from './ui/draft-render.js';
+import { applyWordDraft, wordCellDraftKey } from './ui/word-draft-render.js';
 import { parsePptx } from './pptx/parse.js';
 import { parseDocx } from './docx/parse.js';
 import { scanXml } from './ooxml/xml.js';
@@ -70,11 +70,17 @@ describe('pptx canvas', () => {
     const body = slide.shapes[1];
     const originalText = body.textBody.paragraphs[0].text;
     const draft = {
-      paragraphs: [{ ...body.textBody.paragraphs[0], text: 'Draft text' }],
-      styles: { 0: { bold: true, size: 23, color: '#123456', align: 'ctr' } },
+      texts: {
+        [officeDraftKey(0, body.elId)]: [{ ...body.textBody.paragraphs[0], text: 'Draft text' }],
+      },
+      styles: {
+        [officeDraftKey(0, body.elId)]: {
+          0: { bold: true, size: 23, color: '#123456', align: 'ctr' },
+        },
+      },
     };
 
-    const rendered = applyDraftToSlide(slide, body.elId, draft);
+    const rendered = applyDraftToSlide(slide, 0, draft);
     const renderedBody = rendered.shapes[1];
     const paragraph = renderedBody.textBody.paragraphs[0];
     expect(paragraph).toMatchObject({ text: 'Draft text', align: 'ctr' });
@@ -82,6 +88,51 @@ describe('pptx canvas', () => {
       text: 'Draft text', bold: true, size: 23, color: '#123456',
     });
     expect(slide.shapes[1].textBody.paragraphs[0].text).toBe(originalText);
+  });
+
+  it('keeps drafts isolated by element and applies every pending element in one render', async () => {
+    const model = await parsePptx(await buildPptx());
+    const slide = model.slides[0];
+    const [title, body] = slide.shapes;
+    const draft = {
+      texts: {
+        [officeDraftKey(0, title.elId)]: [{ ...title.textBody.paragraphs[0], text: 'TITLE-DRAFT' }],
+        [officeDraftKey(0, body.elId)]: [{ ...body.textBody.paragraphs[0], text: 'BODY-DRAFT' }],
+      },
+      styles: {
+        [officeDraftKey(0, title.elId)]: { 0: { bold: false, color: '#112233' } },
+        [officeDraftKey(0, body.elId)]: { 0: { bold: true, color: '#445566' } },
+      },
+    };
+
+    const rendered = applyDraftToSlide(slide, 0, draft);
+    expect(rendered.shapes[0].textBody.paragraphs[0].text).toBe('TITLE-DRAFT');
+    expect(rendered.shapes[1].textBody.paragraphs[0].text).toBe('BODY-DRAFT');
+    expect(rendered.shapes[0].textBody.paragraphs[0].runs[0]).toMatchObject({ bold: false, color: '#112233' });
+    expect(rendered.shapes[1].textBody.paragraphs[0].runs[0]).toMatchObject({ bold: true, color: '#445566' });
+    expect(slide.shapes[0].textBody.paragraphs[0].text).toBe(title.textBody.paragraphs[0].text);
+    expect(slide.shapes[1].textBody.paragraphs[0].text).toBe(body.textBody.paragraphs[0].text);
+  });
+
+  it('keeps drafts on their own page when the user moves between slides', async () => {
+    const model = await parsePptx(await buildPptx({
+      slides: [titleSlideXml({ title: 'First' }), titleSlideXml({ title: 'Second' })],
+    }));
+    const first = model.slides[0].shapes[0];
+    const second = model.slides[1].shapes[0];
+    const draft = {
+      texts: {
+        [officeDraftKey(0, first.elId)]: [{ ...first.textBody.paragraphs[0], text: 'PAGE-ONE' }],
+        [officeDraftKey(1, second.elId)]: [{ ...second.textBody.paragraphs[0], text: 'PAGE-TWO' }],
+      },
+    };
+
+    const pageOne = applyDraftToSlide(model.slides[0], 0, draft);
+    const pageTwo = applyDraftToSlide(model.slides[1], 1, draft);
+    expect(pageOne.shapes[0].textBody.paragraphs[0].text).toBe('PAGE-ONE');
+    expect(pageTwo.shapes[0].textBody.paragraphs[0].text).toBe('PAGE-TWO');
+    expect(pageOne.shapes[0].textBody.paragraphs[0].text).not.toBe('PAGE-TWO');
+    expect(model.slides[0].shapes[0].textBody.paragraphs[0].text).toBe('First');
   });
 
   it('renders one node per shape and tags each with its element id', async () => {
@@ -263,10 +314,10 @@ describe('docx canvas', () => {
     const model = await parseDocx(await buildSampleDocx());
     const block = model.blocks[1];
     const originalText = block.text;
-    const rendered = applyWordDraft(model, block.id, {
-      text: 'Draft paragraph',
-      style: { bold: true, size: 23, color: '#123456', underline: true },
-      props: { align: 'center', indLeftCm: 1.5, indFirstCm: 0.5 },
+    const rendered = applyWordDraft(model, {
+      texts: { [block.id]: 'Draft paragraph' },
+      styles: { [block.id]: { bold: true, size: 23, color: '#123456', underline: true } },
+      props: { [block.id]: { align: 'center', indLeftCm: 1.5, indFirstCm: 0.5 } },
     });
     const paragraph = rendered.blocks[1];
 
@@ -292,13 +343,52 @@ describe('docx canvas', () => {
     const table = model.blocks.find(block => block.kind === 'table');
     const cell = table.cells[0];
     const sibling = table.cells[1];
-    const rendered = applyWordDraft(model, table.id, {
-      cell: { row: cell.row, col: cell.col, text: 'CELL-DRAFT' },
+    const rendered = applyWordDraft(model, {
+      cells: { [wordCellDraftKey(table.id, cell.row, cell.col)]: 'CELL-DRAFT' },
     });
     const changed = rendered.blocks.find(block => block.id === table.id);
 
     expect(changed.cells[0].text).toBe('CELL-DRAFT');
     expect(changed.cells[1].text).toBe(sibling.text);
     expect(table.cells[0].text).not.toBe('CELL-DRAFT');
+  });
+
+  it('applies every Word text/style/props/cell draft without touching the source model', async () => {
+    const model = await parseDocx(await buildSampleDocx());
+    const first = model.blocks[1];
+    const second = model.blocks[2];
+    const table = model.blocks.find(block => block.kind === 'table');
+    const firstCell = table.cells[0];
+    const secondCell = table.cells[1];
+    const rendered = applyWordDraft(model, {
+      texts: {
+        [first.id]: 'FIRST-DRAFT',
+        [second.id]: 'SECOND-DRAFT',
+      },
+      styles: {
+        [first.id]: { bold: true, color: '#654321' },
+        [second.id]: { italic: true, size: 19 },
+      },
+      props: {
+        [second.id]: { align: 'right', indFirstCm: 0.75 },
+      },
+      cells: {
+        [wordCellDraftKey(table.id, firstCell.row, firstCell.col)]: 'CELL-ONE',
+        [wordCellDraftKey(table.id, secondCell.row, secondCell.col)]: 'CELL-TWO',
+      },
+    });
+    const renderedFirst = rendered.blocks.find(block => block.id === first.id);
+    const renderedSecond = rendered.blocks.find(block => block.id === second.id);
+    const renderedTable = rendered.blocks.find(block => block.id === table.id);
+
+    expect(renderedFirst.text).toBe('FIRST-DRAFT');
+    expect(renderedSecond).toMatchObject({ text: 'SECOND-DRAFT', align: 'right', indFirstTwips: 425 });
+    expect(renderedFirst.runs[0]).toMatchObject({ bold: true, color: '#654321' });
+    expect(renderedSecond.runs[0]).toMatchObject({ italic: true, size: 19 });
+    expect(renderedTable.cells[0].text).toBe('CELL-ONE');
+    expect(renderedTable.cells[1].text).toBe('CELL-TWO');
+    expect(model.blocks[1].text).toBe(first.text);
+    expect(model.blocks[2].text).toBe(second.text);
+    expect(model.blocks.find(block => block.id === table.id).cells[0].text).toBe(firstCell.text);
   });
 });

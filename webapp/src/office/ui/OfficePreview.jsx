@@ -26,8 +26,12 @@ import PropertyPanel from './PropertyPanel.jsx';
 import EditableCanvas from './EditableCanvas.jsx';
 import InsertMenu from './InsertMenu.jsx';
 import InheritedConfirm from './InheritedConfirm.jsx';
-import { applyDraftToSlide } from './draft-render.js';
+import { applyDraftToSlide, officeDraftKey, parseOfficeDraftKey } from './draft-render.js';
 import { OFFICE_SAVE_NOTICE } from '../save.js';
+import { OFFICE_SYNC_NOTICE } from '../version-binding.js';
+import {
+  officePanelWidthFromPointer, readOfficePanelWidth, saveOfficePanelWidth,
+} from './office-panel-width.js';
 import {
   canRedo, canUndo, createHistory, pushHistory, redoHistory, resetHistory, undoHistory,
 } from './history.js';
@@ -38,7 +42,7 @@ import '../../styles/office-preview.css';
 // a side panel on a low-end laptop.
 export const OFFICE_PREVIEW_MAX_BYTES = 60 * 1024 * 1024;
 
-const EMPTY_DRAFT = { paragraphs: null, styles: null, boxes: null, zorder: null };
+const EMPTY_DRAFT = { texts: {}, styles: {}, boxes: {}, zorders: {} };
 
 // Default geometry for a newly inserted element, in EMU. One inch grid keeps the shapes at
 // a sensible size on any slide format without measuring first.
@@ -82,9 +86,10 @@ function absoluteShapeBox(slide, shape) {
 
 function draftIsEmpty(draft) {
   if (!draft) return true;
-  return !draft.paragraphs && !draft.styles
-    && (!draft.boxes || Object.keys(draft.boxes).length === 0)
-    && !draft.zorder;
+  return Object.keys(draft.texts || {}).length === 0
+    && Object.keys(draft.styles || {}).length === 0
+    && Object.keys(draft.boxes || {}).length === 0
+    && Object.keys(draft.zorders || {}).length === 0;
 }
 
 async function resolveMediaUrls(model) {
@@ -132,7 +137,9 @@ function cascadeBox(model, count) {
   };
 }
 
-export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
+export default function OfficePreview({
+  file, url, family = 'pptx', onSave, onSync, latestVersion,
+}) {
   const [status, setStatus] = useState('loading');
   const [model, setModel] = useState(null);
   const [error, setError] = useState('');
@@ -143,6 +150,8 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
   const [imageUrls, setImageUrls] = useState({});
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(() => readOfficePanelWidth());
   const [pendingInherited, setPendingInherited] = useState(null);
   const [insertCount, setInsertCount] = useState(0);
   // Bytes that exist locally but have not been published to the conversation yet. Kept in a
@@ -171,6 +180,28 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
     historyRef.current = createHistory(EMPTY_DRAFT);
     bumpHistory();
   }, [bumpHistory]);
+
+  useEffect(() => {
+    setEditing(false);
+  }, [url]);
+
+  const startPanelResize = useCallback((event) => {
+    if (typeof window === 'undefined' || window.innerWidth < 900) return;
+    const startX = event.clientX;
+    const startWidth = panelWidth;
+    const move = (moveEvent) => {
+      setPanelWidth(officePanelWidthFromPointer(startWidth, startX, moveEvent.clientX));
+    };
+    const finish = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      setPanelWidth((value) => saveOfficePanelWidth(value));
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+  }, [panelWidth]);
 
   /** Swap in a freshly parsed model and refresh media URLs. Old blob URLs are revoked. */
   const adoptModel = useCallback(async (nextModel) => {
@@ -273,17 +304,16 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
     [model, slideIndex, selectedId],
   );
   const renderedSlide = useMemo(
-    () => applyDraftToSlide(slide, selectedId, draft),
-    [draft, selectedId, slide],
+    () => applyDraftToSlide(slide, slideIndex, draft),
+    [draft, slide, slideIndex],
   );
 
-  // A draft is keyed by element. Carrying it across a page or selection change would write
-  // one shape's text onto another, so both transitions clear it.
+  // Changing pages only changes what is selected. Drafts remain keyed to their own page and
+  // element and are rendered again when the user returns.
   useEffect(() => {
     setSelectedId(null);
     setPickedIds([]);
-    resetDraft();
-  }, [slideIndex, resetDraft]);
+  }, [slideIndex]);
 
   /* ---------- selection ---------- */
 
@@ -313,16 +343,25 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
   /* ---------- draft edits ---------- */
 
   const handleTextChange = useCallback((next) => {
-    commitDraft(current => ({ ...current, paragraphs: next.paragraphs }));
-  }, [commitDraft]);
+    if (!selectedShape) return;
+    const key = officeDraftKey(slideIndex, selectedShape.elId);
+    commitDraft(current => ({
+      ...current,
+      texts: { ...(current.texts || {}), [key]: next.paragraphs },
+    }));
+  }, [commitDraft, selectedShape, slideIndex]);
 
   const handleStyleChange = useCallback((index, patch) => {
+    if (!selectedShape) return;
+    const key = officeDraftKey(slideIndex, selectedShape.elId);
     commitDraft((current) => {
       const styles = { ...(current.styles || {}) };
-      styles[index] = { ...(styles[index] || {}), ...patch };
+      const elementStyles = { ...(styles[key] || {}) };
+      elementStyles[index] = { ...(elementStyles[index] || {}), ...patch };
+      styles[key] = elementStyles;
       return { ...current, styles };
     });
-  }, [commitDraft]);
+  }, [commitDraft, selectedShape, slideIndex]);
 
   // A drag emits dozens of boxes; only the released position is a history entry.
   const handleGestureStart = useCallback(() => {
@@ -332,22 +371,24 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
   }, []);
 
   const handleBoxPreview = useCallback((elId, box) => {
+    const key = officeDraftKey(slideIndex, elId);
     historyRef.current = resetHistory(historyRef.current, {
       ...historyRef.current.present,
-      boxes: { ...(historyRef.current.present.boxes || {}), [elId]: box },
+      boxes: { ...(historyRef.current.present.boxes || {}), [key]: box },
     });
     bumpHistory();
-  }, [bumpHistory]);
+  }, [bumpHistory, slideIndex]);
 
   const handleBoxCommit = useCallback((elId, box) => {
+    const key = officeDraftKey(slideIndex, elId);
     const base = gestureBaseRef.current || historyRef.current;
     gestureBaseRef.current = null;
     historyRef.current = pushHistory(base, {
       ...base.present,
-      boxes: { ...(base.present.boxes || {}), [elId]: box },
+      boxes: { ...(base.present.boxes || {}), [key]: box },
     });
     bumpHistory();
-  }, [bumpHistory]);
+  }, [bumpHistory, slideIndex]);
 
   const handleBoxField = useCallback((box) => {
     if (!selectedShape || !model) return;
@@ -369,7 +410,7 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
 
   const handleAlignToSlide = useCallback((edge) => {
     if (!selectedShape || !model) return;
-    const box = draft.boxes?.[selectedShape.elId]
+    const box = draft.boxes?.[officeDraftKey(slideIndex, selectedShape.elId)]
       || absoluteShapeBox(model.slides[slideIndex], selectedShape);
     const { cx: slideCx, cy: slideCy } = model.slideSize;
     const next = { ...box };
@@ -392,15 +433,19 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
 
   const handleAlign = useCallback((edge) => {
     if (!selectedShape) return;
-    const box = draft.boxes?.[selectedShape.elId] || selectedShape.box;
+    const box = draft.boxes?.[officeDraftKey(slideIndex, selectedShape.elId)] || selectedShape.box;
     const [aligned] = alignBoxes([{ ...box, elId: selectedShape.elId }], edge);
     handleBoxCommit(selectedShape.elId, aligned);
-  }, [draft.boxes, handleBoxCommit, selectedShape]);
+  }, [draft.boxes, handleBoxCommit, selectedShape, slideIndex]);
 
   const handleZOrder = useCallback((direction) => {
     if (!selectedShape) return;
-    commitDraft(current => ({ ...current, zorder: { elId: selectedShape.elId, direction } }));
-  }, [commitDraft, selectedShape]);
+    const key = officeDraftKey(slideIndex, selectedShape.elId);
+    commitDraft(current => ({
+      ...current,
+      zorders: { ...(current.zorders || {}), [key]: direction },
+    }));
+  }, [commitDraft, selectedShape, slideIndex]);
 
   const handleUndo = useCallback(() => {
     historyRef.current = undoHistory(historyRef.current);
@@ -413,6 +458,44 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
   }, [bumpHistory]);
 
   /* ---------- immediate writes ---------- */
+
+  const buildDraftOps = useCallback((sourceModel, currentDraft) => {
+    const ops = [];
+    for (const [key, paragraphs] of Object.entries(currentDraft?.texts || {})) {
+      const target = parseOfficeDraftKey(key);
+      if (!target || !slideShape(sourceModel, target.slideIndex, target.elId)) continue;
+      ops.push({ op: 'text', slideIndex: target.slideIndex, elId: target.elId,
+        payload: { paragraphs } });
+    }
+    for (const [key, styles] of Object.entries(currentDraft?.styles || {})) {
+      const target = parseOfficeDraftKey(key);
+      if (!target || !slideShape(sourceModel, target.slideIndex, target.elId)) continue;
+      const paragraphs = Object.entries(styles).map(([index, style]) => ({
+        index: Number(index), ...style,
+      }));
+      if (paragraphs.length > 0) {
+        ops.push({ op: 'style', slideIndex: target.slideIndex, elId: target.elId,
+          payload: { paragraphs } });
+      }
+    }
+    for (const [key, box] of Object.entries(currentDraft?.boxes || {})) {
+      const target = parseOfficeDraftKey(key);
+      const shape = target && slideShape(sourceModel, target.slideIndex, target.elId);
+      // Inherited geometry never reaches here: the field handler routes it through the
+      // confirmation dialog instead of putting it in the draft.
+      if (!shape || shape.inherited) continue;
+      ops.push({ op: 'geometry', slideIndex: target.slideIndex, elId: target.elId,
+        payload: box });
+    }
+    for (const [key, direction] of Object.entries(currentDraft?.zorders || {})) {
+      const target = parseOfficeDraftKey(key);
+      const shape = target && slideShape(sourceModel, target.slideIndex, target.elId);
+      if (!shape || shape.inherited) continue;
+      ops.push({ op: 'zorder', slideIndex: target.slideIndex, elId: target.elId,
+        payload: { direction } });
+    }
+    return ops;
+  }, []);
 
   /**
    * Write operations that change the package structure, then re-parse.
@@ -431,31 +514,48 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
     setSaving(true);
     setNotice('');
     try {
-      const result = await applyOps(model, ops);
-      if (!result.changed) {
+      let workingModel = model;
+      let bytes = null;
+      const draftOps = buildDraftOps(model, draft);
+      if (draftOps.length > 0) {
+        const flushed = await applyOps(model, draftOps);
+        if (flushed.changed) {
+          workingModel = await parsePptx(flushed.bytes);
+          await adoptModel(workingModel);
+          resetDraft();
+          bytes = flushed.bytes;
+          pendingBytesRef.current = bytes;
+          setHasPending(true);
+        }
+      }
+
+      const result = await applyOps(workingModel, ops);
+      if (result.changed) {
+        const reparsed = await parsePptx(result.bytes);
+        await adoptModel(reparsed);
+        resetDraft();
+        bytes = result.bytes;
+        pendingBytesRef.current = bytes;
+        setHasPending(true);
+      } else if (!bytes) {
         setNotice('没有产生改动');
         return null;
       }
-      const reparsed = await parsePptx(result.bytes);
-      await adoptModel(reparsed);
-      resetDraft();
-      pendingBytesRef.current = result.bytes;
-      setHasPending(true);
 
       if (publish) {
-        const published = await publishBytes(result.bytes, ops);
+        const published = await publishBytes(bytes, [...draftOps, ...ops]);
         if (published) pendingBytesRef.current = null;
         setHasPending(Boolean(pendingBytesRef.current));
       }
       if (successNote) setNotice(successNote);
-      return result.bytes;
+      return bytes;
     } catch (err) {
       setNotice(`操作失败：${err.message}`);
       return null;
     } finally {
       setSaving(false);
     }
-  }, [adoptModel, model, publishBytes, resetDraft, saving]);
+  }, [adoptModel, buildDraftOps, draft, model, publishBytes, resetDraft, saving]);
 
   /* ---------- insert ---------- */
 
@@ -565,97 +665,73 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
     setSlideIndex(to);
   }, [runImmediate, slideCount, slideIndex]);
 
-  /* ---------- save to conversation ---------- */
+  /* ---------- quiet save and explicit sync ---------- */
 
-  /**
-   * The one button that publishes.
-   *
-   * Two things can be outstanding: draft edits that were never applied to the bytes, and
-   * structural bytes that were applied locally but never sent. Both are handled here so the
-   * user gets one message describing the whole edit rather than one per action.
-   */
+  /** Save every draft on every page, then publish only through the quiet save path. */
   const handleSaveDraft = useCallback(async () => {
     if (!model || saving) return;
-    if (draftIsEmpty(draft) && !pendingBytesRef.current) {
+    const draftOps = buildDraftOps(model, draft);
+    if (draftOps.length === 0 && !pendingBytesRef.current) {
       setNotice('没有可写入的改动');
       return;
     }
-
-    const ops = [];
-    const boxes = draft.boxes || {};
-
-    if (draft.paragraphs && selectedShape) {
-      ops.push({ op: 'text', slideIndex, elId: selectedShape.elId,
-        payload: { paragraphs: draft.paragraphs } });
-    }
-    if (draft.styles && selectedShape) {
-      const paragraphs = Object.entries(draft.styles).map(([index, style]) => ({
-        index: Number(index), ...style,
-      }));
-      ops.push({ op: 'style', slideIndex, elId: selectedShape.elId, payload: { paragraphs } });
-    }
-    for (const [elId, box] of Object.entries(boxes)) {
-      const shape = slideShape(model, slideIndex, elId);
-      // Inherited geometry never reaches here: the field handler routes it through the
-      // confirmation dialog instead of putting it in the draft.
-      if (!shape || shape.inherited) continue;
-      ops.push({ op: 'geometry', slideIndex, elId, payload: box });
-    }
-    if (draft.zorder) {
-      ops.push({ op: 'zorder', slideIndex, elId: draft.zorder.elId,
-        payload: { direction: draft.zorder.direction } });
-    }
-
-    // Draft edits are applied here rather than in runImmediate so the publish step sees the
-    // final bytes in one pass. Applying them separately would publish an intermediate file.
-    if (ops.length > 0) {
-      setSaving(true);
-      setNotice('');
-      try {
-        const result = await applyOps(model, ops);
-        if (!result.changed) {
-          setNotice('没有可写入的改动');
-          return;
-        }
-        const reparsed = await parsePptx(result.bytes);
-        await adoptModel(reparsed);
-        resetDraft();
-        pendingBytesRef.current = result.bytes;
-        setHasPending(true);
-        const published = await publishBytes(result.bytes, ops);
-        if (published) {
-          pendingBytesRef.current = null;
-          setHasPending(false);
-          setNotice(OFFICE_SAVE_NOTICE);
-        } else {
-          setNotice('已写入本地，但没能存进会话，请重试保存');
-        }
-      } catch (err) {
-        setNotice(`写入失败：${err.message}`);
-      } finally {
-        setSaving(false);
-      }
-      return;
-    }
-
-    // Only structural bytes are outstanding: publish them directly, no second apply.
     setSaving(true);
     setNotice('');
     try {
-      const published = await publishBytes(pendingBytesRef.current, []);
+      let bytes = pendingBytesRef.current;
+      if (draftOps.length > 0) {
+        const result = await applyOps(model, draftOps);
+        if (result.changed) {
+          bytes = result.bytes;
+          pendingBytesRef.current = bytes;
+          setHasPending(true);
+          await adoptModel(await parsePptx(result.bytes));
+        } else if (!bytes) {
+          resetDraft();
+          setNotice('没有可写入的改动');
+          return;
+        }
+      }
+      if (!bytes) {
+        setNotice('没有可写入的改动');
+        return;
+      }
+      const published = await publishBytes(bytes, draftOps);
       if (published) {
         pendingBytesRef.current = null;
         setHasPending(false);
+        // Only a confirmed upload + binding may discard drafts. A failed publish leaves both
+        // the draft and the pending bytes available for an exact retry.
+        resetDraft();
         setNotice(OFFICE_SAVE_NOTICE);
       } else {
-        setNotice('已写入本地，但没能存进会话，请重试保存');
+        setNotice('已写入本地，但最新版未保存成功，请重试保存');
       }
     } catch (err) {
       setNotice(`保存失败：${err.message}`);
     } finally {
       setSaving(false);
     }
-  }, [adoptModel, draft, model, publishBytes, resetDraft, saving, selectedShape, slideIndex]);
+  }, [adoptModel, buildDraftOps, draft, model, publishBytes, resetDraft, saving]);
+
+  const handleSync = useCallback(async () => {
+    if (saving || !latestVersion || !onSync) return;
+    setSaving(true);
+    setNotice('');
+    try {
+      const synced = await onSync({
+        latestVersion,
+        fileName: file?.name,
+        slideCount: model?.slides?.length,
+        changes: [],
+      });
+      setNotice(synced ? OFFICE_SYNC_NOTICE : '同步失败，请重试');
+    } catch (err) {
+      setNotice(`同步失败：${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [file?.name, latestVersion, model, onSync, saving]);
 
   /* ---------- inherited geometry ---------- */
 
@@ -708,17 +784,29 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
   const canGoForward = canRedo(historyRef.current);
   const selectedBox = (() => {
     if (!selectedId || !selectedShape) return null;
-    const box = draft.boxes?.[selectedId] || selectedShape.box;
+    const box = draft.boxes?.[officeDraftKey(slideIndex, selectedId)] || selectedShape.box;
     if (selectedShape.positioning !== 'relative') return box;
     const group = parentGroupOf(slide, selectedId);
     return group
       ? absoluteFromRelative(box, group.box, group.childOffset, group.childExtent)
       : box;
   })();
+  const selectedDraftKey = selectedId ? officeDraftKey(slideIndex, selectedId) : '';
+  const selectedParagraphs = selectedDraftKey ? draft.texts?.[selectedDraftKey] : null;
+  const selectedStyles = selectedDraftKey ? draft.styles?.[selectedDraftKey] : null;
+  const editedBoxes = (() => {
+    const boxes = {};
+    for (const [key, box] of Object.entries(draft.boxes || {})) {
+      const target = parseOfficeDraftKey(key);
+      if (target?.slideIndex === slideIndex) boxes[target.elId] = box;
+    }
+    return boxes;
+  })();
   const canGroup = pickedIds.length >= 2;
 
   return (
-    <div className="office-preview">
+    <div className="office-preview" data-office-mode={editing ? 'edit' : 'readonly'}
+      style={{ '--office-panel-width': `${panelWidth}px` }}>
       <div className="office-preview-toolbar">
         <button type="button" className="office-page-btn" disabled={slideIndex === 0}
           onClick={() => setSlideIndex(index => Math.max(0, index - 1))} aria-label="上一页">‹</button>
@@ -728,50 +816,60 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
 
         <span className="office-toolbar-divider" />
 
-        <InsertMenu disabled={saving} onInsert={handleInsert} onPicture={handleInsertPicture} />
+        <button type="button" className="office-page-btn" data-office-edit-toggle=""
+          disabled={saving} onClick={() => setEditing(value => !value)}>
+          {editing ? '完成' : '编辑'}
+        </button>
 
-        <button type="button" className="office-page-btn" disabled={!canGroup || saving}
+        <InsertMenu disabled={saving || !editing} onInsert={handleInsert}
+          onPicture={handleInsertPicture} />
+
+        <button type="button" className="office-page-btn" disabled={!editing || !canGroup || saving}
           onClick={handleGroup} title="按住 Shift 选两个以上元素">组合</button>
         <button type="button" className="office-page-btn"
-          disabled={!selectedShape || saving} onClick={handleDeleteElement} title="删除选中元素">
+          disabled={!editing || !selectedShape || saving} onClick={handleDeleteElement} title="删除选中元素">
           删除元素
         </button>
 
         <span className="office-toolbar-divider" />
 
-        <button type="button" className="office-page-btn" disabled={saving}
+        <button type="button" className="office-page-btn" disabled={!editing || saving}
           onClick={handleAddSlide} title="在当前页后新增一页">加页</button>
-        <button type="button" className="office-page-btn" disabled={saving}
+        <button type="button" className="office-page-btn" disabled={!editing || saving}
           onClick={handleDuplicateSlide} title="复制当前页">复制页</button>
-        <button type="button" className="office-page-btn" disabled={saving}
+        <button type="button" className="office-page-btn" disabled={!editing || saving}
           onClick={handleDeleteSlide} title="删除当前页">删页</button>
-        <button type="button" className="office-page-btn" disabled={saving || slideIndex === 0}
+        <button type="button" className="office-page-btn" disabled={!editing || saving || slideIndex === 0}
           onClick={() => handleMoveSlide(-1)} title="当前页上移">页上移</button>
-        <button type="button" className="office-page-btn" disabled={saving || slideIndex >= slideCount - 1}
+        <button type="button" className="office-page-btn" disabled={!editing || saving || slideIndex >= slideCount - 1}
           onClick={() => handleMoveSlide(1)} title="当前页下移">页下移</button>
 
         <span className="office-toolbar-divider" />
 
-        <button type="button" className="office-page-btn" disabled={!canGoBack}
+        <button type="button" className="office-page-btn" disabled={!editing || !canGoBack}
           onClick={handleUndo} title="撤销（Ctrl+Z）">撤销</button>
-        <button type="button" className="office-page-btn" disabled={!canGoForward}
+        <button type="button" className="office-page-btn" disabled={!editing || !canGoForward}
           onClick={handleRedo} title="重做（Ctrl+Shift+Z）">重做</button>
 
         <button type="button" className="office-page-btn"
-          disabled={!selectedShape || selectedShape.inherited}
+          disabled={!editing || !selectedShape || selectedShape.inherited}
           onClick={() => handleZOrder('front')} title="置于顶层">置顶</button>
         <button type="button" className="office-page-btn"
-          disabled={!selectedShape || selectedShape.inherited}
+          disabled={!editing || !selectedShape || selectedShape.inherited}
           onClick={() => handleZOrder('up')} title="上移一层">上移</button>
         <button type="button" className="office-page-btn"
-          disabled={!selectedShape || selectedShape.inherited}
+          disabled={!editing || !selectedShape || selectedShape.inherited}
           onClick={() => handleZOrder('down')} title="下移一层">下移</button>
         <button type="button" className="office-page-btn"
-          disabled={!selectedShape || selectedShape.inherited}
+          disabled={!editing || !selectedShape || selectedShape.inherited}
           onClick={() => handleZOrder('back')} title="置于底层">置底</button>
 
         <span className="office-toolbar-spacer" />
         {dirty ? <span className="office-dirty">已修改</span> : null}
+        <button type="button" className="office-page-btn" data-office-sync=""
+          disabled={!latestVersion || saving || !onSync} onClick={handleSync}>
+          同步给小八
+        </button>
         <button type="button" className="office-save-btn" disabled={saving}
           onClick={handleSaveDraft}>
           {saving ? '写入中…' : '写入文档'}
@@ -789,14 +887,24 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
             selectedId={selectedId}
             hoveredId={hoveredId}
             imageUrls={imageUrls}
-            editedBoxes={draft.boxes}
+            editedBoxes={editedBoxes}
             onSelect={handleSelect}
             onHover={setHoveredId}
             onGestureStart={handleGestureStart}
             onBoxPreview={handleBoxPreview}
             onBoxCommit={handleBoxCommit}
+            readOnly={!editing}
           />
         </div>
+        <div className="office-panel-resizer" data-office-panel-resizer=""
+          role="separator" aria-orientation="vertical" tabIndex={0}
+          onPointerDown={startPanelResize}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+            event.preventDefault();
+            const delta = event.key === 'ArrowLeft' ? 16 : -16;
+            setPanelWidth((value) => saveOfficePanelWidth(value + delta));
+          }} />
         <div className="office-preview-side">
           <ElementList
             shapes={slide?.shapes || []}
@@ -810,7 +918,8 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
           />
           <PropertyPanel
             shape={selectedShape}
-            draft={draft}
+            paragraphs={selectedParagraphs}
+            styles={selectedStyles}
             draftBox={selectedBox}
             onDraftChange={handleTextChange}
             onStyleChange={handleStyleChange}
@@ -818,6 +927,7 @@ export default function OfficePreview({ file, url, family = 'pptx', onSave }) {
             onAlign={handleAlign}
             onAlignToSlide={handleAlignToSlide}
             disabled={saving}
+            readOnly={!editing}
           />
         </div>
       </div>

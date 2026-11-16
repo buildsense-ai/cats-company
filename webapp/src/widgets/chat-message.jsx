@@ -3083,6 +3083,7 @@ export function FilePreviewPanel({
   annotationApi,
   onFileAnnotationSent,
   onOfficeSave,
+  onOfficeSync,
 }) {
   const [fileAnnotationMode, setFileAnnotationMode] = useState(false);
   const fileContentRef = useRef(null);
@@ -3827,7 +3828,9 @@ export function FilePreviewPanel({
               key={descriptor.key}
               file={file}
               url={fetchableMediaURL(url)}
+              latestVersion={file.office_latest}
               onSave={onOfficeSave}
+              onSync={onOfficeSync}
             />
           ) : isOffice ? (
             <OfficePreview
@@ -3835,7 +3838,9 @@ export function FilePreviewPanel({
               file={file}
               url={fetchableMediaURL(url)}
               family={officeFamily}
+              latestVersion={file.office_latest}
               onSave={onOfficeSave}
+              onSync={onOfficeSync}
             />
           ) : loadingText ? (
             <LoadingState kind="document" label="正在打开文件" className="v3-file-preview-state" />
@@ -3846,7 +3851,7 @@ export function FilePreviewPanel({
           ) : isHtml ? (
             <HTMLFilePreview key={descriptor.key} html={textContent || ''}
               annotationMode={fileAnnotationMode}
-              annotatable={Boolean(file.annotation_source && annotationApi)} />
+              annotatable={Boolean(file.annotation_source && !file.office_version_unsynced && annotationApi)} />
           ) : isMarkdown ? (
             <iframe
               className="v3-file-preview-frame"
@@ -3861,7 +3866,7 @@ export function FilePreviewPanel({
             <pre className="v3-file-preview-text" data-file-annotation-text="" data-file-annotation-surface="text">{textContent || '暂无可预览内容。'}</pre>
           )}
         </div>
-        {file.annotation_source && annotationApi && !isRemoteArtifact && (
+        {file.annotation_source && !file.office_version_unsynced && annotationApi && !isRemoteArtifact && (
           <FileAnnotationEditor
             key={`${file.annotation_source.topic_id}:${file.annotation_source.message_id}:${file.annotation_source.attachment_index}`}
             file={file}
