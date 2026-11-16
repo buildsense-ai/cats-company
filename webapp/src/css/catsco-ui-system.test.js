@@ -1737,7 +1737,7 @@ describe('CatsCo shell styling', () => {
     expect(appSource).not.toContain('catsco-brand-mark cc-empty-task-mark');
     expect(ruleFor('.cc-empty-task h1')).toContain('margin: 0;');
     expect(ruleFor('.cc-empty-task h1')).toContain('font-size: 28px;');
-    expect(ruleFor('.cc-empty-task h1')).toContain('font-weight: 300;');
+    expect(ruleFor('.cc-empty-task h1')).toContain('font-weight: 400;');
     expect(ruleFor('.cc-empty-task h1')).toContain('letter-spacing: 0.02em;');
     expect(ruleFor('.cc-empty-task h1')).toContain('line-height: 36px;');
   });

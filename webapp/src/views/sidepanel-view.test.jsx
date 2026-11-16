@@ -4027,6 +4027,11 @@ describe('ChatListView sidebar sections', () => {
     await mount();
     await act(async () => window.dispatchEvent(new Event('cc:open-agent-manager')));
     expect(document.querySelector('[data-testid="agent-store-modal"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="agent-store-modal"]').dataset.initialAgentId).toBe('');
+    await act(async () => window.dispatchEvent(new CustomEvent('cc:open-agent-manager', {
+      detail: { agentId: '42' },
+    })));
+    expect(document.querySelector('[data-testid="agent-store-modal"]').dataset.initialAgentId).toBe('42');
     await act(async () => window.dispatchEvent(new Event('cc:open-add-assistant')));
     expect(document.querySelector('[data-testid="agent-store-modal"]')).toBeNull();
     expect(document.querySelector('[data-testid="add-friend-modal"]').dataset.initialFocus).toBe('invite');

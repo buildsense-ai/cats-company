@@ -1422,7 +1422,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
   margin: 0;
   color: var(--cc-text);
   font-size: 28px;
-  font-weight: 300;
+  font-weight: 400;
   line-height: 36px;
   letter-spacing: 0.02em;
 }
@@ -1491,6 +1491,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .cc-new-task-agent-option:disabled {
   cursor: default;
   opacity: 0.6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-new-task-agent-option {
+    transform: none !important;
+  }
 }
 
 .cc-new-task-agent-option-name {

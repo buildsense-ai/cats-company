@@ -459,9 +459,9 @@ export default function ChatListView({
       setShowAgentStore(true);
     };
     window.addEventListener('cc:open-cloud-worker-manager', openCloudManager);
-    const openAgentManager = () => {
+    const openAgentManager = (event) => {
       setShowAddFriend(false);
-      setAgentStoreInitialAgentId(null);
+      setAgentStoreInitialAgentId(event?.detail?.agentId || null);
       setAgentStoreInitialCloudWorker(null);
       setShowAgentStore(true);
     };

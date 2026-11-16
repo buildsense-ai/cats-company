@@ -26,6 +26,7 @@ import {
   writeComposerTaskContextDraft,
 } from '../utils/composer-draft-storage';
 import EmptyTaskComposer from './empty-task-composer';
+import { readLastTaskAgent, rememberLastTaskAgent } from '../utils/agent-task-topic';
 
 const agents = [
   {
@@ -85,6 +86,7 @@ describe('EmptyTaskComposer', () => {
     await act(async () => {
       root.render(
         <EmptyTaskComposer
+          userId="7"
           onResolveAgentTopic={onResolveAgentTopic}
           onActivateTopic={onActivateTopic}
           {...extraProps}
@@ -1264,6 +1266,24 @@ describe('EmptyTaskComposer', () => {
     expect(api.sendMessage).toHaveBeenCalledWith('grp_402', '整理本周运营数据');
   });
 
+  it('opens settings for the clicked Agent, including the already selected Agent', async () => {
+    await mountComposer();
+    const dispatch = vi.spyOn(window, 'dispatchEvent');
+    try {
+      for (const name of ['运营数据助手', '运营数据助手', '代码审查助手']) {
+        await act(async () => {
+          Simulate.click(container.querySelector(`[role="radio"][aria-label="${name}"]`));
+        });
+        const event = dispatch.mock.calls.at(-1)[0];
+        expect(event.type).toBe('cc:open-agent-manager');
+        expect(event.detail).toEqual({ agentId: name === '运营数据助手' ? '22' : '21' });
+      }
+      expect(api.sendMessage).not.toHaveBeenCalled();
+    } finally {
+      dispatch.mockRestore();
+    }
+  });
+
   it('switches the vertical Agent wheel with arrow keys', async () => {
     const onSelectedAgentChange = vi.fn();
     await mountComposer({ onSelectedAgentChange });
@@ -1328,11 +1348,71 @@ describe('EmptyTaskComposer', () => {
     expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
   });
 
+  it('recognizes the ownership flag when choosing an owned cloud default', async () => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { ...agents[0], relation: 'friend', is_cloud: true },
+      { ...agents[1], is_owner: true, is_cloud: true },
+    ] });
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('defaults to the previous successful task cloud Agent ahead of owned cloud Agents', async () => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { ...agents[0], relation: 'owner', is_cloud: true },
+      { ...agents[1], relation: 'friend', is_cloud: true },
+    ] });
+    rememberLastTaskAgent('7', agents[1]);
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it.each(['missing', 'local', 'other-account'])('falls back to owned cloud Agents for an unusable last-task preference (%s)', async (reason) => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { ...agents[0], relation: 'owner', is_cloud: true },
+      { ...agents[1], relation: 'friend', is_cloud: reason !== 'local' },
+    ] });
+    rememberLastTaskAgent(reason === 'other-account' ? '8' : '7', reason === 'missing' ? { uid: 999 } : agents[1]);
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('代码审查助手');
+  });
+
+  it('remembers the Agent after a successful task send and restores it on the next new task', async () => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { ...agents[0], relation: 'owner', is_cloud: true },
+      { ...agents[1], relation: 'friend', is_cloud: true },
+    ] });
+    await mountComposer();
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="radio"][aria-label="运营数据助手"]'));
+    });
+    expect(readLastTaskAgent('7')).toBe('');
+    await typeInto(container.querySelector('textarea'), '创建一项新任务');
+    await pressEnter(container.querySelector('textarea'));
+    expect(readLastTaskAgent('7')).toBe('22');
+    await act(async () => root.render(null));
+    await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('keeps the previous successful task preference when sending the next task fails', async () => {
+    rememberLastTaskAgent('7', agents[0]);
+    api.sendMessage.mockRejectedValueOnce(new Error('发送失败'));
+    await mountComposer();
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="radio"][aria-label="运营数据助手"]'));
+    });
+    await typeInto(container.querySelector('textarea'), '发送失败的任务');
+    await pressEnter(container.querySelector('textarea'));
+    expect(readLastTaskAgent('7')).toBe('21');
+  });
+
   it('keeps an explicit Agent choice even when a higher-priority default is available', async () => {
     api.getAgents.mockResolvedValue({ agents: [
       { ...agents[0], relation: 'owner', is_cloud: true, added_at: '2026-11-13T00:00:00Z' },
       { ...agents[1], relation: 'friend', is_cloud: false, added_at: '2026-11-01T00:00:00Z' },
     ] });
+    rememberLastTaskAgent('7', agents[0]);
     await mountComposer({ initialAgent: agents[1] });
     expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
     await act(async () => {
@@ -1399,13 +1479,153 @@ describe('EmptyTaskComposer', () => {
     await mountComposer();
     const wheel = container.querySelector('[role="radiogroup"]');
     await act(async () => {
-      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }));
+      const event = new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'wheelDeltaY', { value: -180 });
+      wheel.dispatchEvent(event);
       vi.advanceTimersByTime(32);
     });
     expect(wheel.scrollTop).toBeGreaterThan(14);
     await act(async () => { vi.advanceTimersByTime(500); });
     expect(wheel.scrollTop).toBe(28);
     expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('accumulates small touchpad events by distance instead of moving one Agent per event', async () => {
+    api.getAgents.mockResolvedValue({ agents: [...agents,
+      { uid: 23, display_name: '研究助手' }, { uid: 24, display_name: '写作助手' },
+    ] });
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      for (let index = 0; index < 33; index++) {
+        const event = new WheelEvent('wheel', { deltaY: 2, bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'wheelDeltaY', { value: -6 });
+        wheel.dispatchEvent(event);
+        vi.advanceTimersByTime(8);
+      }
+    });
+    expect(wheel.scrollTop).toBe(0);
+    await act(async () => {
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: 2, bubbles: true, cancelable: true }));
+      vi.advanceTimersByTime(500);
+    });
+    expect(wheel.scrollTop).toBe(28);
+    expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('keeps large touchpad events in the same precise gesture and allows longer swipes', async () => {
+    api.getAgents.mockResolvedValue({ agents: [...agents,
+      { uid: 23, display_name: '研究助手' }, { uid: 24, display_name: '写作助手' },
+      { uid: 25, display_name: '设计助手' },
+    ] });
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      for (const deltaY of [2, 38, 80, 80, 40]) {
+        const event = new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'wheelDeltaY', { value: -deltaY * 3 });
+        wheel.dispatchEvent(event);
+        vi.advanceTimersByTime(8);
+      }
+      vi.advanceTimersByTime(500);
+    });
+    expect(wheel.scrollTop).toBe(84);
+  });
+
+  it('preserves touchpad distance while crossing multiple centered Agents', async () => {
+    api.getAgents.mockResolvedValue({ agents: [...agents,
+      { uid: 23, display_name: '研究助手' }, { uid: 24, display_name: '写作助手' },
+    ] });
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      for (let index = 0; index < 120; index++) {
+        wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: 2, bubbles: true, cancelable: true }));
+        vi.advanceTimersByTime(8);
+      }
+      vi.advanceTimersByTime(500);
+    });
+    expect(wheel.scrollTop).toBe(84);
+  });
+
+  it('drops unused touchpad distance between gestures and when reversing direction', async () => {
+    await mountComposer({ initialAgent: agents[1] });
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      for (const deltaY of [30, -30, -30]) {
+        wheel.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }));
+        vi.advanceTimersByTime(8);
+      }
+      vi.advanceTimersByTime(200);
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: -30, bubbles: true, cancelable: true }));
+      vi.advanceTimersByTime(500);
+    });
+    expect(wheel.scrollTop).toBe(28);
+  });
+
+  it('keeps touchpad deltas out of mouse tick calibration when switching devices', async () => {
+    api.getAgents.mockResolvedValue({ agents: [...agents, { uid: 23, display_name: '研究助手' }] });
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      const touchpadEvent = new WheelEvent('wheel', { deltaY: 1, bubbles: true, cancelable: true });
+      Object.defineProperty(touchpadEvent, 'wheelDeltaY', { value: -3 });
+      wheel.dispatchEvent(touchpadEvent);
+      vi.advanceTimersByTime(200);
+      const mouseEvent = new WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true });
+      Object.defineProperty(mouseEvent, 'wheelDeltaY', { value: -180 });
+      wheel.dispatchEvent(mouseEvent);
+      vi.advanceTimersByTime(500);
+    });
+    expect(wheel.scrollTop).toBe(28);
+  });
+
+  it('handles a native mouse notch during a precise gesture without jumping to the end', async () => {
+    api.getAgents.mockResolvedValue({ agents: [...agents,
+      ...Array.from({ length: 18 }, (_, index) => ({ uid: index + 23, display_name: `助手${index + 3}` })),
+    ] });
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    await act(async () => {
+      const preciseEvent = new WheelEvent('wheel', { deltaY: 2, bubbles: true, cancelable: true });
+      Object.defineProperty(preciseEvent, 'wheelDeltaY', { value: -6 });
+      wheel.dispatchEvent(preciseEvent);
+      vi.advanceTimersByTime(16);
+      const mouseEvent = new WheelEvent('wheel', { deltaY: 1200, bubbles: true, cancelable: true });
+      Object.defineProperty(mouseEvent, 'wheelDeltaY', { value: -180 });
+      wheel.dispatchEvent(mouseEvent);
+      vi.advanceTimersByTime(500);
+    });
+    expect(wheel.scrollTop).toBe(28);
+  });
+
+  it.each([[120, 180], [180, 120]])('recognizes individual native ticks after their scale changes (%s to %s)', async (first, next) => {
+    api.getAgents.mockResolvedValue({ agents: [...agents,
+      ...Array.from({ length: 8 }, (_, index) => ({ uid: index + 23, display_name: `助手${index + 3}` })),
+    ] });
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    for (const nativeDelta of [first, next, next * 3]) {
+      await act(async () => {
+        const event = new WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'wheelDeltaY', { value: -nativeDelta });
+        wheel.dispatchEvent(event);
+        vi.advanceTimersByTime(200);
+      });
+    }
+    expect(wheel.scrollTop).toBe(140);
+  });
+
+  it('leaves touchpad pinch zoom to the browser', async () => {
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    const event = new WheelEvent('wheel', { deltaY: 80, ctrlKey: true, bubbles: true, cancelable: true });
+    await act(async () => {
+      wheel.dispatchEvent(event);
+      vi.advanceTimersByTime(500);
+    });
+    expect(event.defaultPrevented).toBe(false);
+    expect(wheel.scrollTop).toBe(0);
   });
 
   it('preserves multiple native wheel ticks combined into one event', async () => {
@@ -1497,6 +1717,43 @@ describe('EmptyTaskComposer', () => {
     expect(wheel.scrollTop).toBe(28);
     expect(wheel.style.scrollSnapType).toBe('');
     expect(wheel.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('tilts the neighboring names toward the center and keeps the centered name facing forward', async () => {
+    await mountComposer({ initialAgent: agents[1] });
+    const options = container.querySelectorAll('.cc-new-task-agent-option');
+    expect(options[0].style.transform).toContain('rotateX(24deg)');
+    expect(options[1].style.transform).toContain('rotateX(0deg)');
+    expect(options[1].style.transform).toContain('scale(1)');
+    await act(async () => {
+      Simulate.keyDown(container.querySelector('[role="radiogroup"]'), { key: 'Home' });
+    });
+    expect(options[0].style.transform).toContain('rotateX(0deg)');
+    expect(options[1].style.transform).toContain('rotateX(-24deg)');
+  });
+
+  it('compensates fractional scroll rounding in the visual transform', async () => {
+    await mountComposer();
+    const wheel = container.querySelector('[role="radiogroup"]');
+    let scrollTop = 0;
+    let requestedScrollTop = 0;
+    Object.defineProperty(wheel, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        requestedScrollTop = value;
+        scrollTop = Math.floor(value * 1.5) / 1.5;
+      },
+    });
+    await act(async () => {
+      wheel.dispatchEvent(new WheelEvent('wheel', { deltaY: 80, bubbles: true, cancelable: true }));
+      vi.advanceTimersByTime(16);
+    });
+    expect(scrollTop).not.toBe(requestedScrollTop);
+    const offset = Number(wheel.children[0].style.transform.match(/^translateY\(([^p]+)px\)/)[1]);
+    expect(offset).toBeCloseTo(scrollTop - requestedScrollTop, 8);
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(wheel.children[1].style.transform).toContain('translateY(0px)');
   });
 
   it('interpolates the visual emphasis before confirming a new Agent', async () => {

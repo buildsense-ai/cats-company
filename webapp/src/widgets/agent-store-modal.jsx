@@ -1235,6 +1235,11 @@ export default function AgentStoreModal({
         if (requestedBot && isOwnedBot(requestedBot)) {
           setEditingBot(editableBot(requestedBot));
           setTab('manage');
+        } else if (requestedBot) {
+          setEditingBot(null);
+          setTab('hub');
+          setHubCloudView(false);
+          setRosterFilter('added');
         }
       }
     } catch (e) {
@@ -2030,7 +2035,7 @@ export default function AgentStoreModal({
                           </button>
                         )}
                         {!owned && (
-                          <FriendAgentActions bot={bot} onOpenChat={onOpenAgentChat} onRemove={() => handleDelete(bot)} />
+                          <FriendAgentActions bot={bot} initiallyOpen={String(botId) === String(initialAgentId)} onOpenChat={onOpenAgentChat} onRemove={() => handleDelete(bot)} />
                         )}
                         {owned && !bot.tenant_name && (
                           <button
@@ -2963,13 +2968,20 @@ export default function AgentStoreModal({
   );
 }
 
-function FriendAgentActions({ bot, onOpenChat, onRemove }) {
-  const [detailsOpen, setDetailsOpen] = useState(false);
+function FriendAgentActions({ bot, initiallyOpen = false, onOpenChat, onRemove }) {
+  const [detailsOpen, setDetailsOpen] = useState(initiallyOpen);
   const [moreOpen, setMoreOpen] = useState(false);
+  const detailsRef = useRef(null);
   const moreRef = useRef(null);
   const moreButtonRef = useRef(null);
   const botId = bot.id || bot.uid;
   const name = bot.display_name || bot.username;
+  useEffect(() => {
+    if (!initiallyOpen) return undefined;
+    setDetailsOpen(true);
+    const frame = requestAnimationFrame(() => detailsRef.current?.scrollIntoView?.({ block: 'nearest' }));
+    return () => cancelAnimationFrame(frame);
+  }, [initiallyOpen]);
   useEffect(() => {
     if (!moreOpen) return undefined;
     const closeOutside = (event) => {
@@ -3006,7 +3018,7 @@ function FriendAgentActions({ bot, onOpenChat, onRemove }) {
           <button type="button" onClick={() => { setMoreOpen(false); onRemove(); }}>移除好友</button>
         </div>}
       </div>
-      {detailsOpen && <section id={`cc-friend-agent-details-${botId}`} className="cc-agent-friend-details" aria-label={`${name} 资料`}>
+      {detailsOpen && <section ref={detailsRef} id={`cc-friend-agent-details-${botId}`} className="cc-agent-friend-details" aria-label={`${name} 资料`}>
         <dl>
           <div><dt>助手名称</dt><dd>{name}</dd></div>
           <div><dt>UID</dt><dd>{botId}</dd></div>
