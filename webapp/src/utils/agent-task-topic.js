@@ -1,4 +1,18 @@
 import { api } from '../api';
+import { readStorageValue, writeStorageValue } from './storage-access';
+
+const LAST_TASK_AGENT_PREFIX = 'catsco_last_task_agent:v1:';
+
+export function readLastTaskAgent(userId) {
+  if (!userId) return '';
+  return readStorageValue(`${LAST_TASK_AGENT_PREFIX}${userId}`) || '';
+}
+
+export function rememberLastTaskAgent(userId, agent) {
+  const agentUid = agent?.uid || agent?.id;
+  if (!userId || !agentUid) return;
+  writeStorageValue(`${LAST_TASK_AGENT_PREFIX}${userId}`, agentUid);
+}
 
 export async function createAgentTaskTopicRecord({
   agent,

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { CircleAlert, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
+import { readLastTaskAgent, rememberLastTaskAgent } from '../utils/agent-task-topic';
 import {
   invalidateComposerDraftRevision,
   isComposerDraftRevisionCurrent,
@@ -35,16 +36,31 @@ import QRCode from './qr-code';
 const MAX_DROPPED_FILES = 200;
 const PHONE_UPLOAD_POLL_INTERVAL_MS = 2000;
 const AGENT_WHEEL_ROW_HEIGHT = 28;
+const AGENT_WHEEL_TOUCHPAD_STEP_PX = 68;
+const AGENT_WHEEL_GESTURE_GAP_MS = 180;
 
-const agentWheelAppearance = (distance) => ({
-  opacity: Math.max(0.2, 1 - distance * 0.5),
-  transform: `scale(${1 - Math.min(2, distance) * 0.08})`,
-});
+function agentWheelAppearance(distance, pixelOffset = 0) {
+  const limitedDistance = Math.max(-2, Math.min(2, distance));
+  const angleDegrees = limitedDistance * 24;
+  const angle = angleDegrees * Math.PI / 180;
+  const radius = AGENT_WHEEL_ROW_HEIGHT / (24 * Math.PI / 180);
+  const arcOffset = Math.sin(angle) * radius - limitedDistance * AGENT_WHEEL_ROW_HEIGHT;
+  const depth = (Math.cos(angle) - 1) * radius;
+  const progress = Math.abs(limitedDistance) / 2;
+  const falloff = progress * progress * (3 - 2 * progress);
+  return {
+    opacity: 1 - 0.82 * falloff,
+    transform: `translateY(${pixelOffset}px) perspective(360px) translate3d(0, ${arcOffset}px, ${depth}px) rotateX(${-angleDegrees}deg) scale(${1 - 0.08 * falloff})`,
+  };
+}
 
 function updateAgentWheelAppearance(track, scrollTop) {
   const position = scrollTop / AGENT_WHEEL_ROW_HEIGHT;
+  // Offset the browser's rounded scroll position so the visual wheel can keep
+  // moving through fractional pixels, including on scaled Windows displays.
+  const pixelOffset = track.scrollTop - scrollTop;
   Array.from(track.children).forEach((option, index) => {
-    const appearance = agentWheelAppearance(Math.abs(index - position));
+    const appearance = agentWheelAppearance(index - position, pixelOffset);
     option.style.opacity = appearance.opacity;
     option.style.transform = appearance.transform;
   });
@@ -54,7 +70,8 @@ const sortAgentsForNewTask = (agents) => [...agents].sort((left, right) => {
   const cloudPriority = Number(right.is_cloud === true || Boolean(right.tenant_name))
     - Number(left.is_cloud === true || Boolean(left.tenant_name));
   if (cloudPriority) return cloudPriority;
-  const ownerPriority = Number(right.relation === 'owner') - Number(left.relation === 'owner');
+  const ownerPriority = Number(right.relation === 'owner' || right.is_owner === true)
+    - Number(left.relation === 'owner' || left.is_owner === true);
   if (ownerPriority) return ownerPriority;
   return (Date.parse(right.added_at) || 0) - (Date.parse(left.added_at) || 0);
 });
@@ -64,6 +81,7 @@ const isAuthenticationError = (error) => Number(error?.status) === 401
   || /^unauthorized$/i.test(String(error?.message || '').trim());
 
 export default function EmptyTaskComposer({
+  userId,
   heading = null,
   className = 'cc-empty-composer-wrap',
   placeholder = '输入指令，我帮您完成',
@@ -177,6 +195,10 @@ export default function EmptyTaskComposer({
     let previousFrameTime = 0;
     let wheelPosition = track.scrollTop;
     let wheelTickDelta = 0;
+    let lastInputTime = -Infinity;
+    let lastInputDirection = 0;
+    let touchpadDistance = 0;
+    let touchpadUntil = 0;
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
     const animateWheel = (time) => {
       const elapsed = Math.min(64, time - previousFrameTime);
@@ -187,11 +209,11 @@ export default function EmptyTaskComposer({
       // Keep fractional motion between frames. Browsers can round scrollTop
       // to physical pixels, which otherwise stalls the last few pixels.
       const distance = agentWheelTargetRef.current - wheelPosition;
-      wheelPosition += reducedMotion?.matches || Math.abs(distance) <= 1
+      wheelPosition += reducedMotion?.matches || Math.abs(distance) <= 0.05
         ? distance : distance * (1 - Math.exp(-elapsed / 22));
       track.scrollTop = wheelPosition;
       updateAgentWheelAppearance(track, wheelPosition);
-      if (settling && Math.abs(agentWheelTargetRef.current - wheelPosition) <= 1) {
+      if (settling && Math.abs(agentWheelTargetRef.current - wheelPosition) <= 0.05) {
         track.scrollTop = agentWheelTargetRef.current;
         confirmCenteredAgent();
         return;
@@ -199,17 +221,50 @@ export default function EmptyTaskComposer({
       agentWheelFrameRef.current = requestAnimationFrame(animateWheel);
     };
     const handleWheel = (event) => {
-      if (!event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+      if (event.ctrlKey || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
       event.preventDefault();
       if (isSubmitting || agentsRef.current.length === 0) return;
+      const now = performance.now();
+      const direction = Math.sign(event.deltaY);
+      const nativeDelta = Math.abs(event.wheelDeltaY || event.wheelDelta || 0);
+      // WheelEvent has no device type. Recognize native notches (including
+      // Windows' scaled ticks), and keep a precise gesture precise through its
+      // larger events and inertia tail. Never calibrate ticks from tiny deltas.
+      const hasNativeTicks = nativeDelta >= 120
+        && (nativeDelta % 120 === 0 || nativeDelta % 180 === 0);
+      const isPrecisePixelDelta = Math.abs(nativeDelta - Math.abs(event.deltaY) * 3) < 1;
+      // A native notch can arrive before the previous precise gesture expires.
+      // Its pixel distance includes the OS scroll-speed setting, so counting
+      // those pixels as touchpad movement can turn one notch into many items.
+      const hasIndependentNativeTicks = hasNativeTicks && !isPrecisePixelDelta;
+      const hasFallbackTick = !nativeDelta && Number.isInteger(event.deltaY) && Math.abs(event.deltaY) >= 40;
+      const isDiscreteWheel = event.deltaMode !== 0
+        || hasIndependentNativeTicks
+        || (now >= touchpadUntil && (hasNativeTicks || hasFallbackTick));
+      if (now - lastInputTime > AGENT_WHEEL_GESTURE_GAP_MS
+        || direction !== lastInputDirection) {
+        touchpadDistance = 0;
+      }
+      lastInputTime = now;
+      lastInputDirection = direction;
+      let steps;
+      if (isDiscreteWheel) {
+        if (hasNativeTicks) {
+          wheelTickDelta = nativeDelta === 120 || nativeDelta === 180
+            ? nativeDelta : wheelTickDelta || nativeDelta;
+        }
+        steps = hasNativeTicks ? Math.max(1, Math.round(nativeDelta / wheelTickDelta)) : 1;
+        touchpadDistance = 0;
+        touchpadUntil = 0;
+      } else {
+        touchpadUntil = now + AGENT_WHEEL_GESTURE_GAP_MS;
+        touchpadDistance += Math.abs(event.deltaY);
+        steps = Math.floor(touchpadDistance / AGENT_WHEEL_TOUCHPAD_STEP_PX);
+        touchpadDistance %= AGENT_WHEEL_TOUCHPAD_STEP_PX;
+        if (!steps) return;
+      }
       clearTimeout(agentWheelTimerRef.current);
       agentWheelScrollingRef.current = true;
-      const direction = Math.sign(event.deltaY);
-      // A wheel notch selects an item regardless of browser zoom or the OS
-      // scroll-distance setting. Preserve combined native ticks when available.
-      const nativeDelta = Math.abs(event.wheelDeltaY || event.wheelDelta || 0);
-      if (nativeDelta > 0) wheelTickDelta = Math.min(wheelTickDelta || nativeDelta, nativeDelta);
-      const steps = nativeDelta > 0 ? Math.max(1, Math.round(nativeDelta / wheelTickDelta)) : 1;
       const currentTarget = agentWheelFrameRef.current === null || direction !== lastWheelDirection
         ? Math.round(track.scrollTop / AGENT_WHEEL_ROW_HEIGHT) * AGENT_WHEEL_ROW_HEIGHT
         : agentWheelTargetRef.current;
@@ -217,7 +272,7 @@ export default function EmptyTaskComposer({
       agentWheelTargetRef.current = Math.max(0, Math.min(maxPosition,
         currentTarget + direction * steps * AGENT_WHEEL_ROW_HEIGHT));
       lastWheelDirection = direction;
-      lastWheelTime = performance.now();
+      lastWheelTime = now;
       if (agentWheelFrameRef.current === null) {
         wheelPosition = track.scrollTop;
         previousFrameTime = lastWheelTime;
@@ -453,6 +508,9 @@ export default function EmptyTaskComposer({
           });
         }
         nextAgents = sortAgentsForNewTask(nextAgents);
+        const lastTaskAgentId = readLastTaskAgent(userId);
+        const lastCloudAgent = nextAgents.find((agent) => agentKey(agent) === lastTaskAgentId
+          && (agent.is_cloud === true || Boolean(agent.tenant_name)));
         const preferredAgent = initialAgentRef.current;
         const preferredKey = agentKey(preferredAgent);
         if (preferredKey && !nextAgents.some((agent) => agentKey(agent) === preferredKey)) {
@@ -467,7 +525,7 @@ export default function EmptyTaskComposer({
           const preferredExists = nextAgents.some((agent) => agentKey(agent) === preferredKey);
           const nextKey = currentExists
             ? currentKey
-            : (preferredExists ? preferredKey : agentKey(nextAgents[0]));
+            : (preferredExists ? preferredKey : agentKey(lastCloudAgent || nextAgents[0]));
           selectedAgentIdRef.current = nextKey;
           return nextKey;
         });
@@ -885,6 +943,7 @@ export default function EmptyTaskComposer({
 
       await api.sendMessage(topicId, payload);
       messageSent = true;
+      rememberLastTaskAgent(userId, agent);
       // The shared store must be cleared even when navigation already
       // unmounted this view while the request was in flight.
       const draftCleared = clearDraftAfterSend({
@@ -921,7 +980,7 @@ export default function EmptyTaskComposer({
       sendInFlightRef.current = false;
       if (mountedRef.current) setIsSubmitting(false);
     }
-  }, [clearDraftAfterSend, confirmCenteredAgent, isUploadingAttachment, onAcquireTaskTransition, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
+  }, [clearDraftAfterSend, confirmCenteredAgent, isUploadingAttachment, onAcquireTaskTransition, onActivateTopic, onResolveAgentTopic, syncPhoneUploads, userId]);
 
   const handleKeyDown = useCallback((event) => {
     const nativeEvent = event.nativeEvent || event;
@@ -1004,13 +1063,19 @@ export default function EmptyTaskComposer({
             role="radio"
             aria-checked={selected}
             aria-label={name}
-            style={agentWheelAppearance(Math.abs(index - selectedAgentIndex))}
+            aria-haspopup="dialog"
+            style={agentWheelAppearance(index - selectedAgentIndex)}
             title={name}
             tabIndex={selected ? 0 : -1}
             disabled={isSubmitting}
             className={`cc-new-task-agent-option${selected ? ' is-selected' : ''}`}
             key={key}
-            onClick={() => selectAgent(agent)}
+            onClick={() => {
+              selectAgent(agent);
+              window.dispatchEvent(new CustomEvent('cc:open-agent-manager', {
+                detail: { agentId: key },
+              }));
+            }}
           >
             <span className="cc-new-task-agent-option-name">{name}</span>
           </button>

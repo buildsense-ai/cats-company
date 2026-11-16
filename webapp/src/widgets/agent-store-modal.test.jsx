@@ -153,7 +153,7 @@ describe('AgentStoreModal', () => {
     ] });
     const onOpenAgentChat = vi.fn();
     await act(async () => {
-      root.render(<FeedbackProvider><AgentStoreModal initialAgentId={51} onClose={vi.fn()} onOpenAgentChat={onOpenAgentChat} user={{ uid: 7 }} /></FeedbackProvider>);
+      root.render(<FeedbackProvider><AgentStoreModal onClose={vi.fn()} onOpenAgentChat={onOpenAgentChat} user={{ uid: 7 }} /></FeedbackProvider>);
     });
     expect(container.querySelector('.cc-agent-manage-form')).toBeNull();
     expect(container.querySelectorAll('.v3-agent-card')).toHaveLength(3);
@@ -922,6 +922,28 @@ describe('AgentStoreModal', () => {
     expect(api.createBot).toHaveBeenCalledTimes(1);
     expect(container.querySelector('.cc-agent-skill-binding-warning')?.textContent)
       .toContain('助手已创建，但 Skill 未全部添加：版本冲突');
+  });
+
+  test('opens a requested friend assistant directly to its available profile', async () => {
+    api.getMyBots.mockResolvedValue({ bots: [
+      { uid: 42, display_name: 'My assistant', relation: 'owner', is_owner: true },
+    ] });
+    api.getAgents.mockResolvedValue({ agents: [
+      { uid: 51, display_name: 'Friend assistant', username: 'friend-ai', relation: 'friend', is_bot: true },
+    ] });
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        initialAgentId: '51', onClose: vi.fn(), user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.cc-agent-manage-form')).toBeNull();
+    expect(container.querySelector('[aria-label="Friend assistant 资料"]')).not.toBeNull();
+    expect(container.querySelector('.v3-agent-card').textContent).toContain('Friend assistant');
+    expect(container.querySelectorAll('.v3-agent-card')).toHaveLength(1);
+    expect(api.updateBot).not.toHaveBeenCalled();
   });
 
   test('opens a requested owned assistant directly in the management view', async () => {

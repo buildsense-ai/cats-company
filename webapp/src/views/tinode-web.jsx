@@ -61,7 +61,7 @@ import {
   applyScopedModelUpdate,
   resolveScopedModelState,
 } from '../utils/conversation-model-state';
-import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
+import { createAgentTaskTopicRecord, rememberLastTaskAgent } from '../utils/agent-task-topic';
 import { createPublicationRepairTopic } from '../utils/skillhub-publication-repair';
 import { createDraftTaskCoordinator } from '../utils/draft-task-coordinator';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
@@ -1584,10 +1584,11 @@ function TinodeWebApp({ location }) {
         app: { ...app }, startAnnotation: true,
       });
       activateResolvedTopic(created);
+      rememberLastTaskAgent(user?.uid, agent);
       window.dispatchEvent(new Event('cc:data-changed'));
     } finally { transition.release(); }
   }, [acquireDraftTaskTransition, activateResolvedTopic, createDraftAgentTaskTopic,
-    emptyTaskSelectedAgent, persistedTaskContext?.agent, taskDraft]);
+    emptyTaskSelectedAgent, persistedTaskContext?.agent, taskDraft, user?.uid]);
 
   // The old composer's layout cleanup flushes its latest input before this
   // effect. Transfer that flushed draft, then invalidate late upload callbacks.
@@ -2320,6 +2321,7 @@ function NoActiveTask({
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
         <EmptyTaskComposer
+          userId={user?.uid}
           heading={<h1>{formatEmptyTaskGreeting(user)}</h1>}
           initialAgent={initialAgent}
           composerDraftStore={composerDraftStore}
