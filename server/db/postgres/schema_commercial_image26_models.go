@@ -1,13 +1,13 @@
 package postgres
 
-// Image 2.6 lane: the 2.6 image family joins the Free pool and the paid image
-// packages at 100 CNY per model, the per-model image amount 000021 (paid) and
-// 000024 (Free) established. Only the three new budget keys are written, with
-// the jsonb || operator, so a plan whose budgets an operator edited in place
-// keeps every other key; paid packages gain one grant per new model at the
-// grant type, interval and source_ref they already carry, and Free
-// entitlements gain a free grant per model. Both grant paths are guarded, so
-// the migration is repeatable.
+// Image 2.6 lane: the 2.6 image family joins the Free pool (100 CNY each, so the
+// pool becomes twelve models / 2500) and reaches the paid image packages as
+// missing budget keys. Relay's plan reconcile re-splits a package's existing
+// total across every catalog model, so the paid keys usually already exist at
+// that equal share and the migration must not shrink them. Paid packages also
+// gain one grant per new model at the grant type, interval and source_ref they
+// already carry, and Free entitlements gain a free grant per model. Both grant
+// paths are guarded, so the migration is repeatable.
 //
 // This constant is kept byte-identical to the numbered migration: the model-set
 // migrations are no longer part of the startup statement list (they reverted
@@ -16,21 +16,36 @@ package postgres
 // schema.go's statement list comment.
 const migrateCommercialPlansImage26Models = `-- Add the 2.6 image family (gpt-image-2.6, gpt-image-2.6-flare,
 -- gpt-image-2.6-sunburst) to the Free pool and to the paid image packages.
--- Each new image model carries 100 CNY, the per-model image amount 000021 and
--- 000024 established (Personal 100 / Pro 300 at the time, Free 100), so the
--- advertised totals rise by 300 per package: Free 2200 -> 2500.
+-- Free gains the three models at 100 CNY each, the per-model image amount
+-- 000024 established, which takes the Free pool from 2200 to 2500.
 --
--- Only the three new keys are written. The plans' other budgets are preserved
--- with the jsonb || operator, because the stored maps have been edited in place:
--- production catsco-free currently sells a single MiniMax-M3 budget in the
--- control plane, and a literal rewrite would silently revert that data.
+-- The paid packages keep their advertised total. Relay's plan reconcile runs at
+-- server start and re-splits that total across every catalog model, so the 2.6
+-- keys normally already exist when this migration runs (Personal ~733 each,
+-- Pro 2200, internal ~3334). The paid grant loop below therefore only adds the
+-- allowances the package is still missing.
+--
+-- Only missing keys are written: an operator can edit a plan's budgets in place
+-- (production catsco-free stores a single MiniMax-M3 key today), so a literal
+-- rewrite or an unconditional overwrite would revert real data.
 --
 -- Take a transaction-scoped advisory lock so two concurrent runs cannot both
 -- pass the NOT EXISTS guards below and double the grants.
 SELECT pg_advisory_xact_lock(hashtextextended('catsco_commercial_image_26_models_v1', 0));
 
+-- Add only the keys that are still missing. The plan reconcile runs at server
+-- start and already splits a plan's existing total across every catalog model,
+-- so on a live deployment the three keys usually exist by the time this runs
+-- (at the plan's equal share). Overwriting them with a literal 100 would shrink
+-- the package's advertised total, so each key keeps whatever value it holds.
 UPDATE commercial_plans
-SET model_budgets = model_budgets || '{"gpt-image-2.6":100,"gpt-image-2.6-flare":100,"gpt-image-2.6-sunburst":100}'::jsonb
+SET model_budgets = model_budgets
+    || CASE WHEN model_budgets ? 'gpt-image-2.6'
+            THEN '{}'::jsonb ELSE '{"gpt-image-2.6":100}'::jsonb END
+    || CASE WHEN model_budgets ? 'gpt-image-2.6-flare'
+            THEN '{}'::jsonb ELSE '{"gpt-image-2.6-flare":100}'::jsonb END
+    || CASE WHEN model_budgets ? 'gpt-image-2.6-sunburst'
+            THEN '{}'::jsonb ELSE '{"gpt-image-2.6-sunburst":100}'::jsonb END
 WHERE slug IN ('catsco-free', 'catsco-personal', 'catsco-pro', 'catsco-internal-all-models-50k');
 
 -- Free: one free grant per new image model for every active free entitlement,
@@ -113,8 +128,7 @@ BEGIN
                     'image_models_v1', new_grant_id, 'Public plan image 2.6 model access');
         END LOOP;
     END LOOP;
-END $$;
-`
+END $$;`
 
 // rollbackCommercialPlansImage26Models drops only the three new budget keys and
 // revokes only the grants this migration stamped, so every other budget key,
@@ -147,6 +161,4 @@ BEGIN
             expires_at = LEAST(COALESCE(expires_at, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         WHERE id = grant_row.id;
     END LOOP;
-END $$;
-
-`
+END $$;`
