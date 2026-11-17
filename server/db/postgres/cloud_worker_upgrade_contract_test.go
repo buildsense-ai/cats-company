@@ -788,22 +788,19 @@ func TestPostgresCreditTopupRefundBlockedByMachineUpgradeHold(t *testing.T) {
 	}
 
 	// 预占还在：退款被明确拒绝，钱一分不动。
-	if _, _, err := db.BeginCommercialOrderRefund(order.OrderNo, "refund-upgrade-1", time.Minute); err != nil {
-		t.Fatalf("claim refund: %v", err)
+	_, claimed, err := db.BeginCommercialOrderRefund(order.OrderNo, "refund-upgrade-1", time.Minute)
+	if claimed || !errors.Is(err, ErrCommercialOrderCreditSpent) {
+		t.Fatalf("an upgrade hold must reject the refund before calling the provider: claimed=%v err=%v", claimed, err)
 	}
 	refundConfirmation := &types.CommercialRefundConfirmation{
 		Channel: "alipay_page", EventID: "topup-refund-upgrade-1", ProviderTradeNo: "TOPUP-UPGRADE-REFUND-1",
 		RefundRequestNo: "refund-upgrade-1", AmountFen: 5000, Currency: "CNY",
 		RefundedAt: time.Now().UTC(), PayloadHash: strings.Repeat("1", 64),
 	}
-	_, _, err = db.CompleteCommercialOrderRefund(order.OrderNo, refundConfirmation)
-	if !errors.Is(err, ErrCommercialOrderCreditSpent) {
-		t.Fatalf("a refund must be refused while an upgrade holds paid credit, got %v", err)
-	}
 	if got := paidBucketUnits(t, db, uid); got != 2000*unit {
 		t.Fatalf("a refused refund must not move the balance, paid=%d", got)
 	}
-	if stored, err := db.GetCommercialOrder(0, order.OrderNo); err != nil || stored == nil || stored.Status == "refunded" {
+	if stored, err := db.GetCommercialOrder(0, order.OrderNo); err != nil || stored == nil || stored.Status != "fulfilled" {
 		t.Fatalf("a refused refund must not settle the order: %#v err=%v", stored, err)
 	}
 
@@ -814,6 +811,9 @@ func TestPostgresCreditTopupRefundBlockedByMachineUpgradeHold(t *testing.T) {
 	}
 	if got := paidBucketUnits(t, db, uid); got != 5000*unit {
 		t.Fatalf("a released hold must give the credit back, paid=%d", got)
+	}
+	if _, claimed, err := db.BeginCommercialOrderRefund(order.OrderNo, "refund-upgrade-1", time.Minute); err != nil || !claimed {
+		t.Fatalf("claim refund after the upgrade hold was released: claimed=%v err=%v", claimed, err)
 	}
 	refundConfirmation.EventID = "topup-refund-upgrade-2"
 	refunded, changed, err := db.CompleteCommercialOrderRefund(order.OrderNo, refundConfirmation)

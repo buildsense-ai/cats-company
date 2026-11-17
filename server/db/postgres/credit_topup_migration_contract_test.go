@@ -40,6 +40,16 @@ func TestPostgresCreditTopupRollbackPreservesTransactionHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
+			// Match the migration runner: remove newer empty schemas before 074.
+			for _, name := range []string{"000076_machine_upgrade_review_audit.down.sql", "000075_commercial_refund_holds.down.sql"} {
+				newer, err := os.ReadFile("../migrations/postgres/" + name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := conn.ExecContext(context.Background(), string(newer)); err != nil {
+					t.Fatalf("roll back newer empty migration %s: %v", name, err)
+				}
+			}
 			_, downErr := conn.ExecContext(context.Background(), string(migration))
 			if downErr != nil {
 				if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {

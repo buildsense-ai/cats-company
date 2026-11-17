@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -861,6 +862,26 @@ func cloudWorkerSurvivesRenewal(tx *sql.Tx, uid int64, profile string) (bool, er
 	return survives, nil
 }
 
+// BeginCommercialOrderRefund claims one order for a refund and freezes the paid
+// credit that claim may have to reverse, in one transaction that holds both the
+// order row and the buyer's credit account row.
+//
+// The order of operations is the whole point. The claim used to flip the status
+// to 'refunding' and call the provider, and only then tried to revoke the credit;
+// when that revocation refused (credit already spent, still held by a model call,
+// ...), the failure path put the order back to 'fulfilled' while the money had
+// already left. Now nothing can reach the provider until the credit is provably
+// reversible:
+//   - the paid units the order sold are moved out of the spendable bucket into
+//     commercial_refund_holds, with a reserve event in the paid ledger;
+//   - any consumption, open model-call reservation, open machine-upgrade hold or
+//     arrears repayment of that credit refuses the claim here, before the call;
+//   - the claim is deterministic (CCRF-<orderNo>) and the hold is created once,
+//     so a stale retry reuses it instead of freezing a second time.
+//
+// An order that is already 'refunding' without a hold was claimed by a build that
+// refunded first. The provider may have paid the money out, so that state fails
+// closed and is left to an operator instead of being replayed.
 func (a *Adapter) BeginCommercialOrderRefund(orderNo, refundRequestNo string, staleAfter time.Duration) (*types.CommercialOrder, bool, error) {
 	orderNo = strings.TrimSpace(orderNo)
 	refundRequestNo = strings.TrimSpace(refundRequestNo)
@@ -870,34 +891,95 @@ func (a *Adapter) BeginCommercialOrderRefund(orderNo, refundRequestNo string, st
 	if staleAfter <= 0 {
 		staleAfter = 2 * time.Minute
 	}
-	staleBefore := time.Now().UTC().Add(-staleAfter)
-	order, err := scanCommercialOrder(a.db.QueryRow(`
-		UPDATE commercial_orders
-		SET status = 'refunding', refund_request_no = $2, last_error = ''
-		WHERE order_no = $1
-		  AND (status = 'fulfilled' OR (status = 'refunding' AND updated_at < $3))
-		RETURNING `+commercialOrderColumns, orderNo, refundRequestNo, staleBefore))
-	if err == nil {
-		return order, true, nil
-	}
-	if err != sql.ErrNoRows {
-		return nil, false, fmt.Errorf("claim commercial refund: %w", err)
-	}
-	order, err = a.GetCommercialOrder(0, orderNo)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	staleBefore := now.Add(-staleAfter)
+	tx, err := a.db.Begin()
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("begin commercial refund claim: %w", err)
 	}
-	return order, false, nil
+	defer tx.Rollback()
+
+	order, err := scanCommercialOrder(tx.QueryRow(`SELECT `+commercialOrderColumns+`
+		FROM commercial_orders WHERE order_no = $1 FOR UPDATE`, orderNo))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("lock commercial refund order: %w", err)
+	}
+	switch order.Status {
+	case "refunded":
+		return order, false, nil
+	case "fulfilled":
+		if _, err := freezeCommercialOrderRefundHold(ctx, tx, order, refundRequestNo, now); err != nil {
+			return order, false, err
+		}
+		claimed, err := scanCommercialOrder(tx.QueryRow(`
+			UPDATE commercial_orders
+			SET status = 'refunding', refund_request_no = $2, last_error = ''
+			WHERE order_no = $1
+			RETURNING `+commercialOrderColumns, orderNo, refundRequestNo))
+		if err != nil {
+			return nil, false, fmt.Errorf("claim commercial refund: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("commit commercial refund claim: %w", err)
+		}
+		return claimed, true, nil
+	case "refunding":
+		hold, err := readCommercialRefundHold(ctx, tx, order.OrderNo, true)
+		if err != nil {
+			return order, false, err
+		}
+		if hold == nil {
+			return order, false, fmt.Errorf("%w: order %s is already refunding without a local hold; check the payment channel before retrying",
+				errCommercialRefundHoldMissing, order.OrderNo)
+		}
+		if hold.RefundRequestNo != refundRequestNo || hold.State != commercialRefundHoldHeld {
+			return order, false, fmt.Errorf("%w: order %s holds claim %q in state %q",
+				errCommercialRefundHoldMismatch, order.OrderNo, hold.RefundRequestNo, hold.State)
+		}
+		if !order.UpdatedAt.Before(staleBefore) {
+			// Another attempt claimed the order within the stale window; keep
+			// its claim and its frozen credit untouched.
+			return order, false, nil
+		}
+		claimed, err := scanCommercialOrder(tx.QueryRow(`
+			UPDATE commercial_orders
+			SET refund_request_no = $2, last_error = '', updated_at = $3
+			WHERE order_no = $1
+			RETURNING `+commercialOrderColumns, orderNo, refundRequestNo, now))
+		if err != nil {
+			return nil, false, fmt.Errorf("refresh commercial refund claim: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("commit commercial refund claim: %w", err)
+		}
+		return claimed, true, nil
+	default:
+		return order, false, nil
+	}
 }
 
+// FailCommercialOrderRefund records why a refund attempt could not finish and
+// deliberately changes nothing else.
+//
+// It used to put the order back to 'fulfilled', which is exactly the bug: a
+// provider timeout, an HTTP 5xx, a crash between the call and the local commit
+// and a provider that really refunded all look identical from here, so restoring
+// 'fulfilled' sells the buyer credit that the platform already paid back. The
+// claim, the 'refunding' status and the frozen credit stay until the refund is
+// completed by a retry (the provider request number is deterministic) or by an
+// operator who checked the channel.
 func (a *Adapter) FailCommercialOrderRefund(orderNo, refundRequestNo, message string) error {
-	_, err := a.db.Exec(`
+	if _, err := a.db.Exec(`
 		UPDATE commercial_orders
-		SET status = 'fulfilled', last_error = $3
+		SET last_error = $3
 		WHERE order_no = $1 AND status = 'refunding' AND refund_request_no = $2`,
-		strings.TrimSpace(orderNo), strings.TrimSpace(refundRequestNo), truncateCommercialError(message))
-	if err != nil {
-		return fmt.Errorf("release failed commercial refund: %w", err)
+		strings.TrimSpace(orderNo), strings.TrimSpace(refundRequestNo),
+		truncateCommercialError(message)); err != nil {
+		return fmt.Errorf("record failed commercial refund: %w", err)
 	}
 	return nil
 }
@@ -931,6 +1013,22 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 	if strings.TrimSpace(order.ProviderTradeNo) != "" && strings.TrimSpace(order.ProviderTradeNo) != strings.TrimSpace(confirmation.ProviderTradeNo) {
 		return nil, false, fmt.Errorf("commercial refund trade mismatch")
 	}
+	// The hold is read before anything is written: a 'refunding' order without
+	// one has an unknown provider outcome, so no local refund event may be
+	// recorded for it, and a consumed hold means the reversal is already booked.
+	ctx := context.Background()
+	hold, err := readCommercialRefundHold(ctx, tx, order.OrderNo, true)
+	if err != nil {
+		return nil, false, err
+	}
+	if hold == nil {
+		return nil, false, fmt.Errorf("%w: order %s is refunding without a local hold; check the payment channel before completing",
+			errCommercialRefundHoldMissing, order.OrderNo)
+	}
+	if hold.State != commercialRefundHoldHeld || hold.RefundRequestNo != strings.TrimSpace(confirmation.RefundRequestNo) {
+		return nil, false, fmt.Errorf("%w: order %s holds claim %q in state %q",
+			errCommercialRefundHoldMismatch, order.OrderNo, hold.RefundRequestNo, hold.State)
+	}
 	refundedAt := confirmation.RefundedAt.UTC()
 	if refundedAt.IsZero() {
 		refundedAt = time.Now().UTC()
@@ -955,22 +1053,21 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 	if affected == 0 {
 		return nil, false, fmt.Errorf("refund event was already used")
 	}
-	// Credit this order really booked is released in the same transaction. Only
-	// a legacy order put its units straight into the paid bucket, so only a
-	// legacy order has something there to reverse; a subscription order's
-	// allowance is the monthly grant of its period, and demanding a paid grant
-	// it never created would leave every refund of a new order stuck in
-	// 'refunding'. A conservative refusal (already consumed or still held) is
-	// unchanged: it still keeps the refund incomplete instead of turning spent
-	// credit into free credit.
-	bookedPaidCredit, err := commercialOrderCreditGrantBooked(context.Background(), tx, order.OrderNo)
+	// The frozen credit is consumed here, not re-checked. Its units already left
+	// the spendable paid bucket when the claim was taken, so a model call that ran
+	// while the provider was being called can only have spent other units: the
+	// refund finishes instead of getting stuck on a balance it should no longer
+	// care about, and the buyer cannot be paid out twice for the same units.
+	bookedPaidCredit, err := commercialOrderCreditGrantBooked(ctx, tx, order.OrderNo)
 	if err != nil {
 		return nil, false, err
 	}
-	if bookedPaidCredit {
-		if err := reverseCommercialOrderModelCredit(context.Background(), tx, order, refundedAt); err != nil {
-			return nil, false, err
-		}
+	if bookedPaidCredit && order.PlanModelCreditUnits > 0 && hold.Units != order.PlanModelCreditUnits {
+		return nil, false, fmt.Errorf("%w: order %s froze %d units but booked %d",
+			errCommercialRefundHoldMismatch, order.OrderNo, hold.Units, order.PlanModelCreditUnits)
+	}
+	if err := consumeCommercialRefundHold(ctx, tx, order, hold, refundedAt); err != nil {
+		return nil, false, err
 	}
 	if _, err := tx.Exec(`
 		UPDATE commercial_entitlements
@@ -1037,28 +1134,28 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 	// A top-up refund is a credit reversal, nothing more: it must not reschedule
 	// a machine the buyer also owns, because no package window moved for it.
 	if order.Kind != types.CommercialOrderKindCreditTopup {
-	// Cloud workers follow the paid window: after a refund the owner is rolled
-	// back to whatever paid time survives, or the worker is scheduled for
-	// cleanup when nothing remains. A refunded trial must not auto-convert to
-	// a monthly subscription the platform would pay for.
-	var remainingPaid sql.NullTime
-	if err := tx.QueryRow(`
+		// Cloud workers follow the paid window: after a refund the owner is rolled
+		// back to whatever paid time survives, or the worker is scheduled for
+		// cleanup when nothing remains. A refunded trial must not auto-convert to
+		// a monthly subscription the platform would pay for.
+		var remainingPaid sql.NullTime
+		if err := tx.QueryRow(`
 		SELECT MAX(expires_at) FROM commercial_entitlements
 		WHERE uid = $1 AND state = 'active' AND expires_at > CURRENT_TIMESTAMP`, order.UID).Scan(&remainingPaid); err != nil {
-		return nil, false, fmt.Errorf("check remaining paid time after refund: %w", err)
-	}
-	rollbackUntil := refundedAt
-	if remainingPaid.Valid {
-		rollbackUntil = remainingPaid.Time
-	}
-	// The retention window is the plan's own (7-day package → 3 days, 30-day →
-	// 7 days), not a fixed 15. A refund that lands the worker past its paid
-	// window used to set delete_after = refundedAt, so the sweeper destroyed
-	// and purged the instance within a couple of minutes of the refund — no
-	// window at all for a mistaken refund or a support follow-up. Rows created
-	// before the column existed carry 0, so fall back to the shortest published
-	// window instead of zero.
-	if _, err := tx.Exec(`
+			return nil, false, fmt.Errorf("check remaining paid time after refund: %w", err)
+		}
+		rollbackUntil := refundedAt
+		if remainingPaid.Valid {
+			rollbackUntil = remainingPaid.Time
+		}
+		// The retention window is the plan's own (7-day package → 3 days, 30-day →
+		// 7 days), not a fixed 15. A refund that lands the worker past its paid
+		// window used to set delete_after = refundedAt, so the sweeper destroyed
+		// and purged the instance within a couple of minutes of the refund — no
+		// window at all for a mistaken refund or a support follow-up. Rows created
+		// before the column existed carry 0, so fall back to the shortest published
+		// window instead of zero.
+		if _, err := tx.Exec(`
 		UPDATE cloud_worker_lifecycles l
 		SET package_expires_at = $2::timestamptz,
 		    delete_after = $2::timestamptz + (GREATEST(NULLIF(l.retention_days, 0), $3::int) * INTERVAL '1 day'),
@@ -1077,9 +1174,9 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 		-- express without inventing a date.
 		WHERE l.owner_uid = $1 AND l.state IN ('active','delete_pending','delete_failed')
 		  AND NOT (`+cloudWorkerSharedProfileFilter+` AND l.expiry_mode IN ('fixed','permanent','follow_plan'))`,
-		order.UID, rollbackUntil, commercialRefundMinRetentionDays); err != nil {
-		return nil, false, fmt.Errorf("roll back cloud worker lifecycles after refund: %w", err)
-	}
+			order.UID, rollbackUntil, commercialRefundMinRetentionDays); err != nil {
+			return nil, false, fmt.Errorf("roll back cloud worker lifecycles after refund: %w", err)
+		}
 	}
 	// The refunded entitlement is already revoked at this point, so this settles
 	// follow_plan workers on what the buyer really still holds: the surviving

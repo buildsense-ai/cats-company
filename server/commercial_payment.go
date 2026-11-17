@@ -667,8 +667,20 @@ func (h *CommercialPaymentHandler) fulfillCommercialOrderIfPaid(ctx context.Cont
 }
 
 // RefundOrder performs a provider-side full refund and then atomically revokes
-// the order entitlement and its quota grants. A deterministic provider request
-// number makes a retry safe if the provider succeeds before the local commit.
+// the order entitlement and its quota grants.
+//
+// The store claims the order and freezes the paid credit that claim may have to
+// reverse before this function touches the provider, so a refund that cannot be
+// completed locally never costs the platform the money: a spent balance, an open
+// model-call hold or an open machine-upgrade hold refuse the claim, and then no
+// provider call is made at all.
+//
+// Nothing that happens after the claim proves the money did not move. A timeout,
+// a 5xx, a success whose local commit failed and a crash between the two all look
+// the same, so every failure keeps the order 'refunding' with its credit frozen
+// and records the cause. The provider request number is deterministic
+// (CCRF-<orderNo>), which is what makes the retry that finishes such an order
+// safe: the same refund is asked for, not a second one.
 func (h *CommercialPaymentHandler) RefundOrder(ctx context.Context, orderNo, reason string) (*types.CommercialOrder, bool, error) {
 	orderNo = strings.TrimSpace(orderNo)
 	reason = strings.TrimSpace(reason)
@@ -699,11 +711,14 @@ func (h *CommercialPaymentHandler) RefundOrder(ctx context.Context, orderNo, rea
 	}
 	refundRequestNo := commercialRefundRequestNo(order.OrderNo)
 	claimedOrder, claimed, err := store.BeginCommercialOrderRefund(order.OrderNo, refundRequestNo, 2*time.Minute)
-	if err != nil {
-		return order, false, fmt.Errorf("begin commercial refund: %w", err)
-	}
 	if claimedOrder != nil {
 		order = claimedOrder
+	}
+	if err != nil {
+		// The claim itself was refused, before any provider call: the credit is
+		// spent or held, or the order is refunding without a local hold. That is
+		// a conflict for an operator to resolve, not a channel failure.
+		return order, false, fmt.Errorf("%w: %w", errCommercialRefundConflict, err)
 	}
 	if !claimed {
 		if order.Status == "refunded" {
@@ -713,18 +728,30 @@ func (h *CommercialPaymentHandler) RefundOrder(ctx context.Context, orderNo, rea
 	}
 	confirmation, err := refunder.RefundPayment(ctx, order, refundRequestNo, reason)
 	if err != nil {
-		_ = store.FailCommercialOrderRefund(order.OrderNo, refundRequestNo, err.Error())
+		h.recordCommercialRefundFailure(store, order.OrderNo, refundRequestNo, err)
 		return order, false, fmt.Errorf("refund payment: %w", err)
 	}
 	refunded, changed, err := store.CompleteCommercialOrderRefund(order.OrderNo, confirmation)
 	if err != nil {
-		_ = store.FailCommercialOrderRefund(order.OrderNo, refundRequestNo, err.Error())
+		h.recordCommercialRefundFailure(store, order.OrderNo, refundRequestNo, err)
 		return order, false, fmt.Errorf("complete commercial refund: %w", err)
 	}
 	if changed && refunded != nil {
 		h.enqueueRelaySync(refunded.UID)
 	}
 	return refunded, changed, nil
+}
+
+// recordCommercialRefundFailure stores why a refund could not finish without
+// releasing anything. The claim and the frozen credit must survive the failure,
+// because the money may already have left the platform.
+func (h *CommercialPaymentHandler) recordCommercialRefundFailure(store CommercialRefundStore, orderNo, refundRequestNo string, cause error) {
+	if store == nil || cause == nil {
+		return
+	}
+	if err := store.FailCommercialOrderRefund(orderNo, refundRequestNo, cause.Error()); err != nil {
+		log.Printf("record failed commercial refund %s: %v", orderNo, err)
+	}
 }
 
 func commercialRefundRequestNo(orderNo string) string {

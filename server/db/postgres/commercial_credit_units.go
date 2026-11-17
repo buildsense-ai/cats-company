@@ -88,50 +88,30 @@ func commercialOrderCreditGrantBooked(ctx context.Context, tx *sql.Tx, orderNo s
 	return booked, nil
 }
 
-// reverseCommercialOrderModelCredit takes paid credit that a legacy order booked
-// back out of the paid bucket. It is deliberately conservative: once any of that
-// credit could have been spent, the refund is refused instead of clawing back
-// money the buyer no longer holds.
-func reverseCommercialOrderModelCredit(ctx context.Context, tx *sql.Tx, order *types.CommercialOrder, now time.Time) error {
+// commercialOrderPaidCreditRefusal is the single gate that decides whether the
+// paid credit an order booked can still be taken back, and the only thing that
+// authorises the refund freeze. It must run after lockModelCreditAccount, so
+// every question below and the caller's write share the same account row lock:
+//   - is the purchase grant really booked;
+//   - has any paid credit been consumed since then;
+//   - does a model-call reservation still hold paid credit;
+//   - does a machine upgrade still hold paid credit (its hold is booked in
+//     the same paid ledger, so it is spent money just like a reservation);
+//   - did this very order repay arrears — repaying debt is consumption, the
+//     credit is gone and reversing it would hand back money the buyer
+//     already used.
+//
+// Any of them refusing keeps the refund incomplete for an operator instead of
+// turning spent credit into free credit. Nothing here restores arrears: a refund
+// only ever moves the paid bucket, so a top-up that paid off debt cannot be
+// refunded at all.
+func commercialOrderPaidCreditRefusal(ctx context.Context, tx *sql.Tx, order *types.CommercialOrder, account *store.ModelCreditAccount) error {
 	if order == nil || order.PlanModelCreditUnits <= 0 {
 		return nil
 	}
-	key := commercialOrderCreditRefundKey(order.OrderNo)
-	if len(key) > store.ModelCreditEventKeyMaxLen {
-		return fmt.Errorf("order model credit refund key is too long: %w", store.ErrModelCreditInvalid)
+	if account == nil {
+		return fmt.Errorf("%w: order %s has no credit account", ErrCommercialOrderCreditGrantMissing, order.OrderNo)
 	}
-	account, err := lockModelCreditAccount(ctx, tx, order.UID)
-	if err != nil {
-		return err
-	}
-	booked, err := readCommercialOrderCreditEvent(ctx, tx, key)
-	switch {
-	case err == nil:
-		if booked.uid != order.UID || booked.bucket != store.ModelCreditBucketPaid ||
-			booked.eventType != store.ModelCreditEventRefund || booked.units != -order.PlanModelCreditUnits {
-			return fmt.Errorf("order model credit refund %s conflicts with the booked event: %w", key, store.ErrModelCreditConflict)
-		}
-		// Replay: the credit was already taken back.
-		return nil
-	case errors.Is(err, sql.ErrNoRows):
-	default:
-		return err
-	}
-	// One query answers every question the reversal has to ask before it may
-	// touch the balance, and it runs after lockModelCreditAccount, so all the
-	// checks and the write below share the same account row lock:
-	//   - is the purchase grant really booked;
-	//   - has any paid credit been consumed since then;
-	//   - does a model-call reservation still hold paid credit;
-	//   - does a machine upgrade still hold paid credit (its hold is booked in
-	//     the same paid ledger, so it is spent money just like a reservation);
-	//   - did this very order repay arrears — repaying debt is consumption, the
-	//     credit is gone and reversing it would hand back money the buyer
-	//     already used.
-	// Any of them refusing keeps the refund incomplete for an operator instead
-	// of turning spent credit into free credit. Nothing here restores arrears:
-	// a refund only ever moves the paid bucket, so a top-up that paid off debt
-	// cannot be refunded at all.
 	var settledSinceGrant, openPaidHolds, openMachineUpgradeHolds, repaidArrears int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT
@@ -176,12 +156,185 @@ func reverseCommercialOrderModelCredit(ctx context.Context, tx *sql.Tx, order *t
 		return fmt.Errorf("%w: paid bucket holds %d units, order %s sold %d",
 			ErrCommercialOrderCreditShort, account.PaidUnits, order.OrderNo, order.PlanModelCreditUnits)
 	}
-	account.PaidUnits -= order.PlanModelCreditUnits
-	if err := saveModelCreditAccount(ctx, tx, account, now); err != nil {
-		return err
+	return nil
+}
+
+// One refund may have to reverse the paid credit its order sold, and it may only
+// do that once the money is really gone. The hold is the record of the opposite
+// order: the units are moved out of the spendable paid bucket BEFORE the payment
+// channel is called, and completion consumes the hold.
+//
+// The row itself is load-bearing evidence. An order that is already 'refunding'
+// without one was claimed by a build that refunded first, so the channel may
+// already have paid the money out; such a refund fails closed and is left to an
+// operator instead of being replayed.
+const (
+	commercialRefundHoldHeld     = "held"
+	commercialRefundHoldConsumed = "consumed"
+)
+
+var (
+	// errCommercialRefundHoldMissing refuses an order that is already
+	// 'refunding' without a local hold: the provider outcome is unknown, so the
+	// only safe move is to stop and reconcile.
+	errCommercialRefundHoldMissing = errors.New("commercial refund hold is missing")
+	// errCommercialRefundHoldMismatch refuses a hold that belongs to another
+	// claim, or one that was already consumed.
+	errCommercialRefundHoldMismatch = errors.New("commercial refund hold does not match the claim")
+)
+
+// commercialRefundHold is one order's frozen paid credit.
+type commercialRefundHold struct {
+	OrderNo         string
+	UID             int64
+	State           string
+	Units           int64
+	RefundRequestNo string
+	ReserveEventKey string
+}
+
+func readCommercialRefundHold(ctx context.Context, tx *sql.Tx, orderNo string, lock bool) (*commercialRefundHold, error) {
+	query := `SELECT order_no, uid, state, units, refund_request_no, reserve_event_key
+		FROM commercial_refund_holds WHERE order_no = $1`
+	if lock {
+		query += ` FOR UPDATE`
 	}
-	return recordModelCreditEvent(ctx, tx, key, account, store.ModelCreditEventRefund,
-		store.ModelCreditBucketPaid, -order.PlanModelCreditUnits, nil)
+	hold := commercialRefundHold{}
+	if err := tx.QueryRowContext(ctx, query, strings.TrimSpace(orderNo)).Scan(
+		&hold.OrderNo, &hold.UID, &hold.State, &hold.Units,
+		&hold.RefundRequestNo, &hold.ReserveEventKey); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read commercial refund hold: %w", err)
+	}
+	return &hold, nil
+}
+
+// freezeCommercialOrderRefundHold moves the paid credit the order may have to
+// reverse out of the spendable bucket and records the hold. It runs in the
+// caller's transaction, after the order row lock and under the buyer's account
+// row lock, so a concurrent model call, settle or second refund either waits or
+// sees the reduced balance.
+//
+// Repeating it for the same claim never freezes twice: an existing matching hold
+// is returned as is.
+func freezeCommercialOrderRefundHold(ctx context.Context, tx *sql.Tx, order *types.CommercialOrder,
+	refundRequestNo string, now time.Time) (*commercialRefundHold, error) {
+	if order == nil || strings.TrimSpace(order.OrderNo) == "" || order.UID <= 0 {
+		return nil, fmt.Errorf("invalid commercial refund hold: %w", store.ErrModelCreditInvalid)
+	}
+	refundRequestNo = strings.TrimSpace(refundRequestNo)
+	if store.ValidateModelCreditRequestID(refundRequestNo) != nil {
+		return nil, fmt.Errorf("invalid commercial refund request number %q: %w", refundRequestNo, store.ErrModelCreditInvalid)
+	}
+	reserveKey := store.ModelCreditEventKey(store.ModelCreditEventReserve, order.UID, refundRequestNo, store.ModelCreditBucketPaid)
+	if len(reserveKey) > store.ModelCreditEventKeyMaxLen {
+		return nil, fmt.Errorf("commercial refund hold key is too long: %w", store.ErrModelCreditInvalid)
+	}
+	existing, err := readCommercialRefundHold(ctx, tx, order.OrderNo, true)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		if existing.RefundRequestNo != refundRequestNo || existing.State != commercialRefundHoldHeld {
+			return nil, fmt.Errorf("%w: order %s already holds %d units for claim %q in state %q",
+				errCommercialRefundHoldMismatch, order.OrderNo, existing.Units, existing.RefundRequestNo, existing.State)
+		}
+		return existing, nil
+	}
+	bookedPaidCredit, err := commercialOrderCreditGrantBooked(ctx, tx, order.OrderNo)
+	if err != nil {
+		return nil, err
+	}
+	hold := &commercialRefundHold{
+		OrderNo:         order.OrderNo,
+		UID:             order.UID,
+		State:           commercialRefundHoldHeld,
+		RefundRequestNo: refundRequestNo,
+	}
+	if bookedPaidCredit && order.PlanModelCreditUnits > 0 {
+		account, err := lockModelCreditAccount(ctx, tx, order.UID)
+		if err != nil {
+			return nil, err
+		}
+		if err := commercialOrderPaidCreditRefusal(ctx, tx, order, account); err != nil {
+			return nil, err
+		}
+		hold.Units = order.PlanModelCreditUnits
+		account.PaidUnits -= hold.Units
+		if err := saveModelCreditAccount(ctx, tx, account, now); err != nil {
+			return nil, err
+		}
+		requestID := refundRequestNo
+		if err := recordModelCreditEvent(ctx, tx, reserveKey, account, store.ModelCreditEventReserve,
+			store.ModelCreditBucketPaid, hold.Units, &requestID); err != nil {
+			return nil, err
+		}
+		hold.ReserveEventKey = reserveKey
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO commercial_refund_holds
+		(order_no, uid, state, units, refund_request_no, reserve_event_key, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
+		hold.OrderNo, hold.UID, hold.State, hold.Units, hold.RefundRequestNo,
+		hold.ReserveEventKey, now.UTC()); err != nil {
+		return nil, fmt.Errorf("record commercial refund hold: %w", err)
+	}
+	return hold, nil
+}
+
+// consumeCommercialRefundHold records the release of the reservation and the
+// order's negative refund together. Both events snapshot the final account;
+// the frozen units never re-enter spendable balance, so unrelated grants cannot
+// make refund completion overflow an artificial intermediate balance.
+func consumeCommercialRefundHold(ctx context.Context, tx *sql.Tx, order *types.CommercialOrder,
+	hold *commercialRefundHold, now time.Time) error {
+	if order == nil || hold == nil || order.UID <= 0 {
+		return fmt.Errorf("invalid commercial refund hold: %w", store.ErrModelCreditInvalid)
+	}
+	if hold.State != commercialRefundHoldHeld {
+		return fmt.Errorf("%w: order %s hold is %s", errCommercialRefundHoldMismatch, order.OrderNo, hold.State)
+	}
+	if hold.Units > 0 {
+		account, err := lockModelCreditAccount(ctx, tx, order.UID)
+		if err != nil {
+			return err
+		}
+		// The freeze already reduced paid_units. Release + refund have zero
+		// net effect, so snapshot the final account without adding the hold back.
+		requestID := hold.RefundRequestNo
+		releaseKey := store.ModelCreditEventKey(store.ModelCreditEventRelease, order.UID, hold.RefundRequestNo, store.ModelCreditBucketPaid)
+		if err := recordModelCreditEvent(ctx, tx, releaseKey, account, store.ModelCreditEventRelease,
+			store.ModelCreditBucketPaid, hold.Units, &requestID); err != nil {
+			return err
+		}
+		refundKey := commercialOrderCreditRefundKey(order.OrderNo)
+		if booked, err := readCommercialOrderCreditEvent(ctx, tx, refundKey); err == nil {
+			return fmt.Errorf("order model credit refund %s is already booked for uid %d: %w",
+				refundKey, booked.uid, store.ErrModelCreditConflict)
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err := recordModelCreditEvent(ctx, tx, refundKey, account, store.ModelCreditEventRefund,
+			store.ModelCreditBucketPaid, -hold.Units, nil); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE commercial_refund_holds
+		SET state = $2, consumed_at = $3, updated_at = $3
+		WHERE order_no = $1 AND state = $4`,
+		order.OrderNo, commercialRefundHoldConsumed, now.UTC(), commercialRefundHoldHeld)
+	if err != nil {
+		return fmt.Errorf("settle commercial refund hold: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read settled commercial refund hold: %w", err)
+	}
+	if affected != 1 {
+		return fmt.Errorf("%w: order %s hold changed while it was consumed", errCommercialRefundHoldMismatch, order.OrderNo)
+	}
+	return nil
 }
 
 // commercialOrderCreditEvent is the small slice of a ledger row these helpers
