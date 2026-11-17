@@ -2,6 +2,7 @@ import React from 'react';
 
 export const CHAT_COMMANDS = [
   { name: '/compact', label: '压缩上下文', description: '保存检查点并整理较早的对话' },
+  { name: '/resume', label: '恢复任务', description: '重新检查并恢复已暂停的任务或上下文' },
   { name: '/stop', label: '停止当前处理', description: '中断正在运行的请求' },
   { name: '/clear', label: '清空上下文', description: '清空当前会话的上下文' },
 ];

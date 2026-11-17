@@ -4,14 +4,16 @@ import { Simulate } from 'react-dom/test-utils';
 import CommandPalette, { CHAT_COMMANDS, commandMatchesDraft } from './command-palette';
 
 describe('command palette', () => {
-  it('offers only the three supported commands and filters partial drafts', () => {
+  it('offers the supported commands and filters partial drafts', () => {
     expect(commandMatchesDraft('/')?.commands).toEqual(CHAT_COMMANDS);
     expect(commandMatchesDraft('/co')?.commands.map((command) => command.name)).toEqual(['/compact']);
+    expect(commandMatchesDraft('/re')?.commands.map((command) => command.name)).toEqual(['/resume']);
+    expect(commandMatchesDraft('/恢复')?.commands.map((command) => command.name)).toEqual(['/resume']);
     expect(commandMatchesDraft('/停止')?.commands.map((command) => command.name)).toEqual(['/stop']);
     expect(commandMatchesDraft('普通消息')).toBeNull();
   });
 
-  it('selects the highlighted command with the same callback used by a click', async () => {
+  it('selects the clicked command independently of the highlighted command', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -20,17 +22,19 @@ describe('command palette', () => {
     await act(async () => root.render(
       <CommandPalette
         commands={CHAT_COMMANDS}
-        activeIndex={1}
+        activeIndex={2}
         onSelect={onSelect}
         onHighlight={onHighlight}
       />,
     ));
 
     const options = container.querySelectorAll('[role="option"]');
-    expect(options).toHaveLength(3);
-    expect(options[1].getAttribute('aria-selected')).toBe('true');
-    await act(async () => options[2].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })));
-    expect(onSelect).toHaveBeenCalledWith(CHAT_COMMANDS[2]);
+    expect(options).toHaveLength(4);
+    expect(options[2].getAttribute('aria-selected')).toBe('true');
+    expect(options[1].getAttribute('aria-selected')).toBe('false');
+    expect(options[1].textContent).toContain('/resume');
+    await act(async () => options[1].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })));
+    expect(onSelect).toHaveBeenCalledWith(CHAT_COMMANDS[1]);
     await act(async () => Simulate.mouseEnter(options[0]));
     expect(onHighlight).toHaveBeenCalledWith(0);
 
