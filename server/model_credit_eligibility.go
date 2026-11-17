@@ -15,16 +15,14 @@ import (
 //
 // GetModelCreditEligibility 的三个返回值分别是：
 //   - enabled：credit 身份。这个用户是否曾经进入 credit 体系；套餐过期后仍然是
-//     true。Relay 依靠它区分「过期」和「真正的 legacy 老用户」，后者才允许回落到
-//     老额度路径。
+//     true。有效旧模型权限通过 legacy_models 独立返回。
 //   - plan_tier：当下主套餐的档位；没有生效套餐但还有付费余额（独立充值）时是
 //     Relay 梯度的第 1 档，其余无权限情况为 0。
 //   - model_credit_units：当下可用的 credit 额度（micro units）—— 主套餐的月额度，
 //     或者没有套餐时的付费余额；0 表示此刻没有可用的 credit 权限（过期/退订/余额
 //     为零），接口据此回答 allowed=false。
 //
-// 机器（bot）的模型目录与保存权限按同一份判定给范围（见 bot_model_config.go），
-// credit 身份的账户不得再回落到老额度路径。
+// 机器目录、保存和 peer 的 legacy_models 共用有效商业摘要，不恢复历史权益。
 type ModelCreditEligibilityReader interface {
 	GetModelCreditEligibility(context.Context, int64) (bool, int, int64, error)
 }
@@ -68,13 +66,16 @@ func (h *ModelCreditEligibilityHandler) ServeHTTP(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load credit eligibility"})
 		return
 	}
+	summary, err := readLegacyModelSummary(h.reader, input.UID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load legacy eligibility"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		// enabled 是身份，allowed 是当期权限：过期套餐回答 enabled=true /
-		// allowed=false，真正的 legacy 老用户才是 enabled=false。Relay 只允许在
-		// enabled=false 时回落到老额度路径。
 		"enabled":            enabled,
 		"allowed":            enabled && allowance > 0,
 		"plan_tier":          tier,
 		"model_credit_units": allowance,
+		"legacy_models":      legacyModelsForSummary(summary),
 	})
 }

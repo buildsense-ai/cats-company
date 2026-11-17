@@ -1402,12 +1402,143 @@ func TestOwnerModelCatalogRestrictsPaidOnlyCreditUserToCreditModels(t *testing.T
 	}
 }
 
-// 套餐过期且没有付费余额（gift 不凭空授权）：目录里没有任何可选项，老额度也不能
-// 把高级模型放回来。当前已保存的模型仍然可见，但被禁用并说明原因。
+// Valid legacy quota survives independent credit enrollment. Overlapping
+// DeepSeek uses legacy quota, alongside models that have no credit price.
+func TestOwnerModelCatalogMixedLegacyPriorityAndSharedUsage(t *testing.T) {
+	relayCalls := 0
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		relayCalls++
+		writeJSON(w, http.StatusOK, map[string]interface{}{"users": []map[string]interface{}{{
+			"uid": 38, "configured": true, "limits": map[string]interface{}{
+				"monthly_budget": map[string]interface{}{"max_limit": 500, "current_usage": 125},
+			},
+		}}})
+	}))
+	defer relay.Close()
+
+	quota := &creditAwareQuotaStore{
+		// This is a current trusted summary, not historical entitlement data.
+		summary:   &types.CommercialSummary{TotalsByModel: map[string]float64{"MiniMax-M3": 500}},
+		enabled:   true,
+		tier:      store.ModelCreditTaskPlanTierMin,
+		allowance: 4_000 * store.ModelCreditUnitsPerCredit,
+	}
+	handler := NewBotModelConfigHandler(nil, nil)
+	handler.SetRelayUsageClient(&RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()})
+	handler.SetCommercialQuotaSource(quota, true, nil)
+
+	catalog, quotaError := handler.catalogWithUsage(context.Background(), 38, true)
+	if quotaError != "" {
+		t.Fatalf("quota error=%q, want a credit account to report no quota error", quotaError)
+	}
+	if relayCalls != 1 {
+		t.Fatalf("mixed catalog hit relay %d times, want 1", relayCalls)
+	}
+	if len(catalog) != 2 {
+		t.Fatalf("mixed catalog=%#v, want MiniMax and DeepSeek", catalog)
+	}
+	for _, item := range catalog {
+		if !item.Available || item.BillingMode != "legacy" || item.Quota == nil || item.Quota.RemainingPercent != 75 {
+			t.Fatalf("mixed legacy entry=%#v", item)
+		}
+	}
+	// 全局目录是其它入口（relay 公开目录、严格按老套餐的响应）的来源，不能被
+	// 这次 credit 调用写脏。
+	for _, item := range botModelCatalog {
+		if item.BillingMode != "" {
+			t.Fatalf("global catalog entry %s was polluted with billing_mode=%q", item.ID, item.BillingMode)
+		}
+	}
+	for _, item := range relayPublicModelCatalog() {
+		if item.BillingMode != "" {
+			t.Fatalf("relay public catalog entry %s leaked billing_mode=%q", item.ID, item.BillingMode)
+		}
+	}
+}
+
+// JSON 契约：credit 身份的 owner 响应里条目带 billing_mode=credits，且没有任何
+// 编造的 relay 额度字段（前端据此显示“使用账户点数”而不是“额度未配置”）。
+func TestOwnerModelConfigJSONMarksCreditBillingModeAndOmitsQuota(t *testing.T) {
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 38},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	quota := &creditAwareQuotaStore{
+		enabled:   true,
+		tier:      store.ModelCreditTaskPlanTierMin,
+		allowance: 4_000 * store.ModelCreditUnitsPerCredit,
+	}
+	handler := NewBotModelConfigHandler(db, db)
+	handler.SetCommercialQuotaSource(quota, true, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43&include_usage=1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"billing_mode":"credits"`) {
+		t.Fatalf("credit billing mode missing from owner JSON: %s", body)
+	}
+	for _, invented := range []string{`"quota":`, `"quota_error"`, `"remaining_percent"`, `"percent":`} {
+		if strings.Contains(body, invented) {
+			t.Fatalf("credit owner JSON invented quota data (%s): %s", invented, body)
+		}
+	}
+}
+
+// 隔离：legacy（无 credit 资格读取）的 owner 依旧按 relay 额度显示百分比，条目
+// 不带 billing_mode —— 本次改动不能把老用户也标成点数账户。
+func TestOwnerModelConfigJSONKeepsLegacyQuotaWithoutBillingMode(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"users": []map[string]interface{}{{
+				"uid": 7, "configured": true,
+				"limits": map[string]interface{}{
+					"model_limits": []map[string]interface{}{
+						{
+							"provider": "openai", "model": "gpt-6.1-sol",
+							"budget": map[string]interface{}{"max_limit": 100.0, "current_usage": 25.0},
+						},
+					},
+				},
+			}},
+		})
+	}))
+	defer relay.Close()
+
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+	handler.SetRelayUsageClient(&RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()})
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{
+		summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}},
+	}, false, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43&include_usage=1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "billing_mode") {
+		t.Fatalf("legacy owner must not be marked as a credits account: %s", body)
+	}
+	if !strings.Contains(body, `"remaining_percent":75`) {
+		t.Fatalf("legacy per-model percentage missing: %s", body)
+	}
+}
+
+// An expired credit identity with no effective legacy quota cannot reopen the catalog.
 func TestOwnerModelCatalogDeniesExpiredCreditUser(t *testing.T) {
 	quota := &creditAwareQuotaStore{
-		// 历史老额度还在：过期 credit 用户不得靠它回落到老模型目录。
-		summary: &types.CommercialSummary{TotalsByModel: map[string]float64{"MiniMax-M3": 500}},
+		summary: &types.CommercialSummary{},
 		enabled: true,
 		tier:    store.ModelCreditTaskPlanTierNone,
 	}
@@ -1518,5 +1649,75 @@ func TestBotModelCreditPermissionModelAllowed(t *testing.T) {
 		if got := testCase.permission.modelAllowed(testCase.model); got != testCase.want {
 			t.Fatalf("%s: modelAllowed(%s)=%v, want %v", testCase.name, testCase.model, got, testCase.want)
 		}
+	}
+}
+
+func TestOwnerModelCatalogKeepsEffectiveLegacyWithZeroCreditBalance(t *testing.T) {
+	quota := &creditAwareQuotaStore{enabled: true, summary: &types.CommercialSummary{
+		TotalsByModel: map[string]float64{"MiniMax-M3": 500},
+	}}
+	handler := NewBotModelConfigHandler(nil, nil)
+	// Legacy grants remain valid even outside the shared-budget rollout.
+	handler.SetCommercialQuotaSource(quota, false, nil)
+	catalog, quotaError := handler.catalogWithUsage(context.Background(), 7, false)
+	if quotaError != "" || len(catalog) != 2 {
+		t.Fatalf("catalog=%#v error=%s", catalog, quotaError)
+	}
+	for _, item := range catalog {
+		if !item.Available || item.BillingMode != "legacy" {
+			t.Fatalf("legacy entry=%#v", item)
+		}
+		if allowed, err := handler.catalogModelAllowed(context.Background(), 7, item.ID); err != nil || !allowed {
+			t.Fatalf("model=%s allowed=%v err=%v", item.ID, allowed, err)
+		}
+	}
+	quota.summary = &types.CommercialSummary{}
+	if allowed, err := handler.catalogModelAllowed(context.Background(), 7, "minimax-m3"); err != nil || allowed {
+		t.Fatalf("removed legacy quota allowed=%v err=%v", allowed, err)
+	}
+}
+
+func TestOwnerModelSelectionMixedLegacyAndCreditTransitions(t *testing.T) {
+	db := &botModelConfigTestStore{owners: map[int64]int64{43: 7}, models: map[int64]*types.BotModelConfig{43: {RuntimeProtocol: botModelRuntimeProtocol}}}
+	quota := &creditAwareQuotaStore{enabled: true, tier: 1, allowance: 100, summary: &types.CommercialSummary{TotalsByModel: map[string]float64{"MiniMax-M3": 500}}}
+	handler := NewBotModelConfigHandler(db, db)
+	handler.SetCommercialQuotaSource(quota, true, nil)
+	patch := func(model string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(`{"model_id":"`+model+`"}`))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+		rec := httptest.NewRecorder()
+		handler.HandleOwnerConfig(rec, req)
+		return rec
+	}
+	if rec := patch("minimax-m3"); rec.Code != http.StatusOK {
+		t.Fatalf("valid unpriced legacy model status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	quota.allowance = 0
+	if rec := patch("minimax-m3"); rec.Code != http.StatusOK {
+		t.Fatalf("zero credit valid legacy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	quota.summary = &types.CommercialSummary{}
+	if rec := patch("minimax-m3"); rec.Code != http.StatusForbidden {
+		t.Fatalf("removed legacy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	quota.allowance = 100
+	if rec := patch(deepSeekPublicModelID); rec.Code != http.StatusOK {
+		t.Fatalf("credit model status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := patch("minimax-m3"); rec.Code != http.StatusForbidden {
+		t.Fatalf("credit cannot resurrect unpriced model status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOwnerMixedPermissionsFailClosedOnLegacySummaryFailure(t *testing.T) {
+	quota := &creditAwareQuotaStore{enabled: true, tier: 1, allowance: 100, summaryErr: errors.New("legacy summary unavailable")}
+	handler := NewBotModelConfigHandler(nil, nil)
+	handler.SetCommercialQuotaSource(quota, true, nil)
+	catalog, quotaError := handler.catalogWithUsageForCurrent(context.Background(), 7, 0, false, "minimax-m3")
+	if quotaError == "" || len(catalog) != 1 || catalog[0].Available {
+		t.Fatalf("catalog=%#v error=%s", catalog, quotaError)
+	}
+	if allowed, err := handler.catalogModelAllowed(context.Background(), 7, "minimax-m3"); err == nil || allowed {
+		t.Fatalf("allowed=%v err=%v", allowed, err)
 	}
 }

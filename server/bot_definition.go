@@ -189,6 +189,18 @@ func (h *BotDefinitionHandler) HandleOwnerModel(w http.ResponseWriter, r *http.R
 		writeJSON(w, status, map[string]string{"error": "bot model definition could not be updated"})
 		return
 	}
+	if model.Kind == botModelKindCatalog && h.modelConfig != nil {
+		allowed, permissionErr := h.modelConfig.catalogModelAllowed(r.Context(), ownerUID, model.ModelID)
+		if permissionErr != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "model permissions unavailable"})
+			return
+		}
+		if !allowed {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "model_not_in_plan", "error": "model is not included in the current permissions"})
+			return
+		}
+	}
+
 	expected := int64(-1)
 	if req.Revision != nil {
 		expected = *req.Revision
