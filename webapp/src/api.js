@@ -707,6 +707,14 @@ export const api = {
     channel,
     client_request_id: clientRequestId,
   }, options),
+  createCreditTopupOrder: (amountFen, clientRequestId, options = {}) => request('POST', '/api/relay/commercial/orders', {
+    kind: 'credit_topup', amount_fen: amountFen, channel: 'alipay_page', client_request_id: clientRequestId,
+  }, options),
+  getCloudWorkerUpgradeQuote: (name, plan, options = {}) => request('GET', `/api/cloud-workers/upgrade?${new URLSearchParams({ name, plan })}`, undefined, options),
+  getCloudWorkerUpgradeOperation: (operationId, options = {}) => request('GET', `/api/cloud-workers/upgrade?${new URLSearchParams({ operation_id: operationId })}`, undefined, options),
+  upgradeCloudWorker: (name, plan, quoteId, clientRequestId, options = {}) => request('POST', '/api/cloud-workers/upgrade', {
+    name, plan, quote_id: quoteId, client_request_id: clientRequestId,
+  }, options),
   cancelCommercialOrder: (orderNo, options = {}) => request('POST', '/api/relay/commercial/orders/cancel', { order_no: orderNo }, options),
   confirmCommercialTestPayment: (orderNo) => request('POST', '/api/relay/commercial/orders/test-confirm', { order_no: orderNo }),
   claimCommercialTrial: () => request('POST', '/api/relay/commercial/trial/claim', {}),

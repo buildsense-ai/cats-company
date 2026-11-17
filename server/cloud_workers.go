@@ -1481,14 +1481,18 @@ func (h *CloudWorkerHandler) ApplyPlanToOwner(uid int64, tier string) {
 			strings.TrimSpace(lifecycle.TenantName) == "" {
 			continue
 		}
-		out, runErr := h.runScript(h.changePlanScript, "--name", lifecycle.TenantName, "--plan", tier)
+		// A bought upgrade owns a bigger tier for its window: a package renewal
+		// (or a downgrade of the plan row) must not pull the container back down
+		// while the buyer still holds that window.
+		effectiveTier := h.effectiveMachinePlan(lifecycle.TenantName, tier)
+		out, runErr := h.runScript(h.changePlanScript, "--name", lifecycle.TenantName, "--plan", effectiveTier)
 		if runErr != nil {
 			log.Printf("[cloud-worker] plan sync tenant=%s uid=%d tier=%s failed: %v",
-				lifecycle.TenantName, uid, tier, runErr)
+				lifecycle.TenantName, uid, effectiveTier, runErr)
 			continue
 		}
 		log.Printf("[cloud-worker] plan sync tenant=%s uid=%d tier=%s result=%s",
-			lifecycle.TenantName, uid, tier, strings.TrimSpace(string(out)))
+			lifecycle.TenantName, uid, effectiveTier, strings.TrimSpace(string(out)))
 	}
 }
 
@@ -2382,6 +2386,9 @@ func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 	}
 	h.retryQueuedCloudWorkers()
 	h.retryOrphanedCloudWorkerCredits()
+	// 点数升配的收尾：脚本超时/进程中断留下的 reconciling 操作在这里被重新
+	// 核对（change-plan 适配器幂等，重复执行同一档只会回答 noop）。
+	h.ReconcileMachineUpgrades()
 }
 
 // cloudWorkerOrphanCreditMinAge is how long a paid credit may sit untouched
@@ -3116,6 +3123,10 @@ func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request
 func (h *CloudWorkerHandler) HandleSub(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/cloud-workers/")
 	switch {
+	case rest == "upgrade":
+		// 点数升配：GET 报价/操作状态，POST 执行。独立于 create/update 这类
+		// 脚本动作，因为它要的是「先报价、再付点数、只改档位」。
+		h.HandleMachineUpgrade(w, r)
 	case rest == "meta":
 		h.HandleMeta(w, r)
 	case strings.HasSuffix(rest, "/rollback"):

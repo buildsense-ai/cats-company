@@ -10,10 +10,9 @@ export const MODEL_CREDIT_LEGACY_NOTICE = '当前使用旧套餐额度，尚未�
 // allowed=false 只能证明「当期不能用」，不能证明是套餐到期（也可能是权限被收回）。
 // 所以文案只报当前模型权限不可用，并让用户自己去核对有效期与权限状态。
 export const MODEL_CREDIT_UNAVAILABLE_NOTICE = 'credit 账户仍在，当前模型权限不可用；账本余额仍可查看，请检查套餐有效期及权限状态。';
-export const MODEL_CREDIT_TOPUP_NOTICE = '独立余额充值暂未开放';
+export const MODEL_CREDIT_TOPUP_NOTICE = '独立充值以支付页开放状态为准';
 export const MODEL_CREDIT_CYCLE_NOTE = '月额度按订阅生效日锚定的自然月刷新，不结转；提前续费不会提前补额。';
-// 桶名用「付费余额」而不是「充值余额」：这个桶里的钱是既有已入账额度，
-// 独立充值入口并未开放，写「充值」会让人以为现在就能充。
+// 付费余额同时包含独立充值及其他已入账的付费点数。
 export const MODEL_CREDIT_PAID_LABEL = '付费余额';
 // 后端只在「下一期已被已付订阅覆盖」时才给 next_refresh_at。没有它就说明刷新要等
 // 续费，前端只能这么提示，不能自己按 +1 个月推算下一期日期。

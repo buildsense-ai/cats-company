@@ -3,8 +3,11 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/openchat/openchat/server/store"
 )
 
 // GetModelCreditEligibility 返回 (enabled, plan_tier, allowance)：
@@ -39,6 +42,10 @@ func (a *Adapter) GetModelCreditEligibility(ctx context.Context, uid int64) (boo
 		  AND e.state = 'active'
 		  AND e.starts_at <= CURRENT_TIMESTAMP
 		  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+		  AND (`+modelCreditEntitlementUnitsSQL+` > 0 OR (e.source = 'order' AND o.id IS NULL))
+		-- Only a confirmed zero-credit legacy entitlement may be skipped for
+		-- top-up-only access. A missing order snapshot must keep its primary
+		-- slot with zero allowance so damaged order data fails closed.
 		-- Paid packages own the primary slot: an invite code (or a free/legacy
 		-- baseline) may add gift credit but must never displace an active paid
 		-- V2/V3 tier. Within the same class the highest tier wins, then the
@@ -53,14 +60,42 @@ func (a *Adapter) GetModelCreditEligibility(ctx context.Context, uid int64) (boo
 		  p.plan_tier DESC,
 		  e.expires_at DESC NULLS LAST,
 		  e.starts_at DESC,
-		  e.id DESC
+		e.id DESC
 		LIMIT 1`, uid).Scan(&tier, &allowance)
 	if err == sql.ErrNoRows {
-		// 没有生效中的订阅：权限没了，但身份还在（enabled 保持原值）。
+		// 没有生效中的订阅：先看账本里有没有「花钱买来的」点数（独立充值）。
+		// 充值是永久可花的余额，不是月额度，所以它能在没有任何套餐的情况下
+		// 单独给出一份权限；但只有 paid 桶算数 —— 赠送额度、以及一个从没进过
+		// credit 体系的 legacy 用户（没有账户行、paid = 0）都不受影响，
+		// 这样「legacy 不花钱也能拿到 credit 权限」不可能发生。
+		paid, paidErr := a.modelCreditPaidUnits(ctx, uid)
+		if paidErr != nil {
+			return false, 0, 0, fmt.Errorf("load paid model credit for eligibility: %w", paidErr)
+		}
+		if paid > 0 {
+			// 档位：充值不买套餐，所以按 Relay 梯度默认的第 1 档计价；它不授予
+			// 任何机器，也不参与套餐主槽位的排序。
+			return true, store.ModelCreditTaskPlanTierMin, paid, nil
+		}
+		// 权限没了，但身份还在（enabled 保持原值）。
 		return enabled, 0, 0, nil
 	}
 	if err != nil {
 		return false, 0, 0, fmt.Errorf("load primary model credit eligibility: %w", err)
 	}
 	return enabled, tier, allowance, nil
+}
+
+// modelCreditPaidUnits 读 paid 桶余额，不建账户行也不加锁：资格查询是只读入口，
+// 一次读取绝不能把老用户迁进 credit 账本。
+func (a *Adapter) modelCreditPaidUnits(ctx context.Context, uid int64) (int64, error) {
+	var paid int64
+	if err := a.db.QueryRowContext(ctx,
+		`SELECT COALESCE(paid_units, 0) FROM model_credit_accounts WHERE uid = $1`, uid).Scan(&paid); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return paid, nil
 }

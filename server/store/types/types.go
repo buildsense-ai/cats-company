@@ -129,6 +129,10 @@ type CommercialOrder struct {
 	OrderNo           string             `json:"order_no"`
 	UID               int64              `json:"uid"`
 	PlanID            int64              `json:"plan_id"`
+	// Kind is "plan" for a package and "credit_topup" for a standalone credit
+	// purchase. A top-up carries plan_id = 0: there is no product row, and the
+	// amount plus the unit snapshot on the order are the whole contract.
+	Kind              string             `json:"kind,omitempty"`
 	PlanSlug          string             `json:"plan_slug"`
 	PlanName          string             `json:"plan_name"`
 	PlanDescription   string             `json:"plan_description,omitempty"`
@@ -161,6 +165,14 @@ type CommercialOrder struct {
 	// reverse, so editing the plan afterwards cannot change a sold order.
 	PlanModelCreditUnits int64 `json:"plan_model_credit_units,omitempty"`
 }
+
+// CommercialOrderKindPlan is the historical product: a commercial package.
+const CommercialOrderKindPlan = "plan"
+
+// CommercialOrderKindCreditTopup sells spendable model credit for money. It is
+// deliberately not a subscription: no plan row, no trial, no machine, and no
+// change to the package window the buyer already holds.
+const CommercialOrderKindCreditTopup = "credit_topup"
 
 // CommercialPaymentConfirmation is the normalized, verified result emitted by
 // a payment provider. PayloadHash is retained for audit without storing PII.

@@ -496,6 +496,10 @@ func (h *CommercialPaymentHandler) HandleCatalog(w http.ResponseWriter, r *http.
 		"trial_available":    trialAvailable,
 		"test_mode":          h.testAllowedFor(uid),
 		"payment_configured": len(h.channelsFor(uid)) > 0,
+		// 独立点数充值：enabled 由服务端按真实 alipay 售卖通道 + credit 结算门禁
+		// 算出来，前端只能照着显示，不能自己打开。金额区间与档位也由服务端给，
+		// 避免前后端各写一套价格。
+		"credit_topup": h.commercialTopupCatalog(uid),
 	})
 }
 
@@ -861,7 +865,9 @@ func commercialPaymentCallbackOrigin(ctx context.Context) (string, bool) {
 
 func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Request, uid int64) {
 	var req struct {
+		Kind            string `json:"kind"`
 		PlanID          int64  `json:"plan_id"`
+		AmountFen       int64  `json:"amount_fen"`
 		Channel         string `json:"channel"`
 		ClientRequestID string `json:"client_request_id"`
 	}
@@ -869,9 +875,33 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid order request"})
 		return
 	}
+	req.Kind = strings.TrimSpace(req.Kind)
 	req.Channel = strings.TrimSpace(req.Channel)
 	req.ClientRequestID = strings.TrimSpace(req.ClientRequestID)
-	if req.PlanID <= 0 || !commercialClientRequestPattern.MatchString(req.ClientRequestID) {
+	if !commercialClientRequestPattern.MatchString(req.ClientRequestID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid order request"})
+		return
+	}
+	if req.Kind == types.CommercialOrderKindCreditTopup {
+		// 独立充值：金额是唯一商品描述，plan_id 必须为空，免得一笔充值被当成
+		// 订阅卖掉（或者反过来，一笔订阅被当成充值）。
+		if req.PlanID != 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid order request"})
+			return
+		}
+		h.createTopupOrder(w, r, uid, req.Channel, req.ClientRequestID, req.AmountFen)
+		return
+	}
+	if req.Kind != "" && req.Kind != types.CommercialOrderKindPlan {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid order request"})
+		return
+	}
+	if req.AmountFen != 0 {
+		// 套餐金额由服务端按商品定价，客户端不能自己带价。
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid order request"})
+		return
+	}
+	if req.PlanID <= 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid order request"})
 		return
 	}
@@ -940,37 +970,9 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 		writeJSON(w, status, map[string]string{"error": message})
 		return
 	}
-	if order.Status != "created" && order.Status != "failed" && !(order.Status == "pending" && strings.TrimSpace(order.CheckoutURL) == "") {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"order": commercialOrderForUser(order)})
-		return
-	}
-	order, claimed, err := h.store.BeginCommercialOrderPayment(order.OrderNo, expiresAt)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare payment"})
-		return
-	}
-	if !claimed {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"order": commercialOrderForUser(order)})
-		return
-	}
-	intent, err := provider.CreatePayment(withCommercialPaymentCallbackOrigin(r.Context(), r), order)
-	if err != nil {
-		_ = h.store.FailCommercialOrder(order.OrderNo, err.Error())
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to create payment"})
-		return
-	}
-	if intent == nil || intent.ExpiresAt.IsZero() {
-		_ = h.store.FailCommercialOrder(order.OrderNo, "payment provider returned an invalid intent")
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "payment provider returned an invalid intent"})
-		return
-	}
-	order, err = h.store.SetCommercialOrderPaymentIntent(order.OrderNo, intent.CheckoutURL, intent.ExpiresAt)
-	if err != nil {
-		_ = h.store.FailCommercialOrder(order.OrderNo, err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save payment order"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"order": commercialOrderForUser(order)})
+	// 支付发起这一段和充值是同一份逻辑（claim → 建单 → 落 checkout_url），
+	// 抽出去让两条产品线共用同一套重放规则。
+	h.startCommercialOrderPayment(w, r, order, expiresAt)
 }
 
 func decodeCommercialJSON(r *http.Request, target interface{}) error {

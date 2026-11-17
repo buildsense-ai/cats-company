@@ -12,6 +12,7 @@ import {
   ShieldAlert,
   Zap,
 } from 'lucide-react';
+import CloudWorkerUpgrade from './cloud-worker-upgrade';
 import { isCloudWorkerPending } from '../cloud-worker-pending';
 import {
   MINUTE_MS,
@@ -498,6 +499,10 @@ export default function CloudWorkerPanel({
                   </div>
                   {lifecycleHint && (
                     <p className="cc-cloud-version-hint"><AlertCircle size={13} /> {lifecycleHint}</p>
+                  )}
+
+                  {isSharedWorker(worker) && !managementBlocked && actionAvailable('upgrade') && (
+                    <CloudWorkerUpgrade worker={worker} disabled={hasActiveAction || acting} />
                   )}
 
                   <div className="cc-cloud-worker-controls">

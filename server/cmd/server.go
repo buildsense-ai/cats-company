@@ -1337,6 +1337,7 @@ func main() {
 	// re-applies and picks up server-side catalog descriptor changes (for
 	// example the DeepSeek Flash protocol lane). See bot_model_config.go.
 	mux.HandleFunc("/api/admin/bots/model-config/reapply", adminAuthWithDB(botModelConfigHandler.HandleAdminReapplyModelConfig))
+	mux.HandleFunc("/api/admin/cloud-workers/upgrade/retry", adminAuthWithDB(cloudWorkerHandler.HandleAdminMachineUpgradeRetry))
 	mux.HandleFunc("/api/bot/identity", botAPIKeyAuthWithDB(server.HandleBotIdentity))
 	mux.HandleFunc("/api/bot/artifact-runtime-config", botAPIKeyAuthWithDB(artifactRuntimeConfigHandler.Handle))
 	mux.HandleFunc("/api/bot/artifact-context", botAPIKeyAuthWithDB(artifactContextSnapshotHandler.HandleBotRead))

@@ -460,6 +460,15 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test ./server/db/postgres -run 'TestPostgres(AdminUserSearch|StoreContract|CloudWorkerDeploymentContract|CloudWorkerRuntimeCreditsContract|CloudWorkerLifecycleTermContract|CloudWorkerPackageTermContract|CommercialActionMachineTermPreview|CommercialRefundSettlesSharedWorkerTerms|CommercialAdjustmentSettlesSharedWorkerTerms|CloudWorkerMachineTermChain|CommercialEarlyRenewalKeepsSharedWorkerTerm|CommercialExtendKeepsSharedWorkerTerm|CommercialInviteRedeemSettlesSharedWorkerTerms|CreditInviteKeepsMachineWindow|CommercialFutureGapDoesNotExtendWorkerTerm|CommercialPlanManagement|CommercialPaymentContract|CommercialAdjustmentContract|CommercialActionsContract|WorkerActionHistorySurvivesRollback|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|CommercialNativeSearchFlashMigrationPreservesManualQuotaAndRollsBack|CommercialRetireV4FlashMigrationPreservesManualQuotaAndRollsBack|CommercialFreeImageModelsMigrationGrantsAndRollsBack|CommercialAutoRenewConfigAndRuns|CommercialRecordsBeyondFirstHundred|CommercialPublicModelsPreserveRenewalAndCustomQuota|CommercialImageModels|CommercialInviteRedeemerUIDs|ArtifactRuntimeEventSequenceFollowsCommitOrder|ArtifactAppMetadataPersistence)' -count=1 -v
 
+      - name: Test PostgreSQL credit top-up and paid machine upgrades
+        if: matrix.part == 'credit'
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: |
+          test -n "$CATS_PG_TEST_DSN"
+          go test -race ./server/db/postgres -run '^TestPostgres(CreditTopup|MachineUpgrade|MachinePlanTerm)' -parallel=1 -count=1 -v
+          go test -race ./server -run '^Test(MachineUpgrade|CommercialTopup)' -count=1
+
       - name: Test PostgreSQL multi-device selection contract
         if: matrix.part == 'store'
         env:

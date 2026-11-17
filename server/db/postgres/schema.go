@@ -216,6 +216,10 @@ func (a *Adapter) CreateSchema() error {
 		// 名额、以及预留的 root/unfunded 列。它必须排在 068 之后，因为它改了
 		// model_credit_reservations 的合计约束。
 		migrateModelCreditTasks,
+		// 点数充值与云机器升配（migration 000074）：commercial_orders 增加
+		// kind 并允许充值订单没有 plan_id，另建升配的报价/操作/权益三张表。
+		// 放在 commercial_orders 与 model credit 两边都就绪之后。
+		migrateCreditTopupAndMachineUpgrade,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,
@@ -1490,7 +1494,8 @@ CREATE TABLE IF NOT EXISTS commercial_orders (
 	id BIGSERIAL PRIMARY KEY,
 	order_no VARCHAR(40) NOT NULL UNIQUE,
 	uid BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-	plan_id BIGINT NOT NULL REFERENCES commercial_plans(id) ON DELETE RESTRICT,
+	plan_id BIGINT REFERENCES commercial_plans(id) ON DELETE RESTRICT,
+	kind VARCHAR(24) NOT NULL DEFAULT 'plan',
 	plan_slug VARCHAR(64) NOT NULL,
 	plan_name VARCHAR(128) NOT NULL,
 	plan_description TEXT NOT NULL DEFAULT '',
@@ -1514,7 +1519,9 @@ CREATE TABLE IF NOT EXISTS commercial_orders (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	CONSTRAINT chk_commercial_orders_amount CHECK (amount_fen > 0),
-	CONSTRAINT chk_commercial_orders_status CHECK (status IN ('created','pending','paid','fulfilled','closed','failed','refunding','refunded'))
+	CONSTRAINT chk_commercial_orders_status CHECK (status IN ('created','pending','paid','fulfilled','closed','failed','refunding','refunded')),
+	CONSTRAINT chk_commercial_orders_kind CHECK (kind IN ('plan','credit_topup')),
+	CONSTRAINT chk_commercial_orders_kind_plan CHECK ((kind = 'credit_topup') = (plan_id IS NULL))
 );
 `
 

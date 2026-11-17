@@ -5,6 +5,7 @@ import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { resolvePlanOffers, salePlansForOffers } from './plans/plan-offers';
 import LoadingState from './loading-state';
+import CreditTopupForm from './plans/credit-topup-form';
 import useModelCreditAccount, { MODEL_CREDIT_LEGACY_NOTICE, modelCreditIdentity, modelCreditQuotaDisplay } from './plans/use-model-credit-account';
 import { restoreDialogFocus } from '../utils/use-dialog-behavior';
 import {
@@ -365,13 +366,17 @@ function saveCommercialPaymentRequestIDs(requestIDs) {
   }
 }
 
+function commercialOrderRequestKey(order) {
+  return `${order.kind === 'credit_topup' ? `credit_topup:${order.amount_fen}` : order.plan_id}:${order.channel}`;
+}
+
 function reconcileCommercialPaymentRequestIDs(requestIDs, orders) {
   const activeKeys = new Set((orders || []).filter((order) => ['created', 'pending'].includes(order?.status)).map(
-    (order) => `${order.plan_id}:${order.channel}`,
+    commercialOrderRequestKey,
   ));
   const terminalKeys = new Set((orders || []).filter((order) => (
-    order?.plan_id && order?.channel && !['created', 'pending'].includes(order.status)
-  )).map((order) => `${order.plan_id}:${order.channel}`));
+    (order?.plan_id || order?.kind === 'credit_topup') && order?.channel && !['created', 'pending'].includes(order.status)
+  )).map(commercialOrderRequestKey));
   let changed = false;
   for (const key of requestIDs.keys()) {
     if (!activeKeys.has(key) && terminalKeys.has(key)) {
@@ -383,8 +388,8 @@ function reconcileCommercialPaymentRequestIDs(requestIDs, orders) {
 }
 
 function clearCommercialPaymentRequestIDForOrder(requestIDs, order) {
-  if (!order?.plan_id || !order?.channel) return;
-  if (requestIDs.delete(`${order.plan_id}:${order.channel}`)) {
+  if ((!order?.plan_id && order?.kind !== 'credit_topup') || !order?.channel) return;
+  if (requestIDs.delete(commercialOrderRequestKey(order))) {
     saveCommercialPaymentRequestIDs(requestIDs);
   }
 }
@@ -1271,7 +1276,8 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
       return;
     }
     const existing = commercialOrders.find((order) => (
-      ['created', 'pending'].includes(order.status) && order.plan_id === plan.id && order.channel === paymentChannel
+      ['created', 'pending'].includes(order.status) && order.channel === paymentChannel
+      && (plan.kind === 'credit_topup' ? order.kind === 'credit_topup' && order.amount_fen === plan.amount_fen : order.plan_id === plan.id)
     ));
     if (existing) {
       setCheckoutInOrderHistory(false);
@@ -1290,7 +1296,9 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
     paymentRequestIDs.current.set(requestKey, clientRequestID);
     saveCommercialPaymentRequestIDs(paymentRequestIDs.current);
     try {
-      const data = await api.createCommercialOrder(plan.id, paymentChannel, clientRequestID, { timeoutMs: 40_000 });
+      const data = plan.kind === 'credit_topup'
+        ? await api.createCreditTopupOrder(plan.amount_fen, clientRequestID, { timeoutMs: 40_000 })
+        : await api.createCommercialOrder(plan.id, paymentChannel, clientRequestID, { timeoutMs: 40_000 });
       if (data.order && !['created', 'pending'].includes(data.order.status)) {
         paymentRequestIDs.current.delete(requestKey);
         saveCommercialPaymentRequestIDs(paymentRequestIDs.current);
@@ -1315,7 +1323,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
         saveCommercialPaymentRequestIDs(paymentRequestIDs.current);
       }
       if (['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(err.code) || Number(err.status) >= 500) {
-        setError('暂时无法确认订单是否创建成功。请勿重复发起新订单；再次点击同一套餐会继续恢复原订单。');
+        setError('暂时无法确认订单是否创建成功。请勿重复发起新订单；再次确认相同商品会继续恢复原订单。');
       } else {
         setError(err.message || '创建订单失败');
       }
@@ -1419,7 +1427,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
     if (!checkoutOrder?.order_no || !['created', 'pending', 'failed'].includes(checkoutOrder.status)) return;
     const confirmed = await feedback.confirm({
       title: '取消这笔订单？',
-      message: '未支付订单将被关闭。如果付款刚刚完成，系统仍会以支付宝结果为准并发放套餐。',
+      message: '未支付订单将被关闭。如果付款刚刚完成，系统仍会以支付宝结果为准并发放对应权益或点数。',
       confirmLabel: '取消订单',
       tone: 'danger',
     });
@@ -1872,11 +1880,13 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
             </div>
 
             {purchasePlan && (
-              <div ref={purchaseConfirmRef} className="relay-access-purchase-confirm" role="dialog" aria-label="确认购买套餐">
+              <div ref={purchaseConfirmRef} className="relay-access-purchase-confirm" role="dialog" aria-label={purchasePlan.kind === 'credit_topup' ? '确认充值点数' : '确认购买套餐'}>
                 <div>
                   <span>{purchaseIsRenewal ? '确认续费' : '确认购买'}</span>
                   <strong>{purchasePlan.name}</strong>
-                  <p>{purchasePlan.catalogUnavailable && planPresentationOverrides[purchasePlan.slug]?.purchaseDescription
+                  <p>{purchasePlan.kind === 'credit_topup'
+                    ? `${formatPriceFen(purchasePlan.amount_fen)}，支付确认后计入付费余额；如有欠款先抵扣欠款。充值不附带机器，不改变套餐周期，可用于模型消耗和机器升配。`
+                    : purchasePlan.catalogUnavailable && planPresentationOverrides[purchasePlan.slug]?.purchaseDescription
                     ? planPresentationOverrides[purchasePlan.slug].purchaseDescription
                     : Number(purchasePlan.model_credit_units || purchasePlan.monthlyCredits) > 0
                     ? `${formatPriceFen(purchasePlan.price_fen)} / 月，按订阅生效日逐自然月计算；${purchaseIsRenewal ? '提前续费只延长有效期，下一期开始时发放额度' : '本期月额度在套餐生效后发放'}。月额度当期有效，不结转，不自动续费。`
@@ -1937,6 +1947,12 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                 role="tabpanel"
                 aria-labelledby="relay-access-entitlements-tab"
               >
+                <CreditTopupForm config={commercialCatalog?.credit_topup} disabled={Boolean(paymentLoading)} onSelect={plan => {
+                  setPaymentChannel('alipay_page');
+                  purchaseFromChooserRef.current = false;
+                  setCheckoutOrder(null);
+                  setPurchasePlan(plan);
+                }} />
                 {commercialEnabled && activePackages.length > 0 && (
                   <div className="relay-access-entitlement-band">
                     <div className="relay-access-package-list">
