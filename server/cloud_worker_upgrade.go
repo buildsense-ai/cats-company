@@ -615,7 +615,7 @@ func (h *CloudWorkerHandler) runMachineUpgradeScript(item appliedMachineUpgrade,
 			return
 		}
 	}
-	out, err := h.runScript(h.changePlanScript, "--name", op.TenantName, "--plan", op.ToPlan)
+	out, err := h.runScript(h.changePlanScript, "--name", op.TenantName, "--plan", op.ToPlan, "--allow-migrate")
 	if err == nil && !machineUpgradeSucceeded(out, op.ToPlan) {
 		err = errors.New("machine upgrade adapter returned an unconfirmed result")
 	}
