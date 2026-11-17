@@ -13,7 +13,7 @@ describe('command palette', () => {
     expect(commandMatchesDraft('普通消息')).toBeNull();
   });
 
-  it('selects the highlighted command with the same callback used by a click', async () => {
+  it('selects the clicked command independently of the highlighted command', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -22,7 +22,7 @@ describe('command palette', () => {
     await act(async () => root.render(
       <CommandPalette
         commands={CHAT_COMMANDS}
-        activeIndex={1}
+        activeIndex={2}
         onSelect={onSelect}
         onHighlight={onHighlight}
       />,
@@ -30,7 +30,8 @@ describe('command palette', () => {
 
     const options = container.querySelectorAll('[role="option"]');
     expect(options).toHaveLength(4);
-    expect(options[1].getAttribute('aria-selected')).toBe('true');
+    expect(options[2].getAttribute('aria-selected')).toBe('true');
+    expect(options[1].getAttribute('aria-selected')).toBe('false');
     expect(options[1].textContent).toContain('/resume');
     await act(async () => options[1].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })));
     expect(onSelect).toHaveBeenCalledWith(CHAT_COMMANDS[1]);
