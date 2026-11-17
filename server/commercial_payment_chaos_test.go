@@ -665,7 +665,7 @@ func TestCommercialRefundResumesAfterProcessStopsBeforeLocalCommit(t *testing.T)
 		OrderNo: "CC-REFUND-RESTART", UID: 38, Channel: commercialPaymentChannelAlipayPage,
 		Status: "refunding", RefundRequestNo: "CCRF-CC-REFUND-RESTART",
 		ProviderTradeNo: "trade-refund-restart", AmountFen: 1, Currency: "CNY",
-		PlanModelCreditUnits: 9_000_000,
+		PlanModelCreditUnits: 5_000_000,
 		UpdatedAt:            time.Now().UTC().Add(-10 * time.Minute),
 	}
 	// The claim of the previous process froze 5_000_000 units. The retry must
