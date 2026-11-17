@@ -115,12 +115,14 @@ export default function RelayAdminPanel({ onClose }) {
           through the guarded proxy). allow-same-origin + allow-scripts means the
           sandbox is a thin layer only; the real boundary is the server-side
           proxy (uid whitelist + path whitelist + scoped cookie + rate limit),
-          and only whitelisted uid can open this panel at all. */}
+          and only whitelisted uid can open this panel at all. allow-downloads is
+          what makes the "导出 CSV" attachment land: without it the browser
+          silently drops the download and the operator sees nothing. */}
       <iframe
         key={reloadKey}
         title="模型用量管理"
         src={api.relayAdminProxyURL('/local/usage-admin')}
-        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
       />
     </aside>
   );

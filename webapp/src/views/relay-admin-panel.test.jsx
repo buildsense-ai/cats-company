@@ -49,6 +49,9 @@ describe('RelayAdminPanel', () => {
     expect(iframe?.getAttribute('src')).toBe('/api/admin/relay/local/usage-admin');
     expect(iframe?.getAttribute('sandbox')).toContain('allow-scripts');
     expect(iframe?.getAttribute('sandbox')).toContain('allow-modals');
+    // Without allow-downloads the console's "导出 CSV" attachment is dropped by
+    // the browser and the operator gets no file at all.
+    expect(iframe?.getAttribute('sandbox')).toContain('allow-downloads');
   });
 
   it('renders a close button that invokes onClose', async () => {
