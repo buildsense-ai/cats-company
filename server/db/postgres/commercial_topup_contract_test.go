@@ -260,14 +260,10 @@ func TestPostgresCreditTopupRefundRefusesConsumedCredit(t *testing.T) {
 		        0, 0, $2, 0)`, uid, 2000*CommercialTopupUnitsPerFen-1000); err != nil {
 		t.Fatalf("record consumption: %v", err)
 	}
-	if _, _, err := db.BeginCommercialOrderRefund(order.OrderNo, "refund-topup-2", time.Minute); err != nil {
-		t.Fatalf("claim top-up refund: %v", err)
+	_, claimed, err := db.BeginCommercialOrderRefund(order.OrderNo, "refund-topup-2", time.Minute)
+	if claimed {
+		t.Fatal("consumed credit must be refused before a provider refund can be claimed")
 	}
-	_, _, err = db.CompleteCommercialOrderRefund(order.OrderNo, &types.CommercialRefundConfirmation{
-		Channel: "alipay_page", EventID: "topup-refund-0002", ProviderTradeNo: "TOPUP-TRADE-1000",
-		RefundRequestNo: "refund-topup-2", AmountFen: 2000, Currency: "CNY",
-		RefundedAt: time.Now().UTC(), PayloadHash: strings.Repeat("e", 64),
-	})
 	if err == nil {
 		t.Fatal("refunding consumed credit must be refused")
 	}
@@ -275,7 +271,7 @@ func TestPostgresCreditTopupRefundRefusesConsumedCredit(t *testing.T) {
 		t.Fatalf("unexpected refusal reason: %v", err)
 	}
 	order, err = db.GetCommercialOrder(0, order.OrderNo)
-	if err != nil || order == nil || order.Status == "refunded" {
+	if err != nil || order == nil || order.Status != "fulfilled" {
 		t.Fatalf("a refused refund must not settle the order: %#v err=%v", order, err)
 	}
 }
@@ -312,14 +308,10 @@ func TestPostgresCreditTopupRefundRefusesArrearsRepayment(t *testing.T) {
 	if account.PaidUnits != 0 || account.DebtUnits != 1000*unit {
 		t.Fatalf("the top-up must repay arrears first: paid=%d debt=%d", account.PaidUnits, account.DebtUnits)
 	}
-	if _, _, err := db.BeginCommercialOrderRefund(order.OrderNo, "refund-arrears-1", time.Minute); err != nil {
-		t.Fatalf("claim refund: %v", err)
+	_, claimed, err := db.BeginCommercialOrderRefund(order.OrderNo, "refund-arrears-1", time.Minute)
+	if claimed {
+		t.Fatal("arrears repayment must be refused before a provider refund can be claimed")
 	}
-	_, _, err = db.CompleteCommercialOrderRefund(order.OrderNo, &types.CommercialRefundConfirmation{
-		Channel: "alipay_page", EventID: "topup-refund-arrears-1", ProviderTradeNo: "TOPUP-ARREARS-1",
-		RefundRequestNo: "refund-arrears-1", AmountFen: 2000, Currency: "CNY",
-		RefundedAt: time.Now().UTC(), PayloadHash: strings.Repeat("8", 64),
-	})
 	if !errors.Is(err, ErrCommercialOrderCreditSpent) {
 		t.Fatalf("refunding credit that repaid arrears must be refused, got %v", err)
 	}
@@ -336,7 +328,7 @@ func TestPostgresCreditTopupRefundRefusesArrearsRepayment(t *testing.T) {
 			account.PaidUnits, account.DebtUnits)
 	}
 	stored, err := db.GetCommercialOrder(0, order.OrderNo)
-	if err != nil || stored == nil || stored.Status == "refunded" {
+	if err != nil || stored == nil || stored.Status != "fulfilled" {
 		t.Fatalf("a refused refund must not settle the order: %#v err=%v", stored, err)
 	}
 }

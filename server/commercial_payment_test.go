@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -28,6 +29,15 @@ type commercialPaymentTestStore struct {
 	orders      map[string]*types.CommercialOrder
 	requestIDs  map[string]string
 	trialClaims map[int64]bool
+	// refundHolds is the fake of commercial_refund_holds: presence means the
+	// order's credit is frozen, and the value is how much.
+	refundHolds map[string]int64
+	// refundFreezes counts how often a claim froze credit, so a retry that
+	// re-freezes the same order cannot pass unnoticed.
+	refundFreezes map[string]int
+	// refundClaims makes the claim itself refuse, the way the real store does
+	// when the paid credit is already spent or still held.
+	refundClaims map[string]error
 }
 
 type commercialRelaySyncTestStore struct {
@@ -222,6 +232,9 @@ func newCommercialPaymentTestStore() *commercialPaymentTestStore {
 		orders:              map[string]*types.CommercialOrder{},
 		requestIDs:          map[string]string{},
 		trialClaims:         map[int64]bool{},
+		refundHolds:         map[string]int64{},
+		refundFreezes:       map[string]int{},
+		refundClaims:        map[string]error{},
 	}
 }
 
@@ -362,26 +375,62 @@ func (s *commercialPaymentTestStore) FulfillCommercialOrder(orderNo string, conf
 	return &copy, true, nil
 }
 
-func (s *commercialPaymentTestStore) BeginCommercialOrderRefund(orderNo, refundRequestNo string, _ time.Duration) (*types.CommercialOrder, bool, error) {
+// BeginCommercialOrderRefund mirrors the real claim: an order can only be taken
+// from 'fulfilled', a refusal is reported before anything is touched, the hold is
+// created once (a retry reuses it), a stale 'refunding' claim can be refreshed,
+// and a 'refunding' order without a hold fails closed like a legacy claim.
+func (s *commercialPaymentTestStore) BeginCommercialOrderRefund(orderNo, refundRequestNo string, staleAfter time.Duration) (*types.CommercialOrder, bool, error) {
 	order := s.orders[orderNo]
 	if order == nil {
 		return nil, false, nil
 	}
-	if order.Status != "fulfilled" {
+	switch order.Status {
+	case "refunded":
+		copy := *order
+		return &copy, false, nil
+	case "fulfilled":
+		if err := s.refundClaims[orderNo]; err != nil {
+			return nil, false, err
+		}
+		s.refundFreezes[orderNo]++
+		if _, held := s.refundHolds[orderNo]; !held {
+			s.refundHolds[orderNo] = order.PlanModelCreditUnits
+		}
+		order.Status = "refunding"
+		order.RefundRequestNo = refundRequestNo
+		order.UpdatedAt = time.Now().UTC()
+		copy := *order
+		return &copy, true, nil
+	case "refunding":
+		if _, held := s.refundHolds[orderNo]; !held {
+			return nil, false, errors.New("commercial refund hold is missing")
+		}
+		if order.RefundRequestNo != refundRequestNo {
+			return nil, false, errors.New("commercial refund hold does not match the claim")
+		}
+		if staleAfter <= 0 {
+			staleAfter = 2 * time.Minute
+		}
+		if !order.UpdatedAt.Before(time.Now().UTC().Add(-staleAfter)) {
+			copy := *order
+			return &copy, false, nil
+		}
+		order.UpdatedAt = time.Now().UTC()
+		copy := *order
+		return &copy, true, nil
+	default:
 		copy := *order
 		return &copy, false, nil
 	}
-	order.Status = "refunding"
-	order.RefundRequestNo = refundRequestNo
-	copy := *order
-	return &copy, true, nil
 }
 
+// FailCommercialOrderRefund records the cause and keeps the claim, exactly like
+// the real store: a failure never proves the money did not move.
 func (s *commercialPaymentTestStore) FailCommercialOrderRefund(orderNo, refundRequestNo, message string) error {
 	order := s.orders[orderNo]
 	if order != nil && order.Status == "refunding" && order.RefundRequestNo == refundRequestNo {
-		order.Status = "fulfilled"
 		order.LastError = message
+		order.UpdatedAt = time.Now().UTC()
 	}
 	return nil
 }
@@ -395,9 +444,17 @@ func (s *commercialPaymentTestStore) CompleteCommercialOrderRefund(orderNo strin
 		copy := *order
 		return &copy, false, nil
 	}
+	if order.Status != "refunding" {
+		return nil, false, context.Canceled
+	}
+	if _, held := s.refundHolds[orderNo]; !held {
+		return nil, false, errors.New("commercial refund hold is missing")
+	}
+	delete(s.refundHolds, orderNo)
 	order.Status = "refunded"
 	refundedAt := confirmation.RefundedAt
 	order.RefundedAt = &refundedAt
+	order.UpdatedAt = time.Now().UTC()
 	copy := *order
 	return &copy, true, nil
 }
@@ -2312,7 +2369,7 @@ func TestAlipayPaymentRejectsRefundAmountMismatch(t *testing.T) {
 	}
 }
 
-func TestCommercialRefundIsIdempotentAndReleasesFailedClaim(t *testing.T) {
+func TestCommercialRefundIsIdempotentAndKeepsFailedClaim(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	store.orders["CC-REFUND-FLOW"] = &types.CommercialOrder{
 		OrderNo: "CC-REFUND-FLOW", UID: 38, Channel: commercialPaymentChannelAlipayPage,
@@ -2332,7 +2389,12 @@ func TestCommercialRefundIsIdempotentAndReleasesFailedClaim(t *testing.T) {
 	if err != nil || changed || refunded == nil || refunded.Status != "refunded" || provider.refundCalls != 1 {
 		t.Fatalf("repeated refund result=%#v changed=%v calls=%d err=%v", refunded, changed, provider.refundCalls, err)
 	}
+	if _, held := store.refundHolds["CC-REFUND-FLOW"]; held {
+		t.Fatal("a completed refund must consume its hold")
+	}
 
+	// A provider failure cannot release the claim: the cash may already be gone,
+	// so the order keeps 'refunding', its frozen credit and the recorded cause.
 	store.orders["CC-REFUND-RETRY"] = &types.CommercialOrder{
 		OrderNo: "CC-REFUND-RETRY", UID: 38, Channel: commercialPaymentChannelAlipayPage,
 		Status: "fulfilled", ProviderTradeNo: "trade-refund-retry", AmountFen: 1, Currency: "CNY",
@@ -2342,8 +2404,19 @@ func TestCommercialRefundIsIdempotentAndReleasesFailedClaim(t *testing.T) {
 	if _, _, err := handler.RefundOrder(context.Background(), "CC-REFUND-RETRY", "retry test"); err == nil {
 		t.Fatal("provider refund failure was accepted")
 	}
-	if order := store.orders["CC-REFUND-RETRY"]; order.Status != "fulfilled" || order.LastError == "" {
-		t.Fatalf("failed refund claim was not released: %#v", order)
+	order := store.orders["CC-REFUND-RETRY"]
+	if order.Status != "refunding" || order.LastError == "" {
+		t.Fatalf("failed refund must keep its claim: %#v", order)
+	}
+	if _, held := store.refundHolds["CC-REFUND-RETRY"]; !held {
+		t.Fatal("failed refund must keep the frozen credit")
+	}
+	// The claim is fresh, so a second attempt is refused without a second call.
+	if _, _, err := handler.RefundOrder(context.Background(), "CC-REFUND-RETRY", "impatient retry"); err == nil {
+		t.Fatal("a fresh claim must not be retried concurrently")
+	}
+	if provider.refundCalls != 2 {
+		t.Fatalf("a refused retry must not reach the provider, calls=%d", provider.refundCalls)
 	}
 }
 

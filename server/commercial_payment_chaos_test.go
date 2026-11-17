@@ -41,19 +41,8 @@ type failOnceOrderLookupStore struct {
 	failLookup bool
 }
 
-type staleRefundRestartStore struct {
-	*commercialPaymentTestStore
-}
-
-func (s *staleRefundRestartStore) BeginCommercialOrderRefund(orderNo, refundRequestNo string, staleAfter time.Duration) (*types.CommercialOrder, bool, error) {
-	order := s.orders[orderNo]
-	if order != nil && order.Status == "refunding" {
-		order.RefundRequestNo = refundRequestNo
-		copy := *order
-		return &copy, true, nil
-	}
-	return s.commercialPaymentTestStore.BeginCommercialOrderRefund(orderNo, refundRequestNo, staleAfter)
-}
+// legacyRefundingStore is a store whose order was claimed by a build that
+// refunded before it froze anything: 'refunding' with no hold row.
 
 func (s *failOnceOrderLookupStore) GetCommercialOrder(uid int64, orderNo string) (*types.CommercialOrder, error) {
 	if s.failLookup {
@@ -640,12 +629,29 @@ func TestCommercialRefundRecoversWhenProviderSucceededBeforeLocalCommit(t *testi
 	if _, _, err := handler.RefundOrder(context.Background(), "CC-REFUND-COMMIT-RETRY", "commit ambiguity"); err == nil {
 		t.Fatal("local completion failure was accepted")
 	}
-	if order := base.orders["CC-REFUND-COMMIT-RETRY"]; order.Status != "fulfilled" || order.LastError == "" {
-		t.Fatalf("failed completion did not release the refund claim: %#v", order)
+	// The provider says the money is gone and the local commit failed: the order
+	// must stay 'refunding' with its credit frozen, never go back to 'fulfilled'.
+	if order := base.orders["CC-REFUND-COMMIT-RETRY"]; order.Status != "refunding" || order.LastError == "" {
+		t.Fatalf("failed completion must keep the refund claim: %#v", order)
 	}
+	if _, held := base.refundHolds["CC-REFUND-COMMIT-RETRY"]; !held {
+		t.Fatal("failed completion must keep the frozen credit")
+	}
+	// The claim is still fresh, so an immediate retry must not call the provider.
+	if _, _, err := handler.RefundOrder(context.Background(), "CC-REFUND-COMMIT-RETRY", "early retry"); err == nil {
+		t.Fatal("a fresh claim must not be retried concurrently")
+	}
+	if provider.refundCalls != 1 {
+		t.Fatalf("a refused retry reached the provider, calls=%d", provider.refundCalls)
+	}
+	// Once the claim is stale the same deterministic request number is retried.
+	base.orders["CC-REFUND-COMMIT-RETRY"].UpdatedAt = time.Now().UTC().Add(-10 * time.Minute)
 	refunded, changed, err := handler.RefundOrder(context.Background(), "CC-REFUND-COMMIT-RETRY", "commit retry")
 	if err != nil || !changed || refunded == nil || refunded.Status != "refunded" || provider.refundCalls != 2 {
 		t.Fatalf("retry result=%#v changed=%v calls=%d err=%v", refunded, changed, provider.refundCalls, err)
+	}
+	if base.refundFreezes["CC-REFUND-COMMIT-RETRY"] != 1 {
+		t.Fatalf("the retry froze credit again: %d", base.refundFreezes["CC-REFUND-COMMIT-RETRY"])
 	}
 	_, changed, err = handler.RefundOrder(context.Background(), "CC-REFUND-COMMIT-RETRY", "duplicate retry")
 	if err != nil || changed || provider.refundCalls != 2 {
@@ -654,13 +660,17 @@ func TestCommercialRefundRecoversWhenProviderSucceededBeforeLocalCommit(t *testi
 }
 
 func TestCommercialRefundResumesAfterProcessStopsBeforeLocalCommit(t *testing.T) {
-	base := newCommercialPaymentTestStore()
-	base.orders["CC-REFUND-RESTART"] = &types.CommercialOrder{
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-REFUND-RESTART"] = &types.CommercialOrder{
 		OrderNo: "CC-REFUND-RESTART", UID: 38, Channel: commercialPaymentChannelAlipayPage,
 		Status: "refunding", RefundRequestNo: "CCRF-CC-REFUND-RESTART",
 		ProviderTradeNo: "trade-refund-restart", AmountFen: 1, Currency: "CNY",
+		PlanModelCreditUnits: 9_000_000,
+		UpdatedAt:            time.Now().UTC().Add(-10 * time.Minute),
 	}
-	store := &staleRefundRestartStore{commercialPaymentTestStore: base}
+	// The claim of the previous process froze 5_000_000 units. The retry must
+	// reuse that hold instead of freezing the order's snapshot a second time.
+	store.refundHolds["CC-REFUND-RESTART"] = 5_000_000
 	provider := &queryCommercialPaymentProvider{refund: &types.CommercialRefundConfirmation{
 		Channel: commercialPaymentChannelAlipayPage, EventID: "CCRF-CC-REFUND-RESTART",
 		ProviderTradeNo: "trade-refund-restart", RefundRequestNo: "CCRF-CC-REFUND-RESTART",
@@ -674,9 +684,42 @@ func TestCommercialRefundResumesAfterProcessStopsBeforeLocalCommit(t *testing.T)
 	if err != nil || !changed || refunded == nil || refunded.Status != "refunded" || provider.refundCalls != 1 {
 		t.Fatalf("stale refund did not recover: order=%#v changed=%v calls=%d err=%v", refunded, changed, provider.refundCalls, err)
 	}
+	if store.refundFreezes["CC-REFUND-RESTART"] != 0 {
+		t.Fatalf("the resumed refund froze credit again: %d", store.refundFreezes["CC-REFUND-RESTART"])
+	}
 	refunded, changed, err = newHandler().RefundOrder(context.Background(), "CC-REFUND-RESTART", "duplicate after deploy")
 	if err != nil || changed || refunded == nil || refunded.Status != "refunded" || provider.refundCalls != 1 {
 		t.Fatalf("recovered refund was not idempotent: order=%#v changed=%v calls=%d err=%v", refunded, changed, provider.refundCalls, err)
+	}
+}
+
+// A refund claimed by the old build has no hold, and the channel may already have
+// paid the money out. It must not be replayed, and the provider must not be
+// touched again: only an operator who checked the channel may resolve it.
+func TestCommercialRefundFailsClosedForLegacyClaimWithoutHold(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-REFUND-LEGACY"] = &types.CommercialOrder{
+		OrderNo: "CC-REFUND-LEGACY", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "refunding", RefundRequestNo: "CCRF-CC-REFUND-LEGACY",
+		ProviderTradeNo: "trade-refund-legacy", AmountFen: 1, Currency: "CNY",
+		UpdatedAt: time.Now().UTC().Add(-time.Hour),
+	}
+	provider := &queryCommercialPaymentProvider{refund: &types.CommercialRefundConfirmation{
+		Channel: commercialPaymentChannelAlipayPage, EventID: "CCRF-CC-REFUND-LEGACY",
+		ProviderTradeNo: "trade-refund-legacy", RefundRequestNo: "CCRF-CC-REFUND-LEGACY",
+		AmountFen: 1, Currency: "CNY", RefundedAt: time.Now().UTC(),
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+
+	if _, _, err := handler.RefundOrder(context.Background(), "CC-REFUND-LEGACY", "legacy resume"); err == nil {
+		t.Fatal("a legacy claim without a hold must fail closed")
+	}
+	if provider.refundCalls != 0 {
+		t.Fatalf("a legacy claim reached the provider, calls=%d", provider.refundCalls)
+	}
+	order := store.orders["CC-REFUND-LEGACY"]
+	if order.Status != "refunding" || order.RefundedAt != nil {
+		t.Fatalf("a legacy claim must stay refunding for an operator: %#v", order)
 	}
 }
 

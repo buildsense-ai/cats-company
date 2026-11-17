@@ -165,20 +165,51 @@ func (a *Adapter) GetMachineUpgrade(uid int64, operationID string) (*types.Machi
 // so a crash before the script can only ever leave a hold behind, never a
 // silent free upgrade.
 //
-// allowRetry 只属于 reconciler：它不能把一笔 pending 直接变成扣费（那等于绕过
-// 用户下单），也必须在行锁之后确认 updated_at 已经超过 machineUpgradeReconcileClaim
-// 才能接手 running/reconciling，否则两个 reconciler 会同时跑同一个脚本。
+// allowRetry 只属于 reconciler 和人工复核：它不能把一笔 pending 直接变成扣费
+// （那等于绕过用户下单），也必须在行锁之后确认 updated_at 已经超过
+// machineUpgradeReconcileClaim 才能接手 running/reconciling，否则两个 reconciler
+// 会同时跑同一个脚本。
+//
+// audit 只由人工复核的 HTTP 路径带进来，并且必须在同一个事务里落库：审计写不进去
+// 就连认领一起回滚，绝不出现「操作被授权重跑、却没有留下谁授权的记录」。资金、
+// 租约和终态的判断与没有审计时逐字相同——审计是附加事实，不是新的放行条件。
 func (a *Adapter) StartMachineUpgradeCharge(operationID string, allowRetry bool) (*types.MachineUpgradeOperation, bool, error) {
-	return a.startMachineUpgradeCharge(operationID, allowRetry, false)
+	return a.startMachineUpgradeCharge(operationID, allowRetry, false, nil)
 }
 
 // RetryMachineUpgradeReview authorizes one leased attempt after operator review.
 // It never reserves again and cannot revive pending or terminal operations.
+//
+// Deprecated: 这是不带审计的兼容入口，只留给已有的兼容性测试。管理端 HTTP 路径
+// 必须走 RetryMachineUpgradeReviewAudited：认领必须留下授权人，正是这次修复的
+// 目的，没有签字的认领不允许再出现。
 func (a *Adapter) RetryMachineUpgradeReview(operationID string) (*types.MachineUpgradeOperation, bool, error) {
-	return a.startMachineUpgradeCharge(operationID, true, true)
+	return a.startMachineUpgradeCharge(operationID, true, true, nil)
 }
 
-func (a *Adapter) startMachineUpgradeCharge(operationID string, allowRetry, manualReview bool) (*types.MachineUpgradeOperation, bool, error) {
+// RetryMachineUpgradeReviewAudited authorizes one leased attempt after operator
+// review, and records the authorization (actor, operation, reason and the row it
+// was granted against) in the same transaction that takes the lease.
+func (a *Adapter) RetryMachineUpgradeReviewAudited(operationID string, actorUID int64, reason string) (*types.MachineUpgradeOperation, bool, error) {
+	return a.startMachineUpgradeCharge(operationID, true, true, &machineUpgradeReviewAuditInput{
+		ActorUID: actorUID,
+		Reason:   reason,
+	})
+}
+
+func (a *Adapter) startMachineUpgradeCharge(operationID string, allowRetry, manualReview bool, audit *machineUpgradeReviewAuditInput) (*types.MachineUpgradeOperation, bool, error) {
+	var reason string
+	if audit != nil {
+		// 审计只属于人工复核的认领。其它路径带审计进来是调用方写错了：默默丢掉
+		// 等于把一次授权吞掉，所以直接拒绝，连行都不锁。
+		if !manualReview || audit.ActorUID <= 0 {
+			return nil, false, fmt.Errorf("machine upgrade review audit needs a manual review claim from a known actor")
+		}
+		var err error
+		if reason, err = normalizeMachineUpgradeReviewReason(audit.Reason); err != nil {
+			return nil, false, err
+		}
+	}
 	tx, err := a.db.Begin()
 	if err != nil {
 		return nil, false, fmt.Errorf("begin machine upgrade charge: %w", err)
@@ -240,6 +271,23 @@ func (a *Adapter) startMachineUpgradeCharge(operationID string, allowRetry, manu
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("mark machine upgrade running: %w", err)
+	}
+	if audit != nil {
+		// 认领已经发生，这里写「谁授权了这次重跑」。写不进去就让整笔事务回滚：
+		// 行还停在原状态，谁都没拿到这次重跑，也就不存在无人签字的授权。
+		if err := insertMachineUpgradeReviewAudit(tx, machineUpgradeReviewAuditRecord{
+			OperationID:      updated.OperationID,
+			ActorUID:         audit.ActorUID,
+			Action:           machineUpgradeReviewAuditAction,
+			Reason:           reason,
+			PreviousStatus:   op.Status,
+			PreviousMessage:  op.Message,
+			PreviousAttempts: op.Attempts,
+			ClaimedAttempt:   updated.Attempts,
+			ClaimedAt:        updated.UpdatedAt,
+		}); err != nil {
+			return nil, false, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, false, fmt.Errorf("commit machine upgrade charge: %w", err)

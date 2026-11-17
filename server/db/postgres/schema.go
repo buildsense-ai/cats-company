@@ -220,6 +220,8 @@ func (a *Adapter) CreateSchema() error {
 		// kind 并允许充值订单没有 plan_id，另建升配的报价/操作/权益三张表。
 		// 放在 commercial_orders 与 model credit 两边都就绪之后。
 		migrateCreditTopupAndMachineUpgrade,
+		createCommercialRefundHolds,
+		createMachineUpgradeReviewAuditTable,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,
