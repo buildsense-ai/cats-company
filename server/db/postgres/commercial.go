@@ -900,7 +900,8 @@ func (a *Adapter) GetCommercialSummary(uid int64) (*types.CommercialSummary, err
 		SELECT e.id, e.uid, e.plan_id, p.slug, p.name, e.source, e.source_ref, e.state, e.starts_at, e.expires_at, e.created_at, e.updated_at
 		FROM commercial_entitlements e
 		JOIN commercial_plans p ON p.id = e.plan_id
-		WHERE e.uid = $1 AND e.state = 'active' AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+		WHERE e.uid = $1 AND e.state = 'active' AND e.starts_at <= CURRENT_TIMESTAMP
+		  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
 		ORDER BY e.expires_at NULLS LAST, e.id DESC`, uid)
 	if err != nil {
 		return nil, fmt.Errorf("list commercial entitlements: %w", err)
@@ -918,14 +919,39 @@ func (a *Adapter) GetCommercialSummary(uid int64) (*types.CommercialSummary, err
 	}
 
 	grantRows, err := a.db.Query(`
-		SELECT id, uid, COALESCE(plan_id, 0), COALESCE(invite_code_id, 0), grant_type, source_ref, model, amount_cny,
-		       reset_duration, effective_at, expires_at, revoked_at, note, COALESCE(operator_uid, 0), created_at
-		FROM commercial_quota_grants
-		WHERE uid = $1
-		  AND effective_at <= CURRENT_TIMESTAMP
-		  AND revoked_at IS NULL
-		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-		ORDER BY created_at DESC`, uid)
+		SELECT g.id, g.uid, COALESCE(g.plan_id, 0), COALESCE(g.invite_code_id, 0), g.grant_type, g.source_ref, g.model, g.amount_cny,
+		       g.reset_duration, g.effective_at, g.expires_at, g.revoked_at, g.note, COALESCE(g.operator_uid, 0), g.created_at
+		FROM commercial_quota_grants g
+		WHERE g.uid = $1
+		  AND g.effective_at <= CURRENT_TIMESTAMP
+		  AND g.revoked_at IS NULL
+		  AND (g.expires_at IS NULL OR g.expires_at > CURRENT_TIMESTAMP)
+		  -- Package grants cannot outlive their own entitlement. Match source/ref,
+		  -- not just plan: another purchase of the same plan must not revive them.
+		  AND (g.grant_type NOT IN ('order','invite','operator_plan','trial','free','legacy') OR EXISTS (
+		      SELECT 1 FROM commercial_entitlements e
+		      WHERE e.uid = g.uid AND e.plan_id = g.plan_id
+		        AND e.source = CASE WHEN g.grant_type = 'operator_plan' THEN 'operator' ELSE g.grant_type END
+		        AND (e.source_ref = g.source_ref OR (
+		            -- Historical baseline supplements used a separate grant ref.
+		            -- Only their original baseline lifetime can authorize them;
+		            -- an explicitly revoked original reference always wins.
+		            NOT EXISTS (SELECT 1 FROM commercial_entitlements original
+		                WHERE original.uid = g.uid AND original.plan_id = g.plan_id
+		                  AND original.source = e.source AND original.source_ref = g.source_ref)
+		            AND ((g.grant_type = 'free' AND g.source_ref = 'catsco-free-v2'
+		                  AND e.source_ref = 'catsco-free-v1' AND g.effective_at >= e.starts_at
+		                  AND g.expires_at IS NOT DISTINCT FROM e.expires_at
+		                  AND EXISTS (SELECT 1 FROM commercial_plans p WHERE p.id = g.plan_id AND p.slug = 'catsco-free'))
+		              OR (g.grant_type = 'legacy' AND e.source_ref = 'relay-quota-migration-v1'
+		                  AND g.effective_at = e.starts_at
+		                  AND g.expires_at IS NOT DISTINCT FROM e.expires_at
+		                  AND EXISTS (SELECT 1 FROM commercial_plans p WHERE p.id = g.plan_id AND p.slug = 'catsco-legacy-custom')))
+		        ))
+		        AND e.state = 'active' AND e.starts_at <= CURRENT_TIMESTAMP
+		        AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+		  ))
+		ORDER BY g.created_at DESC`, uid)
 	if err != nil {
 		return nil, fmt.Errorf("list commercial quota grants: %w", err)
 	}
@@ -951,6 +977,7 @@ func (a *Adapter) GetCommercialSummary(uid int64) (*types.CommercialSummary, err
 		FROM commercial_entitlements e
 		JOIN commercial_plan_token_quotas q ON q.plan_id = e.plan_id
 		WHERE e.uid = $1 AND e.state = 'active'
+		  AND e.starts_at <= CURRENT_TIMESTAMP
 		  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
 		  AND q.token_quota > 0
 		ORDER BY q.token_quota DESC, e.expires_at DESC NULLS LAST, e.id DESC

@@ -54,7 +54,12 @@ function customDraftFromConfig(config) {
   };
 }
 
-function modelQuotaLabel(quota, state) {
+const CREDITS_BILLING_MODE = 'credits';
+
+// 服务端明确标注 billing_mode=credits 时才按账户点数显示。缺 quota 从没被当成
+// “额度未配置”的证据之外的任何身份信号：既不推断 credit，也不编造百分比。
+function modelQuotaLabel(quota, state, billingMode) {
+  if (billingMode === CREDITS_BILLING_MODE) return '使用账户点数';
   if (state === 'error') return '额度暂不可用';
   if (state !== 'loaded') return '额度同步中';
   if (!quota || quota.quota_configured !== true) return '额度未配置';
@@ -572,7 +577,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                         <strong>{modelLabel}</strong>
                         <small className={`v3-model-menu-quota ${available ? modelQuotaTone(model.quota) : 'muted'}`.trim()}>
                           {available
-                            ? modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState)
+                            ? modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState, model.billing_mode)
                             : model.unavailable_reason || '当前套餐暂不可用'}
                         </small>
                       </span>

@@ -910,3 +910,45 @@ func TestLegacyCustomModelMigrationRestoresCompleteDefinition(t *testing.T) {
 		t.Fatalf("migrated model=%+v", got)
 	}
 }
+
+func TestOwnerDefinitionModelUsesCurrentMixedPermissions(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners:  map[int64]int64{43: 7},
+		records: map[int64]*types.BotDefinitionRecord{},
+	}
+	models := &botModelConfigTestStore{owners: db.owners, models: map[int64]*types.BotModelConfig{}}
+	quota := &creditAwareQuotaStore{enabled: true, tier: 1, allowance: 100,
+		summary: &types.CommercialSummary{TotalsByModel: map[string]float64{"MiniMax-M3": 500}}}
+	modelConfig := NewBotModelConfigHandler(db, models)
+	modelConfig.SetCommercialQuotaSource(quota, false, nil)
+	handler := NewBotDefinitionHandler(db, db, models, modelConfig)
+	patch := func(model string, wantStatus int) {
+		t.Helper()
+		before := db.ensure(43).Runtime.DesiredRevision
+		req := httptest.NewRequest(http.MethodPatch, "/api/bots/definition/model?uid=43",
+			strings.NewReader(`{"model":{"kind":"catalog","modelId":"`+model+`"}}`))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+		rec := httptest.NewRecorder()
+		handler.HandleOwnerModel(rec, req)
+		if rec.Code != wantStatus {
+			t.Fatalf("model=%s status=%d want=%d body=%s", model, rec.Code, wantStatus, rec.Body.String())
+		}
+		stored := db.records[43]
+		if wantStatus == http.StatusOK {
+			if stored.Definition.Model.ModelID != model || stored.Runtime.DesiredRevision != before+1 {
+				t.Fatalf("successful selection not persisted: %+v", stored)
+			}
+		} else if stored.Runtime.DesiredRevision != before {
+			t.Fatalf("denied selection changed revision: %+v", stored)
+		}
+	}
+	patch("minimax-m3", http.StatusOK) // Unpriced models require real legacy grants.
+	quota.allowance = 0
+	patch("minimax-m3", http.StatusOK) // Credit balance cannot remove legacy rights.
+	quota.summary = &types.CommercialSummary{}
+	patch("minimax-m3", http.StatusForbidden)
+	patch(deepSeekPublicModelID, http.StatusForbidden)
+	quota.allowance = 100
+	patch(deepSeekPublicModelID, http.StatusOK)
+	patch("minimax-m3", http.StatusForbidden)
+}

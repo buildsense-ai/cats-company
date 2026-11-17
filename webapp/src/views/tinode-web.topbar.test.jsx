@@ -765,6 +765,73 @@ describe('LocalAssistantBar model selector', () => {
     expect(deepseek?.querySelector('.v3-model-menu-quota.warning')).toBeTruthy();
   });
 
+  const creditBilledConfig = {
+    ...baseConfig,
+    desired: { kind: 'catalog', model_id: 'deepseek-flash', reasoning_effort: 'high', revision: 4 },
+    applied: { kind: 'catalog', model_id: 'deepseek-flash', reasoning_effort: 'high', revision: 4 },
+    models: [
+      {
+        id: 'deepseek-flash',
+        label: 'DeepSeek Flash',
+        description: '原生多模态，支持图片、工具调用与推理强度',
+        context_window_tokens: 1000000,
+        available: true,
+        billing_mode: 'credits',
+        reasoning_efforts: ['high', 'max', 'disabled'],
+        default_reasoning_effort: 'high',
+        vision: true,
+      },
+    ],
+  };
+
+  const openModelMenu = async () => {
+    await act(async () => {
+      container.querySelector('.v3-model-status-button').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  };
+
+  it('labels an explicit credits entry as account credits instead of unconfigured quota', async () => {
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(creditBilledConfig);
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await openModelMenu();
+    const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('DeepSeek Flash'));
+    expect(deepseek).toBeTruthy();
+    expect(deepseek.textContent).toContain('使用账户点数');
+    expect(deepseek.textContent).not.toContain('额度未配置');
+    expect(deepseek.textContent).not.toContain('剩余');
+  });
+
+  it('keeps credits usable when legacy usage sync fails in a mixed catalog', async () => {
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
+      ...creditBilledConfig,
+      quota_error: '平台额度暂时无法同步',
+      models: [...creditBilledConfig.models, { ...baseConfig.models[0], billing_mode: 'legacy' }],
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await openModelMenu();
+    const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('DeepSeek Flash'));
+    expect(deepseek.textContent).toContain('使用账户点数');
+    expect(deepseek.textContent).not.toContain('额度暂不可用');
+    expect(deepseek.disabled).toBe(false);
+    const legacy = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes(baseConfig.models[0].label));
+    expect(legacy.textContent).toContain('额度暂不可用');
+  });
+
+  it('keeps the legacy percentage for an entry without a billing mode', async () => {
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await openModelMenu();
+    const m3 = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('MiniMax M3'));
+    expect(m3.textContent).toContain('剩余 75%');
+    expect(m3.textContent).not.toContain('使用账户点数');
+  });
+
   it('keeps a revoked current model visible but prevents selecting it again', async () => {
     const revokedConfig = {
       ...baseConfig,

@@ -52,6 +52,10 @@ type BotModelConfigHandler struct {
 	commercialEnforceUIDs    map[int64]bool
 }
 
+// botModelCatalogItem is one selectable model in the owner-facing catalog.
+// BillingMode names the permission lane selected for this model: valid legacy
+// quota takes precedence over credit pricing. Mixed catalogs emit "legacy" or
+// "credits"; pure legacy catalogs keep the empty value for compatibility.
 type botModelCatalogItem struct {
 	ID                     string                     `json:"id"`
 	Label                  string                     `json:"label"`
@@ -66,8 +70,14 @@ type botModelCatalogItem struct {
 	UnavailableReason      string                     `json:"unavailable_reason,omitempty"`
 	Runtime                *botModelRuntimeDescriptor `json:"runtime,omitempty"`
 	Quota                  *relayUsageSummary         `json:"quota,omitempty"`
+	BillingMode            string                     `json:"billing_mode,omitempty"`
 	RuntimeModel           string                     `json:"-"`
 }
+
+// botModelBillingModeCredits marks catalog entries whose spend is billed from the
+// credit ledger instead of a per-model relay CNY budget. Display-only: it never
+// participates in eligibility, model scope, balance or billing decisions.
+const botModelBillingModeCredits = "credits"
 
 // botModelRuntimeDescriptor is non-secret metadata consumed by XiaoBa. Relay
 // endpoints and credentials are deliberately excluded and remain device-local.
@@ -845,6 +855,7 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 		catalog[i].Available = true
 		catalog[i].UnavailableReason = ""
 		catalog[i].Quota = nil
+		catalog[i].BillingMode = ""
 		catalog[i].Runtime = catalogRuntimeDescriptorForBot(botUID, catalog[i].ID)
 	}
 
@@ -857,12 +868,15 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 	creditUser := credit.known && credit.enabled
 	var commercialSummary *types.CommercialSummary
 	if creditUser {
-		// credit 身份的账户只按 credit 资格给范围：套餐过期、或者既没有月额度也
-		// 没有付费余额，就是没有可选的模型，绝不能回落到老 CNY 额度的全模型目录。
-		if !credit.spendable() {
+		var summaryErr error
+		commercialSummary, summaryErr = readLegacyModelSummary(h.commercialStore, ownerUID)
+		if summaryErr != nil {
+			return catalogWithUnavailableCurrent(catalog, currentModelID, "套餐额度暂时无法确认"), "套餐共享额度暂时无法同步"
+		}
+		catalog = catalogForMixedPermission(catalog, credit, commercialSummary, currentModelID)
+		if len(legacyModelsForSummary(commercialSummary)) == 0 && !credit.spendable() {
 			return catalogWithUnavailableCurrent(catalog, currentModelID, botModelCreditNoPermissionReason), "当前账户暂无模型额度"
 		}
-		catalog = catalogForCreditPermission(catalog, credit, currentModelID)
 	} else if h.commercialQuotaEnforced(ownerUID) {
 		var summaryErr error
 		commercialSummary, summaryErr = h.commercialStore.GetCommercialSummary(ownerUID)
@@ -876,9 +890,7 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 	if !includeUsage {
 		return catalog, ""
 	}
-	if creditUser {
-		// credit 用户的余额在 credit 账本（/api/relay/credits），relay 按模型记的
-		// CNY 预算对他们没有意义：这里不给条目编造额度，也不必打 relay。
+	if creditUser && len(legacyModelsForSummary(commercialSummary)) == 0 {
 		return catalog, ""
 	}
 	if h.relayAdmin == nil {
@@ -891,22 +903,28 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 	if h.commercialQuotaEnforced(ownerUID) {
 		if !commercialSummaryHasQuota(commercialSummary) {
 			for i := range catalog {
+				if catalog[i].BillingMode == botModelBillingModeCredits {
+					continue
+				}
 				usage := buildRelayUsageResponse(user, catalog[i].ID)
 				catalog[i].Quota = usage.Summary
 			}
 			return catalog, "套餐共享额度迁移中，暂按原额度显示"
 		}
-		if user == nil || user.Limits.MonthlyBudget.MaxLimit <= 0 {
+		if commercialSummaryHasQuota(commercialSummary) && (user == nil || user.Limits.MonthlyBudget.MaxLimit <= 0) {
 			return catalog, "套餐共享额度同步中"
 		}
 		for i := range catalog {
-			if catalog[i].Available {
+			if catalog[i].Available && catalog[i].BillingMode != botModelBillingModeCredits {
 				catalog[i].Quota = buildRelaySharedUsageResponse(user, catalog[i].ID).Summary
 			}
 		}
 		return catalog, ""
 	}
 	for i := range catalog {
+		if catalog[i].BillingMode == botModelBillingModeCredits {
+			continue
+		}
 		usage := buildRelayUsageResponse(user, catalog[i].ID)
 		catalog[i].Quota = usage.Summary
 	}
@@ -994,42 +1012,41 @@ func (h *BotModelConfigHandler) creditPermission(ctx context.Context, uid int64)
 	return botModelCreditPermission{known: true, enabled: enabled, tier: tier, allowance: allowance}, nil
 }
 
-// catalogForCreditPermission 把目录收窄到 credit 资格允许的模型。和付费套餐的老
-// 路径一样：当前已保存的模型即使不再允许也要留着（禁用 + 原因），否则用户看不到
-// 自己正在跑什么，也不知道为什么保不进去。
-func catalogForCreditPermission(
-	catalog []botModelCatalogItem,
-	credit botModelCreditPermission,
-	currentModelID string,
-) []botModelCatalogItem {
+// catalogForMixedPermission keeps current valid legacy grants alongside credit
+// pricing. A model in both sets always uses the existing legacy quota lane.
+func catalogForMixedPermission(catalog []botModelCatalogItem, credit botModelCreditPermission, summary *types.CommercialSummary, currentModelID string) []botModelCatalogItem {
 	current := normalizeRelayModelName(resolveLegacyCatalogModelID(currentModelID))
 	filtered := make([]botModelCatalogItem, 0, len(catalog))
 	for _, item := range catalog {
-		if credit.modelAllowed(item.ID) {
-			filtered = append(filtered, item)
-			continue
-		}
-		if current != "" && normalizeRelayModelName(item.ID) == current {
+		switch {
+		case legacyQuotaModelAllowed(summary, item.ID):
+			item.BillingMode = "legacy"
+		case credit.modelAllowed(item.ID):
+			item.BillingMode = botModelBillingModeCredits
+		case current != "" && normalizeRelayModelName(item.ID) == current:
+			item.BillingMode = "legacy"
 			item.Available = false
 			item.UnavailableReason = "当前套餐不包含该模型，切换后不可再选"
-			filtered = append(filtered, item)
+		default:
+			continue
 		}
+		filtered = append(filtered, item)
 	}
 	return filtered
 }
 
-// catalogModelAllowed 是这个 owner 此刻能不能选某个目录模型。credit 身份的账户
-// 以 credit 资格为准（和 GetModelCreditEligibility 同一口径）；只有 legacy 老用户
-// 才走原来的套餐 CNY 额度路径。
+// catalogModelAllowed shares the mixed catalog's current legacy/credit union.
 func (h *BotModelConfigHandler) catalogModelAllowed(ctx context.Context, ownerUID int64, modelID string) (bool, error) {
 	credit, creditErr := h.creditPermission(ctx, ownerUID)
 	if creditErr != nil {
 		return false, creditErr
 	}
 	if credit.known && credit.enabled {
-		// credit 身份不再回落到老额度：套餐过期、或者既没有月额度也没有付费余额
-		// 就是拒绝，不能让老额度把高级模型放回来。
-		return credit.modelAllowed(modelID), nil
+		summary, err := readLegacyModelSummary(h.commercialStore, ownerUID)
+		if err != nil {
+			return false, err
+		}
+		return legacyQuotaModelAllowed(summary, modelID) || credit.modelAllowed(modelID), nil
 	}
 	if !h.commercialQuotaEnforced(ownerUID) {
 		return true, nil
