@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import './credit-commerce.css';
 
 export function parseTopupAmount(value) {
@@ -10,6 +10,7 @@ export function parseTopupAmount(value) {
 
 export default function CreditTopupForm({ config, disabled = false, onSelect }) {
   const [amount, setAmount] = useState('50');
+  const helpId = useId();
   if (config?.enabled !== true) return null;
   const fen = parseTopupAmount(amount);
   const minimum = Number(config.min_amount_fen);
@@ -26,7 +27,7 @@ export default function CreditTopupForm({ config, disabled = false, onSelect }) 
         price_fen: fen, name: `充值 ${credits} 点`,
       });
     }}>
-      <div className="credit-topup-heading"><strong>给工作补充燃油</strong><span>点数充值</span></div>
+      <div className="credit-topup-heading"><strong>点数充值</strong><span>支付宝支付</span></div>
       <p>点数可用于模型消耗和机器升配。充值不附带机器，不改变套餐周期；套餐另含机器权益和周期点数。</p>
       <div className="credit-topup-presets" role="group" aria-label="快捷充值金额">
         {(config.presets_fen || []).filter(value => value >= minimum && value <= maximum).map(value => (
@@ -36,12 +37,13 @@ export default function CreditTopupForm({ config, disabled = false, onSelect }) 
       </div>
       <label className="credit-topup-amount">自定义金额（元）
         <input inputMode="decimal" autoComplete="off" value={amount} disabled={disabled}
-          onChange={event => setAmount(event.target.value)} aria-describedby="credit-topup-amount-help" />
+          onChange={event => setAmount(event.target.value)} aria-invalid={!valid} aria-describedby={helpId} />
       </label>
-      <div id="credit-topup-amount-help" className="credit-topup-note">
+      <div id={helpId} className="credit-topup-note">
         ¥{minimum / 100}～{maximum / 100}，最多两位小数 · ¥1＝{rate} 点
       </div>
-      <div className="credit-topup-footer"><strong>{credits} 点</strong>
+      {!valid && <p role="status" className="credit-topup-error">请输入 ¥{minimum / 100}～{maximum / 100} 之间的金额，最多两位小数。</p>}
+      <div className="credit-topup-footer"><div className="credit-topup-total"><span>到账点数</span><strong aria-live="polite">{credits} 点</strong></div>
         <button type="submit" disabled={disabled || !valid}>支付宝充值</button>
       </div>
       <small>充值进入付费余额；如有欠款会先抵扣欠款。月额度仍按原周期刷新。</small>
