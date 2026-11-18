@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Brain, RotateCcw, X } from 'lucide-react';
+import { Brain, ChevronRight, RotateCcw, X } from 'lucide-react';
 import { api } from '../api';
 import { renderSafeMarkdown } from './markdown-utils';
 import { MEMORY_NODE_LABELS, MEMORY_RELATIONS, verifiedMemoryDetail } from './memory-branch';
@@ -58,14 +58,45 @@ function MemoryReader({ agentUid, node, onClose }) {
   </aside>, document.body);
 }
 
-export default function MemoryBranchSources({ events, agentUid }) {
+export default function MemoryBranchSources({ events, active, agentUid }) {
+  const [open, setOpen] = useState(false);
+  const disclosureId = useId();
+  const buttonRef = useRef(null);
+  const hasSources = events.some(event => event.read_refs.length > 0);
+  const running = active && events.some(event => event.status === 'running');
+  const ready = active && events.some(event => event.status === 'ready');
+  const injectedCount = new Set(events.flatMap(event => event.injected_refs)).size;
+
+  if (!hasSources) {
+    return running ? <span className="cc-memory-status" role="status"><Brain size={14} aria-hidden="true" />记忆探索中</span> : null;
+  }
+
+  return <div className="cc-memory-disclosure" onKeyDown={event => {
+    if (!open || event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    setOpen(false);
+    buttonRef.current?.focus({ preventScroll: true });
+  }}>
+    <button ref={buttonRef} type="button" className="cc-memory-toggle" aria-expanded={open} aria-controls={open ? disclosureId : undefined}
+      onClick={() => setOpen(value => !value)}>
+      <Brain size={14} aria-hidden="true" />
+      <span>{running && !injectedCount ? '记忆探索中' : '记忆来源'}</span>
+      {injectedCount > 0 && <span className="cc-activity-count">{injectedCount} 份</span>}
+      <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />
+    </button>
+    {open && <MemoryBranchPanel id={disclosureId} events={events} agentUid={agentUid} running={running} ready={ready} />}
+  </div>;
+}
+
+function MemoryBranchPanel({ id, events, agentUid, running, ready }) {
   const [selected, setSelected] = useState(null);
   const triggerRef = useRef(null);
   const graph = useMemo(() => {
     const read = new Set(events.flatMap(event => event.read_refs)), injected = new Set(events.flatMap(event => event.injected_refs)), cited = new Set(events.flatMap(event => event.answer_refs));
     const nodes = new Map(), edges = new Map();
     for (const event of events) {
-      if (!event.injected_refs.length && !['running', 'ready'].includes(event.status)) continue;
+      if (!event.injected_refs.length && !['running', 'ready', 'deferred', 'expired', 'failed', 'cancelled'].includes(event.status)) continue;
       for (const node of event.nodes) if (!injected.size || injected.has(node.ref)) nodes.set(node.id, { ...node, injected: injected.has(node.ref) });
       for (const edge of event.edges) edges.set(edge.id, edge);
     }
@@ -74,15 +105,20 @@ export default function MemoryBranchSources({ events, agentUid }) {
   }, [events]);
   const select = (node, trigger) => { if (!selected && trigger) triggerRef.current = trigger; setSelected(node); };
   const close = useCallback(() => { setSelected(null); if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true }); }, []);
-  const running = events.some(event => event.status === 'running'), ready = events.some(event => event.status === 'ready');
-  const label = events.some(event => event.status === 'unavailable') && !graph.injected.size ? '已收到记忆线索 · 来源暂不可核验' : graph.injected.size ? `已加入主 Agent 上下文 · ${graph.injected.size} 份记忆` : running ? '记忆探索中…' : ready ? '记忆已就绪 · 等待主 Agent 接收' : events.some(event => event.status === 'deferred') ? '本轮未接收探索结果' : events.some(event => ['failed', 'cancelled', 'expired'].includes(event.status)) ? '记忆探索已结束 · 本轮未补充记忆' : '本轮未补充记忆';
-  return <section className="cc-diary-tool cc-memory-branch" aria-label="记忆探索" onClick={event => event.stopPropagation()}>
-    <div className="cc-diary-tool-heading" role="status"><Brain size={15} aria-hidden="true" /><span>{label}</span></div>
-    {graph.read.size > 0 && <p className="cc-memory-summary">Branch 已读 {graph.read.size} 份{graph.cited.size > 0 ? ` · 回答中明确引用 ${graph.cited.size} 份` : ''}{graph.injected.size > 0 && running ? ' · 继续探索中' : ''}</p>}
+  const currentStatus = graph.injected.size
+    ? `已加入主 Agent 上下文 · ${graph.injected.size} 份记忆`
+    : events.some(event => event.status === 'unavailable') ? '来源暂不可核验'
+    : ready ? '已读取，等待主 Agent 接收'
+    : running ? '正在查找相关记忆'
+    : '已读取 · 暂无注入记录';
+  const selectedNode = graph.nodes.find(node => node.id === selected?.id);
+  return <section id={id} className="cc-memory-branch" aria-label="记忆探索" onClick={event => event.stopPropagation()}>
+    <div className="cc-memory-panel-status" role="status">{currentStatus}</div>
+    {graph.read.size > 0 && <p className="cc-memory-summary">已读取 {graph.read.size} 份{graph.cited.size > 0 ? ` · 回答中明确引用 ${graph.cited.size} 份` : ''}</p>}
     {events.some(event => event.consumed_turn_id && event.consumed_turn_id !== event.origin_turn_id) && <p className="cc-diary-incomplete">来自上一轮的探索结果 · 本轮实际接收</p>}
     {graph.nodes.length > 0 && <MemorySourceGraph nodes={graph.nodes} edges={graph.edges} selectedId={selected?.id} onSelect={select} />}
     {graph.edges.length > 0 && <p className="cc-diary-closure">{[...new Set(graph.edges.map(edge => MEMORY_RELATIONS[edge.kind] || edge.kind))].join('、')} · 仅展示已读取节点间的真实关系</p>}
     {graph.limited && <p className="cc-diary-incomplete">图谱仅展示部分节点；点选来源可核验完整内容。</p>}
-    {selected && <MemoryReader agentUid={agentUid} node={graph.nodes.find(node => node.id === selected.id) || selected} onClose={close} />}
+    {selectedNode && <MemoryReader agentUid={agentUid} node={selectedNode} onClose={close} />}
   </section>;
 }

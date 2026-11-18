@@ -1841,7 +1841,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(processToggle.getAttribute('aria-expanded')).toBe('false');
     expect(processToggle.getAttribute('aria-label')).toContain('展开任务步骤');
     expect(processToggle.getAttribute('aria-controls')).toMatch(/^working-steps-/);
-    expect(container.querySelector('.v3-working-summary')?.textContent).toContain('execute_shell');
+    expect(container.querySelector('.v3-working-summary')?.textContent).toBe('1 项');
     expect(container.querySelector('.v3-wpi-tool-result')).toBeNull();
 
     await act(async () => {
@@ -1878,6 +1878,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(resultToggle.getAttribute('aria-expanded')).toBe('true');
     expect(inlineDetails?.querySelector('.v3-wpi-tool-result')).not.toBeNull();
 
+    resultToggle.focus();
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       await Promise.resolve();

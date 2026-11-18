@@ -33,6 +33,8 @@ const render = async (events, saved = false) => {
     workingMessages={saved ? [] : events.map((content, id) => ({ id, type: 'memory_branch', from_uid: 'usr574', content }))}
     workingOnly workingComplete showThinking={false} senderIsBot senderName="小八" />));
   await settle();
+  const disclosure = container.querySelector('.cc-memory-toggle[aria-expanded="false"]');
+  if (disclosure) await click(disclosure);
 };
 beforeEach(() => {
   container = globalThis.document.createElement('div'); globalThis.document.body.append(container); root = createRoot(container); requests = [];
@@ -135,7 +137,7 @@ it.each([
 
 it('B9: unknown version and invalid graph endpoints never render rich source navigation', async () => {
   await render([{ ...graph, schema: 'catsco.memory_branch.v99' }]);
-  expect(container.querySelector('.cc-memory-source')).toBeNull();
+  expect(container.querySelector('.cc-memory-toggle')).toBeNull();
   await render([{ ...graph, edges: [{ id: 'invented', from: 'foreign', to: 'assertion-1', kind: 'qualifies' }] }]);
   expect(container.querySelector('.cc-memory-source')).toBeNull();
 });

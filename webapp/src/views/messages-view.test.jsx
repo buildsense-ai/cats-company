@@ -2116,6 +2116,9 @@ describe('MessagesView composer draft isolation', () => {
     api.getFriends.mockResolvedValueOnce({ friends: [{ id: 2, display_name: 'Agent', is_bot: true }] });
     await mountTopic(root, 'p2p_1_2', { topicName: 'Agent' });
     await act(async () => { await flushPromises(); });
+    expect(container.querySelectorAll('.cc-memory-source')).toHaveLength(0);
+    const sourcesToggle = container.querySelector('.cc-memory-toggle');
+    await act(async () => { sourcesToggle.click(); await flushPromises(); });
     const sources = container.querySelectorAll('.cc-memory-source');
     expect(sources).toHaveLength(capture.events.at(-1).nodes.length);
     expect(container.textContent).toContain('回答中明确引用 1 份');
