@@ -226,7 +226,8 @@ func (a *Adapter) CreateSchema() error {
 		// 可空的 invite_monthly_units（写入值恒 > 0，无回填）。放在商业权益表与
 		// model credit 基础结构都就绪之后，只加列和 CHECK，不改任何既有行。
 		migrateCommercialEntitlementInviteMonthlyUnits,
-	migrateModelCreditMonthlyRollover,
+		migrateModelCreditMonthlyRollover,
+		createCommercialInviteMonthlyRepairs,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,

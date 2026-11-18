@@ -63,7 +63,12 @@ CREATE INDEX IF NOT EXISTS idx_commercial_entitlements_period_anchor
 const modelCreditMonthlyGrantableSourcesSQL = `('order','admin','internal')`
 
 const modelCreditMonthlySourceSQL = `(e.source IN ` + modelCreditMonthlyGrantableSourcesSQL + `
-	OR (e.source = 'invite' AND e.invite_monthly_units IS NOT NULL AND e.expires_at IS NOT NULL))`
+	OR (e.source = 'invite' AND (r.entitlement_id IS NOT NULL OR (e.invite_monthly_units IS NOT NULL AND e.expires_at IS NOT NULL))))`
+
+const modelCreditMonthlyTermJoinSQL = modelCreditEntitlementOrderJoinSQL + `
+	LEFT JOIN commercial_invite_monthly_repairs r ON r.entitlement_id = e.id AND e.source = 'invite'`
+const modelCreditMonthlyTermEndSQL = `COALESCE(e.expires_at, r.term_ends_at)`
+const modelCreditMonthlyTermUnitsSQL = `COALESCE(r.units, ` + modelCreditEntitlementUnitsSQL + `)`
 
 // Orders and qualifying invites must use their immutable entitlement snapshots.
 // Legacy invites still derive model access (not monthly issuance) from the plan.
@@ -94,19 +99,19 @@ type modelCreditMonthlyEntitlement struct {
 func loadModelCreditMonthlyEntitlement(ctx context.Context, tx *sql.Tx, uid int64, now time.Time) (*modelCreditMonthlyEntitlement, error) {
 	ent := modelCreditMonthlyEntitlement{}
 	err := tx.QueryRowContext(ctx, `
-		SELECT e.id, e.plan_id, p.plan_tier, `+modelCreditEntitlementUnitsSQL+`, e.starts_at,
-		       COALESCE(e.period_anchor_at, e.starts_at), e.expires_at, e.source = 'invite'
+		SELECT e.id, e.plan_id, p.plan_tier, `+modelCreditMonthlyTermUnitsSQL+`, e.starts_at,
+		       COALESCE(e.period_anchor_at, e.starts_at), `+modelCreditMonthlyTermEndSQL+`, e.source = 'invite'
 		FROM commercial_entitlements e
-		JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
+		JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditMonthlyTermJoinSQL+`
 		WHERE e.uid = $1
 		  AND e.state = 'active'
 		  AND e.starts_at <= $2
-		  AND (e.expires_at IS NULL OR e.expires_at > $2)
+		  AND (`+modelCreditMonthlyTermEndSQL+` IS NULL OR `+modelCreditMonthlyTermEndSQL+` > $2)
 		  AND `+modelCreditMonthlySourceSQL+`
-		  AND `+modelCreditEntitlementUnitsSQL+` > 0
+		  AND `+modelCreditMonthlyTermUnitsSQL+` > 0
 		ORDER BY (e.source = 'invite'), p.plan_tier DESC,
 		         CASE WHEN e.source = 'invite' THEN e.starts_at END ASC,
-		         e.expires_at DESC NULLS LAST, e.starts_at DESC, e.id DESC
+		         `+modelCreditMonthlyTermEndSQL+` DESC NULLS LAST, e.starts_at DESC, e.id DESC
 		LIMIT 1`, uid, now.UTC()).Scan(
 		&ent.id, &ent.planID, &ent.tier, &ent.units, &ent.startsAt, &ent.anchorAt, &ent.expiresAt, &ent.firstTermOnly)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -259,12 +264,12 @@ func (a *Adapter) ReconcileModelCreditMonthlyPeriods(ctx context.Context, now ti
 		SELECT uid FROM (
 			SELECT e.uid AS uid
 			FROM commercial_entitlements e
-			JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
+			JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditMonthlyTermJoinSQL+`
 			WHERE e.state = 'active'
 			  AND e.starts_at <= $1
-			  AND (e.expires_at IS NULL OR e.expires_at > $1)
+			  AND (`+modelCreditMonthlyTermEndSQL+` IS NULL OR `+modelCreditMonthlyTermEndSQL+` > $1)
 			  AND `+modelCreditMonthlySourceSQL+`
-			  AND `+modelCreditEntitlementUnitsSQL+` > 0
+			  AND `+modelCreditMonthlyTermUnitsSQL+` > 0
 			UNION
 			SELECT ac.uid FROM model_credit_accounts ac WHERE ac.monthly_units > 0
 		) candidates
@@ -407,13 +412,13 @@ func commercialMonthlySubscriptionCovers(ctx context.Context, tx *sql.Tx, uid in
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM commercial_entitlements e
-			JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
+			JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditMonthlyTermJoinSQL+`
 			WHERE e.uid = $1
 			  AND e.state = 'active'
 			  AND `+modelCreditMonthlySourceSQL+`
 			  AND e.starts_at <= $2
-			  AND (e.expires_at IS NULL OR e.expires_at > $2)
-			  AND `+modelCreditEntitlementUnitsSQL+` > 0
+			  AND (`+modelCreditMonthlyTermEndSQL+` IS NULL OR `+modelCreditMonthlyTermEndSQL+` > $2)
+			  AND `+modelCreditMonthlyTermUnitsSQL+` > 0
 		)`, uid, at.UTC()).Scan(&covers); err != nil {
 		return false, fmt.Errorf("check model credit monthly refresh coverage: %w", err)
 	}
