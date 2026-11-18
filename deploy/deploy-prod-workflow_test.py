@@ -153,7 +153,7 @@ class DeployProdWorkflowTest(unittest.TestCase):
     def run_mock_rollout(self, health_ready=True, exec_status=0):
         script = (ROOT / "deploy/prod/remote-deploy.sh").read_text(encoding="utf-8")
         functions = script.split('if [ -z "$revision" ]; then', 1)[0]
-        rollout = 'cd "$compose_dir"' + script.split('cd "$compose_dir"', 1)[1]
+        rollout = 'cd "$compose_dir"' + script.split('\ncd "$compose_dir"', 1)[1]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "compose").mkdir()
@@ -179,6 +179,68 @@ sleep() { :; }
                 capture_output=True, text=True, timeout=10,
             )
             return result
+
+    def test_locked_schema_leaves_current_release_and_skips_rollback(self):
+        self.check_pre_switch_failure(pull_fails=False)
+
+    def test_image_pull_failure_leaves_current_release_and_skips_rollback(self):
+        self.check_pre_switch_failure(pull_fails=True)
+
+    def check_pre_switch_failure(self, pull_fails):
+        script = ROOT / "deploy/prod/remote-deploy.sh"
+        rollback = ROOT / "deploy/prod/remote-rollback.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "compose").mkdir()
+            (root / "compose/docker-compose.yml").touch()
+            (root / "env").mkdir()
+            prod_env = "OC_DB_DRIVER=postgres\nIMAGE_TAG=current\n"
+            (root / "env/prod.env").write_text(prod_env, encoding="utf-8")
+            (root / "CURRENT_REVISION").write_text("current\n", encoding="utf-8")
+            (root / "PREVIOUS_REVISION").write_text("previous\n", encoding="utf-8")
+            (root / "ROLLOUT_ATTEMPT").write_text("old-attempt\n", encoding="utf-8")
+            (root / "compose/sync-artifact-node-env.py").touch()
+            (root / "bin").mkdir()
+            (root / "bin/dreamina").touch(mode=0o755)
+            login = root / "data/dreamina-home/.local/share/dreamina/byted_cli_user_token.json"
+            login.parent.mkdir(parents=True)
+            login.touch()
+            compose = root / "docker-compose"
+            compose.write_text(
+                '#!/usr/bin/env bash\nprintf "%s %s\\n" "${IMAGE_TAG:-}" "$*" >> "$MOCK_CALLS"\n'
+                'shift 4\ncase "$1" in\n'
+                '  run) exit "$MOCK_FAIL_SCHEMA" ;;\n'
+                '  pull) [ "$#" -eq 2 ] && exit 0; exit 42 ;;\n'
+                '  *) exit 1 ;;\nesac\n',
+                encoding="utf-8",
+            )
+            compose.chmod(0o755)
+            calls = root / "calls"
+            runtime = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                       "SKIP_IMAGE_PULL": "0" if pull_fails else "1", "MOCK_CALLS": str(calls),
+                       "MOCK_FAIL_SCHEMA": "0" if pull_fails else "1"}
+            deploy = subprocess.run(["bash", str(script), str(root), "candidate", "new-attempt"],
+                                    env=runtime, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(deploy.returncode, 0)
+            if pull_fails:
+                self.assertEqual(deploy.returncode, 42, deploy.stderr)
+            else:
+                self.assertIn("running stack was not replaced", deploy.stderr)
+            result = subprocess.run(["bash", str(rollback), str(root), "new-attempt"],
+                                    env=runtime, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("leaving the running stack alone", result.stdout)
+            commands = calls.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(commands), 3 if pull_fails else 1)
+            preflight = commands[1] if pull_fails else commands[0]
+            self.assertRegex(preflight, r"^candidate .* run --rm --no-deps -T server .*--prepare-postgres-schema$")
+            if pull_fails:
+                self.assertRegex(commands[-1], r"prod\.env\.candidate\.\S+ pull server dreamina-worker web website$")
+            self.assertEqual(list((root / "env").iterdir()), [root / "env/prod.env"])
+            self.assertEqual((root / "ROLLOUT_ATTEMPT").read_text(encoding="utf-8"), "old-attempt\n")
+            self.assertEqual((root / "env/prod.env").read_text(encoding="utf-8"), prod_env)
+            self.assertEqual((root / "CURRENT_REVISION").read_text(encoding="utf-8"), "current\n")
+            self.assertEqual((root / "PREVIOUS_REVISION").read_text(encoding="utf-8"), "previous\n")
 
     def test_rollout_waits_for_api_before_entering_server(self):
         result = self.run_mock_rollout()

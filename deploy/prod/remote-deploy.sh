@@ -122,11 +122,38 @@ if [ ! -f "$env_file" ]; then
   exit 1
 fi
 
+if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
+  printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null
+fi
+
+# Check the candidate schema while the current API still serves traffic.
+# Compose gives these overrides precedence without rewriting the live env file.
+db_driver="$(sed -n 's/^OC_DB_DRIVER=//p' "$env_file" | tail -n 1 | tr -d '[:space:]\042\047' | tr '[:upper:]' '[:lower:]')"
+case "$(printf '%s' "${OC_DB_DRIVER:-$db_driver}" | tr '[:upper:]' '[:lower:]')" in
+  postgres|postgresql)
+    (
+      cd "$compose_dir" || exit 1
+      export IMAGE_TAG="$revision"
+      export DREAMINA_IMAGE_TAG="$revision"
+      if [ "${SKIP_IMAGE_PULL:-0}" != "1" ]; then
+        compose -f "$compose_file" --env-file "$env_file" pull server || exit 1
+      fi
+      compose -f "$compose_file" --env-file "$env_file" run --rm --no-deps -T server \
+        timeout -k 5 105 ./openchat-server tinode.conf --prepare-postgres-schema </dev/null
+    ) || { echo 'Schema preflight failed; the running stack was not replaced.' >&2; exit 1; }
+    ;;
+esac
+
+# Stage the next environment until all pre-switch checks have passed.
+candidate_env="$(mktemp "$env_file.candidate.XXXXXX")"
+trap 'rm -f -- "$candidate_env"' EXIT
+cp -p -- "$env_file" "$candidate_env"
+
 python3 - <<PY
 import os
 from pathlib import Path
 
-p = Path(r"$env_file")
+p = Path(r"$candidate_env")
 text = p.read_text(encoding="utf-8", errors="replace").replace("\ufeff", "")
 
 updates = {
@@ -160,11 +187,11 @@ for key, value in updates.items():
 p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
-python3 "$compose_dir/sync-artifact-node-env.py" "$env_file"
+python3 "$compose_dir/sync-artifact-node-env.py" "$candidate_env"
 
-allow_shared_db_user="$(sed -n 's/^ALLOW_SHARED_DB_USER=//p' "$env_file" | tail -n 1)"
-db_driver="$(sed -n 's/^OC_DB_DRIVER=//p' "$env_file" | tail -n 1)"
-db_dsn="$(sed -n 's/^OC_DB_DSN=//p' "$env_file" | tail -n 1)"
+allow_shared_db_user="$(sed -n 's/^ALLOW_SHARED_DB_USER=//p' "$candidate_env" | tail -n 1)"
+db_driver="$(sed -n 's/^OC_DB_DRIVER=//p' "$candidate_env" | tail -n 1)"
+db_dsn="$(sed -n 's/^OC_DB_DSN=//p' "$candidate_env" | tail -n 1)"
 db_user="${db_dsn%%:*}"
 
 if [ "${db_driver:-mysql}" = "mysql" ] && [ "${allow_shared_db_user:-0}" != "1" ] && [ "$db_user" = "openchat" ]; then
@@ -180,10 +207,6 @@ EOF
   exit 1
 fi
 
-if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
-  printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null
-fi
-
 if [ ! -x "$root/bin/dreamina" ]; then
   echo "missing executable Dreamina CLI: $root/bin/dreamina" >&2
   exit 1
@@ -197,14 +220,21 @@ if [ ! -f /etc/ssl/certs/ca-certificates.crt ]; then
   exit 1
 fi
 
+if [ "${SKIP_IMAGE_PULL:-0}" != "1" ]; then
+  (
+    cd "$compose_dir"
+    compose -f "$compose_file" --env-file "$candidate_env" pull server dreamina-worker web website
+  )
+fi
+
 if [ -f "$root/CURRENT_REVISION" ]; then
   cp "$root/CURRENT_REVISION" "$root/PREVIOUS_REVISION"
 fi
-
-cd "$compose_dir"
-if [ "${SKIP_IMAGE_PULL:-0}" != "1" ]; then
-  compose -f "$compose_file" --env-file "$env_file" pull server dreamina-worker web website
+if [ -n "${3:-}" ]; then
+  printf '%s\n' "$3" > "$root/ROLLOUT_ATTEMPT"
 fi
+mv -f -- "$candidate_env" "$env_file"
+cd "$compose_dir"
 trap dump_deploy_failure ERR
 compose -f "$compose_file" --env-file "$env_file" up -d
 

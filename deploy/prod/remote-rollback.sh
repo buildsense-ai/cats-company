@@ -5,6 +5,13 @@ root="${1:-/srv/catscompany-prod}"
 compose_file="$root/compose/docker-compose.yml"
 env_file="$root/env/prod.env"
 
+# Automatic rollback is scoped to the attempt that began stack replacement.
+# With no attempt argument, preserve the manual rollback command.
+if [ -n "${2:-}" ] && [ "$(cat "$root/ROLLOUT_ATTEMPT" 2>/dev/null || true)" != "$2" ]; then
+  echo "rollout did not reach stack replacement; leaving the running stack alone"
+  exit 0
+fi
+
 compose() {
   if command -v docker-compose >/dev/null 2>&1; then
     docker-compose "$@"

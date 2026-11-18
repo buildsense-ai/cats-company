@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -12,14 +13,18 @@ import (
 // ensureMessageSearchIndex serializes builds in this schema and repairs an
 // invalid index left by an interrupted concurrent build before retrying it.
 func (a *Adapter) ensureMessageSearchIndex() error {
-	a.messageSearchIndexReady.Store(false)
-	a.messageSearchGramIndexReady.Store(false)
 	ctx := context.Background()
 	conn, err := a.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	return a.ensureMessageSearchIndexOnConn(ctx, conn)
+}
+
+func (a *Adapter) ensureMessageSearchIndexOnConn(ctx context.Context, conn *sql.Conn) error {
+	a.messageSearchIndexReady.Store(false)
+	a.messageSearchGramIndexReady.Store(false)
 	var extensionInstalled bool
 	if err := conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')`).Scan(&extensionInstalled); err != nil {
 		return fmt.Errorf("check message search extension: %w", err)
@@ -38,7 +43,7 @@ func (a *Adapter) ensureMessageSearchIndex() error {
 			return fmt.Errorf("install message search extension: %w", err)
 		}
 	}
-	err = ensureMessageSearchIndexDDL(ctx, conn, "idx_messages_search_document_trgm", createMessageSearchIndex)
+	err := ensureMessageSearchIndexDDL(ctx, conn, "idx_messages_search_document_trgm", createMessageSearchIndex)
 	a.messageSearchIndexReady.Store(err == nil)
 	return err
 }

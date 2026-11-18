@@ -1,12 +1,35 @@
 package postgres
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // CreateSchema creates all required database tables and idempotent indexes.
 func (a *Adapter) CreateSchema() error {
+	// A separate pool keeps migration settings out of request connections.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, err := sql.Open("pgx", a.dsn)
+	if err != nil {
+		return fmt.Errorf("open postgres schema connection: %w", err)
+	}
+	defer db.Close()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire postgres schema connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SET lock_timeout = '1s'`); err != nil {
+		return fmt.Errorf("set postgres schema lock timeout: %w", err)
+	}
+	return a.createSchema(ctx, conn)
+}
+
+func (a *Adapter) createSchema(ctx context.Context, conn *sql.Conn) error {
 	statements := []string{
 		createUpdatedAtFunction,
 		createUsersTable,
@@ -247,26 +270,39 @@ func (a *Adapter) CreateSchema() error {
 		createSchemaMigrationsBaseline,
 	}
 	for _, statement := range statements {
-		if _, err := a.db.Exec(statement); err != nil {
-			return fmt.Errorf("postgres schema statement failed: %w", err)
+		if statement == migrateUsersAddBotDisclose {
+			// IF NOT EXISTS on ALTER still requests ACCESS EXCLUSIVE.
+			var exists bool
+			if err := conn.QueryRowContext(ctx, `SELECT EXISTS (
+				SELECT 1 FROM pg_catalog.pg_attribute
+				WHERE attrelid = 'users'::regclass AND attname = 'bot_disclose'
+				  AND attnum > 0 AND NOT attisdropped)`).Scan(&exists); err != nil {
+				return fmt.Errorf("inspect users.bot_disclose: %w", err)
+			}
+			if exists {
+				continue
+			}
+		}
+		if _, err := conn.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("postgres schema statement %.80q failed: %w", strings.TrimSpace(statement), err)
 		}
 	}
 	// CONCURRENTLY must be a standalone statement outside a transaction. It
 	// lets an existing deployment continue writing while the index is built.
-	if err := a.ensureMessageSearchIndex(); err != nil {
+	if err := a.ensureMessageSearchIndexOnConn(ctx, conn); err != nil {
 		return fmt.Errorf("message search index: %w", err)
 	}
-	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
+	if err := ensureChannelAgentBindingUniqueIncludesAgent(ctx, conn); err != nil {
 		return err
 	}
-	if _, err := a.db.Exec(migrateSessionForks); err != nil {
+	if _, err := conn.ExecContext(ctx, migrateSessionForks); err != nil {
 		return fmt.Errorf("session fork schema: %w", err)
 	}
 	return nil
 }
 
-func (a *Adapter) ensureChannelAgentBindingUniqueIncludesAgent() error {
-	row := a.db.QueryRow(
+func ensureChannelAgentBindingUniqueIncludesAgent(ctx context.Context, conn *sql.Conn) error {
+	row := conn.QueryRowContext(ctx,
 		`SELECT COALESCE(string_agg(att.attname, ',' ORDER BY cols.ord), '')
 		 FROM pg_constraint con
 		 JOIN unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ord) ON true
@@ -282,7 +318,7 @@ func (a *Adapter) ensureChannelAgentBindingUniqueIncludesAgent() error {
 	if strings.TrimSpace(columns) == expected {
 		return nil
 	}
-	if _, err := a.db.Exec(migrateChannelAgentBindingsUniqueIncludesAgent); err != nil {
+	if _, err := conn.ExecContext(ctx, migrateChannelAgentBindingsUniqueIncludesAgent); err != nil {
 		return fmt.Errorf("migrate channel agent binding unique constraint: %w", err)
 	}
 	return nil
