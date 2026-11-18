@@ -53,7 +53,33 @@ type agentQuotaSummary struct {
 	RemainingPercent float64 `json:"remaining_percent"`
 	Status           string  `json:"status"`
 	ResetDuration    string  `json:"reset_duration,omitempty"`
+	// BillingMode 只在实际按 credit 账本计费时为 "credits"。这类模型没有旧额度
+	// 百分比，好友看到的摘要只有「使用账户点数」；余额不进这个响应。
+	BillingMode string `json:"billing_mode,omitempty"`
 }
+// MarshalJSON 让 credits 模式的摘要不下发旧额度百分比。remaining_percent 是
+// 没有 omitempty 的 float64（legacy 真正的 0% 必须照常下发），所以只能在
+// credits 模式下换一份线上形状：这个 0 会被好友端当成「额度已用完」。
+func (s agentQuotaSummary) MarshalJSON() ([]byte, error) {
+	type legacySummary agentQuotaSummary
+	if s.BillingMode != botModelBillingModeCredits {
+		return json.Marshal(legacySummary(s))
+	}
+	return json.Marshal(struct {
+		Source          string `json:"source,omitempty"`
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoning_effort,omitempty"`
+		Status          string `json:"status"`
+		BillingMode     string `json:"billing_mode,omitempty"`
+	}{
+		Source:          s.Source,
+		Model:           s.Model,
+		ReasoningEffort: s.ReasoningEffort,
+		Status:          s.Status,
+		BillingMode:     s.BillingMode,
+	})
+}
+
 
 type agentQuotaCacheEntry struct {
 	response  agentQuotaResponse
@@ -462,6 +488,28 @@ func (h *AgentHandler) HandleAgentQuota(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
+	// credit 计价的模型没有旧额度百分比：命中就只报「使用账户点数」，不去读
+	// relay 的旧预算，也不会显示超额。这个摘要是好友可见的，所以只带计费方式，
+	// 不带任何余额数字。
+	switch relayBillingModeFor(r.Context(), h.creditQuotaStore(), ownerUID, model) {
+	case relayBillingCredits:
+		writeJSON(w, http.StatusOK, agentQuotaResponse{
+			Configured: true,
+			Summary: &agentQuotaSummary{
+				Source:          "credits",
+				Model:           model,
+				ReasoningEffort: deviceStatus.ReasoningEffort,
+				Status:          "credits",
+				BillingMode:     botModelBillingModeCredits,
+			},
+		})
+		return
+	case relayBillingUnknown:
+		// 计费资格或旧权益读不出来时不报额度：好友端显示「额度未同步」，
+		// 而不是一个可能不属于这个模型的旧百分比。
+		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
+		return
+	}
 	if h.relayAdmin == nil || model == "" {
 		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
 		return
@@ -530,6 +578,20 @@ func appliedBotModelStatus(config *types.BotModelConfig) (DeviceModelStatus, boo
 	}
 }
 
+// creditQuotaStore 在同一份存储上取老套餐摘要与 credit 资格读取的存储面。
+// 生产里的 PostgreSQL 适配器两样都实现；只实现其中一个的存储（老部署或测试
+// 替身）返回 nil，调用方保持原来的老额度行为。
+func (h *AgentHandler) creditQuotaStore() commercialQuotaSummaryStore {
+	if h == nil || h.db == nil {
+		return nil
+	}
+	quotaStore, ok := h.db.(commercialQuotaSummaryStore)
+	if !ok {
+		return nil
+	}
+	return quotaStore
+}
+
 func sanitizeAgentQuota(usage relayUsageResponse) agentQuotaResponse {
 	response := agentQuotaResponse{Configured: usage.Configured, Shared: true}
 	if usage.Summary == nil {
@@ -547,6 +609,7 @@ func sanitizeAgentQuota(usage relayUsageResponse) agentQuotaResponse {
 		RemainingPercent: remaining,
 		Status:           usage.Summary.Status,
 		ResetDuration:    usage.Summary.ResetDuration,
+		BillingMode:      usage.Summary.BillingMode,
 	}
 	return response
 }
