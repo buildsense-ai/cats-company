@@ -312,7 +312,7 @@ describe('AppsView', () => {
     expect(document.activeElement).toBe(container.querySelector('.cc-app-card-menu summary'));
   });
 
-  test('loads only the selected Agent applications and opens one inside the viewer', async () => {
+  test('opens an application from the global catalogue independently of any previous conversation', async () => {
     await act(async () => {
       root.render(<AppsView user={{ uid: 7 }} topicId="usr_123" />);
       await Promise.resolve();
@@ -330,7 +330,6 @@ describe('AppsView', () => {
 
     expect(mocks.requestArtifactLaunch).toHaveBeenCalledWith({
       app: 'saturday-demo',
-      topic_id: 'usr_123',
     });
     expect(container.querySelector('.cc-apps-viewer-frame')?.getAttribute('src'))
       .toBe('https://artifact.catsco.cc/_launch/saturday-demo?code=one-time');
@@ -339,6 +338,56 @@ describe('AppsView', () => {
     expect(titles()).toEqual(['Saturday 演示应用']);
     await selectAgent('全部');
     expect(titles()).toEqual(['好友应用', 'Saturday 演示应用']);
+  });
+
+  test('keeps the catalogue visible after a launch failure and retries with an authenticated URL', async () => {
+    mocks.requestArtifactLaunch.mockRejectedValueOnce(new Error('artifact_gateway_unavailable'));
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+    await act(async () => { container.querySelector('[aria-label="打开应用 好友应用"]').click(); });
+
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(titles()).toContain('好友应用');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('暂时无法打开「好友应用」');
+
+    let finishLaunch;
+    mocks.requestArtifactLaunch.mockReturnValueOnce(new Promise(resolve => { finishLaunch = resolve; }));
+    const retry = container.querySelector('.cc-apps-launch-error button');
+    retry.focus();
+    await act(async () => { retry.click(); });
+    expect(container.querySelector('.cc-apps-launch-error button')).toBe(retry);
+    expect(document.activeElement).toBe(retry);
+    expect(retry.getAttribute('aria-disabled')).toBe('true');
+    expect(retry.textContent).toBe('打开中');
+    expect(container.querySelector('.cc-app-card-loading')).toBeNull();
+    await act(async () => { retry.click(); });
+    expect(mocks.requestArtifactLaunch.mock.calls).toEqual([[{ app: 'friend-demo' }], [{ app: 'friend-demo' }]]);
+    await act(async () => { finishLaunch({ launch_url: 'https://artifact.catsco.cc/_launch/friend-demo' }); });
+    expect(container.querySelector('iframe').src).toContain('/_launch/');
+    expect(container.querySelector('.cc-apps-launch-error')).toBeNull();
+  });
+
+  test('keeps the current preview after an external launch fails and still confirms after a retry', async () => {
+    const openWindow = vi.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+      await act(async () => { container.querySelector('[aria-label="打开应用 好友应用"]').click(); });
+      const preview = container.querySelector('iframe');
+
+      mocks.requestArtifactLaunch.mockResolvedValueOnce({});
+      await act(async () => { container.querySelector('.cc-apps-viewer-external').click(); });
+      expect(container.querySelector('iframe')).toBe(preview);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('暂时无法打开「好友应用」');
+      expect(openWindow).not.toHaveBeenCalled();
+
+      await act(async () => { container.querySelector('.cc-apps-launch-error button').click(); });
+      const confirmation = document.querySelector('[role="alertdialog"]');
+      expect(confirmation?.textContent).toContain('当前页面会保留。');
+      expect(openWindow).not.toHaveBeenCalled();
+      await act(async () => { Array.from(confirmation.querySelectorAll('button')).find((button) => button.textContent === '仍然打开').click(); });
+      expect(openWindow).toHaveBeenCalledWith('https://artifact.catsco.cc/_launch/saturday-demo?code=one-time', '_blank', 'noopener,noreferrer');
+    } finally {
+      openWindow.mockRestore();
+    }
   });
 
   test('keeps available apps when one Agent fails, and retries the failed list', async () => {

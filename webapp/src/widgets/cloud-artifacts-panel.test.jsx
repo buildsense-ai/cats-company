@@ -31,6 +31,13 @@ import { FeedbackProvider } from '../components/feedback-system';
 import CloudArtifactsPanel from './cloud-artifacts-panel';
 import { promoGatewayApp, promoRegistryArtifact } from '../test-fixtures/promo-gateway';
 
+function toolbarAction(container, label) {
+  const menu = container.querySelector('.cloud-artifacts-overflow');
+  if (!menu.open) menu.querySelector('summary').click();
+  expect(menu.open).toBe(true);
+  return [...menu.querySelectorAll('button')].find((button) => button.textContent === label);
+}
+
 const activeArtifact = {
   id: 'lesson-game',
   title: '课堂小游戏',
@@ -335,11 +342,13 @@ describe('CloudArtifactsPanel', () => {
     if (boundary === 'auth') await act(async () => setToken(previousToken));
   });
 
-  test('shows only files and results, with the result visibility explanation', async () => {
-    await renderPanel();
-
+  test('shows files and apps with legacy results available from the overflow', async () => {
+    await renderPanel({ initialTab: 'files' });
     expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
-      .toEqual(['文件', '应用旧', '应用']);
+      .toEqual(['文件', '应用']);
+    await act(async () => { toolbarAction(container, '旧版应用').click(); });
+    expect(container.querySelector('.cloud-artifacts-overflow')).toBeNull();
+    expect(container.querySelector('[aria-label="返回文件"]')).not.toBeNull();
     expect(container.textContent).toContain('共享成果');
     expect(container.querySelector('.cloud-artifacts-role-badge')).toBeNull();
     expect(container.textContent).not.toContain('你可管理全部成果');
@@ -634,7 +643,8 @@ describe('CloudArtifactsPanel', () => {
     expect(onPreviewFile).toHaveBeenCalledWith(historicalFile);
   });
 
-  test('loads older conversation files with the stable cursor', async () => {
+  test('retries an older file page at the same cursor and keeps the existing files', async () => {
+    let finishRetry;
     api.getTopicFiles
       .mockResolvedValueOnce({
         files: [historicalFile],
@@ -642,11 +652,8 @@ describe('CloudArtifactsPanel', () => {
         next_before_id: 820,
         next_before_created_at: historicalFile.created_at,
       })
-      .mockResolvedValueOnce({
-        files: [{ ...historicalFile, id: '700:0', message_id: 700, name: '复习清单.docx' }],
-        has_more: false,
-        next_before_id: 0,
-      });
+      .mockRejectedValueOnce(new Error('加载较早文件失败'))
+      .mockImplementationOnce(() => new Promise(resolve => { finishRetry = resolve; }));
     await renderPanel({ initialTab: 'files' });
 
     await act(async () => {
@@ -656,11 +663,40 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
 
-    expect(api.getTopicFiles).toHaveBeenLastCalledWith('p2p_7_440', {
+    const olderFileRequest = {
       beforeId: 820,
       beforeCreatedAt: historicalFile.created_at,
       limit: 40,
+    };
+    expect(api.getTopicFiles).toHaveBeenLastCalledWith('p2p_7_440', olderFileRequest);
+    const list = container.querySelector('.cloud-artifacts-list');
+    const failure = list.nextElementSibling;
+    expect(failure.getAttribute('role')).toBe('alert');
+    expect(failure.textContent).toContain('加载较早文件失败');
+    expect(container.querySelector('.cloud-artifacts-load-more')).toBeNull();
+    expect(container.textContent).toContain(historicalFile.name);
+
+    const retry = failure.querySelector('button');
+    await act(async () => {
+      retry.focus();
+      retry.click();
     });
+
+    expect(failure.querySelector('button')).toBe(retry);
+    expect(document.activeElement).toBe(retry);
+    expect(retry.getAttribute('aria-busy')).toBe('true');
+    expect(retry.textContent).toBe('重试中');
+    await act(async () => retry.click());
+    expect(api.getTopicFiles).toHaveBeenCalledTimes(3);
+    expect(api.getTopicFiles).toHaveBeenLastCalledWith('p2p_7_440', olderFileRequest);
+    await act(async () => finishRetry({
+      files: [{ ...historicalFile, id: '700:0', message_id: 700, name: '复习清单.docx' }],
+      has_more: false,
+      next_before_id: 0,
+    }));
+
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain(historicalFile.name);
     expect(api.getAgentFiles).not.toHaveBeenCalled();
     expect(container.textContent).toContain('复习清单.docx');
   });
@@ -828,11 +864,11 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).not.toContain('你可以查看成果，并可管理成果标签');
   });
 
-  test('shows only the file tab when the current conversation has no Agent', async () => {
+  test('shows a file heading when the current conversation has no Agent', async () => {
     await renderPanel({ initialTab: 'files', agentUid: 0 });
 
-    expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
-      .toEqual(['文件']);
+    expect(container.querySelector('.cloud-artifacts-header h2')?.textContent).toBe('文件');
+    expect(container.querySelector('[role="tablist"]')).toBeNull();
     expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_7_440', {
       beforeId: 0,
       limit: 40,
@@ -860,7 +896,8 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).toContain('其他任务成果');
     expect(container.querySelector('.cloud-artifact-filter-trigger')?.getAttribute('aria-label'))
       .toContain('范围：全部成果');
-    expect(container.querySelector('button[role="tab"][disabled]')?.textContent).toBe('文件');
+    expect(container.querySelector('.cloud-artifacts-header h2')?.textContent).toBe('旧版应用');
+    expect(container.querySelector('[role="tablist"]')).toBeNull();
     expect(api.getAgentFiles).not.toHaveBeenCalled();
   });
 
@@ -900,7 +937,7 @@ describe('CloudArtifactsPanel', () => {
     await flush();
     const frame = container.querySelector('.cloud-artifacts-gateway-frame');
     expect(frame).not.toBeNull();
-    expect(container.textContent).not.toContain('应用清单暂时是空的');
+    expect(container.textContent).not.toContain('当前 Agent 暂无已发布的应用');
     expect(onWorkspacePreviewChange).toHaveBeenLastCalledWith(true);
     await act(async () => container.querySelector('[aria-label="全屏查看应用"]').click());
     expect(onToggleWorkspaceFullscreen).toHaveBeenCalledTimes(1);
@@ -960,7 +997,7 @@ describe('CloudArtifactsPanel', () => {
     // the frame and re-mint the launch binding, like entering the app again.
     api.requestArtifactLaunch.mockClear();
     await act(async () => {
-      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+      toolbarAction(container, '刷新应用').click();
     });
     await flush();
 
@@ -989,7 +1026,7 @@ describe('CloudArtifactsPanel', () => {
     // session they already have: no revoke, no guest downgrade, frame untouched.
     api.requestArtifactLaunch.mockRejectedValueOnce(new Error('artifact_launch_rate_limited'));
     await act(async () => {
-      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+      toolbarAction(container, '刷新应用').click();
     });
     await flush();
 
@@ -1014,7 +1051,7 @@ describe('CloudArtifactsPanel', () => {
     // A guest holds no binding, so remounting the plain URL cannot cost them a
     // session. Refusing here reported a failure while the safe action was free.
     await act(async () => {
-      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+      toolbarAction(container, '刷新应用').click();
     });
     await flush();
 
@@ -1040,7 +1077,7 @@ describe('CloudArtifactsPanel', () => {
     // frame and reports the failure.
     api.requestArtifactLaunch.mockRejectedValueOnce(new Error('artifact_launch_rate_limited'));
     await act(async () => {
-      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+      toolbarAction(container, '刷新应用').click();
     });
     await flush();
     expect(container.textContent).toContain('应用刷新失败');
@@ -1071,7 +1108,7 @@ describe('CloudArtifactsPanel', () => {
     // tab switch mid-refresh could let a stale response overwrite another tab.
     const catalogueCallsBefore = api.listArtifactApps.mock.calls.length;
     await act(async () => {
-      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+      toolbarAction(container, '刷新应用').click();
     });
     await flush();
 
@@ -1088,7 +1125,7 @@ describe('CloudArtifactsPanel', () => {
     expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      [...container.querySelectorAll('button')].find((button) => button.textContent === '返回').click();
+      container.querySelector('[aria-label="返回应用列表"]').click();
     });
     await renderPanel({ initialApp: app });
     expect(container.querySelector('.cloud-artifacts-gateway-frame')).toBeNull();
@@ -1119,6 +1156,8 @@ describe('CloudArtifactsPanel', () => {
     });
     await flush();
     expect(container.querySelector('.cloud-artifacts-gateway-frame')?.getAttribute('src')).toBe(app.url);
+    expect(container.querySelector('.cloud-artifacts-tabs')).toBeNull();
+    await act(async () => { container.querySelector('[aria-label="返回应用列表"]').click(); });
     await act(async () => {
       [...container.querySelectorAll('button[role="tab"]')].find((button) => button.textContent === '文件').click();
     });
@@ -1176,8 +1215,7 @@ describe('CloudArtifactsPanel', () => {
 
     await renderPanel({ initialTab: 'active' });
     await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用').click();
+      container.querySelector('[aria-label="返回应用列表"]').click();
       await Promise.resolve();
     });
 
@@ -1209,8 +1247,7 @@ describe('CloudArtifactsPanel', () => {
 
     await renderPanel({ initialTab: 'active' });
     await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用').click();
+      container.querySelector('[aria-label="返回应用列表"]').click();
       await Promise.resolve();
     });
 
@@ -1230,8 +1267,7 @@ describe('CloudArtifactsPanel', () => {
     // Opening in a new page stays available as a secondary action, but it is
     // confirmed first: the new tab no longer belongs to this conversation.
     await act(async () => {
-      [...container.querySelectorAll('button')]
-        .find((button) => button.textContent === '新页面打开').click();
+      toolbarAction(container, '新页面打开').click();
       await Promise.resolve();
     });
     expect(openSpy).not.toHaveBeenCalled();
@@ -1248,8 +1284,7 @@ describe('CloudArtifactsPanel', () => {
 
     // Going back returns to the list.
     await act(async () => {
-      [...container.querySelectorAll('button')]
-        .find((button) => button.textContent === '返回').click();
+      container.querySelector('[aria-label="返回应用列表"]').click();
       await Promise.resolve();
     });
     expect(container.querySelector('.cloud-artifacts-gateway-frame')).toBeNull();
@@ -1275,8 +1310,7 @@ describe('CloudArtifactsPanel', () => {
 
     await renderPanel({ initialTab: 'active' });
     await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用').click();
+      container.querySelector('[aria-label="返回应用列表"]').click();
       await Promise.resolve();
     });
     await act(async () => {
@@ -1310,8 +1344,7 @@ describe('CloudArtifactsPanel', () => {
     // recognises the visitor from the platform's domain cookie on its own.
     api.requestArtifactLaunch.mockClear();
     await act(async () => {
-      [...container.querySelectorAll('button')]
-        .find((button) => button.textContent === '新页面打开').click();
+      toolbarAction(container, '新页面打开').click();
       await Promise.resolve();
     });
     // The tab loses the conversation binding, so the user is asked first.
@@ -1345,8 +1378,7 @@ describe('CloudArtifactsPanel', () => {
 
     await renderPanel({ initialTab: 'active' });
     await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用').click();
+      container.querySelector('[aria-label="返回应用列表"]').click();
       await Promise.resolve();
     });
     await act(async () => {
@@ -1380,8 +1412,7 @@ describe('CloudArtifactsPanel', () => {
 
     await renderPanel({ initialTab: 'active' });
     await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用').click();
+      container.querySelector('[aria-label="返回应用列表"]').click();
       await Promise.resolve();
     });
     await act(() => {
@@ -1405,8 +1436,7 @@ describe('CloudArtifactsPanel', () => {
     });
     expect(change.signal.aborted).toBe(false);
     await act(async () => {
-      [...container.querySelectorAll('button')]
-        .find((button) => button.textContent === '返回').click();
+      container.querySelector('[aria-label="返回应用列表"]').click();
       await Promise.resolve();
     });
     expect(change.signal.aborted).toBe(true);
@@ -1428,8 +1458,7 @@ describe('CloudArtifactsPanel', () => {
 
     await renderPanel({ initialTab: 'active' });
     await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用').click();
+      container.querySelector('[aria-label="返回应用列表"]').click();
       await Promise.resolve();
     });
     await act(async () => {
@@ -1442,8 +1471,7 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).toContain('身份未附带');
 
     await act(async () => {
-      [...container.querySelectorAll('button')]
-        .find((button) => button.textContent === '新页面打开').click();
+      toolbarAction(container, '新页面打开').click();
       await Promise.resolve();
     });
     await act(async () => {
@@ -1475,8 +1503,7 @@ describe('CloudArtifactsPanel', () => {
 
     await renderPanel({ initialTab: 'active' });
     await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用').click();
+      container.querySelector('[aria-label="返回应用列表"]').click();
       await Promise.resolve();
     });
     await act(async () => {
@@ -1490,17 +1517,25 @@ describe('CloudArtifactsPanel', () => {
     expect(container.querySelector('.cloud-artifacts-gateway-frame')).toBeNull();
   });
 
-  test('explains an unavailable gateway list instead of showing a broken tab', async () => {    api.listArtifactApps.mockRejectedValueOnce(new Error('artifact_gateway_unavailable'));
+  test('shows one state while loading, after failure, and after retrying an empty application list', async () => {
+    let rejectList;
+    api.listArtifactApps.mockImplementationOnce(() => new Promise((_, reject) => { rejectList = reject; }))
+      .mockResolvedValueOnce({ apps: [] });
 
-    await renderPanel({ initialTab: 'active' });
-    await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用').click();
-      await Promise.resolve();
-    });
+    await renderPanel({ initialTab: 'gateway', topicId: '' });
+    expect(container.textContent.match(/正在读取应用/g)).toHaveLength(1);
+    expect(container.querySelector('.cloud-artifacts-status')).toBeNull();
 
-    expect(container.textContent).toContain('应用清单暂时不可用');
-    expect(container.textContent).not.toContain('成果读取失败');
+    await act(async () => rejectList(new Error('artifact_gateway_unavailable')));
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(container.textContent.match(/应用清单暂时不可用/g)).toHaveLength(1);
+    expect(container.textContent).not.toContain('当前 Agent 暂无已发布的应用');
+
+    await act(async () => container.querySelector('[role="alert"] button').click());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('.cloud-artifacts-status')?.textContent).toBe('当前 Agent 暂无已发布的应用');
+    expect(container.querySelectorAll('.cloud-artifacts-status')).toHaveLength(1);
+    expect(container.querySelector('.cloud-artifacts-list')).toBeNull();
   });
 
   test('unbound preview can create an annotation task and retains errors for retry', async () => {
@@ -1976,8 +2011,7 @@ test('gateway annotation toolbar reports user intent to the host and renders hos
   });
   await renderPanel({ initialTab: 'active' });
   await act(async () => {
-    [...container.querySelectorAll('button[role="tab"]')]
-      .find((button) => button.textContent === '应用').click();
+    container.querySelector('[aria-label="返回应用列表"]').click();
     await Promise.resolve();
   });
   await act(async () => {
@@ -1988,7 +2022,7 @@ test('gateway annotation toolbar reports user intent to the host and renders hos
   // Tools render only for a conversation-scoped viewer with a known agent.
   expect(container.querySelector('.cloud-artifacts-gateway-annotation-tools')).toBeNull();
   const modeButton = container.querySelector('[aria-label="批注应用"]');
-  expect(modeButton.nextElementSibling.getAttribute('aria-label')).toBe('刷新当前栏目');
+  expect(container.querySelector('.cloud-artifacts-header summary[aria-label="更多操作"]')).not.toBeNull();
   expect(modeButton).not.toBeNull();
   expect(modeButton.getAttribute('aria-pressed')).toBe('false');
   await act(async () => {
@@ -2030,8 +2064,7 @@ test('gateway viewer frame change payload carries the annotation app identity', 
   });
   await renderPanel({ initialTab: 'active' });
   await act(async () => {
-    [...container.querySelectorAll('button[role="tab"]')]
-      .find((button) => button.textContent === '应用').click();
+    container.querySelector('[aria-label="返回应用列表"]').click();
     await Promise.resolve();
   });
   await act(async () => {
@@ -2063,8 +2096,7 @@ test('annotation tools stay hidden without a conversation or a resolvable agent'
   });
   await renderPanel({ initialTab: 'active', topicId: '' });
   await act(async () => {
-    [...container.querySelectorAll('button[role="tab"]')]
-      .find((button) => button.textContent === '应用').click();
+    container.querySelector('[aria-label="返回应用列表"]').click();
     await Promise.resolve();
   });
   await act(async () => {

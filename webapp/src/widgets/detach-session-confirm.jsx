@@ -15,7 +15,7 @@ function appLabel(app) {
   return String(app?.title || app?.id || '').trim();
 }
 
-export function DetachSessionConfirm({ app, onCancel, onConfirm }) {
+export function DetachSessionConfirm({ app, onCancel, onConfirm, message = DETACH_SESSION_CONFIRM_MESSAGE }) {
   const dialogRef = useRef(null);
   const cancelRef = useRef(null);
   const descriptionID = React.useId();
@@ -34,7 +34,7 @@ export function DetachSessionConfirm({ app, onCancel, onConfirm }) {
         onClick={(event) => event.stopPropagation()}
       >
         <h4>{name ? `在新页面打开“${name}”？` : '在新页面打开应用？'}</h4>
-        <p id={descriptionID}>{DETACH_SESSION_CONFIRM_MESSAGE}</p>
+        <p id={descriptionID}>{message}</p>
         <div className="cloud-artifact-confirm-actions">
           <button ref={cancelRef} type="button" onClick={onCancel}>取消</button>
           <button type="button" onClick={onConfirm}>{DETACH_SESSION_CONFIRM_ACTION}</button>
@@ -53,7 +53,7 @@ export function DetachSessionConfirm({ app, onCancel, onConfirm }) {
 
 // One confirmation per caller. Components that own several "open in a new tab"
 // entrances share a single instance, so two dialogs can never stack up.
-export function useDetachSessionConfirm() {
+export function useDetachSessionConfirm({ message } = {}) {
   const [pending, setPending] = useState(null);
   const actionRef = useRef(null);
 
@@ -76,7 +76,7 @@ export function useDetachSessionConfirm() {
   }, []);
 
   const dialog = pending
-    ? <DetachSessionConfirm app={pending.app} onCancel={cancel} onConfirm={confirm} />
+    ? <DetachSessionConfirm app={pending.app} onCancel={cancel} onConfirm={confirm} message={message} />
     : null;
 
   return { requestDetach, dialog, pending: Boolean(pending) };

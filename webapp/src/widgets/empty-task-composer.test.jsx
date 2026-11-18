@@ -109,15 +109,38 @@ describe('EmptyTaskComposer', () => {
     api.getAgents.mockRejectedValueOnce(error);
     await mountComposer();
     const notice = container.querySelector('.v3-composer-agent-error');
-    expect(notice.textContent).toBe(message);
+    expect(notice.querySelector('span').textContent).toBe(message);
     expect(notice.getAttribute('role')).toBe('status');
     expect(notice.querySelector('svg').getAttribute('aria-hidden')).toBe('true');
 
-    await act(async () => {
-      window.dispatchEvent(new Event('cc:data-changed'));
-      await flushPromises();
-    });
+    const retry = notice.querySelector('button');
+    if (retry) {
+      let finishRetry;
+      api.getAgents.mockReturnValueOnce(new Promise(resolve => { finishRetry = resolve; }));
+      retry.focus();
+      await act(async () => { retry.click(); });
+      expect(container.querySelector('.cc-composer-agent-retry')).toBe(retry);
+      expect(document.activeElement).toBe(retry);
+      expect(retry.getAttribute('aria-busy')).toBe('true');
+      expect(retry.textContent).toBe('重试中');
+      await act(async () => { retry.click(); });
+      expect(api.getAgents).toHaveBeenCalledTimes(2);
+      await act(async () => { finishRetry({ agents }); await flushPromises(); });
+    } else {
+      await act(async () => { window.dispatchEvent(new Event('cc:data-changed')); await flushPromises(); });
+    }
     expect(container.querySelector('.v3-composer-agent-error')).toBeNull();
+  });
+
+  it('shows the add-assistant entry after a successful empty roster', async () => {
+    api.getAgents.mockResolvedValueOnce({ agents: [] });
+    const openAddAssistant = vi.fn();
+    window.addEventListener('cc:open-add-assistant', openAddAssistant, { once: true });
+    await mountComposer();
+    const action = container.querySelector('.cc-new-task-agent-empty-action');
+    expect(action?.textContent).toBe('添加助手');
+    await act(async () => action.click());
+    expect(openAddAssistant).toHaveBeenCalledTimes(1);
   });
 
   it.each([true, false])('consolidates upload authentication failures and preserves the draft (roster failure: %s)', async (rosterFailed) => {
@@ -1420,6 +1443,19 @@ describe('EmptyTaskComposer', () => {
     rememberLastTaskAgent('7', agents[1]);
     api.getGroups.mockRejectedValueOnce(new Error('history unavailable'));
     await mountComposer();
+    expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
+  });
+
+  it('limits the optional history read and uses the saved Agent when it times out', async () => {
+    api.getAgents.mockResolvedValue({ agents: [
+      { ...agents[0], relation: 'owner', is_cloud: true },
+      { ...agents[1], relation: 'friend', is_cloud: true },
+    ] });
+    rememberLastTaskAgent('7', agents[1]);
+    api.getGroups.mockReturnValueOnce(new Promise(() => {}));
+    await mountComposer();
+    expect(api.getGroups).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 700 }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(700); });
     expect(container.querySelector('[aria-checked="true"]').getAttribute('aria-label')).toBe('运营数据助手');
   });
 

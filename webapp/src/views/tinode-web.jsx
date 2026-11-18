@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { api, resolveMediaURL, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSActiveTopic, sendWSPageFocus, sendWSPageVisibility } from '../api';
 import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
@@ -324,6 +324,14 @@ function taskContextMatches(context, next) {
     && String(context.projectName || '') === String(next.projectName || '');
 }
 
+function hasNewTaskDraftPayload(store) {
+  return Boolean(
+    readComposerInputDraft(store, NEW_TASK_DRAFT_KEY).trim()
+    || readComposerAttachmentDraft(store, NEW_TASK_DRAFT_KEY).length
+    || readComposerPhoneUploadSession(store, NEW_TASK_DRAFT_KEY)?.session_id,
+  );
+}
+
 export function resetComposerDraftStore(draftStoreRef) {
   draftStoreRef.current?.deactivate?.();
   const nextStore = createComposerDraftStore();
@@ -401,14 +409,15 @@ function TinodeWebApp({ location }) {
   const [messageLocationRequest, setMessageLocationRequest] = useState(null);
   const messageLocationSequenceRef = useRef(0);
   const taskDraftSequenceRef = useRef(0);
-  const draftTaskScopeRef = useRef('');
+  const draftTaskContextRef = useRef(null);
   const draftTaskCoordinatorRef = useRef(null);
   const pendingDraftTransferRef = useRef(null);
   const standaloneRequestRef = useRef(null);
   if (!draftTaskCoordinatorRef.current) {
-    draftTaskCoordinatorRef.current = createDraftTaskCoordinator(() => (
-      `${getAuthRevision()}|${getToken()}|${draftTaskScopeRef.current}`
-    ));
+    draftTaskCoordinatorRef.current = createDraftTaskCoordinator(() => {
+      const { identity, agentId } = draftTaskContextRef.current;
+      return `${getAuthRevision()}|${getToken()}|${identity}|${agentId}`;
+    });
   }
   const composerDraftStoreRef = useRef(null);
   const composerDraftOwnerRef = useRef('');
@@ -492,11 +501,7 @@ function TinodeWebApp({ location }) {
     composerDraftStoreRef.current,
     NEW_TASK_DRAFT_KEY,
   );
-  const hasPersistedTaskPayload = Boolean(
-    readComposerInputDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY).trim()
-    || readComposerAttachmentDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY).length
-    || readComposerPhoneUploadSession(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY)?.session_id,
-  );
+  const hasPersistedTaskPayload = hasNewTaskDraftPayload(composerDraftStoreRef.current);
 
   useEffect(() => {
     composerDraftStoreRef.current?.activate?.();
@@ -701,7 +706,7 @@ function TinodeWebApp({ location }) {
       agentUid: normalizedAgentUid,
       requestId: cloudArtifactsRequestSequenceRef.current,
       topicId: activeTopicId,
-      initialTab: selection.initialTab || (activeTopicId ? 'files' : 'active'),
+      initialTab: selection.initialTab || (activeTopicId ? 'files' : 'gateway'),
       file: selection.file,
       app: selection.app,
     };
@@ -740,7 +745,9 @@ function TinodeWebApp({ location }) {
       if (window.innerWidth <= 1024) setStandaloneCloudArtifactsExpanded(false);
     };
     const restoreOnEscape = (event) => {
-      if (!standaloneCloudArtifactsRequest || !standaloneCloudArtifactsExpanded || event.key !== 'Escape') return;
+      if (!standaloneCloudArtifactsRequest || !standaloneCloudArtifactsExpanded
+        || event.key !== 'Escape' || event.defaultPrevented
+        || document.querySelector('.cc-app-focus .cloud-artifacts-overflow[open]')) return;
       event.preventDefault();
       restoreStandaloneCloudArtifacts();
     };
@@ -755,7 +762,7 @@ function TinodeWebApp({ location }) {
   const handleOpenManagedAgentArtifacts = useCallback((agentUid) => {
     setActiveView('chats');
     setMobileSidebarOpen(false);
-    openCloudArtifactsForAgent(agentUid);
+    openCloudArtifactsForAgent(agentUid, { initialTab: 'active' });
   }, [openCloudArtifactsForAgent]);
 
   useEffect(() => {
@@ -1491,25 +1498,70 @@ function TinodeWebApp({ location }) {
     persistComposerDraftStore(composerDraftStoreRef.current);
   }, []);
 
-  const handleNewTask = useCallback((options = {}) => {
-    const agent = options.agent || null;
-    const agentUid = agent?.uid || agent?.id || 'new-task';
-    const projectId = Number(options?.projectId || 0);
-    const projectName = projectId > 0 ? String(options?.projectName || '') : '';
-    taskDraftSequenceRef.current += 1;
-    setStandaloneCloudArtifactsRequest(null);
-    setEmptyTaskSelectedAgent(agent);
-    setActiveTopic(null);
-    setActiveView('chats');
-    setTaskDraft({
-      agent,
-      key: `${agentUid}:${taskDraftSequenceRef.current}`,
-      projectId: projectId > 0 ? projectId : 0,
-      projectName,
-    });
-    syncTaskContextDraft({ agent, projectId, projectName });
-    setMobileSidebarOpen(false);
-  }, [setActiveTopic, syncTaskContextDraft]);
+  const handleNewTask = useCallback(async (options = {}) => {
+    const transition = draftTaskCoordinatorRef.current.acquire();
+    if (!transition) {
+      feedback.notify({ message: '正在处理当前任务，请稍后重试。' });
+      return;
+    }
+
+    try {
+      const store = composerDraftStoreRef.current;
+      let destination = options;
+      if (hasNewTaskDraftPayload(store)) {
+        const { identity } = draftTaskContextRef.current;
+        const authRevision = getAuthRevision();
+        const token = getToken();
+        const discard = await feedback.confirm({
+          title: '有一份未发送的草稿',
+          message: '继续编辑会保留草稿及原来的助手和项目。',
+          confirmLabel: '放弃草稿并新建',
+          cancelLabel: '继续编辑草稿',
+          tone: 'danger',
+        });
+        const currentContext = draftTaskContextRef.current;
+        // A wheel selection can settle while the dialog is open. It changes
+        // the send target, but the user is still deciding about the same draft.
+        if (currentContext.identity !== identity || composerDraftStoreRef.current !== store
+          || getAuthRevision() !== authRevision || getToken() !== token) return;
+        if (discard) {
+          // Clear the mounted composer's value before its layout cleanup reads
+          // the textarea, so unmounting cannot save the discarded text again.
+          flushSync(() => {
+            invalidateComposerDraftRevision(store, NEW_TASK_DRAFT_KEY);
+            writeComposerInputDraft(store, NEW_TASK_DRAFT_KEY, '');
+            writeComposerAttachmentDraft(store, NEW_TASK_DRAFT_KEY, []);
+            writeComposerPhoneUploadSession(store, NEW_TASK_DRAFT_KEY, null);
+          });
+        } else {
+          if (currentContext.activeView === 'chats' && !currentContext.activeTopicId) {
+            setMobileSidebarOpen(false);
+            return;
+          }
+          destination = readComposerTaskContextDraft(store, NEW_TASK_DRAFT_KEY) || {};
+        }
+      } else {
+        // A file upload may still be pending even when the draft is empty.
+        invalidateComposerDraftRevision(store, NEW_TASK_DRAFT_KEY);
+      }
+
+      const agent = destination.agent || null;
+      const agentUid = agent?.uid || agent?.id || 'new-task';
+      const projectId = Math.max(0, Number(destination.projectId) || 0);
+      const projectName = projectId > 0 ? String(destination.projectName || '') : '';
+      taskDraftSequenceRef.current += 1;
+      setStandaloneCloudArtifactsRequest(null);
+      setEmptyTaskSelectedAgent(agent);
+      setActiveTopic(null);
+      setActiveView('chats');
+      setTaskDraft({ agent, key: `${agentUid}:${taskDraftSequenceRef.current}`, projectId, projectName });
+      syncTaskContextDraft({ agent, projectId, projectName });
+      persistComposerDraftStore(store);
+      setMobileSidebarOpen(false);
+    } finally {
+      transition.release();
+    }
+  }, [feedback, setActiveTopic, syncTaskContextDraft]);
 
   const handleStartAgentTask = useCallback((agent, options = {}) => {
     if (!agent?.uid && !agent?.id) return;
@@ -1562,7 +1614,13 @@ function TinodeWebApp({ location }) {
     });
   }, [createAgentTaskTopic, persistedTaskContext?.projectId, persistedTaskContext?.projectName, taskDraft]);
 
-  draftTaskScopeRef.current = `${user?.uid || ''}|${activeTopic?.topicId || ''}|${taskDraft?.key || taskDraftSequenceRef.current}|${emptyTaskSelectedAgent?.uid || emptyTaskSelectedAgent?.id || ''}|${taskDraft?.projectId || persistedTaskContext?.projectId || 0}`;
+  const draftProjectId = taskDraft?.projectId || persistedTaskContext?.projectId || 0;
+  draftTaskContextRef.current = {
+    identity: `${user?.uid || ''}|${activeTopicId}|${taskDraft?.key || taskDraftSequenceRef.current}|${draftProjectId}`,
+    agentId: emptyTaskSelectedAgent?.uid || emptyTaskSelectedAgent?.id || '',
+    activeView,
+    activeTopicId,
+  };
   standaloneRequestRef.current = standaloneCloudArtifactsRequest;
   const acquireDraftTaskTransition = useCallback(() => draftTaskCoordinatorRef.current.acquire(), []);
 
@@ -1572,7 +1630,7 @@ function TinodeWebApp({ location }) {
     const agentUid = Number(agent?.uid || agent?.id || 0);
     if (!request || !agentUid || agentUid !== Number(request.agentUid)
       || (app.agent && Number(app.agent) !== agentUid)) {
-      throw new Error('请先选择该应用所属的 Agent，再新建任务并标注。');
+      throw new Error('请切换到该应用所属的助手后再批注。');
     }
     const transition = acquireDraftTaskTransition();
     if (!transition) throw new Error('正在创建任务或发送消息，请稍候重试。');
@@ -1913,7 +1971,7 @@ function TinodeWebApp({ location }) {
           <div key={activeView} data-loading-region="" className="v3-main-content">
             {activeView === 'apps' ? (
               <Suspense fallback={<SecondaryViewLoading kind="apps" label="正在读取应用" />}>
-                <AppsView key={user?.uid} user={user} topicId={activeTopic?.topicId || ''} viewStateRef={appsViewStateRef} />
+                <AppsView key={user?.uid} user={user} viewStateRef={appsViewStateRef} />
               </Suspense>
             ) : activeView === 'skillhub' ? (
               <Suspense fallback={<SecondaryViewLoading kind="skills" label="正在读取能力" />}>
@@ -1984,6 +2042,8 @@ function TinodeWebApp({ location }) {
                       }}
                       onOpenArtifact={openExternalArtifact}
                       onStartAnnotation={startStandaloneAnnotation}
+                      onApplicationClosed={() => setStandaloneCloudArtifactsRequest((request) =>
+                        request?.app ? { ...request, app: null } : request)}
                       workspaceFullscreen={standaloneCloudArtifactsExpanded}
                       onToggleWorkspaceFullscreen={toggleStandaloneCloudArtifacts}
                       onWorkspacePreviewChange={(active) => {

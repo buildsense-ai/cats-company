@@ -3,6 +3,13 @@ import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { artifactPanelStorageKey } from '../utils/artifact-panel-state';
+
+function legacyAppsButton(container) {
+  const menu = container.querySelector('.cloud-artifacts-overflow');
+  if (!menu.open) menu.querySelector('summary').click();
+  return [...menu.querySelectorAll('button')].find((button) => button.textContent === '旧版应用');
+}
 
 const { sourceJourney, artifactRefreshPreviewObserved, feedbackConfirm, feedbackNotify, screenshotRequest, useRealScreenshotHost, legacyCapabilityOwner } = vi.hoisted(() => ({
   sourceJourney: { enabled: false },
@@ -3808,8 +3815,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧');
+      const artifactsTab = legacyAppsButton(container);
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await flushPromises();
@@ -5278,8 +5284,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(api.getAgentFiles).not.toHaveBeenCalled();
 
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -5339,7 +5344,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(onRequestConsumed).toHaveBeenCalledWith(1);
 
     await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="关闭云文件"]'));
+      Simulate.click(container.querySelector('button[aria-label="关闭侧栏"]'));
       await flushPromises();
     });
     expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
@@ -5388,8 +5393,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -5504,8 +5508,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -5617,8 +5620,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -5722,8 +5724,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -5776,8 +5777,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -5862,8 +5862,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -5939,8 +5938,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -5991,8 +5989,7 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
     await act(async () => {
-      const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧');
+      const artifactsTab = legacyAppsButton(container);
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await Promise.resolve();
@@ -6076,8 +6073,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => flushPromises());
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -6189,8 +6185,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => flushPromises());
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -6239,8 +6234,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -6293,8 +6287,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -6388,8 +6381,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧');
+      const artifactsTab = legacyAppsButton(container);
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await flushPromises();
@@ -6495,8 +6487,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => { await flushPromises(); });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -6622,8 +6613,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => { await flushPromises(); });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -6709,8 +6699,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => { await flushPromises(); });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -7095,8 +7084,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => { await flushPromises(); });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -7272,8 +7260,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => { await flushPromises(); });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -7371,8 +7358,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -7471,8 +7457,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -7599,8 +7584,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用旧'));
+      Simulate.click(legacyAppsButton(container));
       await flushPromises();
     });
     await act(async () => {
@@ -7625,7 +7609,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(api.sendMessage).toHaveBeenCalledWith('grp_91', '分析这些', undefined);
   });
 
-  it('finds a conversation file from history and opens it in the existing file preview', async () => {
+  it('restores loaded history files and scroll position after previewing an older file', async () => {
     const historicalFile = {
       id: '820:0',
       name: '期末学情报告.pdf',
@@ -7634,11 +7618,10 @@ describe('MessagesView composer draft isolation', () => {
       size: 728341,
       topic_name: '期末材料',
     };
-    api.getTopicFiles.mockResolvedValue({
-      files: [historicalFile],
-      has_more: false,
-      next_before_id: 0,
-    });
+    const newerFile = { ...historicalFile, id: '900:0', name: '最近上传的文件.pdf' };
+    api.getTopicFiles
+      .mockResolvedValueOnce({ files: [newerFile], has_more: true, next_before_id: 900 })
+      .mockResolvedValueOnce({ files: [historicalFile], has_more: false, next_before_id: 0 });
 
     await mountTopic(root, 'p2p_1_440', {
       cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
@@ -7653,12 +7636,19 @@ describe('MessagesView composer draft isolation', () => {
       limit: 40,
     });
     expect(api.getAgentFiles).not.toHaveBeenCalled();
+    const listBody = container.querySelector('.cloud-artifacts-body');
+    const listShell = listBody.closest('.v3-file-preview-shell');
+    await act(async () => {
+      container.querySelector('.cloud-artifacts-load-more').click();
+    });
+    listBody.scrollTop = 180;
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="预览文件 期末学情报告.pdf"]'));
       await Promise.resolve();
     });
 
-    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+    expect(listShell.style.display).toBe('none');
+    expect(listShell.hasAttribute('inert')).toBe(true);
     const preview = container.querySelector('.mock-file-preview');
     expect(preview?.textContent).toContain('期末学情报告.pdf');
     expect(preview?.getAttribute('data-url')).toBe(historicalFile.url);
@@ -7669,11 +7659,17 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    expect(container.querySelector('.cloud-artifacts-body')).toBe(listBody);
+    expect(listBody.scrollTop).toBe(180);
+    expect(listShell.style.display).toBe('');
+    expect(listShell.hasAttribute('inert')).toBe(false);
+    expect(listBody.textContent).toContain(historicalFile.name);
+    expect(listBody.textContent).toContain(newerFile.name);
     expect([...container.querySelectorAll('button[role="tab"]')]
       .find((button) => button.textContent === '文件')
       ?.getAttribute('aria-selected')).toBe('true');
     expect(api.getTopicFiles).toHaveBeenCalledTimes(2);
+    expect(api.getTopicFiles).toHaveBeenLastCalledWith('p2p_1_440', { beforeId: 900, limit: 40 });
     expect(api.getAgentFiles).not.toHaveBeenCalled();
   });
 
@@ -7709,8 +7705,8 @@ describe('MessagesView composer draft isolation', () => {
       limit: 40,
     });
     expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
-    expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
-      .toEqual(['文件']);
+    expect(container.querySelector('.cloud-artifacts-header h2')?.textContent).toBe('文件');
+    expect(container.querySelector('[role="tablist"]')).toBeNull();
     expect(api.getCloudArtifacts).not.toHaveBeenCalled();
   });
 
@@ -10670,10 +10666,17 @@ describe('MessagesView composer draft isolation', () => {
 
       const panel = container.querySelector('.cloud-artifacts-panel');
       expect(panel).not.toBeNull();
-      // The panel opens on the application list and selects the gateway tab; the
-      // application itself is then opened through the same viewer the sidebar uses.
-      expect(container.querySelector('button[role="tab"][aria-selected="true"]')?.textContent).toBe('应用');
+      expect(panel.querySelector('.cloud-artifacts-gateway-viewer-title')?.textContent).toBe('Mini Mario 测试页');
+      expect(panel.querySelector('[role="tablist"]')).toBeNull();
       expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'mario-test', topic_id: 'p2p_1_440' });
+
+      await act(async () => { panel.querySelector('[aria-label="返回应用列表"]').click(); });
+      expect(panel.querySelector('iframe')).toBeNull();
+      expect(JSON.parse(localStorage.getItem(artifactPanelStorageKey(1))).topics.p2p_1_440)
+        .toMatchObject({ open: true, tab: 'gateway', app: null });
+
+      await act(async () => { container.querySelector('.mock-open-artifact-app').click(); });
+      expect(panel.querySelector('iframe')).not.toBeNull();
     });
 
     it('keeps the application alive across a conversation switch and back', async () => {
@@ -10725,6 +10728,7 @@ describe('MessagesView composer draft isolation', () => {
         await flushPromises();
       });
       expect(activeGatewayFrame(container)).toBe(frame);
+      expect(frame.closest('.v3-file-preview-shell').hasAttribute('inert')).toBe(true);
 
       // Coming back shows the very same frame, so whatever it was running is
       // still running.
@@ -10734,6 +10738,7 @@ describe('MessagesView composer draft isolation', () => {
       });
       const frameAfter = activeGatewayFrame(container);
       expect(frameAfter).toBe(frame);
+      expect(frameAfter.closest('.v3-file-preview-shell').hasAttribute('inert')).toBe(false);
       expect(frameAfter.getAttribute('src')).toBe(srcBefore);
       expect(api.requestArtifactLaunch).not.toHaveBeenCalled();
     });
@@ -11440,8 +11445,7 @@ describe('MessagesView gateway annotation flow', () => {
       return original(data, targetOrigin);
     };
     const connects = () => posted.filter((m) => m?.type === 'catsco.gateway.annotation.connect.v1');
-    const notice = () => [...container.querySelectorAll('.cloud-artifacts-gateway-viewer-note')]
-      .map((node) => node.textContent).join(' ');
+    const notice = () => container.querySelector('.cloud-artifacts-annotation-note [role="status"]')?.textContent || '';
 
     await act(async () => {
       Simulate.load(frame);
@@ -11470,9 +11474,7 @@ describe('MessagesView gateway annotation flow', () => {
       return original(data, targetOrigin);
     };
     const connects = () => posted.filter((m) => m?.type === 'catsco.gateway.annotation.connect.v1');
-    // The capability note belongs to the panel, which renders it beside the frame.
-    const notice = () => [...container.querySelectorAll('.cloud-artifacts-gateway-viewer-note')]
-      .map((node) => node.textContent).join(' ');
+    const notice = () => container.querySelector('.cloud-artifacts-annotation-note [role="status"]')?.textContent || '';
 
     await act(async () => {
       Simulate.load(frame);
@@ -11532,7 +11534,7 @@ describe('MessagesView gateway annotation flow', () => {
     const page = { path: '/board', revision: 'r1' };
     const connect = await followupReady(frame, page);
     const button = container.querySelector('[aria-label="批注应用"]');
-    expect(button.nextElementSibling.getAttribute('aria-label')).toBe('刷新当前栏目');
+    expect(container.querySelector('.cloud-artifacts-overflow summary[aria-label="更多操作"]')).not.toBeNull();
     expect(container.querySelector('[data-annotation-mode]')).toBeNull();
     expect(container.querySelector('.cloud-artifacts-gateway-annotation-tools')).toBeNull();
     await followupCapture(frame, connect, page);
@@ -11688,12 +11690,15 @@ describe('MessagesView gateway annotation flow', () => {
     expect(document.querySelector('.gateway-annotation-popover')).toBeNull();
   });
 
-  test('guest viewer disables the only annotation control', async () => {
+  test('guest viewer explains the annotation restriction without entering selection mode', async () => {
     api.requestArtifactLaunch.mockRejectedValueOnce(new Error('guest'));
     await openGatewayAppInSidebar();
     const button = container.querySelector('[aria-label="批注应用"]');
-    expect(button.disabled).toBe(true);
-    expect(button.title).toContain('绑定不可用');
+    expect(button.title).toBe('查看批注限制');
+    await act(async () => button.click());
+    expect(container.querySelector('.cloud-artifacts-annotation-note [role="status"]')?.textContent)
+      .toContain('会话绑定不可用');
+    expect(button.getAttribute('aria-pressed')).toBe('false');
     expect(container.querySelector('[data-annotation-mode]')).toBeNull();
   });
 

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   token: 'session-token',
   sessionRevision: 1,
+  confirm: vi.fn(),
   connectWS: vi.fn(),
   disconnectWS: vi.fn(),
   getMe: vi.fn(),
@@ -56,7 +57,7 @@ vi.mock('../api', () => {
 
 vi.mock('../components/feedback-system', () => ({
   InlineFeedback: ({ children }) => <>{children}</>,
-  useFeedback: () => ({ confirm: vi.fn(), notify: vi.fn() }),
+  useFeedback: () => ({ confirm: mocks.confirm, notify: vi.fn() }),
 }));
 
 vi.mock('../utils/push-operation', () => ({ enqueuePushOperation: vi.fn(() => Promise.resolve()) }));
@@ -192,7 +193,14 @@ vi.mock('../widgets/relay-access-modal', () => ({
 
 import TinodeWeb from './tinode-web';
 import { api, sendWSActiveTopic } from '../api';
-import { readComposerInputDraft, readComposerAttachmentDraft, writeComposerAttachmentDraft } from '../utils/composer-draft-storage';
+import {
+  readComposerInputDraft,
+  readComposerAttachmentDraft,
+  readComposerDraftRevision,
+  readComposerPhoneUploadSession,
+  readComposerTaskContextDraft,
+  writeComposerAttachmentDraft,
+} from '../utils/composer-draft-storage';
 import { workspaceOnboardingStorageKey } from '../utils/workspace-onboarding';
 
 let container;
@@ -230,6 +238,7 @@ async function openOnboardingReplayFromSettingsEntry() {
 beforeEach(() => {
   mocks.token = 'session-token';
   mocks.sessionRevision = 1;
+  mocks.confirm.mockReset().mockResolvedValue(false);
   mocks.annotationError = null;
   mocks.messageProps = null;
   mocks.emptyProps = null;
@@ -295,6 +304,77 @@ test('opens the inline new-task page and updates its Agent without losing the pr
   });
   expect(api.createGroup).not.toHaveBeenCalled();
   expect(api.sendMessage).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['项目内新建任务', { agent: null, projectId: 12, projectName: 'Website' }],
+  ['选择 Agent 返回新任务', { agent: { uid: 7 }, projectId: 0, projectName: '' }],
+])('keeps the original draft context until discarding through %s', async (entry, destination) => {
+  const key = 'new-task';
+  const originalAgent = { uid: 99, display_name: '旧草稿助手' };
+  const attachments = [{ name: 'draft.pdf', type: 'file' }];
+  const phoneUploadSession = { session_id: 'existing-upload' };
+  sessionStorage.setItem('catsco_composer_drafts:v1:1', JSON.stringify({
+    inputDrafts: [[key, '发给原来助手的草稿']],
+    attachmentDrafts: [[key, attachments]],
+    phoneUploadSessions: [[key, phoneUploadSession]],
+    taskContextDrafts: [[key, { agent: originalAgent, projectId: 95, projectName: '原项目' }]],
+    updatedAt: Date.now(),
+  }));
+  await act(async () => renderWorkspace());
+  const store = mocks.emptyProps.composerDraftStore;
+  const oldRevision = readComposerDraftRevision(store, key);
+  await act(async () => container.querySelector('[aria-label="打开 SkillHub"]').click());
+  const openNewTask = () => [...container.querySelectorAll('button')]
+    .find(button => button.textContent === entry).click();
+  await act(async () => openNewTask());
+
+  expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ cancelLabel: '继续编辑草稿' }));
+  expect(mocks.emptyProps.initialAgent.uid).toBe(originalAgent.uid);
+  expect(readComposerInputDraft(store, key)).toBe('发给原来助手的草稿');
+  expect(readComposerAttachmentDraft(store, key)).toEqual(attachments);
+  expect(readComposerPhoneUploadSession(store, key)).toEqual(phoneUploadSession);
+  expect(readComposerTaskContextDraft(store, key)).toMatchObject({ agent: originalAgent, projectId: 95 });
+  expect(readComposerDraftRevision(store, key)).toBe(oldRevision);
+
+  mocks.confirm.mockResolvedValueOnce(true);
+  await act(async () => openNewTask());
+  expect(container.querySelector('textarea[aria-label="新任务草稿"]').value).toBe('');
+  expect(readComposerAttachmentDraft(store, key)).toEqual([]);
+  expect(readComposerPhoneUploadSession(store, key)).toBeNull();
+  expect(readComposerTaskContextDraft(store, key)).toMatchObject(destination);
+  expect(readComposerDraftRevision(store, key)).toBeGreaterThan(oldRevision);
+  expect(api.createGroup).not.toHaveBeenCalled();
+  expect(api.sendMessage).not.toHaveBeenCalled();
+});
+
+test.each([false, true])('discards the draft after the Agent wheel settles only in the same auth session (%s)', async (sessionChanged) => {
+  const key = 'new-task';
+  const draftText = '尚未发送的任务内容';
+  sessionStorage.setItem('catsco_composer_drafts:v1:1', JSON.stringify({
+    inputDrafts: [[key, draftText]],
+    taskContextDrafts: [[key, { agent: { uid: 99 }, projectId: 95, projectName: '原项目' }]],
+    updatedAt: Date.now(),
+  }));
+  await act(async () => renderWorkspace());
+  const store = mocks.emptyProps.composerDraftStore;
+
+  let resolveConfirmation;
+  mocks.confirm.mockReturnValueOnce(new Promise((resolve) => { resolveConfirmation = resolve; }));
+  await act(async () => [...container.querySelectorAll('button')]
+    .find((button) => button.textContent === '项目内新建任务').click());
+  expect(mocks.confirm).toHaveBeenCalledTimes(1);
+
+  // The wheel can finish selecting after the confirmation is already visible.
+  await act(async () => mocks.emptyProps.onSelectedAgentChange({ uid: 22, display_name: '相邻助手' }));
+  if (sessionChanged) mocks.sessionRevision += 1;
+  await act(async () => resolveConfirmation(true));
+
+  expect(readComposerInputDraft(store, key)).toBe(sessionChanged ? draftText : '');
+  expect(readComposerTaskContextDraft(store, key)).toMatchObject(sessionChanged
+    ? { agent: { uid: 22 }, projectId: 95 }
+    : { agent: null, projectId: 12 });
+  expect(api.createGroup).not.toHaveBeenCalled();
 });
 
 test('only marks the displayed conversation active and retains each tool browse state', async () => {

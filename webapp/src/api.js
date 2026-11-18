@@ -763,7 +763,7 @@ export const api = {
   getDeviceAudit: (limit = 20) => request('GET', `/api/devices/audit?limit=${limit}`),
 
   // Virtual employee roster
-  getAgents: () => request('GET', '/api/agents'),
+  getAgents: (options) => request('GET', '/api/agents', undefined, options),
   getKnowledgeWikiManifest: (agentUid, options = {}) =>
     request('GET', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/manifest`, undefined, options),
   getKnowledgeWikiWebSocketTicket: (agentUid, options = {}) =>
@@ -833,7 +833,7 @@ export const api = {
     member_ids: memberIds,
     ...(kind ? { kind } : {}),
   }),
-  getGroups: () => request('GET', '/api/groups'),
+  getGroups: (options) => request('GET', '/api/groups', undefined, options),
   getGroupInfo: (groupId) => request('GET', `/api/groups/info?id=${groupId}`),
   updateGroup: (groupId, name, avatarUrl) =>
     request('POST', '/api/groups/update', { group_id: groupId, name, avatar_url: avatarUrl }),
@@ -850,7 +850,7 @@ export const api = {
     request('POST', '/api/groups/announcement', { group_id: groupId, announcement }),
 
   // Bot management
-  getMyBots: () => request('GET', '/api/bots'),
+  getMyBots: (options) => request('GET', '/api/bots', undefined, options),
   getBotBodyStatus: (uid) => request('GET', `/api/bots/body-status?uid=${encodeURIComponent(uid)}`),
   getBotInviteCode: (uid) => request('GET', `/api/bots/invite-code?uid=${uid}`),
   generateBotInviteCode: (uid) => request('POST', `/api/bots/invite-code?uid=${uid}`, {}),

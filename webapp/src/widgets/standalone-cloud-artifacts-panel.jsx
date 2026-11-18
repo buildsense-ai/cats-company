@@ -35,6 +35,7 @@ export default function StandaloneCloudArtifactsPanel({
   onClose,
   onOpenArtifact,
   onStartAnnotation,
+  onApplicationClosed,
   workspaceFullscreen = false,
   onToggleWorkspaceFullscreen,
   onWorkspacePreviewChange,
@@ -65,6 +66,7 @@ export default function StandaloneCloudArtifactsPanel({
       onTabChange={onTabChange}
       onClose={onClose}
       onStartAnnotation={onStartAnnotation}
+      onApplicationClosed={onApplicationClosed}
       workspaceFullscreen={workspaceFullscreen}
       onToggleWorkspaceFullscreen={onToggleWorkspaceFullscreen}
       onWorkspacePreviewChange={onWorkspacePreviewChange}

@@ -2599,7 +2599,15 @@ export default function MessagesView({
     }, { silent: true });
   }, [topic, writeArtifactPanelEntry]);
 
-  const changeArtifactPanelTab = useCallback((nextTab) => {    setCloudArtifactsTab(nextTab);
+  const recordPanelApplicationClosed = useCallback(() => {
+    setCloudArtifactsInitialApp(null);
+    if (!topic) return;
+    const current = activeArtifactPanelRef.current || emptyArtifactPanelEntry();
+    if (current.app) writeArtifactPanelEntry(topic, { ...current, app: null });
+  }, [topic, writeArtifactPanelEntry]);
+
+  const changeArtifactPanelTab = useCallback((nextTab) => {
+    setCloudArtifactsTab(nextTab);
     if (!topic) return;
     const current = activeArtifactPanelRef.current || emptyArtifactPanelEntry();
     writeArtifactPanelEntry(topic, { ...current, tab: nextTab });
@@ -7162,7 +7170,10 @@ export default function MessagesView({
       if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented
         || gatewayAnnotationCapture || gatewayAnnotationMode !== 'off'
         || phoneUploadDialogOpen || previewImageId || conversationSharePreviewOpen) return;
-      if (chatColumnRef.current?.parentElement?.querySelector('.file-annotation-editor:not([data-mode="off"])')) return;
+      if (event.target instanceof Element && event.target.closest('.cloud-artifact-confirm')) return;
+      if (chatColumnRef.current?.parentElement?.querySelector(
+        '.file-annotation-editor:not([data-mode="off"]), .cloud-artifacts-overflow[open]',
+      )) return;
       event.preventDefault();
       event.stopPropagation();
       if (attachmentMenuOpen || showMentionPicker || commandPaletteVisible) {
@@ -7854,10 +7865,13 @@ export default function MessagesView({
           const entry = artifactPanelEntries[panelTopic];
           if (!entry?.open) return null;
           const isActive = panelTopic === topic;
-          // The conversation on screen follows its live state: previewing a file
-          // or backing out to the list closes the application here exactly as
-          // before. Parked conversations follow what they had open.
-          if (isActive && !activePanelOpen) return null;
+          // Keep a file list mounted behind its preview so returning restores
+          // the same pages and scroll position. Other tabs keep their existing
+          // preview lifecycle, including retiring an active application.
+          const fileListHidden = isActive && !activePanelOpen && previewFile
+            && cloudArtifactsReturnOpen && activePanelTab === 'files';
+          if (isActive && !activePanelOpen && !fileListHidden) return null;
+          const isVisible = isActive && !fileListHidden;
           return (
             <div
               key={`artifact-panel-${panelTopic}`}
@@ -7878,7 +7892,7 @@ export default function MessagesView({
               // are only translated outwards, so the application inside does not
               // reflow to a tiny viewport; the sliver is unpaintable, unclickable
               // and out of the accessibility tree.
-              style={isActive ? undefined : {
+              style={isActive ? (fileListHidden ? { display: 'none' } : undefined) : {
                 position: 'fixed',
                 top: 0,
                 left: 0,
@@ -7889,10 +7903,11 @@ export default function MessagesView({
                 opacity: 0.01,
                 zIndex: -1,
               }}
-              aria-hidden={isActive ? undefined : 'true'}
+              aria-hidden={isVisible ? undefined : 'true'}
+              inert={isVisible ? undefined : ''}
               data-panel-parked={isActive ? undefined : 'true'}
             >
-              {isActive && (
+              {isVisible && (
                 <div
                   className="v3-preview-resize-handle"
                   role="separator"
@@ -7905,14 +7920,14 @@ export default function MessagesView({
                 />
               )}
               <CloudArtifactsPanel
-                workspaceFullscreen={isActive ? previewExpanded : false}
-                onToggleWorkspaceFullscreen={isActive ? togglePreviewWorkspace : undefined}
-                onWorkspacePreviewChange={isActive ? handleWorkspacePreviewChange : undefined}
+                workspaceFullscreen={isVisible ? previewExpanded : false}
+                onToggleWorkspaceFullscreen={isVisible ? togglePreviewWorkspace : undefined}
+                onWorkspacePreviewChange={isVisible ? handleWorkspacePreviewChange : undefined}
                 agentUid={entry.agentUid}
                 topicId={panelTopic}
                 tab={isActive ? activePanelTab : entry.tab}
                 initialApp={isActive ? activePanelApp : entry.app}
-                isActive={isActive}
+                isActive={isVisible}
                 onTabChange={isActive ? changeArtifactPanelTab : undefined}
                 onClose={isActive ? closeSidePanel : () => forgetArtifactPanelEntry(panelTopic)}
                 onPreviewArtifact={isActive ? previewCloudArtifact : undefined}
@@ -7930,6 +7945,7 @@ export default function MessagesView({
                 // panel itself; this reports it so the conversation remembers it
                 // exactly like one opened from a chat card.
                 onApplicationOpened={isActive ? recordPanelApplication : undefined}
+                onApplicationClosed={isActive ? recordPanelApplicationClosed : undefined}
               />
             </div>
           );

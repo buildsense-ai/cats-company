@@ -1274,6 +1274,8 @@ body {
 }
 
 .cloud-artifacts-header {
+  position: relative;
+  z-index: 1;
   flex: 0 0 auto;
   min-height: 52px;
   padding: 0 18px;
@@ -1317,10 +1319,10 @@ body {
 }
 
 .cloud-artifacts-header-actions {
+  flex-shrink: 0;
   gap: 8px;
 }
 
-.cloud-artifacts-header-actions button,
 .cloud-artifact-actions button,
 .cloud-artifact-actions a {
   width: 34px;
@@ -1336,28 +1338,24 @@ body {
   text-decoration: none;
 }
 
-.cloud-artifacts-header-actions button:hover,
 .cloud-artifact-actions button:hover,
 .cloud-artifact-actions a:hover {
   color: var(--v3-text-main);
   background: var(--v3-bg-message-hover);
 }
 
-.cloud-artifacts-header-actions button {
-  width: 32px;
-  height: 32px;
-  border-color: var(--cc-border-strong);
-  border-radius: 8px;
-  background: var(--cc-panel);
-  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
+.cloud-artifacts-header .v3-tool {
+  flex: 0 0 auto;
+  cursor: pointer;
 }
 
-.cloud-artifacts-header-actions button:hover {
-  border-color: color-mix(in srgb, var(--cc-text-secondary) 48%, var(--cc-border-strong));
-  background: var(--cc-hover);
+.cloud-artifacts-header .v3-tool[aria-pressed='true'],
+.cloud-artifacts-header .cloud-artifacts-overflow[open] > summary {
+  background: var(--cc-selected);
+  color: var(--cc-text);
 }
 
-.cloud-artifacts-header-actions button:disabled {
+.cloud-artifacts-header .v3-tool:disabled {
   cursor: wait;
   opacity: 0.6;
 }
@@ -1373,51 +1371,33 @@ body {
 }
 
 .cloud-artifacts-tabs {
-  position: relative;
-  align-self: stretch;
   display: flex;
-  align-items: stretch;
-  gap: 20px;
+  align-items: center;
 }
 
 .cloud-artifacts-tabs button {
-  position: relative;
-  padding: 0 2px;
-  border: 0;
-  color: var(--v3-text-muted);
-  background: transparent;
+  min-height: 34px;
+  padding-inline: 12px;
+  color: var(--cc-text-secondary);
   font-size: 13px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.cloud-artifacts-tab-indicator {
-  position: absolute;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  background: var(--cc-accent);
-  pointer-events: none;
-  transition: transform 160ms ease, width 160ms ease;
-}
-
-.cloud-artifacts-tabs button.active {
-  color: var(--v3-text-main);
-  font-weight: 600;
-}
+.cloud-artifacts-tabs button:hover { color: var(--cc-text); }
 
 .cloud-artifacts-tabs button:focus-visible,
 .cloud-artifact-actions button:focus-visible,
 .cloud-artifact-actions a:focus-visible,
-.cloud-artifacts-status button:focus-visible,
+.cloud-artifacts-status button:not(.cc-recovery-button):focus-visible,
 .cloud-artifacts-load-more:focus-visible {
   outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
   outline-offset: 2px;
 }
 
-.cloud-artifacts-header-actions button:focus-visible {
-  border-color: var(--cc-text-secondary);
-  outline: 2px solid color-mix(in srgb, var(--cc-text-secondary) 38%, transparent);
-  outline-offset: 2px;
+.cloud-artifacts-header :is(.v3-tool, .cloud-artifacts-overflow-popover button, .cloud-artifacts-annotation-note button):focus-visible {
+  outline: 1px solid var(--cc-focus-border);
+  outline-offset: 1px;
 }
 
 /* Gateway application viewer: opens inside the panel, not in a new tab. */
@@ -1428,51 +1408,96 @@ body {
   min-height: 0;
 }
 
-.cloud-artifacts-gateway-viewer-bar {
-  flex: 0 0 auto;
-  min-height: 40px;
-  padding: 0 2px;
+.cloud-artifacts-gateway-heading {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid var(--v3-border);
 }
 
-.cloud-artifacts-gateway-viewer-bar button {
-  flex: 0 0 auto;
-  padding: 6px 12px;
-  border: 1px solid transparent;
-  border-radius: var(--v3-radius);
+.cloud-artifacts-overflow { position: relative; z-index: 1; }
+.cloud-artifacts-overflow > summary { list-style: none; }
+.cloud-artifacts-overflow > summary::-webkit-details-marker { display: none; }
+
+.cloud-artifacts-overflow-popover,
+.cloud-artifacts-annotation-note {
+  position: absolute;
+  top: calc(100% + 8px);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-panel);
+  color: var(--cc-text-secondary);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+}
+
+.cloud-artifacts-overflow-popover {
+  inset-inline-end: 0;
+  width: max-content;
+  min-width: 152px;
+  padding: 4px;
+}
+
+.cloud-artifacts-overflow-popover button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
-  color: var(--v3-text-muted);
+  color: inherit;
   font: inherit;
-  line-height: 1.2;
+  font-size: 13px;
+  text-align: start;
   cursor: pointer;
 }
 
-.cloud-artifacts-gateway-viewer-bar button:hover {
-  color: var(--v3-text-main);
-  background: var(--v3-bg-message-hover);
+.cloud-artifacts-overflow-popover button:not(:disabled):hover,
+.cloud-artifacts-annotation-note button:hover { background: var(--cc-hover); }
+.cloud-artifacts-overflow-popover button:not(:disabled):active,
+.cloud-artifacts-annotation-note button:active { background: var(--cc-pressed); }
+.cloud-artifacts-overflow-popover button:disabled { opacity: 0.6; cursor: wait; }
+
+.cloud-artifacts-annotation-note {
+  inset-inline-end: 54px;
+  width: min(260px, calc(100% - 66px));
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px 9px 12px;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
-.cloud-artifacts-gateway-viewer-bar button:focus-visible {
-  outline: 2px solid var(--v3-primary);
-  outline-offset: 2px;
+.cloud-artifacts-annotation-note button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 22px;
+  height: 22px;
+  margin-inline-start: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 
 .cloud-artifacts-gateway-viewer-title {
-  flex: 1 1 auto;
-  min-width: 0;
+  margin: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 13px;
-  color: var(--v3-text-main);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cc-text);
 }
 
 .cloud-artifacts-gateway-viewer-note {
   flex: 0 0 auto;
-  margin: 6px 2px 0;
+  margin: 0;
+  padding: 6px 14px;
   font-size: 12px;
   color: var(--v3-text-muted);
 }
@@ -1601,13 +1626,6 @@ body {
 .cloud-artifacts-gateway-annotation-mode.is-off.is-active {
   border-color: transparent;
   background: transparent;
-}
-
-.cloud-artifacts-gateway-annotation-hint {
-  flex: 0 0 auto;
-  margin: 6px 2px 0;
-  font-size: 12px;
-  color: var(--v3-text-muted);
 }
 
 /* Composer annotation capture editor and draft bar. */
@@ -1840,6 +1858,13 @@ body {
   padding: 12px;
   overflow-y: auto;
 }
+
+.cloud-artifacts-body.is-app-preview {
+  min-height: 0;
+  padding: 0;
+}
+
+.cloud-artifacts-body.is-app-preview > .cloud-artifacts-status { margin: 8px 14px; }
 
 .cloud-artifacts-body.is-loading {
   display: flex;
@@ -2870,10 +2895,27 @@ body {
 }
 
 .cloud-artifacts-status.error {
-  color: #fca5a5;
+  color: var(--cc-danger-text);
 }
 
-.cloud-artifacts-status button {
+.cloud-artifacts-status.is-inline {
+  min-height: 38px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.cloud-artifacts-status.is-pagination {
+  justify-content: center;
+  margin-block: 10px 0;
+}
+
+.cloud-artifacts-status button:not(.cc-recovery-button) {
   padding: 7px 14px;
   border: 1px solid var(--v3-border);
   border-radius: 6px;
@@ -3910,7 +3952,7 @@ body {
   transition: border-color 0.2s;
 }
 
-.v3-composer-box:focus-within {
+.v3-composer-box:focus-within:where(:not(:has(.cc-composer-agent-retry:focus))) {
   border-color: color-mix(in srgb, var(--v3-text-main) 58%, var(--v3-border));
   box-shadow: none;
 }

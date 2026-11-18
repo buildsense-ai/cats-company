@@ -18,6 +18,7 @@ const ruleIn = (source, selector) => source.match(
   new RegExp(`(?:^|\\r?\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]*\\}`),
 )?.[0] || '';
 const ruleFor = (selector) => ruleIn(css, selector);
+const composerFocusSelector = '.v3-composer-box:focus-within:where(:not(:has(.cc-composer-agent-retry:focus)))';
 
 const propertyValue = (source, selector, property) => (selector ? ruleIn(source, selector) : source).match(
   new RegExp(`${property}:\\s*([^;]+);`),
@@ -882,9 +883,9 @@ describe('CatsCo shell styling', () => {
 
   it('keeps the composer border faint while using its surface for focus feedback', () => {
     const composerRule = ruleFor('.v3-composer-box');
-    const focusRule = ruleFor('.v3-composer-box:focus-within');
+    const focusRule = ruleFor(composerFocusSelector);
     const metalRule = ruleFor('html:not([data-theme="liquid"]) .v3-composer-box::before');
-    const metalFocusRule = ruleFor('html:not([data-theme="liquid"]) .v3-composer-box:focus-within::before');
+    const metalFocusRule = ruleFor('html:not([data-theme="liquid"]) ' + composerFocusSelector + '::before');
 
     expect(composerRule).toContain('border: 1px solid color-mix(in srgb, var(--cc-text) 2%, transparent);');
     expect(composerRule).toContain('background-color 160ms ease');
@@ -910,7 +911,7 @@ describe('CatsCo shell styling', () => {
 
   it('keeps the light liquid composer legible with a single neutral focus border', () => {
     const composerRule = ruleFor('html[data-theme="liquid"] .v3-composer-box');
-    const composerFocusRule = ruleFor('html[data-theme="liquid"] .v3-composer-box:focus-within');
+    const composerFocusRule = ruleFor('html[data-theme="liquid"] ' + composerFocusSelector);
     const composerInputRule = ruleFor('html[data-theme="liquid"] .v3-composer-input');
 
     expect(composerRule).toContain('background: rgba(255, 255, 255, 0.84);');

@@ -1,7 +1,3 @@
-.cloud-artifacts-header-actions .cloud-artifacts-annotation-toggle.is-active {
-  color: var(--cc-accent, #22734e);
-  background: var(--cc-accent-soft, #e7f3ec);
-}
 .gateway-annotation-target-outline {
   position: fixed;
   z-index: 1100;

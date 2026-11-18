@@ -92,7 +92,7 @@ describe('ArtifactQuickPicker', () => {
     expect(api.getTopicFiles).not.toHaveBeenCalled();
     await render({ topicId: '' });
     await act(async () => trigger().click());
-    expect(onSelect).toHaveBeenLastCalledWith({ initialTab: 'active' });
+    expect(onSelect).toHaveBeenLastCalledWith({ initialTab: 'gateway' });
   });
 
   it('discards late responses when the conversation and Agent change', async () => {
