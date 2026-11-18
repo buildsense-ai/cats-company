@@ -1,0 +1,117 @@
+/* Conversation activity shares the transcript's spacing and type. Sources
+ * open inline at the same width as the tool details. */
+.cc-chat-activity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.cc-chat-activity:empty { display: none; }
+.cc-memory-disclosure { display: contents; }
+
+.cc-chat-activity :is(.v3-working-toggle, .v3-working-status, .cc-memory-toggle, .cc-memory-status) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font: 500 12px/1.45 var(--cc-font-sans);
+  letter-spacing: normal;
+  text-transform: none;
+  text-align: left;
+}
+
+.cc-chat-activity .cc-working-details-label { display: inline; }
+.cc-chat-activity .cc-working-details-label::before { content: none; }
+.cc-chat-activity .v3-working-summary,
+.cc-activity-count {
+  color: var(--cc-text-secondary);
+  font: 400 11px/1.45 var(--cc-font-sans);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cc-chat-activity :is(.v3-working-toggle, .cc-memory-toggle) { cursor: pointer; }
+.cc-chat-activity :is(.v3-working-toggle, .cc-memory-toggle):is(:hover, [aria-expanded='true']) {
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.v3-working-process :is(.v3-working-toggle, .cc-memory-toggle, .v3-wpi-tool-header):focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
+}
+
+.cc-chat-activity svg { flex-shrink: 0; }
+
+.v3-working-toggle .v3-working-label[hidden] { display: none; }
+.cc-chat-activity .cc-memory-branch {
+  flex: 0 0 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin-block: 5px 8px;
+  padding: 10px 0 4px;
+  border-block-start: 1px solid var(--v3-border);
+}
+
+.cc-memory-panel-status {
+  margin-block: 0 3px;
+  color: var(--cc-text);
+  font: 600 13px/1.5 var(--cc-font-sans);
+}
+
+.v3-working-process .v3-working-details-inline { margin: 3px 0 8px; }
+.v3-working-process .v3-working-details-inline .v3-working-steps {
+  gap: 4px;
+  padding: 4px 2px;
+  border-inline-start: 0;
+  border-block-start: 1px solid var(--v3-border);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.v3-working-process .v3-wpi-tool-header {
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 6px;
+  color: var(--cc-text-secondary);
+  font: 500 12px/1.45 var(--cc-font-sans);
+}
+
+.v3-working-process .v3-wpi-tool-header .v3-wpi-tool-name {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--cc-text);
+}
+
+.v3-working-process .v3-wpi-tool-header .oc-wpi-tool-input {
+  margin-left: 0;
+  opacity: 1;
+  color: var(--cc-text-secondary);
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+.v3-working-process .v3-wpi-tool-size {
+  color: var(--cc-text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (pointer: coarse) {
+  .cc-chat-activity :is(.v3-working-toggle, .cc-memory-toggle),
+  .v3-working-process .v3-wpi-tool-header.is-toggle { min-height: 44px; }
+}

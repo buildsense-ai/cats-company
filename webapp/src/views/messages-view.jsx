@@ -7364,6 +7364,7 @@ export default function MessagesView({
           );
           if (group.type === 'working') {
             if (!showThinking && !liquidConversation && !hasWorkingSources(group.messages)) return null;
+            const processState = conversationExecutionState(group);
             return (
               <div
                 key={group.renderKey}
@@ -7390,7 +7391,8 @@ export default function MessagesView({
                   workingOnly
                   workingComplete={group.workingComplete}
                   replyStreaming={liquidConversation && group.conversationStreaming}
-                  executionState={liquidConversation ? conversationExecutionState(group) : undefined}
+                  memoryBranchActive={processState === 'running' && !group.conversationStreaming}
+                  executionState={liquidConversation ? processState : undefined}
                   executionNote={liquidConversation && conversationTaskForGroup(group)?.state === 'failed'
                     ? String(conversationTaskForGroup(group).error || conversationTaskForGroup(group).summary || '') : undefined}
                   showThinking={showThinking}

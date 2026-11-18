@@ -33,6 +33,8 @@ const render = async (events, saved = false) => {
     workingMessages={saved ? [] : events.map((content, id) => ({ id, type: 'memory_branch', from_uid: 'usr574', content }))}
     workingOnly workingComplete showThinking={false} senderIsBot senderName="小八" />));
   await settle();
+  const disclosure = container.querySelector('.cc-memory-toggle[aria-expanded="false"]');
+  if (disclosure) await click(disclosure);
 };
 beforeEach(() => {
   container = globalThis.document.createElement('div'); globalThis.document.body.append(container); root = createRoot(container); requests = [];
@@ -60,6 +62,7 @@ it('shows the consumed summary from grp_7445 during replay without inventing a r
   const consumed = { ...base, sequence: 3, status: 'unavailable', consumed_turn_id: base.origin_turn_id, observation_id: 'obs' };
   await render([base, consumed], true);
   expect(container.textContent).toContain('主 Agent 已收到记忆摘要');
+  expect(container.querySelector('.cc-memory-toggle, canvas')).toBeNull();
   expect(container.querySelector('.cc-memory-source')).toBeNull();
   expect(requests).toHaveLength(0);
   evidence.push({journey: 'grp_7445 summary consumed', clickableSources: 0});
@@ -157,7 +160,7 @@ it.each([
 
 it('B9: unknown version and invalid graph endpoints never render rich source navigation', async () => {
   await render([{ ...graph, schema: 'catsco.memory_branch.v99' }]);
-  expect(container.querySelector('.cc-memory-source')).toBeNull();
+  expect(container.querySelector('.cc-memory-toggle')).toBeNull();
   await render([{ ...graph, edges: [{ id: 'invented', from: 'foreign', to: 'assertion-1', kind: 'qualifies' }] }]);
   expect(container.querySelector('.cc-memory-source')).toBeNull();
 });

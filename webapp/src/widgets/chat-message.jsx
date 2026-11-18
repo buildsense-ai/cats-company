@@ -47,6 +47,7 @@ import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import DiaryToolResult from './diary-tool-result';
 import MemoryBranchSources from './memory-branch-sources';
 import { latestMemoryBranches } from './memory-branch';
+import './chat-activity.css';
 import { diaryAgentUID, diaryToolView } from './diary-sources';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
@@ -947,7 +948,7 @@ function WorkingPlanCard({ item }) {
   );
 }
 
-function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, showDetails = true }) {
+function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, memoryBranchActive, showDetails = true }) {
   const liquidConversation = useLiquidConversation();
   const [revealingNarratives, setRevealingNarratives] = useState({});
   const [open, setOpen] = useState(false);
@@ -980,19 +981,19 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
   const statusLabel = executionState ? EXECUTION_LABELS[executionState] : stopped ? '已停止' : complete ? '已完成' : '正在执行';
   const running = executionState ? executionState === 'running' : !complete && !stopped;
   const streamingNarrative = replyStreaming || progressMessages.some((item, index) => item.streaming || revealingNarratives[index]);
-  const lastTool = [...safeBlocks].reverse().find((item) => item.type === 'tool_pair');
   const sourceOnly = safeBlocks.every(item => item.type === 'memory_branch');
-  const summary = sourceOnly ? '记忆探索' : plan
-    ? `${completedPlanSteps}/${plan.steps.length}${!complete && lastTool?.name && lastTool.name !== 'update_plan' ? ` · ${lastTool.name}` : ''}`
-    : `${safeBlocks.length} 步${lastTool?.name && lastTool.name !== 'catslog_knowledge_recall' ? ` · ${lastTool.name}` : diaryItems.length ? ' · 查阅日记' : ''}`;
+  const toolCount = detailBlocks.filter(item => ['tool_pair', 'tool_result_orphan', 'subagent_group'].includes(item.type)).length;
+  const summary = plan ? `${completedPlanSteps}/${plan.steps.length}` : toolCount ? `${toolCount} 项` : '';
+  const branchActive = (memoryBranchActive ?? running) && !finished && !replyStreaming;
+  const branchActiveWithSnapshot = branchActive && memoryEvents.some(event => event.status === 'running');
 
   const statusContent = (
     <>
-      {hasDetails && <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />}
-      <span className="v3-working-label">{statusLabel}</span>
-      <span className="v3-working-summary">{summary}</span>
+      <span className="v3-working-label" hidden={hasDetails && complete && !stopped}>{statusLabel}</span>
       {hasDetails && <span className="cc-working-details-label">执行详情</span>}
-      {running && !streamingNarrative && (
+      {hasDetails && summary && <span className="v3-working-summary">{summary}</span>}
+      {hasDetails && <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />}
+      {running && !streamingNarrative && !branchActiveWithSnapshot && (
         <span className="cc-working-dots" aria-hidden="true"><i /><i /><i /></span>
       )}
     </>
@@ -1012,7 +1013,8 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
     if (!open || !hasDetails) return undefined;
 
     const handleKeyDown = (event) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || !triggerRef.current?.closest('.v3-working-process')?.contains(document.activeElement)) return;
+      if (document.activeElement?.closest('.cc-memory-disclosure')) return;
       event.preventDefault();
       setOpen(false);
       triggerRef.current?.focus({ preventScroll: true });
@@ -1041,24 +1043,26 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
           ))}
         </div>
       )}
-      {(!liquidConversation || !streamingNarrative || !running) && (hasDetails ? (
-        <button
-          ref={triggerRef}
-          type="button"
-          className="v3-working-toggle"
-          aria-expanded={open}
-          aria-controls={stepsID}
-          aria-label={`${statusLabel} ${summary}，${open ? '收起任务步骤' : '展开任务步骤'}`}
-          onClick={handleDetailsToggle}
-        >
-          {statusContent}
-        </button>
-      ) : (
-        <div className="v3-working-status" role="status">
-          {statusContent}
-        </div>
-      ))}
-      {memoryEvents.length > 0 && <MemoryBranchSources events={memoryEvents} agentUid={agentUid} />}
+      <div className="cc-chat-activity">
+        {!sourceOnly && (!liquidConversation || !streamingNarrative || !running || hasDetails) && (hasDetails ? (
+          <button
+            ref={triggerRef}
+            type="button"
+            className="v3-working-toggle"
+            aria-expanded={open}
+            aria-controls={stepsID}
+            aria-label={`执行详情${summary ? ` ${summary}` : ''}，${statusLabel}，${open ? '收起任务步骤' : '展开任务步骤'}`}
+            onClick={handleDetailsToggle}
+          >
+            {statusContent}
+          </button>
+        ) : (
+          <div className="v3-working-status" role="status">
+            {statusContent}
+          </div>
+        ))}
+        {memoryEvents.length > 0 && <MemoryBranchSources events={memoryEvents} active={branchActive} agentUid={agentUid} />}
+      </div>
       {!open && planContent}
       {open && hasDetails && (
         <div
@@ -1151,7 +1155,7 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, memoryBranchActive, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
   const liquidConversation = useLiquidConversation();
   const [replyRevealing, setReplyRevealing] = useState(false);
   const softStream = liquidConversation && !isSelf && Boolean(message._streaming) && !message._stopped
@@ -1475,7 +1479,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
           )}
 
           {!isSelf && (showThinking || executionState || latestMemoryBranches(workingBlocks).length > 0 || workingBlocks.some((item) => item.type === 'tool_pair' && diaryToolView(item))) && (
-            <WorkingProcess blocks={workingBlocks} agentUid={diaryAgentUID(message.from_uid)} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} showDetails={showThinking} />
+            <WorkingProcess blocks={workingBlocks} agentUid={diaryAgentUID(message.from_uid)} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} memoryBranchActive={memoryBranchActive} showDetails={showThinking} />
           )}
 
           {workingAnnotationDoc && <GatewayAnnotationCard doc={workingAnnotationDoc} />}
@@ -1696,6 +1700,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.executionNote === nextProps.executionNote &&
     prevProps.replyPending === nextProps.replyPending &&
     prevProps.replyStreaming === nextProps.replyStreaming &&
+    prevProps.memoryBranchActive === nextProps.memoryBranchActive &&
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&
     prevProps.annotationTopicId === nextProps.annotationTopicId &&
