@@ -287,16 +287,20 @@ func (a *Adapter) createSchema(ctx context.Context, conn *sql.Conn) error {
 			return fmt.Errorf("postgres schema statement %.80q failed: %w", strings.TrimSpace(statement), err)
 		}
 	}
-	// CONCURRENTLY must be a standalone statement outside a transaction. It
-	// lets an existing deployment continue writing while the index is built.
-	if err := a.ensureMessageSearchIndexOnConn(ctx, conn); err != nil {
-		return fmt.Errorf("message search index: %w", err)
-	}
 	if err := ensureChannelAgentBindingUniqueIncludesAgent(ctx, conn); err != nil {
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, migrateSessionForks); err != nil {
 		return fmt.Errorf("session fork schema: %w", err)
+	}
+	// Concurrent index builds can wait for old snapshots, even when those
+	// readers never touched messages. Keep that wait under the overall schema
+	// deadline, not the short lock budget used for blocking DDL above.
+	if _, err := conn.ExecContext(ctx, `SET lock_timeout = 0`); err != nil {
+		return fmt.Errorf("set postgres concurrent index lock timeout: %w", err)
+	}
+	if err := a.ensureMessageSearchIndexOnConn(ctx, conn); err != nil {
+		return fmt.Errorf("message search index: %w", err)
 	}
 	return nil
 }

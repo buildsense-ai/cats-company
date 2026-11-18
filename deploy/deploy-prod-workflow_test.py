@@ -205,6 +205,12 @@ sleep() { :; }
             login = root / "data/dreamina-home/.local/share/dreamina/byted_cli_user_token.json"
             login.parent.mkdir(parents=True)
             login.touch()
+            # Do not let the fixture transfer ownership to the production UID,
+            # including on CI runners with passwordless sudo.
+            for name, status in (("sudo", 1), ("chown", 0)):
+                stub = root / name
+                stub.write_text(f"#!/usr/bin/env bash\nexit {status}\n", encoding="utf-8")
+                stub.chmod(0o755)
             compose = root / "docker-compose"
             compose.write_text(
                 '#!/usr/bin/env bash\nprintf "%s %s\\n" "${IMAGE_TAG:-}" "$*" >> "$MOCK_CALLS"\n'

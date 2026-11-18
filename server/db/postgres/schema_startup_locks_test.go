@@ -91,4 +91,63 @@ func TestPostgresStartupSchemaLocks(t *testing.T) {
 		WHERE table_schema=current_schema() AND table_name='users' AND column_name='bot_disclose'`).Scan(&nullable); err != nil || nullable != "NO" {
 		t.Fatalf("expected bot_disclose NOT NULL after upgrade, got %q (%v)", nullable, err)
 	}
+
+	t.Run("concurrent search index waits for an old snapshot", func(t *testing.T) {
+		if _, err := db.db.Exec(`DROP INDEX idx_messages_search_document_trgm`); err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := db.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer snapshot.Rollback()
+		var count int
+		if err := snapshot.QueryRow(`SELECT count(*) FROM users`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+
+		result := make(chan error, 1)
+		go func() { result <- db.CreateSchema() }()
+		finished := false
+		defer func() {
+			_ = snapshot.Rollback()
+			if !finished {
+				<-result
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		for {
+			select {
+			case err := <-result:
+				finished = true
+				t.Fatalf("schema finished before waiting for the snapshot: %v", err)
+			default:
+			}
+			var waiting bool
+			if err := db.db.QueryRowContext(ctx, `SELECT EXISTS (
+				SELECT 1 FROM pg_stat_progress_create_index
+				WHERE relid = 'messages'::regclass AND phase = 'waiting for old snapshots')`).Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+			if waiting {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		select {
+		case err := <-result:
+			finished = true
+			t.Fatalf("search index used the short DDL lock timeout: %v", err)
+		case <-time.After(1250 * time.Millisecond):
+		}
+		if err := snapshot.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		err = <-result
+		finished = true
+		if err != nil || !db.messageSearchIndexReady.Load() {
+			t.Fatalf("search index did not finish after releasing the snapshot: %v", err)
+		}
+	})
 }
