@@ -164,14 +164,14 @@ func TestPostgresCommercialActionsCreditOnly(t *testing.T) {
 			t.Fatal("early renewal duplicated allowance or lost the anchor")
 		}
 		next, err := db.ReconcileModelCreditMonthlyPeriod(ctx, uid, expiry)
-		if err != nil || next.MonthlyUnits != allowance {
+		if err != nil || next.MonthlyUnits != 2*allowance-spent {
 			t.Fatalf("next period: %+v %v", next, err)
 		}
 		if _, err := db.ReconcileModelCreditMonthlyPeriod(ctx, uid, expiry.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
-		if count(`SELECT COUNT(*) FROM model_credit_ledger_events WHERE uid=$1 AND bucket='monthly' AND event_type='grant'`, uid) != 2 || count(`SELECT COUNT(*) FROM model_credit_ledger_events WHERE uid=$1 AND bucket='monthly' AND event_type='expire' AND units=$2`, uid, allowance-spent) != 1 {
-			t.Fatal("period rollover duplicated grants or carried old allowance")
+		if count(`SELECT COUNT(*) FROM model_credit_ledger_events WHERE uid=$1 AND bucket='monthly' AND event_type='grant'`, uid) != 2 || count(`SELECT COUNT(*) FROM model_credit_ledger_events WHERE uid=$1 AND bucket='monthly' AND event_type='expire'`, uid) != 0 {
+			t.Fatal("period rollover duplicated grants or expired carried allowance")
 		}
 		noLegacyOrMachine(uid)
 	})

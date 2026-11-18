@@ -11,7 +11,10 @@ export const MODEL_CREDIT_LEGACY_NOTICE = '当前使用旧套餐额度，尚未�
 // 所以文案只报当前模型权限不可用，并让用户自己去核对有效期与权限状态。
 export const MODEL_CREDIT_UNAVAILABLE_NOTICE = 'credit 账户仍在，当前模型权限不可用；账本余额仍可查看，请检查套餐有效期及权限状态。';
 export const MODEL_CREDIT_TOPUP_NOTICE = '独立充值以支付页开放状态为准';
-export const MODEL_CREDIT_CYCLE_NOTE = '月额度按订阅生效日锚定的自然月刷新，不结转；提前续费不会提前补额。';
+// 月额度在订阅有效期内结转：未用余额与下一期发放叠加。到期后未用部分冻结，续费解锁；
+// 到期期间不发新一期月额度。冻结额度单独由后端 `frozen_monthly_units` 给出，不进可消费合计。
+export const MODEL_CREDIT_CYCLE_NOTE = '月额度按订阅生效日锚定的自然月刷新，有效期内未用额度结转到下一期；提前续费不会提前补额。';
+export const MODEL_CREDIT_FROZEN_UNLOCK_NOTE = '续费后解锁，冻结期间不计入可用额度';
 // 付费余额同时包含独立充值及其他已入账的付费点数。
 export const MODEL_CREDIT_PAID_LABEL = '付费余额';
 // 后端只在「下一期已被已付订阅覆盖」时才给 next_refresh_at。没有它就说明刷新要等
@@ -97,6 +100,18 @@ export function modelCreditPeriodDisplay(account) {
   return { known: true, period: lines.join(' · '), lines };
 }
 
+// 冻结月额度只在后端明确给出正数时才显示。它是「到期后没花掉的月额度」，不是可用余额：
+// 不能并进月额度桶、也不能进可消费合计，否则用户会以为能马上花。allowed=false 不证明
+// 到期，所以文案只说冻结和续费解锁，不替用户断定原因。
+export function modelCreditFrozenDisplay(account) {
+  const safe = account || {};
+  const scale = Number(safe.units_per_credit) || 1_000_000;
+  const frozen = Math.max(0, Number(safe.frozen_monthly_units || 0));
+  if (!(frozen > 0)) return { units: 0, note: '' };
+  const formatted = (frozen / scale).toLocaleString('zh-CN', { maximumFractionDigits: 6 });
+  return { units: frozen, note: `冻结月额度 ${formatted} credit · ${MODEL_CREDIT_FROZEN_UNLOCK_NOTE}` };
+}
+
 export function modelCreditQuotaDisplay(account, allowance = 0, identity = modelCreditIdentity(account)) {
   const safe = account || {};
   const scale = Number(safe.units_per_credit) || 1_000_000;
@@ -104,7 +119,14 @@ export function modelCreditQuotaDisplay(account, allowance = 0, identity = model
   const format = units => (units / scale).toLocaleString('zh-CN', { maximumFractionDigits: 6 });
   const buckets = ['monthly', 'gift', 'paid', 'debt'].map(key => value(key));
   const [monthly, gift, paid, debt] = buckets;
-  const available = Math.max(0, monthly + gift + paid);
+  // 可消费合计以后端 `spendable_units` 为准：它已经排除冻结的月额度。老响应没有这个
+  // 字段时退回三个可消费桶相加，避免未升级的后端显示成零余额。
+  const spendableProvided = safe.spendable_units !== undefined && safe.spendable_units !== null
+    && Number.isFinite(Number(safe.spendable_units));
+  const spendable = spendableProvided
+    ? Math.max(0, Number(safe.spendable_units))
+    : Math.max(0, monthly + gift + paid);
+  const frozenDisplay = modelCreditFrozenDisplay(safe);
   const unavailable = identity.state === 'blocked';
   const period = modelCreditPeriodDisplay(safe);
   const statusParts = [
@@ -112,13 +134,16 @@ export function modelCreditQuotaDisplay(account, allowance = 0, identity = model
     `当期可用：${identity.allowed ? '是' : (unavailable ? '否（当前模型权限不可用）' : '否')}`,
   ];
   return {
-    className: debt > 0 ? 'danger' : (unavailable || available <= 0 ? 'warning' : 'normal'),
+    className: debt > 0 ? 'danger' : (unavailable || spendable <= 0 ? 'warning' : 'normal'),
     title: unavailable ? 'credit 余额（当前模型权限不可用）' : '可用 credit',
-    meta: `${format(available)} credit`,
+    meta: `${format(spendable)} credit`,
     detail: unavailable ? MODEL_CREDIT_UNAVAILABLE_NOTICE : `按月额度 → 邀请赠送 → ${MODEL_CREDIT_PAID_LABEL}扣减`,
     // 四个桶必须各自说清楚：只报一个合计时，用户没法判断扣的是哪一笔。
     note: `月额度 ${format(monthly)} · 邀请赠送 ${format(gift)} · ${MODEL_CREDIT_PAID_LABEL} ${format(paid)} · 欠款 ${format(debt)} credit。${MODEL_CREDIT_CYCLE_NOTE}`,
     buckets: `月额度 ${format(monthly)} credit · 邀请赠送 ${format(gift)} credit · ${MODEL_CREDIT_PAID_LABEL} ${format(paid)} credit · 欠款 ${format(debt)} credit`,
+    // 冻结额度为 0 时整行为空串，界面不渲染这一行。
+    frozenNote: frozenDisplay.note,
+    frozenUnits: frozenDisplay.units,
     status: `${statusParts.join(' · ')} · ${MODEL_CREDIT_TOPUP_NOTICE}`,
     // 周期只用后端字段：legacy / 邀请码账号这里恒为空串。
     period: period.period,

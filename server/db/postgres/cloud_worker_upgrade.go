@@ -511,11 +511,26 @@ func (a *Adapter) machinePlanTerm(query string, args ...interface{}) (*types.Mac
 // MachineUpgradeCreditBalance reports what a quote may spend and whether the
 // account is in arrears (an over-spent account may not buy an upgrade).
 //
+// 报价必须先对账月额度：跨期的旧余额要作废（作废后进 frozen_monthly_units，永远
+// 不可花），新的一期要先发出来。拿上一期的余额报价，用户会「看着够、下单失败」。
+// frozen_monthly_units 是已过期/已退回的冻结额度，只用于展示，绝不计入可花余额。
+//
 // gift 不在可花范围里：报价必须和真正能扣的钱一致，否则用户看着够、下单却失败。
 func (a *Adapter) MachineUpgradeCreditBalance(uid int64) (int64, bool, error) {
+	if uid <= 0 {
+		return 0, false, nil
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return 0, false, fmt.Errorf("begin machine upgrade balance: %w", err)
+	}
+	defer tx.Rollback()
+	if err := reconcileMachineUpgradeMonthly(context.Background(), tx, uid, time.Now().UTC()); err != nil {
+		return 0, false, err
+	}
 	var account store.ModelCreditAccount
 	account.UID = uid
-	if err := a.db.QueryRow(
+	if err := tx.QueryRow(
 		`SELECT monthly_units, gift_units, paid_units, debt_units FROM model_credit_accounts WHERE uid = $1`,
 		uid).Scan(&account.MonthlyUnits, &account.GiftUnits, &account.PaidUnits, &account.DebtUnits); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -523,11 +538,31 @@ func (a *Adapter) MachineUpgradeCreditBalance(uid int64) (int64, bool, error) {
 		}
 		return 0, false, fmt.Errorf("read machine upgrade balance: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("commit machine upgrade balance: %w", err)
+	}
 	return machineUpgradeSpendableUnits(account), account.DebtUnits > 0, nil
+}
+
+// reconcileMachineUpgradeMonthly rolls the subscription month over before an
+// upgrade quotes, holds or returns monthly credit.
+//
+// 对账同时完成三件事，缺一不可：
+//   - 跨期作废旧余额（进 frozen，不可花）；
+//   - 老账本里「只有发放事件、没有批次行」的历史月额度补一条批次，否则将来的释放
+//     找不到归属批次，退回的钱会凭空消失；
+//   - 新的一期在报价前发出，避免报价与扣费口径不一致。
+func reconcileMachineUpgradeMonthly(ctx context.Context, tx *sql.Tx, uid int64, now time.Time) error {
+	if _, _, err := reconcileModelCreditMonthlyPeriod(ctx, tx, uid, now.UTC()); err != nil {
+		return err
+	}
+	return nil
 }
 
 // machineUpgradeSpendableUnits is everything a machine upgrade may spend:
 // monthly and paid only, summed without overflowing int64.
+//
+// frozen_monthly_units 不计入：它是过期或已退回的月额度，和 upgrade 无关。
 func machineUpgradeSpendableUnits(account store.ModelCreditAccount) int64 {
 	sum, ok := store.ModelCreditAddUnits(account.MonthlyUnits, account.PaidUnits)
 	if !ok {
@@ -571,9 +606,16 @@ type machineUpgradeBucket struct {
 // one allowed order (monthly -> paid) and records the hold. Gift is never
 // touched. An account in arrears is refused outright: buying resources while
 // already over-spent is how an unfunded balance becomes free credit.
+//
+// 月额度按批次扣：预占把「这笔钱来自哪个月的哪一批」写进 hold_lots，释放时才能
+// 只退回还活着的那一批。已过期（frozen）和被退款作废（revoked）的批次不可花，
+// 所以这里先对账再扣，扣不到就是余额不足，绝不拿过期额度买单。
 func reserveMachineUpgradeCredits(ctx context.Context, tx *sql.Tx, op *types.MachineUpgradeOperation, now time.Time) error {
 	if op.CostUnits <= 0 {
 		return fmt.Errorf("machine upgrade %s has no cost to hold", op.OperationID)
+	}
+	if err := reconcileMachineUpgradeMonthly(ctx, tx, op.UID, now); err != nil {
+		return err
 	}
 	account, err := lockModelCreditAccount(ctx, tx, op.UID)
 	if err != nil {
@@ -586,6 +628,12 @@ func reserveMachineUpgradeCredits(ctx context.Context, tx *sql.Tx, op *types.Mac
 	if !ok {
 		return fmt.Errorf("%w: need %d units, spendable balance %d",
 			ErrMachineUpgradeInsufficient, op.CostUnits, machineUpgradeSpendableUnits(*account))
+	}
+	// Attribute the monthly slice to the exact lots it came from. The request id
+	// is the operation id, the same key the reserve ledger event uses, so a
+	// replay reads back the same hold and a release consumes the same rows.
+	if err := debitModelCreditMonthlyLots(ctx, tx, op.UID, op.OperationID, split.Monthly); err != nil {
+		return err
 	}
 	account.MonthlyUnits -= split.Monthly
 	account.GiftUnits -= split.Gift
@@ -638,6 +686,9 @@ func machineUpgradeHeldBuckets(ctx context.Context, tx *sql.Tx, uid int64, opera
 // already debited at reserve time, so this only records the consumption — the
 // same split the existing model-credit reservation does.
 //
+// 月额度批次在预占时就已经扣掉了，结算只是把这笔预占消费掉：清掉 hold_lots 里
+// 的分配记录，让子账本不会留下永远还不掉的悬挂批次。
+//
 // 预占里出现 gift 只可能是账本被污染：结算它就等于承认一次不合规的 gift 消费，
 // 所以这里直接报错卡住，等人工核对，而不是把钱悄悄记成已花。
 func settleMachineUpgradeCredits(ctx context.Context, tx *sql.Tx, op *types.MachineUpgradeOperation, now time.Time) error {
@@ -657,6 +708,18 @@ func settleMachineUpgradeCredits(ctx context.Context, tx *sql.Tx, op *types.Mach
 	if err != nil {
 		return err
 	}
+	// Charge the whole monthly hold: an upgrade costs exactly what was quoted, so
+	// every held monthly unit is consumed. Nothing is returned to a lot here.
+	var monthlyHeld int64
+	for _, part := range buckets {
+		if part.bucket == store.ModelCreditBucketMonthly {
+			monthlyHeld += part.units
+		}
+	}
+	if _, err := returnModelCreditMonthlyHold(ctx, tx, account, op.OperationID,
+		monthlyHeld, monthlyHeld, now); err != nil {
+		return err
+	}
 	for _, part := range buckets {
 		key := store.ModelCreditEventKey(store.ModelCreditEventSettle, op.UID, op.OperationID, part.bucket)
 		requestID := op.OperationID
@@ -669,20 +732,42 @@ func settleMachineUpgradeCredits(ctx context.Context, tx *sql.Tx, op *types.Mach
 }
 
 // releaseMachineUpgradeCredits gives the held units back to their buckets.
+//
+// 退款只废除对应订单的批次；未作废的月额度按当前订阅状态退回可用或冻结余额。
+// 旧升配没有批次分配记录，按实际预占流水重建归属，不使用开单时刻。
 func releaseMachineUpgradeCredits(ctx context.Context, tx *sql.Tx, op *types.MachineUpgradeOperation, now time.Time) error {
 	buckets, err := machineUpgradeHeldBuckets(ctx, tx, op.UID, op.OperationID)
 	if err != nil {
+		return err
+	}
+	// 先对账，确定当前订阅状态并接管还存在的旧月额度。
+	if err := reconcileMachineUpgradeMonthly(ctx, tx, op.UID, now); err != nil {
 		return err
 	}
 	account, err := lockModelCreditAccount(ctx, tx, op.UID)
 	if err != nil {
 		return err
 	}
+	var monthlyHeld int64
+	for _, part := range buckets {
+		if part.bucket == store.ModelCreditBucketMonthly {
+			monthlyHeld += part.units
+		}
+	}
+	monthlyReturned, err := returnModelCreditMonthlyHold(ctx, tx, account, op.OperationID,
+		monthlyHeld, 0, now)
+	if err != nil {
+		return err
+	}
 	for _, part := range buckets {
 		var ok bool
+		released := part.units
 		switch part.bucket {
 		case store.ModelCreditBucketMonthly:
-			account.MonthlyUnits, ok = store.ModelCreditAddUnits(account.MonthlyUnits, part.units)
+			// returnModelCreditMonthlyHold 已经把退回来的月额度记到账户上（活批次进
+			// monthly，过期批次进 frozen），所以这里不能再加一次。
+			released = monthlyReturned
+			ok = true
 		case store.ModelCreditBucketGift:
 			account.GiftUnits, ok = store.ModelCreditAddUnits(account.GiftUnits, part.units)
 		case store.ModelCreditBucketPaid:
@@ -693,10 +778,14 @@ func releaseMachineUpgradeCredits(ctx context.Context, tx *sql.Tx, op *types.Mac
 		if !ok {
 			return fmt.Errorf("machine upgrade %s hold is inconsistent: %w", op.OperationID, store.ErrModelCreditInvalid)
 		}
+		if released == 0 {
+			// 一个单位都没退回来（批次被作废或整批过期）：不写一笔假退款事件。
+			continue
+		}
 		key := store.ModelCreditEventKey(store.ModelCreditEventRelease, op.UID, op.OperationID, part.bucket)
 		requestID := op.OperationID
 		if err := recordModelCreditEvent(ctx, tx, key, account, store.ModelCreditEventRelease,
-			part.bucket, part.units, &requestID); err != nil {
+			part.bucket, released, &requestID); err != nil {
 			return err
 		}
 	}

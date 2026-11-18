@@ -554,22 +554,29 @@ func commercialPaidChainEnd(tx *sql.Tx, uid int64, tier int, now time.Time) (tim
 // the new period continues. Same-tier purchases inherit it even when they renew
 // through a different plan row or slug, so the day-of-month and the once-per-
 // period allowance survive a package being re-listed under a new id.
-func commercialPaidChainAnchor(tx *sql.Tx, uid int64, tier int, now time.Time) (time.Time, bool, error) {
+func commercialPaidChainAnchor(tx *sql.Tx, uid int64, tier int, paidAt, periodStartsAt time.Time) (time.Time, bool, error) {
 	if tier <= 0 {
 		return time.Time{}, false, nil
 	}
+	// A finite chain ends exactly at the new period's start. Without one,
+	// only a perpetual entitlement can already cover the payment time.
+	var tailEnd *time.Time
+	if periodStartsAt.After(paidAt) {
+		tailEnd = &periodStartsAt
+	}
 	var anchor sql.NullTime
 	err := tx.QueryRow(`
-		SELECT COALESCE(e.period_anchor_at, e.starts_at)
+		SELECT CASE WHEN e.source = 'invite' AND e.invite_monthly_units > 0 AND e.expires_at IS NOT NULL
+		            THEN e.expires_at ELSE COALESCE(e.period_anchor_at, e.starts_at) END
 		FROM commercial_entitlements e
 		JOIN commercial_plans p ON p.id = e.plan_id
 		WHERE e.uid = $1 AND e.state = 'active'
 		  AND p.plan_tier = $2
 		  AND e.starts_at <= $3
-		  AND (e.expires_at IS NULL OR e.expires_at > $3)
+		  AND e.expires_at IS NOT DISTINCT FROM $4
 		ORDER BY CASE WHEN e.source IN ('order','admin','internal') THEN 0 ELSE 1 END,
-		         e.expires_at DESC NULLS LAST, e.id DESC
-		LIMIT 1`, uid, tier, now.UTC()).Scan(&anchor)
+		         e.id DESC
+		LIMIT 1`, uid, tier, periodStartsAt.UTC(), tailEnd).Scan(&anchor)
 	if err == sql.ErrNoRows {
 		return time.Time{}, false, nil
 	}
@@ -614,6 +621,10 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	paidAt := confirmation.PaidAt.UTC()
 	if paidAt.IsZero() {
 		paidAt = time.Now().UTC()
+	}
+	// Match PostgreSQL timestamp precision before deriving a credit period key.
+	if order.PlanModelCreditUnits > 0 && order.Kind != types.CommercialOrderKindCreditTopup {
+		paidAt = paidAt.Truncate(time.Microsecond)
 	}
 	// A credit subscription is only ever sold as a 30-day monthly product, and the
 	// order snapshot decides — not the live plan row — so an order taken before
@@ -701,9 +712,12 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		// is what keeps one allowance per period and 1/31 → 2/28 → 3/31 intact.
 		// Re-anchoring on the payment day is exactly what shortened the window and
 		// granted a second allowance inside the month that was already paid for.
+		// An invited first term has its own finite expiry (including any
+		// machine-aligned boundary). The first paid term anchors at its start,
+		// not at the original redemption, so it always buys a full month.
 		anchor := paidAt
 		if orderTier > 0 {
-			if existing, ok, err := commercialPaidChainAnchor(tx, order.UID, orderTier, paidAt); err != nil {
+			if existing, ok, err := commercialPaidChainAnchor(tx, order.UID, orderTier, paidAt, periodStartsAt); err != nil {
 				return nil, false, err
 			} else if ok {
 				anchor = existing
@@ -1086,14 +1100,13 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 		WHERE uid = $1 AND source = 'order' AND source_ref = $2 AND state <> 'revoked'`, order.UID, order.OrderNo); err != nil {
 		return nil, false, fmt.Errorf("revoke refunded entitlement: %w", err)
 	}
-	if order.PlanModelCreditUnits > 0 && !bookedPaidCredit {
-		// The paid grant path is retired, so the refund settles the monthly
-		// permission instead of a paid balance: reconcile against what survives
-		// the revocation. A still-running renewal period keeps the allowance it
-		// was granted, and when nothing is left the refunded period's unused
-		// allowance is expired rather than staying spendable on a package the
-		// buyer no longer holds.
-		if _, _, err := reconcileModelCreditMonthlyPeriod(context.Background(), tx, order.UID, refundedAt); err != nil {
+	if order.PlanModelCreditUnits > 0 {
+		// The monthly balance can contain multiple orders. Revoke only this
+		// order's lots, including frozen units and any outstanding holds.
+		if err := revokeOrderModelCreditMonthlyLots(ctx, tx, order.UID, order.OrderNo, refundedAt); err != nil {
+			return nil, false, err
+		}
+		if _, _, err := reconcileModelCreditMonthlyPeriod(ctx, tx, order.UID, refundedAt); err != nil {
 			return nil, false, err
 		}
 	}
