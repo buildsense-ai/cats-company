@@ -36,6 +36,7 @@ type commercialRelayBaselineStore interface {
 type CommercialRelaySyncerOptions struct {
 	EnforceEnabled bool
 	EnforceUIDs    map[int64]bool
+	ModelCatalog   *CommercialModelCatalog
 	Interval       time.Duration
 	RetryDelays    []time.Duration
 }
@@ -56,6 +57,7 @@ type commercialRelayPendingState struct {
 type CommercialRelaySyncer struct {
 	store            CommercialRelayManagedStore
 	relayAdmin       *RelayAdminClient
+	modelCatalog     *CommercialModelCatalog
 	enforceEnabled   bool
 	enforceUIDs      map[int64]bool
 	interval         time.Duration
@@ -81,6 +83,7 @@ func NewCommercialRelaySyncer(store CommercialRelayManagedStore, relayAdmin *Rel
 	return &CommercialRelaySyncer{
 		store:           store,
 		relayAdmin:      relayAdmin,
+		modelCatalog:    opts.ModelCatalog,
 		enforceEnabled:  opts.EnforceEnabled,
 		enforceUIDs:     copyCommercialUIDSet(opts.EnforceUIDs),
 		interval:        interval,
@@ -645,6 +648,7 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 			}
 		}
 	}
+	summary = commercialRelaySummaryWithGPT62(ctx, s.modelCatalog, summary)
 	trialChanged := relayUser.Limits.FreeTerraTrial != nil && relayUser.Limits.FreeTerraTrial.Enabled != trialEnabled
 	s.logMissingRelayModels(uid, commercialRelayMissingRequiredModels(summary, relayUser, managed))
 	updates, nextManaged := commercialRelayManagedPlan(uid, summary, relayUser, managed)
@@ -734,6 +738,32 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 		return nil, fmt.Errorf("save managed relay budgets: %w", err)
 	}
 	return updates, nil
+}
+
+// Adjust the model-specific sync input, not the shared pool or its usage window.
+func commercialRelaySummaryWithGPT62(ctx context.Context, catalog *CommercialModelCatalog, summary *types.CommercialSummary) *types.CommercialSummary {
+	if summary == nil {
+		return nil
+	}
+	var hasGPT62 bool
+	for model := range summary.TotalsByModel {
+		hasGPT62 = hasGPT62 || types.IsGPT62Sol(model)
+	}
+	if !hasGPT62 {
+		return summary
+	}
+	filtered := *summary
+	filtered.TotalCNY = commercialRelaySharedLimit(summary)
+	filtered.TotalsByModel = make(map[string]float64, len(summary.TotalsByModel))
+	for model, amount := range summary.TotalsByModel {
+		if !types.IsGPT62Sol(model) {
+			filtered.TotalsByModel[model] = amount
+		}
+	}
+	if amount := gpt62LegacyQuota(summary, time.Now()); amount > 0 && gpt62CatalogEnabled(ctx, catalog) {
+		filtered.TotalsByModel[types.GPT62Sol] = amount
+	}
+	return &filtered
 }
 
 const (
@@ -1083,7 +1113,7 @@ func commercialRelayBaseline(relayUser *commercialRelayUsageUser) (string, map[s
 	if relayUser != nil {
 		for _, limit := range relayUser.Limits.ModelLimits {
 			model := strings.TrimSpace(limit.Model)
-			if model == "" || model == "*" || limit.Budget.MaxLimit <= commercialRelayBlockedLimit {
+			if model == "" || model == "*" || types.IsGPT62Sol(model) || limit.Budget.MaxLimit <= commercialRelayBlockedLimit {
 				continue
 			}
 			if hasScopes && !allowed[normalizeRelayModelName(model)] {

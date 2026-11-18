@@ -360,6 +360,11 @@ func (h *BotDefinitionHandler) HandleRuntimeDefinition(w http.ResponseWriter, r 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot definition"})
 		return
 	}
+	if record != nil && record.Exists {
+		if model, ok := botDefinitionModelForResponse(record); ok && strings.EqualFold(strings.TrimSpace(model.Kind), botModelKindCatalog) && types.IsGPT62Sol(model.ModelID) && h.modelConfig.writeGPT62RuntimeDenial(w, r, ownerUID) {
+			return
+		}
+	}
 	response, err := h.definitionResponse(ownerUID, botUID, record, true)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})

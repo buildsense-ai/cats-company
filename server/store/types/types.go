@@ -445,6 +445,39 @@ type CommercialSummary struct {
 	TokenQuotaDuration string `json:"token_quota_duration,omitempty"`
 }
 
+// GPT62Sol is reserved for the explicitly supported legacy packages.
+const GPT62Sol = "gpt-6.2-sol"
+
+func IsGPT62Sol(model string) bool {
+	return strings.EqualFold(strings.TrimSpace(model), GPT62Sol)
+}
+
+func GPT62SolLegacyPlan(slug string) bool {
+	switch slug {
+	case "catsco-personal", "catsco-pro", "catsco-internal-all-models-50k":
+		return true
+	default:
+		return false
+	}
+}
+
+func GPT62SolInternalOnly(sellable, internal []string, known bool) bool {
+	if !known {
+		return false
+	}
+	for _, model := range sellable {
+		if IsGPT62Sol(model) {
+			return false
+		}
+	}
+	for _, model := range internal {
+		if model == GPT62Sol {
+			return true
+		}
+	}
+	return false
+}
+
 // CommercialRelayBaselineCandidate is one active legacy baseline entitlement
 // together with the data needed to decide whether it was really a custom
 // pre-migration pool or a Free pool that the Relay seed classifier

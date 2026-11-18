@@ -723,7 +723,18 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		VALUES ($1, $2, 'order', $3, 'active', $4, $5, $6)`, order.UID, order.PlanID, order.OrderNo, periodStartsAt, expiresAt, entitlementAnchor); err != nil {
 		return nil, false, fmt.Errorf("create order entitlement: %w", err)
 	}
-	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, order.PlanModelBudgets, periodStartsAt, expiresAt); err != nil {
+	budgets := order.PlanModelBudgets
+	if budgets[types.GPT62Sol] > 0 && types.GPT62SolLegacyPlan(order.PlanSlug) && order.PlanModelCreditUnits == 0 {
+		var active bool
+		if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM commercial_plans WHERE id = $1 AND slug = $2
+			AND state = 0 AND archived_at IS NULL AND model_credit_units = 0 AND model_budgets ? $3)`, order.PlanID, order.PlanSlug, types.GPT62Sol).Scan(&active); err != nil {
+			return nil, false, fmt.Errorf("check restricted order model: %w", err)
+		}
+		budgets = a.gpt62GrantBudgets(budgets, order.PlanSlug, active)
+	} else {
+		budgets = filterGPT62GrantBudgets(budgets)
+	}
+	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, budgets, periodStartsAt, expiresAt); err != nil {
 		return nil, false, err
 	}
 	// A credit package sells a monthly allowance, not a lump of spendable paid
@@ -1271,7 +1282,7 @@ func (a *Adapter) ClaimCommercialTrial(uid int64, planSlug string) (*types.Comme
 	if affected == 0 {
 		return nil, fmt.Errorf("trial package already claimed")
 	}
-	if err := createCommercialPlanGrants(tx, uid, plan.ID, 0, "trial", plan.Slug, plan.Name, plan.MonthlyBudget, plan.ModelBudgets, startsAt, expiresAt); err != nil {
+	if err := createCommercialPlanGrants(tx, uid, plan.ID, 0, "trial", plan.Slug, plan.Name, plan.MonthlyBudget, filterGPT62GrantBudgets(plan.ModelBudgets), startsAt, expiresAt); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {

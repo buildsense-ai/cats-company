@@ -699,10 +699,24 @@ func main() {
 	// hardcoded list, so a model onboarded on the relay becomes sellable with no
 	// control-plane change. The reconcile runs once at startup and only writes
 	// when a plan's model set actually differs from the catalog.
-	if modelCatalog := server.NewCommercialModelCatalogFromEnv(); modelCatalog != nil {
+	modelCatalog := server.NewCommercialModelCatalogFromEnv()
+	botModelConfigHandler.SetCommercialModelCatalog(modelCatalog)
+	relayConfigHandler.SetBotModelConfig(botModelConfigHandler)
+	if modelCatalog != nil {
 		accountAdminHandler.SetCommercialModelCatalog(modelCatalog)
 		reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), commercialPlanReconcileTimeout)
 		catalogModels, internalOnlyModels, internalOnlyKnown, catalogSource, catalogErr := modelCatalog.Catalog(reconcileCtx)
+		// A disk snapshot can preserve general catalog fallback, but cannot
+		// authorize this private route or provision new grants for it.
+		if catalogSource == "snapshot" {
+			filtered := internalOnlyModels[:0]
+			for _, model := range internalOnlyModels {
+				if !types.IsGPT62Sol(model) {
+					filtered = append(filtered, model)
+				}
+			}
+			internalOnlyModels = filtered
+		}
 		if catalogErr != nil {
 			log.Printf("commercial plan model reconcile skipped: relay catalog unavailable: %v", catalogErr)
 		} else if reconciler, ok := db.(interface {
@@ -720,6 +734,9 @@ func main() {
 		log.Printf("commercial model catalog is not configured; paid plan model sets will not follow the relay")
 	}
 	var commercialRelaySyncer *server.CommercialRelaySyncer
+	if issuer, ok := db.(interface{ SetGPT62CatalogGate(func() bool) }); ok {
+		issuer.SetGPT62CatalogGate(func() bool { return modelCatalog.GPT62SolEnabled(context.Background()) })
+	}
 	commercialServiceCtx, commercialServiceCancel := context.WithCancel(context.Background())
 	defer commercialServiceCancel()
 	if creditExpiryLedger, ok := db.(server.ModelCreditExpiryReleaser); ok {
@@ -734,6 +751,7 @@ func main() {
 		commercialRelaySyncer = server.NewCommercialRelaySyncer(commercialRelayManagedStore, relayAdminClient, server.CommercialRelaySyncerOptions{
 			EnforceEnabled: relayCommercialEnforceEnabled,
 			EnforceUIDs:    relayCommercialEnforceUIDs,
+			ModelCatalog:   modelCatalog,
 		})
 		commercialRelaySyncer.Start(commercialServiceCtx)
 		accountAdminHandler.SetCommercialRelaySyncer(commercialRelaySyncer)
@@ -1258,6 +1276,7 @@ func main() {
 		log.Fatal("database adapter does not support model credit eligibility reads")
 	}
 	modelCreditEligibilityHandler := server.NewModelCreditEligibilityHandler(modelCreditEligibilityReader)
+	modelCreditEligibilityHandler.SetCommercialModelCatalog(modelCatalog)
 	mux.Handle("/internal/relay/credits/eligibility", modelCreditEligibilityHandler)
 
 	mux.HandleFunc("/internal/relay/credits/reserve", modelCreditHandler.HandleInternalMutation)

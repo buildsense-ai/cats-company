@@ -604,7 +604,7 @@ func (h *AccountAdminHandler) HandleCommercialRelaySync(w http.ResponseWriter, r
 		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Terra trial policy changes require the commercial relay syncer"})
 		return
 	}
-	if len(dryRun.ProposedUpdates) == 0 {
+	if !dryRun.CanApply {
 		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"applied": false, "dry_run": dryRun, "note": "no syncable model budgets"})
 		return
 	}
@@ -872,6 +872,7 @@ func (h *AccountAdminHandler) buildCommercialRelayDryRun(ctx context.Context, st
 	if trialEnabled {
 		summary = commercialSummaryWithTerraTrial(summary)
 	}
+	summary = commercialRelaySummaryWithGPT62(ctx, h.modelCatalog, summary)
 	dryRun := compareCommercialRelayBudgets(uid, summary, relayUser)
 	dryRun.Summary = originalSummary
 	dryRun.ProposedFreeTerraTrial = trialEnabled
@@ -1270,6 +1271,15 @@ func (h *AccountAdminHandler) commercialPlanForSave(store CommercialStore, slug 
 // the baseline, so this adds no query of its own: paid plans are few and a save
 // is an operator action, not a request-path operation.
 func (h *AccountAdminHandler) validateOfficialPaidPlanSave(slug string, budgets map[string]float64, existingPlan *types.CommercialPlan) error {
+	for model := range budgets {
+		if !types.IsGPT62Sol(model) {
+			continue
+		}
+		if model != types.GPT62Sol || !types.GPT62SolLegacyPlan(slug) || existingPlan == nil ||
+			existingPlan.ModelBudgets[model] <= 0 || !gpt62CatalogEnabled(context.Background(), h.modelCatalog) {
+			return fmt.Errorf("%s is managed by the legacy plan reconcile", types.GPT62Sol)
+		}
+	}
 	if !IsCommercialOfficialPaidPlanSlug(slug) {
 		return nil
 	}
@@ -1279,6 +1289,9 @@ func (h *AccountAdminHandler) validateOfficialPaidPlanSave(slug string, budgets 
 	catalog, _, err := h.modelCatalog.Models(context.Background())
 	if err != nil {
 		return fmt.Errorf("relay model catalog is unavailable: %w", err)
+	}
+	if budgets[types.GPT62Sol] > 0 {
+		catalog = append(catalog, types.GPT62Sol)
 	}
 	var currentTotal *float64
 	if existingPlan != nil {

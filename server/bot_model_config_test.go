@@ -1449,7 +1449,7 @@ func TestOwnerModelCatalogMixedLegacyPriorityAndSharedUsage(t *testing.T) {
 			t.Fatalf("global catalog entry %s was polluted with billing_mode=%q", item.ID, item.BillingMode)
 		}
 	}
-	for _, item := range relayPublicModelCatalog() {
+	for _, item := range relayPublicModelCatalog(false) {
 		if item.BillingMode != "" {
 			t.Fatalf("relay public catalog entry %s leaked billing_mode=%q", item.ID, item.BillingMode)
 		}
@@ -1625,8 +1625,14 @@ func TestOwnerModelCatalogKeepsLegacyPathWithoutCreditIdentity(t *testing.T) {
 	if quotaError != "" {
 		t.Fatalf("quota error=%q", quotaError)
 	}
-	if len(catalog) != len(botModelCatalog) {
-		t.Fatalf("legacy catalog=%d entries, want the full pool %d", len(catalog), len(botModelCatalog))
+	want := relayPublicModelCatalog(false)
+	if len(catalog) != len(want) {
+		t.Fatalf("legacy catalog=%d entries, want the unrestricted pool %d", len(catalog), len(want))
+	}
+	for _, item := range catalog {
+		if types.IsGPT62Sol(item.ID) {
+			t.Fatal("unrestricted legacy catalog leaked GPT-6.2 Sol")
+		}
 	}
 }
 

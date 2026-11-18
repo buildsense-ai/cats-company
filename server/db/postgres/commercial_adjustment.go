@@ -251,7 +251,7 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 			adjustment.UID, plan.ID, operationID, now, expiresAt, source, periodAnchor); err != nil {
 			return nil, fmt.Errorf("create operator commercial entitlement: %w", err)
 		}
-		if err := createOperatorPlanGrants(tx, adjustment.UID, plan, operationID, strings.TrimSpace(adjustment.Note), now, expiresAt); err != nil {
+		if err := a.createOperatorPlanGrants(tx, adjustment.UID, plan, operationID, strings.TrimSpace(adjustment.Note), now, expiresAt); err != nil {
 			return nil, err
 		}
 		if source == "admin" {
@@ -416,7 +416,7 @@ func (a *Adapter) applyCommercialAccountAdjustmentTx(tx *sql.Tx, adjustment *typ
 			adjustment.UID, currentPlanID, operationID, currentExpiry, newExpiry, source, periodAnchor); err != nil {
 			return nil, fmt.Errorf("create renewal extension entitlement: %w", err)
 		}
-		if err := createOperatorPlanGrants(tx, adjustment.UID, plan, operationID, strings.TrimSpace(adjustment.Note), currentExpiry, &newExpiry); err != nil {
+		if err := a.createOperatorPlanGrants(tx, adjustment.UID, plan, operationID, strings.TrimSpace(adjustment.Note), currentExpiry, &newExpiry); err != nil {
 			return nil, err
 		}
 		if source == "admin" {
@@ -601,9 +601,9 @@ func revokeCommercialPackageState(tx *sql.Tx, uid int64, operationID, note strin
 	return nil
 }
 
-func createOperatorPlanGrants(tx *sql.Tx, uid int64, plan *types.CommercialPlan, operationID, note string, startsAt time.Time, expiresAt *time.Time) error {
+func (a *Adapter) createOperatorPlanGrants(tx *sql.Tx, uid int64, plan *types.CommercialPlan, operationID, note string, startsAt time.Time, expiresAt *time.Time) error {
 	budgets := make(map[string]float64, len(plan.ModelBudgets)+1)
-	for model, amount := range plan.ModelBudgets {
+	for model, amount := range a.gpt62GrantBudgets(plan.ModelBudgets, plan.Slug, plan.State == 0 && plan.ModelCreditUnits == 0) {
 		if model = strings.TrimSpace(model); model != "" && amount > 0 {
 			budgets[model] = amount
 		}

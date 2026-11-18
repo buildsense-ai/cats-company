@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // CommercialModelCatalog answers "which models may a paid plan sell right now".
@@ -137,6 +139,12 @@ func (c *CommercialModelCatalog) Models(ctx context.Context) ([]string, string, 
 	return models, source, nil
 }
 
+// GPT62SolEnabled requires a live Relay classification, not a disk fallback.
+func (c *CommercialModelCatalog) GPT62SolEnabled(ctx context.Context) bool {
+	models, internal, known, source, err := c.Catalog(ctx)
+	return err == nil && source != "snapshot" && types.GPT62SolInternalOnly(models, internal, known)
+}
+
 // Catalog is Models plus the internal-only list, and reports whether the relay
 // declared that list at all.
 //
@@ -153,6 +161,9 @@ func (c *CommercialModelCatalog) Catalog(ctx context.Context) (models, internalO
 	c.mu.Lock()
 	if len(c.models) > 0 && now.Sub(c.fetchedAt) < c.ttl {
 		models, source := copyCatalogModels(c.models), "memory"
+		if c.source == "snapshot" {
+			source = "snapshot"
+		}
 		internalOnly, known := copyCatalogModels(c.internalOnly), c.internalOnlyKnown
 		c.mu.Unlock()
 		return models, internalOnly, known, source, nil
