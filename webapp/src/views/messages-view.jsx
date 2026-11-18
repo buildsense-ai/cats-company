@@ -20,6 +20,7 @@ import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette'
 import PwaDownloadLink from '../widgets/pwa-download-link';
 import {
   OFFICE_SAVE_NOTICE,
+  countChangedOps,
 } from '../office/save.js';
 import {
   performExplicitOfficeSync, performQuietOfficeSave, resolveLatestOfficeVersion,
@@ -2572,6 +2573,10 @@ export default function MessagesView({
         topicId: topic,
         uploadFile: api.uploadFile,
         upsertBinding: api.upsertFileVersionBinding,
+        sendMessage: api.sendMessage,
+        requirement: saved.requirement || '',
+        slideCount: saved.slideCount,
+        changedParts: countChangedOps(saved.changes),
       });
 
       const nextFile = {

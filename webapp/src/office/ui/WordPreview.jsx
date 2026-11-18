@@ -270,6 +270,8 @@ export default function WordPreview({
   const [draft, setDraft] = useState(EMPTY_WORD_DRAFT);
   const [activeCell, setActiveCell] = useState(null);
   const [editing, setEditing] = useState(false);
+  const [askOpen, setAskOpen] = useState(false);
+  const [askText, setAskText] = useState('');
   const [panelWidth, setPanelWidth] = useState(() => readOfficePanelWidth());
   const pendingBytesRef = useRef(null);
   const [hasPending, setHasPending] = useState(false);
@@ -484,7 +486,7 @@ export default function WordPreview({
     }
   }, [adopt, model, persistDrafts, saving]);
 
-  const handleSave = useCallback(async () => {
+  const handleSave = useCallback(async (requirement = '') => {
     if (!model || saving) return;
     if (!dirty) {
       setNotice('没有可写入的改动');
@@ -513,6 +515,7 @@ export default function WordPreview({
         fileName: file?.name || 'document.docx',
         slideCount: undefined,
         changes: [{ op: 'docx-edit' }],
+        requirement,
       });
       if (onSave && !published) {
         setNotice('已写入本地，但最新版未保存成功，请重试保存');
@@ -538,23 +541,6 @@ export default function WordPreview({
     }
   }, [adopt, applyToBytes, dirty, file?.name, model, onSave, saving]);
 
-  const handleSync = useCallback(async () => {
-    if (saving || !latestVersion || !onSync) return;
-    setSaving(true);
-    setNotice('');
-    try {
-      const synced = await onSync({
-        latestVersion,
-        fileName: file?.name,
-        changes: [{ op: 'docx-edit' }],
-      });
-      setNotice(synced ? OFFICE_SYNC_NOTICE : '同步失败，请重试');
-    } catch (err) {
-      setNotice(`同步失败：${err.message}`);
-    } finally {
-      setSaving(false);
-    }
-  }, [file?.name, latestVersion, onSync, saving]);
 
   const handleInsertParagraph = useCallback(async () => {
     const anchor = selectedBlock;
@@ -670,15 +656,37 @@ export default function WordPreview({
         />
         <span className="office-toolbar-spacer" />
         {dirty ? <span className="office-dirty">已修改</span> : null}
-        <button type="button" className="office-page-btn" data-office-sync=""
-          disabled={!latestVersion || saving || !onSync} onClick={handleSync}>
-          同步给小八
-        </button>
         <button type="button" className="office-save-btn" disabled={saving}
-          onClick={handleSave}>
+          onClick={() => { setAskText(''); setAskOpen(true); }}>
           {saving ? '写入中…' : '写入文档'}
         </button>
       </div>
+
+      {askOpen ? (
+        <div className="office-ask-backdrop" data-office-ask="">
+          <div className="office-ask" role="dialog" aria-modal="true" aria-label="写入文档">
+            <div className="office-ask-title">还有要一起发给小八的新要求吗？</div>
+            <p className="office-ask-hint">
+              写了就和小八说一声，它会拿着这一版继续改。留空则只保存，会话里不发消息。
+            </p>
+            <textarea className="office-ask-input" data-office-ask-input="" rows={4}
+              autoFocus value={askText} placeholder="例如：把第二段的语气改正式一点"
+              onChange={event => setAskText(event.target.value)} />
+            <div className="office-ask-actions">
+              <button type="button" className="office-page-btn"
+                onClick={() => setAskOpen(false)}>取消</button>
+              <button type="button" className="office-save-btn" data-office-ask-confirm=""
+                onClick={() => {
+                  const requirement = askText.trim();
+                  setAskOpen(false);
+                  handleSave(requirement);
+                }}>
+                {askText.trim() ? '写入并发送' : '仅写入'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {notice ? <div className="office-preview-notice">{notice}</div> : null}
 

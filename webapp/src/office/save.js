@@ -40,7 +40,9 @@ export function officeSavedFileName(originalName, family = 'pptx') {
  * conversation summary all read `content`, and a message with only a file block renders as
  * an empty bubble in several places.
  */
-export function buildOfficeUpdateMessage({ uploaded, originalName, family = 'pptx', slideCount, changedParts }) {
+export function buildOfficeUpdateMessage({
+  uploaded, originalName, family = 'pptx', slideCount, changedParts, requirement,
+}) {
   const upload = uploaded || {};
   const name = String(upload.name || officeSavedFileName(originalName, family)).trim();
   const payload = {
@@ -56,15 +58,22 @@ export function buildOfficeUpdateMessage({ uploaded, originalName, family = 'ppt
   const pages = Number.isFinite(slideCount) && slideCount > 0 ? `，共 ${slideCount} 页` : '';
   const parts = Number.isFinite(changedParts) && changedParts > 0
     ? `，改了 ${changedParts} 处` : '';
-  const text = `已按你的修改更新 ${name}（${label}${pages}${parts}）`;
+
+  // The user's own words go first and stay verbatim. 小八 reads the whole message, and a
+  // paraphrase of the request would quietly change what was asked for.
+  const ask = typeof requirement === 'string' ? requirement.trim() : '';
+  const update = `已按你的修改更新 ${name}（${label}${pages}${parts}）`;
+  const text = ask ? `${ask}\n\n${update}` : update;
 
   return {
     content: text,
     content_blocks: [
-      { type: 'text', text },
+      ...(ask ? [{ type: 'text', text: ask }] : []),
+      { type: 'text', text: update },
       { type: 'file', payload },
     ],
     payload,
+    requirement: ask,
   };
 }
 

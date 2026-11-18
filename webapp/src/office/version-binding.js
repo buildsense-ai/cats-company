@@ -4,7 +4,7 @@ import {
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 
 export const OFFICE_VERSION_STORAGE_PREFIX = 'office.fileVersion.';
-export const OFFICE_LOCAL_SAVE_NOTICE = '已保存最新版，仅本机可见；同步给小八后才能跨设备';
+export const OFFICE_LOCAL_SAVE_NOTICE = '已保存最新版，仅本机可见；关掉重开会回到旧版';
 export const OFFICE_SERVER_UNSUPPORTED_NOTICE = '已保存到本机；服务器版本记录未启用，关掉重开会回到旧版';
 export const OFFICE_VERSION_UNSUPPORTED_CODE = 'office-version-unsupported';
 export const OFFICE_UNSYNCED_NOTICE = '已保存最新版，但尚未发给小八；会话里仍是旧附件';
@@ -184,7 +184,8 @@ export async function resolveLatestOfficeVersion(file, getBinding, storage = 'lo
 }
 
 export async function performQuietOfficeSave({
-  file, bytes, fileName, family, topicId, uploadFile, upsertBinding, storage = 'localStorage',
+  file, bytes, fileName, family, topicId, uploadFile, upsertBinding, sendMessage,
+  requirement = '', slideCount, changedParts, storage = 'localStorage',
 }) {
   if (!bytes?.byteLength) throw new Error('没有可保存的内容');
   if (!topicId) throw new Error('缺少会话');
@@ -192,6 +193,41 @@ export async function performQuietOfficeSave({
   const wrapped = officeBytesToFile(bytes, fileName, family);
   const uploaded = await uploadFile(wrapped, 'file');
   const latest = latestVersionFromUpload(uploaded);
+
+  // When the user typed something to send along, the message itself carries the new file,
+  // so 小八 reads the edited version on its next turn without a separate pointer to keep in
+  // sync. The source→latest pointer stays the path for a silent save with no message.
+  const ask = typeof requirement === 'string' ? requirement.trim() : '';
+  if (ask) {
+    if (typeof sendMessage !== 'function') throw new Error('当前会话无法发送消息');
+    const message = buildOfficeUpdateMessage({
+      uploaded,
+      originalName: fileName || file?.name,
+      family,
+      slideCount,
+      changedParts,
+      requirement: ask,
+    });
+    const result = await sendMessage(topicId, {
+      type: 'text',
+      content: message.content,
+      content_blocks: message.content_blocks,
+    });
+    if (!result) throw new Error('消息未发送成功');
+    if (source) writeLocalVersionBinding(source, latest, storage);
+    return {
+      source,
+      latest,
+      uploaded,
+      binding: null,
+      sent: result,
+      messageSent: true,
+      localOnly: false,
+      notice: OFFICE_SYNC_NOTICE,
+      nextFile: applyOfficeLatestVersion(file, source, latest),
+    };
+  }
+
   let binding = null;
   if (source) {
     const request = buildFileVersionBindingRequest(source, latest, topicId);
@@ -204,6 +240,7 @@ export async function performQuietOfficeSave({
     latest,
     uploaded,
     binding,
+    messageSent: false,
     localOnly: !source,
     notice: source ? OFFICE_UNSYNCED_NOTICE : OFFICE_LOCAL_SAVE_NOTICE,
     // Compare against the file the user actually opened. Replacing its key first would

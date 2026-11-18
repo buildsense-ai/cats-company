@@ -511,3 +511,86 @@
 }
 
 .office-preview-state.is-error { color: #b02a1f; }
+
+/* Write-to-document prompt. It asks for one optional sentence, so it stays small and
+   centred instead of taking over the panel. */
+.office-ask-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(16, 20, 28, .32);
+}
+
+.office-ask {
+  width: min(420px, calc(100% - 32px));
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(16, 20, 28, .22);
+  padding: 16px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.office-ask-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: #16181b;
+}
+
+.office-ask-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #6b7280;
+}
+
+.office-ask-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 72px;
+  border: 1px solid #dcdfe5;
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #16181b;
+  font-family: inherit;
+}
+
+.office-ask-input:focus {
+  outline: none;
+  border-color: #1f5eff;
+  box-shadow: 0 0 0 2px rgba(31, 94, 255, .14);
+}
+
+.office-ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.office-ask-actions .office-page-btn {
+  border: 1px solid #dcdfe5;
+  background: #fff;
+  color: #2c323d;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.office-ask-actions .office-save-btn {
+  border: 1px solid #1f5eff;
+  background: #1f5eff;
+  color: #fff;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}

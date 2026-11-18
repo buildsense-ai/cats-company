@@ -150,6 +150,8 @@ export default function OfficePreview({
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [editing, setEditing] = useState(false);
+  const [askOpen, setAskOpen] = useState(false);
+  const [askText, setAskText] = useState('');
   const [panelWidth, setPanelWidth] = useState(() => readOfficePanelWidth());
   const [pendingInherited, setPendingInherited] = useState(null);
   const [insertCount, setInsertCount] = useState(0);
@@ -218,13 +220,14 @@ export default function OfficePreview({
    * the topic. This function exists so every publish path reports the same way and clears the
    * pending marker only after the parent confirms the message landed.
    */
-  const publishBytes = useCallback(async (bytes, changes) => {
+  const publishBytes = useCallback(async (bytes, changes, requirement = '') => {
     if (!bytes || !onSave) return false;
     const result = await onSave({
       bytes,
       fileName: file?.name || 'presentation.pptx',
       slideCount: model?.slides?.length,
       changes: changes || [],
+      requirement,
     });
     return result || false;
   }, [file?.name, model, onSave]);
@@ -667,7 +670,7 @@ export default function OfficePreview({
   /* ---------- quiet save and explicit sync ---------- */
 
   /** Save every draft on every page, then publish only through the quiet save path. */
-  const handleSaveDraft = useCallback(async () => {
+  const handleSaveDraft = useCallback(async (requirement = '') => {
     if (!model || saving) return;
     const draftOps = buildDraftOps(model, draft);
     if (draftOps.length === 0 && !pendingBytesRef.current) {
@@ -720,24 +723,6 @@ export default function OfficePreview({
     }
   }, [adoptModel, buildDraftOps, draft, model, publishBytes, resetDraft, saving]);
 
-  const handleSync = useCallback(async () => {
-    if (saving || !latestVersion || !onSync) return;
-    setSaving(true);
-    setNotice('');
-    try {
-      const synced = await onSync({
-        latestVersion,
-        fileName: file?.name,
-        slideCount: model?.slides?.length,
-        changes: [],
-      });
-      setNotice(synced ? OFFICE_SYNC_NOTICE : '同步失败，请重试');
-    } catch (err) {
-      setNotice(`同步失败：${err.message}`);
-    } finally {
-      setSaving(false);
-    }
-  }, [file?.name, latestVersion, model, onSync, saving]);
 
   /* ---------- inherited geometry ---------- */
 
@@ -872,15 +857,37 @@ export default function OfficePreview({
 
         <span className="office-toolbar-spacer" />
         {dirty ? <span className="office-dirty">已修改</span> : null}
-        <button type="button" className="office-page-btn" data-office-sync=""
-          disabled={!latestVersion || saving || !onSync} onClick={handleSync}>
-          同步给小八
-        </button>
         <button type="button" className="office-save-btn" disabled={saving}
-          onClick={handleSaveDraft}>
+          onClick={() => { setAskText(''); setAskOpen(true); }}>
           {saving ? '写入中…' : '写入文档'}
         </button>
       </div>
+
+      {askOpen ? (
+        <div className="office-ask-backdrop" data-office-ask="">
+          <div className="office-ask" role="dialog" aria-modal="true" aria-label="写入文档">
+            <div className="office-ask-title">还有要一起发给小八的新要求吗？</div>
+            <p className="office-ask-hint">
+              写了就和小八说一声，它会拿着这一版继续改。留空则只保存，会话里不发消息。
+            </p>
+            <textarea className="office-ask-input" data-office-ask-input="" rows={4}
+              autoFocus value={askText} placeholder="例如：把第 3 页的标题改短一点"
+              onChange={event => setAskText(event.target.value)} />
+            <div className="office-ask-actions">
+              <button type="button" className="office-page-btn"
+                onClick={() => setAskOpen(false)}>取消</button>
+              <button type="button" className="office-save-btn" data-office-ask-confirm=""
+                onClick={() => {
+                  const requirement = askText.trim();
+                  setAskOpen(false);
+                  handleSaveDraft(requirement);
+                }}>
+                {askText.trim() ? '写入并发送' : '仅写入'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {notice ? <div className="office-preview-notice">{notice}</div> : null}
 
