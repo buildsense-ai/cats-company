@@ -13,8 +13,10 @@ import {
   Download,
   ExternalLink,
   FileText,
+  History,
   Image as ImageIcon,
   ListFilter,
+  MoreHorizontal,
   Plus,
   Share2,
   RefreshCw,
@@ -35,6 +37,7 @@ import useDialogBehavior from '../utils/use-dialog-behavior';
 import { previewFileDescriptor } from './chat-message';
 import PwaDownloadLink from './pwa-download-link';
 import LoadingState from './loading-state';
+import SlidingSegments from './sliding-segments';
 
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 const FILTER_POPOVER_GAP = 8;
@@ -175,6 +178,7 @@ export default function CloudArtifactsPanel({
   onGatewayAnnotationState,
   onStartAnnotation,
   onApplicationOpened,
+  onApplicationClosed,
   annotationCapture,
   onAnnotationSubmit,
   onAnnotationScreenshot,
@@ -187,14 +191,16 @@ export default function CloudArtifactsPanel({
   const normalizedInitialTab = ['active', 'deleted', 'files', 'gateway'].includes(initialTab)
     ? initialTab
     : 'files';
-  const safeInitialTab = !topicId && normalizedInitialTab === 'files' ? 'active' : normalizedInitialTab;
+  const defaultTab = topicId ? 'files' : 'gateway';
+  const safeInitialTab = !topicId && normalizedInitialTab === 'files' ? defaultTab : normalizedInitialTab;
   const [localTab, setLocalTab] = useState(safeInitialTab);
   const requestedTab = controlledTab ?? localTab;
-  const tab = !topicId && requestedTab === 'files' ? 'active' : requestedTab;
+  const tab = !topicId && requestedTab === 'files' ? defaultTab : requestedTab;
   const [artifacts, setArtifacts] = useState([]);
   const [files, setFiles] = useState([]);
   const [gatewayApps, setGatewayApps] = useState([]);
   const [gatewayPreview, setGatewayPreview] = useState(null);
+  const isGatewayPreviewOpen = tab === 'gateway' && Boolean(gatewayPreview);
   // Gateway exposes focus mode only while an app iframe is open. The other
   // cloud tabs are themselves workspace content and can always be expanded.
   const workspacePreviewActive = tab === 'gateway'
@@ -311,9 +317,33 @@ export default function CloudArtifactsPanel({
   const [confirmError, setConfirmError] = useState('');
   const [artifactScope, setArtifactScope] = useState('current');
   const requestSequenceRef = useRef(0);
+  const failedFilePageRef = useRef(null);
   const publishInputRef = useRef(null);
-  const tabsRef = useRef(null);
-  const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0 });
+  const headerRef = useRef(null);
+  const overflowRef = useRef(null);
+  const legacyReturnTabRef = useRef('gateway');
+
+  const closeToolbarMenu = useCallback((restoreFocus = false) => {
+    const menu = overflowRef.current;
+    if (!menu?.open) return;
+    menu.open = false;
+    if (restoreFocus) menu.querySelector('summary')?.focus();
+  }, []);
+
+  useEffect(() => {
+    closeToolbarMenu();
+    if (!isActive) return undefined;
+    const dismissOnOutsideClick = (event) => {
+      if (!overflowRef.current?.contains(event.target)) closeToolbarMenu();
+    };
+    const dismissOnBlur = () => closeToolbarMenu();
+    document.addEventListener('pointerdown', dismissOnOutsideClick);
+    window.addEventListener('blur', dismissOnBlur);
+    return () => {
+      document.removeEventListener('pointerdown', dismissOnOutsideClick);
+      window.removeEventListener('blur', dismissOnBlur);
+    };
+  }, [agentUid, closeToolbarMenu, isActive, tab, topicId, gatewayPreview?.id]);
 
   useEffect(() => {
     if (!copiedID) return undefined;
@@ -327,44 +357,46 @@ export default function CloudArtifactsPanel({
     return () => window.clearTimeout(timer);
   }, [copiedShareID]);
 
-  useLayoutEffect(() => {
-    const tabs = tabsRef.current;
-    const active = tabs?.querySelector('[aria-selected="true"]');
-    if (!active) return undefined;
-    const measure = () => {
-      const left = active.offsetLeft;
-      const width = active.offsetWidth;
-      setTabIndicator(previous => previous.left === left && previous.width === width
-        ? previous : { left, width });
-    };
-    measure();
-    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
-    observer?.observe(tabs);
-    observer?.observe(active);
-    window.addEventListener('resize', measure);
-    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
-  }, [tab, agentUid]);
+  const returnToGatewayList = () => {
+    retireGatewayOpen();
+    onGatewayFrameChange?.(null);
+    gatewayPreviewRef.current = null;
+    setGatewayPreview(null);
+    setGatewayAnnotationMode('off');
+    setGatewayAnnotationCapabilityNote('');
+    setError('');
+    onApplicationClosed?.();
+  };
+
+  const focusHeaderNavigation = () => {
+    window.requestAnimationFrame(() => {
+      const header = headerRef.current;
+      (header?.querySelector('[aria-selected="true"], .cloud-artifacts-gateway-heading > button')
+        || header?.querySelector('[aria-label="关闭侧栏"]'))?.focus({ preventScroll: true });
+    });
+  };
 
   const selectTab = (nextTab) => {
     // 「文件」依赖 topicId；'gateway'（应用）是跨域公共只读清单，两者互不影响。
     if (nextTab === 'files' && !topicId) return;
     if (tab === 'gateway' && nextTab !== 'gateway') {
-      retireGatewayOpen();
-      onGatewayFrameChange?.(null);
-      gatewayPreviewRef.current = null;
-      setGatewayPreview(null);
-      setGatewayAnnotationMode('off');
+      returnToGatewayList();
     }
     if (controlledTab == null) setLocalTab(nextTab);
     onTabChange?.(nextTab);
+    if (nextTab !== tab) focusHeaderNavigation();
   };
 
-  const loadContent = useCallback(async ({ append = false, beforeId = 0, beforeCreatedAt = '' } = {}) => {
+  const loadContent = useCallback(async ({ append = false, beforeId = 0, beforeCreatedAt = '', retry = false } = {}) => {
     const requestID = requestSequenceRef.current + 1;
     requestSequenceRef.current = requestID;
     const isCurrentRequest = () => requestSequenceRef.current === requestID;
+    const clearError = () => {
+      failedFilePageRef.current = null;
+      setError('');
+    };
     setLoading(true);
-    setError('');
+    if (!retry) clearError();
     try {
       if (tab === 'files') {
         if (!topicId) {
@@ -379,6 +411,7 @@ export default function CloudArtifactsPanel({
         if (beforeCreatedAt) fileRequest.beforeCreatedAt = beforeCreatedAt;
         const result = await api.getTopicFiles(topicId, fileRequest);
         if (!isCurrentRequest()) return;
+        if (retry) clearError();
         const nextFiles = Array.isArray(result?.files) ? result.files : [];
         setFiles((current) => sortFilesByTime(append ? [...current, ...nextFiles] : nextFiles));
         setFileCursor({
@@ -391,11 +424,13 @@ export default function CloudArtifactsPanel({
       if (tab === 'gateway') {
         const result = await api.listArtifactApps(agentUid);
         if (!isCurrentRequest()) return;
+        if (retry) clearError();
         setGatewayApps(Array.isArray(result?.apps) ? result.apps : []);
         return;
       }
       const result = await api.getCloudArtifacts(agentUid, tab);
       if (!isCurrentRequest()) return;
+      if (retry) clearError();
       setArtifacts(Array.isArray(result?.artifacts) ? result.artifacts : []);
       setViewerRelation(String(result?.viewer_relation || ''));
       setCanPublish(Boolean(result?.can_publish) && result?.publish_mode === 'immediate');
@@ -408,6 +443,9 @@ export default function CloudArtifactsPanel({
       });
     } catch (err) {
       if (!isCurrentRequest()) return;
+      if (tab === 'files' && append) {
+        failedFilePageRef.current = { append, beforeId, beforeCreatedAt };
+      }
       const fallbackText = tab === 'files'
         ? '聊天文件读取失败'
         : tab === 'gateway' ? '应用清单读取失败' : '成果读取失败';
@@ -564,11 +602,8 @@ export default function CloudArtifactsPanel({
       title: String(app.title || ''),
     });
     setGatewayAnnotationMode('off');
-    setGatewayAnnotationCapabilityNote(artifactOpenBindingUsable(openBinding)
-      ? '' : (!topicId && onStartAnnotation
-        ? '点击标注将创建新任务，评论会作为新任务的第一条消息。'
-        : '会话绑定不可用，标注已禁用，请在原会话重新打开应用'));
-  }, [agentUid, onGatewayFrameChange, onStartAnnotation, topicId, retireGatewayOpen]);
+    setGatewayAnnotationCapabilityNote('');
+  }, [agentUid, onGatewayFrameChange, topicId, retireGatewayOpen]);
 
   // The refresh action in the toolbar. While an application is open, "refresh"
   // has to mean "show me what the application serves now" — re-reading the
@@ -576,7 +611,7 @@ export default function CloudArtifactsPanel({
   // displaying the document it loaded first. Reopening remounts the frame (via its
   // key) and re-mints the launch binding, which is what a fresh entry into the
   // application does too. When no application is open, it refreshes the list.
-  const handleRefresh = useCallback(async () => {
+  const handleRefresh = useCallback(async ({ retry = false } = {}) => {
     const open = gatewayPreview;
     if (tab === 'gateway' && open) {
       // openGatewayApp treats a missing URL as a no-op, which on this path
@@ -586,8 +621,9 @@ export default function CloudArtifactsPanel({
         return;
       }
       if (gatewayRefreshing) return;
+      const sourceRequest = requestSequenceRef.current;
       setGatewayRefreshing(true);
-      setError('');
+      if (!retry) setError('');
       try {
         // Only the application is reloaded. Re-reading the catalogue here would use
         // the `tab` captured at click time, so switching tabs mid-refresh would let a
@@ -597,14 +633,17 @@ export default function CloudArtifactsPanel({
           // The user pressed refresh: remounting is the whole point.
           force: true,
         });
+        if (retry && requestSequenceRef.current === sourceRequest) setError('');
       } catch {
-        setError('应用刷新失败，请稍后重试（当前内容保持不变）');
+        if (requestSequenceRef.current === sourceRequest && gatewayPreviewRef.current === open) {
+          setError('应用刷新失败，请稍后重试（当前内容保持不变）');
+        }
       } finally {
         setGatewayRefreshing(false);
       }
       return;
     }
-    await loadContent();
+    await loadContent({ retry });
   }, [gatewayPreview, gatewayRefreshing, loadContent, openGatewayApp, tab]);
 
   // Unmount-only cleanup.
@@ -649,6 +688,7 @@ export default function CloudArtifactsPanel({
       if (annotationStartingRef.current) return;
       annotationStartingRef.current = true;
       setAnnotationStarting(true);
+      setGatewayAnnotationCapabilityNote('');
       const signal = gatewayPreview.bindingSignal;
       try {
         await onStartAnnotation(gatewayPreview, { signal });
@@ -658,6 +698,10 @@ export default function CloudArtifactsPanel({
         annotationStartingRef.current = false;
         setAnnotationStarting(false);
       }
+      return;
+    }
+    if (!artifactOpenBindingUsable(gatewayPreview?.openBinding)) {
+      setGatewayAnnotationCapabilityNote('会话绑定不可用，请在原会话重新打开应用后再批注。');
       return;
     }
     const mode = gatewayAnnotationMode === 'select' ? 'off' : 'select';
@@ -717,7 +761,11 @@ export default function CloudArtifactsPanel({
   }, [topicId]);
 
   useEffect(() => {
-    if (tab !== 'gateway' || !initialApp?.id || !initialApp?.url) return;
+    if (!initialApp) {
+      consumedInitialAppRef.current = null;
+      return;
+    }
+    if (tab !== 'gateway' || !initialApp.id || !initialApp.url) return;
     const consumed = consumedInitialAppRef.current;
     // Compare by identity of the application, not by object reference. The
     // parent rebuilds `initialApp` on every conversation switch, so a reference
@@ -758,7 +806,12 @@ export default function CloudArtifactsPanel({
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      if (!isActive || event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      if (overflowRef.current?.open) {
+        event.preventDefault();
+        closeToolbarMenu(true);
+        return;
+      }
       if (annotationCapture || gatewayAnnotationMode !== 'off') {
         event.preventDefault();
         onAnnotationCancel?.();
@@ -770,7 +823,7 @@ export default function CloudArtifactsPanel({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [confirmArtifact, confirmTag, onClose, annotationCapture, gatewayAnnotationMode, onAnnotationCancel, onGatewayAnnotationMode]);
+  }, [isActive, closeToolbarMenu, confirmArtifact, confirmTag, onClose, annotationCapture, gatewayAnnotationMode, onAnnotationCancel, onGatewayAnnotationMode]);
 
   const copyURL = async (artifact) => {
     try {
@@ -1019,7 +1072,7 @@ export default function CloudArtifactsPanel({
     : tab === 'files'
       ? '当前聊天还没有文件'
       : tab === 'gateway'
-        ? '应用清单暂时是空的'
+        ? '当前 Agent 暂无已发布的应用'
         : '回收站是空的';
   const visibleCount = tab === 'files'
     ? files.length
@@ -1030,6 +1083,46 @@ export default function CloudArtifactsPanel({
   const isOwner = viewerRelation === 'owner';
   const canManageTags = viewerRelation === 'owner' || viewerRelation === 'friend';
   const hasAgent = Number(agentUid || 0) > 0;
+  const gatewayTitle = gatewayPreview?.title || gatewayPreview?.id || '';
+  const showSectionTabs = !isGatewayPreviewOpen && !artifactTabSelected && Boolean(topicId) && hasAgent;
+  const sectionTabsId = React.useId();
+  const headerTitle = isGatewayPreviewOpen ? gatewayTitle : {
+    files: '文件', gateway: '应用', active: '旧版应用', deleted: '回收站',
+  }[tab];
+  const legacyReturnTab = topicId && legacyReturnTabRef.current === 'files' ? 'files' : 'gateway';
+  const backLabel = isGatewayPreviewOpen ? '返回应用列表'
+    : tab === 'deleted' ? '返回旧版应用'
+      : tab === 'active' ? (legacyReturnTab === 'files' ? '返回文件' : '返回应用列表') : '';
+  const startAnnotationTask = !topicId && Boolean(onStartAnnotation);
+  const annotationLabel = startAnnotationTask ? '新建任务并标注' : '批注应用';
+  const annotationToolbarNote = gatewayAnnotationCapabilityNote || (
+    gatewayAnnotationMode === 'select' && !annotationCapture
+      ? '点击元素或拖动画框，随后在选区旁写评论。Esc 退出。'
+      : ''
+  );
+  const filePageError = tab === 'files' && files.length > 0 && failedFilePageRef.current;
+  const retryPending = loading || gatewayRefreshing;
+  const recoveryNotice = error && (
+    <div
+      className={`cloud-artifacts-status error${visibleCount > 0 ? ' is-inline' : ''}${filePageError ? ' is-pagination' : ''}`}
+      role="alert"
+    >
+      <span>{error}</span>
+      <button
+        type="button"
+        className="cc-recovery-button"
+        aria-disabled={retryPending}
+        aria-busy={retryPending}
+        onClick={() => {
+          if (retryPending) return;
+          if (tab === 'gateway' && gatewayPreview) void handleRefresh({ retry: true });
+          else void loadContent({ ...failedFilePageRef.current, retry: true });
+        }}
+      >
+        {retryPending ? '重试中' : '重试'}
+      </button>
+    </div>
+  );
 
   const renderArtifact = (artifact) => (
     <article className="cloud-artifact-item" key={artifact.id}>
@@ -1147,63 +1240,40 @@ export default function CloudArtifactsPanel({
           aria-label="关闭云文件"
           onClick={onClose}
         />
-        <header className="cloud-artifacts-header">
-          <div ref={tabsRef} className="cloud-artifacts-tabs" role="tablist" aria-label="云文件">
-            <span className="cloud-artifacts-tab-indicator" aria-hidden="true"
-              style={{ width: tabIndicator.width, transform: `translateX(${tabIndicator.left}px)` }} />
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'files'}
-              className={tab === 'files' ? 'active' : ''}
-              disabled={!topicId}
-              title={topicId ? '当前会话文件' : '进入会话后查看文件'}
-              onClick={() => selectTab('files')}
-            >
-              文件
-            </button>
-            {hasAgent && (
-              <>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={artifactTabSelected}
-                  className={artifactTabSelected ? 'active' : ''}
-                  onClick={() => selectTab('active')}
-                >
-                  应用旧
+        <header ref={headerRef} className="cloud-artifacts-header">
+          {showSectionTabs ? (
+            <SlidingSegments className="cloud-artifacts-tabs" value={tab} keyboardTabs role="tablist" aria-label="云内容">
+              <button type="button" id={`${sectionTabsId}-files`} role="tab" aria-selected={tab === 'files'}
+                aria-controls={`${sectionTabsId}-content`} onClick={() => selectTab('files')}>文件</button>
+              <button type="button" id={`${sectionTabsId}-gateway`} role="tab" aria-selected={tab === 'gateway'}
+                aria-controls={`${sectionTabsId}-content`} onClick={() => selectTab('gateway')}>应用</button>
+            </SlidingSegments>
+          ) : (
+            <div className="cloud-artifacts-gateway-heading">
+              {backLabel && (
+                <button type="button" className="v3-tool" aria-label={backLabel} title={backLabel}
+                  onClick={isGatewayPreviewOpen ? () => {
+                    returnToGatewayList();
+                    focusHeaderNavigation();
+                  } : () => selectTab(tab === 'deleted' ? 'active' : legacyReturnTab)}>
+                  <ArrowLeft size={16} aria-hidden="true" />
                 </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={tab === 'gateway'}
-                  className={tab === 'gateway' ? 'active' : ''}
-                  onClick={() => selectTab('gateway')}
-                >
-                  应用
-                </button>
-              </>
-            )}
-          </div>
+              )}
+              <h2 className="cloud-artifacts-gateway-viewer-title" title={headerTitle}>{headerTitle}</h2>
+            </div>
+          )}
           <div className="cloud-artifacts-header-actions">
-            {workspacePreviewActive && onToggleWorkspaceFullscreen && (
-              <button className="cc-workspace-fullscreen-action" type="button"
-                aria-label={workspaceFullscreen ? `还原${workspaceFullscreenLabel}视图` : `全屏查看${workspaceFullscreenLabel}`}
-                title={workspaceFullscreen ? `还原${workspaceFullscreenLabel}视图（Esc）` : `全屏查看${workspaceFullscreenLabel}`}
-                aria-pressed={workspaceFullscreen} onClick={onToggleWorkspaceFullscreen}>
-                {workspaceFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-              </button>
-            )}
             {tab === 'active' && canPublish && (
               <>
                 <button
                   type="button"
+                  className="v3-tool"
                   onClick={() => publishInputRef.current?.click()}
                   disabled={Boolean(pendingID)}
                   aria-label="上传成果"
                   title="上传成果"
                 >
-                  <Upload size={18} className={pendingID === '__publish__' ? 'is-publishing' : ''} />
+                  <Upload size={16} aria-hidden="true" className={pendingID === '__publish__' ? 'is-publishing' : ''} />
                 </button>
                 <input
                   ref={publishInputRef}
@@ -1217,49 +1287,90 @@ export default function CloudArtifactsPanel({
               </>
             )}
             {tab === 'active' && isOwner && (
-              <button type="button" onClick={() => selectTab('deleted')} aria-label="打开回收站" title="回收站">
-                <Trash2 size={18} />
+              <button type="button" className="v3-tool" onClick={() => selectTab('deleted')} aria-label="打开回收站" title="回收站">
+                <Trash2 size={16} aria-hidden="true" />
               </button>
             )}
-            {tab === 'deleted' && (
-              <button type="button" onClick={() => selectTab('active')} aria-label="返回成果列表" title="返回成果">
-                <ArrowLeft size={18} />
-              </button>
-            )}
-            {tab === 'gateway' && gatewayPreview && (
+            {isGatewayPreviewOpen && (topicId || startAnnotationTask) && (
               <button
                 type="button"
-                className={`cloud-artifacts-annotation-toggle${gatewayAnnotationMode === 'select' ? ' is-active' : ''}`}
-                aria-label={!topicId && onStartAnnotation ? '新建任务并标注' : '批注应用'}
+                className={`v3-tool cloud-artifacts-annotation-toggle${gatewayAnnotationMode === 'select' ? ' is-active' : ''}`}
+                aria-label={annotationLabel}
                 aria-pressed={gatewayAnnotationMode === 'select'}
                 aria-busy={annotationStarting}
-                title={!topicId && onStartAnnotation
-                  ? (annotationStarting ? '正在创建任务…' : '新建任务并标注，评论将发送至新任务')
-                  : artifactOpenBindingUsable(gatewayPreview.openBinding)
-                    ? '点击选择元素，拖动画框；评论直接发送至原会话（Esc 退出）'
-                    : '会话绑定不可用，请在原会话重新打开应用'}
-                disabled={annotationStarting || (!artifactOpenBindingUsable(gatewayPreview.openBinding) && !(!topicId && onStartAnnotation))}
+                title={annotationStarting ? '正在创建任务…'
+                  : startAnnotationTask || artifactOpenBindingUsable(gatewayPreview.openBinding)
+                    ? annotationLabel : '查看批注限制'}
+                disabled={annotationStarting}
                 onClick={handleAnnotationModeSelect}
               >
-                <Pencil size={18} aria-hidden="true" />
+                <Pencil size={16} aria-hidden="true" />
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => handleRefresh()}
-              disabled={loading || gatewayRefreshing}
-              aria-label="刷新当前栏目"
-              title={tab === 'gateway' && gatewayPreview ? '重新加载应用' : '刷新'}
-            >
-              <RefreshCw size={18} className={loading || gatewayRefreshing ? 'is-spinning' : ''} />
-            </button>
-            <button type="button" onClick={onClose} aria-label="关闭云文件" title="关闭">
-              <X size={18} />
+            {workspacePreviewActive && onToggleWorkspaceFullscreen && (
+              <button className="v3-tool cc-workspace-fullscreen-action" type="button"
+                aria-label={workspaceFullscreen ? `还原${workspaceFullscreenLabel}视图` : `全屏查看${workspaceFullscreenLabel}`}
+                title={workspaceFullscreen ? `还原${workspaceFullscreenLabel}视图（Esc）` : `全屏查看${workspaceFullscreenLabel}`}
+                aria-pressed={workspaceFullscreen} onClick={onToggleWorkspaceFullscreen}>
+                {workspaceFullscreen ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
+              </button>
+            )}
+            {!isGatewayPreviewOpen && (
+              <button type="button" className="v3-tool" onClick={handleRefresh} disabled={loading} aria-label="刷新当前栏目" title="刷新当前栏目">
+                <RefreshCw size={16} aria-hidden="true" className={loading ? 'is-spinning' : ''} />
+              </button>
+            )}
+            {(isGatewayPreviewOpen || (hasAgent && !artifactTabSelected)) && (
+              <details ref={overflowRef} className="cloud-artifacts-overflow" onBlur={(event) => {
+                if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) closeToolbarMenu();
+              }}>
+                <summary className="v3-tool" aria-label="更多操作" title="更多操作">
+                  {isGatewayPreviewOpen && gatewayRefreshing
+                    ? <RefreshCw size={16} className="is-spinning" aria-hidden="true" />
+                    : <MoreHorizontal size={16} aria-hidden="true" />}
+                </summary>
+                <div className="cloud-artifacts-overflow-popover" role="group" aria-label="更多操作">
+                  {isGatewayPreviewOpen ? (
+                    <>
+                      <button type="button" disabled={gatewayRefreshing} onClick={() => {
+                        closeToolbarMenu(true);
+                        void handleRefresh();
+                      }}><RefreshCw size={16} aria-hidden="true" />刷新应用</button>
+                      <button type="button" aria-label={`在新页面打开 ${gatewayTitle}`} onClick={() => {
+                        closeToolbarMenu(true);
+                        openGatewayApp(gatewayPreview, 'window');
+                      }}><ExternalLink size={16} aria-hidden="true" />新页面打开</button>
+                    </>
+                  ) : (
+                    <button type="button" onClick={() => {
+                      closeToolbarMenu();
+                      legacyReturnTabRef.current = tab;
+                      selectTab('active');
+                    }}><History size={16} aria-hidden="true" />旧版应用</button>
+                  )}
+                </div>
+              </details>
+            )}
+            <button type="button" className="v3-tool" onClick={onClose} aria-label="关闭侧栏" title="关闭侧栏">
+              <X size={16} aria-hidden="true" />
             </button>
           </div>
+          {isGatewayPreviewOpen && annotationToolbarNote && (
+            <div className="cloud-artifacts-annotation-note">
+              <span role="status">{annotationToolbarNote}</span>
+              {gatewayAnnotationCapabilityNote && (
+                <button type="button" aria-label="关闭批注提示" onClick={() => setGatewayAnnotationCapabilityNote('')}>
+                  <X size={14} aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          )}
         </header>
 
-        <div data-loading-region="" className={`cloud-artifacts-body${loading && visibleCount === 0 ? ' is-loading' : ''}`}>
+        <div data-loading-region="" className={`cloud-artifacts-body${isGatewayPreviewOpen ? ' is-app-preview' : ''}${loading && !error && visibleCount === 0 ? ' is-loading' : ''}`}
+          id={showSectionTabs ? `${sectionTabsId}-content` : undefined}
+          role={showSectionTabs ? 'tabpanel' : undefined}
+          aria-labelledby={showSectionTabs ? `${sectionTabsId}-${tab}` : undefined}>
           {artifactTabSelected && tab !== 'deleted' && (
             <div className="cloud-artifacts-context-note">
               <div className="cloud-artifacts-context-copy">
@@ -1314,20 +1425,13 @@ export default function CloudArtifactsPanel({
               )}
             </div>
           )}
-          {loading && visibleCount === 0 && (
+          {loading && !error && visibleCount === 0 && (
             <LoadingState
               kind={tab === 'files' ? 'document' : 'apps'}
               label={tab === 'files' ? '正在读取文件' : tab === 'gateway' ? '正在读取应用' : '正在读取成果'}
             />
           )}
-          {!loading && error && (
-            <div className="cloud-artifacts-status error" role="alert">
-              <span>{error}</span>
-              <button type="button" onClick={() => (tab === 'gateway' && gatewayPreview
-                ? handleRefresh()
-                : loadContent())}>重试</button>
-            </div>
-          )}
+          {!filePageError && recoveryNotice}
           {!loading && !error && visibleCount === 0 && (
             <div className="cloud-artifacts-status">
               <span>{emptyText}</span>
@@ -1347,7 +1451,7 @@ export default function CloudArtifactsPanel({
                   />
                 ))}
               </div>
-              {fileHasMore && (
+              {filePageError ? recoveryNotice : fileHasMore && (
                 <button
                   type="button"
                   className="cloud-artifacts-load-more"
@@ -1364,41 +1468,7 @@ export default function CloudArtifactsPanel({
               className="cloud-artifacts-gateway-viewer"
               style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
             >
-              <div className="cloud-artifacts-gateway-viewer-bar">
-                <button
-                  type="button"
-                  onClick={() => {
-                    retireGatewayOpen();
-                    onGatewayFrameChange?.(null);
-                    gatewayPreviewRef.current = null;
-                    setGatewayPreview(null);
-                  }}
-                  aria-label="返回应用列表"
-                >
-                  返回
-                </button>
-                <span className="cloud-artifacts-gateway-viewer-title">
-                  {gatewayPreview.title || gatewayPreview.id}
-                </span>
-                <button
-                  type="button"
-                  aria-label={'在新页面打开 ' + (gatewayPreview.title || gatewayPreview.id || '')}
-                  onClick={() => openGatewayApp(gatewayPreview, 'window')}
-                >
-                  新页面打开
-                </button>
-              </div>
               {handoffState && <p className="cloud-artifacts-gateway-viewer-note" role="status">{HANDOFF_LABELS[handoffState]}</p>}
-              {gatewayAnnotationCapabilityNote && (
-                <p className="cloud-artifacts-gateway-viewer-note" role="status">
-                  {gatewayAnnotationCapabilityNote}
-                </p>
-              )}
-              {gatewayAnnotationMode !== 'off' && (
-                <p className="cloud-artifacts-gateway-annotation-hint" role="status">
-                  点击元素或拖动画框，随后在选区旁写评论并发送至原会话。Esc 退出。
-                </p>
-              )}
               {gatewayPreview.visitor && (
                 <p className="cloud-artifacts-gateway-viewer-note" role="status">
                   身份未附带，按访客打开
@@ -1450,16 +1520,6 @@ export default function CloudArtifactsPanel({
                 referrerPolicy="no-referrer"
                 style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}
               />
-            </div>
-          )}
-          {tab === 'gateway' && !gatewayPreview && gatewayApps.length === 0 && (
-            // An empty catalogue still renders the list container: "this Agent
-            // publishes no applications" is information, and a panel that
-            // renders nothing at all looks broken.
-            <div className="cloud-artifacts-list cloud-artifacts-list-empty">
-              <p className="cloud-artifacts-empty">
-                {loading ? '正在读取应用…' : (error || '这个 Agent 还没有发布应用。')}
-              </p>
             </div>
           )}
           {tab === 'gateway' && gatewayApps.length > 0

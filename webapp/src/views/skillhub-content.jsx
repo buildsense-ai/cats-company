@@ -222,7 +222,7 @@ function SkillNavigation(props) {
   return (
     <nav className='cc-skillhub-navigation' aria-label='Agent 能力视图'>
       <div className='cc-skillhub-tabs-actions'>
-        <SlidingSegments value={activeSection} className='cc-skillhub-tabs' role='tablist' aria-label='能力管理'>
+        <SlidingSegments value={activeSection} className='cc-skillhub-tabs' keyboardTabs role='tablist' aria-label='能力管理'>
           <button type='button' id='skillhub-added-tab' role='tab' aria-selected={activeSection === 'added'} aria-controls='skillhub-added-panel' className={activeSection === 'added' ? 'active' : ''} onClick={() => onChangeSection('added')}>
             能力总览 <span>{addedCount}</span>
           </button>

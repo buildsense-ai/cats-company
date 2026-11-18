@@ -1519,6 +1519,38 @@ html[data-theme="liquid"] .catsco-brand-mark {
   font-size: 14px;
 }
 
+.cc-recovery-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: calc(4em + 20px);
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-control-surface);
+  color: var(--cc-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: var(--cc-font-weight-medium);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cc-recovery-button:not(:disabled, [aria-disabled="true"]):hover {
+  background: var(--cc-secondary-action-bg-hover);
+  color: var(--cc-text);
+}
+.cc-recovery-button:not(:disabled, [aria-disabled="true"]):active {
+  background: var(--cc-secondary-action-bg-active);
+}
+.cc-recovery-button[aria-busy="true"] { cursor: wait; }
+.cc-new-task-agent-empty-action {
+  display: flex;
+  margin-inline: auto;
+}
+
 .cc-empty-composer-wrap {
   width: 100%;
   padding: 0;
@@ -4471,7 +4503,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
   transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
 }
 
-.v3-composer-box:focus-within {
+.v3-composer-box:focus-within:where(:not(:has(.cc-composer-agent-retry:focus))) {
   border-color: color-mix(in srgb, var(--cc-text) 2%, transparent);
   background-color: color-mix(in srgb, var(--cc-panel) 98%, white);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
@@ -4513,7 +4545,7 @@ html:not([data-theme="liquid"]) .v3-composer-box::before {
   transition: opacity 220ms ease;
 }
 
-html:not([data-theme="liquid"]) .v3-composer-box:focus-within::before {
+html:not([data-theme="liquid"]) .v3-composer-box:focus-within:where(:not(:has(.cc-composer-agent-retry:focus)))::before {
   opacity: 0.95;
   animation: cc-composer-metal-flow 8s linear infinite;
 }
@@ -5384,15 +5416,19 @@ html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
 .cc-confirm-submit.is-danger {
   border-color: transparent;
   background: color-mix(in srgb, var(--cc-danger) 16%, var(--cc-panel));
-  color: var(--cc-danger);
+  color: var(--cc-danger-text);
   box-shadow: none;
 }
 
 .cc-confirm-submit.is-danger:hover:not(:disabled) {
   border-color: transparent;
   background: color-mix(in srgb, var(--cc-danger) 24%, var(--cc-panel));
-  color: color-mix(in srgb, var(--cc-danger) 88%, var(--cc-text));
   box-shadow: none;
+  transform: none;
+}
+
+.cc-confirm-submit.is-danger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--cc-danger) 28%, var(--cc-panel));
 }
 
 @keyframes cc-confirm-enter {
@@ -11827,7 +11863,7 @@ html[data-theme="liquid"] .v3-composer-box {
   transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 120ms ease;
 }
 
-html[data-theme="liquid"] .v3-composer-box:focus-within {
+html[data-theme="liquid"] .v3-composer-box:focus-within:where(:not(:has(.cc-composer-agent-retry:focus))) {
   border-color: rgba(86, 98, 217, 0.42);
 }
 

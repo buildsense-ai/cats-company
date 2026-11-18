@@ -47,7 +47,7 @@ describe('restored green liquid theme', () => {
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-composer-input::placeholder\s*\{[^}]*color: var\(--cc-placeholder\);/,
     );
     expect(css).toMatch(
-      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-composer-box:focus-within\s*\{[^}]*border-color: color-mix\(in srgb, var\(--cc-text\) 58%, var\(--cc-liquid-edge\)\);[^}]*\}/,
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-composer-box:focus-within:where\(:not\(:has\(\.cc-composer-agent-retry:focus\)\)\)\s*\{[^}]*border-color: color-mix\(in srgb, var\(--cc-text\) 58%, var\(--cc-liquid-edge\)\);[^}]*\}/,
     );
     expect(css).toMatch(
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-custom-model-select-options\s*\{[^}]*background-color: #222425;[^}]*color: #ffffff;/,

@@ -95,7 +95,7 @@ html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-apps-page {
 
 .cc-apps-refresh:hover:not(:disabled),
 .cc-apps-back-button:hover,
-.cc-apps-viewer-external:hover,
+.cc-apps-viewer-external:hover:not(:disabled),
 .cc-app-card-external:hover:not(:disabled) {
   border-color: var(--cc-border-strong);
   background: var(--cc-hover);
@@ -112,6 +112,7 @@ html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-apps-page {
 }
 
 .cc-apps-refresh:disabled,
+.cc-apps-viewer-external:disabled,
 .cc-app-card-external:disabled {
   cursor: wait;
   opacity: 0.65;
@@ -606,12 +607,17 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
   color: var(--cc-danger-text, #f49a9a);
 }
 
-.cc-apps-state.is-error button {
-  border: 0;
-  background: transparent;
-  color: var(--cc-accent-text);
-  cursor: pointer;
-  font: inherit;
+.cc-apps-state.cc-apps-launch-error {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  justify-content: flex-start;
+  min-height: 0;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--cc-border);
+  border-radius: 8px;
+  background: var(--cc-panel);
 }
 
 .cc-apps-state.is-empty {

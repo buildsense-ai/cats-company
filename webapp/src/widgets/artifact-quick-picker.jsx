@@ -112,7 +112,7 @@ export default function ArtifactQuickPicker({ agentUid, topicId, onSelect, class
     onChoose?.();
   };
   const openFullPanel = () => {
-    onSelect?.({ initialTab: topicId ? 'files' : 'active' });
+    onSelect?.({ initialTab: topicId ? 'files' : 'gateway' });
     close();
     onChoose?.();
   };

@@ -516,7 +516,7 @@ describe('LocalAssistantBar model selector', () => {
     expect(button.disabled).toBe(false);
     await act(async () => button.click());
     expect(document.querySelector('[role="dialog"][aria-label="选择产物"]')).toBeNull();
-    expect(onOpenCloudArtifacts).toHaveBeenCalledWith({ initialTab: 'active' });
+    expect(onOpenCloudArtifacts).toHaveBeenCalledWith({ initialTab: 'gateway' });
 
     await renderBar({ onOpenCloudArtifacts: undefined });
     const unavailableButton = container.querySelector('button[aria-label="产物暂不可用"]');

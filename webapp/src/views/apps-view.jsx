@@ -125,7 +125,7 @@ function readFavorites(uid) {
   }
 }
 
-function AppCard({ app, agent, openingID, onOpen, onOpenWindow, onShare, shared, onEdit, favorite, onToggleFavorite }) {
+function AppCard({ app, agent, openingID, showOpeningStatus, onOpen, onOpenWindow, onShare, shared, onEdit, favorite, onToggleFavorite }) {
   const id = String(app?.id || app?.url || appTitle(app));
   const title = appTitle(app);
   const iconURL = appIconURL(app) || String(agent?.avatar_url || '').trim();
@@ -146,7 +146,7 @@ function AppCard({ app, agent, openingID, onOpen, onOpenWindow, onShare, shared,
         <span className="cc-app-card-footer">
           {updatedAt && <span className="cc-app-card-updated">更新于 {updatedAt}</span>}
         </span>
-        {openingID === String(app?.id || '') && <span className="cc-app-card-loading" role="status">正在打开…</span>}
+        {showOpeningStatus && openingID === String(app?.id || '') && <span className="cc-app-card-loading" role="status">正在打开…</span>}
       </button>
       <div className="cc-app-card-actions">
         <button type="button" className="cc-app-card-favorite" aria-pressed={favorite} onClick={() => onToggleFavorite(app)} aria-label={`${favorite ? '取消收藏' : '收藏'} ${title}`} title={favorite ? '取消收藏' : '收藏'}>
@@ -194,7 +194,7 @@ export default function AppsView(props) {
   return <AppsViewSession key={String(props.user?.uid || '')} {...props} />;
 }
 
-function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
+function AppsViewSession({ user = null, viewStateRef }) {
   const userUID = String(user?.uid || '');
   const cachedView = useRef(viewStateRef?.current?.uid === userUID ? viewStateRef.current : null).current;
   const [agents, setAgents] = useState(() => cachedView?.agents || []);
@@ -209,6 +209,7 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
   const [error, setError] = useState('');
   const [selectedApp, setSelectedApp] = useState(null);
   const [openingID, setOpeningID] = useState('');
+  const [launchFailure, setLaunchFailure] = useState(null);
   const [manageableOnly, setManageableOnly] = useState(() => Boolean(cachedView?.manageableOnly));
   const [favoritesOnly, setFavoritesOnly] = useState(() => Boolean(cachedView?.favoritesOnly));
   const [query, setQuery] = useState(() => cachedView?.query || '');
@@ -406,37 +407,57 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
     ? `已加载 ${resolvedAgentCount} 个 Agent，正在读取 ${loadingAgentCount} 个`
     : '';
 
-  const { requestDetach, dialog: detachDialog } = useDetachSessionConfirm();
+  const { requestDetach, dialog: detachDialog } = useDetachSessionConfirm({
+    message: '当前页面会保留。',
+  });
 
   const openApp = useCallback(async (app, target = 'viewer') => {
     if (!app?.id || !app?.url) return;
     const requestID = ++launchRequestRef.current;
     const id = String(app.id);
     setOpeningID(id);
-    let viewerURL = app.url;
+    setLaunchFailure(current => current && appKey(current.app) === appKey(app)
+      && current.target === target ? current : null);
+    let viewerURL;
     try {
-      const launch = await api.requestArtifactLaunch({ app: id, topic_id: topicId });
-      if (launch?.launch_url) viewerURL = launch.launch_url;
+      const launch = await api.requestArtifactLaunch({ app: id });
+      viewerURL = launch?.launch_url;
     } catch {
-      // A public app can still open as a guest when the launch handoff fails.
+      // Keep the catalogue or current preview available so the user can retry.
     }
     if (requestID !== launchRequestRef.current) return;
     setOpeningID('');
+    if (!viewerURL) {
+      setLaunchFailure({ app, target });
+      return;
+    }
+    setLaunchFailure(null);
     if (target === 'window') {
-      // The launched URL carries the conversation binding; the app's own
-      // address does not. Say so before the tab is opened.
       requestDetach(app, () => window.open(viewerURL, '_blank', 'noopener,noreferrer'));
       return;
     }
     rememberListScroll();
     setSelectedApp({ ...app, viewerURL });
-  }, [topicId, rememberListScroll, requestDetach]);
+  }, [rememberListScroll, requestDetach]);
 
   const returnToList = () => {
     launchRequestRef.current += 1;
     setOpeningID('');
+    setLaunchFailure(null);
     setSelectedApp(null);
   };
+
+  const launchNotice = launchFailure && (
+    <div className="cc-apps-state is-error cc-apps-launch-error">
+      <span role="alert">暂时无法打开「{appTitle(launchFailure.app)}」。</span>
+      <button type="button" className="cc-recovery-button"
+        aria-disabled={Boolean(openingID) || undefined}
+        aria-busy={Boolean(openingID) || undefined}
+        onClick={() => { if (!openingID) void openApp(launchFailure.app, launchFailure.target); }}>
+        {openingID ? '打开中' : '重试打开'}
+      </button>
+    </div>
+  );
 
   const pageTitle = useMemo(() => selectedApp
     ? appTitle(selectedApp)
@@ -450,11 +471,12 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
             <ArrowLeft size={17} aria-hidden="true" /><span>返回应用</span>
           </button>
           <div className="cc-apps-viewer-title" title={pageTitle}>{pageTitle}</div>
-          <button type="button" className="cc-apps-viewer-external" onClick={() => openApp(selectedApp, 'window')}>
+          <button type="button" className="cc-apps-viewer-external" disabled={Boolean(openingID)} onClick={() => openApp(selectedApp, 'window')}>
             <ExternalLink size={16} aria-hidden="true" /><span>新页面打开</span>
           </button>
         </div>
-        <iframe className="cc-apps-viewer-frame" src={selectedApp.viewerURL || selectedApp.url} title={pageTitle} sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals allow-downloads" referrerPolicy="no-referrer" />
+        {launchNotice}
+        <iframe className="cc-apps-viewer-frame" src={selectedApp.viewerURL} title={pageTitle} sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals allow-downloads" referrerPolicy="no-referrer" />
         {detachDialog}
       </section>
     );
@@ -509,11 +531,12 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
       {loading && <span className="cc-apps-loading-announcement" role="status">{loadingSummary || '正在加载共享应用…'}</span>}
       {loading && loadingSummary && <div className="cc-apps-loading-progress" aria-hidden="true">{loadingSummary}</div>}
       {loading && !hasLoaded && resolvedAgentCount === 0 && <div className="cc-apps-initial-loading">{showLoadingMotion && <LoadingState kind="apps" label="正在读取应用" announce={false} />}</div>}
-      {!loading && listError && <div className="cc-apps-state is-error" role="alert"><span>{listError}</span><button type="button" onClick={loadApps}>重试</button></div>}
+      {!loading && listError && <div className="cc-apps-state is-error" role="alert"><span>{listError}</span><button type="button" className="cc-recovery-button" onClick={loadApps}>重试</button></div>}
       {!loading && !listError && visibleApps.length === 0 && <div className="cc-apps-state is-empty"><AppWindow size={24} aria-hidden="true" /><strong>{emptyTitle}</strong><span>{emptyCopy}</span></div>}
+      {launchNotice}
       {visibleApps.length > 0 && (
         <div className="cc-apps-grid cc-apps-results">
-          {visibleApps.map((app) => <AppCard key={appKey(app)} app={app} agent={app.sourceAgent} openingID={openingID} onOpen={openApp} onOpenWindow={(nextApp) => openApp(nextApp, 'window')} onShare={shareApp} shared={sharedAppKey === appKey(app)} onEdit={setEditingApp} favorite={favoriteKeys.includes(appKey(app))} onToggleFavorite={toggleFavorite} />)}
+          {visibleApps.map((app) => <AppCard key={appKey(app)} app={app} agent={app.sourceAgent} openingID={openingID} showOpeningStatus={!launchFailure} onOpen={openApp} onOpenWindow={(nextApp) => openApp(nextApp, 'window')} onShare={shareApp} shared={sharedAppKey === appKey(app)} onEdit={setEditingApp} favorite={favoriteKeys.includes(appKey(app))} onToggleFavorite={toggleFavorite} />)}
         </div>
       )}
       {editingApp && <AppMetadataEditor key={`${user?.uid}:${editingApp.id}`} app={editingApp} onClose={() => setEditingApp(null)} onSaved={(updated) => {

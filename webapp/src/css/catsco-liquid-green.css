@@ -301,7 +301,7 @@ html[data-theme="liquid"][data-liquid-variant="green"] .v3-composer-box {
   transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 120ms ease;
 }
 
-html[data-theme="liquid"][data-liquid-variant="green"] .v3-composer-box:focus-within {
+html[data-theme="liquid"][data-liquid-variant="green"] .v3-composer-box:focus-within:where(:not(:has(.cc-composer-agent-retry:focus))) {
   border-color: color-mix(in srgb, var(--cc-text) 58%, var(--cc-liquid-edge));
 }
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { CircleAlert, FileText, Image, Smartphone, X } from 'lucide-react';
+import { CircleAlert, FileText, Image, Plus, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import { readLastTaskAgent, rememberLastTaskAgent } from '../utils/agent-task-topic';
@@ -38,6 +38,18 @@ const PHONE_UPLOAD_POLL_INTERVAL_MS = 2000;
 const AGENT_WHEEL_ROW_HEIGHT = 28;
 const AGENT_WHEEL_TOUCHPAD_STEP_PX = 68;
 const AGENT_WHEEL_GESTURE_GAP_MS = 180;
+const AGENT_PREFERENCE_TIMEOUT_MS = 700;
+const AGENT_ROSTER_TIMEOUT_MS = 10_000;
+
+async function readOptionalAgentPreference(request) {
+  let timer;
+  const fallback = new Promise(resolve => { timer = setTimeout(resolve, AGENT_PREFERENCE_TIMEOUT_MS, null); });
+  try {
+    return await Promise.race([request.catch(() => null), fallback]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function agentWheelAppearance(distance, pixelOffset = 0) {
   const limitedDistance = Math.max(-2, Math.min(2, distance));
@@ -116,7 +128,7 @@ export default function EmptyTaskComposer({
   const initialAgentId = agentKey(initialAgent);
   const [agents, setAgents] = useState(() => initialAgentId ? [initialAgent] : []);
   const [agentsLoading, setAgentsLoading] = useState(true);
-  const [agentsError, setAgentsError] = useState('');
+  const [agentsError, setAgentsError] = useState(null);
   const [selectedAgentId, setSelectedAgentId] = useState(initialAgentId);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState(initialDraftAttachments);
@@ -140,6 +152,8 @@ export default function EmptyTaskComposer({
   const inputValueRef = useRef(initialDraftInput);
   const initialAgentRef = useRef(initialAgent);
   const agentsRef = useRef(initialAgentId ? [initialAgent] : []);
+  const agentLoadRef = useRef(null);
+  const rosterLoadedRef = useRef(false);
   const selectedAgentIdRef = useRef(initialAgentId);
   const pendingAttachmentsRef = useRef(initialDraftAttachments);
   const dragDepthRef = useRef(0);
@@ -483,80 +497,97 @@ export default function EmptyTaskComposer({
     return true;
   }, [composerDraftStore, normalizedDraftKey, persistAttachmentDraft, revisionStore]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadAgents = async () => {
-      if (!cancelled && mountedRef.current) {
-        setAgentsLoading(true);
-        setAgentsError('');
-      }
-      try {
-        const [response, taskHistory] = await Promise.all([
-          api.getAgents(),
-          userId && api.getGroups ? api.getGroups().catch(() => null) : Promise.resolve(null),
-        ]);
-        if (cancelled || !mountedRef.current) return;
-        let nextAgents = Array.isArray(response?.agents) ? response.agents : [];
-        // Older servers omit selection metadata. Their bot roster still knows
-        // which owned assistants are cloud-hosted, so use those facts meanwhile.
-        if (nextAgents.some((agent) => typeof agent.is_cloud !== 'boolean')) {
-          const botsResponse = api.getMyBots ? await api.getMyBots().catch(() => null) : null;
-          if (cancelled || !mountedRef.current) return;
-          const botsByKey = new Map((botsResponse?.bots || []).map((bot) => [agentKey(bot), bot]));
-          nextAgents = nextAgents.map((agent) => {
-            const bot = botsByKey.get(agentKey(agent));
-            if (!bot) return agent;
-            return {
-              ...agent,
-              tenant_name: bot.tenant_name,
-              added_at: agent.added_at || (agent.relation === 'owner' ? bot.created_at : undefined),
-            };
-          });
-        }
-        nextAgents = sortAgentsForNewTask(nextAgents);
-        const lastTaskAgentId = readLastTaskAgent(userId, taskHistory?.groups);
-        const lastCloudAgent = nextAgents.find((agent) => agentKey(agent) === lastTaskAgentId
-          && isRemoteTaskAgent(agent));
-        const preferredAgent = initialAgentRef.current;
-        const preferredKey = agentKey(preferredAgent);
-        if (preferredKey && !nextAgents.some((agent) => agentKey(agent) === preferredKey)) {
-          nextAgents = [preferredAgent, ...nextAgents];
-        }
-        agentsRef.current = nextAgents;
-        setAgents(nextAgents);
-        // A successful roster read does not prove upload authentication recovered.
-        setSelectedAgentId((current) => {
-          const currentKey = String(current || '');
-          const currentExists = nextAgents.some((agent) => agentKey(agent) === currentKey);
-          const preferredExists = nextAgents.some((agent) => agentKey(agent) === preferredKey);
-          const nextKey = currentExists
-            ? currentKey
-            : (preferredExists ? preferredKey : agentKey(lastCloudAgent || nextAgents[0]));
-          selectedAgentIdRef.current = nextKey;
-          return nextKey;
+  const loadAgents = useCallback(async () => {
+    agentLoadRef.current?.abort();
+    const controller = new AbortController();
+    agentLoadRef.current = controller;
+    const { signal } = controller;
+    const isCurrent = () => !signal.aborted && mountedRef.current;
+    const preferenceRequest = { signal, timeoutMs: AGENT_PREFERENCE_TIMEOUT_MS };
+    setAgentsLoading(true);
+    try {
+      // History only decides the initial preference. Bound its latency so it
+      // cannot hold an available roster and the send button indefinitely.
+      const accountHistory = userId && !selectedAgentIdRef.current && api.getGroups
+        ? readOptionalAgentPreference(api.getGroups(preferenceRequest)) : null;
+      const [response, taskHistory] = await Promise.all([
+        api.getAgents({ signal, timeoutMs: AGENT_ROSTER_TIMEOUT_MS }),
+        accountHistory,
+      ]);
+      if (!isCurrent()) return;
+      let nextAgents = Array.isArray(response?.agents) ? response.agents : [];
+      // Older servers omit selection metadata. Their bot roster still knows
+      // which owned assistants are cloud-hosted, so use those facts meanwhile.
+      if (nextAgents.some((agent) => typeof agent.is_cloud !== 'boolean')) {
+        const botsResponse = api.getMyBots ? await readOptionalAgentPreference(api.getMyBots(preferenceRequest)) : null;
+        if (!isCurrent()) return;
+        const botsByKey = new Map((botsResponse?.bots || []).map((bot) => [agentKey(bot), bot]));
+        nextAgents = nextAgents.map((agent) => {
+          const bot = botsByKey.get(agentKey(agent));
+          if (!bot) return agent;
+          return {
+            ...agent,
+            tenant_name: bot.tenant_name,
+            added_at: agent.added_at || (agent.relation === 'owner' ? bot.created_at : undefined),
+          };
         });
-      } catch (error) {
-        if (cancelled || !mountedRef.current) return;
+      }
+      nextAgents = sortAgentsForNewTask(nextAgents);
+      const lastTaskAgentId = readLastTaskAgent(userId, taskHistory?.groups);
+      const lastCloudAgent = nextAgents.find((agent) => agentKey(agent) === lastTaskAgentId
+        && isRemoteTaskAgent(agent));
+      const preferredAgent = initialAgentRef.current;
+      const preferredKey = agentKey(preferredAgent);
+      if (preferredKey && !nextAgents.some((agent) => agentKey(agent) === preferredKey)) {
+        nextAgents = [preferredAgent, ...nextAgents];
+      }
+      rosterLoadedRef.current = true;
+      agentsRef.current = nextAgents;
+      setAgents(nextAgents);
+      setAgentsError(null);
+      // A successful roster read does not prove upload authentication recovered.
+      setSelectedAgentId((current) => {
+        const currentKey = String(current || '');
+        const currentExists = nextAgents.some((agent) => agentKey(agent) === currentKey);
+        const preferredExists = nextAgents.some((agent) => agentKey(agent) === preferredKey);
+        const nextKey = currentExists
+          ? currentKey
+          : (preferredExists ? preferredKey : agentKey(lastCloudAgent || nextAgents[0]));
+        selectedAgentIdRef.current = nextKey;
+        return nextKey;
+      });
+    } catch (error) {
+      if (!isCurrent()) return;
+      const authFailure = isAuthenticationError(error);
+      const accessDenied = Number(error?.status) === 403;
+      const retryable = !authFailure && !accessDenied;
+      const keepRoster = retryable && rosterLoadedRef.current && agentsRef.current.length > 0;
+      if (!keepRoster) {
+        rosterLoadedRef.current = false;
         agentsRef.current = [];
         setAgents([]);
         selectedAgentIdRef.current = '';
         setSelectedAgentId('');
-        setAgentsError(isAuthenticationError(error)
-          ? AUTHENTICATION_MESSAGE
-          : error?.message || '助手列表加载失败，请稍后重试。');
-      } finally {
-        if (!cancelled && mountedRef.current) setAgentsLoading(false);
       }
-    };
+      setAgentsError({
+        message: authFailure ? AUTHENTICATION_MESSAGE : keepRoster
+          ? '助手列表暂时无法刷新，仍可使用已加载的助手。'
+          : error?.message || '助手列表加载失败，请稍后重试。',
+        retryable,
+      });
+    } finally {
+      if (isCurrent()) setAgentsLoading(false);
+    }
+  }, [userId]);
 
-    loadAgents();
+  useEffect(() => {
+    void loadAgents();
     window.addEventListener('cc:data-changed', loadAgents);
     return () => {
-      cancelled = true;
+      agentLoadRef.current?.abort();
       window.removeEventListener('cc:data-changed', loadAgents);
     };
-  }, []);
+  }, [loadAgents]);
 
   const selectedAgent = useMemo(
     () => agents.find((agent) => agentKey(agent) === String(selectedAgentId || '')) || null,
@@ -1018,6 +1049,7 @@ export default function EmptyTaskComposer({
   );
 
   const selectedAgentIndex = agents.findIndex((agent) => agentKey(agent) === String(selectedAgentId || ''));
+  const showAgentWheel = agents.length > 0 || (agentsLoading && !agentsError);
   const agentSelector = (
     <section
       className="cc-new-task-agent-selector"
@@ -1025,12 +1057,12 @@ export default function EmptyTaskComposer({
       style={{ '--cc-agent-wheel-row-height': `${AGENT_WHEEL_ROW_HEIGHT}px` }}
     >
       <div className="cc-new-task-agent-wheel" data-busy={isSubmitting || undefined}>
-        <div className="cc-new-task-agent-wheel-focus" aria-hidden="true" />
+        {showAgentWheel && <div className="cc-new-task-agent-wheel-focus" aria-hidden="true" />}
       <div
         ref={agentScrollRef}
         className="cc-new-task-agent-scroll"
-        role="radiogroup"
-        aria-label="任务助手"
+        role={agents.length > 0 ? 'radiogroup' : undefined}
+        aria-label={agents.length > 0 ? '任务助手' : undefined}
         aria-busy={agentsLoading}
         onScroll={(event) => {
           if (isSubmitting || agents.length === 0 || agentWheelFrameRef.current !== null) return;
@@ -1056,11 +1088,18 @@ export default function EmptyTaskComposer({
           event.currentTarget.querySelectorAll('[role="radio"]')[next]?.focus();
         }}
       >
-      {agents.length === 0 ? (
+      {agents.length === 0 && agentsLoading && !agentsError && (
         <div className="cc-new-task-agent-scroll-empty" role="status">
-          {agentsLoading ? '正在加载助手…' : '暂无可用助手'}
+          正在加载助手…
         </div>
-      ) : agents.map((agent, index) => {
+      )}
+      {agents.length === 0 && !agentsLoading && !agentsError && (
+        <button type="button" className="cc-recovery-button cc-new-task-agent-empty-action"
+          onClick={() => window.dispatchEvent(new Event('cc:open-add-assistant'))}>
+          <Plus size={14} aria-hidden="true" />添加助手
+        </button>
+      )}
+      {agents.map((agent, index) => {
         const key = agentKey(agent);
         const name = agent.display_name || agent.username || 'Agent';
         const selected = key === String(selectedAgentId || '');
@@ -1096,13 +1135,21 @@ export default function EmptyTaskComposer({
   const uploadAuthenticationFailed = attachmentStatus?.kind === 'authentication';
   const composerErrorNotice = uploadAuthenticationFailed
     ? UPLOAD_AUTHENTICATION_MESSAGE
-    : agents.length === 0 ? agentsError : '';
+    : agentsError?.message;
   const notices = (
     <>
       {composerErrorNotice && (
         <div className="v3-live-input-status v3-live-input-status-error v3-composer-agent-error" role="status">
           <CircleAlert size={14} aria-hidden="true" />
           <span>{composerErrorNotice}</span>
+          {!uploadAuthenticationFailed && agentsError?.retryable && (
+            <button type="button" className="cc-recovery-button cc-composer-agent-retry"
+              aria-disabled={agentsLoading || undefined}
+              aria-busy={agentsLoading || undefined}
+              onClick={() => { if (!agentsLoading) void loadAgents(); }}>
+              {agentsLoading ? '重试中' : '重试'}
+            </button>
+          )}
         </div>
       )}
       {!uploadAuthenticationFailed && (attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (

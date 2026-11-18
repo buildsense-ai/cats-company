@@ -1,7 +1,7 @@
 import React, { forwardRef, useImperativeHandle, useLayoutEffect, useRef } from 'react';
 import './sliding-segments.css';
 
-const SlidingSegments = forwardRef(function SlidingSegments({ children, className = '', value, ...props }, forwardedRef) {
+const SlidingSegments = forwardRef(function SlidingSegments({ children, className = '', value, keyboardTabs = false, onKeyDown, ...props }, forwardedRef) {
   const containerRef = useRef(null);
   const indicatorRef = useRef(null);
   useImperativeHandle(forwardedRef, () => containerRef.current);
@@ -33,10 +33,30 @@ const SlidingSegments = forwardRef(function SlidingSegments({ children, classNam
     };
   }, [children, value]);
 
+  const handleKeyDown = (event) => {
+    onKeyDown?.(event);
+    if (event.defaultPrevented || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const tabs = [...event.currentTarget.querySelectorAll('button[role="tab"]:not(:disabled)')];
+    const index = tabs.indexOf(event.target);
+    if (index < 0) return;
+
+    const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+      : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    event.preventDefault();
+    tabs[nextIndex].focus();
+    if (nextIndex !== index) tabs[nextIndex].click();
+  };
+
+  const items = keyboardTabs ? React.Children.map(children, child => (
+    React.isValidElement(child) && child.props.role === 'tab'
+      ? React.cloneElement(child, { tabIndex: child.props['aria-selected'] ? 0 : -1 })
+      : child
+  )) : children;
+
   return (
-    <div {...props} ref={containerRef} className={`cc-sliding-segments ${className}`}>
+    <div {...props} onKeyDown={keyboardTabs ? handleKeyDown : onKeyDown} ref={containerRef} className={`cc-sliding-segments ${className}`}>
       <span ref={indicatorRef} className="cc-segment-indicator" aria-hidden="true" />
-      {children}
+      {items}
     </div>
   );
 });
