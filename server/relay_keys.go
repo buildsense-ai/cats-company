@@ -110,10 +110,37 @@ type relayUsageSummary struct {
 	Status           string  `json:"status"`
 	ResetDuration    string  `json:"reset_duration,omitempty"`
 	LastReset        string  `json:"last_reset,omitempty"`
-	UsedCNY          float64 `json:"-"`
-	LimitCNY         float64 `json:"-"`
-	RemainingCNY     float64 `json:"-"`
+	// BillingMode 只在实际按 credit 账本计费时为 "credits"；此时百分比、超额
+	// 状态和旧额度周期都不下发，前端显示「使用账户点数」。余额本身仍由
+	// /api/relay/credits 面板负责，这里不重复展示。
+	BillingMode  string  `json:"billing_mode,omitempty"`
+	UsedCNY      float64 `json:"-"`
+	LimitCNY     float64 `json:"-"`
+	RemainingCNY float64 `json:"-"`
 }
+// MarshalJSON 让 credits 模式的摘要不下发旧额度字段。percent/remaining_percent
+// 是没有 omitempty 的 float64（legacy 真正的 0% 必须照常下发），所以只能在
+// credits 模式下换一份线上形状：这两个 0 会被前端当成「额度已用完」。
+func (s relayUsageSummary) MarshalJSON() ([]byte, error) {
+	type legacySummary relayUsageSummary
+	if s.BillingMode != botModelBillingModeCredits {
+		return json.Marshal(legacySummary(s))
+	}
+	return json.Marshal(struct {
+		Source      string `json:"source,omitempty"`
+		Model       string `json:"model"`
+		Provider    string `json:"provider,omitempty"`
+		Status      string `json:"status"`
+		BillingMode string `json:"billing_mode,omitempty"`
+	}{
+		Source:      s.Source,
+		Model:       s.Model,
+		Provider:    s.Provider,
+		Status:      s.Status,
+		BillingMode: s.BillingMode,
+	})
+}
+
 
 func NewRelayKeyHandlerFromEnv() *RelayKeyHandler {
 	return &RelayKeyHandler{admin: NewRelayAdminClientFromEnv()}
@@ -272,6 +299,26 @@ func (h *RelayKeyHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if scope != "total" {
+		if model == "" {
+			model = relayEnv("CATS_RELAY_DEFAULT_MODEL", "MiniMax-M2.7")
+		}
+		switch relayBillingModeFor(r.Context(), h.commercialStore, uid, model) {
+		case relayBillingCredits:
+			// 实际按 credit 账本计费的模型没有旧额度百分比可言：只报「使用账户
+			// 点数」，不去读 relay 的旧预算，也不会显示超额。余额在 credit 面板展示。
+			writeJSON(w, http.StatusOK, relayUsageResponse{
+				Configured: true,
+				Summary:    relayCreditUsageSummary(model),
+			})
+			return
+		case relayBillingUnknown:
+			// 计费资格或旧权益读不出来时不能回落旧额度百分比：宁可报「额度未同步」
+			// （不下发 summary），也不能把一个可能不属于这个模型的额度发给前端。
+			writeJSON(w, http.StatusOK, relayUsageResponse{Configured: false})
+			return
+		}
+	}
 	if h.admin == nil {
 		writeJSON(w, http.StatusOK, relayUsageResponse{Configured: false})
 		return
@@ -298,9 +345,6 @@ func (h *RelayKeyHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, buildRelayTotalUsageResponse(user, commercialSummary))
 		return
-	}
-	if model == "" {
-		model = relayEnv("CATS_RELAY_DEFAULT_MODEL", "MiniMax-M2.7")
 	}
 	if h.commercialQuotaEnforced(uid) {
 		summary, summaryErr := h.commercialStore.GetCommercialSummary(uid)
@@ -332,6 +376,67 @@ func commercialSummaryHasQuota(summary *types.CommercialSummary) bool {
 		}
 	}
 	return false
+}
+
+// relayBillingMode 是「这个模型的额度该怎么说」的三态结果。Unknown 专门用来
+// 表达「读不到、不能确定」：这种情况下任何额度数字都是编的，调用方必须什么都不
+// 报，而不是回落到旧额度百分比。
+type relayBillingMode int
+
+const (
+	relayBillingLegacy  relayBillingMode = iota // 沿用旧模型额度（含没有 credit 资格读取面的老部署）
+	relayBillingCredits                         // 实际按 credit 账本计费
+	relayBillingUnknown                         // 计费资格或旧权益读取失败
+)
+
+// relayBillingModeFor 判定某个模型此刻按什么计费。判定直接复用 credit 资格的
+// 既有规则（见 bot_model_config.go 的 botModelCreditPermission）：
+//   - 身份只认存储给的 enabled（套餐过期/退订仍是 credit 身份）；
+//   - 模型必须落在 credit 计价范围内（目前只有 DeepSeek Flash）；
+//   - 与当前有效的旧模型权益重叠时旧额度优先，和模型目录一致。
+//
+// 余额、档位和套餐名字都不参与判定：零余额的 credit 账户依然是点数模式，
+// 不能因为「余额看着还有额度」就回落到旧额度百分比。
+//
+// 旧权益摘要只在模型确实是 credit 计价候选时才读：其它模型既不需要它判定，
+// 也不该为此多打一次存储。读失败时不会把「读不到」当成「没有旧权益」，而是
+// 返回 Unknown，让调用方不报额度。
+func relayBillingModeFor(ctx context.Context, store commercialQuotaSummaryStore, uid int64, model string) relayBillingMode {
+	if store == nil || uid <= 0 || strings.TrimSpace(model) == "" {
+		return relayBillingLegacy
+	}
+	reader, ok := store.(ModelCreditEligibilityReader)
+	if !ok || reader == nil {
+		// 只有套餐摘要、没有资格读取面的存储（老部署或测试替身）保持原行为。
+		return relayBillingLegacy
+	}
+	permission := botModelCreditPermission{known: true, enabled: true}
+	if !permission.coversModel(model) {
+		return relayBillingLegacy
+	}
+	enabled, _, _, eligibilityErr := reader.GetModelCreditEligibility(ctx, uid)
+	if eligibilityErr == nil && !enabled {
+		return relayBillingLegacy
+	}
+	summary, summaryErr := readLegacyModelSummary(store, uid)
+	if legacyQuotaModelAllowed(summary, model) {
+		return relayBillingLegacy
+	}
+	if eligibilityErr != nil || summaryErr != nil {
+		return relayBillingUnknown
+	}
+	return relayBillingCredits
+}
+
+// relayCreditUsageSummary 只说明「这个模型按账户点数计费」，不带旧额度百分比、
+// 超额状态或周期：余额由 credit 面板负责，这里不重复展示，也不进入任何超额告警。
+func relayCreditUsageSummary(model string) *relayUsageSummary {
+	return &relayUsageSummary{
+		Source:      "credits",
+		Model:       model,
+		Status:      "credits",
+		BillingMode: botModelBillingModeCredits,
+	}
 }
 
 func buildRelayTotalUsageResponse(user *commercialRelayUsageUser, commercialSummary *types.CommercialSummary) relayUsageResponse {

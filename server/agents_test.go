@@ -1051,3 +1051,270 @@ func agentPairKey(a, b int64) string {
 func groupMemberKey(groupID, userID int64) string {
 	return strconv.FormatInt(groupID, 10) + ":" + strconv.FormatInt(userID, 10)
 }
+
+// creditAgentQuotaStore 在同一份存储上提供老套餐摘要与 credit 资格读取（生产里的
+// PostgreSQL 适配器两样都有）。只实现其中一个的存储走原来的老额度路径。
+type creditAgentQuotaStore struct {
+	*agentTestStore
+	summary    *types.CommercialSummary
+	summaryErr error
+	enabled    bool
+	eligErr    error
+}
+
+func (s *creditAgentQuotaStore) GetCommercialSummary(int64) (*types.CommercialSummary, error) {
+	return s.summary, s.summaryErr
+}
+
+func (s *creditAgentQuotaStore) GetModelCreditEligibility(context.Context, int64) (bool, int, int64, error) {
+	if s.eligErr != nil {
+		return false, 0, 0, s.eligErr
+	}
+	// allowance=0：零余额的 credit 账户仍然是点数模式，不能据此回落到旧额度。
+	return s.enabled, 0, 0, nil
+}
+
+// credit 计费的机器模型不能把旧额度百分比或超额状态交给好友看：只报计费方式。
+func TestHandleAgentQuotaReportsAccountCreditsForCreditBilledModel(t *testing.T) {
+	relayCalls := 0
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		relayCalls++
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+			UID: 99, Configured: true,
+			Limits: commercialRelayLimits{
+				MonthlyBudget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 250, ResetDuration: "1M"},
+				ModelLimits: []commercialRelayModelLimit{
+					{Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 250, ResetDuration: "1M"}},
+				},
+			},
+		}}})
+	}))
+	defer admin.Close()
+
+	base := &agentTestStore{
+		users: map[int64]*types.User{
+			43: {ID: 43, Username: "review-agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{43: 99},
+		friendPairs: map[string]bool{
+			agentPairKey(7, 43): true,
+		},
+		modelConfigs: map[int64]*types.BotModelConfig{
+			43: {AppliedKind: "catalog", AppliedModelID: "deepseek-flash", AppliedReasoning: "high", AppliedRevision: 3},
+		},
+	}
+	quotaStore := &creditAgentQuotaStore{
+		agentTestStore: base,
+		summary:        &types.CommercialSummary{TotalsByModel: map[string]float64{}},
+		enabled:        true,
+	}
+	handler := NewAgentHandler(quotaStore, nil)
+	handler.SetRelayUsageDependencies(&RelayAdminClient{
+		baseURL: admin.URL,
+		token:   "test-token",
+		client:  admin.Client(),
+	}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleAgentQuota(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body agentQuotaResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !body.Configured || body.Summary == nil {
+		t.Fatalf("unexpected quota response: %+v", body)
+	}
+	if body.Summary.BillingMode != botModelBillingModeCredits || body.Summary.Status != "credits" {
+		t.Fatalf("credit-billed agent summary=%+v, want billing_mode=credits", body.Summary)
+	}
+	if body.Summary.Model != "deepseek-flash" || body.Summary.ReasoningEffort != "high" {
+		t.Fatalf("applied model lost in credit summary: %+v", body.Summary)
+	}
+	if body.Summary.RemainingPercent != 0 {
+		t.Fatalf("credit summary kept a legacy percentage: %+v", body.Summary)
+	}
+	if relayCalls != 0 {
+		t.Fatalf("credit-billed agent consulted the legacy relay budget %d times", relayCalls)
+	}
+	for _, leaked := range []string{"used_cny", "limit_cny", "remaining_cny"} {
+		if strings.Contains(rec.Body.String(), leaked) {
+			t.Fatalf("friend-visible credit summary leaked %s: %s", leaked, rec.Body.String())
+		}
+	}
+}
+
+// credit 计费的机器模型在好友端看到的是「使用账户点数」：线上形状里不能有
+// remaining_percent 这种旧额度字段（0 会被渲染成「额度用完」）。直接看原始 wire。
+func TestHandleAgentQuotaCreditSummaryOmitsLegacyWireFields(t *testing.T) {
+	base := &agentTestStore{
+		users: map[int64]*types.User{
+			43: {ID: 43, Username: "review-agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{43: 99},
+		friendPairs: map[string]bool{
+			agentPairKey(7, 43): true,
+		},
+		modelConfigs: map[int64]*types.BotModelConfig{
+			43: {AppliedKind: "catalog", AppliedModelID: "deepseek-flash", AppliedReasoning: "high", AppliedRevision: 3},
+		},
+	}
+	handler := NewAgentHandler(&creditAgentQuotaStore{
+		agentTestStore: base,
+		summary:        &types.CommercialSummary{TotalsByModel: map[string]float64{}},
+		enabled:        true,
+	}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleAgentQuota(rec, req)
+
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, body)
+	}
+	for _, legacyField := range []string{"percent", "quota_configured", "reset_duration", "used_cny", "limit_cny", "remaining_cny"} {
+		if strings.Contains(body, legacyField) {
+			t.Fatalf("friend-visible credits wire shape leaked %q: %s", legacyField, body)
+		}
+	}
+	if !strings.Contains(body, `"billing_mode":"credits"`) || !strings.Contains(body, `"reasoning_effort":"high"`) {
+		t.Fatalf("credits wire shape lost billing mode or applied reasoning: %s", body)
+	}
+}
+
+// legacy 真正的 0% 剩余额度必须留在 wire 上：不能为了 credits 干净给字段加
+// omitempty，把「用满」变成「没有额度信息」。
+func TestHandleAgentQuotaKeepsLegacyZeroRemainingOnWire(t *testing.T) {
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+			UID: 99, Configured: true,
+			Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+				{Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 100, ResetDuration: "1M"}},
+			}},
+		}}})
+	}))
+	defer admin.Close()
+
+	base := &agentTestStore{
+		users: map[int64]*types.User{
+			43: {ID: 43, Username: "review-agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{43: 99},
+		friendPairs: map[string]bool{
+			agentPairKey(7, 43): true,
+		},
+		modelConfigs: map[int64]*types.BotModelConfig{
+			43: {AppliedKind: "catalog", AppliedModelID: "deepseek-flash", AppliedReasoning: "high", AppliedRevision: 3},
+		},
+	}
+	// 只实现套餐摘要的老替身（没有 credit 资格读取面）走原来的老额度路径。
+	handler := NewAgentHandler(&legacyAgentQuotaStore{agentTestStore: base}, nil)
+	handler.SetRelayUsageDependencies(&RelayAdminClient{
+		baseURL: admin.URL,
+		token:   "test-token",
+		client:  admin.Client(),
+	}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleAgentQuota(rec, req)
+
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, body)
+	}
+	if !strings.Contains(body, `"remaining_percent":0`) || !strings.Contains(body, `"status":"high"`) {
+		t.Fatalf("legacy zero remaining must stay on the wire: %s", body)
+	}
+	if strings.Contains(body, "billing_mode") {
+		t.Fatalf("legacy summary must not carry a billing mode: %s", body)
+	}
+}
+
+// 计费资格或旧权益读不出来时，好友端宁可不报额度（configured=false）也不能拿到
+// 一个可能不属于这个模型的旧百分比。
+func TestHandleAgentQuotaDoesNotInventQuotaWhenBillingCannotBeRead(t *testing.T) {
+	cases := []struct {
+		name  string
+		store *creditAgentQuotaStore
+	}{
+		{
+			name:  "eligibility read fails",
+			store: &creditAgentQuotaStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}}, eligErr: errors.New("eligibility down")},
+		},
+		{
+			name:  "legacy summary read fails",
+			store: &creditAgentQuotaStore{summaryErr: errors.New("summary down"), enabled: true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.store.agentTestStore = &agentTestStore{
+				users: map[int64]*types.User{
+					43: {ID: 43, Username: "review-agent", AccountType: types.AccountBot},
+				},
+				owners: map[int64]int64{43: 99},
+				friendPairs: map[string]bool{
+					agentPairKey(7, 43): true,
+				},
+				modelConfigs: map[int64]*types.BotModelConfig{
+					43: {AppliedKind: "catalog", AppliedModelID: "deepseek-flash", AppliedReasoning: "high", AppliedRevision: 3},
+				},
+			}
+			admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+					UID: 99, Configured: true,
+					Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+						{Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 25, ResetDuration: "1M"}},
+					}},
+				}}})
+			}))
+			defer admin.Close()
+
+			handler := NewAgentHandler(tc.store, nil)
+			handler.SetRelayUsageDependencies(&RelayAdminClient{
+				baseURL: admin.URL,
+				token:   "test-token",
+				client:  admin.Client(),
+			}, nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
+			req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+			rec := httptest.NewRecorder()
+
+			handler.HandleAgentQuota(rec, req)
+
+			body := rec.Body.String()
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, body)
+			}
+			var out agentQuotaResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("decode response: %v body=%s", err, body)
+			}
+			if out.Configured || out.Summary != nil || !out.Shared {
+				t.Fatalf("unreadable billing must not report quota: %s", body)
+			}
+			if strings.Contains(body, "percent") {
+				t.Fatalf("unreadable billing fabricated a percentage: %s", body)
+			}
+		})
+	}
+}
+
+// legacyAgentQuotaStore 只有套餐摘要，没有 credit 资格读取面（老部署的形状）。
+type legacyAgentQuotaStore struct {
+	*agentTestStore
+	summary *types.CommercialSummary
+}
+
+func (s *legacyAgentQuotaStore) GetCommercialSummary(int64) (*types.CommercialSummary, error) {
+	return s.summary, nil
+}

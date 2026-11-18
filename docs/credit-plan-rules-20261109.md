@@ -85,6 +85,7 @@
 14. peer 资格接口保留 `enabled`（历史 credit 身份）、`allowed`、`plan_tier`、`model_credit_units` 的原语义，额外始终返回 `legacy_models` 数组；无当前有效旧模型时返回 `[]`。网站按每个模型的 `billing_mode` 显示旧额度或“使用账户点数”，旧额度同步失败不使 credit 条目失效。
 15. 自动 Free 注册基线不作为 credit 身份的旧套餐优先计费依据，避免默认赠送基线遮住账户点数；其商业摘要和旧预算数值继续保留。真实旧套餐、迁移保留、独立人工授予及 Token 权益仍按当前有效授权并存；扣减调整按负数计入，不能恢复已扣清的旧权限。
 16. 历史 `catsco-free-v2` 追加 grant 可对应同一免费套餐当前有效的 `catsco-free-v1` 基线，追加时间不得早于基线且到期时间须一致；内部保留套餐的独立追加 grant 仅在与 `relay-quota-migration-v1` 基线起止时间完全一致时兼容。两种兼容均要求不存在同原引用的 entitlement；原引用已撤销、过期或尚未生效时不得借另一来源恢复。
+17. 单模型用量入口（`/api/relay/usage`、`/api/agents/quota`）与实际扣费口径一致：模型确实按 credit 计费时只回 `billing_mode=credits` 与“使用账户点数”，不下发旧额度百分点、超额状态或周期，也不因此去读旧预算；余额仍只在 credit 面板展示。有效旧模型权益与 credit 重叠时旧额度优先，仍回百分点。身份只认 `enabled`，余额为零的 credit 账户仍是点数模式；好友可见的机器摘要只带计费方式，不带任何余额数字。
 
 ## P0-5 套餐周期、续费、升级与降级
 

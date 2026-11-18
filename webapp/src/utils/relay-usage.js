@@ -14,6 +14,16 @@ export function reasoningEffortLabel(effort) {
   return Object.hasOwn(labels, value) ? labels[value] : value;
 }
 
+// 后端只在模型确实按 credit 账本计费时才给 billing_mode=credits（见
+// server/relay_keys.go 与 server/agents.go）。这类模型没有旧额度百分比：
+// 不能把 0%/100%+ 当成剩余额度或超额，也不能把余额混进来 —— 余额在套餐
+// 面板里展示。自备模型（custom）保持原来的分支。
+export const CREDITS_BILLING_MODE = 'credits';
+
+export function isCreditBilledSummary(summary) {
+  return summary?.billing_mode === CREDITS_BILLING_MODE || summary?.status === CREDITS_BILLING_MODE;
+}
+
 export function formatRelayUsagePill(summary, { customLabel = '自定义模型', showModel = true } = {}) {
   if (summary?.source === 'custom' || summary?.status === 'custom') {
     if (!showModel) return customLabel;
@@ -21,6 +31,10 @@ export function formatRelayUsagePill(summary, { customLabel = '自定义模型',
     return model ? `${model} · 自备` : customLabel;
   }
   if (!summary || !summary.model) return '';
+
+  if (isCreditBilledSummary(summary)) {
+    return showModel ? `${shortRelayModelName(summary.model)} 使用账户点数` : '使用账户点数';
+  }
 
   if (summary.status === 'over_limit') {
     return showModel ? `${shortRelayModelName(summary.model)} 已用 100%+` : '已用 100%+';
@@ -86,6 +100,7 @@ export function resolveConversationModelDisplay(currentModelName, agentModelStat
   const quotaMeta = quota || (custom ? '自备模型' : '额度未同步');
   const meta = [reasoningEffort, quotaMeta].filter(Boolean).join(' · ');
   const reasoningTitle = reasoningEffort ? `；推理强度 ${reasoningEffort}` : '';
+  const creditBilled = isCreditBilledSummary(summary);
   const quotaSource = summary.reset_duration === 'never'
     ? '使用该账号一次性新人试用额度，用完不恢复'
     : '使用该虚拟员工所属账号的共享额度';
@@ -94,13 +109,18 @@ export function resolveConversationModelDisplay(currentModelName, agentModelStat
     meta,
     title: custom
       ? `${model}${reasoningTitle}；该虚拟员工使用自备模型，不消耗 CatsCo 共享额度`
-      : quota
-        ? `${model}${reasoningTitle}；${quotaSource}，${quota}`
-        : `${model}${reasoningTitle}；当前额度暂未同步`,
+      : creditBilled
+        // 点数计费的模型没有旧额度可言，标题也不能说「共享额度」。
+        ? `${model}${reasoningTitle}；该虚拟员工使用所属账号的点数计费，不占用旧额度`
+        : quota
+          ? `${model}${reasoningTitle}；${quotaSource}，${quota}`
+          : `${model}${reasoningTitle}；当前额度暂未同步`,
   };
 }
 
 export function relayUsageTone(summary) {
+  // 点数计费没有百分比也没有超额：remaining_percent 缺省成 0 时不能触发警告色。
+  if (isCreditBilledSummary(summary)) return 'muted';
   if (summary?.status === 'over_limit') return 'danger';
   if (summary?.status === 'high' || Number(summary?.remaining_percent) <= 10) return 'warning';
   if (summary?.status === 'custom') return 'muted';

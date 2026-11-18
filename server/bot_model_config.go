@@ -1027,17 +1027,25 @@ func (p botModelCreditPermission) spendable() bool {
 	return p.known && p.enabled && p.allowance > 0 && store.ModelCreditTaskPlanTierTrusted(p.tier)
 }
 
+// coversModel 报告这个目录模型是否落在 credit 计价范围内，不看余额也不看档位：
+// 范围由套餐定义决定，余额为零的 credit 账户仍然是点数模式（只是当期不可消费），
+// 不能因为「余额看起来还有额度」就回落到旧额度路径。展示入口（relay 用量、
+// 机器额度）用它把旧额度百分比换成「使用账户点数」。
+func (p botModelCreditPermission) coversModel(modelID string) bool {
+	if !p.known || !p.enabled {
+		return false
+	}
+	target := normalizeRelayModelName(resolveLegacyCatalogModelID(modelID))
+	return target != "" && target == normalizeRelayModelName(deepSeekPublicModelID)
+}
+
 // modelAllowed 报告 credit 用户能不能选这个目录模型。模型范围复用现有套餐定义：
 // credit 计费目前只开通了 DeepSeek Flash（docs/credit-plan-rules-20261109.md
 // P0-1.5，V1/V2/V3 三档范围相同；botmgr 给 credit 新机器指定初始模型时用的也是
 // 这一条），所以这里不另造价格表或模型表。tier 只做可信性校验 —— 档位不可信
 // 时 Relay 无法计价，保存一个选不动的模型等于骗用户。
 func (p botModelCreditPermission) modelAllowed(modelID string) bool {
-	if !p.spendable() {
-		return false
-	}
-	target := normalizeRelayModelName(resolveLegacyCatalogModelID(modelID))
-	return target != "" && target == normalizeRelayModelName(deepSeekPublicModelID)
+	return p.spendable() && p.coversModel(modelID)
 }
 
 // creditPermission 读 owner 的 credit 资格。只有存储同时提供套餐摘要与资格读取
