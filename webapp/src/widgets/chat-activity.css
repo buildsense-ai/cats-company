@@ -54,7 +54,7 @@
 
 .cc-chat-activity svg { flex-shrink: 0; }
 
-.v3-working-process.is-finished .v3-working-toggle .v3-working-label { display: none; }
+.v3-working-toggle .v3-working-label[hidden] { display: none; }
 .cc-chat-activity .cc-memory-branch {
   flex: 0 0 100%;
   min-width: 0;

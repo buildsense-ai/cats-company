@@ -18,7 +18,9 @@ export const creditPlanPresentation = Object.fromEntries(creditPlanOffers.map((o
     actionLabel: `获取 CatsCo ${offer.name}`,
     highlights: [{ kind: 'capacity', label: '月额度', value: String(offer.monthlyCredits), unit: 'credit' }, { kind: 'discount', label: '模型调用优惠', value: offer.discountBps === 10000 ? '无优惠' : `${offer.discountBps / 1000} 折` }],
     featuresLabel: false, features: [{ label: plan.focus, details: plan.details }, ...plan.examples],
-    purchaseDescription: `¥${offer.price_fen / 100} / 月，每周期 ${offer.monthlyCredits} credit。按自然月对日计算，月额度当期有效，不结转；提前续费不提前补额。机器期限单独显示，已保留环境到期暂停、暂不自动清理，显式删除仍有效。`,
+    // 结转与冻结是已确认规则：有效期内未用月额度并进下一期；到期未用部分冻结，续费解锁，
+    // 到期期间不发放新一期额度。机器期限仍单独计算，不能被写成随点数周期变化。
+    purchaseDescription: `¥${offer.price_fen / 100} / 月，每周期 ${offer.monthlyCredits} credit。按自然月对日计算，有效期内未用月额度结转到下一期；到期后未用部分冻结、续费后解锁，到期期间不发新额度，提前续费不提前补额。机器期限单独显示，已保留环境到期暂停、暂不自动清理，显式删除仍有效。`,
   }];
 }));
-export const creditPlanNote = '月额度当期有效，不结转；1 元对应 100 credit。模型调用按实际用量及套餐费率扣费。';
+export const creditPlanNote = '有效期内未用月额度结转下一期，到期未用部分冻结、续费后解锁；1 元对应 100 credit。模型调用按实际用量及套餐费率扣费。';

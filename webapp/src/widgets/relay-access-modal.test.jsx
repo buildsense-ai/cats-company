@@ -300,7 +300,9 @@ describe('RelayAccessModal commercial rollout', () => {
     // 没有独立余额充值商品/入口时只说明，不给假按钮。
     expect(balance.textContent).toContain('独立充值以支付页开放状态为准');
     expect(balance.textContent).not.toContain('充值余额入口');
-    expect(balance.textContent).toContain('月额度按订阅生效日锚定的自然月刷新，不结转；提前续费不会提前补额。');
+    expect(balance.textContent).toContain('月额度按订阅生效日锚定的自然月刷新，有效期内未用额度结转到下一期；提前续费不会提前补额。');
+    // 后端没报冻结额度时，余额区不能凭空多出一行「冻结」。
+    expect(balance.textContent).not.toContain('冻结月额度');
     // 周期行只翻译后端字段：当前窗口、订阅截止、下一次确定刷新。
     expect(balance.textContent).toContain('本期 2026-11-01 至 2026-12-01');
     expect(balance.textContent).toContain('订阅截止 2026-12-01');
@@ -309,6 +311,24 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(balance.textContent).not.toContain('充值余额');
     expect(container.querySelector('.relay-credit-balance')).toBeNull();
     expect(creditPlanOffers.map(plan => plan.plan_tier)).toEqual([1, 2, 3]);
+  });
+
+  it('renders a frozen monthly balance only when the backend reports one and keeps it out of the spendable total', async () => {
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans: creditPlanOffers.map((plan, index) => ({ ...plan, id: 900 + index, model_credit_units: plan.monthlyCredits * 1_000_000 })) });
+    api.getModelCreditAccount.mockResolvedValue({
+      enabled: true, allowed: false, monthly_units: 0, frozen_monthly_units: 1_500_000_000,
+      gift_units: 0, paid_units: 0, debt_units: 0, spendable_units: 0, units_per_credit: 1_000_000,
+    });
+    await act(async () => { root.render(<CatsCoPlansModal onClose={vi.fn()} />); });
+    const balance = container.querySelector('.relay-access-current-quota');
+    expect(balance.querySelector('.relay-access-current-quota-reading strong').textContent).toBe('0 credit');
+    // 冻结额度单独一行，只承诺续费解锁，不宣称可用。
+    expect(balance.textContent).toContain('冻结月额度 1,500 credit · 续费后解锁，冻结期间不计入可用额度');
+    const bucketLine = [...balance.querySelectorAll('.relay-access-current-quota-note')]
+      .map(node => node.textContent)
+      .find(text => text.startsWith('月额度 '));
+    expect(bucketLine).toBe('月额度 0 credit · 邀请赠送 0 credit · 付费余额 0 credit · 欠款 0 credit');
+    expect(bucketLine).not.toContain('1,500');
   });
 
   it('asks for a renewal instead of inventing the next period when the backend sends no next refresh', async () => {

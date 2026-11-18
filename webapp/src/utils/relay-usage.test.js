@@ -1,6 +1,8 @@
 import {
   formatRelayUsagePill,
   formatModelDisplayName,
+  isCreditBilledSummary,
+  relayUsageTone,
   resolveConversationModelDisplay,
   resolveCurrentModelName,
   shortCustomModelName,
@@ -136,5 +138,51 @@ describe('relay usage labels', () => {
       state: 'hidden',
       summary: null,
     })).toBeNull();
+  });
+
+  test('labels a credit-billed model as account credits instead of a legacy percentage', () => {
+    const summary = {
+      source: 'credits',
+      status: 'credits',
+      billing_mode: 'credits',
+      model: 'deepseek-flash',
+    };
+    expect(isCreditBilledSummary(summary)).toBe(true);
+    expect(formatRelayUsagePill(summary, { showModel: false })).toBe('使用账户点数');
+    expect(formatRelayUsagePill(summary)).toBe('DS 使用账户点数');
+    // 零余额/缺省百分比不能被当成「剩余 0%」或超额提示。
+    expect(formatRelayUsagePill({ ...summary, remaining_percent: 0 })).toBe('DS 使用账户点数');
+    expect(formatRelayUsagePill({ ...summary, status: 'over_limit', remaining_percent: 0 })).toBe('DS 使用账户点数');
+    expect(relayUsageTone(summary)).toBe('muted');
+    expect(relayUsageTone({ ...summary, remaining_percent: 0 })).not.toBe('warning');
+  });
+
+  test('keeps the legacy percentage for a model without a credit billing mode', () => {
+    const summary = { source: 'relay', status: 'normal', model: 'MiniMax-M3', remaining_percent: 72 };
+    expect(isCreditBilledSummary(summary)).toBe(false);
+    expect(formatRelayUsagePill(summary)).toBe('M3 剩余 72%');
+    expect(relayUsageTone(summary)).toBe('');
+    // 自备模型分支不变，不会被 credit 文案覆盖。
+    expect(formatRelayUsagePill(
+      { source: 'custom', status: 'custom', model: 'gpt-5.6-terra', billing_mode: 'credits' },
+    )).toBe('gpt-5.6-terra · 自备');
+  });
+
+  test('reports account credits for a credit-billed Agent model without claiming shared quota', () => {
+    expect(resolveConversationModelDisplay('MiniMax-M2.7', {
+      isBot: true,
+      state: 'ready',
+      summary: {
+        source: 'credits',
+        status: 'credits',
+        billing_mode: 'credits',
+        model: 'deepseek-flash',
+        reasoning_effort: 'high',
+      },
+    })).toEqual({
+      model: 'DeepSeek-flash',
+      meta: '高 · 使用账户点数',
+      title: 'DeepSeek-flash；推理强度 高；该虚拟员工使用所属账号的点数计费，不占用旧额度',
+    });
   });
 });

@@ -371,6 +371,27 @@ describe('mobile model context wiring', () => {
     });
   });
 
+  it('reports account credits for a credit-billed conversation instead of a legacy percentage', () => {
+    expect(buildMobileModelInfo('MiniMax-M2.7', {
+      isBot: true,
+      state: 'ready',
+      summary: {
+        source: 'credits',
+        status: 'credits',
+        billing_mode: 'credits',
+        model: 'deepseek-flash',
+      },
+    }, {
+      source: 'relay',
+      model: 'deepseek-flash',
+      remaining_percent: 0,
+    })).toMatchObject({
+      model: 'DeepSeek-flash',
+      quota: '使用账户点数',
+      tone: 'muted',
+    });
+  });
+
   it('routes profile desktop actions through the modal mode setter', () => {
     expect(tinodeWebSource).toContain("onOpenDownload={() => openDesktopModal('download')}");
     expect(tinodeWebSource).toContain("onOpenDesktopConnect={() => openDesktopModal('connect')}");

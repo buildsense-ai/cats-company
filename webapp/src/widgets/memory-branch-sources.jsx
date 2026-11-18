@@ -58,6 +58,8 @@ function MemoryReader({ agentUid, node, onClose }) {
   </aside>, document.body);
 }
 
+const SUMMARY_RECEIVED = '主 Agent 已收到记忆摘要';
+
 export default function MemoryBranchSources({ events, active, agentUid }) {
   const [open, setOpen] = useState(false);
   const disclosureId = useId();
@@ -67,8 +69,10 @@ export default function MemoryBranchSources({ events, active, agentUid }) {
   const ready = active && events.some(event => event.status === 'ready');
   const injectedCount = new Set(events.flatMap(event => event.injected_refs)).size;
 
+  const summaryReceived = events.some(event => event.observation_id && event.consumed_turn_id);
   if (!hasSources) {
-    return running ? <span className="cc-memory-status" role="status"><Brain size={14} aria-hidden="true" />记忆探索中</span> : null;
+    const status = summaryReceived ? `${SUMMARY_RECEIVED} · 暂无可打开的来源` : running ? '记忆探索中' : null;
+    return status && <span className="cc-memory-status" role="status"><Brain size={14} aria-hidden="true" />{status}</span>;
   }
 
   return <div className="cc-memory-disclosure" onKeyDown={event => {
@@ -85,11 +89,11 @@ export default function MemoryBranchSources({ events, active, agentUid }) {
       {injectedCount > 0 && <span className="cc-activity-count">{injectedCount} 份</span>}
       <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />
     </button>
-    {open && <MemoryBranchPanel id={disclosureId} events={events} agentUid={agentUid} running={running} ready={ready} />}
+    {open && <MemoryBranchPanel id={disclosureId} events={events} agentUid={agentUid} running={running} ready={ready} summaryReceived={summaryReceived} />}
   </div>;
 }
 
-function MemoryBranchPanel({ id, events, agentUid, running, ready }) {
+function MemoryBranchPanel({ id, events, agentUid, running, ready, summaryReceived }) {
   const [selected, setSelected] = useState(null);
   const triggerRef = useRef(null);
   const graph = useMemo(() => {
@@ -105,8 +109,10 @@ function MemoryBranchPanel({ id, events, agentUid, running, ready }) {
   }, [events]);
   const select = (node, trigger) => { if (!selected && trigger) triggerRef.current = trigger; setSelected(node); };
   const close = useCallback(() => { setSelected(null); if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true }); }, []);
+  const localCount = [...graph.injected].filter(ref => /^local:[a-f0-9]{64}$/.test(ref)).length;
   const currentStatus = graph.injected.size
     ? `已加入主 Agent 上下文 · ${graph.injected.size} 份记忆`
+    : summaryReceived ? SUMMARY_RECEIVED
     : events.some(event => event.status === 'unavailable') ? '来源暂不可核验'
     : ready ? '已读取，等待主 Agent 接收'
     : running ? '正在查找相关记忆'
@@ -114,6 +120,7 @@ function MemoryBranchPanel({ id, events, agentUid, running, ready }) {
   const selectedNode = graph.nodes.find(node => node.id === selected?.id);
   return <section id={id} className="cc-memory-branch" aria-label="记忆探索" onClick={event => event.stopPropagation()}>
     <div className="cc-memory-panel-status" role="status">{currentStatus}</div>
+    {localCount > 0 && <p className="cc-memory-summary">摘要引用了 {localCount} 份本地会话记录</p>}
     {graph.read.size > 0 && <p className="cc-memory-summary">已读取 {graph.read.size} 份{graph.cited.size > 0 ? ` · 回答中明确引用 ${graph.cited.size} 份` : ''}</p>}
     {events.some(event => event.consumed_turn_id && event.consumed_turn_id !== event.origin_turn_id) && <p className="cc-diary-incomplete">来自上一轮的探索结果 · 本轮实际接收</p>}
     {graph.nodes.length > 0 && <MemorySourceGraph nodes={graph.nodes} edges={graph.edges} selectedId={selected?.id} onSelect={select} />}

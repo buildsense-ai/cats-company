@@ -59,14 +59,16 @@ var modelCreditPeerSecretPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 //   - allowed 是当期权限：套餐过期后 enabled 仍为 true、allowed 变成 false，这样前端
 //     和 Relay 都不会把「过期」误当成「legacy 免费」。
 type modelCreditAccountResponse struct {
-	UID            int64 `json:"uid"`
-	Enabled        bool  `json:"enabled"`
-	Allowed        bool  `json:"allowed"`
-	MonthlyUnits   int64 `json:"monthly_units"`
-	GiftUnits      int64 `json:"gift_units"`
-	PaidUnits      int64 `json:"paid_units"`
-	DebtUnits      int64 `json:"debt_units"`
-	UnitsPerCredit int64 `json:"units_per_credit"`
+	UID                int64 `json:"uid"`
+	Enabled            bool  `json:"enabled"`
+	Allowed            bool  `json:"allowed"`
+	MonthlyUnits       int64 `json:"monthly_units"`
+	FrozenMonthlyUnits int64 `json:"frozen_monthly_units"`
+	SpendableUnits     int64 `json:"spendable_units"`
+	GiftUnits          int64 `json:"gift_units"`
+	PaidUnits          int64 `json:"paid_units"`
+	DebtUnits          int64 `json:"debt_units"`
+	UnitsPerCredit     int64 `json:"units_per_credit"`
 	// 月额度周期与下一次确定刷新时间：都由存储按订阅自己的锚点算，前端不要自己
 	// 按 +1 个月推算。没有月订阅（legacy/邀请/免费）时这四个字段整体缺省；订阅
 	// 到期后刷新要等续费，此时 next_refresh_at 为 nil，其余字段仍然描述当下这一期。
@@ -135,6 +137,8 @@ func (h *ModelCreditHandler) HandleAccount(w http.ResponseWriter, r *http.Reques
 	}
 	if account != nil {
 		response.MonthlyUnits = account.MonthlyUnits
+		response.FrozenMonthlyUnits = account.FrozenMonthlyUnits
+		response.SpendableUnits = account.SpendableUnits()
 		response.GiftUnits = account.GiftUnits
 		response.PaidUnits = account.PaidUnits
 		response.DebtUnits = account.DebtUnits
@@ -292,6 +296,7 @@ func (h *ModelCreditHandler) HandleInternalMutation(w http.ResponseWriter, r *ht
 		response.Account = &modelCreditAccountResponse{
 			UID: account.UID, Enabled: true, Allowed: account.SpendableUnits() > 0,
 			MonthlyUnits: account.MonthlyUnits, GiftUnits: account.GiftUnits,
+			FrozenMonthlyUnits: account.FrozenMonthlyUnits, SpendableUnits: account.SpendableUnits(),
 			PaidUnits: account.PaidUnits, DebtUnits: account.DebtUnits,
 			UnitsPerCredit: store.ModelCreditUnitsPerCredit,
 		}

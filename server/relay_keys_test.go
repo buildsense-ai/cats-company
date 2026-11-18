@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -823,5 +824,270 @@ func TestRelayUsageErrorDoesNotExposeUpstreamCommercialDetails(t *testing.T) {
 		if strings.Contains(rec.Body.String(), sensitive) {
 			t.Fatalf("relay error leaked %s: %s", sensitive, rec.Body.String())
 		}
+	}
+}
+
+// 按 credit 账本计费的模型不能显示旧额度百分比：即使 relay 那边还有一份超额
+// 预算，也只能回答「使用账户点数」。零余额也仍是点数模式，不能据此回落。
+func TestRelayUsageHandlerReportsCreditsForCreditBilledModel(t *testing.T) {
+	relayCalls := 0
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		relayCalls++
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+			UID: 38, Configured: true,
+			Limits: commercialRelayLimits{
+				MonthlyBudget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 250, ResetDuration: "1M"},
+				ModelLimits: []commercialRelayModelLimit{
+					{Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 250, ResetDuration: "1M"}},
+				},
+			},
+		}}})
+	}))
+	defer admin.Close()
+
+	handler := &RelayKeyHandler{admin: &RelayAdminClient{baseURL: admin.URL, token: "test", client: admin.Client()}}
+	handler.SetCommercialQuotaSource(&creditAwareQuotaStore{
+		summary:   &types.CommercialSummary{TotalsByModel: map[string]float64{}},
+		enabled:   true,
+		allowance: 0,
+	}, true, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=deepseek-flash", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUsage(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out relayUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Summary == nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if !out.Configured || out.Summary.BillingMode != botModelBillingModeCredits || out.Summary.Status != "credits" {
+		t.Fatalf("credit-billed model summary=%#v, want billing_mode=credits", out.Summary)
+	}
+	if out.Summary.Model != "deepseek-flash" {
+		t.Fatalf("credit summary model=%q, want the applied model", out.Summary.Model)
+	}
+	if out.Summary.QuotaConfigured || out.Summary.Percent != 0 || out.Summary.RemainingPercent != 0 {
+		t.Fatalf("credit summary leaked legacy quota: %#v", out.Summary)
+	}
+	if relayCalls != 0 {
+		t.Fatalf("credit-billed model consulted the legacy relay budget %d times", relayCalls)
+	}
+}
+
+// 当前有效的旧模型权益与 credit 重叠时旧额度优先：进了 credit 体系不代表要把
+// 旧额度百分比换成点数，扣费方式每次调用只采用一种。
+func TestRelayUsageHandlerKeepsLegacyPercentWhenCreditOverlaps(t *testing.T) {
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+			UID: 38, Configured: true,
+			Limits: commercialRelayLimits{
+				MonthlyBudget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 25, ResetDuration: "1M"},
+				ModelLimits: []commercialRelayModelLimit{
+					{Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 25, ResetDuration: "1M"}},
+				},
+			},
+		}}})
+	}))
+	defer admin.Close()
+
+	handler := &RelayKeyHandler{admin: &RelayAdminClient{baseURL: admin.URL, token: "test", client: admin.Client()}}
+	handler.SetCommercialQuotaSource(&creditAwareQuotaStore{
+		summary:   &types.CommercialSummary{TotalsByModel: map[string]float64{"deepseek-flash": 500}},
+		enabled:   true,
+		allowance: 4_000,
+	}, true, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=deepseek-flash", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUsage(rec, req)
+
+	var out relayUsageResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.Summary == nil {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if out.Summary.BillingMode != "" || out.Summary.Status != "normal" || out.Summary.RemainingPercent != 75 {
+		t.Fatalf("overlapping legacy quota lost priority: %#v", out.Summary)
+	}
+}
+
+// credits 模式的线上形状不能带旧额度字段：percent/remaining_percent 的零值会被
+// 前端当成「额度已用完」，quota_configured=false 会显示成「额度未配置」。这里
+// 直接看原始 wire，避免只是把结构体解回来而漏掉多出来的字段。
+func TestRelayUsageHandlerCreditSummaryOmitsLegacyWireFields(t *testing.T) {
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Errorf("credit-billed model must not consult the legacy relay budget")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer admin.Close()
+
+	handler := &RelayKeyHandler{admin: &RelayAdminClient{baseURL: admin.URL, token: "test", client: admin.Client()}}
+	handler.SetCommercialQuotaSource(&creditAwareQuotaStore{
+		summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}},
+		enabled: true,
+	}, true, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=deepseek-flash", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUsage(rec, req)
+
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, body)
+	}
+	for _, legacyField := range []string{"percent", "quota_configured", "reset_duration", "last_reset", "used_cny", "limit_cny", "remaining_cny"} {
+		if strings.Contains(body, legacyField) {
+			t.Fatalf("credits wire shape leaked legacy field %q: %s", legacyField, body)
+		}
+	}
+	if !strings.Contains(body, `"billing_mode":"credits"`) || !strings.Contains(body, `"status":"credits"`) {
+		t.Fatalf("credits wire shape lost the billing mode: %s", body)
+	}
+}
+
+// legacy 真正的 0% 必须照常下发：不能为了让 credits 干净就给百分比加 omitempty，
+// 那会把「一点都没用过」也变成「没有额度信息」。
+func TestRelayUsageHandlerKeepsLegacyZeroPercentOnWire(t *testing.T) {
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+			UID: 38, Configured: true,
+			Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+				{Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 0, ResetDuration: "1M"}},
+			}},
+		}}})
+	}))
+	defer admin.Close()
+
+	handler := &RelayKeyHandler{admin: &RelayAdminClient{baseURL: admin.URL, token: "test", client: admin.Client()}}
+	// 只实现套餐摘要、没有 credit 资格读取面的存储 = 老部署或老测试替身。
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{}, false, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=deepseek-flash", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUsage(rec, req)
+
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, body)
+	}
+	if !strings.Contains(body, `"quota_configured":true,"percent":0,"remaining_percent":100,"status":"normal"`) {
+		t.Fatalf("legacy zero percent must stay on the wire: %s", body)
+	}
+	if strings.Contains(body, "billing_mode") {
+		t.Fatalf("legacy summary must not carry a billing mode: %s", body)
+	}
+}
+
+// 计费资格或旧权益读不出来时不能回落旧额度百分比：宁可不报额度（前端显示
+// 「额度未同步」），也不能把一个可能不属于这个模型的额度发给前端。唯一例外是
+// 能证明该模型确实有有效的旧权益 —— 那时旧额度是真的，照旧下发。
+func TestRelayUsageHandlerDoesNotInventQuotaWhenBillingCannotBeRead(t *testing.T) {
+	cases := []struct {
+		name              string
+		store             *creditAwareQuotaStore
+		wantLegacyPercent bool
+	}{
+		{
+			name:  "eligibility read fails",
+			store: &creditAwareQuotaStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}}, eligErr: errors.New("eligibility down")},
+		},
+		{
+			name:  "legacy summary read fails",
+			store: &creditAwareQuotaStore{summaryErr: errors.New("summary down"), enabled: true, allowance: 4_000},
+		},
+		{
+			name:              "eligibility read fails but legacy grant proves ownership",
+			store:             &creditAwareQuotaStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{"deepseek-flash": 500}}, eligErr: errors.New("eligibility down")},
+			wantLegacyPercent: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+					UID: 38, Configured: true,
+					Limits: commercialRelayLimits{
+						MonthlyBudget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 25, ResetDuration: "1M"},
+						ModelLimits: []commercialRelayModelLimit{
+							{Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 25, ResetDuration: "1M"}},
+						},
+					},
+				}}})
+			}))
+			defer admin.Close()
+
+			handler := &RelayKeyHandler{admin: &RelayAdminClient{baseURL: admin.URL, token: "test", client: admin.Client()}}
+			handler.SetCommercialQuotaSource(tc.store, true, nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=deepseek-flash", nil)
+			req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+			rec := httptest.NewRecorder()
+
+			handler.HandleUsage(rec, req)
+
+			body := rec.Body.String()
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, body)
+			}
+			var out relayUsageResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("decode response: %v body=%s", err, body)
+			}
+			if !tc.wantLegacyPercent {
+				if out.Configured || out.Summary != nil {
+					t.Fatalf("unreadable billing must not report quota: %s", body)
+				}
+				if strings.Contains(body, "percent") || strings.Contains(body, "quota_configured") {
+					t.Fatalf("unreadable billing fabricated legacy quota fields: %s", body)
+				}
+				return
+			}
+			if out.Summary == nil || out.Summary.RemainingPercent != 75 || out.Summary.BillingMode != "" {
+				t.Fatalf("proven legacy grant must keep its real percent: %s", body)
+			}
+		})
+	}
+}
+
+// 旧权益摘要只在模型是 credit 计价候选时才读：别的模型既不靠它判定，也不该多打
+// 一次存储（coversModel 在资格读取之前，所以资格读取次数为 0 就说明整条链都没读）。
+func TestRelayUsageHandlerSkipsCreditEligibilityForNonCreditModel(t *testing.T) {
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+			UID: 38, Configured: true,
+			Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+				{Model: "MiniMax-M2.7", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 25, ResetDuration: "1M"}},
+			}},
+		}}})
+	}))
+	defer admin.Close()
+
+	quotaStore := &creditAwareQuotaStore{
+		summary:   &types.CommercialSummary{TotalsByModel: map[string]float64{"deepseek-flash": 500}},
+		enabled:   true,
+		allowance: 4_000,
+	}
+	handler := &RelayKeyHandler{admin: &RelayAdminClient{baseURL: admin.URL, token: "test", client: admin.Client()}}
+	handler.SetCommercialQuotaSource(quotaStore, false, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=MiniMax-M2.7", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUsage(rec, req)
+
+	var out relayUsageResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.Summary == nil {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if out.Summary.RemainingPercent != 75 || out.Summary.BillingMode != "" {
+		t.Fatalf("non-credit model lost its legacy percent: %s", rec.Body.String())
+	}
+	if quotaStore.calls != 0 {
+		t.Fatalf("non-credit model read the credit eligibility %d times", quotaStore.calls)
 	}
 }

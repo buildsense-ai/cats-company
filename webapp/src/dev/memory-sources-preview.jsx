@@ -52,6 +52,7 @@ function Preview() {
   const [details, setDetails] = useState(false), [theme, setTheme] = useState(document.documentElement.dataset.theme);
   const [complete, setComplete] = useState(false);
   const event = snapshot(mode);
+  const terminalState = ['failed', 'cancelled'].find(state => params.get('execution') === state);
   const inProgress = ['running', 'ready', 'quiet-live'].includes(mode) && !complete;
   const live = [{ id: 31, from_uid: 'usr574', type: 'memory_branch', content: event }];
   const combined = mode === 'combined' ? [...workingMessages(graphResult, 'graph'), ...live] : live;
@@ -65,7 +66,7 @@ function Preview() {
     <section className="v3-chat-column"><div className="v3-timeline">
       <ChatMessage message={{ id: 10, from_uid: 'usr275', content: '我们之前约定的部署和回滚流程是什么？' }} isSelf senderName="你" />
       <ChatMessage key={mode} message={{ id: 11, from_uid: 'usr574', content: '', ...(mode === 'saved' ? { content_blocks: [{ type: 'memory_branch', payload: event }] } : {}) }}
-        workingMessages={mode === 'saved' ? [] : combined} workingOnly workingComplete={!inProgress} executionState={mode === 'idle' ? 'idle' : undefined} showThinking={details} senderIsBot senderName="小八" />
+        workingMessages={mode === 'saved' ? [] : combined} workingOnly workingComplete={!inProgress} executionState={mode === 'idle' ? 'idle' : terminalState} showThinking={details} senderIsBot senderName="小八" />
       {!inProgress && mode !== 'unknown' && <ChatMessage isConsecutive message={{ id: 12, from_uid: 'usr574', content: mode === 'recorded' ? `The next request received the late branch result. ${recorded.injected_refs[0]}` : '先确认数据库向后兼容，保留上一版本。回滚后检查数据和后台任务；外部系统的回滚行为仍需单独核验。' }} senderIsBot senderName="小八" />}
     </div></section>
   </main>;

@@ -23,6 +23,15 @@ func modelCreditMigration(t *testing.T, direction string) string {
 	return string(b)
 }
 
+func modelCreditRolloverMigration(t *testing.T, direction string) string {
+	t.Helper()
+	b, err := os.ReadFile("../migrations/postgres/000078_model_credit_monthly_rollover." + direction + ".sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 func modelCreditTaskMigration(t *testing.T, direction string) string {
 	t.Helper()
 	b, err := os.ReadFile("../migrations/postgres/000071_model_credit_tasks." + direction + ".sql")
@@ -491,6 +500,7 @@ func TestPostgresModelCreditLedgerDatabaseGuards(t *testing.T) {
 	}
 	for _, query := range []string{
 		`UPDATE model_credit_accounts SET paid_units = -1 WHERE uid = $1`,
+		`UPDATE model_credit_accounts SET frozen_monthly_units = -1 WHERE uid = $1`,
 		// A debt event may not be booked on a spending bucket, and a gift bucket
 		// may never carry a debt event.
 		`INSERT INTO model_credit_ledger_events (event_key, uid, bucket, event_type, units, monthly_balance, gift_balance, paid_balance, debt_balance) VALUES ('grant:bad-bucket', $1, 'debt', 'grant', 1, 0, 0, 0, 0)`,
@@ -508,6 +518,18 @@ func TestPostgresModelCreditLedgerDatabaseGuards(t *testing.T) {
 		if _, err := db.db.Exec(query, uid); err == nil {
 			t.Fatalf("SQL guard accepted %q", query)
 		}
+	}
+	if _, err := db.db.Exec(`UPDATE model_credit_accounts SET frozen_monthly_units = 1 WHERE uid = $1`, uid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(modelCreditRolloverMigration(t, "down")); err == nil {
+		t.Fatal("rollover down migration silently dropped frozen credit")
+	}
+	if _, err := db.db.Exec(`UPDATE model_credit_accounts SET frozen_monthly_units = 0 WHERE uid = $1`, uid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(modelCreditRolloverMigration(t, "down")); err != nil {
+		t.Fatalf("rollover down migration: %v", err)
 	}
 	// 000071 的 root 任务表依赖账户表，回滚必须先撤掉它（部署时也是倒序执行）。
 	if _, err := db.db.Exec(modelCreditTaskMigration(t, "down")); err != nil {
@@ -527,6 +549,9 @@ func TestPostgresModelCreditLedgerDatabaseGuards(t *testing.T) {
 	}
 	if _, err := db.db.Exec(modelCreditTaskMigration(t, "up")); err != nil {
 		t.Fatalf("task up migration after rollback: %v", err)
+	}
+	if _, err := db.db.Exec(modelCreditRolloverMigration(t, "up")); err != nil {
+		t.Fatalf("rollover up migration after rollback: %v", err)
 	}
 }
 

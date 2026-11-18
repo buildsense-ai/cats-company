@@ -99,20 +99,19 @@ func TestPostgresCreditSubscriptionPaymentGrantsMonthlyOnly(t *testing.T) {
 			t.Fatalf("early renewal granted the next period immediately: monthly grants=%d, want 1", grants)
 		}
 
-		// 下一个自然周期开始时只发一次：旧周期余额作废，新周期发一份。
+		// 下一个自然周期开始时只发一次，新额度与余点相加。
 		if _, err := db.ReconcileModelCreditMonthlyPeriod(ctx, uid, renewalStart.Add(time.Hour)); err != nil {
 			t.Fatalf("reconcile the renewed period: %v", err)
 		}
 		account = creditSubscriptionAccount(t, db, ctx, uid)
-		if account.MonthlyUnits != allowance || account.PaidUnits != 0 {
-			t.Fatalf("renewed period balance monthly=%d paid=%d, want monthly=%d paid=0",
-				account.MonthlyUnits, account.PaidUnits, allowance)
+		if account.MonthlyUnits != 2*allowance || account.PaidUnits != 0 || account.FrozenMonthlyUnits != 0 {
+			t.Fatalf("renewed period balance: %+v, want monthly=%d paid=0 frozen=0", account, 2*allowance)
 		}
 		if grants := creditSubscriptionEventCount(t, db, uid, store.ModelCreditBucketMonthly, store.ModelCreditEventGrant); grants != 2 {
 			t.Fatalf("renewed period monthly grants=%d, want exactly one per period (2)", grants)
 		}
-		if expires := creditSubscriptionEventCount(t, db, uid, store.ModelCreditBucketMonthly, store.ModelCreditEventExpire); expires != 1 {
-			t.Fatalf("previous period allowance was not expired exactly once: expiries=%d", expires)
+		if expires := creditSubscriptionEventCount(t, db, uid, store.ModelCreditBucketMonthly, store.ModelCreditEventExpire); expires != 0 {
+			t.Fatalf("rollover must not expire remaining credit: expiries=%d", expires)
 		}
 		if _, err := db.ReconcileModelCreditMonthlyPeriod(ctx, uid, renewalStart.Add(2*time.Hour)); err != nil {
 			t.Fatalf("repeat reconcile of the renewed period: %v", err)
@@ -154,14 +153,14 @@ func TestPostgresCreditSubscriptionPaymentGrantsMonthlyOnly(t *testing.T) {
 			t.Fatalf("refunded entitlement state=%q err=%v, want revoked", state, err)
 		}
 		account := creditSubscriptionAccount(t, db, ctx, uid)
-		if account.MonthlyUnits != 0 || account.PaidUnits != 0 {
-			t.Fatalf("refunded order kept credit: monthly=%d paid=%d, want 0/0", account.MonthlyUnits, account.PaidUnits)
+		if account.MonthlyUnits != 0 || account.PaidUnits != 0 || account.FrozenMonthlyUnits != 0 {
+			t.Fatalf("refunded order kept credit: %+v, want all buckets zero", account)
 		}
 		if paidRefunds := creditSubscriptionEventCount(t, db, uid, store.ModelCreditBucketPaid, store.ModelCreditEventRefund); paidRefunds != 0 {
 			t.Fatalf("refund invented a paid reversal for an order that never booked paid credit: events=%d", paidRefunds)
 		}
-		if expiries := creditSubscriptionEventCount(t, db, uid, store.ModelCreditBucketMonthly, store.ModelCreditEventExpire); expiries != 1 {
-			t.Fatalf("refunded period allowance was not expired exactly once: expiries=%d", expiries)
+		if refunds := creditSubscriptionEventCount(t, db, uid, store.ModelCreditBucketMonthly, store.ModelCreditEventRefund); refunds != 1 {
+			t.Fatalf("refunded period must be revoked exactly once: refunds=%d", refunds)
 		}
 	})
 

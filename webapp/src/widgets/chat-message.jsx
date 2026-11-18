@@ -989,7 +989,7 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
 
   const statusContent = (
     <>
-      <span className="v3-working-label">{statusLabel}</span>
+      <span className="v3-working-label" hidden={hasDetails && complete && !stopped}>{statusLabel}</span>
       {hasDetails && <span className="cc-working-details-label">执行详情</span>}
       {hasDetails && summary && <span className="v3-working-summary">{summary}</span>}
       {hasDetails && <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />}

@@ -61,6 +61,13 @@ try {
   check('live retrieval has one lightweight status and no canvas', `({ok:document.querySelectorAll('.cc-memory-status').length===1&&document.body.innerText.includes('记忆探索中')&&!document.querySelector('canvas')})`);
   click('[data-preview="finish"]');
   check('live status disappears when a no-result turn ends', `({ok:!document.querySelector('.cc-memory-status')&&!document.querySelector('.cc-memory-toggle')})`);
+  for (const [state, label] of [['failed', '执行失败'], ['cancelled', '已停止']]) {
+    open('combined', '&execution=' + state);
+    check('collapsed tool details show ' + state, `(()=>{
+      const toggle = document.querySelector('.v3-working-toggle');
+      return {ok:toggle?.getAttribute('aria-expanded') === 'false' && toggle.innerText.includes(${JSON.stringify(label)}), text:toggle?.innerText};
+    })()`);
+  }
   open('combined');
   check('completed turn starts compact with both entry points', `({ok:!!document.querySelector('.v3-working-toggle')&&!!document.querySelector('.cc-memory-toggle')&&!document.querySelector('canvas')&&window.__memoryPreviewLog.length===0})`);
   shot('desktop-collapsed.png');
