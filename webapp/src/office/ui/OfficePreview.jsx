@@ -27,7 +27,7 @@ import InsertMenu from './InsertMenu.jsx';
 import InheritedConfirm from './InheritedConfirm.jsx';
 import { applyDraftToSlide, officeDraftKey, parseOfficeDraftKey } from './draft-render.js';
 import { OFFICE_SAVE_NOTICE } from '../save.js';
-import { OFFICE_SYNC_NOTICE } from '../version-binding.js';
+import { OFFICE_SYNC_NOTICE, OFFICE_SERVER_UNSUPPORTED_NOTICE } from '../version-binding.js';
 import {
   officePanelWidthFromPointer, readOfficePanelWidth, saveOfficePanelWidth,
 } from './office-panel-width.js';
@@ -226,7 +226,7 @@ export default function OfficePreview({
       slideCount: model?.slides?.length,
       changes: changes || [],
     });
-    return Boolean(result);
+    return result || false;
   }, [file?.name, model, onSave]);
 
   useEffect(() => {
@@ -696,7 +696,14 @@ export default function OfficePreview({
         return;
       }
       const published = await publishBytes(bytes, draftOps);
-      if (published) {
+      if (published?.unsupported) {
+        // The upload landed; only the source→latest pointer is missing because the deployed
+        // backend has no route for it. Saying "retry" here would be a lie, so name the cause.
+        pendingBytesRef.current = null;
+        setHasPending(false);
+        resetDraft();
+        setNotice(OFFICE_SERVER_UNSUPPORTED_NOTICE);
+      } else if (published) {
         pendingBytesRef.current = null;
         setHasPending(false);
         // Only a confirmed upload + binding may discard drafts. A failed publish leaves both

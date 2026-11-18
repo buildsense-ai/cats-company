@@ -19,7 +19,7 @@ import { applyInsertImage } from '../docx/insert.js';
 import { BLOCK_KINDS, ALIGNMENTS, blockPreview, cmToTwips, twipsToCm } from '../docx/model.js';
 import { applyWordDraft, wordCellDraftKey } from './word-draft-render.js';
 import { OFFICE_SAVE_NOTICE } from '../save.js';
-import { OFFICE_SYNC_NOTICE } from '../version-binding.js';
+import { OFFICE_SYNC_NOTICE, OFFICE_SERVER_UNSUPPORTED_NOTICE } from '../version-binding.js';
 import LocalDraftTextarea from './LocalDraftTextarea.jsx';
 import {
   officePanelWidthFromPointer, readOfficePanelWidth, saveOfficePanelWidth,
@@ -516,6 +516,15 @@ export default function WordPreview({
       });
       if (onSave && !published) {
         setNotice('已写入本地，但最新版未保存成功，请重试保存');
+        return;
+      }
+      if (published?.unsupported) {
+        // The upload landed; the source→latest pointer is missing only because the deployed
+        // backend has no route for it. Prompting a retry here would never succeed.
+        if (reparsed) adopt(reparsed);
+        pendingBytesRef.current = null;
+        setHasPending(false);
+        setNotice(OFFICE_SERVER_UNSUPPORTED_NOTICE);
         return;
       }
       if (reparsed) adopt(reparsed);

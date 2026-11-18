@@ -23,7 +23,7 @@ import {
 } from '../office/save.js';
 import {
   performExplicitOfficeSync, performQuietOfficeSave, resolveLatestOfficeVersion,
-  OFFICE_SYNC_NOTICE,
+  OFFICE_SYNC_NOTICE, OFFICE_VERSION_UNSUPPORTED_CODE,
 } from '../office/version-binding.js';
 import ImageViewport from '../widgets/image-viewport';
 import { useFeedback } from '../components/feedback-system';
@@ -2588,8 +2588,11 @@ export default function MessagesView({
         localOnly: result.localOnly,
         notice: result.notice || OFFICE_SAVE_NOTICE,
       };
-    } catch {
-      // A falsy result keeps drafts and pending bytes retryable.
+    } catch (err) {
+      // A falsy result keeps drafts and pending bytes retryable. A backend that lacks the
+      // version route is reported separately, because asking the user to retry would be
+      // asking them to repeat something that cannot succeed until that route ships.
+      if (err?.code === OFFICE_VERSION_UNSUPPORTED_CODE) return { unsupported: true };
       return null;
     }
   }, [feedback, previewFile, setPreviewFileWithFocus]);

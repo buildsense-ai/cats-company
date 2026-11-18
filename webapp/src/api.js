@@ -1100,7 +1100,21 @@ export const api = {
   uploadFile: async (file, type = 'file') => {
     return uploadRawFile(`/api/upload?type=${type}&${RAW_UPLOAD_QUERY}`, file, { authToken: getToken() });
   },
-  upsertFileVersionBinding: (binding) => request('POST', '/api/files/version-bindings', binding),
+  upsertFileVersionBinding: async (binding) => {
+    try {
+      return await request('POST', '/api/files/version-bindings', binding);
+    } catch (error) {
+      // A 404 means the deployed backend predates this route. Callers must be able to tell
+      // that apart from a real failure, otherwise the UI keeps telling the user to retry
+      // something that cannot succeed until the backend ships.
+      if (error?.status === 404) {
+        const unsupported = new Error('服务器尚未提供版本记录接口');
+        unsupported.code = 'office-version-unsupported';
+        throw unsupported;
+      }
+      throw error;
+    }
+  },
   getFileVersionBinding: async (source) => {
     const topicID = String(source?.topic_id || '').trim();
     const messageID = Number(source?.source_message_id || 0);

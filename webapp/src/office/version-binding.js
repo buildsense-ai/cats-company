@@ -5,6 +5,8 @@ import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 
 export const OFFICE_VERSION_STORAGE_PREFIX = 'office.fileVersion.';
 export const OFFICE_LOCAL_SAVE_NOTICE = '已保存最新版，仅本机可见；同步给小八后才能跨设备';
+export const OFFICE_SERVER_UNSUPPORTED_NOTICE = '已保存到本机；服务器版本记录未启用，关掉重开会回到旧版';
+export const OFFICE_VERSION_UNSUPPORTED_CODE = 'office-version-unsupported';
 export const OFFICE_UNSYNCED_NOTICE = '已保存最新版，但尚未发给小八；会话里仍是旧附件';
 export { OFFICE_SYNC_NOTICE };
 
