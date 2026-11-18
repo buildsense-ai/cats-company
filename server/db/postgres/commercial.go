@@ -608,17 +608,17 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	}
 	defer tx.Rollback()
 
-	var inviteID, planID, inviteCreditUnits int64
+	var inviteID, planID, inviteCreditUnits, planCreditUnits int64
 	var maxRedemptions, redeemedCount, cloudWorkerCredits, inviteState, planState, durationDays int
 	var activeLegacyPlan bool
 	var expiresAt sql.NullTime
-	var planSlug, planName, cloudWorkerProfile, cloudWorkerBilling, cloudWorkerRuntimePlan string
+	var planSlug, planName, planSaleState, cloudWorkerProfile, cloudWorkerBilling, cloudWorkerRuntimePlan string
 	var monthlyBudget float64
 	var budgetsRaw []byte
 	err = tx.QueryRow(`
 		SELECT c.id, c.plan_id, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.cloud_worker_billing_mode, c.state, c.expires_at, c.model_credit_units,
-		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state, p.cloud_worker_runtime_plan,
-		       p.state = 0 AND p.archived_at IS NULL AND p.model_credit_units = 0
+		       p.slug, p.name, p.sale_state, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state, p.cloud_worker_runtime_plan,
+		       p.model_credit_units, p.state = 0 AND p.archived_at IS NULL AND p.model_credit_units = 0
 		FROM commercial_invite_codes c
 		JOIN commercial_plans p ON p.id = c.plan_id
 		WHERE lower(c.code) = lower($1)
@@ -635,11 +635,13 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		&inviteCreditUnits,
 		&planSlug,
 		&planName,
+		&planSaleState,
 		&monthlyBudget,
 		&budgetsRaw,
 		&durationDays,
 		&planState,
 		&cloudWorkerRuntimePlan,
+		&planCreditUnits,
 		&activeLegacyPlan,
 	)
 	if err == sql.ErrNoRows {
@@ -657,6 +659,17 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	if redeemedCount >= maxRedemptions {
 		return nil, fmt.Errorf("invite code has no remaining redemptions")
 	}
+	// 一次兑换如果落在「真在卖」的套餐上（public、有限期、卖模型点数），就把这个套餐
+	// 期限内的内置点数一起交付。面额在兑换这一刻快照到权益行上 —— 与订单路径快照
+	// plan_model_credit_units 同理：事后改套餐不能改写这位兑换者已经拿到的东西。
+	//
+	// 快照单独存一列，绝不并进邀请的一次性 gift：gift 是运营额外给的（可以是 0），
+	// 快照是套餐期限本来就含的，两者不能互相顶掉，gift=0 也照样交付期限点数。
+	//
+	// 范围刻意收窄：hidden/test 套餐、永久套餐（duration_days==-1）、不卖点数的套餐
+	// 一律保持原路径 —— 没有快照、没有月额度 —— 历史邀请码和它们的兑换者因此不会被
+	// 迁进 credit 账本。套餐本身必须可售（state==0，前面已校验）。
+	finiteCreditPackage := planSaleState == "public" && durationDays > 0 && planCreditUnits > 0
 	// Retention follows the invite's plan length (7d → 3 days, longer → 7).
 	retentionDays := types.CloudWorkerRetentionDays(0, durationDays)
 	// The slot size is a plan attribute and has to travel with the credit for the
@@ -680,49 +693,60 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		return nil, fmt.Errorf("invite code already redeemed")
 	}
 
-	startsAt := time.Now().UTC()
-	if err := validateNoOpenCommercialOfficialOrder(tx, uid, startsAt); err != nil {
+	if err := validateNoOpenCommercialOfficialOrder(tx, uid, time.Now().UTC()); err != nil {
 		return nil, err
 	}
-	// 只有「邀请自带赠送额度」（credit 邀请，默认 20 credit）才是叠加式的权限：它
-	// 加上自己的 gift 和订阅行，但不抢占已付套餐 —— 已付的 V2/V3 继续拥有模型与折扣
-	// （GetModelCreditEligibility 把 order/admin/internal 排在最前，付费行仍是主套餐）。
-	// 这种邀请只在没有任何付费权限时才走档位激活（激活会撤销更低档与免费基线）。
-	//
+	// The open-order check holds the account's tier lock. Take the redemption
+	// time after acquiring it so a concurrent paid activation is visible.
+	startsAt := time.Now().UTC().Truncate(time.Microsecond)
+	// A credit invite keeps its own gift and worker alongside a paid package,
+	// but must not leave a monthly grant to be claimed after that package ends.
 	// 老式（CNY/token）邀请保持原有语义不变：它没有自己的 credit 面额，兑换就是换套餐，
 	// 仍然走档位激活并撤销之前的套餐。历史上发出去的邀请码和它们的兑换者因此完全按
 	// 老路径结算，不会被这次改动迁移成 credit 权限。
 	shouldActivate := true
-	if inviteCreditUnits > 0 {
+	if inviteCreditUnits > 0 || finiteCreditPackage {
 		paidActive, paidErr := activePaidCommercialEntitlement(tx, uid, startsAt)
 		if paidErr != nil {
 			return nil, paidErr
 		}
 		shouldActivate = !paidActive
 	}
+	var inviteMonthlyUnits sql.NullInt64
+	if shouldActivate && finiteCreditPackage {
+		inviteMonthlyUnits = sql.NullInt64{Int64: planCreditUnits, Valid: true}
+	}
 	if shouldActivate {
 		if err := activateCommercialOfficialPlan(tx, uid, planSlug, startsAt); err != nil {
 			return nil, err
 		}
 	}
-	// A credit invite is a permission without a fixed term ("体验不设固定天数"):
-	// its allowance is the gift itself, not a timed package, so the entitlement
-	// carries no expiry. Cloud worker credits keep the plan's derived window, so a
-	// redemption still cannot hand out a machine that never expires.
+	// A gift-only credit invite is a permission without a fixed term ("体验不设固定
+	// 天数"): its allowance is the gift itself, not a timed package, so the
+	// entitlement carries no expiry. Cloud worker credits keep the plan's derived
+	// window, so a redemption still cannot hand out a machine that never expires.
+	//
+	// A snapshot invite is the package's own term: the finite entitlement ends
+	// exactly when the worker-derived window ends (30 days for a monthly credit
+	// package), so the points it includes cannot outlive the term that included
+	// them — and that window is what the monthly reconciler reads.
 	workerExpires := (*time.Time)(nil)
 	if durationDays != -1 {
 		expiry := startsAt.AddDate(0, 0, durationDays)
 		workerExpires = &expiry
 	}
 	entitlementExpires := workerExpires
-	if inviteCreditUnits > 0 {
+	if inviteCreditUnits > 0 && !finiteCreditPackage {
 		entitlementExpires = nil
 	}
+	// The snapshot rides on the entitlement row, not on the invite code: editing
+	// the package afterwards must not rewrite what this redeemer was given. NULL
+	// means "no snapshot", which stays the answer for every existing entitlement.
 	var entitlementID int64
 	if err := tx.QueryRow(`
-		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
-		VALUES ($1, $2, 'invite', $3, 'active', $4, $5)
-		RETURNING id`, uid, planID, code, startsAt, entitlementExpires).Scan(&entitlementID); err != nil {
+		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at, invite_monthly_units)
+		VALUES ($1, $2, 'invite', $3, 'active', $4, $5, $6)
+		RETURNING id`, uid, planID, code, startsAt, entitlementExpires, inviteMonthlyUnits).Scan(&entitlementID); err != nil {
 		return nil, fmt.Errorf("create commercial entitlement: %w", err)
 	}
 	modelBudgets := a.gpt62GrantBudgets(decodeModelBudgets(budgetsRaw), planSlug, activeLegacyPlan && inviteCreditUnits == 0)
@@ -754,11 +778,12 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	if cloudWorkerProfile == types.CloudWorkerPackedShared {
 		inviteExpiryMode = types.CloudWorkerExpiryFollowPlan
 	}
-	// A credit invite (the plan sells model credit, so the invite carries a gift
-	// allowance) provisions a credit environment: the worker it opens keeps its
-	// files and history after the invite's window ends. A legacy CNY/token invite
-	// carries 0 units and keeps the historical cleanup schedule.
-	inviteRetainData := inviteCreditUnits > 0
+	// A credit invite provisions a credit environment: the worker it opens keeps
+	// its files and history after the invite's window ends. That is true when the
+	// invite hands out a gift and equally for a finite credit package with a
+	// zero gift, even if a paid plan already owns the monthly allowance. A legacy
+	// CNY/token invite carries neither and keeps the historical cleanup schedule.
+	inviteRetainData := inviteCreditUnits > 0 || finiteCreditPackage
 	for ordinal := 1; ordinal <= cloudWorkerCredits; ordinal++ {
 		if _, err := tx.Exec(`
 			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode, retention_days, runtime_plan, expiry_mode, retain_data)
@@ -787,6 +812,19 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	// grants are left alone: they were sold independently of any package.
 	if err := grantCommercialInviteModelCredit(context.Background(), tx, uid, code, inviteCreditUnits, startsAt); err != nil {
 		return nil, fmt.Errorf("grant invite model credit: %w", err)
+	}
+	// The gift above and the snapshot on the entitlement are two different
+	// buckets: the snapshot is what the package's term includes, the gift is the
+	// operator's one-time extra, so paying out one never depends on the other.
+	// Once both are written, book the term's first monthly issuance with the same
+	// reconciler the order path uses and in this same transaction: a redemption
+	// must not wait for the sweeper to show the allowance it was just given.
+	// Gated on the snapshot, so legacy/unqualified redemptions never reach the
+	// monthly ledger at all.
+	if inviteMonthlyUnits.Valid {
+		if _, _, err := reconcileModelCreditMonthlyPeriod(context.Background(), tx, uid, startsAt); err != nil {
+			return nil, fmt.Errorf("reconcile invite model credit period: %w", err)
+		}
 	}
 	if err := settleSharedCloudWorkerFollowPlanTerms(tx, uid, startsAt); err != nil {
 		return nil, err

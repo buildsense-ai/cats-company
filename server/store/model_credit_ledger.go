@@ -125,17 +125,18 @@ func ModelCreditAddUnits(balance, delta int64) (int64, bool) {
 // root 任务，它后续的预留可以超出余额（超出部分记真实欠款）。它是账户行上的一列，
 // 因此和余额一起被同一把行锁保护。
 type ModelCreditAccount struct {
-	UID            int64
-	MonthlyUnits   int64
-	GiftUnits      int64
-	PaidUnits      int64
-	DebtUnits      int64
-	RetainedTaskID string
-	UpdatedAt      time.Time
+	UID                int64
+	MonthlyUnits       int64
+	FrozenMonthlyUnits int64
+	GiftUnits          int64
+	PaidUnits          int64
+	DebtUnits          int64
+	RetainedTaskID     string
+	UpdatedAt          time.Time
 }
 
 func (a ModelCreditAccount) Validate() error {
-	if a.UID <= 0 || a.MonthlyUnits < 0 || a.GiftUnits < 0 || a.PaidUnits < 0 || a.DebtUnits < 0 {
+	if a.UID <= 0 || a.MonthlyUnits < 0 || a.FrozenMonthlyUnits < 0 || a.GiftUnits < 0 || a.PaidUnits < 0 || a.DebtUnits < 0 {
 		return ErrModelCreditInvalid
 	}
 	if a.RetainedTaskID != "" && ValidateModelCreditTaskID(a.RetainedTaskID) != nil {

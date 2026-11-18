@@ -3,11 +3,13 @@ import { createRoot } from 'react-dom/client';
 vi.mock('../../api', () => ({ api: { getModelCreditAccount: vi.fn() } }));
 import { api } from '../../api';
 import useModelCreditAccount, {
+  MODEL_CREDIT_FROZEN_UNLOCK_NOTE,
   MODEL_CREDIT_LEGACY_NOTICE,
   MODEL_CREDIT_PAID_LABEL,
   MODEL_CREDIT_RENEWAL_REQUIRED_NOTICE,
   MODEL_CREDIT_TOPUP_NOTICE,
   MODEL_CREDIT_UNAVAILABLE_NOTICE,
+  modelCreditFrozenDisplay,
   modelCreditIdentity,
   modelCreditPeriodDisplay,
   modelCreditQuotaDisplay,
@@ -49,10 +51,54 @@ describe('credit account content', () => {
     expect(content.buckets).toBe('月额度 3,999.123456 credit · 邀请赠送 20 credit · 付费余额 7 credit · 欠款 2.5 credit');
     expect(content.note).toContain('月额度 3,999.123456 · 邀请赠送 20 · 付费余额 7 · 欠款 2.5 credit');
     expect(content.buckets).not.toContain('充值余额');
-    // Month allowance is anchored to the subscription and never rolls over;
-    // an early renewal must not re-fill the current month.
-    expect(content.note).toContain('月额度按订阅生效日锚定的自然月刷新，不结转；提前续费不会提前补额。');
+    // 月额度按订阅锚定的自然月刷新；有效期内未用额度结转，提前续费不提前补额。
+    expect(content.note).toContain('月额度按订阅生效日锚定的自然月刷新，有效期内未用额度结转到下一期；提前续费不会提前补额。');
+    expect(content.frozenNote).toBe('');
+    expect(content.frozenUnits).toBe(0);
     expect(content.className).toBe('danger');
+  });
+
+  it('shows carried-over monthly units as one spendable balance while the plan is active', async () => {
+    // 已确认规则：有效期内未用的 1,500 结转到下一期，与新发 4,000 叠加为 5,500 可用。
+    api.getModelCreditAccount.mockResolvedValue({
+      ...account,
+      debt_units: 0,
+      monthly_units: 5_500_000_000,
+      spendable_units: 5_500_000_000,
+      frozen_monthly_units: 0,
+    });
+    await act(async () => root.render(<Probe />));
+    const content = JSON.parse(container.textContent);
+    expect(content.meta).toBe('5,500 credit');
+    expect(content.buckets).toContain('月额度 5,500 credit');
+    // 冻结为 0 时整行不出现，绝不能显示「冻结 0 credit」。
+    expect(content.frozenNote).toBe('');
+  });
+
+  it('shows the frozen monthly balance separately and never counts it as spendable', async () => {
+    // 到期后未用的月额度冻结：后端另给 frozen_monthly_units，spendable_units 已排除它。
+    api.getModelCreditAccount.mockResolvedValue({
+      enabled: true,
+      allowed: false,
+      monthly_units: 0,
+      frozen_monthly_units: 1_500_000_000,
+      gift_units: 20_000_000,
+      paid_units: 7_000_000,
+      debt_units: 0,
+      spendable_units: 27_000_000,
+      units_per_credit: 1_000_000,
+    });
+    await act(async () => root.render(<Probe />));
+    const content = JSON.parse(container.textContent);
+    // 可用额度只报后端给的 spendable_units：冻结的 1,500 不在里面。
+    expect(content.meta).toBe('27 credit');
+    expect(content.buckets).toBe('月额度 0 credit · 邀请赠送 20 credit · 付费余额 7 credit · 欠款 0 credit');
+    expect(content.frozenUnits).toBe(1_500_000_000);
+    expect(content.frozenNote).toBe(`冻结月额度 1,500 credit · ${MODEL_CREDIT_FROZEN_UNLOCK_NOTE}`);
+    // 冻结额度是续费后才解锁的，不能混进「月额度」桶或备注里的可用合计。
+    expect(content.buckets).not.toContain('1,500');
+    expect(content.note).not.toContain('冻结月额度');
+    expect(content.className).toBe('warning');
   });
 
   it('shows enabled and allowed separately and defers top-up availability to checkout', async () => {
@@ -167,5 +213,21 @@ describe('credit monthly period display', () => {
     expect(display.known).toBe(true);
     // 解析不了的时间不显示成编造的日期，只用占位符，并保留「需续费」提示。
     expect(display.period).toBe(`本期 — 至 2026-12-01 · ${MODEL_CREDIT_RENEWAL_REQUIRED_NOTICE}`);
+  });
+});
+
+// 冻结月额度是「到期待续费」的余额：只有后端给出正数时才渲染，且永远不进可消费合计。
+describe('credit frozen monthly display', () => {
+  it('hides the frozen row unless the backend reports a positive balance', () => {
+    expect(modelCreditFrozenDisplay(null)).toEqual({ units: 0, note: '' });
+    expect(modelCreditFrozenDisplay({ frozen_monthly_units: 0 })).toEqual({ units: 0, note: '' });
+    expect(modelCreditFrozenDisplay({ frozen_monthly_units: -5 })).toEqual({ units: 0, note: '' });
+    const display = modelCreditFrozenDisplay({
+      frozen_monthly_units: 1_500_000_000,
+      units_per_credit: 1_000_000,
+    });
+    expect(display.units).toBe(1_500_000_000);
+    expect(display.note).toBe(`冻结月额度 1,500 credit · ${MODEL_CREDIT_FROZEN_UNLOCK_NOTE}`);
+    expect(MODEL_CREDIT_FROZEN_UNLOCK_NOTE).toBe('续费后解锁，冻结期间不计入可用额度');
   });
 });

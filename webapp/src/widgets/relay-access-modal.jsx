@@ -6,7 +6,7 @@ import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { resolvePlanOffers, salePlansForOffers } from './plans/plan-offers';
 import LoadingState from './loading-state';
 import CreditTopupForm from './plans/credit-topup-form';
-import useModelCreditAccount, { MODEL_CREDIT_LEGACY_NOTICE, modelCreditIdentity, modelCreditQuotaDisplay } from './plans/use-model-credit-account';
+import useModelCreditAccount, { MODEL_CREDIT_CYCLE_NOTE, MODEL_CREDIT_LEGACY_NOTICE, modelCreditIdentity, modelCreditQuotaDisplay } from './plans/use-model-credit-account';
 import { restoreDialogFocus } from '../utils/use-dialog-behavior';
 import {
   readStorageValue,
@@ -260,7 +260,8 @@ function commercialPlanPresentation(plan) {
 function commercialUsageTextForUser(plan, presentation) {
   const units = Number(plan?.model_credit_units || 0);
   const points = units > 0 ? ` · ${formatModelCreditPoints(units)} credit` : '';
-  return units > 0 ? `月额度${points} · 当期有效，不结转` : `${presentation?.usageLabel || '套餐用量'} · ${Number(plan?.duration_days || 30)} 天有效`;
+  // 结转是当前已确认规则：有效期内未用月额度并进下一期，到期未用部分冻结、续费解锁。
+  return units > 0 ? `月额度${points} · 有效期内未用额度结转` : `${presentation?.usageLabel || '套餐用量'} · ${Number(plan?.duration_days || 30)} 天有效`;
 }
 
 function commercialPlanCycle(plan) {
@@ -1145,7 +1146,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
     ? creditState.error
     : (creditIdentity.known && !creditIdentity.enabled ? MODEL_CREDIT_LEGACY_NOTICE : '');
   const currentResetInfo = hasCreditAccount
-    ? { cycle: true, detail: '月额度按订阅生效日锚定的自然月刷新，不结转；提前续费不会提前补额。' }
+    ? { cycle: true, detail: MODEL_CREDIT_CYCLE_NOTE }
     : usageResetInfo(currentUsage);
   const currentResetText = currentResetInfo.cycle
     ? currentResetInfo.detail
@@ -1805,6 +1806,12 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                   <span className="relay-access-current-quota-note">{currentQuota.buckets}</span>
                 </div>
               )}
+              {/* 冻结额度只有后端给出正数时才出现；它是续费后能解锁的余额，不是当前可消费额度。 */}
+              {hasCreditAccount && currentQuota.frozenNote && (
+                <div className="relay-access-current-quota-cycle">
+                  <span className="relay-access-current-quota-note">{currentQuota.frozenNote}</span>
+                </div>
+              )}
               {hasCreditAccount && currentQuota.status && (
                 <div className="relay-access-current-quota-cycle">
                   <span className="relay-access-current-quota-note">{currentQuota.status}</span>
@@ -1889,7 +1896,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                     : purchasePlan.catalogUnavailable && planPresentationOverrides[purchasePlan.slug]?.purchaseDescription
                     ? planPresentationOverrides[purchasePlan.slug].purchaseDescription
                     : Number(purchasePlan.model_credit_units || purchasePlan.monthlyCredits) > 0
-                    ? `${formatPriceFen(purchasePlan.price_fen)} / 月，按订阅生效日逐自然月计算；${purchaseIsRenewal ? '提前续费只延长有效期，下一期开始时发放额度' : '本期月额度在套餐生效后发放'}。月额度当期有效，不结转，不自动续费。`
+                    ? `${formatPriceFen(purchasePlan.price_fen)} / 月，按订阅生效日逐自然月计算；${purchaseIsRenewal ? '提前续费只延长有效期，下一期开始时发放额度' : '本期月额度在套餐生效后发放'}。有效期内未用月额度结转到下一期；到期后未用部分冻结、续费后解锁，到期期间不发新额度，不自动续费。`
                     : purchaseIsRenewal
                     ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期日顺延 ${Number(purchasePlan.duration_days || 30)} 天；不会自动扣款。云托管员工是否恢复取决于它自己的状态：仍在数据保留期内的到期暂停机器，续费后可以恢复运行；已释放或已删除的实例无法恢复；人工暂停的机器不会因续费自动恢复，需要联系管理员处理。`
                     : purchaseIsUpgrade

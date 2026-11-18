@@ -13,7 +13,7 @@ import (
 var _ store.ModelCreditLedgerStore = (*Adapter)(nil)
 
 // modelCreditAccountQuery reads one account row in bucket order.
-const modelCreditAccountQuery = `SELECT monthly_units, gift_units, paid_units, debt_units,
+const modelCreditAccountQuery = `SELECT monthly_units, gift_units, paid_units, debt_units, frozen_monthly_units,
 	COALESCE(retained_task_id, ''), updated_at
 	FROM model_credit_accounts WHERE uid = $1`
 
@@ -38,7 +38,7 @@ func lockModelCreditAccount(ctx context.Context, tx *sql.Tx, uid int64) (*store.
 	}
 	account := store.ModelCreditAccount{UID: uid}
 	if err := tx.QueryRowContext(ctx, modelCreditAccountQuery+` FOR UPDATE`, uid).Scan(
-		&account.MonthlyUnits, &account.GiftUnits, &account.PaidUnits, &account.DebtUnits,
+		&account.MonthlyUnits, &account.GiftUnits, &account.PaidUnits, &account.DebtUnits, &account.FrozenMonthlyUnits,
 		&account.RetainedTaskID, &account.UpdatedAt); err != nil {
 		return nil, fmt.Errorf("lock model credit account: %w", err)
 	}
@@ -56,10 +56,10 @@ func saveModelCreditAccount(ctx context.Context, tx *sql.Tx, account *store.Mode
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE model_credit_accounts
 		SET monthly_units = $2, gift_units = $3, paid_units = $4, debt_units = $5,
-		    retained_task_id = $6, updated_at = $7
+		    retained_task_id = $6, updated_at = $7, frozen_monthly_units = $8
 		WHERE uid = $1`,
 		account.UID, account.MonthlyUnits, account.GiftUnits, account.PaidUnits, account.DebtUnits,
-		retainedTaskID, account.UpdatedAt); err != nil {
+		retainedTaskID, account.UpdatedAt, account.FrozenMonthlyUnits); err != nil {
 		return fmt.Errorf("store model credit account: %w", err)
 	}
 	return nil
@@ -71,7 +71,7 @@ func saveModelCreditAccount(ctx context.Context, tx *sql.Tx, account *store.Mode
 func readModelCreditAccountForUpdate(ctx context.Context, tx *sql.Tx, uid int64) (*store.ModelCreditAccount, bool, error) {
 	account := store.ModelCreditAccount{UID: uid}
 	err := tx.QueryRowContext(ctx, modelCreditAccountQuery+` FOR UPDATE`, uid).Scan(
-		&account.MonthlyUnits, &account.GiftUnits, &account.PaidUnits, &account.DebtUnits,
+		&account.MonthlyUnits, &account.GiftUnits, &account.PaidUnits, &account.DebtUnits, &account.FrozenMonthlyUnits,
 		&account.RetainedTaskID, &account.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &account, false, nil
@@ -95,7 +95,7 @@ func recordModelCreditEvent(ctx context.Context, tx *sql.Tx, key string, account
 		 monthly_balance, gift_balance, paid_balance, debt_balance)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		key, account.UID, bucket, eventType, units, requestID,
-		account.MonthlyUnits, account.GiftUnits, account.PaidUnits, account.DebtUnits); err != nil {
+		account.MonthlyUnits+account.FrozenMonthlyUnits, account.GiftUnits, account.PaidUnits, account.DebtUnits); err != nil {
 		return fmt.Errorf("record model credit event: %w", err)
 	}
 	return nil
@@ -310,9 +310,7 @@ func (a *Adapter) ReserveModelCredits(ctx context.Context, in store.ModelCreditR
 		return nil, nil, fmt.Errorf("begin model credit reserve: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Before holding anything, bring the monthly bucket to the period `now` falls
-	// in: a stale period's leftover is expired and the current period is granted,
-	// so a request can never spend last month's allowance or miss this month's.
+	// Reconcile before allocating so only active monthly points fund a new hold.
 	// 对账同时拿到账户行锁，下面读任务状态因此不会和 resume/finish 交错。
 	now := time.Now().UTC()
 	account, _, err := reconcileModelCreditMonthlyPeriod(ctx, tx, in.UID, now)
@@ -347,6 +345,11 @@ func (a *Adapter) ReserveModelCredits(ctx context.Context, in store.ModelCreditR
 	if !store.ModelCreditTaskPlanTierTrusted(task.PlanTier) {
 		return nil, nil, store.ErrModelCreditTaskTierUnavailable
 	}
+	if permitted, err := modelCreditTaskPermitted(ctx, tx, in.UID, now); err != nil {
+		return nil, nil, err
+	} else if !permitted {
+		return nil, nil, store.ErrModelCreditTaskNotRunning
+	}
 	split, funded := store.AllocateModelCreditUnits(*account, in.Units)
 	unfunded := int64(0)
 	if !funded {
@@ -360,6 +363,9 @@ func (a *Adapter) ReserveModelCredits(ctx context.Context, in store.ModelCreditR
 			// 余额刚好够（并发下可能在上面的判定之后补上），按正常预占处理。
 			unfunded = 0
 		}
+	}
+	if err := debitModelCreditMonthlyLots(ctx, tx, in.UID, in.RequestID, split.Monthly); err != nil {
+		return nil, nil, err
 	}
 	account.MonthlyUnits -= split.Monthly
 	account.GiftUnits -= split.Gift
@@ -422,8 +428,7 @@ func (a *Adapter) SettleModelCredits(ctx context.Context, in store.ModelCreditSe
 	}
 	defer func() { _ = tx.Rollback() }()
 	// Settling must see the period `now` falls in, not a stale bucket: an overage
-	// is otherwise taken from last period's allowance, and a released hold could
-	// be handed back into a period it never belonged to.
+	// Overage may use only the current spendable balance.
 	now := time.Now().UTC()
 	account, _, err := reconcileModelCreditMonthlyPeriod(ctx, tx, in.UID, now)
 	if err != nil {
@@ -449,20 +454,8 @@ func (a *Adapter) SettleModelCredits(ctx context.Context, in store.ModelCreditSe
 		Gift:    reservation.Split.Gift - consumed.Gift,
 		Paid:    reservation.Split.Paid - consumed.Paid,
 	}
-	// A hold taken in one period and settled in the next must not hand last
-	// period's monthly units back into the current period: they are expired, not
-	// returned, so credit is neither reused across periods nor moved to someone
-	// else's allowance.
-	expiredMonthly := int64(0)
-	if released.Monthly > 0 {
-		expired, periodErr := modelCreditMonthlyHoldExpired(ctx, tx, in.UID, reservation.CreatedAt, now)
-		if periodErr != nil {
-			return nil, nil, periodErr
-		}
-		if expired {
-			expiredMonthly, released.Monthly = released.Monthly, 0
-		}
-	}
+	// Charge the hold in its original order. Return any unused, unrevoked
+	// monthly units to the original lot, frozen if there is no active package.
 	// 已派发的调用必须结算，所以这里不再因为余额不够而报错：先从当下真实余额扣，
 	// 扣不动的部分（含保留任务用掉的 unfunded 预占）落成真实欠款。
 	fundedTotal := reservation.Split.Total()
@@ -471,9 +464,16 @@ func (a *Adapter) SettleModelCredits(ctx context.Context, in store.ModelCreditSe
 	overage, uncovered := store.AllocateModelCreditUnitsPartial(*account, excess)
 	debtAccrued := unfundedUsed + uncovered
 	var ok bool
-	if account.MonthlyUnits, ok = store.ModelCreditAddUnits(account.MonthlyUnits, released.Monthly); !ok {
-		return nil, nil, store.ErrModelCreditInvalid
+	if err := debitModelCreditMonthlyLots(ctx, tx, in.UID, "", overage.Monthly); err != nil {
+		return nil, nil, err
 	}
+	returned, err := returnModelCreditMonthlyHold(ctx, tx, account, in.RequestID,
+		reservation.Split.Monthly, consumed.Monthly, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	expiredMonthly := released.Monthly - returned
+	released.Monthly = returned
 	if account.GiftUnits, ok = store.ModelCreditAddUnits(account.GiftUnits, released.Gift); !ok {
 		return nil, nil, store.ErrModelCreditInvalid
 	}
@@ -555,8 +555,7 @@ func (a *Adapter) ReleaseModelCredits(ctx context.Context, in store.ModelCreditR
 		return nil, nil, fmt.Errorf("begin model credit release: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Same as settle: reconcile first so a release never returns units into a
-	// period the hold did not belong to.
+	// Reconcile so any returned monthly units follow the current freeze state.
 	now := time.Now().UTC()
 	account, _, err := reconcileModelCreditMonthlyPeriod(ctx, tx, in.UID, now)
 	if err != nil {
@@ -575,32 +574,20 @@ func (a *Adapter) ReleaseModelCredits(ctx context.Context, in store.ModelCreditR
 	if reservation.NoUsageConfirmedAt == nil {
 		return nil, nil, store.ErrModelCreditConflict
 	}
-	// Same cross-period rule as settle: the unused monthly part of a hold taken
-	// in a previous period is expired instead of being returned to this period.
 	released := reservation.Split
-	expiredMonthly := int64(0)
-	if released.Monthly > 0 {
-		expired, periodErr := modelCreditMonthlyHoldExpired(ctx, tx, in.UID, reservation.CreatedAt, now)
-		if periodErr != nil {
-			return nil, nil, periodErr
-		}
-		if expired {
-			expiredMonthly, released.Monthly = released.Monthly, 0
-		}
+	returned, err := returnModelCreditMonthlyHold(ctx, tx, account, in.RequestID,
+		released.Monthly, 0, now)
+	if err != nil {
+		return nil, nil, err
 	}
-	for _, part := range modelCreditBucketParts(released) {
-		var ok bool
-		switch part.bucket {
-		case store.ModelCreditBucketMonthly:
-			account.MonthlyUnits, ok = store.ModelCreditAddUnits(account.MonthlyUnits, part.units)
-		case store.ModelCreditBucketGift:
-			account.GiftUnits, ok = store.ModelCreditAddUnits(account.GiftUnits, part.units)
-		case store.ModelCreditBucketPaid:
-			account.PaidUnits, ok = store.ModelCreditAddUnits(account.PaidUnits, part.units)
-		}
-		if !ok {
-			return nil, nil, store.ErrModelCreditInvalid
-		}
+	expiredMonthly := released.Monthly - returned
+	released.Monthly = returned
+	var ok bool
+	if account.GiftUnits, ok = store.ModelCreditAddUnits(account.GiftUnits, released.Gift); !ok {
+		return nil, nil, store.ErrModelCreditInvalid
+	}
+	if account.PaidUnits, ok = store.ModelCreditAddUnits(account.PaidUnits, released.Paid); !ok {
+		return nil, nil, store.ErrModelCreditInvalid
 	}
 	reservation.State = store.ModelCreditReservationReleased
 	// 释放把额度还给用户，但如果账户仍然是被耗尽的，保留名额必须按 running 任务重算，
@@ -644,7 +631,7 @@ func (a *Adapter) GetModelCreditAccount(ctx context.Context, uid int64) (*store.
 	}
 	account := store.ModelCreditAccount{UID: uid}
 	if err := a.db.QueryRowContext(ctx, modelCreditAccountQuery, uid).Scan(
-		&account.MonthlyUnits, &account.GiftUnits, &account.PaidUnits, &account.DebtUnits,
+		&account.MonthlyUnits, &account.GiftUnits, &account.PaidUnits, &account.DebtUnits, &account.FrozenMonthlyUnits,
 		&account.RetainedTaskID, &account.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrModelCreditNotFound

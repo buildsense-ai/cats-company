@@ -15,9 +15,9 @@ import (
 //
 // 覆盖 docs/credit-plan-rules-20261109.md 里可自动验证的条款：
 //   - P0-5 自然月对日：1/31 → 2/28 → 3/31，提前续费不重发；
-//   - P0-2 月额度当期有效、不结转：跨期作废旧周期余额，并发/重复执行只发一次；
-//   - P0-2 跨期预留不挪用：旧周期的预留释放不会塞回新周期；
-//   - P1-1 邀请赠送 20 credit，且不覆盖已付 primary、不发月额度。
+//   - P0-2 未用月额度结转，新周期并发/重复执行只发一次；
+//   - P0-2 跨期预留按原发放批次归还；
+//   - P1-1 旧邀请码赠送 20 credit，不覆盖已付 primary、不发月额度。
 func TestPostgresModelCreditMonthlyPeriodReconcile(t *testing.T) {
 	db := openCreditMonthlyTestDB(t)
 	ctx := context.Background()
@@ -59,7 +59,7 @@ func TestPostgresModelCreditMonthlyPeriodReconcile(t *testing.T) {
 		t.Fatalf("repeat reconcile changed the allowance: %d -> %d", first.MonthlyUnits, again.MonthlyUnits)
 	}
 
-	// 本期预留 500 credit，跨到下一个周期后剩余额度作废、新周期重新发放。
+	// 本期预留 500 credit，未占用的余点留到下一周期。
 	// 账本预留必须挂在已经 start 的 root 任务上（P0-3.9）。
 	if decision, taskErr := db.ApplyModelCreditTask(ctx, store.ModelCreditTaskInput{
 		UID: uid, TaskID: "root-monthly-period", Action: store.ModelCreditTaskActionStart,
@@ -72,17 +72,17 @@ func TestPostgresModelCreditMonthlyPeriodReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reserve in first period: %v", err)
 	}
-	if held.MonthlyUnits != 11_500*store.ModelCreditUnitsPerCredit {
-		t.Fatalf("after hold monthly = %d units, want 11500 credit", held.MonthlyUnits)
+	if held.MonthlyUnits != 23_500*store.ModelCreditUnitsPerCredit {
+		t.Fatalf("after hold monthly = %d units, want 23500 credit", held.MonthlyUnits)
 	}
 
-	// 走到下一个周期：旧周期剩下的 11,500 作废，新周期重新发 12,000。
+	// 旧余点 11,500 加已开始的两个周期各 12,000。
 	second, err := db.ReconcileModelCreditMonthlyPeriod(ctx, uid, time.Now().UTC().AddDate(0, 1, 0))
 	if err != nil {
 		t.Fatalf("second period reconcile: %v", err)
 	}
-	if second.MonthlyUnits != 12_000*store.ModelCreditUnitsPerCredit {
-		t.Fatalf("second period allowance = %d units, want exactly 12000 (old period must not carry over)", second.MonthlyUnits)
+	if second.MonthlyUnits != 35_500*store.ModelCreditUnitsPerCredit {
+		t.Fatalf("rolled balance = %d units, want 35500 credit", second.MonthlyUnits)
 	}
 
 	// 模拟真实跨期：这笔预留是上个周期创建的（跨期时后台扫描已经换过期）。
@@ -90,7 +90,7 @@ func TestPostgresModelCreditMonthlyPeriodReconcile(t *testing.T) {
 		WHERE uid = $1 AND request_id = $2`, uid, reservation.RequestID, anchor); err != nil {
 		t.Fatalf("backdate reservation: %v", err)
 	}
-	// 旧周期的预留此时释放：未用的 500 credit 属于上个周期，必须作废而不是塞回本期。
+	// 原批次尚未被撤销，未用的 500 点应原样归还。
 	settled, afterSettle, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{
 		UID: uid, RequestID: reservation.RequestID, ActualUnits: 0,
 	})
@@ -100,16 +100,11 @@ func TestPostgresModelCreditMonthlyPeriodReconcile(t *testing.T) {
 	if settled.State != store.ModelCreditReservationSettled {
 		t.Fatalf("reservation state = %q", settled.State)
 	}
-	if afterSettle.MonthlyUnits != 12_000*store.ModelCreditUnitsPerCredit {
-		t.Fatalf("cross-period release leaked into the current period: monthly = %d units, want 12000 credit", afterSettle.MonthlyUnits)
+	if afterSettle.MonthlyUnits != 36_000*store.ModelCreditUnitsPerCredit {
+		t.Fatalf("cross-period release = %d units, want 36000 credit", afterSettle.MonthlyUnits)
 	}
-	var expireEvents int
-	if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_credit_ledger_events
-		WHERE uid = $1 AND bucket = 'monthly' AND event_type = 'expire'`, uid).Scan(&expireEvents); err != nil {
-		t.Fatalf("count expire events: %v", err)
-	}
-	if expireEvents < 2 {
-		t.Fatalf("expected expiry events for the carried-over allowance and the stale hold, got %d", expireEvents)
+	if got := creditSubscriptionEventCount(t, db, uid, store.ModelCreditBucketMonthly, store.ModelCreditEventExpire); got != 0 {
+		t.Fatalf("normal rollover must not expire credit, got %d expiry events", got)
 	}
 	var grants int
 	if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_credit_ledger_events
@@ -121,7 +116,7 @@ func TestPostgresModelCreditMonthlyPeriodReconcile(t *testing.T) {
 	}
 }
 
-// 订阅结束后，剩下的月额度必须作废：额度不结转，也不能在无套餐状态下继续花。
+// 订阅结束后余点冻结；充值独立入账，续订才解冻并发新一期。
 func TestPostgresModelCreditMonthlyPeriodExpiresWithSubscription(t *testing.T) {
 	db := openCreditMonthlyTestDB(t)
 	ctx := context.Background()
@@ -154,8 +149,22 @@ func TestPostgresModelCreditMonthlyPeriodExpiresWithSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile expired subscription: %v", err)
 	}
-	if expired.MonthlyUnits != 0 {
-		t.Fatalf("expired subscription kept %d monthly units, want 0", expired.MonthlyUnits)
+	if expired.MonthlyUnits != 0 || expired.FrozenMonthlyUnits != funded.MonthlyUnits || expired.SpendableUnits() != 0 {
+		t.Fatalf("expired subscription should freeze its balance: %+v", expired)
+	}
+	if _, err := db.GrantModelCredits(ctx, store.ModelCreditGrantInput{UID: uid, Bucket: store.ModelCreditBucketPaid,
+		Units: 100 * store.ModelCreditUnitsPerCredit, IdempotencyKey: "rollover-topup"}); err != nil {
+		t.Fatalf("book account top-up: %v", err)
+	}
+	renewAt := time.Date(2027, time.March, 6, 10, 0, 0, 0, time.UTC)
+	withPaid, err := db.ReconcileModelCreditMonthlyPeriod(ctx, uid, renewAt.Add(-time.Hour))
+	if err != nil || withPaid.MonthlyUnits != 0 || withPaid.FrozenMonthlyUnits != funded.MonthlyUnits || withPaid.SpendableUnits() != 100*store.ModelCreditUnitsPerCredit {
+		t.Fatalf("top-up must not unlock frozen points: account=%+v err=%v", withPaid, err)
+	}
+	insertCreditMonthlyTestEntitlement(t, db, uid, planID, "order", "ORDER-UNFREEZE", renewAt, renewAt.AddDate(0, 1, 0), renewAt)
+	renewed, err := db.ReconcileModelCreditMonthlyPeriod(ctx, uid, renewAt)
+	if err != nil || renewed.MonthlyUnits != 8_000*store.ModelCreditUnitsPerCredit || renewed.FrozenMonthlyUnits != 0 || renewed.PaidUnits != withPaid.PaidUnits {
+		t.Fatalf("renewal must unlock remaining points and grant one term: account=%+v err=%v", renewed, err)
 	}
 }
 

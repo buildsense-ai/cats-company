@@ -207,7 +207,7 @@ const pricingFaqs = [{
   answer: '个人套餐按月计费，周期按自然月对日计算，没有对应日期时取当月月末，不使用固定 30 天。当前展示入门版 ¥39、日常版 ¥79、专业版 ¥159，团队版 ¥599 仍按 30 天一期。尚未公布年付价格，也不会在此页发起自动续费。'
 }, {
   question: '页面上的 credit 如何理解？',
-  answer: '1 元对应 100 credit，模型调用按实际用量及套餐费率扣费。月额度当期有效，不结转；提前续费只延长有效期，不提前补额。扣费顺序为月额度、邀请赠送额度、付费余额。独立余额充值暂未开放。'
+  answer: '1 元对应 100 credit，模型调用按实际用量及套餐费率扣费。月额度在套餐有效期内结转，未用部分并进下一期；套餐到期后未用部分冻结、续费后解锁，到期期间不发新额度。提前续费只延长有效期，不提前补额。扣费顺序为月额度、邀请赠送额度、付费余额。独立余额充值暂未开放。'
 }, {
   question: '峰谷时段怎么计算？',
   answer: '模型调用按北京时间区分峰谷：工作日 09:00–12:00 和 14:00–18:00 为峰时，其余时段为谷时；周末和法定节假日全天为谷时，调休补班的周末同样按谷时计算。峰谷费率差异以模型官方公布的价格为准。'
@@ -225,7 +225,7 @@ const pricingFaqs = [{
   answer: '团队版是最多 10 人共同使用和管理 AI 员工的套餐，包含独享服务器、共享知识库和权限管理，价格与额度按 30 天一期计算。Business Start 是 ¥4,999 / 月起的企业落地服务，按约定范围提供环境准备、启动培训、首批场景和 Skill 初始化；复杂集成、私有化和长期支持需另行咨询。'
 }, {
   question: '邀请码会改变套餐价格吗？',
-  answer: '不会。邀请码兑换 20 credit 赠送额度，独立记账并叠加在付费套餐之上，不替代付费套餐，也不是折扣券，不改变套餐价格；赠送额度不能用于抵扣欠款。已有邀请码可通过页面下方入口前往 CatsCo 工作台登录。'
+  answer: '不会。邀请码兑换 20 credit 赠送额度，独立记账并叠加在付费套餐之上，不替代付费套餐，也不是折扣券，不改变套餐价格；赠送额度不能用于抵扣欠款。兑换有限期的公开套餐邀请码时，按该套餐首期月额度发放点数，与可配置的赠送额度分开记账、互不顶替。已有邀请码可通过页面下方入口前往 CatsCo 工作台登录。'
 }];
 function Price({
   amount
@@ -310,7 +310,7 @@ export function PricingPage() {
             </div>
           </section>
         </div>
-        <p className="pricing-estimate-note">月额度当期有效，不结转；1 元对应 100 credit。模型调用按实际用量及套餐费率扣费。</p>
+        <p className="pricing-estimate-note">月额度在套餐有效期内结转，到期未用部分冻结、续费后解锁；1 元对应 100 credit。模型调用按实际用量及套餐费率扣费。</p>
         <section className="pricing-access" aria-labelledby="pricing-access-title">
           <div><span className="pricing-section-eyebrow">EARLY ACCESS</span><h2 id="pricing-access-title">已有邀请码？</h2><p>邀请码兑换 20 credit 赠送额度，独立记账并叠加在付费套餐之上，不替代套餐、不是折扣券，也不改变套餐价格。</p></div>
           <a href={appLoginUrl({ access: 'invite', source: 'pricing', next: '/?open=relay' })}>使用邀请码登录<Icon name="arrowRight" /></a>

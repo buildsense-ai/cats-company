@@ -276,6 +276,15 @@ test('website credit copy matches the approved credit plan rules', async () => {
   assert.doesNotMatch(pricing, /官方价格|官方原价|平台服务费|×\s*(?:1\.8|2)/)
   assert.match(pricing, /按套餐费率计费，无折扣/)
   assert.match(pricing, /'套餐费率 9 折'/)
+  // 已确认规则：有效期内未用月额度结转；到期未用部分冻结、续费后解锁，到期期间不发新额度。
+  assert.match(pricing, /有效期内未用月额度结转|有效期内结转/)
+  assert.match(pricing, /到期未用部分冻结/)
+  assert.match(pricing, /续费后解锁/)
+  assert.match(pricing, /到期期间不发新额度/)
+  assert.doesNotMatch(pricing, /不结转/)
+  // 有限期公开套餐邀请码发首期月额度，与可配置的赠送额度分开记账。
+  assert.match(pricing, /按该套餐首期月额度发放点数/)
+  assert.match(pricing, /与可配置的赠送额度分开记账/)
 })
 
 test('website retention distinguishes ordinary deadlines from retained environments', async () => {
