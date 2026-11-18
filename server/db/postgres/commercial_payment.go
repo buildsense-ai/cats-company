@@ -495,21 +495,21 @@ func (a *Adapter) CloseExpiredCommercialOrders(limit int) (int64, error) {
 // the first expiry, which used to create overlapping entitlements and a second
 // allowance in the same month. The tier — not the plan row or its slug — is what
 // "the same product" means, so a re-listed package on the same rung renews the
-// same chain. Perpetual rows (expires_at IS NULL) never join a chain: there is no
-// finite moment a paid period could be appended after.
+// Only finite billing terms join the chain, including an audited invite
+// repair whose billing end is independent of its model-access entitlement.
 func commercialPaidChainEnd(tx *sql.Tx, uid int64, tier int, now time.Time) (time.Time, bool, error) {
 	if tier <= 0 {
 		return time.Time{}, false, nil
 	}
 	rows, err := tx.Query(`
-		SELECT e.starts_at, e.expires_at
+		SELECT e.starts_at, `+modelCreditMonthlyTermEndSQL+`
 		FROM commercial_entitlements e
 		JOIN commercial_plans p ON p.id = e.plan_id
+		LEFT JOIN commercial_invite_monthly_repairs r ON r.entitlement_id = e.id AND e.source = 'invite'
 		WHERE e.uid = $1 AND e.state = 'active'
 		  AND p.plan_tier = $2
-		  AND e.expires_at IS NOT NULL
-		  AND e.expires_at > $3
-		ORDER BY e.starts_at, e.expires_at, e.id
+		  AND `+modelCreditMonthlyTermEndSQL+` > $3
+		ORDER BY e.starts_at, `+modelCreditMonthlyTermEndSQL+`, e.id
 		FOR UPDATE OF e`, uid, tier, now.UTC())
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("load commercial paid chain: %w", err)
@@ -566,14 +566,15 @@ func commercialPaidChainAnchor(tx *sql.Tx, uid int64, tier int, paidAt, periodSt
 	}
 	var anchor sql.NullTime
 	err := tx.QueryRow(`
-		SELECT CASE WHEN e.source = 'invite' AND e.invite_monthly_units > 0 AND e.expires_at IS NOT NULL
-		            THEN e.expires_at ELSE COALESCE(e.period_anchor_at, e.starts_at) END
+		SELECT CASE WHEN e.source = 'invite' AND (e.invite_monthly_units > 0 OR r.entitlement_id IS NOT NULL)
+		            THEN `+modelCreditMonthlyTermEndSQL+` ELSE COALESCE(e.period_anchor_at, e.starts_at) END
 		FROM commercial_entitlements e
 		JOIN commercial_plans p ON p.id = e.plan_id
+		LEFT JOIN commercial_invite_monthly_repairs r ON r.entitlement_id = e.id AND e.source = 'invite'
 		WHERE e.uid = $1 AND e.state = 'active'
 		  AND p.plan_tier = $2
 		  AND e.starts_at <= $3
-		  AND e.expires_at IS NOT DISTINCT FROM $4
+		  AND `+modelCreditMonthlyTermEndSQL+` IS NOT DISTINCT FROM $4
 		ORDER BY CASE WHEN e.source IN ('order','admin','internal') THEN 0 ELSE 1 END,
 		         e.id DESC
 		LIMIT 1`, uid, tier, periodStartsAt.UTC(), tailEnd).Scan(&anchor)
