@@ -21,7 +21,6 @@ import { readRelationships } from '../ooxml/zip.js';
 import {
   absoluteFromRelative, alignBoxes, clampBoxToSlide, relativeFromAbsolute,
 } from '../pptx/geometry.js';
-import ElementList from './ElementList.jsx';
 import PropertyPanel from './PropertyPanel.jsx';
 import EditableCanvas from './EditableCanvas.jsx';
 import InsertMenu from './InsertMenu.jsx';
@@ -878,7 +877,7 @@ export default function OfficePreview({
 
       {notice ? <div className="office-preview-notice">{notice}</div> : null}
 
-      <div className="office-preview-body">
+      <div className="office-preview-body" data-office-side={editing ? 'on' : 'off'}>
         <div className="office-preview-stage">
           <EditableCanvas
             slide={renderedSlide}
@@ -896,40 +895,34 @@ export default function OfficePreview({
             readOnly={!editing}
           />
         </div>
-        <div className="office-panel-resizer" data-office-panel-resizer=""
-          role="separator" aria-orientation="vertical" tabIndex={0}
-          onPointerDown={startPanelResize}
-          onKeyDown={(event) => {
-            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-            event.preventDefault();
-            const delta = event.key === 'ArrowLeft' ? 16 : -16;
-            setPanelWidth((value) => saveOfficePanelWidth(value + delta));
-          }} />
-        <div className="office-preview-side">
-          <ElementList
-            shapes={slide?.shapes || []}
-            selectedId={selectedId}
-            pickedIds={pickedIds}
-            onSelect={handleSelect}
-            onSelectMany={handleSelectMany}
-            onHover={setHoveredId}
-            slideIndex={slideIndex}
-            slideCount={slideCount}
-          />
-          <PropertyPanel
-            shape={selectedShape}
-            paragraphs={selectedParagraphs}
-            styles={selectedStyles}
-            draftBox={selectedBox}
-            onDraftChange={handleTextChange}
-            onStyleChange={handleStyleChange}
-            onBoxChange={handleBoxField}
-            onAlign={handleAlign}
-            onAlignToSlide={handleAlignToSlide}
-            disabled={saving}
-            readOnly={!editing}
-          />
-        </div>
+        {editing ? (
+          <>
+            <div className="office-panel-resizer" data-office-panel-resizer=""
+              role="separator" aria-orientation="vertical" tabIndex={0}
+              onPointerDown={startPanelResize}
+              onKeyDown={(event) => {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                event.preventDefault();
+                const delta = event.key === 'ArrowLeft' ? 16 : -16;
+                setPanelWidth((value) => saveOfficePanelWidth(value + delta));
+              }} />
+            <div className="office-preview-side">
+              <PropertyPanel
+                shape={selectedShape}
+                paragraphs={selectedParagraphs}
+                styles={selectedStyles}
+                draftBox={selectedBox}
+                onDraftChange={handleTextChange}
+                onStyleChange={handleStyleChange}
+                onBoxChange={handleBoxField}
+                onAlign={handleAlign}
+                onAlignToSlide={handleAlignToSlide}
+                disabled={saving}
+                readOnly={!editing}
+              />
+            </div>
+          </>
+        ) : null}
       </div>
 
       {pendingInherited ? (

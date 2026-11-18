@@ -48,9 +48,10 @@ describe('Office read-only posture', () => {
     });
 
     expect(container.querySelector('[data-office-mode]').getAttribute('data-office-mode')).toBe('readonly');
-    const fields = [...container.querySelectorAll('.office-preview-side input, .office-preview-side textarea, .office-preview-side select')];
-    expect(fields.length).toBeGreaterThan(0);
-    expect(fields.every(field => field.disabled)).toBe(true);
+    // Read-only hides the edit panel entirely, so a reader who never enters edit mode
+    // keeps the full width for the document instead of a disabled property sidebar.
+    expect(container.querySelector('.office-preview-side')).toBeNull();
+    expect(container.querySelector('.office-preview-body').getAttribute('data-office-side')).toBe('off');
     expect(container.querySelector('[data-office-selection]')).toBeNull();
     expect(container.querySelector('[data-office-edit-toggle]').textContent).toBe('编辑');
 
@@ -68,8 +69,7 @@ describe('Office read-only posture', () => {
     await act(async () => Simulate.click(container.querySelector('[data-office-edit-toggle]')));
     expect(container.querySelector('[data-office-mode]').getAttribute('data-office-mode')).toBe('readonly');
     expect(container.querySelector('[data-office-selection]')).toBeNull();
-    expect(container.querySelector('.office-preview-side textarea[data-office-text-input]').value)
-      .toBe('Draft survives completion');
+    expect(container.querySelector('.office-preview-side')).toBeNull();
     expect(container.textContent).toContain('Draft survives completion');
     act(() => root.unmount());
   });
@@ -82,9 +82,8 @@ describe('Office read-only posture', () => {
     });
 
     expect(container.querySelector('[data-office-mode]').getAttribute('data-office-mode')).toBe('readonly');
-    const fields = [...container.querySelectorAll('.office-preview-side input, .office-preview-side textarea, .office-preview-side select')];
-    expect(fields.length).toBeGreaterThan(0);
-    expect(fields.every(field => field.disabled)).toBe(true);
+    expect(container.querySelector('.office-preview-side')).toBeNull();
+    expect(container.querySelector('.office-preview-body').getAttribute('data-office-side')).toBe('off');
 
     await act(async () => Simulate.click(container.querySelector('[data-office-edit-toggle]')));
     expect(container.querySelector('[data-office-mode]').getAttribute('data-office-mode')).toBe('edit');
@@ -95,8 +94,8 @@ describe('Office read-only posture', () => {
     expect(container.textContent).toContain('Word draft survives completion');
     await act(async () => Simulate.click(container.querySelector('[data-office-edit-toggle]')));
     expect(container.querySelector('[data-office-mode]').getAttribute('data-office-mode')).toBe('readonly');
-    expect(container.querySelector('.office-preview-side textarea[data-office-text-input]').value)
-      .toBe('Word draft survives completion');
+    expect(container.querySelector('.office-preview-side')).toBeNull();
+    expect(container.textContent).toContain('Word draft survives completion');
     act(() => root.unmount());
   });
 });

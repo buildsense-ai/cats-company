@@ -673,7 +673,7 @@ export default function WordPreview({
 
       {notice ? <div className="office-preview-notice">{notice}</div> : null}
 
-      <div className="office-preview-body">
+      <div className="office-preview-body" data-office-side={editing ? 'on' : 'off'}>
         <div className="office-preview-stage office-docx-stage">
           <DocxCanvas
             model={renderedModel}
@@ -685,18 +685,19 @@ export default function WordPreview({
             onCellSelect={editing ? handleCellSelect : undefined}
           />
         </div>
-        <div className="office-panel-resizer" data-office-panel-resizer=""
-          role="separator" aria-orientation="vertical" tabIndex={0}
-          onPointerDown={startPanelResize}
-          onKeyDown={(event) => {
-            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-            event.preventDefault();
-            const delta = event.key === 'ArrowLeft' ? 16 : -16;
-            setPanelWidth((value) => saveOfficePanelWidth(value + delta));
-          }} />
-        <div className="office-preview-side">
-          <BlockList blocks={renderedModel.blocks} selectedId={selectedId} onSelect={setSelectedId} />
-          <BlockPanel
+        {editing ? (
+          <>
+            <div className="office-panel-resizer" data-office-panel-resizer=""
+              role="separator" aria-orientation="vertical" tabIndex={0}
+              onPointerDown={startPanelResize}
+              onKeyDown={(event) => {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                event.preventDefault();
+                const delta = event.key === 'ArrowLeft' ? 16 : -16;
+                setPanelWidth((value) => saveOfficePanelWidth(value + delta));
+              }} />
+            <div className="office-preview-side">
+              <BlockPanel
             block={selectedBlock}
             text={selectedText}
             style={effectiveStyle}
@@ -739,8 +740,10 @@ export default function WordPreview({
                 cells: { ...current.cells, [selectedCellKey]: value } }));
             }}
             disabled={saving || !editing}
-          />
-        </div>
+              />
+            </div>
+          </>
+        ) : null}
       </div>
     </div>
   );

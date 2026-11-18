@@ -29,11 +29,11 @@ func TestFileVersionBindingsSchemaColumnsUniqueAndIndex(t *testing.T) {
 }
 
 func TestFileVersionBindingsSchemaMigrationUpDown(t *testing.T) {
-	up, err := os.ReadFile("../migrations/postgres/000067_file_version_bindings.up.sql")
+	up, err := os.ReadFile("../migrations/postgres/000079_file_version_bindings.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	down, err := os.ReadFile("../migrations/postgres/000067_file_version_bindings.down.sql")
+	down, err := os.ReadFile("../migrations/postgres/000079_file_version_bindings.down.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
