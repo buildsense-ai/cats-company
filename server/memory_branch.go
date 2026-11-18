@@ -90,7 +90,7 @@ func normalizedMemoryBranch(content interface{}) (map[string]interface{}, bool) 
 			return nil, false
 		}
 		ids[node.ID] = true
-		label := map[string]string{"assertion": "记忆断言", "condition": "适用条件", "omission": "已知缺口", "correction": "更正", "session_query": "历史提问", "session_result": "历史回答", "learning_node": "学习记录", "message": "原始消息", "tool_call": "工具调用"}[node.Kind]
+		label := map[string]string{"archive_turn": "会话摘录", "assertion": "记忆断言", "condition": "适用条件", "omission": "已知缺口", "correction": "更正", "session_query": "历史提问", "session_result": "历史回答", "learning_node": "学习记录", "message": "原始消息", "tool_call": "工具调用"}[node.Kind]
 		if label == "" {
 			label = "记忆节点"
 		}

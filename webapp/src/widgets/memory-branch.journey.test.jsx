@@ -43,6 +43,28 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); setToken(null); vi.unstubAllGlobals(); });
 afterAll(() => { mkdirSync('/tmp/catsco-branch-sources', { recursive: true }); writeFileSync('/tmp/catsco-branch-sources/ui-journey.json', JSON.stringify({ evidence }, null, 2)); });
 
+it('archive read is owner-scoped on click and only the matching pin renders', async () => {
+  const reader = {kind:'archive_turn', archive:{day:'2026-11-18',offset:123,digest:revision}};
+  const node = {...graph.nodes[0],kind:'archive_turn',reader};
+  const event = {...graph,nodes:[node],edges:[]};
+  fetch.mockResolvedValueOnce(new Response('{}',{status:404}));
+  await render([event], true); await click(container.querySelector('.cc-memory-source'));
+  expect(requests.length).toBe(0);
+  expect(globalThis.document.body.textContent).toContain('无权查看或来源已不可用');
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify({archive:reader.archive,source:{status:'read',coverage:'complete',text:'verified archived conversation'}})));
+  await click(globalThis.document.querySelector('.cc-diary-read-error button'));
+  expect(globalThis.document.body.textContent).toContain('verified archived conversation');
+});
+
+it('shows the consumed summary from grp_7445 during replay without inventing a readable source', async () => {
+  const consumed = { ...base, sequence: 3, status: 'unavailable', consumed_turn_id: base.origin_turn_id, observation_id: 'obs' };
+  await render([base, consumed], true);
+  expect(container.textContent).toContain('主 Agent 已收到记忆摘要');
+  expect(container.querySelector('.cc-memory-source')).toBeNull();
+  expect(requests).toHaveLength(0);
+  evidence.push({journey: 'grp_7445 summary consumed', clickableSources: 0});
+});
+
 it('B1/B2/B3/B7: live replay deduplicates by run/sequence and distinguishes ready from actual injection', async () => {
   await render([base, { ...graph, status: 'ready', sequence: 2, injected_refs: [], consumed_turn_id: undefined }]);
   expect(container.textContent).not.toContain('已加入主 Agent 上下文');
