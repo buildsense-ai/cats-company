@@ -42,7 +42,10 @@ func ensureMessageSearchIndexDDL(ctx context.Context, conn *sql.Conn, indexName,
 	`, indexName).Scan(&exists, &valid); err != nil {
 		return err
 	}
-	if exists && !valid {
+	if valid {
+		return nil
+	}
+	if exists {
 		if _, err := conn.ExecContext(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+indexName); err != nil {
 			return fmt.Errorf("drop interrupted search index: %w", err)
 		}
@@ -50,11 +53,8 @@ func ensureMessageSearchIndexDDL(ctx context.Context, conn *sql.Conn, indexName,
 	if _, err := conn.ExecContext(ctx, indexDDL); err != nil {
 		return err
 	}
-	if !valid {
-		// Statistics let custom plans choose ordered history reads for common
-		// terms and the GIN index for selective ones after the initial build.
-		_, err := conn.ExecContext(ctx, `ANALYZE messages`)
-		return err
-	}
-	return nil
+	// Statistics let custom plans choose ordered history reads for common
+	// terms and the GIN index for selective ones after the initial build.
+	_, err := conn.ExecContext(ctx, `ANALYZE messages`)
+	return err
 }

@@ -276,7 +276,7 @@ jobs:
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
           sudo -n -E "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
-          sudo -n -E "$root/compose/remote-deploy.sh" "$root" "$revision"
+          sudo -n -E "$root/compose/remote-deploy.sh" "$root" "$revision" "${{ github.run_id }}-${{ github.run_attempt }}"
           sudo -n "$root/compose/ensure-stt-websocket-nginx.sh" /etc/nginx/sites-available/catscompany-app
           sudo -n "$root/compose/ensure-image-timeout-nginx.sh" /etc/nginx/sites-available/catscompany-app 580
           sudo -n "$root/compose/ensure-shimo-login-nginx.sh" /etc/nginx/sites-available/catscompany-app "$root/env/prod.env"
@@ -314,7 +314,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
-          ssh ${SSH_OPTS} "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} sudo -n -E bash ${PROD_STACK_ROOT}/compose/remote-rollback.sh ${PROD_STACK_ROOT} || true"
+          ssh ${SSH_OPTS} "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} sudo -n -E bash ${PROD_STACK_ROOT}/compose/remote-rollback.sh ${PROD_STACK_ROOT} ${{ github.run_id }}-${{ github.run_attempt }} || true"
 
       - name: Dump prod status on failure
         if: ${{ failure() && steps.gate.outputs.ready == 'true' }}

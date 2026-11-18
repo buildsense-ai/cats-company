@@ -311,10 +311,35 @@ func startDiagnosticsServer() {
 	}()
 }
 
+func preparePostgresSchema(cfgPath string) error {
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load configuration: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(cfg.Database.Driver), "postgres") &&
+		!strings.EqualFold(strings.TrimSpace(cfg.Database.Driver), "postgresql") {
+		return fmt.Errorf("postgres schema preflight requires a PostgreSQL database")
+	}
+	db, _, err := openStore(cfg.Database)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
+	defer db.Close()
+	return db.CreateSchema()
+}
+
 func main() {
 	cfgPath := "tinode.conf"
 	if len(os.Args) > 1 {
 		cfgPath = os.Args[1]
+	}
+	// Production runs this mode before replacing the healthy API container.
+	if len(os.Args) > 2 && os.Args[2] == "--prepare-postgres-schema" {
+		if err := preparePostgresSchema(cfgPath); err != nil {
+			log.Fatalf("schema preflight failed: %v", err)
+		}
+		log.Print("postgres schema preflight succeeded")
+		return
 	}
 
 	cfg, err := loadConfig(cfgPath)

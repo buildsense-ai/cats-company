@@ -30,8 +30,9 @@ func TestMessageSearchExtensionFailurePolicy(t *testing.T) {
 			mock.ExpectExec(createMessageSearchExtension).WillReturnError(&pgconn.PgError{Code: tc.code})
 			if tc.fallback {
 				mock.ExpectExec("SELECT pg_advisory_lock").WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectQuery("SELECT count.*pg_index").WithArgs("idx_messages_search_grams_gin").WillReturnRows(sqlmock.NewRows([]string{"exists", "valid"}).AddRow(true, true))
+				mock.ExpectQuery("SELECT count.*pg_index").WithArgs("idx_messages_search_grams_gin").WillReturnRows(sqlmock.NewRows([]string{"exists", "valid"}).AddRow(false, false))
 				mock.ExpectExec("CREATE INDEX CONCURRENTLY").WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectExec("ANALYZE messages").WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("SELECT pg_advisory_unlock").WillReturnResult(sqlmock.NewResult(0, 1))
 			}
 			a := &Adapter{db: db}
@@ -50,7 +51,7 @@ func TestMessageSearchExtensionFailurePolicy(t *testing.T) {
 	}
 }
 
-func TestMessageSearchPreinstalledExtensionSkipsInstallation(t *testing.T) {
+func TestMessageSearchPreinstalledExtensionAndValidIndexSkipDDL(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +62,6 @@ func TestMessageSearchPreinstalledExtensionSkipsInstallation(t *testing.T) {
 	mock.ExpectQuery("SELECT EXISTS .*pg_extension").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectExec("SELECT pg_advisory_lock").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT count.*pg_index").WillReturnRows(sqlmock.NewRows([]string{"exists", "valid"}).AddRow(true, true))
-	mock.ExpectExec("CREATE INDEX CONCURRENTLY").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SELECT pg_advisory_unlock").WillReturnResult(sqlmock.NewResult(0, 1))
 	a := &Adapter{db: db}
 	if err := a.ensureMessageSearchIndex(); err != nil {
@@ -184,7 +184,8 @@ func TestPostgresMessageSearchWithoutExtensionPrivileges(t *testing.T) {
 	name := fmt.Sprintf("cats_search_restricted_%d", time.Now().UnixNano())
 	// A separate database is necessary: pg_trgm is shared across schemas, and
 	// an extension installed by another test would hide the privilege failure.
-	if _, err := base.db.Exec(`CREATE ROLE ` + quoteIdent(name)); err != nil {
+	const testPassword = "restricted_search_test"
+	if _, err := base.db.Exec(`CREATE ROLE ` + quoteIdent(name) + ` LOGIN PASSWORD '` + testPassword + `'`); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { base.db.Exec(`DROP ROLE ` + quoteIdent(name)) })
@@ -206,15 +207,14 @@ func TestPostgresMessageSearchWithoutExtensionPrivileges(t *testing.T) {
 	if _, err := admin.db.Exec(`CREATE SCHEMA app AUTHORIZATION ` + quoteIdent(name)); err != nil {
 		t.Fatal(err)
 	}
+	// Log in as the restricted role so both the app pool and the dedicated
+	// schema connection use the same privileges.
+	parsed.User = url.UserPassword(name, testPassword)
 	db := &Adapter{}
-	if err := db.Open(dbDSN); err != nil {
+	if err := db.Open(dsnWithSearchPath(t, parsed.String(), "app")); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	db.db.SetMaxOpenConns(1)
-	if _, err := db.db.Exec(`SET ROLE ` + quoteIdent(name)); err != nil {
-		t.Fatal(err)
-	}
 	var canInstall bool
 	if err := db.db.QueryRow(`SELECT has_database_privilege(current_user,current_database(),'CREATE')`).Scan(&canInstall); err != nil || canInstall {
 		t.Fatalf("test role unexpectedly able to install extensions: allowed=%v err=%v", canInstall, err)
