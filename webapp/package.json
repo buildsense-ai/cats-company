@@ -32,7 +32,9 @@
   "overrides": {
     "jake": {
       "filelist": "2.0.2"
-    }
+    },
+    "glob": "14.0.6",
+    "minimatch": "11.0.9"
   },
   "scripts": {
     "prestart": "node scripts/generate-auth-critical-css.mjs",
