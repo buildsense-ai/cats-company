@@ -533,7 +533,7 @@ export default function WordPreview({
       if (reparsed) adopt(reparsed);
       pendingBytesRef.current = null;
       setHasPending(false);
-      setNotice(OFFICE_SAVE_NOTICE);
+      setNotice((published && published.notice) || OFFICE_SAVE_NOTICE);
     } catch (err) {
       setNotice(`写入失败：${err.message}`);
     } finally {

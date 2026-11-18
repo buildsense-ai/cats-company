@@ -712,7 +712,7 @@ export default function OfficePreview({
         // Only a confirmed upload + binding may discard drafts. A failed publish leaves both
         // the draft and the pending bytes available for an exact retry.
         resetDraft();
-        setNotice(OFFICE_SAVE_NOTICE);
+        setNotice(published.notice || OFFICE_SAVE_NOTICE);
       } else {
         setNotice('已写入本地，但最新版未保存成功，请重试保存');
       }

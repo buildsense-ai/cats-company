@@ -135,6 +135,30 @@ describe('quiet save and explicit sync', () => {
     expect(localStorage.length).toBe(0);
   });
 
+  it('keeps the new version reachable when the backend cannot record it', async () => {
+    // The deployed backend may predate the version route. The save must still leave a local
+    // pointer, otherwise reopening the original attachment silently shows the old bytes and
+    // the user's edit looks lost even in the same browser.
+    const uploadFile = vi.fn().mockResolvedValue(LATEST);
+    const upsertBinding = vi.fn().mockRejectedValue(
+      Object.assign(new Error('no route'), { code: 'office-version-unsupported' }),
+    );
+
+    const result = await performQuietOfficeSave({
+      file: SOURCE_FILE, bytes: new Uint8Array([1, 2, 3]), fileName: 'source.pptx',
+      family: 'pptx', topicId: 'p2p_7_9', uploadFile, upsertBinding,
+    });
+
+    expect(result.serverUnsupported).toBe(true);
+    expect(result.nextFile.file_key).toBe('latest.pptx');
+    expect(readLocalVersionBinding(SOURCE)).toMatchObject({ url: LATEST.url });
+
+    // Reopening the original attachment must resolve to the saved version with no server help.
+    const reopened = await resolveLatestOfficeVersion(SOURCE_FILE, vi.fn().mockResolvedValue(null));
+    expect(reopened.url).toBe(LATEST.url);
+    expect(reopened.office_version_unsynced).toBe(true);
+  });
+
   it('sends exactly one message whose file payload is the current latest version', async () => {
     const sendMessage = vi.fn().mockResolvedValue({ id: 501, topic_id: 'p2p_7_9' });
     const result = await performExplicitOfficeSync({

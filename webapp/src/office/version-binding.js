@@ -230,10 +230,35 @@ export async function performQuietOfficeSave({
 
   let binding = null;
   if (source) {
-    const request = buildFileVersionBindingRequest(source, latest, topicId);
-    binding = await upsertBinding(request);
-    if (!binding) throw new Error('版本指针未保存');
+    // Write the local pointer BEFORE talking to the server.
+    //
+    // The old order was upsert-then-write, so a backend without the version route threw
+    // before the pointer existed. Reopening then had nothing to resolve against and fell
+    // back to the original attachment, which is why an edit looked lost even in the same
+    // browser. The pointer is cheap to write and is the only thing that makes the new
+    // version reachable again.
     writeLocalVersionBinding(source, latest, storage);
+    try {
+      const request = buildFileVersionBindingRequest(source, latest, topicId);
+      binding = await upsertBinding(request);
+    } catch (err) {
+      // Distinguish "this backend has no such route" from "the request failed". Both leave
+      // the user with a locally reachable version, but only the second one is worth
+      // retrying, and saying so is the difference between a bug report and noise.
+      const unsupported = err?.code === OFFICE_VERSION_UNSUPPORTED_CODE;
+      return {
+        source,
+        latest,
+        uploaded,
+        binding: null,
+        messageSent: false,
+        localOnly: true,
+        serverUnsupported: unsupported,
+        serverFailed: !unsupported,
+        notice: unsupported ? OFFICE_SERVER_UNSUPPORTED_NOTICE : OFFICE_LOCAL_SAVE_NOTICE,
+        nextFile: applyOfficeLatestVersion(file, source, latest),
+      };
+    }
   }
   return {
     source,
