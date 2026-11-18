@@ -26,6 +26,7 @@ import {
   performExplicitOfficeSync, performQuietOfficeSave, resolveLatestOfficeVersion,
   OFFICE_SYNC_NOTICE, OFFICE_VERSION_UNSUPPORTED_CODE,
 } from '../office/version-binding.js';
+import { latestNamedAttachment } from '../office/latest-attachment.js';
 import ImageViewport from '../widgets/image-viewport';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
@@ -2682,12 +2683,33 @@ export default function MessagesView({
     setPendingArtifactRefresh(null);
     const token = previewResolveTokenRef.current + 1;
     previewResolveTokenRef.current = token;
-    applyPreviewFileWithFocus(file);
-    if (!file) return;
-    const resolved = await resolveLatestOfficeVersion(file, api.getFileVersionBinding);
+    if (!file) {
+      applyPreviewFileWithFocus(file);
+      return;
+    }
+
+    // The thread can hold several attachments with the same name, and the one the user
+    // clicked is often the earliest. Opening those bytes while the real newest version
+    // sits further down reads as "my edit was lost", so jump to the last matching one.
+    const newer = latestNamedAttachment(messages, file);
+    let opened = file;
+    if (newer) {
+      const { messageId, ...latest } = newer;
+      opened = {
+        ...file,
+        ...latest,
+        annotation_source: {
+          topic_id: String(activeTopicRef.current || ''),
+          message_id: messageId,
+          attachment_index: 0,
+        },
+      };
+    }
+    applyPreviewFileWithFocus(opened);
+    const resolved = await resolveLatestOfficeVersion(opened, api.getFileVersionBinding);
     if (previewResolveTokenRef.current !== token) return;
     applyPreviewFileWithFocus(resolved);
-  }, [applyPreviewFileWithFocus]);
+  }, [applyPreviewFileWithFocus, messages]);
 
   const closeSidePanel = useCallback(() => {
     previewResolveTokenRef.current += 1;
