@@ -13,6 +13,7 @@ import (
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
+	"time"
 )
 
 const defaultBotModelID = "minimax-m3"
@@ -48,6 +49,7 @@ type BotModelConfigHandler struct {
 	publicEnabled            bool
 	testUIDs                 map[int64]bool
 	commercialStore          commercialQuotaSummaryStore
+	commercialCatalog        *CommercialModelCatalog
 	commercialEnforceEnabled bool
 	commercialEnforceUIDs    map[int64]bool
 }
@@ -123,6 +125,11 @@ var botModelCatalog = []botModelCatalogItem{
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 	{
+		ID: types.GPT62Sol, Label: "GPT-6.2 Sol", Description: "OpenAI Responses，支持精细推理强度",
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: types.GPT62Sol,
+		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
+	},
+	{
 		ID: "claude-sonnet-5-5", Label: "Claude Sonnet 5.5", Description: "Claude 长上下文模型，1M 上下文与深度推理",
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000, Vision: true, RuntimeModel: "claude-sonnet-5-5",
 	},
@@ -183,6 +190,24 @@ func (h *BotModelConfigHandler) SetCommercialQuotaSource(store commercialQuotaSu
 	h.commercialStore = store
 	h.commercialEnforceEnabled = enforceEnabled
 	h.commercialEnforceUIDs = copyCommercialUIDSet(enforceUIDs)
+}
+
+func (h *BotModelConfigHandler) SetCommercialModelCatalog(catalog *CommercialModelCatalog) {
+	h.commercialCatalog = catalog
+}
+
+// writeGPT62RuntimeDenial gates previously saved catalog choices after a plan
+// expires or the Relay removes the private route. It never edits the selection.
+func (h *BotModelConfigHandler) writeGPT62RuntimeDenial(w http.ResponseWriter, r *http.Request, ownerUID int64) bool {
+	allowed, err := h.catalogModelAllowed(r.Context(), ownerUID, types.GPT62Sol)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "model permission is unavailable"})
+		return true
+	}
+	if !allowed {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "model is not included in the current package"})
+	}
+	return !allowed
 }
 
 func (h *BotModelConfigHandler) commercialQuotaEnforced(uid int64) bool {
@@ -495,6 +520,9 @@ func (h *BotModelConfigHandler) HandleRuntimeConfig(w http.ResponseWriter, r *ht
 	config, err := h.models.GetBotModelConfig(botUID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot model configuration"})
+		return
+	}
+	if normalized := botModelConfigWithDefaults(config); normalized.Kind == botModelKindCatalog && types.IsGPT62Sol(normalized.ModelID) && h.writeGPT62RuntimeDenial(w, r, ownerUID) {
 		return
 	}
 	if !botModelRuntimeSupported(config) {
@@ -849,8 +877,13 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 	includeUsage bool,
 	currentModelID string,
 ) ([]botModelCatalogItem, string) {
-	catalog := make([]botModelCatalogItem, len(botModelCatalog))
-	copy(catalog, botModelCatalog)
+	catalog := make([]botModelCatalogItem, 0, len(botModelCatalog))
+	for _, item := range botModelCatalog {
+		if types.IsGPT62Sol(item.ID) && !gpt62CatalogEnabled(ctx, h.commercialCatalog) {
+			continue
+		}
+		catalog = append(catalog, item)
+	}
 	for i := range catalog {
 		catalog[i].Available = true
 		catalog[i].UnavailableReason = ""
@@ -885,6 +918,19 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 		}
 		if commercialSummaryHasQuota(commercialSummary) {
 			catalog = catalogForCommercialSummary(catalog, commercialSummary, currentModelID)
+		}
+	}
+	// This restriction also applies when general commercial enforcement is off
+	// or the account has no commercial summary. Do not list an expired selection.
+	for i, item := range catalog {
+		if types.IsGPT62Sol(item.ID) {
+			if !creditUser && !h.commercialQuotaEnforced(ownerUID) {
+				commercialSummary, _ = readLegacyModelSummary(h.commercialStore, ownerUID)
+			}
+			if gpt62LegacyQuota(commercialSummary, time.Now()) <= 0 {
+				catalog = append(catalog[:i], catalog[i+1:]...)
+			}
+			break
 		}
 	}
 	if !includeUsage {
@@ -1023,7 +1069,7 @@ func catalogForMixedPermission(catalog []botModelCatalogItem, credit botModelCre
 			item.BillingMode = "legacy"
 		case credit.modelAllowed(item.ID):
 			item.BillingMode = botModelBillingModeCredits
-		case current != "" && normalizeRelayModelName(item.ID) == current:
+		case !types.IsGPT62Sol(item.ID) && current != "" && normalizeRelayModelName(item.ID) == current:
 			item.BillingMode = "legacy"
 			item.Available = false
 			item.UnavailableReason = "当前套餐不包含该模型，切换后不可再选"
@@ -1037,6 +1083,16 @@ func catalogForMixedPermission(catalog []botModelCatalogItem, credit botModelCre
 
 // catalogModelAllowed shares the mixed catalog's current legacy/credit union.
 func (h *BotModelConfigHandler) catalogModelAllowed(ctx context.Context, ownerUID int64, modelID string) (bool, error) {
+	if types.IsGPT62Sol(modelID) {
+		if h == nil || ownerUID <= 0 {
+			return false, nil
+		}
+		summary, err := readLegacyModelSummary(h.commercialStore, ownerUID)
+		if err != nil || gpt62LegacyQuota(summary, time.Now()) <= 0 {
+			return false, err
+		}
+		return gpt62CatalogEnabled(ctx, h.commercialCatalog), nil
+	}
 	credit, creditErr := h.creditPermission(ctx, ownerUID)
 	if creditErr != nil {
 		return false, creditErr
@@ -1076,7 +1132,7 @@ func catalogForCommercialSummary(
 			filtered = append(filtered, item)
 			continue
 		}
-		if current != "" && normalizeRelayModelName(item.ID) == current {
+		if !types.IsGPT62Sol(item.ID) && current != "" && normalizeRelayModelName(item.ID) == current {
 			item.Available = false
 			item.UnavailableReason = "当前套餐已不包含该模型，切换后不可再选"
 			filtered = append(filtered, item)
@@ -1094,7 +1150,7 @@ func catalogWithUnavailableCurrent(
 		return nil
 	}
 	for _, item := range catalog {
-		if normalizeRelayModelName(item.ID) != current {
+		if types.IsGPT62Sol(item.ID) || normalizeRelayModelName(item.ID) != current {
 			continue
 		}
 		item.Available = false

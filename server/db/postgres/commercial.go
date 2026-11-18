@@ -534,6 +534,9 @@ func (a *Adapter) GrantCommercialQuota(grant *types.CommercialQuotaGrant) (*type
 		return nil, fmt.Errorf("commercial quota grant is nil")
 	}
 	model := strings.TrimSpace(grant.Model)
+	if types.IsGPT62Sol(model) {
+		return nil, fmt.Errorf("%s quota must come from an eligible legacy package", types.GPT62Sol)
+	}
 	if model == "" {
 		model = "*"
 	}
@@ -607,13 +610,15 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 
 	var inviteID, planID, inviteCreditUnits int64
 	var maxRedemptions, redeemedCount, cloudWorkerCredits, inviteState, planState, durationDays int
+	var activeLegacyPlan bool
 	var expiresAt sql.NullTime
 	var planSlug, planName, cloudWorkerProfile, cloudWorkerBilling, cloudWorkerRuntimePlan string
 	var monthlyBudget float64
 	var budgetsRaw []byte
 	err = tx.QueryRow(`
 		SELECT c.id, c.plan_id, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.cloud_worker_billing_mode, c.state, c.expires_at, c.model_credit_units,
-		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state, p.cloud_worker_runtime_plan
+		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state, p.cloud_worker_runtime_plan,
+		       p.state = 0 AND p.archived_at IS NULL AND p.model_credit_units = 0
 		FROM commercial_invite_codes c
 		JOIN commercial_plans p ON p.id = c.plan_id
 		WHERE lower(c.code) = lower($1)
@@ -635,6 +640,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		&durationDays,
 		&planState,
 		&cloudWorkerRuntimePlan,
+		&activeLegacyPlan,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("invite code not found")
@@ -719,7 +725,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		RETURNING id`, uid, planID, code, startsAt, entitlementExpires).Scan(&entitlementID); err != nil {
 		return nil, fmt.Errorf("create commercial entitlement: %w", err)
 	}
-	modelBudgets := decodeModelBudgets(budgetsRaw)
+	modelBudgets := a.gpt62GrantBudgets(decodeModelBudgets(budgetsRaw), planSlug, activeLegacyPlan && inviteCreditUnits == 0)
 	if monthlyBudget > 0 {
 		modelBudgets["*"] = monthlyBudget
 	}

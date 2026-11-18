@@ -4,11 +4,15 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 const defaultRelayBaseURL = "https://relay.catsco.cc"
 
-type RelayConfigHandler struct{}
+type RelayConfigHandler struct {
+	modelConfig *BotModelConfigHandler
+}
 
 type relayEndpoint struct {
 	Protocol string `json:"protocol"`
@@ -30,6 +34,10 @@ type relayConfigResponse struct {
 
 func NewRelayConfigHandler() *RelayConfigHandler {
 	return &RelayConfigHandler{}
+}
+
+func (h *RelayConfigHandler) SetBotModelConfig(modelConfig *BotModelConfigHandler) {
+	h.modelConfig = modelConfig
 }
 
 func relayEnv(name, fallback string) string {
@@ -60,14 +68,20 @@ func (h *RelayConfigHandler) HandleConfig(w http.ResponseWriter, r *http.Request
 		keyHint = "访问凭证由 CatsCo 管理员发放。请妥善保存，泄露后可联系管理员撤销并重建。"
 	}
 
+	allowGPT62, _ := h.modelConfig.catalogModelAllowed(r.Context(), UIDFromContext(r.Context()), types.GPT62Sol)
+	w.Header().Set("Cache-Control", "private, no-store")
+	defaultModel := relayEnv("CATS_RELAY_DEFAULT_MODEL", "MiniMax-M2.7")
+	if types.IsGPT62Sol(defaultModel) {
+		defaultModel = "MiniMax-M2.7"
+	}
 	writeJSON(w, http.StatusOK, relayConfigResponse{
 		BaseURL:      baseURL,
-		DefaultModel: relayEnv("CATS_RELAY_DEFAULT_MODEL", "MiniMax-M2.7"),
+		DefaultModel: defaultModel,
 		Endpoints: []relayEndpoint{
 			{Protocol: "OpenAI-compatible", BaseURL: openAIBaseURL},
 			{Protocol: "Anthropic-compatible", BaseURL: anthropicBaseURL},
 		},
-		Models:             relayPublicModelCatalog(),
+		Models:             relayPublicModelCatalog(allowGPT62),
 		KeyHint:            keyHint,
 		DocsURL:            relayEnv("CATS_RELAY_DOCS_URL", baseURL),
 		SelfServiceEnabled: selfServiceEnabled,
@@ -77,12 +91,15 @@ func (h *RelayConfigHandler) HandleConfig(w http.ResponseWriter, r *http.Request
 // relayPublicModelCatalog serves the catalog-wide defaults. The per-bot
 // DeepSeek Flash protocol lane (deepseek_flash_lane.go) travels with the bot
 // definition and model configuration instead of this global list.
-func relayPublicModelCatalog() []botModelCatalogItem {
-	catalog := make([]botModelCatalogItem, len(botModelCatalog))
-	copy(catalog, botModelCatalog)
-	for i := range catalog {
-		catalog[i].Available = true
-		catalog[i].Runtime = catalogRuntimeDescriptor(catalog[i])
+func relayPublicModelCatalog(allowGPT62 bool) []botModelCatalogItem {
+	catalog := make([]botModelCatalogItem, 0, len(botModelCatalog))
+	for _, item := range botModelCatalog {
+		if types.IsGPT62Sol(item.ID) && !allowGPT62 {
+			continue
+		}
+		item.Available = true
+		item.Runtime = catalogRuntimeDescriptor(item)
+		catalog = append(catalog, item)
 	}
 	return catalog
 }

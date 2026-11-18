@@ -9,6 +9,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // ModelCreditEligibilityReader 是资格查询的存储面。
@@ -28,11 +30,16 @@ type ModelCreditEligibilityReader interface {
 }
 
 type ModelCreditEligibilityHandler struct {
-	reader ModelCreditEligibilityReader
+	reader  ModelCreditEligibilityReader
+	catalog *CommercialModelCatalog
 }
 
 func NewModelCreditEligibilityHandler(reader ModelCreditEligibilityReader) *ModelCreditEligibilityHandler {
 	return &ModelCreditEligibilityHandler{reader: reader}
+}
+
+func (h *ModelCreditEligibilityHandler) SetCommercialModelCatalog(catalog *CommercialModelCatalog) {
+	h.catalog = catalog
 }
 
 var modelCreditEligibilityPeerSecretPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
@@ -71,11 +78,18 @@ func (h *ModelCreditEligibilityHandler) ServeHTTP(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load legacy eligibility"})
 		return
 	}
+	models := legacyModelsForSummary(summary)
+	for i, model := range models {
+		if types.IsGPT62Sol(model) && !gpt62CatalogEnabled(r.Context(), h.catalog) {
+			models = append(models[:i], models[i+1:]...)
+			break
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"enabled":            enabled,
 		"allowed":            enabled && allowance > 0,
 		"plan_tier":          tier,
 		"model_credit_units": allowance,
-		"legacy_models":      legacyModelsForSummary(summary),
+		"legacy_models":      models,
 	})
 }

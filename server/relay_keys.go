@@ -594,6 +594,9 @@ func buildRelaySharedUsageResponse(user *commercialRelayUsageUser, model string)
 }
 
 func commercialQuotaModelAllowed(summary *types.CommercialSummary, model string) bool {
+	if types.IsGPT62Sol(model) {
+		return gpt62LegacyQuota(summary, time.Now()) > 0
+	}
 	if summary == nil {
 		return false
 	}

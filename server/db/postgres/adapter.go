@@ -41,6 +41,7 @@ type Adapter struct {
 	healthWatch                 poolhealth.Tracker
 	messageSearchIndexReady     atomic.Bool
 	messageSearchGramIndexReady atomic.Bool
+	gpt62CatalogEnabled         func() bool
 }
 
 var _ store.Store = (*Adapter)(nil)

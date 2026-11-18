@@ -8,6 +8,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // ReconcileCommercialPlanModels keeps every auto-updating plan's model set in
@@ -78,11 +80,12 @@ func (a *Adapter) ReconcileCommercialPlanModelsWithInternal(ctx context.Context,
 	if !internalOnlyKnown {
 		return fmt.Errorf("relay catalog predates the internal-only split: %w", errReconcileCatalogUnknown)
 	}
-	models := normalizeReconcileModels(catalog)
+	allowGPT62 := types.GPT62SolInternalOnly(catalog, internalOnly, internalOnlyKnown)
+	models := reconcilePublicPlanModels(catalog)
 	if len(models) == 0 {
 		return fmt.Errorf("commercial model catalog is empty")
 	}
-	internalModels := normalizeReconcileModels(internalOnly)
+	internalModels := reconcilePublicPlanModels(internalOnly)
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin commercial plan reconcile: %w", err)
@@ -101,7 +104,7 @@ func (a *Adapter) ReconcileCommercialPlanModelsWithInternal(ctx context.Context,
 		return err
 	}
 	for _, slug := range plans {
-		if err := reconcileOfficialPlan(ctx, tx, slug, models, internalModels); err != nil {
+		if err := reconcileOfficialPlan(ctx, tx, slug, models, internalModels, allowGPT62); err != nil {
 			return err
 		}
 	}
@@ -239,7 +242,7 @@ func reconcilePlanSlugs(ctx context.Context, tx *sql.Tx) ([]string, error) {
 		if err := rows.Scan(&slug, &tier, &autoUpdate); err != nil {
 			return nil, fmt.Errorf("scan plan slug for model reconcile: %w", err)
 		}
-		if reconcileCoversPlan(slug, tier, autoUpdate) {
+		if reconcileCoversPlan(slug, tier, autoUpdate) || types.GPT62SolLegacyPlan(slug) {
 			slugs = append(slugs, slug)
 		}
 	}
@@ -247,6 +250,17 @@ func reconcilePlanSlugs(ctx context.Context, tx *sql.Tx) ([]string, error) {
 		return nil, fmt.Errorf("read plan slugs for model reconcile: %w", err)
 	}
 	return slugs, nil
+}
+
+func reconcilePublicPlanModels(catalog []string) []string {
+	models := normalizeReconcileModels(catalog)
+	out := models[:0]
+	for _, model := range models {
+		if !types.IsGPT62Sol(model) {
+			out = append(out, model)
+		}
+	}
+	return out
 }
 
 func normalizeReconcileModels(catalog []string) []string {
@@ -276,18 +290,20 @@ type storedBudget struct {
 
 // reconcileOfficialPlan rewrites one plan's model budgets and, when the model
 // set actually changed, migrates the grants of everyone currently holding it.
-func reconcileOfficialPlan(ctx context.Context, tx *sql.Tx, slug string, catalog, internalOnly []string) error {
+func reconcileOfficialPlan(ctx context.Context, tx *sql.Tx, slug string, catalog, internalOnly []string, allowGPT62 bool) error {
 	var (
 		planID           int64
 		planName         string
 		rawBudgets       []byte
 		autoUpdateModels bool
+		state            int
+		modelCreditUnits int64
 	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, name, model_budgets, auto_update_models
+		SELECT id, name, model_budgets, auto_update_models, state, model_credit_units
 		FROM commercial_plans
 		WHERE slug = $1 AND archived_at IS NULL
-		FOR UPDATE`, slug).Scan(&planID, &planName, &rawBudgets, &autoUpdateModels)
+		FOR UPDATE`, slug).Scan(&planID, &planName, &rawBudgets, &autoUpdateModels, &state, &modelCreditUnits)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -296,7 +312,11 @@ func reconcileOfficialPlan(ctx context.Context, tx *sql.Tx, slug string, catalog
 	}
 
 	current := decodeModelBudgets(rawBudgets)
-	target := reconcilePlanModelBudgets(current, catalog, autoUpdateModels, internalOnly...)
+	forceModel := ""
+	if allowGPT62 && state == 0 && modelCreditUnits == 0 && types.GPT62SolLegacyPlan(slug) {
+		forceModel = types.GPT62Sol
+	}
+	target := reconcilePlanModelBudgetsWithModel(current, catalog, autoUpdateModels, forceModel, internalOnly...)
 	if target == nil {
 		// The plan's model set already matches the catalog, so there is nothing to
 		// rewrite. Its holders can still be out of step: a model the relay routes
@@ -353,6 +373,10 @@ func reconcileOfficialPlan(ctx context.Context, tx *sql.Tx, slug string, catalog
 // retired it" and strip it from the internal package that grants it. They are
 // never added - only an operator puts one in a plan.
 func reconcilePlanModelBudgets(current map[string]float64, catalog []string, autoUpdateModels bool, internalOnly ...string) map[string]float64 {
+	return reconcilePlanModelBudgetsWithModel(current, catalog, autoUpdateModels, "", internalOnly...)
+}
+
+func reconcilePlanModelBudgetsWithModel(current map[string]float64, catalog []string, autoUpdateModels bool, forceModel string, internalOnly ...string) map[string]float64 {
 	existing := make(map[string]storedBudget, len(current))
 	// The plan's present total is the anchor: whatever the model set becomes,
 	// this is what the plan advertises and what a buyer's pool must stay at. A
@@ -404,6 +428,10 @@ func reconcilePlanModelBudgets(current map[string]float64, catalog []string, aut
 			changed = true
 		}
 		out[model] = 0
+	}
+	if forceModel != "" {
+		out[forceModel] = 0
+		changed = changed || current[forceModel] <= 0
 	}
 	// Put back the internal-only models the plan already holds. They are absent
 	// from the sellable catalog, so the loop above skipped them and the removal
@@ -459,6 +487,54 @@ func reconcilePlanModelBudgets(current map[string]float64, catalog []string, aut
 // computed value and its stored form compare equal.
 func roundBudget(value float64) float64 {
 	return math.Round(value*1e6) / 1e6
+}
+
+// SetGPT62CatalogGate is wired once at startup, before grant writers run.
+func (a *Adapter) SetGPT62CatalogGate(enabled func() bool) {
+	a.gpt62CatalogEnabled = enabled
+}
+
+func (a *Adapter) gpt62GrantBudgets(budgets map[string]float64, slug string, activeLegacyPlan bool) map[string]float64 {
+	if budgets[types.GPT62Sol] > 0 && activeLegacyPlan && types.GPT62SolLegacyPlan(slug) &&
+		a.gpt62CatalogEnabled != nil && a.gpt62CatalogEnabled() {
+		return budgets
+	}
+	return filterGPT62GrantBudgets(budgets)
+}
+
+// Old order snapshots or plan rows may still contain the restricted model.
+// Reallocate its share without changing the overall legacy pool.
+func filterGPT62GrantBudgets(budgets map[string]float64) map[string]float64 {
+	var excluded float64
+	var found bool
+	for model, amount := range budgets {
+		if types.IsGPT62Sol(model) {
+			found = true
+			excluded += max(0, amount)
+		}
+	}
+	if !found {
+		return budgets
+	}
+	filtered := make(map[string]float64, len(budgets))
+	var remaining []string
+	for model, amount := range budgets {
+		if !types.IsGPT62Sol(model) {
+			filtered[model] = amount
+			if model != "" && model != "*" && amount > 0 {
+				remaining = append(remaining, model)
+			}
+		}
+	}
+	if len(remaining) > 0 && excluded > 0 {
+		sort.Strings(remaining)
+		share := roundBudget(excluded / float64(len(remaining)))
+		for _, model := range remaining {
+			filtered[model] = roundBudget(filtered[model] + share)
+		}
+		filtered[remaining[0]] = roundBudget(filtered[remaining[0]] + excluded - share*float64(len(remaining)))
+	}
+	return filtered
 }
 
 // reconcilePlanOrderSnapshots refreshes the model snapshot on orders that have
@@ -539,6 +615,9 @@ func reconcilePlanGrantsForced(ctx context.Context, tx *sql.Tx, planID int64, pl
 	}
 
 	for _, pkg := range packages {
+		if amounts[types.GPT62Sol] > 0 && !pkg.hasActiveEntitlement {
+			continue
+		}
 		// A package already holding exactly the plan's set is left alone: this
 		// pass runs on every startup, and rewriting a correct package would
 		// churn the ledger and the grants for no reason.
@@ -758,14 +837,15 @@ func reconcileGrantSetMatches(current, want []string) bool {
 // reconcileGrantPackage identifies one buyer's active package: the grants that
 // were created together for the same plan from the same source.
 type reconcileGrantPackage struct {
-	planID       int64
-	uid          int64
-	grantType    string
-	sourceRef    string
-	inviteCodeID int64
-	operatorUID  *int64
-	effectiveAt  sql.NullTime
-	expiresAt    sql.NullTime
+	planID               int64
+	uid                  int64
+	grantType            string
+	sourceRef            string
+	inviteCodeID         int64
+	operatorUID          *int64
+	effectiveAt          sql.NullTime
+	expiresAt            sql.NullTime
+	hasActiveEntitlement bool
 }
 
 // reconcileGrantPackages lists the active paid packages for a plan. Only grant
@@ -777,7 +857,13 @@ func reconcileGrantPackages(ctx context.Context, tx *sql.Tx, planID int64) ([]re
 		       COALESCE(MAX(g.invite_code_id), 0),
 		       MAX(g.operator_uid),
 		       MIN(g.effective_at),
-		       MAX(g.expires_at)
+		       MAX(g.expires_at),
+		       MIN(g.effective_at) <= CURRENT_TIMESTAMP AND EXISTS (
+		           SELECT 1 FROM commercial_entitlements e
+		           WHERE e.uid = g.uid AND e.plan_id = $1 AND e.source_ref = g.source_ref
+		             AND e.source = CASE WHEN g.grant_type = 'operator_plan' THEN 'operator' ELSE g.grant_type END
+		             AND e.state = 'active' AND e.starts_at <= CURRENT_TIMESTAMP
+		             AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP))
 		FROM commercial_quota_grants g
 		WHERE g.plan_id = $1
 		  AND g.grant_type IN ('order', 'invite', 'operator_plan')
@@ -793,7 +879,7 @@ func reconcileGrantPackages(ctx context.Context, tx *sql.Tx, planID int64) ([]re
 		pkg := reconcileGrantPackage{planID: planID}
 		if err := rows.Scan(
 			&pkg.uid, &pkg.grantType, &pkg.sourceRef, &pkg.inviteCodeID,
-			&pkg.operatorUID, &pkg.effectiveAt, &pkg.expiresAt,
+			&pkg.operatorUID, &pkg.effectiveAt, &pkg.expiresAt, &pkg.hasActiveEntitlement,
 		); err != nil {
 			return nil, fmt.Errorf("scan paid plan package: %w", err)
 		}
