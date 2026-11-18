@@ -7,11 +7,16 @@ const object = value => value && typeof value === 'object' && !Array.isArray(val
 const bounded = value => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\x00-\x1f]/.test(value);
 const only = (value, keys) => Object.keys(value).every(key => keys.includes(key));
 const refs = value => Array.isArray(value) && value.length <= 64 && value.every(bounded) && new Set(value).size === value.length;
-export const MEMORY_NODE_LABELS = { assertion: '记忆断言', condition: '适用条件', omission: '已知缺口', correction: '更正', uncertainty: '不确定项', session_query: '历史提问', session_result: '历史回答', learning_node: '学习记录', source_memory_projection_node: '记忆节点', message: '原始消息', tool_call: '工具调用' };
+export const MEMORY_NODE_LABELS = { archive_turn: '归档会话摘录', assertion: '记忆断言', condition: '适用条件', omission: '已知缺口', correction: '更正', uncertainty: '不确定项', session_query: '历史提问', session_result: '历史回答', learning_node: '学习记录', source_memory_projection_node: '记忆节点', message: '原始消息', tool_call: '工具调用' };
 export const MEMORY_RELATIONS = { supports: '支持', qualifies: '适用条件', omits: '缺口', corrects: '更正', supplements: '补充', requires: '前置条件', derived_from: '来源于', continues: '延续', related: '关联', used: '使用' };
 
 export function memoryReaderValid(reader) {
   if (!object(reader)) return false;
+  if (reader.kind === 'archive_turn') {
+    const p = reader.archive;
+    return only(reader,['kind','archive']) && object(p) && only(p,['day','offset','digest']) && /^\d{4}-\d{2}-\d{2}$/.test(p.day)
+      && Number.isSafeInteger(p.offset) && p.offset >= 0 && revision.test(p.digest);
+  }
   if (reader.kind === 'projection') return only(reader, ['kind', 'projection_ref', 'revision']) && pin.test(reader.projection_ref) && (reader.revision === undefined || revision.test(reader.revision));
   if (reader.kind === 'assertion') return only(reader, ['kind', 'projection_ref', 'member_ref', 'node_id']) && pin.test(reader.projection_ref) && pin.test(reader.member_ref) && /^[a-f0-9]{64}$/.test(reader.node_id);
   const a = reader.anchor;
@@ -47,6 +52,12 @@ export function latestMemoryBranches(items) {
 
 export function verifiedMemoryDetail(page, reader) {
   const nodeRows = nodes => Array.isArray(nodes) && nodes.every(node => object(node) && typeof node.text === 'string' && typeof node.kind === 'string');
+  if (reader.kind === 'archive_turn') {
+    const p = page?.archive, source = page?.source;
+    if (!p || ['day','digest','offset'].some(key => p[key] !== reader.archive[key]) || source?.status !== 'read'
+      || source.coverage !== 'complete' || source.truncated || source.missing || source.revoked || typeof source.text !== 'string') throw new Error('归档版本未核验，请重试。');
+    return { nodes:[{kind:'archive_turn',text:source.text}], conditions:[], omissions:[], coverage:'partial' };
+  }
   if (reader.kind === 'projection') {
     if (page?.ref !== reader.projection_ref || reader.revision && page.revision !== reader.revision || !object(page.document) || !nodeRows(page.document.nodes)) throw new Error('返回版本与引用不一致，未显示正文。');
     return { nodes: page.document.nodes, conditions: page.document.conditions || [], omissions: page.document.omissions || [], gaps: page.document.gap_acknowledgement, coverage: page.document.overall_coverage, goal: page.document.goal };

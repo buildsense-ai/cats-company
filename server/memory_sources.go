@@ -6,13 +6,20 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var memorySourcePin = regexp.MustCompile(`^ref_[a-f0-9]{64}$`)
 var memorySourceRevision = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var memorySourceNodeID = regexp.MustCompile(`^(output-)?[a-f0-9]{64}$`)
 
+type archivedTurn struct {
+	Day    string `json:"day"`
+	Offset *int64 `json:"offset"`
+	Digest string `json:"digest"`
+}
 type memorySourceReader struct {
+	Archive       *archivedTurn          `json:"archive,omitempty"`
 	Kind          string                 `json:"kind"`
 	ProjectionRef string                 `json:"projection_ref,omitempty"`
 	Revision      string                 `json:"revision,omitempty"`
@@ -40,6 +47,9 @@ func memorySourcesUpstreamQuery(r *http.Request, agentUID int64) ([]byte, bool) 
 	}
 	out := map[string]interface{}{"agent_id": formatUID(agentUID)}
 	switch q.Kind {
+	case "archive_turn":
+		out["operation"] = "archive_turn"
+		out["archive"] = q.Archive
 	case "projection":
 		out["operation"] = "memory_projection"
 		out["projection_ref"] = q.ProjectionRef
@@ -54,6 +64,16 @@ func memorySourcesUpstreamQuery(r *http.Request, agentUID int64) ([]byte, bool) 
 	return body, e == nil
 }
 func validMemorySourceReader(q memorySourceReader) bool {
+	if q.Kind == "archive_turn" {
+		if q.Archive == nil || q.Archive.Offset == nil || *q.Archive.Offset < 0 || !memorySourceRevision.MatchString(q.Archive.Digest) {
+			return false
+		}
+		_, err := time.Parse("2006-01-02", q.Archive.Day)
+		return err == nil && q.Anchor == nil && q.ProjectionRef == "" && q.Revision == "" && q.MemberRef == "" && q.NodeID == ""
+	}
+	if q.Archive != nil {
+		return false
+	}
 	switch q.Kind {
 	case "projection":
 		return memorySourcePin.MatchString(q.ProjectionRef) && (q.Revision == "" || memorySourceRevision.MatchString(q.Revision)) && q.MemberRef == "" && q.NodeID == "" && q.Anchor == nil

@@ -75,9 +75,12 @@ export default function MemoryBranchSources({ events, agentUid }) {
   const select = (node, trigger) => { if (!selected && trigger) triggerRef.current = trigger; setSelected(node); };
   const close = useCallback(() => { setSelected(null); if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true }); }, []);
   const running = events.some(event => event.status === 'running'), ready = events.some(event => event.status === 'ready');
-  const label = events.some(event => event.status === 'unavailable') && !graph.injected.size ? '已收到记忆线索 · 来源暂不可核验' : graph.injected.size ? `已加入主 Agent 上下文 · ${graph.injected.size} 份记忆` : running ? '记忆探索中…' : ready ? '记忆已就绪 · 等待主 Agent 接收' : events.some(event => event.status === 'deferred') ? '本轮未接收探索结果' : events.some(event => ['failed', 'cancelled', 'expired'].includes(event.status)) ? '记忆探索已结束 · 本轮未补充记忆' : '本轮未补充记忆';
+  const localCount = [...graph.injected].filter(ref => /^local:[a-f0-9]{64}$/.test(ref)).length;
+  const summaryReceived = events.some(event => event.observation_id && event.consumed_turn_id);
+  const label = summaryReceived && !graph.injected.size ? '主 Agent 已收到记忆摘要 · 暂无可打开的来源' : graph.injected.size ? `已加入主 Agent 上下文 · ${graph.injected.size} 份记忆` : running ? '记忆探索中…' : ready ? '记忆已就绪 · 等待主 Agent 接收' : events.some(event => event.status === 'deferred') ? '本轮未接收探索结果' : events.some(event => ['failed', 'cancelled', 'expired'].includes(event.status)) ? '记忆探索已结束 · 本轮未补充记忆' : '本轮未补充记忆';
   return <section className="cc-diary-tool cc-memory-branch" aria-label="记忆探索" onClick={event => event.stopPropagation()}>
     <div className="cc-diary-tool-heading" role="status"><Brain size={15} aria-hidden="true" /><span>{label}</span></div>
+    {localCount > 0 && <p className="cc-memory-summary">摘要引用了 {localCount} 份本地会话记录</p>}
     {graph.read.size > 0 && <p className="cc-memory-summary">Branch 已读 {graph.read.size} 份{graph.cited.size > 0 ? ` · 回答中明确引用 ${graph.cited.size} 份` : ''}{graph.injected.size > 0 && running ? ' · 继续探索中' : ''}</p>}
     {events.some(event => event.consumed_turn_id && event.consumed_turn_id !== event.origin_turn_id) && <p className="cc-diary-incomplete">来自上一轮的探索结果 · 本轮实际接收</p>}
     {graph.nodes.length > 0 && <MemorySourceGraph nodes={graph.nodes} edges={graph.edges} selectedId={selected?.id} onSelect={select} />}
