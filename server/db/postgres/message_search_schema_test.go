@@ -30,8 +30,9 @@ func TestMessageSearchExtensionFailurePolicy(t *testing.T) {
 			mock.ExpectExec(createMessageSearchExtension).WillReturnError(&pgconn.PgError{Code: tc.code})
 			if tc.fallback {
 				mock.ExpectExec("SELECT pg_advisory_lock").WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectQuery("SELECT count.*pg_index").WithArgs("idx_messages_search_grams_gin").WillReturnRows(sqlmock.NewRows([]string{"exists", "valid"}).AddRow(true, true))
+				mock.ExpectQuery("SELECT count.*pg_index").WithArgs("idx_messages_search_grams_gin").WillReturnRows(sqlmock.NewRows([]string{"exists", "valid"}).AddRow(false, false))
 				mock.ExpectExec("CREATE INDEX CONCURRENTLY").WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectExec("ANALYZE messages").WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("SELECT pg_advisory_unlock").WillReturnResult(sqlmock.NewResult(0, 1))
 			}
 			a := &Adapter{db: db}
@@ -50,7 +51,7 @@ func TestMessageSearchExtensionFailurePolicy(t *testing.T) {
 	}
 }
 
-func TestMessageSearchPreinstalledExtensionSkipsInstallation(t *testing.T) {
+func TestMessageSearchPreinstalledExtensionAndValidIndexSkipDDL(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +62,6 @@ func TestMessageSearchPreinstalledExtensionSkipsInstallation(t *testing.T) {
 	mock.ExpectQuery("SELECT EXISTS .*pg_extension").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectExec("SELECT pg_advisory_lock").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT count.*pg_index").WillReturnRows(sqlmock.NewRows([]string{"exists", "valid"}).AddRow(true, true))
-	mock.ExpectExec("CREATE INDEX CONCURRENTLY").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("SELECT pg_advisory_unlock").WillReturnResult(sqlmock.NewResult(0, 1))
 	a := &Adapter{db: db}
 	if err := a.ensureMessageSearchIndex(); err != nil {
