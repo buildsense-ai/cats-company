@@ -93,6 +93,7 @@ func (a *Adapter) createSchema(ctx context.Context, conn *sql.Conn) error {
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
+		createWikiCatalog,
 		createGroupInviteRequestsTable,
 		createFeedbackReportsTable,
 		createAuthServicesTable,

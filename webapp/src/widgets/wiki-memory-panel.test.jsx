@@ -62,10 +62,10 @@ describe('chat wiki memories', () => {
     expect(container.querySelector('article h2 strong')?.textContent).toBe('Markdown');
     await click(rows()[0]);
     await click(rows()[0]);
-    expect(api.getWikiMemoryDocument).toHaveBeenCalledTimes(1);
+    expect(api.getWikiMemoryDocument).toHaveBeenCalledTimes(2);
   });
 
-  it('loads the all-conversation catalog once and shares wiki documents between graph and folded lists', async () => {
+  it('loads the all-conversation catalog once when switching between graph and folded lists', async () => {
     api.getWikiMemoryCatalog.mockResolvedValue(page([wiki('older', 11), wiki('newer', 12)]));
     await render();
     await click(Array.from(container.querySelectorAll('nav button')).find(button => button.textContent === '助手记忆'));
@@ -78,7 +78,7 @@ describe('chat wiki memories', () => {
     expect(group.open).toBe(true);
     expect(group.querySelector('article').textContent).toContain('Markdown');
     expect(api.getWikiMemoryCatalog).toHaveBeenCalledTimes(2);
-    expect(api.getWikiMemoryDocument).toHaveBeenCalledTimes(1);
+    expect(api.getWikiMemoryDocument).toHaveBeenCalledTimes(2);
   });
 
   it('loads the next list page at the bottom and keeps newer rows first', async () => {

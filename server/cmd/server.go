@@ -1263,7 +1263,10 @@ func main() {
 	dailyNotesHandler := server.NewDailyNotesHandler(db, os.Getenv("CATSCO_DAILY_NOTES_BASE_URL"))
 	mux.HandleFunc("POST /api/agents/{uid}/daily-notes", jwtAuthWithDB(dailyNotesHandler.HandleQuery))
 	mux.HandleFunc("POST /api/agents/{uid}/memory-sources", jwtAuthWithDB(dailyNotesHandler.HandleMemoryRead))
-	wikiMemoryHandler := server.NewWikiMemoryHandler(db, os.Getenv("CATSCO_WIKI_MEMORY_BASE_URL"), os.Getenv("CATSCO_WIKI_MEMORY_TOKEN"))
+	wikiMemoryHandler := server.NewWikiMemoryHandler(db, hub, os.Getenv("CATSCO_WIKI_MEMORY_BASE_URL"), os.Getenv("CATSCO_WIKI_MEMORY_TOKEN"))
+	wikiCatalogCtx, stopWikiCatalogSync := context.WithCancel(context.Background())
+	defer stopWikiCatalogSync()
+	go wikiMemoryHandler.RunCatalogSync(wikiCatalogCtx)
 	mux.HandleFunc("GET /api/memories/availability", jwtAuthWithDB(wikiMemoryHandler.HandleAvailability))
 	mux.HandleFunc("GET /api/agents/{uid}/memories", jwtAuthWithDB(wikiMemoryHandler.HandleCatalog))
 	mux.HandleFunc("GET /api/agents/{uid}/memories/{id}", jwtAuthWithDB(wikiMemoryHandler.HandleDocument))
@@ -1535,6 +1538,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("shutting down gracefully...")
+	stopWikiCatalogSync()
 	stopPublicationDelivery()
 	stopCommitDispatch()
 

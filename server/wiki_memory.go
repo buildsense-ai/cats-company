@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -22,12 +24,14 @@ var wikiMemoryID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 type WikiMemoryHandler struct {
 	db      store.Store
+	hub     *Hub
+	catalog store.WikiCatalogStore
 	baseURL string
 	token   string
 	client  *http.Client
 }
 
-func NewWikiMemoryHandler(db store.Store, baseURL, token string) *WikiMemoryHandler {
+func NewWikiMemoryHandler(db store.Store, hub *Hub, baseURL, token string) *WikiMemoryHandler {
 	base, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || base.Hostname() == "" || (base.Scheme != "https" && base.Scheme != "http") ||
 		base.User != nil || base.ForceQuery || base.RawQuery != "" || base.Fragment != "" ||
@@ -36,32 +40,22 @@ func NewWikiMemoryHandler(db store.Store, baseURL, token string) *WikiMemoryHand
 	} else {
 		baseURL = base.Scheme + "://" + base.Host
 	}
-	return &WikiMemoryHandler{
-		db: db, baseURL: baseURL, token: strings.TrimSpace(token),
+	handler := &WikiMemoryHandler{
+		db: db, hub: hub, baseURL: baseURL, token: strings.TrimSpace(token),
 		client: &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}
+	if provider, ok := db.(store.WikiCatalogProvider); ok {
+		handler.catalog = provider.WikiCatalog()
+	}
+	return handler
 }
 
 func (h *WikiMemoryHandler) configured() bool {
-	return h.baseURL != "" && h.token != ""
+	return h.baseURL != "" && h.token != "" && h.catalog != nil
 }
 
 func (h *WikiMemoryHandler) HandleAvailability(w http.ResponseWriter, _ *http.Request) {
 	writeWikiMemoryJSON(w, http.StatusOK, map[string]bool{"enabled": h.configured()})
-}
-
-type wikiMemoryScope struct {
-	BotUID   string   `json:"bot_uid"`
-	Kind     string   `json:"kind"`
-	TopicIDs []string `json:"topic_ids,omitempty"`
-}
-
-type wikiMemoryRequest struct {
-	Scope   wikiMemoryScope `json:"scope"`
-	TopicID string          `json:"topic_id,omitempty"`
-	Cursor  string          `json:"cursor,omitempty"`
-	Limit   int             `json:"limit,omitempty"`
-	ID      string          `json:"id,omitempty"`
 }
 
 type wikiMemoryItem struct {
@@ -97,41 +91,56 @@ func (h *WikiMemoryHandler) HandleCatalog(w http.ResponseWriter, r *http.Request
 		return
 	}
 	query := r.URL.Query()
-	input := wikiMemoryRequest{TopicID: query.Get("topic_id"), Cursor: query.Get("cursor"), Limit: 100}
+	topic, limit := query.Get("topic_id"), 100
 	if raw := query.Get("limit"); raw != "" {
-		limit, err := strconv.Atoi(raw)
+		var err error
+		limit, err = strconv.Atoi(raw)
 		if err != nil {
 			wikiMemoryError(w, http.StatusBadRequest)
 			return
 		}
-		input.Limit = limit
 	}
-	if len(input.Cursor) > 2048 || input.Limit < 1 || input.Limit > 200 || (input.TopicID != "" && !wikiMemoryBotTopic(input.TopicID, botUID)) {
+	after, valid := wikiCatalogCursor(query.Get("cursor"))
+	if !valid || limit < 1 || limit > 200 || (topic != "" && !wikiMemoryBotTopic(topic, botUID)) {
 		wikiMemoryError(w, http.StatusBadRequest)
 		return
 	}
-	scope, titles, err := h.scope(viewerUID, botUID)
+	var topics []string
+	var titles map[string]string
+	if topic != "" {
+		if status := h.conversationAccess(viewerUID, botUID, topic); status != http.StatusOK {
+			wikiMemoryError(w, status)
+			return
+		}
+		topics = []string{topic}
+	} else {
+		var err error
+		topics, titles, err = h.allowedTopics(viewerUID, botUID)
+		if err != nil {
+			wikiMemoryError(w, http.StatusServiceUnavailable)
+			return
+		}
+	}
+	entries, err := h.catalog.ListWikiCatalog(r.Context(), botUID, topics, after, limit+1)
 	if err != nil {
 		wikiMemoryError(w, http.StatusServiceUnavailable)
 		return
 	}
-	if scope.Kind == "topics" && (len(scope.TopicIDs) == 0 || (input.TopicID != "" && !slices.Contains(scope.TopicIDs, input.TopicID))) {
-		wikiMemoryError(w, http.StatusNotFound)
-		return
+	catalog := wikiMemoryCatalog{Items: make([]wikiMemoryItem, 0, min(limit, len(entries)))}
+	if len(entries) > limit {
+		entries = entries[:limit]
+		last := entries[len(entries)-1]
+		data, _ := json.Marshal([2]string{last.CreatedAt, last.ID})
+		cursor := base64.RawURLEncoding.EncodeToString(data)
+		catalog.NextCursor = &cursor
 	}
-	input.Scope = scope
-	var catalog wikiMemoryCatalog
-	_, status := h.query(r, "catalog", input, &catalog)
-	if status != http.StatusOK {
-		wikiMemoryError(w, status)
-		return
-	}
-	if !validWikiMemoryCatalog(catalog.Items, input) {
-		wikiMemoryError(w, http.StatusBadGateway)
-		return
-	}
-	if catalog.Items == nil {
-		catalog.Items = []wikiMemoryItem{}
+	for _, entry := range entries {
+		conversations := []string{}
+		if entry.TopicID != "" {
+			conversations = append(conversations, entry.TopicID)
+		}
+		catalog.Items = append(catalog.Items, wikiMemoryItem{ID: entry.ID, Title: entry.Title,
+			ConversationIDs: conversations, CreatedAt: entry.CreatedAt, Revision: entry.Revision})
 	}
 	catalog.Conversations = h.conversations(viewerUID, botUID, catalog.Items, titles)
 	writeWikiMemoryJSON(w, http.StatusOK, catalog)
@@ -147,22 +156,26 @@ func (h *WikiMemoryHandler) HandleDocument(w http.ResponseWriter, r *http.Reques
 		wikiMemoryError(w, http.StatusBadRequest)
 		return
 	}
-	scope, _, err := h.scope(viewerUID, botUID)
+	entry, found, err := h.catalog.GetWikiCatalogEntry(r.Context(), id)
 	if err != nil {
 		wikiMemoryError(w, http.StatusServiceUnavailable)
 		return
 	}
-	if scope.Kind == "topics" && len(scope.TopicIDs) == 0 {
+	if !found || entry.BotUID != strconv.FormatInt(botUID, 10) {
 		wikiMemoryError(w, http.StatusNotFound)
 		return
 	}
+	if status := h.documentAccess(viewerUID, botUID, entry.TopicID); status != http.StatusOK {
+		wikiMemoryError(w, status)
+		return
+	}
 	var document wikiMemoryDocument
-	etag, status := h.query(r, "wiki", wikiMemoryRequest{Scope: scope, ID: id}, &document)
+	etag, status := h.query(r.Context(), "wiki", wikiBodyRequest{ID: id}, r.Header.Get("If-None-Match"), &document)
 	if status != http.StatusOK && status != http.StatusNotModified {
 		wikiMemoryError(w, status)
 		return
 	}
-	if etag == "" || (status == http.StatusOK && (document.ID != id || document.Revision == "")) ||
+	if etag != `"`+entry.Revision+`"` || (status == http.StatusOK && (document.ID != id || document.Revision != entry.Revision)) ||
 		(status == http.StatusNotModified && r.Header.Get("If-None-Match") == "") {
 		wikiMemoryError(w, http.StatusBadGateway)
 		return
@@ -201,39 +214,68 @@ func (h *WikiMemoryHandler) identify(w http.ResponseWriter, r *http.Request) (in
 	return viewerUID, botUID, true
 }
 
-func (h *WikiMemoryHandler) scope(viewerUID, botUID int64) (wikiMemoryScope, map[string]string, error) {
-	scope := wikiMemoryScope{BotUID: strconv.FormatInt(botUID, 10), Kind: "topics"}
+func (h *WikiMemoryHandler) allowedTopics(viewerUID, botUID int64) ([]string, map[string]string, error) {
 	owner, err := h.db.GetBotOwner(botUID)
 	if err != nil {
-		return scope, nil, err
+		return nil, nil, err
 	}
 	if owner == viewerUID {
-		scope.Kind = "owner"
-		return scope, nil, nil
+		return nil, nil, nil
 	}
-	friends, err := h.db.AreFriends(viewerUID, botUID)
-	if err != nil {
-		return scope, nil, err
-	}
-	if friends {
-		scope.TopicIDs = append(scope.TopicIDs, p2pTopicID(viewerUID, botUID))
+	topics := []string{}
+	if direct := p2pTopicID(viewerUID, botUID); h.conversationAccess(viewerUID, botUID, direct) == http.StatusOK {
+		topics = append(topics, direct)
 	}
 	groups, err := h.db.GetUserGroups(viewerUID)
 	if err != nil {
-		return scope, nil, err
+		return nil, nil, err
 	}
 	titles := make(map[string]string)
 	for _, group := range groups {
 		// GetUserGroups returns standard and agent task groups of the viewer.
 		if group != nil && (group.Kind == types.GroupKindStandard || group.Kind == types.GroupKindAgentTask) && slices.Contains(group.AgentIDs, botUID) {
 			topic := "grp_" + strconv.FormatInt(group.ID, 10)
-			scope.TopicIDs = append(scope.TopicIDs, topic)
+			topics = append(topics, topic)
 			titles[topic] = group.Name
 		}
 	}
-	slices.Sort(scope.TopicIDs)
-	scope.TopicIDs = slices.Compact(scope.TopicIDs)
-	return scope, titles, nil
+	return topics, titles, nil
+}
+
+func (h *WikiMemoryHandler) conversationAccess(viewerUID, botUID int64, topic string) int {
+	if h.hub == nil {
+		return http.StatusServiceUnavailable
+	}
+	if code, _ := h.hub.validateTopicReadAccess(viewerUID, types.AccountHuman, topic); code != 0 {
+		if code >= 500 {
+			return http.StatusServiceUnavailable
+		}
+		return http.StatusNotFound
+	}
+	if group := extractGroupID(topic); group > 0 {
+		member, err := h.db.IsGroupMember(group, botUID)
+		if err != nil {
+			return http.StatusServiceUnavailable
+		}
+		if !member {
+			return http.StatusNotFound
+		}
+	}
+	return http.StatusOK
+}
+
+func (h *WikiMemoryHandler) documentAccess(viewerUID, botUID int64, topic string) int {
+	owner, err := h.db.GetBotOwner(botUID)
+	if err != nil {
+		return http.StatusServiceUnavailable
+	}
+	if owner == viewerUID {
+		return http.StatusOK
+	}
+	if !wikiMemoryBotTopic(topic, botUID) {
+		return http.StatusNotFound
+	}
+	return h.conversationAccess(viewerUID, botUID, topic)
 }
 
 func wikiMemoryBotTopic(topic string, botUID int64) bool {
@@ -244,27 +286,20 @@ func wikiMemoryBotTopic(topic string, botUID int64) bool {
 	return peer > 0 && peer != botUID && topic == p2pTopicID(peer, botUID)
 }
 
-func validWikiMemoryCatalog(items []wikiMemoryItem, input wikiMemoryRequest) bool {
-	if len(items) > input.Limit {
-		return false
+func wikiCatalogCursor(cursor string) (store.WikiCatalogPosition, bool) {
+	if cursor == "" {
+		return store.WikiCatalogPosition{}, true
 	}
-	for _, item := range items {
-		if !wikiMemoryID.MatchString(item.ID) || item.Revision == "" ||
-			(input.TopicID != "" && !slices.Contains(item.ConversationIDs, input.TopicID)) {
-			return false
-		}
-		if input.Scope.Kind == "topics" {
-			if len(item.ConversationIDs) == 0 {
-				return false
-			}
-			for _, topic := range item.ConversationIDs {
-				if !slices.Contains(input.Scope.TopicIDs, topic) {
-					return false
-				}
-			}
-		}
+	if len(cursor) > 512 {
+		return store.WikiCatalogPosition{}, false
 	}
-	return true
+	data, err := base64.RawURLEncoding.DecodeString(cursor)
+	var fields []string
+	if err != nil || json.Unmarshal(data, &fields) != nil || len(fields) != 2 ||
+		!validWikiTime(fields[0]) || !wikiMemoryID.MatchString(fields[1]) {
+		return store.WikiCatalogPosition{}, false
+	}
+	return store.WikiCatalogPosition{CreatedAt: fields[0], ID: fields[1]}, true
 }
 
 func (h *WikiMemoryHandler) conversations(viewerUID, botUID int64, items []wikiMemoryItem, groupTitles map[string]string) []wikiMemoryConversation {
@@ -334,21 +369,19 @@ func (h *WikiMemoryHandler) conversations(viewerUID, botUID int64, items []wikiM
 	return result
 }
 
-func (h *WikiMemoryHandler) query(r *http.Request, endpoint string, input wikiMemoryRequest, output any) (string, int) {
+func (h *WikiMemoryHandler) query(ctx context.Context, endpoint string, input any, ifNoneMatch string, output any) (string, int) {
 	body, err := json.Marshal(input)
 	if err != nil {
 		return "", http.StatusInternalServerError
 	}
-	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.baseURL+"/internal/catsco/memory/"+endpoint, bytes.NewReader(body))
+	upstream, err := http.NewRequestWithContext(ctx, http.MethodPost, h.baseURL+"/internal/catsco/memory/"+endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", http.StatusServiceUnavailable
 	}
 	upstream.Header.Set("Content-Type", "application/json")
 	upstream.Header.Set("Authorization", "Bearer "+h.token)
-	if endpoint == "wiki" {
-		if etag := r.Header.Get("If-None-Match"); etag != "" {
-			upstream.Header.Set("If-None-Match", etag)
-		}
+	if ifNoneMatch != "" {
+		upstream.Header.Set("If-None-Match", ifNoneMatch)
 	}
 	response, err := h.client.Do(upstream)
 	if err != nil {

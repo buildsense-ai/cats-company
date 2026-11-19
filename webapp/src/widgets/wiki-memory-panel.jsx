@@ -69,7 +69,6 @@ export default function WikiMemoryPanel({ viewerUid, topicId, agents, onClose })
 function WikiMemoryContent({ viewerUid, agentUid, topicId }) {
   const [isBotView, setBotView] = useState(false);
   const [openedBotView, setOpenedBotView] = useState(false);
-  const documents = useRef(new Map());
   const visitKey = `catsco:wiki-seen:${viewerUid}:${agentUid}`;
   const [visit] = useState(() => readVisit(visitKey));
   const [refreshID, setRefreshID] = useState(0);
@@ -78,7 +77,6 @@ function WikiMemoryContent({ viewerUid, agentUid, topicId }) {
     const refresh = () => {
       if (document.visibilityState !== 'visible' || Date.now() - lastRefresh < 250) return;
       lastRefresh = Date.now();
-      documents.current.clear();
       setRefreshID(previous => previous + 1);
     };
     window.addEventListener('focus', refresh);
@@ -100,13 +98,13 @@ function WikiMemoryContent({ viewerUid, agentUid, topicId }) {
           </>
         )}
       </nav>
-      <WikiCatalog key={`topic:${refreshID}`} hidden={isBotView} topicId={topicId} documents={documents.current} {...{ agentUid, visit, visitKey }} />
-      {openedBotView && <WikiCatalog key={`bot:${refreshID}`} hidden={!isBotView} documents={documents.current} {...{ agentUid, visit, visitKey }} />}
+      <WikiCatalog key={`topic:${refreshID}`} hidden={isBotView} topicId={topicId} {...{ agentUid, visit, visitKey }} />
+      {openedBotView && <WikiCatalog key={`bot:${refreshID}`} hidden={!isBotView} {...{ agentUid, visit, visitKey }} />}
     </>
   );
 }
 
-function WikiCatalog({ hidden, agentUid, topicId, documents, visit, visitKey }) {
+function WikiCatalog({ hidden, agentUid, topicId, visit, visitKey }) {
   const [items, setItems] = useState([]);
   const [conversations, setConversations] = useState({});
   const [nextCursor, setNextCursor] = useState(null);
@@ -197,7 +195,7 @@ function WikiCatalog({ hidden, agentUid, topicId, documents, visit, visitKey }) 
     setSelected(current => current === id ? null : id);
   }
 
-  const read = item => <WikiBody key={`${item.id}:${item.revision}`} {...{ item, agentUid, documents }} />;
+  const read = item => <WikiBody key={`${item.id}:${item.revision}`} {...{ item, agentUid }} />;
   const renderList = entries => <ul className="cc-wiki-list">
     {entries.map(item => (
       <li key={item.id}>
@@ -296,9 +294,8 @@ function WikiGraph({ groups, conversations, selected, toggle, isNew }) {
   );
 }
 
-function WikiBody({ item, agentUid, documents }) {
-  const cached = documents.get(item.id);
-  const [document, setDocument] = useState(cached?.revision === item.revision ? cached : null);
+function WikiBody({ item, agentUid }) {
+  const [document, setDocument] = useState(null);
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState(false);
 
@@ -307,16 +304,14 @@ function WikiBody({ item, agentUid, documents }) {
     const controller = new AbortController();
     api.getWikiMemoryDocument(agentUid, item.id, { signal: controller.signal }).then(body => {
       if (controller.signal.aborted) return;
-      documents.set(item.id, body);
       setDocument(body);
     }).catch(() => {
       if (!controller.signal.aborted) {
-        documents.delete(item.id);
         setError(true);
       }
     });
     return () => controller.abort();
-  }, [agentUid, item.id, documents, attempt, document]);
+  }, [agentUid, item.id, attempt, document]);
 
   if (error) return <div className="cc-wiki-feedback" role="status">正文不可用。<button type="button" onClick={() => { setError(false); setAttempt(previous => previous + 1); }}>重试</button></div>;
   if (!document) return <p className="cc-wiki-feedback" role="status">正在读取正文…</p>;
