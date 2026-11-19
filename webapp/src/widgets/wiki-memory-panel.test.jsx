@@ -77,6 +77,22 @@ describe('chat wiki memories', () => {
     expect(rows()[0].textContent).toContain('设计讨论');
     expect(api.getWikiMemoryCatalog).toHaveBeenCalledTimes(2);
     expect(api.getWikiMemoryDocument).not.toHaveBeenCalled();
+    const groupList = container.querySelector('select[aria-label="列表分组"]');
+    await act(async () => {
+      groupList.value = 'topic';
+      groupList.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const group = container.querySelector('.cc-wiki-groups details');
+    expect(group.querySelector('summary').textContent).toContain('设计讨论');
+    expect(rows()).toHaveLength(0);
+    await act(async () => {
+      group.open = true;
+      group.dispatchEvent(new Event('toggle'));
+    });
+    await click(rows()[0]);
+    expect(container.querySelector('.cc-wiki-reader h3').textContent).toBe('Wiki newer');
+    await click(container.querySelector('.cc-wiki-reader-toolbar button'));
+    expect(group.open).toBe(true);
   });
 
   it('loads the next list page at the bottom and keeps newer rows first', async () => {

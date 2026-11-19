@@ -57,6 +57,21 @@
 .cc-wiki-view-bar button[aria-pressed="true"] { background: var(--wiki-hover); font-weight: 650; }
 
 .cc-wiki-list-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 5px 12px 14px; }
+.cc-wiki-list-options { display: flex; justify-content: flex-end; padding: 6px 16px 0; }
+.cc-wiki-list-options select {
+  padding: 3px 5px;
+  border: 1px solid var(--wiki-stroke);
+  border-radius: 5px;
+  background: var(--cc-panel, #fff);
+  color: var(--wiki-muted);
+  font: inherit;
+  font-size: 12px;
+}
+.cc-wiki-groups details { border-bottom: 1px solid var(--wiki-stroke); }
+.cc-wiki-groups summary { cursor: pointer; padding: 11px 8px; font-size: 13px; }
+.cc-wiki-groups summary small { float: inline-end; margin-inline-start: 8px; color: var(--wiki-muted); }
+.cc-wiki-groups details ul { padding-inline-start: 12px; }
+.cc-wiki-groups .cc-wiki-list li:last-child { border-bottom: 0; }
 .cc-wiki-list { margin: 0; list-style: none; padding: 0; }
 .cc-wiki-list-end { height: 1px; }
 .cc-wiki-list li { border-bottom: 1px solid var(--wiki-stroke); }
