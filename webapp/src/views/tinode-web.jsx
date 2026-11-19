@@ -389,6 +389,21 @@ function TinodeWebApp({ location }) {
   const requestedOpen = new URLSearchParams(search).get('open') || '';
   const downloadLinkKey = requestedOpen === 'download' ? `${pathname}?${search}#${hash}` : '';
   const [user, setUser] = useState(() => getInitialUser());
+  const [wikiMemoryViewer, setWikiMemoryViewer] = useState(null);
+  const viewerUid = user?.uid;
+  useEffect(() => {
+    if (!viewerUid) {
+      setWikiMemoryViewer(null);
+      return;
+    }
+    const controller = new AbortController();
+    api.getWikiMemoryAvailability({ signal: controller.signal }).then(({ enabled }) => {
+      if (!controller.signal.aborted) setWikiMemoryViewer(enabled === true ? viewerUid : null);
+    }).catch(() => {
+      if (!controller.signal.aborted) setWikiMemoryViewer(null);
+    });
+    return () => controller.abort();
+  }, [viewerUid]);
   const [sessionRestoreError, setSessionRestoreError] = useState('');
   const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
@@ -1993,6 +2008,7 @@ function TinodeWebApp({ location }) {
                 key={composerDraftOwner || 'anonymous'}
                 topBar={localAssistantBar}
                 renderTopBar={renderLocalAssistantBar}
+                wikiMemoryEnabled={Boolean(viewerUid && wikiMemoryViewer === viewerUid)}
                 topic={activeTopic.topicId}
                 topicName={activeTopic.name}
                 user={user}

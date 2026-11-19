@@ -59,6 +59,31 @@ func wikiMemoryTestRequest(mux *http.ServeMux, uid int64, path, ifNoneMatch stri
 	return response
 }
 
+func TestWikiMemoryAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name, origin, token string
+		enabled             bool
+	}{
+		{"unset", "", "", false},
+		{"missing token", "https://memory.internal", "", false},
+		{"path instead of origin", "https://memory.internal/upload", "test-key", false},
+		{"configured", "https://memory.internal:8460/", "test-key", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewWikiMemoryHandler(nil, tc.origin, tc.token)
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/api/memories/availability", nil)
+			handler.HandleAvailability(response, request)
+
+			var result map[string]bool
+			err := json.Unmarshal(response.Body.Bytes(), &result)
+			if response.Code != http.StatusOK || err != nil || !reflect.DeepEqual(result, map[string]bool{"enabled": tc.enabled}) {
+				t.Fatalf("availability: %d %s (%v)", response.Code, response.Body, err)
+			}
+		})
+	}
+}
+
 func TestWikiMemoryCatalogUsesLiveTopicPermissions(t *testing.T) {
 	db := &wikiMemoryTestStore{groups: map[int64][]*types.Group{
 		2: {{ID: 7, Name: "会话标题", Kind: types.GroupKindStandard, AgentIDs: []int64{50}},

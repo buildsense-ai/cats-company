@@ -1264,6 +1264,7 @@ func main() {
 	mux.HandleFunc("POST /api/agents/{uid}/daily-notes", jwtAuthWithDB(dailyNotesHandler.HandleQuery))
 	mux.HandleFunc("POST /api/agents/{uid}/memory-sources", jwtAuthWithDB(dailyNotesHandler.HandleMemoryRead))
 	wikiMemoryHandler := server.NewWikiMemoryHandler(db, os.Getenv("CATSCO_WIKI_MEMORY_BASE_URL"), os.Getenv("CATSCO_WIKI_MEMORY_TOKEN"))
+	mux.HandleFunc("GET /api/memories/availability", jwtAuthWithDB(wikiMemoryHandler.HandleAvailability))
 	mux.HandleFunc("GET /api/agents/{uid}/memories", jwtAuthWithDB(wikiMemoryHandler.HandleCatalog))
 	mux.HandleFunc("GET /api/agents/{uid}/memories/{id}", jwtAuthWithDB(wikiMemoryHandler.HandleDocument))
 	mux.HandleFunc("/api/agents/", jwtAuthWithDB(cloudArtifactHandler.HandleAgentArtifacts))

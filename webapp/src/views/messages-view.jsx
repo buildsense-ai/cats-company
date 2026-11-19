@@ -760,6 +760,7 @@ function cacheHistoryPage(cache, key, entry) {
 export default function MessagesView({
   topBar = null,
   renderTopBar,
+  wikiMemoryEnabled = false,
   topic,
   topicName,
   user,
@@ -1122,7 +1123,7 @@ export default function MessagesView({
   }, [messages, olderGalleryItems]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const [wikiMemoryTopic, setWikiMemoryTopic] = useState('');
-  const wikiMemoryOpen = wikiMemoryTopic === topic && Boolean(topic);
+  const wikiMemoryOpen = wikiMemoryEnabled && wikiMemoryTopic === topic && Boolean(topic);
   useEffect(() => {
     setWikiMemoryTopic('');
   }, [topic, user.uid]);
@@ -7239,7 +7240,7 @@ export default function MessagesView({
           left: `${previewDockPoint.left}px`, right: 'auto', top: `${previewDockPoint.top}px`, bottom: 'auto',
           transform: 'none',
         } : undefined}>
-          {renderTopBar ? renderTopBar(wikiMemoryAgents.length > 0 && (
+          {renderTopBar ? renderTopBar(wikiMemoryEnabled && wikiMemoryAgents.length > 0 && (
             <button type="button" className="v3-action-btn" aria-label="记忆" title="记忆" aria-expanded={wikiMemoryOpen}
               onClick={() => {
                 if (!wikiMemoryOpen && previewExpanded) restorePreviewWorkspace();

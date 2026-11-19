@@ -485,6 +485,7 @@ async function uploadRawFile(path, file, { authToken = '' } = {}) {
 export const api = {
   ...authApi,
   getMe: () => request('GET', '/api/me'),
+  getWikiMemoryAvailability: ({ signal } = {}) => request('GET', '/api/memories/availability', undefined, { signal }),
   getWikiMemoryCatalog: (agentUid, { topicId, cursor, signal } = {}) => {
     const query = new URLSearchParams({ limit: '100' });
     if (topicId) query.set('topic_id', topicId);

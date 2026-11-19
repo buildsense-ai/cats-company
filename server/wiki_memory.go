@@ -29,13 +29,25 @@ type WikiMemoryHandler struct {
 
 func NewWikiMemoryHandler(db store.Store, baseURL, token string) *WikiMemoryHandler {
 	base, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+	if err != nil || base.Hostname() == "" || (base.Scheme != "https" && base.Scheme != "http") ||
+		base.User != nil || base.ForceQuery || base.RawQuery != "" || base.Fragment != "" ||
+		(base.EscapedPath() != "" && base.EscapedPath() != "/") {
 		baseURL = ""
+	} else {
+		baseURL = base.Scheme + "://" + base.Host
 	}
 	return &WikiMemoryHandler{
-		db: db, baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), token: strings.TrimSpace(token),
+		db: db, baseURL: baseURL, token: strings.TrimSpace(token),
 		client: &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}
+}
+
+func (h *WikiMemoryHandler) configured() bool {
+	return h.baseURL != "" && h.token != ""
+}
+
+func (h *WikiMemoryHandler) HandleAvailability(w http.ResponseWriter, _ *http.Request) {
+	writeWikiMemoryJSON(w, http.StatusOK, map[string]bool{"enabled": h.configured()})
 }
 
 type wikiMemoryScope struct {
@@ -87,7 +99,12 @@ func (h *WikiMemoryHandler) HandleCatalog(w http.ResponseWriter, r *http.Request
 	query := r.URL.Query()
 	input := wikiMemoryRequest{TopicID: query.Get("topic_id"), Cursor: query.Get("cursor"), Limit: 100}
 	if raw := query.Get("limit"); raw != "" {
-		input.Limit, _ = strconv.Atoi(raw)
+		limit, err := strconv.Atoi(raw)
+		if err != nil {
+			wikiMemoryError(w, http.StatusBadRequest)
+			return
+		}
+		input.Limit = limit
 	}
 	if len(input.Cursor) > 2048 || input.Limit < 1 || input.Limit > 200 || (input.TopicID != "" && !wikiMemoryBotTopic(input.TopicID, botUID)) {
 		wikiMemoryError(w, http.StatusBadRequest)
@@ -172,7 +189,7 @@ func (h *WikiMemoryHandler) identify(w http.ResponseWriter, r *http.Request) (in
 		wikiMemoryError(w, http.StatusBadRequest)
 		return 0, 0, false
 	}
-	if h.baseURL == "" || h.token == "" {
+	if !h.configured() {
 		wikiMemoryError(w, http.StatusServiceUnavailable)
 		return 0, 0, false
 	}
