@@ -133,7 +133,7 @@ func TestModelCreditTaskHTTPPlanTierSnapshotAgainstPostgres(t *testing.T) {
 	if tier := planTierOf(started); tier != 2 {
 		t.Fatalf("start plan_tier = %d, want the server-side tier 2", tier)
 	}
-	for _, action := range []string{"status", "start"} {
+	for _, action := range []string{"status", "start", "dispatch"} {
 		payload := call(action, "http-tier-root")
 		if tier := planTierOf(payload); tier != 2 {
 			t.Fatalf("%s plan_tier = %d, want the same snapshot 2", action, tier)
@@ -145,6 +145,10 @@ func TestModelCreditTaskHTTPPlanTierSnapshotAgainstPostgres(t *testing.T) {
 	}
 	if tier := planTierOf(finished); tier != 2 {
 		t.Fatalf("finish plan_tier = %d, want the same snapshot 2", tier)
+	}
+	if replay := call("dispatch", "http-tier-root"); replay["allowed"] != false ||
+		replay["state"] != store.ModelCreditTaskCompleted || planTierOf(replay) != 2 {
+		t.Fatalf("dispatch of completed root = %+v", replay)
 	}
 
 	// 客户端自报档位：请求体里带 plan_tier 是未知字段，直接 400（DisallowUnknownFields）。
@@ -164,6 +168,7 @@ func TestModelCreditTaskHTTPPlanTierSnapshotAgainstPostgres(t *testing.T) {
 		}
 		if _, err := db.GrantCommercialQuota(&types.CommercialQuotaGrant{
 			UID: uid, Model: deepSeekPublicModelID, AmountCNY: 10,
+			EffectiveAt: time.Now().UTC().Add(-time.Minute),
 		}); err != nil {
 			t.Fatalf("grant legacy model quota: %v", err)
 		}

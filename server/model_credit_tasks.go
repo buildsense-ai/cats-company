@@ -20,13 +20,18 @@ import (
 //	POST /internal/relay/credit-tasks   {uid, action, task_id, model? (start only)}
 //	-> {enabled, allowed, task_id, state, plan_tier, retained_task_id?, reason?, spendable_units, debt_units}
 //
+// action 有五个：start / status / resume / finish，以及 dispatch。dispatch 是 Relay
+// opt-in 派发（X-CatsCo-Billing-Dispatch）专用：它只推进计费状态（root 缺失等同
+// start，running/completed 等同 status，paused 等同 resume），不会重放应用请求。
+// 纯 legacy 账户照旧返回 enabled=false + allowed=true 且什么都不落库；请求体里没有
+// 档位字段，也拒绝未知字段 —— 客户端无法自报 tier；model 只有 start 带。
+//
 // 为什么任务要单独一个接口：额度是否够、有没有欠款、套餐权限是否还有效、以及「额度
 // 耗尽只保留最近开始的那个任务」这些判定必须在服务端一次事务里做完，Relay 不能自己
 // 拼（docs/credit-plan-rules-20261109.md P0-3）。
 //
 // plan_tier 是这个 root 任务的套餐档位快照（1..3，legacy/无快照为 0）：任务运行中套餐
 // 到期时 Relay 仍按它计价（按到期前费率跑到结束），所以不要改用 eligibility 的现读档位。
-// 请求体里没有档位字段，也拒绝未知字段 —— 客户端无法自报 tier。
 type modelCreditTaskHandler struct {
 	tasks store.ModelCreditTaskStore
 }

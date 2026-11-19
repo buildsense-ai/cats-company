@@ -29,6 +29,10 @@ const (
 	ModelCreditTaskActionStatus = "status"
 	ModelCreditTaskActionResume = "resume"
 	ModelCreditTaskActionFinish = "finish"
+	// ModelCreditTaskActionDispatch 是 Relay opt-in 派发（X-CatsCo-Billing-Dispatch）用的
+	// 计费入口：只改计费状态，绝不重放应用请求。语义 = root 缺失时等同 start，
+	// running/completed 等同 status，paused 等同 resume。纯 legacy 账户照旧不落库。
+	ModelCreditTaskActionDispatch = "dispatch"
 )
 
 // reason 是给 Relay/前端看的机器码，不翻译。
@@ -117,13 +121,14 @@ func (t ModelCreditTask) Validate() error {
 	return nil
 }
 
-// ModelCreditTaskInput 是一次 start/status/resume/finish 请求。
+// ModelCreditTaskInput 是一次 start/status/resume/finish/dispatch 请求。
 type ModelCreditTaskInput struct {
 	UID    int64
 	TaskID string
 	Action string
 	// PreferLegacy is set by Company after checking legacy model rights for start.
-	// It only applies if this account has no credit task for TaskID.
+	// It only applies to start: dispatch deliberately has no legacy route (old Relays
+	// still call start when they want the legacy-quota preference).
 	PreferLegacy bool
 }
 
@@ -134,7 +139,8 @@ func (in ModelCreditTaskInput) Validate() error {
 	}
 	switch in.Action {
 	case ModelCreditTaskActionStart, ModelCreditTaskActionStatus,
-		ModelCreditTaskActionResume, ModelCreditTaskActionFinish:
+		ModelCreditTaskActionResume, ModelCreditTaskActionFinish,
+		ModelCreditTaskActionDispatch:
 		return nil
 	default:
 		return ErrModelCreditInvalid
@@ -144,7 +150,7 @@ func (in ModelCreditTaskInput) Validate() error {
 // ModelCreditTaskDecision 是 Relay 拿到的判定结果。Allowed 只看这个 root 任务现在
 // 能不能跑；enabled=false + allowed=true 就是「沿用 legacy 额度」。
 //
-// PlanTier 是这个 root 的套餐档位快照（0 = 没有可信快照），四个 action 都回同一份：
+// PlanTier 是这个 root 的套餐档位快照（0 = 没有可信快照），所有 action 都回同一份：
 // Relay 用它计价，绝不能改用 eligibility 的现读档位（套餐一过期就没了）。
 type ModelCreditTaskDecision struct {
 	Enabled        bool
@@ -164,11 +170,12 @@ type ModelCreditTaskStore interface {
 	GetModelCreditTask(context.Context, int64, string) (*ModelCreditTask, error)
 }
 
-// NormalizeModelCreditTaskAction 把外部传进来的 action 收紧成四个合法值。
+// NormalizeModelCreditTaskAction 把外部传进来的 action 收紧成五个合法值。
 func NormalizeModelCreditTaskAction(action string) (string, bool) {
 	switch normalized := strings.ToLower(strings.TrimSpace(action)); normalized {
 	case ModelCreditTaskActionStart, ModelCreditTaskActionStatus,
-		ModelCreditTaskActionResume, ModelCreditTaskActionFinish:
+		ModelCreditTaskActionResume, ModelCreditTaskActionFinish,
+		ModelCreditTaskActionDispatch:
 		return normalized, true
 	default:
 		return "", false

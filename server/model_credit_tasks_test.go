@@ -132,6 +132,8 @@ func TestModelCreditTaskHandlerRejectsBadRequests(t *testing.T) {
 		{"model on status", http.MethodPost, `{"uid":1,"action":"status","task_id":"root","model":"deepseek-flash"}`, "Bearer " + modelCreditTaskTestSecret, http.StatusBadRequest},
 		{"model on resume", http.MethodPost, `{"uid":1,"action":"resume","task_id":"root","model":"deepseek-flash"}`, "Bearer " + modelCreditTaskTestSecret, http.StatusBadRequest},
 		{"model on finish", http.MethodPost, `{"uid":1,"action":"finish","task_id":"root","model":"deepseek-flash"}`, "Bearer " + modelCreditTaskTestSecret, http.StatusBadRequest},
+		{"model on dispatch", http.MethodPost, `{"uid":1,"action":"dispatch","task_id":"root","model":"deepseek-flash"}`, "Bearer " + modelCreditTaskTestSecret, http.StatusBadRequest},
+		{"legacy preference on dispatch", http.MethodPost, `{"uid":1,"action":"dispatch","task_id":"root","prefer_legacy":true}`, "Bearer " + modelCreditTaskTestSecret, http.StatusBadRequest},
 		{"empty model", http.MethodPost, `{"uid":1,"action":"start","task_id":"root","model":""}`, "Bearer " + modelCreditTaskTestSecret, http.StatusBadRequest},
 		{"blank model", http.MethodPost, `{"uid":1,"action":"start","task_id":"root","model":" \t"}`, "Bearer " + modelCreditTaskTestSecret, http.StatusBadRequest},
 		{"null model", http.MethodPost, `{"uid":1,"action":"start","task_id":"root","model":null}`, "Bearer " + modelCreditTaskTestSecret, http.StatusBadRequest},
@@ -243,5 +245,63 @@ func TestModelCreditTaskHandlerWithoutStoreIsUnavailable(t *testing.T) {
 	handler.ServeHTTP(response, modelCreditTaskHTTPRequest(`{"uid":1,"action":"start","task_id":"root"}`))
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+// dispatch 是 Relay opt-in 派发（X-CatsCo-Billing-Dispatch）专用入口：请求体只有
+// uid/action/task_id，Company 侧不读 legacy 额度、也不认模型字段，判定完全交给存储层的
+// 既有政策。纯 legacy 账户照旧拿到 enabled=false + allowed=true。
+func TestModelCreditTaskHandlerDispatch(t *testing.T) {
+	t.Setenv("CATSCO_RELAY_CREDIT_PEER_SECRET", modelCreditTaskTestSecret)
+	for _, action := range []string{"dispatch", "DISPATCH", " Dispatch "} {
+		stub := &modelCreditTaskStub{decision: &store.ModelCreditTaskDecision{
+			Enabled: true, Allowed: true, TaskID: "dispatch-root", State: store.ModelCreditTaskRunning,
+			PlanTier: 2, Reason: store.ModelCreditTaskReasonOK, SpendableUnits: 4,
+		}}
+		response := httptest.NewRecorder()
+		NewModelCreditTaskHandler(stub).ServeHTTP(response,
+			modelCreditTaskHTTPRequest(`{"uid":42,"action":"`+action+`","task_id":"dispatch-root"}`))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"plan_tier":2`) {
+			t.Fatalf("%q status=%d body=%s", action, response.Code, response.Body.String())
+		}
+		if stub.input.Action != store.ModelCreditTaskActionDispatch || stub.input.TaskID != "dispatch-root" ||
+			stub.input.PreferLegacy || stub.summaryCalls != 0 {
+			t.Fatalf("%q reached the store as %+v (legacy reads=%d)", action, stub.input, stub.summaryCalls)
+		}
+	}
+
+	// 纯 legacy 账户：dispatch 照旧返回 legacy 判定，不会读 legacy 汇总，也不会被改道。
+	legacy := &modelCreditTaskStub{decision: &store.ModelCreditTaskDecision{
+		Enabled: false, Allowed: true, TaskID: "dispatch-legacy", State: store.ModelCreditTaskRunning,
+		Reason: store.ModelCreditTaskReasonLegacy,
+	}}
+	legacyResponse := httptest.NewRecorder()
+	NewModelCreditTaskHandler(legacy).ServeHTTP(legacyResponse,
+		modelCreditTaskHTTPRequest(`{"uid":7,"action":"dispatch","task_id":"dispatch-legacy"}`))
+	if legacyResponse.Code != http.StatusOK || legacy.summaryCalls != 0 ||
+		!strings.Contains(legacyResponse.Body.String(), `"enabled":false`) ||
+		!strings.Contains(legacyResponse.Body.String(), `"allowed":true`) ||
+		!strings.Contains(legacyResponse.Body.String(), `"plan_tier":0`) {
+		t.Fatalf("legacy dispatch status=%d body=%s", legacyResponse.Code, legacyResponse.Body.String())
+	}
+
+	// 存储层错误照旧映射成 HTTP 码：Relay 靠它决定停不停。
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"unknown root", store.ErrModelCreditTaskNotFound, http.StatusNotFound},
+		{"conflict", store.ErrModelCreditConflict, http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &modelCreditTaskStub{err: tc.err}
+			response := httptest.NewRecorder()
+			NewModelCreditTaskHandler(stub).ServeHTTP(response,
+				modelCreditTaskHTTPRequest(`{"uid":1,"action":"dispatch","task_id":"dispatch-root"}`))
+			if response.Code != tc.status || stub.input.Action != store.ModelCreditTaskActionDispatch {
+				t.Fatalf("status=%d want=%d input=%+v body=%s", response.Code, tc.status, stub.input, response.Body.String())
+			}
+		})
 	}
 }

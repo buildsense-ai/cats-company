@@ -308,7 +308,7 @@ func retainedTaskStillRunning(ctx context.Context, tx *sql.Tx, uid int64, retain
 }
 
 // modelCreditTaskDecision 组装判定。planTier 是这个 root 的档位快照（0 = 没有可信
-// 快照），四个 action 都回同一份，Relay 直接拿它计价。
+// 快照），所有 action（含 dispatch）都回同一份，Relay 直接拿它计价。
 func modelCreditTaskDecision(account *store.ModelCreditAccount, taskID string, planTier int,
 	enabled, allowed bool, state, reason string) *store.ModelCreditTaskDecision {
 	decision := &store.ModelCreditTaskDecision{
@@ -338,6 +338,11 @@ func modelCreditTaskStoredPlanTier(task *store.ModelCreditTask) int {
 // （started_at / started_seq 不重写，paused 也不会被提升成 running）。resume 是用户
 // 手动恢复的唯一入口，必须满足「无欠款 + 有额度 + 有有效权限 + 透支名额没被别的
 // 运行中任务占着」。finish 幂等，并且不会顺手唤醒任何 paused 任务。
+//
+// dispatch 是 Relay opt-in 派发（X-CatsCo-Billing-Dispatch）用的计费入口，只改计费
+// 状态、绝不重放应用请求：root 缺失时等同 start，running/completed 等同 status，
+// paused 等同 resume。所以 started_at / started_seq / 档位快照 / 结算回执都由既有
+// 函数维护，dispatch 自己不写任何新语义。
 func (a *Adapter) ApplyModelCreditTask(ctx context.Context, in store.ModelCreditTaskInput) (*store.ModelCreditTaskDecision, error) {
 	if err := in.Validate(); err != nil {
 		return nil, err
@@ -402,6 +407,8 @@ func (a *Adapter) ApplyModelCreditTask(ctx context.Context, in store.ModelCredit
 			return nil, store.ErrModelCreditTaskNotFound
 		}
 		decision, err = applyModelCreditTaskFinish(ctx, tx, account, task, now)
+	case store.ModelCreditTaskActionDispatch:
+		decision, err = applyModelCreditTaskDispatch(ctx, tx, account, permitted, task, in, now)
 	}
 	if err != nil {
 		return nil, err
@@ -588,6 +595,29 @@ func applyModelCreditTaskFinish(ctx context.Context, tx *sql.Tx, account *store.
 	}
 	return modelCreditTaskDecision(account, task.TaskID, storedTier, true, false,
 		store.ModelCreditTaskCompleted, store.ModelCreditTaskReasonTaskCompleted), nil
+}
+
+// applyModelCreditTaskDispatch 是 Relay opt-in 派发（X-CatsCo-Billing-Dispatch）的入口。
+// 它只是把请求路由到既有的三个函数，自己不改任何计费规则：
+//
+//   - root 缺失：等同 start（同一套权限/额度/欠款/档位快照判定，同样按当前政策决定
+//     running 还是 paused；纯 legacy 账户在上面早就返回了，不会被拉进 credit）；
+//   - running / completed：等同 status，纯读，不重写 started_at / 档位 / 回执；
+//   - paused：等同 resume，是唯一会写状态的分支（只能由这次显式派发拉起）。
+//
+// 注意 paused 走 resume 而不是 status：额度为 0 或有欠款时，判定必须仍然是
+// quota_exhausted / debt_outstanding —— 即使透支名额还被另一个已经在跑的 root 占着
+// （那笔已派发的调用还在结算）。status 会把原因改写成 retained_task_other，dispatch
+// 不能那样报，否则 Relay 会把「余额耗尽」误当成「等别的任务结束」。
+func applyModelCreditTaskDispatch(ctx context.Context, tx *sql.Tx, account *store.ModelCreditAccount,
+	permitted bool, task *store.ModelCreditTask, in store.ModelCreditTaskInput, now time.Time) (*store.ModelCreditTaskDecision, error) {
+	if task == nil {
+		return applyModelCreditTaskStart(ctx, tx, account, permitted, nil, in, now)
+	}
+	if task.State == store.ModelCreditTaskPaused {
+		return applyModelCreditTaskResume(ctx, tx, account, permitted, task, now)
+	}
+	return modelCreditTaskStatusDecision(ctx, tx, account, permitted, task)
 }
 
 // GetModelCreditTask 读一个 root 任务的状态（不含判定，供排障/测试使用）。
