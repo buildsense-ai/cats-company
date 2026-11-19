@@ -193,13 +193,6 @@ func updateModelCreditTaskState(ctx context.Context, tx *sql.Tx, uid int64, task
 	return nil
 }
 
-// syncModelCreditTaskRetention 实现「额度耗尽只保留一个任务」（P0-3.1/P0-3.2）：
-//
-//   - 还有可花额度时不动任何任务，只在保留任务已经结束/被暂停时清掉透支名额；
-//   - 额度耗尽（含全被 hold 占用）时，挑 started_seq 最大的 running 原始任务当唯一
-//     保留任务，其余 running 全部暂停并记录原因；
-//   - 绝不反向操作：保留任务结束不会把任何 paused 任务变成 running。
-
 // lockModelCreditTaskPlanTier 给「从没合法启动过」的任务补一次档位快照。SQL 里加了
 // plan_tier = 0 的守卫：即使并发/重复调用，已经有快照的行也不会被改写 —— 旧任务的
 // 费率一旦锁定就永远不变。
@@ -216,21 +209,34 @@ func lockModelCreditTaskPlanTier(ctx context.Context, tx *sql.Tx, uid int64, tas
 	return nil
 }
 
-// 调用方必须持有账户行锁，且已经更新好余额。
+// A zero hold is only issued by postpaid admission, including before this
+// change. Use the existing (uid, root_task_id) index. Settlement and no-usage
+// reclamation keep the original amount and row, so any receipt state counts.
+// The caller still has to verify that the root is running with a trusted tier.
+const modelCreditTaskPostpaidReceiptSQL = `SELECT 1 FROM model_credit_reservations r
+	WHERE r.uid = t.uid AND r.root_task_id = t.root_task_id AND r.reserved_units = 0`
+
+func modelCreditTaskHasPostpaidReceipt(ctx context.Context, tx *sql.Tx, uid int64, taskID string) (bool, error) {
+	var admitted bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (`+modelCreditTaskPostpaidReceiptSQL+`)
+		FROM model_credit_tasks t WHERE t.uid = $1 AND t.root_task_id = $2`, uid, taskID).Scan(&admitted); err != nil {
+		return false, fmt.Errorf("check postpaid model credit admission: %w", err)
+	}
+	return admitted, nil
+}
+
+// syncModelCreditTaskRetention keeps the most recently started legacy running
+// root eligible for overdraft holds when credit runs out. Postpaid turns that
+// have a receipt continue independently. Paused roots still require resume.
+// The caller must hold the account lock and have updated the balance.
 func syncModelCreditTaskRetention(ctx context.Context, tx *sql.Tx, account *store.ModelCreditAccount, now time.Time) (bool, error) {
 	if account == nil || account.UID <= 0 {
 		return false, nil
 	}
 	if account.SpendableUnits() > 0 {
-		if account.RetainedTaskID == "" {
-			return false, nil
-		}
-		var running bool
-		if err := tx.QueryRowContext(ctx, `
-			SELECT EXISTS (SELECT 1 FROM model_credit_tasks
-			               WHERE uid = $1 AND root_task_id = $2 AND state = 'running')`,
-			account.UID, account.RetainedTaskID).Scan(&running); err != nil {
-			return false, fmt.Errorf("check retained model credit task: %w", err)
+		running, err := retainedTaskStillRunning(ctx, tx, account.UID, account.RetainedTaskID)
+		if err != nil {
+			return false, err
 		}
 		if running {
 			return false, nil
@@ -243,9 +249,9 @@ func syncModelCreditTaskRetention(ctx context.Context, tx *sql.Tx, account *stor
 	}
 	var latest string
 	err := tx.QueryRowContext(ctx, `
-		SELECT root_task_id FROM model_credit_tasks
-		WHERE uid = $1 AND state = 'running'
-		ORDER BY started_seq DESC LIMIT 1`, account.UID).Scan(&latest)
+		SELECT t.root_task_id FROM model_credit_tasks t
+		WHERE t.uid = $1 AND t.state = 'running' AND NOT EXISTS (`+modelCreditTaskPostpaidReceiptSQL+`)
+		ORDER BY t.started_seq DESC LIMIT 1`, account.UID).Scan(&latest)
 	if errors.Is(err, sql.ErrNoRows) {
 		if account.RetainedTaskID == "" {
 			return false, nil
@@ -268,8 +274,9 @@ func syncModelCreditTaskRetention(ctx context.Context, tx *sql.Tx, account *stor
 		changed = true
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE model_credit_tasks SET state = 'paused', reason = $3, updated_at = $4
-		WHERE uid = $1 AND state = 'running' AND root_task_id <> $2`,
+		UPDATE model_credit_tasks t SET state = 'paused', reason = $3, updated_at = $4
+		WHERE t.uid = $1 AND t.state = 'running' AND t.root_task_id <> $2
+		  AND NOT EXISTS (`+modelCreditTaskPostpaidReceiptSQL+`)`,
 		account.UID, latest, store.ModelCreditTaskReasonQuotaExhausted, now.UTC()); err != nil {
 		return false, fmt.Errorf("pause non-retained model credit tasks: %w", err)
 	}
@@ -299,8 +306,9 @@ func retainedTaskStillRunning(ctx context.Context, tx *sql.Tx, uid int64, retain
 	}
 	var running bool
 	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS (SELECT 1 FROM model_credit_tasks
-		               WHERE uid = $1 AND root_task_id = $2 AND state = 'running')`,
+		SELECT EXISTS (SELECT 1 FROM model_credit_tasks t
+		               WHERE t.uid = $1 AND t.root_task_id = $2 AND t.state = 'running'
+		                 AND NOT EXISTS (`+modelCreditTaskPostpaidReceiptSQL+`))`,
 		uid, retainedTaskID).Scan(&running); err != nil {
 		return false, fmt.Errorf("check retained model credit task: %w", err)
 	}

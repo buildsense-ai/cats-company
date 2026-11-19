@@ -34,8 +34,8 @@ func modelCreditDispatchWrites(t *testing.T, db *Adapter, uid int64) (holds, eve
 	return holds, events
 }
 
-// root 缺失时 dispatch 必须和 start 完全一致：同样的权限/额度/欠款/档位快照政策，同样的
-// started_at/started_seq；postpaid 预留也仍然只认「当刻真实余额 > 0 且无欠款」。
+// root 缺失时 dispatch 必须和 start 完全一致：同样的权限、额度、欠款和档位快照政策。
+// 首笔 postpaid 预留再次检查准入条件，后续请求复用该轮的准入结果。
 func TestPostgresModelCreditTaskDispatchAdmitsNewRootLikeStart(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
@@ -66,7 +66,7 @@ func TestPostgresModelCreditTaskDispatchAdmitsNewRootLikeStart(t *testing.T) {
 	if stored.State != store.ModelCreditTaskRunning || stored.PlanTier != 1 {
 		t.Fatalf("stored root after dispatch %+v", stored)
 	}
-	// 同一 root 的 postpaid 预留：当刻余额 > 0 且无欠款才放行，且只留回执不扣桶。
+	// 首笔 postpaid 预留只留回执，不扣桶。
 	hold, account, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{
 		UID: uid, RequestID: "dispatch-hold-1", RootTaskID: "dispatch-new", Postpaid: true,
 	})
@@ -86,20 +86,25 @@ func TestPostgresModelCreditTaskDispatchAdmitsNewRootLikeStart(t *testing.T) {
 		!sameModelCreditTaskRow(stored, replayed) {
 		t.Fatalf("dispatch replay rewrote the root: decision=%+v before=%+v after=%+v", replay, stored, replayed)
 	}
-	// 欠款一旦出现，postpaid 预留立刻回到 insufficient；旧 finish 行为不变。
+	// 已准入的 root 可以继续接收请求并保留原档位，直到 finish。
 	if _, account, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{
 		UID: uid, RequestID: "dispatch-hold-1", ActualUnits: 9,
 	}); err != nil || account.DebtUnits != 4 || account.SpendableUnits() != 0 {
 		t.Fatalf("postpaid settle %v %+v", err, account)
 	}
-	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{
+	if receipt, account, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{
 		UID: uid, RequestID: "dispatch-hold-2", RootTaskID: "dispatch-new", Postpaid: true,
-	}); !errors.Is(err, store.ErrModelCreditInsufficient) {
-		t.Fatalf("postpaid admission in arrears: %v", err)
+	}); err != nil || receipt.ReservedUnits != 0 || account.DebtUnits != 4 {
+		t.Fatalf("same turn must continue while in arrears: %v %+v %+v", err, receipt, account)
 	}
 	finished, err := modelCreditTaskAction(t, db, uid, "dispatch-new", store.ModelCreditTaskActionFinish)
 	if err != nil || finished.State != store.ModelCreditTaskCompleted || finished.Allowed || finished.PlanTier != 1 {
 		t.Fatalf("finish after dispatch %v %+v", err, finished)
+	}
+	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{
+		UID: uid, RequestID: "dispatch-hold-3", RootTaskID: "dispatch-new", Postpaid: true,
+	}); !errors.Is(err, store.ErrModelCreditTaskNotRunning) {
+		t.Fatalf("finished root admitted a new request: %v", err)
 	}
 }
 
