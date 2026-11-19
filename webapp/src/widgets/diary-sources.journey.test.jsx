@@ -15,14 +15,17 @@ import { anchor, documentId, revision, nextRevision, entries, readPage, searchRe
 // D6 stored content_blocks and hidden process details lose source cards;
 //    closing the reader must restore focus and Escape must close only it.
 // D8 specializing a tool must not drop the assistant's preceding progress text.
-// D7 multiple hits are actual interactive graph nodes; only returned Diary
-//    relations may connect them, and a search page never invents edges.
-// D9 the graph uses the Agent Settings Canvas renderer and source-cluster
-//    layout; missing source metadata must never become guessed session groups.
-// D10 Diary graphs mount only after both the process and its tool step open;
-//     closing either must release the graph/reader and abort pending reads.
-// D11 a pending→completed result must stay collapsed; selecting a step opens
-//     only that call, including when reasoning visibility is disabled.
+// D7 Diary and Branch are two entry points for one question ("what memory
+//    informed this answer?"); Diary hits must sit in the shared memory list,
+//    not two clicks deep inside a tool step, and never as an unlabeled graph.
+// D9 the same entry returned by a search and a later read is one row, keeping
+//    the stronger (read) disclosure; long lists stay scannable.
+// D10 the memory list mounts only when opened; collapsing it releases the
+//     reader and aborts a pending private read. Opening never reads bodies.
+// D11 a pending→completed result must not auto-open anything or reveal
+//     reasoning hidden by the viewer's setting.
+// D12 tool steps name what happened in product language; unknown tools keep
+//     their real name, failures are visible, raw output stays one click deep.
 // The journey uses the real ChatMessage, reader, Markdown and authenticated API
 // client; only the HTTP boundary is a fixture. Browser screenshots supplement it.
 const evidence = [];
@@ -30,15 +33,13 @@ let container, root, requests;
 const jsonResponse = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const settle = async () => { await act(async () => { for (let i = 0; i < 12; i += 1) await Promise.resolve(); }); };
 const click = async (el) => { expect(el).toBeTruthy(); await act(async () => el.click()); await settle(); };
-const sourceButtons = () => [...container.querySelectorAll('.cc-diary-source')];
+const sourceButtons = () => [...container.querySelectorAll('.cc-memory-source')];
 const reader = () => document.querySelector('[aria-label="日记引用详情"]');
 const render = async (messages = workingMessages(), extra = {}, expand = true) => {
   await act(async () => root.render(<ChatMessage message={{ id: 3, from_uid: 'usr574', content: '', created_at: '2026-11-15T10:00:00Z' }} workingMessages={messages} workingOnly workingComplete senderIsBot senderName="小八" isSelf={false} showThinking={false} {...extra} />));
   if (expand) {
-    const process = container.querySelector('.v3-working-toggle[aria-expanded="false"]');
-    if (process) await click(process);
-    const step = [...container.querySelectorAll('.v3-wpi-tool-header.is-toggle[aria-expanded="false"]')].find(button => button.textContent.includes('catslog_knowledge_recall'));
-    if (step) await click(step);
+    const memory = container.querySelector('.cc-memory-toggle[aria-expanded="false"]');
+    if (memory) await click(memory);
   }
 };
 
@@ -61,10 +62,10 @@ afterAll(() => {
 
 it('D1/D2: search → exact version read → keyboard close, without claiming a citation', async () => {
   await render(workingMessages(searchResult, 'search'));
-  expect(container.textContent).toContain('找到 2 条笔记');
-  expect(container.textContent).toContain('仅搜索命中');
+  expect(sourceButtons()).toHaveLength(2);
+  expect(container.textContent).toContain('搜索结果');
   expect(container.textContent).toContain('还有更多结果');
-  expect(container.textContent).not.toContain('已引用');
+  expect(container.textContent).not.toContain('回答引用');
   expect(requests).toHaveLength(0);
   const button = sourceButtons()[0]; button.focus(); await click(button);
   expect(requests[0].body).toEqual({ operation: 'read', document_id: documentId, entry_id: entries[0].id, revision });
@@ -74,21 +75,21 @@ it('D1/D2: search → exact version read → keyboard close, without claiming a 
   expect(reader().textContent).toContain('引用时版本');
   await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
   expect(reader()).toBeNull(); expect(document.activeElement).toBe(button);
-  expect(container.querySelector('.v3-working-toggle').getAttribute('aria-expanded')).toBe('true');
+  expect(container.querySelector('.cc-memory-toggle').getAttribute('aria-expanded')).toBe('true');
   evidence.push({ journey: 'search/read/close', request: requests[0].body, body: 'exact version', restoredFocus: true });
 });
 
-it('D6: saved content blocks show a complete graph with corrections and draft status', async () => {
+it('D6: saved content blocks list the read notes with draft status; relations open in the reader', async () => {
   const blocks = [{ type: 'tool_use', id: 'diary-call', name: 'catslog_knowledge_recall', input: { action: 'graph', seeds: [anchor()] } }, { type: 'tool_result', tool_use_id: 'diary-call', content: JSON.stringify(graphResult) }];
   await render([], { message: { id: 4, from_uid: 'usr574', content: '', content_blocks: blocks } });
   expect(sourceButtons()).toHaveLength(2);
-  expect(container.textContent).toContain('已返回 2 条笔记正文');
-  expect(container.textContent).toContain('更正');
   expect(container.textContent).toContain('未审定');
+  expect(container.textContent).not.toContain('搜索结果');
   await click(sourceButtons()[1]);
   expect(reader().textContent).toContain('回滚完成后');
   expect(reader().textContent).toContain('同次读取的关联笔记');
-  evidence.push({ journey: 'saved graph', cards: 2, correction: true, draft: true });
+  expect(reader().textContent).toContain('更正');
+  evidence.push({ journey: 'saved read', rows: 2, correctionInReader: true, draft: true });
 });
 
 it('D2: a different returned revision is refused, never displayed as the cited source', async () => {
@@ -102,12 +103,14 @@ it('D2: a different returned revision is refused, never displayed as the cited s
 it('D3: malformed/incomplete/foreign results retain raw tools without clickable sources', async () => {
   for (const result of ['{"contract":', { ...graphResult, closure_complete: false }]) {
     await render(workingMessages(result), { showThinking: true });
+    expect(container.querySelector('.cc-memory-toggle')).toBeNull();
     expect(sourceButtons()).toHaveLength(0);
+    expect(container.querySelector('.v3-working-toggle')).toBeTruthy();
   }
   const foreign = workingMessages(); foreign[1].metadata.tool_use_id = 'different-call';
   await render(foreign, { showThinking: true });
   expect(sourceButtons()).toHaveLength(0);
-  evidence.push({ journey: 'invalid/partial/foreign', cards: 0 });
+  evidence.push({ journey: 'invalid/partial/foreign', rows: 0 });
 });
 
 it('D4: rapid selection cancels the old read and ignores even a late successful response', async () => {
@@ -124,38 +127,45 @@ it('D4: rapid selection cancels the old read and ignores even a late successful 
   evidence.push({ journey: 'selection race', firstAborted: true, selected: entries[1].id });
 });
 
-it('D7: graph nodes preserve returned relations; independent search hits have no invented edges', async () => {
-  await render();
-  expect(container.querySelector('[aria-label="日记命中图谱"]')).toBeTruthy();
-  expect(container.querySelector('.cc-daily-notes-network canvas')).toBeTruthy();
-  expect(container.querySelectorAll('.cc-diary-node')).toHaveLength(2);
-  expect(container.querySelectorAll('.cc-daily-notes-network-controls button')).toHaveLength(3);
-  expect(container.querySelector('canvas').getAttribute('aria-label')).toContain('1 组');
-  await click(container.querySelector('.cc-diary-node'));
-  expect(reader().textContent).toContain('数据库变更向后兼容');
-  await render(workingMessages(searchResult, 'search'));
-  expect(container.querySelectorAll('.cc-diary-node')).toHaveLength(2);
-  expect(container.querySelector('canvas').getAttribute('aria-label')).toContain('2 条笔记');
-  expect(container.textContent).toContain('未返回关联关系');
-  evidence.push({ journey: 'interactive graph', nodes: 2, returnedEdges: 1, searchEdges: 0 });
+it('D7: Diary and Branch share one memory list; no graph, no tool-step detour', async () => {
+  const ref = `ref_${'a'.repeat(64)}`;
+  const branch = { schema: 'catsco.memory_branch.v1', branch_run_id: 'memory-mixed', origin_turn_id: 'turn-1', sequence: 2, status: 'injected',
+    consumed_turn_id: 'turn-1', observation_id: 'obs-1', read_refs: [ref], injected_refs: [ref], answer_refs: [], edges: [],
+    nodes: [{ id: 'n1', kind: 'assertion', label: '记忆断言', ref, reader: { kind: 'projection', projection_ref: ref } }] };
+  await render([...workingMessages(), { id: 9, from_uid: 'usr574', type: 'memory_branch', content: branch }]);
+  expect(container.querySelectorAll('.cc-memory-toggle')).toHaveLength(1);
+  expect(container.querySelectorAll('.cc-memory-source.is-diary')).toHaveLength(2);
+  expect(container.querySelectorAll('.cc-memory-source.is-branch')).toHaveLength(1);
+  expect(container.textContent).toContain('日记');
+  expect(container.textContent).toContain('历史会话');
+  expect(container.querySelector('canvas, .cc-daily-notes-network')).toBeNull();
+  // Hidden process details hide every step; sources stay reachable here.
+  expect(container.querySelector('.v3-working-toggle')).toBeNull();
+  expect(requests).toHaveLength(0);
+  evidence.push({ journey: 'one memory list', diary: 2, branch: 1, canvases: 0 });
 });
 
-it('D9: returned source anchors form the same session clusters as Agent Settings', async () => {
+it('D9: duplicate hits collapse to the read row; long lists reveal the rest on demand', async () => {
+  const second = workingMessages(searchResult, 'search').map(message => ({ ...message, id: message.id + 10, metadata: message.type === 'tool_use' ? { ...message.metadata, id: 'diary-second' } : { ...message.metadata, tool_use_id: 'diary-second' } }));
+  await render([...second, ...workingMessages()]);
+  expect(sourceButtons()).toHaveLength(2);
+  expect(container.textContent).not.toContain('搜索结果');
   await render(workingMessages(clusterGraphResult));
-  expect(container.querySelector('canvas').getAttribute('aria-label')).toContain('12 条笔记，按来源会话分为 2 组');
+  expect(sourceButtons()).toHaveLength(6);
+  const more = [...container.querySelectorAll('button')].find(button => button.textContent.includes('再显示 6 条'));
+  await click(more);
   expect(sourceButtons()).toHaveLength(12);
   expect(requests).toHaveLength(0);
   await click(sourceButtons()[0]);
   expect(requests[0].body.revision).toBe(revision);
-  expect(reader().textContent).toContain('数据库变更向后兼容');
-  evidence.push({ journey: 'Agent Settings source clusters', notes: 12, sessionRegions: 2, eagerReads: 0 });
+  evidence.push({ journey: 'dedupe and long list', deduped: 2, initial: 6, total: 12, eagerReads: 0 });
 });
 
 it('D8: the assistant progress attached to a Diary read remains in the conversation', async () => {
   const messages = [{ id: 0, from_uid: 'usr574', type: 'text', content: 'AI文本:我先核对之前的部署笔记。' }, ...workingMessages()];
   await render(messages);
   expect(container.textContent).toContain('我先核对之前的部署笔记。');
-  expect(container.querySelectorAll('.cc-diary-node')).toHaveLength(2);
+  expect(sourceButtons()).toHaveLength(2);
   evidence.push({ journey: 'attached progress', preserved: true });
 });
 
@@ -170,59 +180,52 @@ it('D5: authorization refusal never reveals the tool body; failed reads can retr
   evidence.push({ journey: 'refusal/retry', refusedBody: false, retry: 'success' });
 });
 
-it('D10: process → selected Diary shell → graph; collapsing unmounts it without reading bodies', async () => {
+it('D10: the memory list mounts only when opened and never reads bodies by itself', async () => {
   await render(workingMessages(), {}, false);
-  expect(container.querySelector('.cc-diary-tool')).toBeNull();
-  expect(container.querySelector('canvas')).toBeNull();
-  expect(requests).toHaveLength(0);
-  const process = container.querySelector('.v3-working-toggle');
-  await click(process);
-  expect(container.querySelector('canvas')).toBeNull();
-  const step = container.querySelector('.v3-wpi-tool-header.is-toggle');
-  expect(step.getAttribute('aria-expanded')).toBe('false');
-  await click(step);
+  expect(sourceButtons()).toHaveLength(0);
+  const memory = container.querySelector('.cc-memory-toggle');
+  expect(memory.textContent).toContain('2');
+  await click(memory);
   expect(sourceButtons()).toHaveLength(2);
-  expect(container.querySelector('canvas')).toBeTruthy();
   expect(requests).toHaveLength(0);
-  await click(step);
-  expect(container.querySelector('canvas')).toBeNull();
-  await click(step); await click(process);
-  expect(container.querySelector('.cc-diary-tool')).toBeNull();
-  evidence.push({ journey: 'two-stage disclosure', initialCanvases: 0, expandedProcessCanvases: 0, selectedToolCanvases: 1, eagerReads: 0 });
+  await click(memory);
+  expect(sourceButtons()).toHaveLength(0);
+  evidence.push({ journey: 'lazy memory list', eagerReads: 0 });
 });
 
-it('D11: a pending Diary result stays collapsed when it completes and hides attached reasoning', async () => {
+it('D11: a pending Diary call shows progress, then stays collapsed and keeps reasoning hidden', async () => {
   const pending = [{ id: 0, from_uid: 'usr574', type: 'thinking', content: 'PRIVATE_REASONING_SENTINEL' }, workingMessages()[0]];
-  await render(pending, {}, false);
-  await click(container.querySelector('.v3-working-toggle'));
-  expect(container.textContent).not.toContain('PRIVATE_REASONING_SENTINEL');
-  expect(container.querySelector('canvas')).toBeNull();
+  await render(pending, { workingComplete: false }, false);
+  expect(container.querySelector('.cc-memory-status')?.textContent).toContain('正在查阅日记');
   await render([pending[0], ...workingMessages()], {}, false);
-  const step = container.querySelector('.v3-wpi-tool-header.is-toggle');
-  expect(step.getAttribute('aria-expanded')).toBe('false');
-  expect(container.querySelector('canvas')).toBeNull();
-  await click(step);
+  expect(container.querySelector('.cc-memory-toggle').getAttribute('aria-expanded')).toBe('false');
+  expect(container.querySelector('.v3-working-toggle')).toBeNull();
+  expect(container.textContent).not.toContain('PRIVATE_REASONING_SENTINEL');
+  await click(container.querySelector('.cc-memory-toggle'));
   expect(sourceButtons()).toHaveLength(2);
   expect(container.textContent).not.toContain('PRIVATE_REASONING_SENTINEL');
   evidence.push({ journey: 'streaming completion', staysCollapsed: true, hiddenReasoningDisclosed: false });
 });
 
-it('D11: selecting one Diary call does not mount graphs for the other calls', async () => {
-  const second = workingMessages(searchResult, 'search').map(message => ({ ...message, id: message.id + 10, metadata: message.type === 'tool_use' ? { ...message.metadata, id: 'diary-second' } : { ...message.metadata, tool_use_id: 'diary-second' } }));
-  await render([...workingMessages(), ...second], {}, false);
+it('D12: tool steps read as actions; raw name and output stay one click deep; failures show', async () => {
+  const failing = [{ id: 20, from_uid: 'usr574', type: 'tool_use', content: 'execute_shell', metadata: { id: 'shell-1', input: { command: 'npm test' } } },
+    { id: 21, from_uid: 'usr574', type: 'tool_result', content: 'exit 1', metadata: { tool_use_id: 'shell-1', is_error: true } }];
+  await render([...workingMessages(searchResult, 'search'), ...failing], { showThinking: true }, false);
   await click(container.querySelector('.v3-working-toggle'));
-  const steps = [...container.querySelectorAll('.v3-wpi-tool-header.is-toggle')];
-  expect(steps).toHaveLength(2);
-  await click(steps[1]);
-  expect(container.querySelectorAll('.cc-diary-tool')).toHaveLength(1);
-  expect(container.textContent).toContain('找到 2 条笔记');
-  expect(container.textContent).not.toContain('已返回 2 条笔记正文');
-  expect(steps[0].getAttribute('aria-expanded')).toBe('false');
-  expect(requests).toHaveLength(0);
-  evidence.push({ journey: 'per-call disclosure', calls: 2, mountedGraphs: 1 });
+  const steps = [...container.querySelectorAll('.v3-wpi-tool-header')];
+  expect(steps[0].querySelector('.v3-wpi-tool-name').textContent).toBe('搜索日记');
+  expect(steps[0].textContent).toContain('部署回滚');
+  expect(steps[0].textContent).not.toContain('catslog_knowledge_recall');
+  expect(steps[0].textContent).not.toContain('字符');
+  expect(steps[1].querySelector('.v3-wpi-tool-name').textContent).toBe('运行命令');
+  expect(steps[1].textContent).toContain('失败');
+  await click(steps[0]);
+  expect(container.querySelector('.v3-wpi-tool-result').textContent).toContain('catslog_knowledge_recall');
+  expect(container.querySelector('.cc-diary-tool, canvas')).toBeNull();
+  evidence.push({ journey: 'readable tool steps', label: '搜索日记', failureVisible: true });
 });
 
-it('D10: closing the process aborts an open private read and removes its portal', async () => {
+it('D10: collapsing the memory list aborts an open private read and removes its portal', async () => {
   let finish;
   fetch.mockImplementationOnce((url, options) => {
     requests.push({ signal: options.signal });
@@ -230,11 +233,10 @@ it('D10: closing the process aborts an open private read and removes its portal'
   });
   await render(); await click(sourceButtons()[0]);
   expect(reader()).toBeTruthy();
-  await click(container.querySelector('.v3-working-toggle'));
+  await click(container.querySelector('.cc-memory-toggle'));
   expect(requests[0].signal.aborted).toBe(true);
   expect(reader()).toBeNull();
   finish(jsonResponse(readPage())); await settle();
   expect(reader()).toBeNull();
-  expect(container.querySelector('canvas')).toBeNull();
   evidence.push({ journey: 'collapse cancels read', aborted: true, stalePortal: false });
 });

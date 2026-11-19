@@ -461,7 +461,8 @@ describe('ChatMessage rich file rendering', () => {
     const narrative = toolStep?.querySelector('.v3-wpi-narrative');
     const tool = toolStep?.querySelector('.v3-wpi-tool');
     expect(narrative?.textContent).toBe('已完成验收。');
-    expect(tool?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('execute_shell');
+    expect(tool?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('运行命令');
+    expect(tool?.querySelector('.v3-wpi-tool-name')?.getAttribute('title')).toBe('execute_shell');
     expect(narrative?.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(container.querySelector('.v3-message-followup-text')?.textContent).not.toContain('已完成验收。');
     expect(container.querySelectorAll('.v3-message')).toHaveLength(1);
@@ -1763,7 +1764,8 @@ describe('ChatMessage rich file rendering', () => {
       .toBeTruthy();
     expect(persistentPlan?.classList.contains('is-after-details')).toBe(true);
     expect(inlineDetails?.querySelectorAll('.v3-wpi-tool-name')).toHaveLength(1);
-    expect(inlineDetails?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('execute_shell');
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('运行命令');
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-name')?.getAttribute('title')).toBe('execute_shell');
   });
 
   it('animates only steps that become completed while the plan is mounted', async () => {

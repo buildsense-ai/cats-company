@@ -55,21 +55,6 @@
 .cc-chat-activity svg { flex-shrink: 0; }
 
 .v3-working-toggle .v3-working-label[hidden] { display: none; }
-.cc-chat-activity .cc-memory-branch {
-  flex: 0 0 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  margin-block: 5px 8px;
-  padding: 10px 0 4px;
-  border-block-start: 1px solid var(--v3-border);
-}
-
-.cc-memory-panel-status {
-  margin-block: 0 3px;
-  color: var(--cc-text);
-  font: 600 13px/1.5 var(--cc-font-sans);
-}
-
 .v3-working-process .v3-working-details-inline { margin: 3px 0 8px; }
 .v3-working-process .v3-working-details-inline .v3-working-steps {
   gap: 4px;
@@ -86,29 +71,160 @@
   min-height: 34px;
   padding: 5px 6px;
   color: var(--cc-text-secondary);
-  font: 500 12px/1.45 var(--cc-font-sans);
+  font: 500 13px/1.45 var(--cc-font-sans);
+}
+
+/* Collapsed: what the step was for. Expanded: the exact call and return. */
+.v3-working-process .v3-wpi-tool-header .v3-wpi-tool-desc {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-text);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .v3-working-process .v3-wpi-tool-header .v3-wpi-tool-name {
-  min-width: 0;
+  flex: 0 0 auto;
+  color: var(--cc-text-secondary);
+  font-weight: 400;
+}
+.v3-working-process .v3-wpi-tool-header .v3-wpi-tool-name.is-primary {
   flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--cc-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.v3-working-process .v3-wpi-tool-header .oc-wpi-tool-input {
-  margin-left: 0;
-  opacity: 1;
-  color: var(--cc-text-secondary);
-  -webkit-mask-image: none;
-  mask-image: none;
+.v3-working-process .v3-wpi-tool-status.is-error {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--cc-danger-text);
+  font-weight: 500;
 }
 
-.v3-working-process .v3-wpi-tool-size {
+/* An opened step grows the log instead of scrolling inside it; every long
+ * part of the step is capped on its own. */
+.v3-working-process .v3-working-steps:has(.v3-wpi-tool-details) { max-height: none; }
+
+/* The opened header and its body share one tinted block, so it is clear
+ * where this step ends and the next begins. */
+.v3-working-process .v3-wpi-tool:has(> .v3-wpi-tool-details) { row-gap: 0; }
+.v3-working-process .v3-wpi-tool-header.is-toggle[aria-expanded='true'] {
+  border-radius: var(--cc-radius-sm) var(--cc-radius-sm) 0 0;
+  background: var(--cc-open-tint);
+}
+.v3-working-process,
+.cc-memory-panel { --cc-open-tint: color-mix(in srgb, var(--cc-hover) 65%, transparent); }
+
+.v3-working-process .v3-wpi-tool-details {
+  display: grid;
+  gap: 16px;
+  margin: 0 0 8px;
+  padding: 6px 12px 12px 34px;
+  border-radius: 0 0 var(--cc-radius-sm) var(--cc-radius-sm);
+  background: var(--cc-open-tint);
+  font: 400 13px/1.6 var(--cc-font-sans);
+}
+
+.v3-working-process .v3-wpi-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 6px;
+  color: var(--cc-text);
+  font: 500 13px/1.5 var(--cc-font-sans);
+}
+.v3-working-process .v3-wpi-return.is-error .v3-wpi-section-title > span:first-child { color: var(--cc-danger-text); }
+.v3-working-process .v3-wpi-section-meta { color: var(--cc-text-secondary); font: 400 12px/1.5 var(--cc-font-sans); font-variant-numeric: tabular-nums; }
+.v3-working-process .v3-wpi-raw-tool {
   color: var(--cc-text-secondary);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
+  font: 400 12px/1.5 var(--cc-font-mono);
+}
+
+/* Keys share one column per object, as wide as the longest key (capped), so
+ * each value starts right after its key instead of across a fixed gap. */
+.v3-working-process .v3-wpi-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 16px;
+  align-items: baseline;
+  margin: 0;
+}
+.v3-working-process .v3-wpi-field { display: contents; }
+.v3-working-process .v3-wpi-fields > .v3-wpi-field-rest { grid-column: 1 / -1; }
+.v3-working-process .v3-wpi-field-key {
+  min-width: 0;
+  max-width: 20ch;
+  overflow: hidden;
+  color: var(--cc-text-secondary);
+  font: 400 12px/1.6 var(--cc-font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.v3-working-process .v3-wpi-field-value {
+  min-width: 0;
+  margin: 0;
+  color: var(--cc-text);
+  overflow-wrap: anywhere;
+}
+.v3-working-process .v3-wpi-field-text { white-space: pre-wrap; }
+.v3-working-process .v3-wpi-field-scalar { font: 400 12.5px/1.6 var(--cc-font-mono); font-variant-numeric: tabular-nums; }
+.v3-working-process .v3-wpi-field-value > :is(.v3-wpi-fields, .v3-wpi-items) {
+  padding-inline-start: 10px;
+  border-inline-start: 1px solid var(--cc-border);
+}
+.v3-working-process .v3-wpi-items {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.v3-working-process .v3-wpi-items > li + li {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--cc-border);
+}
+.v3-working-process .v3-wpi-field-rest,
+.v3-working-process .v3-wpi-pending { margin: 2px 0 0; color: var(--cc-text-secondary); }
+
+.v3-working-process :is(.v3-wpi-raw-toggle, .v3-wpi-more) {
+  margin-inline-start: auto;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font: 500 12px/1.6 var(--cc-font-sans);
+  cursor: pointer;
+}
+.v3-working-process .v3-wpi-more { margin-inline-start: 4px; }
+.v3-working-process :is(.v3-wpi-raw-toggle, .v3-wpi-more):hover { background: var(--cc-hover); color: var(--cc-text); }
+.v3-working-process :is(.v3-wpi-raw-toggle, .v3-wpi-more):focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 1px;
+}
+
+.v3-working-process .v3-wpi-plain {
+  max-height: 260px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-code);
+  font: 400 12.5px/1.6 var(--cc-font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .v3-working-process .v3-wpi-tool-details { padding-inline: 10px; }
+  .v3-working-process .v3-wpi-fields { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
+  .v3-working-process .v3-wpi-field-key { max-width: none; }
+  .v3-working-process .v3-wpi-field-value + .v3-wpi-field-key { margin-top: 6px; }
 }
 
 @media (pointer: coarse) {
