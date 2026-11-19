@@ -251,6 +251,7 @@ func (a *Adapter) createSchema(ctx context.Context, conn *sql.Conn) error {
 		migrateCommercialEntitlementInviteMonthlyUnits,
 		migrateModelCreditMonthlyRollover,
 		createCommercialInviteMonthlyRepairs,
+		migrateModelCreditPostpaid,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,

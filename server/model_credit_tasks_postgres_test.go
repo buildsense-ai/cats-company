@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -96,9 +97,13 @@ func TestModelCreditTaskHTTPPlanTierSnapshotAgainstPostgres(t *testing.T) {
 	handler := NewModelCreditTaskHandler(db)
 	uidText := strconv.FormatInt(uid, 10)
 
-	call := func(action, taskID string) map[string]interface{} {
+	call := func(action, taskID string, model ...string) map[string]interface{} {
 		t.Helper()
-		body := `{"uid":` + uidText + `,"action":"` + action + `","task_id":"` + taskID + `"}`
+		body := `{"uid":` + uidText + `,"action":"` + action + `","task_id":"` + taskID + `"`
+		if len(model) > 0 {
+			body += `,"model":` + strconv.Quote(model[0])
+		}
+		body += `}`
 		req := httptest.NewRequest(http.MethodPost, "/internal/relay/credit-tasks", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+secret)
 		recorder := httptest.NewRecorder()
@@ -128,7 +133,7 @@ func TestModelCreditTaskHTTPPlanTierSnapshotAgainstPostgres(t *testing.T) {
 	if tier := planTierOf(started); tier != 2 {
 		t.Fatalf("start plan_tier = %d, want the server-side tier 2", tier)
 	}
-	for _, action := range []string{"status", "start"} {
+	for _, action := range []string{"status", "start", "dispatch"} {
 		payload := call(action, "http-tier-root")
 		if tier := planTierOf(payload); tier != 2 {
 			t.Fatalf("%s plan_tier = %d, want the same snapshot 2", action, tier)
@@ -141,6 +146,10 @@ func TestModelCreditTaskHTTPPlanTierSnapshotAgainstPostgres(t *testing.T) {
 	if tier := planTierOf(finished); tier != 2 {
 		t.Fatalf("finish plan_tier = %d, want the same snapshot 2", tier)
 	}
+	if replay := call("dispatch", "http-tier-root"); replay["allowed"] != false ||
+		replay["state"] != store.ModelCreditTaskCompleted || planTierOf(replay) != 2 {
+		t.Fatalf("dispatch of completed root = %+v", replay)
+	}
 
 	// 客户端自报档位：请求体里带 plan_tier 是未知字段，直接 400（DisallowUnknownFields）。
 	req := httptest.NewRequest(http.MethodPost, "/internal/relay/credit-tasks",
@@ -151,4 +160,59 @@ func TestModelCreditTaskHTTPPlanTierSnapshotAgainstPostgres(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("client-supplied plan_tier status=%d body=%s, want 400", recorder.Code, recorder.Body.String())
 	}
+
+	t.Run("legacy only for new overlap roots", func(t *testing.T) {
+		creditOnly := call("start", "credit-first-root", deepSeekPublicModelID)
+		if creditOnly["enabled"] != true || creditOnly["allowed"] != true || planTierOf(creditOnly) != 2 {
+			t.Fatalf("credit-only DeepSeek start = %+v", creditOnly)
+		}
+		if _, err := db.GrantCommercialQuota(&types.CommercialQuotaGrant{
+			UID: uid, Model: deepSeekPublicModelID, AmountCNY: 10,
+			EffectiveAt: time.Now().UTC().Add(-time.Minute),
+		}); err != nil {
+			t.Fatalf("grant legacy model quota: %v", err)
+		}
+		legacy := call("start", "legacy-first-root", "deepseek-v4-flash")
+		if legacy["enabled"] != false || legacy["allowed"] != true || legacy["state"] != store.ModelCreditTaskRunning ||
+			legacy["reason"] != store.ModelCreditTaskReasonLegacy || planTierOf(legacy) != 0 {
+			t.Fatalf("new overlap root = %+v", legacy)
+		}
+		if _, err := db.GetModelCreditTask(ctx, uid, "legacy-first-root"); !errors.Is(err, store.ErrModelCreditTaskNotFound) {
+			t.Fatalf("legacy route persisted a credit root: %v", err)
+		}
+		var holds int
+		holdsQuery := `SELECT COUNT(*) FROM "` + schema + `".model_credit_reservations WHERE uid = $1 AND root_task_id = $2`
+		if err := admin.QueryRowContext(ctx, holdsQuery, uid, "legacy-first-root").Scan(&holds); err != nil || holds != 0 {
+			t.Fatalf("legacy route holds=%d err=%v", holds, err)
+		}
+		if replay := call("start", "credit-first-root", deepSeekPublicModelID); replay["enabled"] != true ||
+			replay["allowed"] != true || replay["state"] != store.ModelCreditTaskRunning || planTierOf(replay) != 2 {
+			t.Fatalf("existing running credit root = %+v", replay)
+		}
+		if replay := call("start", "http-tier-root", deepSeekPublicModelID); replay["enabled"] != true ||
+			replay["allowed"] != false || replay["state"] != store.ModelCreditTaskCompleted || planTierOf(replay) != 2 {
+			t.Fatalf("existing completed credit root = %+v", replay)
+		}
+		// Old Relay omits the model and still creates a credit root on this overlap account.
+		unhinted := call("start", "unhinted-credit-root")
+		if unhinted["enabled"] != true || unhinted["allowed"] != true {
+			t.Fatalf("old Relay with overlapping rights = %+v", unhinted)
+		}
+
+		if _, err := admin.ExecContext(ctx, `UPDATE "`+schema+`".commercial_entitlements SET state = 'expired' WHERE uid = $1 AND plan_id = $2`, uid, planID); err != nil {
+			t.Fatalf("expire credit entitlement: %v", err)
+		}
+		paused := call("start", "paused-credit-root")
+		if paused["enabled"] != true || paused["allowed"] != false || paused["state"] != store.ModelCreditTaskPaused ||
+			paused["reason"] != store.ModelCreditTaskReasonEntitlementExpired {
+			t.Fatalf("paused credit root = %+v", paused)
+		}
+		if err := admin.QueryRowContext(ctx, holdsQuery, uid, "paused-credit-root").Scan(&holds); err != nil || holds != 0 {
+			t.Fatalf("paused root should have no holds: holds=%d err=%v", holds, err)
+		}
+		if replay := call("start", "paused-credit-root", "deepseek-v4-flash"); replay["enabled"] != true ||
+			replay["allowed"] != false || replay["state"] != store.ModelCreditTaskPaused || replay["reason"] != paused["reason"] {
+			t.Fatalf("paused credit root replay = %+v", replay)
+		}
+	})
 }

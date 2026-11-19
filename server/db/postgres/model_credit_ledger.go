@@ -292,10 +292,9 @@ func (a *Adapter) GrantModelCredits(ctx context.Context, in store.ModelCreditGra
 	return account, nil
 }
 
-// ReserveModelCredits holds units for one request in the fixed order monthly ->
-// gift -> paid, or reports ErrModelCreditInsufficient. The hold is keyed by
-// request id, so a replay returns the stored hold and a replay with a different
-// amount is rejected as a conflict.
+// ReserveModelCredits admits a request and records its settlement receipt.
+// Postpaid requests hold no units. Legacy callers hold units in monthly, gift,
+// then paid order. Reusing an ID with a different amount or root conflicts.
 //
 // 每笔预留都必须带 root_task_id，并且那个 root 必须已经 start 且当前 running：没有
 // root、或 root 已被暂停/结束的调用会拿到明确错误，而不是绕过门禁继续花钱
@@ -338,6 +337,10 @@ func (a *Adapter) ReserveModelCredits(ctx context.Context, in store.ModelCreditR
 		return nil, nil, store.ErrModelCreditTaskNotFound
 	}
 	if task.State != store.ModelCreditTaskRunning {
+		if in.Postpaid && task.State == store.ModelCreditTaskPaused &&
+			task.Reason == store.ModelCreditTaskReasonQuotaExhausted && account.SpendableUnits() <= 0 {
+			return nil, nil, store.ErrModelCreditInsufficient
+		}
 		return nil, nil, store.ErrModelCreditTaskNotRunning
 	}
 	// 档位快照算不出费率（0，只可能来自本列上线前写下的旧行）：running 也不能继续花钱，
@@ -349,6 +352,27 @@ func (a *Adapter) ReserveModelCredits(ctx context.Context, in store.ModelCreditR
 		return nil, nil, err
 	} else if !permitted {
 		return nil, nil, store.ErrModelCreditTaskNotRunning
+	}
+	if in.Postpaid {
+		if account.SpendableUnits() <= 0 || account.DebtUnits > 0 {
+			return nil, nil, store.ErrModelCreditInsufficient
+		}
+		// Keep a durable receipt for reconciliation without debiting any bucket.
+		reservation = &store.ModelCreditReservation{
+			UID: in.UID, RequestID: in.RequestID, RootTaskID: in.RootTaskID,
+			State: store.ModelCreditReservationReserved, CreatedAt: now,
+			LeaseExpiresAt: now.Add(store.ModelCreditReservationLease),
+		}
+		if err := reservation.Validate(); err != nil {
+			return nil, nil, err
+		}
+		if err := insertModelCreditReservation(ctx, tx, reservation); err != nil {
+			return nil, nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, nil, fmt.Errorf("commit model credit admission: %w", err)
+		}
+		return reservation, account, nil
 	}
 	split, funded := store.AllocateModelCreditUnits(*account, in.Units)
 	unfunded := int64(0)
