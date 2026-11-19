@@ -10,7 +10,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import LocalDraftTextarea from './LocalDraftTextarea.jsx';
-import { placeBarBeside, shouldDockBar, BAR_HEIGHT, BAR_WIDTH } from './floating-bar-placement.js';
+import { placeBarBeside, shouldDockBar, clampDragOffset, BAR_HEIGHT, BAR_WIDTH } from './floating-bar-placement.js';
 
 const SWATCHES = ['#16181b', '#c0392b', '#1f5eff', '#0f8a4a', '#b8860b', '#7b2fbe'];
 
@@ -64,10 +64,20 @@ export default function SelectionBar({
     const base = offset;
     setDragging(true);
     const move = (moveEvent) => {
-      setOffset({
-        x: base.x + (moveEvent.clientX - startX),
-        y: base.y + (moveEvent.clientY - startY),
-      });
+      // Clamped against the container on every move: the fitted position is clamped, but the
+      // drag offset used to be free, which let the bar be pulled past the right edge where it
+      // was half outside the preview and impossible to grab back.
+      const host = barRef.current?.parentElement;
+      const rect = host?.getBoundingClientRect?.();
+      setOffset(clampDragOffset({
+        offset: {
+          x: base.x + (moveEvent.clientX - startX),
+          y: base.y + (moveEvent.clientY - startY),
+        },
+        position,
+        size: { width: BAR_WIDTH, height: Math.max(BAR_HEIGHT, barRef.current?.offsetHeight || 0) },
+        container: rect ? { width: rect.width, height: rect.height } : containerSize,
+      }));
     };
     const finish = (upEvent) => {
       window.removeEventListener('pointermove', move);

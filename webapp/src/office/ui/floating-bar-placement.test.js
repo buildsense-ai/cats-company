@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { placeBarBeside, shouldDockBar } from './floating-bar-placement.js';
+import {
+  clampDragOffset, placeBarBeside, shouldDockBar,
+} from './floating-bar-placement.js';
 
 const container = { width: 900, height: 600 };
 const size = { width: 330, height: 148 };
@@ -60,5 +62,56 @@ describe('docking', () => {
     expect(shouldDockBar({ pointerX: 880, containerWidth: 900 })).toBe(true);
     expect(shouldDockBar({ pointerX: 840, containerWidth: 900 })).toBe(false);
     expect(shouldDockBar({ pointerX: 900, containerWidth: 0 })).toBe(false);
+  });
+});
+
+describe('drag stays inside the container', () => {
+  const position = { left: 300, top: 120 };
+  const container = { width: 900, height: 600 };
+  const barSize = { width: 330, height: 160 };
+
+  it('lets the bar move freely while it remains visible', () => {
+    const result = clampDragOffset({
+      offset: { x: -40, y: 30 }, position, size: barSize, container,
+    });
+    expect(result).toEqual({ x: -40, y: 30 });
+  });
+
+  it('stops a drag that would push the bar past the right edge', () => {
+    // 600px to the right would put the bar at x=900, entirely outside a 900px container.
+    const result = clampDragOffset({
+      offset: { x: 600, y: 0 }, position, size: barSize, container,
+    });
+    expect(position.left + result.x + barSize.width).toBeLessThanOrEqual(container.width - 8);
+  });
+
+  it('stops a drag that would push the bar past the left edge', () => {
+    const result = clampDragOffset({
+      offset: { x: -900, y: 0 }, position, size: barSize, container,
+    });
+    expect(position.left + result.x).toBeGreaterThanOrEqual(8);
+  });
+
+  it('stops a drag past the bottom edge', () => {
+    const result = clampDragOffset({
+      offset: { x: 0, y: 900 }, position, size: barSize, container,
+    });
+    expect(position.top + result.y + barSize.height).toBeLessThanOrEqual(container.height - 8);
+  });
+
+  it('passes the offset through before the container has been measured', () => {
+    const result = clampDragOffset({
+      offset: { x: 25, y: -10 },
+      position,
+      size: barSize,
+      container: { width: 0, height: 0 },
+    });
+    expect(result).toEqual({ x: 25, y: -10 });
+  });
+
+  it('survives missing numbers instead of producing NaN', () => {
+    const result = clampDragOffset({});
+    expect(Number.isNaN(result.x)).toBe(false);
+    expect(Number.isNaN(result.y)).toBe(false);
   });
 });

@@ -91,6 +91,38 @@ export function shouldDockBar({ pointerX, containerWidth, threshold = FLOATING_B
   return finite(pointerX, width) >= width - Math.max(finite(threshold, 0), 0);
 }
 
+/**
+ * Keep a dragged bar inside its container.
+ *
+ * The initial position is clamped, but the drag offset used to be free. That let the bar be
+ * pulled past the right edge, where it was half outside the preview and could not be grabbed
+ * back — a real browser check showed it 153px out of bounds mid-drag.
+ *
+ * Teleports are not rejected: a wide `allowed` range still lets the user park the bar
+ * completely left of the block, which is the point of dragging it.
+ */
+export function clampDragOffset({ offset, position, size, container, margin = BAR_MARGIN }) {
+  const width = finite(container?.width, 0);
+  const height = finite(container?.height, 0);
+  const barWidth = Math.max(finite(size?.width, 0), 0);
+  const barHeight = Math.max(finite(size?.height, 0), 0);
+  const x = finite(offset?.x, 0);
+  const y = finite(offset?.y, 0);
+  if (width <= 0 || height <= 0) return { x, y };
+
+  // The offset is relative to the computed spot, so the legal range is what keeps
+  // (position + offset) inside the margin box.
+  const minX = margin - finite(position?.left, 0);
+  const maxX = width - barWidth - margin - finite(position?.left, 0);
+  const minY = margin - finite(position?.top, 0);
+  const maxY = height - barHeight - margin - finite(position?.top, 0);
+
+  return {
+    x: Math.round(clamp(x, Math.min(minX, maxX), Math.max(minX, maxX))),
+    y: Math.round(clamp(y, Math.min(minY, maxY), Math.max(minY, maxY))),
+  };
+}
+
 /** Whether the bar is pinned against the right edge, remembered per browser. */
 export const BAR_DOCKED_KEY = 'office.barDocked';
 
