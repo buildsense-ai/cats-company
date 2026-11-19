@@ -130,6 +130,34 @@
   border-radius: 2px;
 }
 
+/* Drag handle. Without a place to grab, a floating panel can only sit in one corner,
+   which is the same problem the fixed column had. */
+.office-panel-grip {
+  flex: 0 0 auto;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+  color: #9aa0ab;
+  font-size: 10px;
+  letter-spacing: .08em;
+  border-bottom: 1px solid #e2e4e9;
+  background: #f4f5f8;
+  border-radius: 10px 10px 0 0;
+}
+
+.office-panel-grip:hover,
+.office-panel-grip:active {
+  background: #e8ecf6;
+  color: #4b5563;
+}
+
+.office-panel-grip-dots { letter-spacing: .16em; }
+
 .office-preview-side {
   position: absolute;
   top: 10px;

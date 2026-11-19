@@ -24,6 +24,9 @@ import LocalDraftTextarea from './LocalDraftTextarea.jsx';
 import {
   officePanelWidthFromPointer, readOfficePanelWidth, saveOfficePanelWidth,
 } from './office-panel-width.js';
+import {
+  clampPanelOffset, panelOffsetTransform, readOfficePanelOffset, saveOfficePanelOffset,
+} from './panel-drag.js';
 import '../../styles/office-preview.css';
 
 export const DOCX_PREVIEW_MAX_BYTES = 60 * 1024 * 1024;
@@ -273,6 +276,7 @@ export default function WordPreview({
   const [askOpen, setAskOpen] = useState(false);
   const [askText, setAskText] = useState('');
   const [panelWidth, setPanelWidth] = useState(() => readOfficePanelWidth());
+  const [panelOffset, setPanelOffset] = useState(() => readOfficePanelOffset());
   const pendingBytesRef = useRef(null);
   const [hasPending, setHasPending] = useState(false);
   const imageInputRef = useRef(null);
@@ -309,6 +313,37 @@ export default function WordPreview({
     window.addEventListener('pointerup', finish);
     window.addEventListener('pointercancel', finish);
   }, [panelWidth]);
+
+  /**
+   * Drag the panel by its grip.
+   *
+   * Movement is a translate, so the width the user already picked and the resize handle
+   * both keep working. Listeners sit on the window for the gesture: a pointer that leaves
+   * the grip mid-drag must not strand the panel.
+   */
+  const startPanelDrag = useCallback((event) => {
+    if (!event || (event.button !== undefined && event.button !== 0)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const base = panelOffset;
+    const move = (moveEvent) => {
+      setPanelOffset(clampPanelOffset({
+        x: base.x + (moveEvent.clientX - startX),
+        y: base.y + (moveEvent.clientY - startY),
+      }));
+    };
+    const finish = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      setPanelOffset((value) => saveOfficePanelOffset(value));
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+  }, [panelOffset]);
 
   useEffect(() => {
     let cancelled = false;
@@ -706,6 +741,7 @@ export default function WordPreview({
           <>
             <div className="office-panel-resizer" data-office-panel-resizer=""
               role="separator" aria-orientation="vertical" tabIndex={0}
+              style={{ transform: panelOffsetTransform(panelOffset) }}
               onPointerDown={startPanelResize}
               onKeyDown={(event) => {
                 if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -713,7 +749,13 @@ export default function WordPreview({
                 const delta = event.key === 'ArrowLeft' ? 16 : -16;
                 setPanelWidth((value) => saveOfficePanelWidth(value + delta));
               }} />
-            <div className="office-preview-side">
+            <div className="office-preview-side"
+              style={{ transform: panelOffsetTransform(panelOffset) }}>
+              <div className="office-panel-grip" data-office-panel-grip="" title="拖动移动面板"
+                onPointerDown={startPanelDrag}>
+                <span className="office-panel-grip-dots" aria-hidden="true">⋯⋯</span>
+                <span className="office-panel-grip-text">拖动</span>
+              </div>
               <BlockPanel
             block={selectedBlock}
             text={selectedText}
