@@ -67,7 +67,12 @@ function Preview() {
   const terminalState = ['failed', 'cancelled'].find(state => params.get('execution') === state);
   const inProgress = ['running', 'ready', 'quiet-live'].includes(mode) && !complete;
   const live = [{ id: 31, from_uid: 'usr574', type: 'memory_branch', content: event }];
-  const combined = mode === 'combined' ? [...workingMessages(graphResult, 'graph'), ...live] : live;
+  // A described shell step with a JSON result shows the tool step layout.
+  const shell = [
+    { id: 901, from_uid: 'usr574', type: 'tool_use', content: 'execute_shell', metadata: { id: 'shell-call', input: { command: 'npm run migrate:check -- --dry-run', description: '检查迁移是否向后兼容', timeout: 60000 } } },
+    { id: 902, from_uid: 'usr574', type: 'tool_result', content: JSON.stringify({ exit_code: 0, compatible: true, duration_ms: 1840, migrations: [{ id: '0042_add_index', reversible: true }, { id: '0043_backfill', reversible: false }], stdout: '2 migrations checked\n1 irreversible step needs a manual rollback plan' }), metadata: { tool_use_id: 'shell-call' } },
+  ];
+  const combined = mode === 'combined' ? [...workingMessages(graphResult, 'graph'), ...shell, ...live] : live;
   return <main className="cc-diary-preview">
     <header><div><strong>记忆探索来源</strong><p>本地合成数据 · 实际消息组件 · 不读取线上账号</p></div><div className="cc-diary-preview-controls">
       <label>场景 <select value={mode} onChange={event => setMode(event.target.value)}>{[['clusters', '两个来源'], ['combined', '日记与记忆探索'], ['recorded', '真实运行时录制'], ['saved', '历史回放'], ['running', '正在探索'], ['ready', '已读，尚未注入'], ['stale', '完成后缺少 Branch 终态'], ['idle', '历史缺少 Branch 终态'], ['finished-ready', '已完成，结果未采纳'], ['quiet-live', '等待 Branch 更新'], ['empty', '无补充结果'], ['cancelled', '已取消'], ['late', '上一轮晚到'], ['missed', '生产形态：回答前未读到'], ['archive', '生产形态：会话摘录未赶上'], ['archive-used', '生产形态：部分采用'], ['unknown', '未知协议回退']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
