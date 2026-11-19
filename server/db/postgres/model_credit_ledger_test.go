@@ -289,7 +289,7 @@ func TestPostgresModelCreditReserveSettleIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestPostgresModelCreditPostpaidRecordsAndSettlesActualUsage(t *testing.T) {
+func TestPostgresModelCreditPostpaidTurnSettlesThroughDebt(t *testing.T) {
 	t.Parallel()
 	db := modelCreditDatabase(t)
 	ctx := context.Background()
@@ -298,45 +298,119 @@ func TestPostgresModelCreditPostpaidRecordsAndSettlesActualUsage(t *testing.T) {
 	modelCreditFund(t, db, uid, store.ModelCreditBucketMonthly, 2, "seed-monthly")
 	modelCreditFund(t, db, uid, store.ModelCreditBucketGift, 1, "seed-gift")
 	seeded := modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 1, "seed-paid")
-	modelCreditTestTask(t, db, uid, "postpaid-other")
-	modelCreditTestTask(t, db, uid, "postpaid-root")
-	input := store.ModelCreditReserveInput{UID: uid, RequestID: "req-first", RootTaskID: "postpaid-root", Postpaid: true}
-	for _, requestID := range []string{"req-first", "req-first", "req-late"} {
-		input.RequestID = requestID
+	// Simulate dispatching a different root before the first request is sent.
+	modelCreditTestTask(t, db, uid, "waiting-root")
+	root := modelCreditTestTask(t, db, uid, "postpaid-root")
+	input := store.ModelCreditReserveInput{UID: uid, RequestID: "req-first", RootTaskID: root.TaskID, Postpaid: true}
+	for range 2 {
 		held, account, err := db.ReserveModelCredits(ctx, input)
 		if err != nil || held.ReservedUnits != 0 || held.State != store.ModelCreditReservationReserved || !sameModelCreditBuckets(account, seeded) {
 			t.Fatalf("postpaid admission changed the balance: %v, hold=%+v, account=%+v", err, held, account)
 		}
 	}
-	settle := store.ModelCreditSettleInput{UID: uid, RequestID: "req-first", ActualUnits: 4}
-	if _, account, err := db.SettleModelCredits(ctx, settle); err != nil || account.SpendableUnits() != 0 || account.DebtUnits != 0 {
-		t.Fatalf("settlement must spend exactly the available balance: %v %+v", err, account)
+	settle := store.ModelCreditSettleInput{UID: uid, RequestID: input.RequestID, ActualUnits: 6}
+	if _, account, err := db.SettleModelCredits(ctx, settle); err != nil || account.SpendableUnits() != 0 || account.DebtUnits != 2 {
+		t.Fatalf("first request must spend the balance and accrue two units of debt: %v %+v", err, account)
 	}
-	input.RequestID = "req-blocked"
-	for _, root := range []string{"postpaid-root", "postpaid-other"} {
-		input.RootTaskID = root
-		if _, _, err := db.ReserveModelCredits(ctx, input); !errors.Is(err, store.ErrModelCreditInsufficient) {
-			t.Fatalf("root %s admitted at zero balance: %v", root, err)
+	for _, action := range []string{store.ModelCreditTaskActionDispatch, store.ModelCreditTaskActionStatus} {
+		decision, err := db.ApplyModelCreditTask(ctx, store.ModelCreditTaskInput{UID: uid, TaskID: root.TaskID, Action: action})
+		if err != nil || !decision.Allowed || decision.PlanTier != root.PlanTier || decision.DebtUnits != 2 {
+			t.Fatalf("%s must allow the admitted turn at its original tier: %v %+v", action, err, decision)
 		}
 	}
-	settle.RequestID, settle.ActualUnits = "req-late", 7
+	newRoot, err := db.ApplyModelCreditTask(ctx, store.ModelCreditTaskInput{UID: uid, TaskID: "new-root", Action: store.ModelCreditTaskActionDispatch})
+	if err != nil || newRoot.Allowed || newRoot.State != store.ModelCreditTaskPaused || newRoot.Reason != store.ModelCreditTaskReasonDebtOutstanding {
+		t.Fatalf("new turn must be blocked by debt: %v %+v", err, newRoot)
+	}
+	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{
+		UID: uid, RequestID: "req-waiting", RootTaskID: "waiting-root", Postpaid: true,
+	}); !errors.Is(err, store.ErrModelCreditInsufficient) {
+		t.Fatalf("a dispatched root without its own receipt must pass the balance check: %v", err)
+	}
+	input.RequestID = "req-second"
+	if receipt, account, err := db.ReserveModelCredits(ctx, input); err != nil || receipt.ReservedUnits != 0 || account.DebtUnits != 2 {
+		t.Fatalf("same turn must admit a new request after the first settled into debt: %v %+v %+v", err, receipt, account)
+	}
+	settle.RequestID, settle.ActualUnits = input.RequestID, 7
 	for range 2 {
 		receipt, account, err := db.SettleModelCredits(ctx, settle)
-		if err != nil || account.DebtUnits != 7 || account.SpendableUnits() != 0 || receipt.SettledUnits == nil || *receipt.SettledUnits != 7 {
-			t.Fatalf("late usage must accrue debt once: %v %+v %+v", err, account, receipt)
+		if err != nil || account.DebtUnits != 9 || account.SpendableUnits() != 0 || receipt.SettledUnits == nil || *receipt.SettledUnits != 7 {
+			t.Fatalf("second usage must add seven units of debt exactly once: %v %+v %+v", err, account, receipt)
 		}
-	}
-	input.RootTaskID = "postpaid-root"
-	if _, _, err := db.ReserveModelCredits(ctx, input); !errors.Is(err, store.ErrModelCreditInsufficient) {
-		t.Fatalf("retained root admitted with debt: %v", err)
 	}
 	var precharges, debtEvents int
 	if err := db.db.QueryRow(`SELECT count(*) FILTER (WHERE event_type = 'reserve'),
 		count(*) FILTER (WHERE event_type = 'debt_accrued') FROM model_credit_ledger_events WHERE uid = $1`, uid).Scan(&precharges, &debtEvents); err != nil {
 		t.Fatal(err)
 	}
-	if precharges != 0 || debtEvents != 1 {
-		t.Fatalf("expected zero precharges and one debt event, got %d and %d", precharges, debtEvents)
+	if precharges != 0 || debtEvents != 2 {
+		t.Fatalf("expected zero precharges and two debt events, got %d and %d", precharges, debtEvents)
+	}
+	if _, err := db.ApplyModelCreditTask(ctx, store.ModelCreditTaskInput{UID: uid, TaskID: root.TaskID, Action: store.ModelCreditTaskActionFinish}); err != nil {
+		t.Fatal(err)
+	}
+	modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 10, "top-up")
+	decision, err := db.ApplyModelCreditTask(ctx, store.ModelCreditTaskInput{UID: uid, TaskID: root.TaskID, Action: store.ModelCreditTaskActionDispatch})
+	if err != nil || decision.Allowed || decision.State != store.ModelCreditTaskCompleted || decision.DebtUnits != 0 || decision.SpendableUnits == 0 {
+		t.Fatalf("finish must close the turn even after replenishing credit: %v %+v", err, decision)
+	}
+	input.RequestID = "req-after-finish"
+	if _, _, err := db.ReserveModelCredits(ctx, input); !errors.Is(err, store.ErrModelCreditTaskNotRunning) {
+		t.Fatalf("finished root admitted a new request: %v", err)
+	}
+}
+
+func TestPostgresModelCreditPostpaidConcurrentTurnsSurviveLegacyRetention(t *testing.T) {
+	t.Parallel()
+	db := modelCreditDatabase(t)
+	ctx := context.Background()
+	uid := modelCreditTestUser(t, db, "credit-postpaid-concurrent")
+	modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 1, "seed-paid")
+	// Standalone paid credit is this user's only permission to start a turn.
+	for _, root := range []string{"legacy-older", "postpaid-a", "legacy-newer", "postpaid-b"} {
+		modelCreditTestTask(t, db, uid, root)
+	}
+	roots := []string{"postpaid-a", "postpaid-b"}
+	errs := make(chan error, len(roots))
+	for _, root := range roots {
+		go func() {
+			_, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{
+				UID: uid, RootTaskID: root, RequestID: root + "-first", Postpaid: true,
+			})
+			errs <- err
+		}()
+	}
+	for range roots {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent first admission: %v", err)
+		}
+	}
+	if t.Failed() {
+		return
+	}
+	first := store.ModelCreditNoUsageConfirmation{UID: uid, RequestID: "postpaid-a-first"}
+	if _, err := db.MarkModelCreditNoUsage(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if released, err := db.ReleaseExpiredModelCredits(ctx, time.Now().Add(store.ModelCreditReservationLease), 10); err != nil || released != 1 {
+		t.Fatalf("reclaim postpaid receipt after no usage: %v released=%d", err, released)
+	}
+	if _, account, err := db.SettleModelCredits(ctx, store.ModelCreditSettleInput{UID: uid, RequestID: "postpaid-b-first", ActualUnits: 1}); err != nil || account.PaidUnits != 0 || account.DebtUnits != 0 || account.RetainedTaskID != "legacy-newer" {
+		t.Fatalf("settling to zero must reserve the legacy slot for a legacy root: %v %+v", err, account)
+	}
+	if task, err := db.GetModelCreditTask(ctx, uid, "legacy-older"); err != nil || task.State != store.ModelCreditTaskPaused {
+		t.Fatalf("legacy non-retained root must still pause: %v %+v", err, task)
+	}
+	for _, root := range roots {
+		request := store.ModelCreditReserveInput{UID: uid, RequestID: root + "-next", RootTaskID: root, Postpaid: true}
+		if receipt, _, err := db.ReserveModelCredits(ctx, request); err != nil || receipt.ReservedUnits != 0 {
+			t.Fatalf("admitted root %s must stay running after paid credit runs out: %v %+v", root, err, receipt)
+		}
+	}
+	if _, _, err := db.ReserveModelCredits(ctx, store.ModelCreditReserveInput{
+		UID: uid, RequestID: "legacy-postpaid", RootTaskID: "legacy-newer", Postpaid: true,
+	}); !errors.Is(err, store.ErrModelCreditTaskNotRunning) {
+		t.Fatalf("a running legacy root without a receipt still needs current permission: %v", err)
 	}
 }
 

@@ -293,13 +293,10 @@ func (a *Adapter) GrantModelCredits(ctx context.Context, in store.ModelCreditGra
 }
 
 // ReserveModelCredits admits a request and records its settlement receipt.
-// Postpaid requests hold no units. Legacy callers hold units in monthly, gift,
-// then paid order. Reusing an ID with a different amount or root conflicts.
-//
-// 每笔预留都必须带 root_task_id，并且那个 root 必须已经 start 且当前 running：没有
-// root、或 root 已被暂停/结束的调用会拿到明确错误，而不是绕过门禁继续花钱
-// （P0-3.6/P0-3.9）。唯一的例外是「保留任务」：只有它可以把预占拆成「余额兜底的
-// 部分」+「没有余额兜底的 unfunded 部分」，后者在结算时才落成真实欠款。
+// Both paths require a running root and its trusted tier snapshot. A postpaid
+// root checks permission and balance on its first receipt, then continues with
+// zero holds until it ends. Legacy requests still hold units in monthly, gift,
+// then paid order and use retention for overdraft holds.
 func (a *Adapter) ReserveModelCredits(ctx context.Context, in store.ModelCreditReserveInput) (*store.ModelCreditReservation, *store.ModelCreditAccount, error) {
 	if err := in.Validate(); err != nil {
 		return nil, nil, err
@@ -348,15 +345,25 @@ func (a *Adapter) ReserveModelCredits(ctx context.Context, in store.ModelCreditR
 	if !store.ModelCreditTaskPlanTierTrusted(task.PlanTier) {
 		return nil, nil, store.ErrModelCreditTaskTierUnavailable
 	}
-	if permitted, err := modelCreditTaskPermitted(ctx, tx, in.UID, now); err != nil {
-		return nil, nil, err
-	} else if !permitted {
-		return nil, nil, store.ErrModelCreditTaskNotRunning
-	}
+	var admitted bool
 	if in.Postpaid {
-		if account.SpendableUnits() <= 0 || account.DebtUnits > 0 {
+		// The account lock covers lookup, first admission and receipt insertion.
+		admitted, err = modelCreditTaskHasPostpaidReceipt(ctx, tx, in.UID, in.RootTaskID)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if !admitted {
+		if permitted, err := modelCreditTaskPermitted(ctx, tx, in.UID, now); err != nil {
+			return nil, nil, err
+		} else if !permitted {
+			return nil, nil, store.ErrModelCreditTaskNotRunning
+		}
+		if in.Postpaid && (account.SpendableUnits() <= 0 || account.DebtUnits > 0) {
 			return nil, nil, store.ErrModelCreditInsufficient
 		}
+	}
+	if in.Postpaid {
 		// Keep a durable receipt for reconciliation without debiting any bucket.
 		reservation = &store.ModelCreditReservation{
 			UID: in.UID, RequestID: in.RequestID, RootTaskID: in.RootTaskID,
@@ -368,6 +375,11 @@ func (a *Adapter) ReserveModelCredits(ctx context.Context, in store.ModelCreditR
 		}
 		if err := insertModelCreditReservation(ctx, tx, reservation); err != nil {
 			return nil, nil, err
+		}
+		if !admitted && account.RetainedTaskID == in.RootTaskID {
+			if _, err := syncModelCreditTaskRetention(ctx, tx, account, now); err != nil {
+				return nil, nil, err
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			return nil, nil, fmt.Errorf("commit model credit admission: %w", err)
@@ -423,8 +435,7 @@ func (a *Adapter) ReserveModelCredits(ctx context.Context, in store.ModelCreditR
 			return nil, nil, err
 		}
 	}
-	// 这一笔可能刚好把额度用光（含全被 hold 占住）：只有最近开始的 running 任务
-	// 留下继续透支，其余立刻暂停（P0-3.1/P0-3.5）。
+	// Holds can exhaust the balance and trigger retention for legacy roots.
 	if _, err := syncModelCreditTaskRetention(ctx, tx, account, now); err != nil {
 		return nil, nil, err
 	}
@@ -558,7 +569,7 @@ func (a *Adapter) SettleModelCredits(ctx context.Context, in store.ModelCreditSe
 			return nil, nil, err
 		}
 	}
-	// 结算把余额清空（含全被 hold 占住）时同样要收敛到「只保留一个任务」。
+	// Settlement can exhaust the balance and trigger retention for legacy roots.
 	if _, err := syncModelCreditTaskRetention(ctx, tx, account, now); err != nil {
 		return nil, nil, err
 	}
