@@ -289,6 +289,57 @@ func TestPostgresModelCreditReserveSettleIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestPostgresModelCreditPostpaidRecordsAndSettlesActualUsage(t *testing.T) {
+	t.Parallel()
+	db := modelCreditDatabase(t)
+	ctx := context.Background()
+	uid := modelCreditTestUser(t, db, "credit-postpaid")
+	modelCreditTestPermission(t, db, uid)
+	modelCreditFund(t, db, uid, store.ModelCreditBucketMonthly, 2, "seed-monthly")
+	modelCreditFund(t, db, uid, store.ModelCreditBucketGift, 1, "seed-gift")
+	seeded := modelCreditFund(t, db, uid, store.ModelCreditBucketPaid, 1, "seed-paid")
+	modelCreditTestTask(t, db, uid, "postpaid-other")
+	modelCreditTestTask(t, db, uid, "postpaid-root")
+	input := store.ModelCreditReserveInput{UID: uid, RequestID: "req-first", RootTaskID: "postpaid-root", Postpaid: true}
+	for _, requestID := range []string{"req-first", "req-first", "req-late"} {
+		input.RequestID = requestID
+		held, account, err := db.ReserveModelCredits(ctx, input)
+		if err != nil || held.ReservedUnits != 0 || held.State != store.ModelCreditReservationReserved || !sameModelCreditBuckets(account, seeded) {
+			t.Fatalf("postpaid admission changed the balance: %v, hold=%+v, account=%+v", err, held, account)
+		}
+	}
+	settle := store.ModelCreditSettleInput{UID: uid, RequestID: "req-first", ActualUnits: 4}
+	if _, account, err := db.SettleModelCredits(ctx, settle); err != nil || account.SpendableUnits() != 0 || account.DebtUnits != 0 {
+		t.Fatalf("settlement must spend exactly the available balance: %v %+v", err, account)
+	}
+	input.RequestID = "req-blocked"
+	for _, root := range []string{"postpaid-root", "postpaid-other"} {
+		input.RootTaskID = root
+		if _, _, err := db.ReserveModelCredits(ctx, input); !errors.Is(err, store.ErrModelCreditInsufficient) {
+			t.Fatalf("root %s admitted at zero balance: %v", root, err)
+		}
+	}
+	settle.RequestID, settle.ActualUnits = "req-late", 7
+	for range 2 {
+		receipt, account, err := db.SettleModelCredits(ctx, settle)
+		if err != nil || account.DebtUnits != 7 || account.SpendableUnits() != 0 || receipt.SettledUnits == nil || *receipt.SettledUnits != 7 {
+			t.Fatalf("late usage must accrue debt once: %v %+v %+v", err, account, receipt)
+		}
+	}
+	input.RootTaskID = "postpaid-root"
+	if _, _, err := db.ReserveModelCredits(ctx, input); !errors.Is(err, store.ErrModelCreditInsufficient) {
+		t.Fatalf("retained root admitted with debt: %v", err)
+	}
+	var precharges, debtEvents int
+	if err := db.db.QueryRow(`SELECT count(*) FILTER (WHERE event_type = 'reserve'),
+		count(*) FILTER (WHERE event_type = 'debt_accrued') FROM model_credit_ledger_events WHERE uid = $1`, uid).Scan(&precharges, &debtEvents); err != nil {
+		t.Fatal(err)
+	}
+	if precharges != 0 || debtEvents != 1 {
+		t.Fatalf("expected zero precharges and one debt event, got %d and %d", precharges, debtEvents)
+	}
+}
+
 // 预留阶段不许超支（除了唯一的保留任务），但已经派发出去的调用在结算时超出预占/余额
 // 必须落成真实欠款，而且重复结算不能再记一次（P0-2.3/P0-3.2）。
 func TestPostgresModelCreditSettleOverageBooksRealDebt(t *testing.T) {

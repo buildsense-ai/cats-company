@@ -15,10 +15,9 @@ import (
 // root 上，额度耗尽时只保留「最近开始」的那个 running root 继续透支，其余暂停。
 //
 // enabled 与 allowed 是两件事：
-//   - enabled 说明这个用户进过 credit 体系（有账本账户，或买过/被发过 credit 套餐）。
-//     从没进过的老用户 enabled=false、allowed=true，走原来的额度逻辑。
-//   - allowed 说明这个 root 任务此刻能不能跑。套餐过期是 enabled=true、allowed=false
-//     （reason=entitlement_expired），绝不能因为权限失效就把用户退回 legacy。
+//   - enabled 说明这个 root 走 credit 账本。从没进过 credit 的老用户，或新 root
+//     优先走有权限的 legacy 模型时，enabled=false、allowed=true，沿用原来的额度逻辑。
+//   - allowed 说明这个 root 任务此刻能不能跑。credit root 不会因为权限失效就退回 legacy。
 const (
 	ModelCreditTaskRunning   = "running"
 	ModelCreditTaskPaused    = "paused"
@@ -123,10 +122,14 @@ type ModelCreditTaskInput struct {
 	UID    int64
 	TaskID string
 	Action string
+	// PreferLegacy is set by Company after checking legacy model rights for start.
+	// It only applies if this account has no credit task for TaskID.
+	PreferLegacy bool
 }
 
 func (in ModelCreditTaskInput) Validate() error {
-	if in.UID <= 0 || ValidateModelCreditTaskID(in.TaskID) != nil {
+	if in.UID <= 0 || ValidateModelCreditTaskID(in.TaskID) != nil ||
+		(in.PreferLegacy && in.Action != ModelCreditTaskActionStart) {
 		return ErrModelCreditInvalid
 	}
 	switch in.Action {
@@ -139,7 +142,7 @@ func (in ModelCreditTaskInput) Validate() error {
 }
 
 // ModelCreditTaskDecision 是 Relay 拿到的判定结果。Allowed 只看这个 root 任务现在
-// 能不能跑；enabled=false + allowed=true 就是「老用户，照旧」。
+// 能不能跑；enabled=false + allowed=true 就是「沿用 legacy 额度」。
 //
 // PlanTier 是这个 root 的套餐档位快照（0 = 没有可信快照），四个 action 都回同一份：
 // Relay 用它计价，绝不能改用 eligibility 的现读档位（套餐一过期就没了）。

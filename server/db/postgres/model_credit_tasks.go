@@ -24,6 +24,7 @@ var _ store.ModelCreditTaskStore = (*Adapter)(nil)
 //
 //   - 买过/被发过带 model credit 的套餐（包括已经过期、退订的订阅）；
 //   - 或者账本里已经有事件（发放、预留、结算、欠款……）；
+//   - 或者已经有任何 credit root（包括暂停且尚未预留的任务）；
 //   - 或者账本账户上有真实余额/欠款。
 //
 // 只有身份不靠「有没有 model_credit_accounts 行」单独判断：余额页 / 资格查询这类
@@ -37,6 +38,7 @@ func (a *Adapter) modelCreditTaskEnabled(ctx context.Context, uid int64) (bool, 
 		               JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
 		               WHERE e.uid = $1 AND `+modelCreditEntitlementUnitsSQL+` > 0)
 		    OR EXISTS (SELECT 1 FROM model_credit_ledger_events ev WHERE ev.uid = $1)
+		    OR EXISTS (SELECT 1 FROM model_credit_tasks t WHERE t.uid = $1)
 		    OR EXISTS (SELECT 1 FROM model_credit_accounts ac WHERE ac.uid = $1
 		               AND (ac.monthly_units > 0 OR ac.gift_units > 0
 		                    OR ac.paid_units > 0 OR ac.debt_units > 0))`, uid).Scan(&enabled); err != nil {
@@ -213,7 +215,7 @@ func lockModelCreditTaskPlanTier(ctx context.Context, tx *sql.Tx, uid int64, tas
 	}
 	return nil
 }
-//
+
 // 调用方必须持有账户行锁，且已经更新好余额。
 func syncModelCreditTaskRetention(ctx context.Context, tx *sql.Tx, account *store.ModelCreditAccount, now time.Time) (bool, error) {
 	if account == nil || account.UID <= 0 {
@@ -357,22 +359,26 @@ func (a *Adapter) ApplyModelCreditTask(ctx context.Context, in store.ModelCredit
 		return nil, fmt.Errorf("begin model credit task %s: %w", in.Action, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// enabled 的用户已经在 credit 模型里：账本账户行必须先存在（model_credit_tasks 的
-	// uid 外键指向它），然后对账顺便拿走行锁 —— 本月月额度先归位，后面看到的
-	// spendable/debt 才是当期真实值。legacy 用户在上面已经直接返回，不会走到这里，
-	// 所以这次 upsert 不会把老用户迁进 credit 账本。
+	// 既有 credit 用户先拿到账户行锁，串行判断 root 是否已经由 credit 门禁处理过。
+	// 纯 legacy 老用户在上面已经返回，不会被建出账本账户。
 	if _, err := lockModelCreditAccount(ctx, tx, in.UID); err != nil {
 		return nil, err
 	}
+	task, err := modelCreditTaskByID(ctx, tx, in.UID, in.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	if in.PreferLegacy && task == nil {
+		// Inference still checks legacy admission. Roll back this lock-only path.
+		return modelCreditTaskDecision(nil, in.TaskID, store.ModelCreditTaskPlanTierNone, false, true,
+			store.ModelCreditTaskRunning, store.ModelCreditTaskReasonLegacy), nil
+	}
+	// Credit decisions use the current month's balance and permission.
 	account, _, err := reconcileModelCreditMonthlyPeriod(ctx, tx, in.UID, now)
 	if err != nil {
 		return nil, err
 	}
 	permitted, err := modelCreditTaskPermitted(ctx, tx, in.UID, now)
-	if err != nil {
-		return nil, err
-	}
-	task, err := modelCreditTaskByID(ctx, tx, in.UID, in.TaskID)
 	if err != nil {
 		return nil, err
 	}
