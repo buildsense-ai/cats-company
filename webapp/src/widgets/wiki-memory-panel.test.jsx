@@ -37,6 +37,7 @@ describe('chat wiki memories', () => {
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     container.remove();
   });
@@ -124,6 +125,70 @@ describe('chat wiki memories', () => {
     expect(container.querySelector('.cc-wiki-catalog-count').textContent).toContain('2 篇');
     expect(api.getWikiMemoryCatalog.mock.calls.at(-1)[1].cursor).toBe('next');
     expect(api.getWikiMemoryDocument).not.toHaveBeenCalled();
+  });
+
+  it('keeps the selected conversation in place when a catalog page arrives mid-drag', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 600));
+    const frames = new Map();
+    let nextFrame = 0;
+    vi.stubGlobal('requestAnimationFrame', callback => {
+      frames.set(++nextFrame, callback);
+      return nextFrame;
+    });
+    vi.stubGlobal('cancelAnimationFrame', id => frames.delete(id));
+    const draw = () => act(async () => {
+      while (frames.size) {
+        const pending = [...frames.values()];
+        frames.clear();
+        for (const callback of pending) callback(performance.now());
+      }
+    });
+
+    const conversations = [
+      { id: 'grp_7', title: '设计讨论' }, { id: 'grp_8', title: '部署记录' }, { id: 'grp_9', title: '日常工作' },
+    ];
+    const entries = (label, count, day, topic) => Array.from({ length: count }, (_, i) => wiki(`${label}-${i}`, day, topic));
+    let resolveNext;
+    api.getWikiMemoryCatalog
+      .mockResolvedValueOnce(page([]))
+      .mockResolvedValueOnce({
+        ...page([...entries('A', 55, 12, 'grp_7'), ...entries('B', 33, 12, 'grp_8'), ...entries('C-recent', 12, 12, 'grp_9')], 'next'),
+        conversations,
+      })
+      .mockReturnValueOnce(new Promise(resolve => { resolveNext = resolve; }));
+
+    const button = name => container.querySelector(`button[aria-label="${name}"]`);
+    await render();
+    await click([...container.querySelectorAll('nav button')].find(element => element.textContent === '助手记忆'));
+    await draw();
+    await click(button('设计讨论，55 篇 Wiki'));
+    const map = container.querySelector('.cc-wiki-map');
+    const point = () => button('Wiki A-9');
+    const x = () => Number.parseFloat(point().style.left);
+    const initialX = x();
+    await act(async () => map.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -50, clientX: 100, clientY: 300 })));
+    expect(x()).toBeGreaterThan(initialX);
+
+    map.setPointerCapture = vi.fn();
+    const pointer = (type, clientX) => act(async () => map.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, pointerId: 1, button: 0, clientX, clientY: 300,
+    })));
+    const zoomedX = x();
+    await pointer('pointerdown', 200);
+    await pointer('pointermove', 220);
+    expect(x()).toBeCloseTo(zoomedX + 20);
+
+    await act(async () => resolveNext({ ...page(entries('C-older', 100, 11, 'grp_9')), conversations }));
+    await draw();
+    expect(container.querySelector('.cc-wiki-catalog-count').textContent).toContain('200 篇');
+    expect(point()).toBeTruthy();
+    expect(x()).toBeCloseTo(zoomedX + 20);
+    await pointer('pointermove', 230);
+    expect(x()).toBeCloseTo(zoomedX + 30);
+    await pointer('pointerup', 230);
+    await click(button('显示全部'));
+    expect(button('日常工作，112 篇 Wiki')).toBeTruthy();
+    expect(button('设计讨论，55 篇 Wiki')).toBeTruthy();
   });
 
   it('discards displayed body and rechecks the active scope when the browser regains focus', async () => {

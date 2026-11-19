@@ -36,7 +36,7 @@ function fitLayout(layout, size) {
   const { minX, maxX, minY, maxY } = layout.bounds;
   const zoom = Math.min(1.65, Math.max(1, size.width - 52) / Math.max(1, maxX - minX),
     Math.max(1, size.height - 48) / Math.max(1, maxY - minY));
-  return { zoom, centerX: (minX + maxX) / 2, centerY: (minY + maxY) / 2 };
+  return { zoom, offsetX: (minX + maxX) / 2, offsetY: (minY + maxY) / 2 };
 }
 
 function pointOnScreen(point, camera, size) {
@@ -82,21 +82,33 @@ export default function WikiMemoryGraph({ groups, conversations, onOpen, isNew }
   const [panning, setPanning] = useState(false);
   const layout = useLayout(groups);
   const items = useMemo(() => new Map([...groups.values()].flat().map(item => [item.id, item])), [groups]);
-  const fit = layout && fitLayout(layout, size);
-  const camera = cameraOverride || fit;
+  const fit = useMemo(() => layout && fitLayout(layout, size), [layout, size]);
+  const regionKey = cameraOverride?.regionKey;
+  const anchor = layout?.regions[layout.regionIndex.get(regionKey)];
+  const anchorLost = regionKey !== undefined && !anchor;
+  if (anchorLost) setCamera(null);
+
+  // An opened cluster can move between layouts. Pan and zoom keep its relative offsets.
+  const view = anchorLost ? fit : cameraOverride ?? fit;
+  const camera = view && {
+    zoom: view.zoom,
+    centerX: view.offsetX + (anchor?.x ?? 0),
+    centerY: view.offsetY + (anchor?.y ?? 0),
+  };
   const detailZoom = Math.max(NODE_ZOOM, (fit?.zoom ?? 0) * 1.14);
   const zoomAt = useCallback((factor, x = size.width / 2, y = size.height / 2) => {
-    if (!layout || !size.width) return;
+    if (!fit || !size.width) return;
     setCamera(previous => {
-      const current = previous || fitLayout(layout, size);
-      const zoom = Math.max(fitLayout(layout, size).zoom * 0.65, Math.min(MAX_ZOOM, current.zoom * factor));
+      const current = previous ?? fit;
+      const zoom = Math.max(fit.zoom * 0.65, Math.min(MAX_ZOOM, current.zoom * factor));
       return {
+        ...current,
         zoom,
-        centerX: current.centerX + (x - size.width / 2) * (1 / current.zoom - 1 / zoom),
-        centerY: current.centerY + (y - size.height / 2) * (1 / current.zoom - 1 / zoom),
+        offsetX: current.offsetX + (x - size.width / 2) * (1 / current.zoom - 1 / zoom),
+        offsetY: current.offsetY + (y - size.height / 2) * (1 / current.zoom - 1 / zoom),
       };
     });
-  }, [layout, size]);
+  }, [fit, size]);
 
   useEffect(() => {
     const target = viewport.current;
@@ -123,7 +135,7 @@ export default function WikiMemoryGraph({ groups, conversations, onOpen, isNew }
     return () => target.removeEventListener('wheel', onWheel);
   }, [size.height, zoomAt]);
 
-  const overview = !camera || camera.zoom < detailZoom;
+  const overview = !camera || camera.zoom < (anchor ? NODE_ZOOM : detailZoom);
   const circles = layout && camera && size.width ? layout.regions.flatMap(region => {
     const center = pointOnScreen(region, camera, size);
     const radius = region.r * camera.zoom;
@@ -141,15 +153,15 @@ export default function WikiMemoryGraph({ groups, conversations, onOpen, isNew }
 
   function focusRegion(region) {
     setCamera({
-      centerX: region.x, centerY: region.y,
+      regionKey: region.key, offsetX: 0, offsetY: 0,
       zoom: Math.max(detailZoom * 1.16, Math.min(2.5, (Math.min(size.width, size.height) - 66) / (2 * region.r))),
     });
   }
 
   function startPan(event) {
-    if (event.button !== 0 || !camera) return;
+    if (event.button !== 0 || !view) return;
     dragged.current = false;
-    drag.current = { pointer: event.pointerId, x: event.clientX, y: event.clientY, camera };
+    drag.current = { pointer: event.pointerId, x: event.clientX, y: event.clientY, view };
   }
 
   function movePan(event) {
@@ -163,8 +175,8 @@ export default function WikiMemoryGraph({ groups, conversations, onOpen, isNew }
       event.currentTarget.setPointerCapture(event.pointerId);
       setPanning(true);
     }
-    setCamera({ ...start.camera, centerX: start.camera.centerX - dx / start.camera.zoom,
-      centerY: start.camera.centerY - dy / start.camera.zoom });
+    setCamera({ ...start.view, offsetX: start.view.offsetX - dx / start.view.zoom,
+      offsetY: start.view.offsetY - dy / start.view.zoom });
   }
 
   function stopPan(event) {
