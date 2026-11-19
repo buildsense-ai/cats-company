@@ -28,6 +28,18 @@ function snapshot(mode) {
   }
   if (['running', 'ready', 'stale', 'idle', 'finished-ready', 'quiet-live', 'empty', 'cancelled'].includes(mode)) { event.status = ['stale', 'idle', 'quiet-live'].includes(mode) ? 'running' : mode === 'finished-ready' ? 'ready' : mode; event.injected_refs = []; event.answer_refs = []; delete event.consumed_turn_id; delete event.observation_id; }
   if (['quiet-live', 'empty'].includes(mode)) { event.read_refs = []; event.nodes = []; event.edges = []; }
+  if (['archive', 'archive-used'].includes(mode)) {
+    // Shape of 24 of 25 production runs on 2026-11-18: archive turns, no edges.
+    // Synthetic digests and offsets; no production identifiers.
+    const turns = [['2026-11-18', 4], ['2026-11-17', 1], ['2026-11-13', 1]].flatMap(([day, count]) => Array.from({ length: count }, (_, i) => ({ day, offset: 1200 * (i + 1) })));
+    event.nodes = turns.map((archive, i) => ({ id: `turn-${i}`, kind: 'archive_turn', label: '会话摘录', ref: `local:${String(i).repeat(64)}`, reader: { kind: 'archive_turn', archive: { ...archive, digest: 'd'.repeat(64) } } }));
+    event.edges = []; event.read_refs = event.nodes.map(node => node.ref);
+    if (mode === 'archive') { event.status = 'deferred'; event.injected_refs = []; event.answer_refs = []; delete event.consumed_turn_id; delete event.observation_id; }
+    else { event.status = 'answered'; event.injected_refs = event.read_refs.slice(0, 2); event.answer_refs = event.read_refs.slice(0, 1); }
+  }
+  // Most common production shape (23 of 54 runs, 2026-11-18): the reply
+  // finished before Branch read anything; the channel closed on 'deferred'.
+  if (mode === 'missed') { event.status = 'deferred'; event.nodes = []; event.edges = []; event.read_refs = []; event.injected_refs = []; event.answer_refs = []; delete event.consumed_turn_id; delete event.observation_id; }
   if (mode === 'late') event.origin_turn_id = 'previous-turn';
   if (mode === 'unknown') event.schema = 'catsco.memory_branch.v99';
   return event;
@@ -58,7 +70,7 @@ function Preview() {
   const combined = mode === 'combined' ? [...workingMessages(graphResult, 'graph'), ...live] : live;
   return <main className="cc-diary-preview">
     <header><div><strong>记忆探索来源</strong><p>本地合成数据 · 实际消息组件 · 不读取线上账号</p></div><div className="cc-diary-preview-controls">
-      <label>场景 <select value={mode} onChange={event => setMode(event.target.value)}>{[['clusters', '两个来源'], ['combined', '日记与记忆探索'], ['recorded', '真实运行时录制'], ['saved', '历史回放'], ['running', '正在探索'], ['ready', '已读，尚未注入'], ['stale', '完成后缺少 Branch 终态'], ['idle', '历史缺少 Branch 终态'], ['finished-ready', '已完成，结果未采纳'], ['quiet-live', '等待 Branch 更新'], ['empty', '无补充结果'], ['cancelled', '已取消'], ['late', '上一轮晚到'], ['unknown', '未知协议回退']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      <label>场景 <select value={mode} onChange={event => setMode(event.target.value)}>{[['clusters', '两个来源'], ['combined', '日记与记忆探索'], ['recorded', '真实运行时录制'], ['saved', '历史回放'], ['running', '正在探索'], ['ready', '已读，尚未注入'], ['stale', '完成后缺少 Branch 终态'], ['idle', '历史缺少 Branch 终态'], ['finished-ready', '已完成，结果未采纳'], ['quiet-live', '等待 Branch 更新'], ['empty', '无补充结果'], ['cancelled', '已取消'], ['late', '上一轮晚到'], ['missed', '生产形态：回答前未读到'], ['archive', '生产形态：会话摘录未赶上'], ['archive-used', '生产形态：部分采用'], ['unknown', '未知协议回退']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       {mode === 'quiet-live' && <button type="button" data-preview="finish" onClick={() => setComplete(true)}>结束回合</button>}
       <label><input type="checkbox" checked={details} onChange={event => setDetails(event.target.checked)} />执行详情</label>
       <button type="button" onClick={() => { const next = theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = next; setTheme(next); }}>切换{theme === 'dark' ? '浅色' : '深色'}</button>
