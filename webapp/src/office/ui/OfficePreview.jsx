@@ -26,15 +26,15 @@ import EditableCanvas from './EditableCanvas.jsx';
 import InsertMenu from './InsertMenu.jsx';
 import InheritedConfirm from './InheritedConfirm.jsx';
 import { applyDraftToSlide, officeDraftKey, parseOfficeDraftKey } from './draft-render.js';
-import { paragraphsFromPlainText } from './inline-text.js';
+import { plainTextOfParagraphs, paragraphsFromPlainText } from './inline-text.js';
 import { OFFICE_SAVE_NOTICE } from '../save.js';
 import { OFFICE_SYNC_NOTICE, OFFICE_SERVER_UNSUPPORTED_NOTICE } from '../version-binding.js';
 import {
-  officePanelWidthFromPointer, readOfficePanelWidth, saveOfficePanelWidth,
+  readOfficePanelWidth,
 } from './office-panel-width.js';
-import {
-  clampPanelOffset, panelOffsetTransform, readOfficePanelOffset, saveOfficePanelOffset,
-} from './panel-drag.js';
+import SelectionBar from './SelectionBar.jsx';
+import { byElementId, useBarAnchor } from './bar-anchor.js';
+import { readBarDocked, saveBarDocked } from './floating-bar-placement.js';
 import {
   canRedo, canUndo, createHistory, pushHistory, redoHistory, resetHistory, undoHistory,
 } from './history.js';
@@ -157,8 +157,7 @@ export default function OfficePreview({
   const [askOpen, setAskOpen] = useState(false);
   const [askText, setAskText] = useState('');
   const [panelWidth, setPanelWidth] = useState(() => readOfficePanelWidth());
-  const [panelOffset, setPanelOffset] = useState(() => readOfficePanelOffset());
-  const panelDragRef = useRef(null);
+  const [barDocked, setBarDocked] = useState(() => readBarDocked());
   const [pendingInherited, setPendingInherited] = useState(null);
   const [insertCount, setInsertCount] = useState(0);
   // Bytes that exist locally but have not been published to the conversation yet. Kept in a
@@ -167,7 +166,7 @@ export default function OfficePreview({
   const [hasPending, setHasPending] = useState(false);
   const historyRef = useRef(createHistory(EMPTY_DRAFT));
   const gestureBaseRef = useRef(null);
-  const [, setHistoryVersion] = useState(0);
+  const [historyVersion, setHistoryVersion] = useState(0);
   const imageUrlsRef = useRef({});
   const abortRef = useRef(null);
 
@@ -192,55 +191,26 @@ export default function OfficePreview({
     setEditing(false);
   }, [url]);
 
-  const startPanelResize = useCallback((event) => {
-    if (typeof window === 'undefined' || window.innerWidth < 900) return;
-    const startX = event.clientX;
-    const startWidth = panelWidth;
-    const move = (moveEvent) => {
-      setPanelWidth(officePanelWidthFromPointer(startWidth, startX, moveEvent.clientX));
-    };
-    const finish = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', finish);
-      window.removeEventListener('pointercancel', finish);
-      setPanelWidth((value) => saveOfficePanelWidth(value));
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', finish);
-    window.addEventListener('pointercancel', finish);
-  }, [panelWidth]);
-
   /**
-   * Drag the panel by its grip.
+   * Switch between the floating bar and the docked column.
    *
-   * Movement is applied as a translate rather than by changing width or flex, so the panel
-   * keeps the size the user already chose and the resize handle keeps working. Listeners
-   * live on the window for the duration of the gesture: a pointer that leaves the grip
-   * mid-drag must not freeze the panel where it was.
+   * Docking is a posture, not a second component: the same bar grows into a column and the
+   * full property panel joins it there. Remembering it means a user who prefers the column
+   * does not have to re-dock for every document.
    */
-  const startPanelDrag = useCallback((event) => {
-    if (!event || (event.button !== undefined && event.button !== 0)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const base = panelOffset;
-    const move = (moveEvent) => {
-      setPanelOffset(clampPanelOffset({
-        x: base.x + (moveEvent.clientX - startX),
-        y: base.y + (moveEvent.clientY - startY),
-      }));
-    };
-    const finish = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', finish);
-      window.removeEventListener('pointercancel', finish);
-      setPanelOffset((value) => saveOfficePanelOffset(value));
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', finish);
-    window.addEventListener('pointercancel', finish);
-  }, [panelOffset]);
+  const setDocked = useCallback((value) => {
+    setBarDocked(saveBarDocked(value));
+  }, []);
+
+  // Where the bar points. Measured from the DOM, not the model: the slide is scaled to the
+  // window, and a Word-style text block may have no model coordinates at all.
+  const canvasHostRef = useRef(null);
+  const anchorSelector = selectedId ? byElementId(selectedId) : '';
+  const barAnchor = useBarAnchor(
+    canvasHostRef,
+    anchorSelector,
+    `${selectedId || ''}|${slideIndex}|${historyVersion}`,
+  );
 
   /** Swap in a freshly parsed model and refresh media URLs. Old blob URLs are revoked. */
   const adoptModel = useCallback(async (nextModel) => {
@@ -416,6 +386,7 @@ export default function OfficePreview({
       return { ...current, styles };
     });
   }, [commitDraft, selectedShape, slideIndex]);
+
 
   // A drag emits dozens of boxes; only the released position is a history entry.
   const handleGestureStart = useCallback(() => {
@@ -837,6 +808,31 @@ export default function OfficePreview({
   const selectedDraftKey = selectedId ? officeDraftKey(slideIndex, selectedId) : '';
   const selectedParagraphs = selectedDraftKey ? draft.texts?.[selectedDraftKey] : null;
   const selectedStyles = selectedDraftKey ? draft.styles?.[selectedDraftKey] : null;
+
+  /**
+   * The character controls in the bar act on the element's first paragraph.
+   *
+   * The bar shows one text box and one B/I/U row, so a control with no paragraph chosen
+   * has to mean something definite. First paragraph is the honest choice: it is what the
+   * box shows. Per-paragraph styling stays reachable from the docked panel.
+   */
+  const handleBarStyle = (patch) => {
+    handleStyleChange(0, patch);
+  };
+
+  const barActiveStyle = (() => {
+    if (!selectedShape) return {};
+    const paragraphs = selectedParagraphs || selectedShape.textBody?.paragraphs || [];
+    const first = paragraphs[0] || {};
+    const patch = selectedStyles?.[0] || {};
+    return {
+      bold: patch.bold !== undefined ? patch.bold : Boolean(first.bold),
+      italic: patch.italic !== undefined ? patch.italic : Boolean(first.italic),
+      underline: patch.underline !== undefined ? patch.underline : Boolean(first.underline),
+      color: patch.color !== undefined ? patch.color : (first.color || ''),
+      align: patch.align !== undefined ? patch.align : (first.align || 'l'),
+    };
+  })();
   const editedBoxes = (() => {
     const boxes = {};
     for (const [key, box] of Object.entries(draft.boxes || {})) {
@@ -849,7 +845,9 @@ export default function OfficePreview({
 
   return (
     <div className="office-preview" data-office-mode={editing ? 'edit' : 'readonly'}
-      style={{ '--office-panel-width': `${panelWidth}px` }}>
+      style={{
+        '--office-panel-width': `${panelWidth}px`,
+      }}>
       <div className="office-preview-toolbar">
         <button type="button" className="office-page-btn" disabled={slideIndex === 0}
           onClick={() => setSlideIndex(index => Math.max(0, index - 1))} aria-label="上一页">‹</button>
@@ -943,7 +941,12 @@ export default function OfficePreview({
 
       {notice ? <div className="office-preview-notice">{notice}</div> : null}
 
-      <div className="office-preview-body" data-office-side={editing ? 'on' : 'off'}>
+      <div className="office-preview-body" ref={canvasHostRef}
+        data-office-side={editing ? 'on' : 'off'}
+        data-office-bar-docked={barDocked ? 'on' : 'off'}>
+        {/* The bar is a sibling of the scrollable stage, not a child of it: inside the stage it
+            would scroll away with the document and be clipped by overflow. It still positions
+            itself against this container, which is the box the anchor was measured in. */}
         <div className="office-preview-stage">
           <EditableCanvas
             slide={renderedSlide}
@@ -961,26 +964,26 @@ export default function OfficePreview({
             onTextCommit={handleInlineText}
             readOnly={!editing}
           />
+
         </div>
-        {editing ? (
-          <>
-            <div className="office-panel-resizer" data-office-panel-resizer=""
-              role="separator" aria-orientation="vertical" tabIndex={0}
-              style={{ transform: panelOffsetTransform(panelOffset) }}
-              onPointerDown={startPanelResize}
-              onKeyDown={(event) => {
-                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-                event.preventDefault();
-                const delta = event.key === 'ArrowLeft' ? 16 : -16;
-                setPanelWidth((value) => saveOfficePanelWidth(value + delta));
-              }} />
-            <div className="office-preview-side"
-              style={{ transform: panelOffsetTransform(panelOffset) }}>
-              <div className="office-panel-grip" data-office-panel-grip="" title="拖动移动面板"
-                onPointerDown={startPanelDrag}>
-                <span className="office-panel-grip-dots" aria-hidden="true">⋯⋯</span>
-                <span className="office-panel-grip-text">拖动</span>
-              </div>
+          {editing && selectedShape ? (
+            <SelectionBar
+              anchor={barAnchor.anchor}
+              containerSize={barAnchor.size}
+              label={selectedShape.label || selectedShape.elId}
+              hasText={Boolean(selectedShape.textBody?.paragraphs?.length)}
+              value={plainTextOfParagraphs(
+                selectedParagraphs || selectedShape.textBody?.paragraphs || [],
+              )}
+              onTextCommit={(text) => handleInlineText(selectedShape.elId, text)}
+              style={barActiveStyle}
+              onStyle={handleBarStyle}
+              onDelete={() => handleDeleteElement()}
+              disabled={saving}
+              docked={barDocked}
+              onDock={setDocked}
+              onClose={() => setSelectedId(null)}
+            >
               <PropertyPanel
                 shape={selectedShape}
                 paragraphs={selectedParagraphs}
@@ -994,9 +997,8 @@ export default function OfficePreview({
                 disabled={saving}
                 readOnly={!editing}
               />
-            </div>
-          </>
-        ) : null}
+            </SelectionBar>
+          ) : null}
       </div>
 
       {pendingInherited ? (

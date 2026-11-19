@@ -27,7 +27,10 @@ import {
   OFFICE_SYNC_NOTICE, OFFICE_VERSION_UNSUPPORTED_CODE,
 } from '../office/version-binding.js';
 import { latestNamedAttachment } from '../office/latest-attachment.js';
-import { listPendingVersions, markVersionSynced, pendingVersionAttachments } from '../office/pending-versions.js';
+import ConfirmDialog from '../office/ui/ConfirmDialog.jsx';
+import {
+  listPendingVersionDocuments, markVersionsSynced, pendingVersionAttachments,
+} from '../office/pending-versions.js';
 import ImageViewport from '../widgets/image-viewport';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
@@ -1090,6 +1093,9 @@ export default function MessagesView({
     return () => clearTimeout(timer);
   }, [conversationTasks, conversationTaskExpiryRevision, topic]);
   const [conversationNotice, setConversationNotice] = useState('');
+  // Pending "send these edited documents along?" question. Holds the names plus the promise
+  // resolver, so the send path can await a real answer without branching into callbacks.
+  const [attachApproval, setAttachApproval] = useState(null);
   const reconnectingConversation = conversationConnection === 'reconnecting';
   useEffect(() => {
     if (!liquidConversation || !topic) return undefined;
@@ -4283,6 +4289,24 @@ export default function MessagesView({
     setMessages((prev) => prev.filter((message) => message.id !== tempId));
   }, []);
 
+  /**
+   * Ask before carrying edited documents into an outgoing message.
+   *
+   * Resolves true/false. Two answers mean "do not attach": the user skipped the files and
+   * sent text only, or they abandoned the send entirely. Both leave the local record alone,
+   * so the file is offered again next time rather than silently lost.
+   */
+  const askAttachApproval = useCallback((names) => new Promise((resolve) => {
+    setAttachApproval({ names: Array.isArray(names) ? names : [], resolve });
+  }), []);
+
+  const settleAttachApproval = useCallback((approved) => {
+    setAttachApproval((current) => {
+      current?.resolve?.(approved);
+      return null;
+    });
+  }, []);
+
   const handleSend = useCallback(async () => {
     if (conversationFork.blocked) return;
     const isConversationFollowup = liquidConversation && activeBotWorking;
@@ -4384,17 +4408,26 @@ export default function MessagesView({
       invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
 
       const currentReplyTo = switchesTopic ? null : originalReplyTo;
-      // Hand the newest saved version over with this message. Saving an Office file posts
-      // nothing on its own, so without this the agent keeps reading the attachment from
-      // before the edit and every later instruction is applied to stale bytes.
-      const pendingVersions = annotationSendSnapshot.drafts.length
-        ? []
-        : listPendingVersions(topic);
+      // Saving an Office file posts nothing on its own, so without this the agent keeps
+      // reading the attachment from before the edit and every later instruction is applied
+      // to stale bytes. Two rules keep that from turning into an avalanche of files: only
+      // the newest save of each document is carried, and the user is asked before anything
+      // is attached. A message that silently grows four attachments reads as a bug.
+      const pendingDocuments = annotationSendSnapshot.drafts.length
+        ? { latest: [], superseded: [] }
+        : listPendingVersionDocuments(topic);
+      const pendingVersions = pendingDocuments.latest;
       if (pendingVersions.length > 0) {
-        attachmentsToSend = [
-          ...attachmentsToSend,
-          ...pendingVersionAttachments(topic, attachmentsToSend),
-        ];
+        const carry = pendingVersionAttachments(topic, attachmentsToSend);
+        if (carry.length > 0) {
+          // Asking inside the page rather than with window.confirm: the browser dialog looks
+          // like a warning, cannot be styled, and is silently auto-accepted in some webviews,
+          // which is how unattended attachments happened in the first place.
+          const approved = await askAttachApproval(carry.map(item => item.name || '未命名文档'));
+          // Declining is not a failure: the record stays, so the file is offered again on
+          // the next message instead of being silently dropped.
+          if (approved) attachmentsToSend = [...attachmentsToSend, ...carry];
+        }
       }
       const contentBlocks = buildAtomicContentBlocks(protocolText, attachmentsToSend);
       const displayContent = text || summarizeAttachments(attachmentsToSend);
@@ -4640,8 +4673,9 @@ export default function MessagesView({
           : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
       // The newest file is now inside the conversation, so the local "unsent" record has
-      // done its job. Keeping it would attach the same bytes to every later message.
-      for (const entry of pendingVersions) markVersionSynced(entry.source);
+      // done its job. Clear the older saves it replaced as well, or they keep their place
+      // in storage and reappear as extra attachments on a later message.
+      markVersionsSynced([...pendingVersions, ...pendingDocuments.superseded]);
       if (liquidConversation && activeTopicRef.current === topic && selectedAgent) {
         markConversationActivity(selectedAgent.uid || selectedAgent.id, 'waiting');
       }
@@ -4877,7 +4911,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [conversationFork.blocked, activeBotWorking, liquidConversation, markConversationActivity, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
+  }, [conversationFork.blocked, activeBotWorking, liquidConversation, markConversationActivity, askAttachApproval, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!canStopActiveBotWorking || isStopRequested) return;
@@ -7368,6 +7402,17 @@ export default function MessagesView({
 
   return (
     <>
+      {attachApproval ? (
+        <ConfirmDialog
+          title={`这条消息会带上 ${attachApproval.names.length} 个改过的文档`}
+          lines={attachApproval.names}
+          hint="一起发送，小八下一步读到的就是你改后的版本；只发文字的话，文档留在本地，下次再问还会提示。"
+          confirmLabel="一起发送"
+          cancelLabel="只发文字"
+          onConfirm={() => settleAttachApproval(true)}
+          onCancel={() => settleAttachApproval(false)}
+        />
+      ) : null}
       <div
         className={`v3-message-workspace${sidePanelOpen ? ' has-preview' : ''}${previewExpanded ? ' cc-app-focus' : ''}${previewExpanded && previewContextOpen ? ' cc-app-context-open' : ''}${previewContextPlacement === 'below' ? ' cc-app-context-below' : ''}${previewComposerMinimized ? ' cc-app-composer-minimized' : ''}${previewComposerActive ? ' cc-app-composer-active' : ''}${previewDockDragging ? ' cc-app-dock-dragging' : ''}`}
         style={sidePanelOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}

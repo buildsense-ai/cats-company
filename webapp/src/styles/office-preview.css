@@ -116,6 +116,10 @@
 }
 
 .office-preview-stage {
+  /* Relative so the editing bar positions itself against the document rather than the page.
+     Without it the bar's absolute coordinates resolve against whichever ancestor happens to
+     be positioned, which is how a toolbar ends up far from the block it edits. */
+  position: relative;
   padding: 18px;
   display: flex;
   align-items: flex-start;
@@ -162,7 +166,11 @@
   position: absolute;
   top: 10px;
   right: 10px;
-  bottom: 10px;
+  /* Height is a variable, not a stretch to the bottom edge: the panel floats now, so it
+     must be able to end above the slide it is parked on. max-height keeps a tall
+     choice from running past the preview in a short window. */
+  height: var(--office-panel-height, 520px);
+  max-height: calc(100% - 20px);
   width: var(--office-panel-width, 300px);
   border: 1px solid #e2e4e9;
   border-radius: 10px;
@@ -636,3 +644,325 @@
   font-size: 12px;
   cursor: pointer;
 }
+
+/* Bottom-edge resize. Inside the panel so it tracks the real bottom even when max-height
+   cuts the chosen height short. */
+.office-panel-height-resizer {
+  flex: 0 0 auto;
+  height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+  background: #f4f5f8;
+  border-top: 1px solid #e2e4e9;
+  border-radius: 0 0 10px 10px;
+  position: relative;
+}
+
+.office-panel-height-resizer::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 26px;
+  height: 3px;
+  margin-left: -13px;
+  border-radius: 2px;
+  background: #c8ccd6;
+}
+
+.office-panel-height-resizer:hover,
+.office-panel-height-resizer:focus-visible {
+  background: #e8ecf6;
+  outline: none;
+}
+
+.office-panel-height-resizer:hover::after,
+.office-panel-height-resizer:focus-visible::after { background: #8ea9f5; }
+
+/* Scroll buttons for a panel shrunk below the point where its rows fit. The wheel still
+   scrolls; these give the bottom edge of a small panel something to press. */
+.office-panel-scroll {
+  display: none;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid #e2e4e9;
+  background: #f7f8fa;
+}
+
+.office-preview-side[data-office-panel-short] .office-panel-scroll { display: flex; }
+
+.office-panel-scroll-btn {
+  flex: 1 1 0;
+  height: 22px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #fff;
+  color: #5a616d;
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.office-panel-scroll-btn:hover:not(:disabled) { background: #eef0f4; border-color: #c3c8d2; }
+.office-panel-scroll-btn:disabled { opacity: .38; cursor: default; }
+/* ---------------------------------------------------------------------------
+   Editing bar: the compact toolbar that sits beside the block you clicked.
+
+   The property column used to be the only way in, so entering edit mode shoved the
+   document sideways and then left a permanent card parked over one corner. This bar
+   follows the selection instead, and only becomes a column when dragged to the edge.
+   --------------------------------------------------------------------------- */
+
+.office-bar {
+  position: absolute;
+  z-index: 9;
+  width: 330px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 0 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(16, 20, 28, .18);
+  font-size: 12px;
+  color: #303540;
+}
+
+.office-bar.is-dragging { box-shadow: 0 16px 40px rgba(16, 20, 28, .26); }
+
+.office-bar-grip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid #eceef2;
+  border-radius: 10px 10px 0 0;
+  background: #f6f7fa;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+  color: #7c818b;
+  font-size: 11px;
+}
+
+.office-bar-grip:hover { background: #eef1f8; color: #4b5563; }
+.office-bar-dots { letter-spacing: -1px; font-size: 11px; }
+.office-bar-name { font-weight: 600; color: #4b5563; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-bar-spacer { flex: 1 1 auto; }
+
+.office-bar-icon {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.office-bar-icon:hover { background: #e6eaf4; border-color: #d3d8e2; color: #303540; }
+
+.office-bar-text {
+  margin: 0 8px;
+  width: calc(100% - 16px);
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #16181b;
+  background: #fff;
+  resize: vertical;
+}
+
+.office-bar-text:focus { border-color: #1f5eff; outline: none; }
+
+.office-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  flex-wrap: wrap;
+}
+
+.office-bar-btn {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  border: 1px solid #dcdfe6;
+  border-radius: 5px;
+  background: #fff;
+  color: #303540;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.office-bar-btn:hover:not(:disabled) { border-color: #b9c0cc; background: #f6f7fa; }
+.office-bar-btn.is-on { border-color: #1f5eff; background: #e8efff; color: #1f5eff; font-weight: 700; }
+.office-bar-btn:disabled { opacity: .45; cursor: default; }
+
+/* Italic needs to look italic in the toolbar too, otherwise the button is unreadable as a
+   state: a slanted I is the only thing that tells the user which way it is set. */
+.office-bar-btn[title="斜体"] { font-style: italic; font-family: Georgia, "Times New Roman", serif; }
+
+.office-bar-swatch {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, .18);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.office-bar-swatch:hover:not(:disabled) { transform: scale(1.12); }
+.office-bar-swatch:disabled { opacity: .4; cursor: default; }
+
+.office-bar-sep { width: 1px; height: 16px; background: #e4e7ec; margin: 0 2px; }
+
+.office-bar-select {
+  height: 24px;
+  border: 1px solid #dcdfe6;
+  border-radius: 5px;
+  background: #fff;
+  color: #303540;
+  font-size: 11.5px;
+  padding: 0 2px;
+}
+
+.office-bar-note { margin: 0; padding: 2px 8px 0; color: #8a909b; font-size: 11.5px; }
+
+.office-bar-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 8px 0;
+  border-top: 1px solid #eceef2;
+  margin-top: 2px;
+}
+
+.office-bar-danger {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid #e6c6c6;
+  border-radius: 5px;
+  background: #fff;
+  color: #b4362f;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.office-bar-danger:hover:not(:disabled) { background: #fdf2f1; border-color: #d9a3a0; }
+.office-bar-danger:disabled { opacity: .45; cursor: default; }
+
+/* Docked posture. Same bar, pushed against the right edge and grown into a column: this is
+   the tools-palette shape the user asked for, and it is also where the full property panel
+   lives, so the floating bar can stay small. */
+.office-bar.is-docked {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: auto;
+  width: var(--office-panel-width, 320px);
+  border-radius: 0;
+  border: none;
+  border-left: 1px solid #e8eaef;
+  box-shadow: -10px 0 26px rgba(16, 20, 28, .07);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.office-bar.is-docked .office-bar-grip {
+  border-radius: 0;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.office-bar.is-docked .office-bar-text { resize: none; }
+
+/* The docked column is a real column: the document gives up the space instead of being
+   covered by a card. Without this the page slides underneath the palette and the right
+   edge of every line becomes unreadable while editing. */
+.office-preview-body[data-office-bar-docked="on"] .office-preview-stage {
+  padding-right: calc(var(--office-panel-width, 320px) + 18px);
+}
+
+/* The full property panel inside the docked column needs no frame of its own: the column
+   already is the frame. */
+.office-bar.is-docked .office-props {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 4px 10px 24px;
+}
+
+/* ---------------------------------------------------------------------------
+   In-page confirmation. window.confirm cannot be styled, reads as a browser warning,
+   and some webviews answer it automatically: all three are reasons a user could not
+   tell whether their document was about to be sent.
+   --------------------------------------------------------------------------- */
+
+.office-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(18, 21, 28, .38);
+}
+
+.office-confirm {
+  width: min(380px, 100%);
+  padding: 16px 18px 14px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgba(16, 20, 28, .28);
+  color: #23262d;
+}
+
+.office-confirm-title { font-size: 14px; font-weight: 650; line-height: 1.5; }
+
+.office-confirm-list {
+  margin: 10px 0 0;
+  padding: 8px 10px 8px 24px;
+  max-height: 132px;
+  overflow-y: auto;
+  border-radius: 8px;
+  background: #f6f7fa;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #40454f;
+  list-style: disc;
+}
+
+.office-confirm-hint { margin: 10px 0 0; font-size: 11.5px; line-height: 1.65; color: #7c818b; }
+
+.office-confirm-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.office-confirm-spacer { flex: 1 1 auto; }
+
+.office-confirm-btn {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid #dcdfe6;
+  border-radius: 7px;
+  background: #fff;
+  color: #40454f;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.office-confirm-btn:hover { background: #f4f6fa; border-color: #c3c8d2; }
+.office-confirm-btn.is-primary { background: #1f5eff; border-color: #1f5eff; color: #fff; font-weight: 600; }
+.office-confirm-btn.is-primary:hover { background: #1a51e0; border-color: #1a51e0; }
+.office-confirm-btn.is-quiet { border-color: transparent; color: #9aa0ab; }

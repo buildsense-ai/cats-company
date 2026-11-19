@@ -16,20 +16,29 @@ import {
   deleteParagraph, insertParagraph, validateDocumentPart,
 } from '../docx/write.js';
 import { applyInsertImage } from '../docx/insert.js';
-import { BLOCK_KINDS, ALIGNMENTS, blockPreview, cmToTwips, twipsToCm } from '../docx/model.js';
+import {
+  BLOCK_KINDS, ALIGNMENTS, blockLabel, cmToTwips, twipsToCm,
+} from '../docx/model.js';
 import { applyWordDraft, wordCellDraftKey } from './word-draft-render.js';
 import { OFFICE_SAVE_NOTICE } from '../save.js';
 import { OFFICE_SYNC_NOTICE, OFFICE_SERVER_UNSUPPORTED_NOTICE } from '../version-binding.js';
 import LocalDraftTextarea from './LocalDraftTextarea.jsx';
-import {
-  officePanelWidthFromPointer, readOfficePanelWidth, saveOfficePanelWidth,
-} from './office-panel-width.js';
-import {
-  clampPanelOffset, panelOffsetTransform, readOfficePanelOffset, saveOfficePanelOffset,
-} from './panel-drag.js';
+import { readOfficePanelWidth } from './office-panel-width.js';
+import SelectionBar from './SelectionBar.jsx';
+import { byBlockId, useBarAnchor } from './bar-anchor.js';
+import { readBarDocked, saveBarDocked } from './floating-bar-placement.js';
 import '../../styles/office-preview.css';
 
 export const DOCX_PREVIEW_MAX_BYTES = 60 * 1024 * 1024;
+
+// Word stores alignment as words, PPT as codes. The bar shows one set of buttons and the
+// caller owns the vocabulary it writes back, so the option list is passed in.
+const WORD_ALIGN_OPTIONS = [
+  { value: 'left', label: '左' },
+  { value: 'center', label: '中' },
+  { value: 'right', label: '右' },
+  { value: 'both', label: '两端' },
+];
 
 const EMPTY_WORD_DRAFT = { texts: {}, styles: {}, props: {}, cells: {} };
 
@@ -276,7 +285,8 @@ export default function WordPreview({
   const [askOpen, setAskOpen] = useState(false);
   const [askText, setAskText] = useState('');
   const [panelWidth, setPanelWidth] = useState(() => readOfficePanelWidth());
-  const [panelOffset, setPanelOffset] = useState(() => readOfficePanelOffset());
+  const [barDocked, setBarDocked] = useState(() => readBarDocked());
+  const canvasHostRef = useRef(null);
   const pendingBytesRef = useRef(null);
   const [hasPending, setHasPending] = useState(false);
   const imageInputRef = useRef(null);
@@ -296,54 +306,16 @@ export default function WordPreview({
     setEditing(false);
   }, [url]);
 
-  const startPanelResize = useCallback((event) => {
-    if (typeof window === 'undefined' || window.innerWidth < 900) return;
-    const startX = event.clientX;
-    const startWidth = panelWidth;
-    const move = (moveEvent) => {
-      setPanelWidth(officePanelWidthFromPointer(startWidth, startX, moveEvent.clientX));
-    };
-    const finish = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', finish);
-      window.removeEventListener('pointercancel', finish);
-      setPanelWidth((value) => saveOfficePanelWidth(value));
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', finish);
-    window.addEventListener('pointercancel', finish);
-  }, [panelWidth]);
-
   /**
-   * Drag the panel by its grip.
+   * Switch between the floating bar and the docked column.
    *
-   * Movement is a translate, so the width the user already picked and the resize handle
-   * both keep working. Listeners sit on the window for the gesture: a pointer that leaves
-   * the grip mid-drag must not strand the panel.
+   * Docking is a posture, not a second component: the same bar grows into a column and the
+   * full property panel joins it there. Remembering it means a user who prefers the column
+   * does not have to re-dock for every document.
    */
-  const startPanelDrag = useCallback((event) => {
-    if (!event || (event.button !== undefined && event.button !== 0)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const base = panelOffset;
-    const move = (moveEvent) => {
-      setPanelOffset(clampPanelOffset({
-        x: base.x + (moveEvent.clientX - startX),
-        y: base.y + (moveEvent.clientY - startY),
-      }));
-    };
-    const finish = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', finish);
-      window.removeEventListener('pointercancel', finish);
-      setPanelOffset((value) => saveOfficePanelOffset(value));
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', finish);
-    window.addEventListener('pointercancel', finish);
-  }, [panelOffset]);
+  const setDocked = useCallback((value) => {
+    setBarDocked(saveBarDocked(value));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -448,6 +420,11 @@ export default function WordPreview({
       : twipsToCm(selectedBlock?.indFirstTwips || 0),
   }), [selectedBlock, selectedProps?.indFirstCm, selectedProps?.indLeftCm]);
 
+
+  // Where the bar points. Measured from the DOM: a Word paragraph has no coordinates in
+  // the model, and the page is scaled to whatever width the preview column has.
+  const anchorSelector = selectedId ? byBlockId(selectedId) : ''
+  const barAnchor = useBarAnchor(canvasHostRef, anchorSelector, `${selectedId || ''}|${Object.keys(draft.texts).length}|${Object.keys(draft.styles).length}`);
   const renderedModel = useMemo(() => applyWordDraft(model, draft), [draft, model]);
 
   const applyToBytes = useCallback(async () => {
@@ -661,7 +638,9 @@ export default function WordPreview({
 
   return (
     <div className="office-preview" data-office-mode={editing ? 'edit' : 'readonly'}
-      style={{ '--office-panel-width': `${panelWidth}px` }}>
+      style={{
+        '--office-panel-width': `${panelWidth}px`,
+      }}>
       <div className="office-preview-toolbar">
         <span className="office-page-label">
           {model.blocks.length} 块 · {model.outline.length} 个标题
@@ -725,7 +704,12 @@ export default function WordPreview({
 
       {notice ? <div className="office-preview-notice">{notice}</div> : null}
 
-      <div className="office-preview-body" data-office-side={editing ? 'on' : 'off'}>
+      <div className="office-preview-body" ref={canvasHostRef}
+        data-office-side={editing ? 'on' : 'off'}
+        data-office-bar-docked={barDocked ? 'on' : 'off'}>
+        {/* The bar is a sibling of the scrollable stage, not a child of it: inside the stage it
+            would scroll away with the document and be clipped by overflow. It still positions
+            itself against this container, which is the box the anchor was measured in. */}
         <div className="office-preview-stage office-docx-stage">
           <DocxCanvas
             model={renderedModel}
@@ -736,73 +720,96 @@ export default function WordPreview({
             activeCell={activeCell}
             onCellSelect={editing ? handleCellSelect : undefined}
           />
+
         </div>
-        {editing ? (
-          <>
-            <div className="office-panel-resizer" data-office-panel-resizer=""
-              role="separator" aria-orientation="vertical" tabIndex={0}
-              style={{ transform: panelOffsetTransform(panelOffset) }}
-              onPointerDown={startPanelResize}
-              onKeyDown={(event) => {
-                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-                event.preventDefault();
-                const delta = event.key === 'ArrowLeft' ? 16 : -16;
-                setPanelWidth((value) => saveOfficePanelWidth(value + delta));
-              }} />
-            <div className="office-preview-side"
-              style={{ transform: panelOffsetTransform(panelOffset) }}>
-              <div className="office-panel-grip" data-office-panel-grip="" title="拖动移动面板"
-                onPointerDown={startPanelDrag}>
-                <span className="office-panel-grip-dots" aria-hidden="true">⋯⋯</span>
-                <span className="office-panel-grip-text">拖动</span>
-              </div>
+          {editing && selectedBlock ? (
+            <SelectionBar
+              anchor={barAnchor.anchor}
+              containerSize={barAnchor.size}
+              label={blockLabel(selectedBlock)}
+              alignOptions={WORD_ALIGN_OPTIONS}
+              hasText={selectedBlock.kind === BLOCK_KINDS.PARAGRAPH}
+              value={selectedText !== undefined ? selectedText : (selectedBlock.text || '')}
+              onTextCommit={(value) => {
+                if (!selectedId) return;
+                setDraft(current => ({
+                  ...current,
+                  texts: { ...current.texts, [selectedId]: value },
+                }));
+              }}
+              style={effectiveStyle}
+              onStyle={(patch) => {
+                if (!selectedId) return;
+                setDraft(current => ({
+                  ...current,
+                  styles: {
+                    ...current.styles,
+                    [selectedId]: { ...(current.styles[selectedId] || {}), ...patch },
+                  },
+                }));
+              }}
+              onDelete={handleDeleteBlock}
+              disabled={saving}
+              docked={barDocked}
+              onDock={setDocked}
+              onClose={() => setSelectedId(null)}
+            >
               <BlockPanel
-            block={selectedBlock}
-            text={selectedText}
-            style={effectiveStyle}
-            props={effectiveProps}
-            onTextChange={(value) => {
-              if (!selectedId) return;
-              setDraft(current => ({ ...current,
-                texts: { ...current.texts, [selectedId]: value } }));
-            }}
-            onStyleChange={(patch) => {
-              if (!selectedId) return;
-              setDraft(current => ({ ...current, styles: {
-                ...current.styles,
-                [selectedId]: { ...(current.styles[selectedId] || {}), ...patch },
-              } }));
-            }}
-            onAlign={(align) => {
-              if (!selectedId) return;
-              setDraft(current => ({ ...current, props: {
-                ...current.props,
-                [selectedId]: { ...(current.props[selectedId] || {}), align },
-              } }));
-            }}
-            onIndent={({ leftCm, firstCm }) => {
-              if (!selectedId) return;
-              setDraft(current => {
-                const next = { ...(current.props[selectedId] || {}) };
-                if (leftCm !== undefined) next.indLeftCm = leftCm;
-                if (firstCm !== undefined) next.indFirstCm = firstCm;
-                return { ...current, props: { ...current.props, [selectedId]: next } };
-              });
-            }}
-            onDelete={handleDeleteBlock}
-            activeCell={selectedTableCell}
-            onCellSelect={handleCellSelect}
-            cellText={selectedCellText}
-            onCellTextChange={(value) => {
-              if (!selectedCellKey) return;
-              setDraft(current => ({ ...current,
-                cells: { ...current.cells, [selectedCellKey]: value } }));
-            }}
-            disabled={saving || !editing}
+                block={selectedBlock}
+                text={selectedText}
+                style={effectiveStyle}
+                props={effectiveProps}
+                onTextChange={(value) => {
+                  if (!selectedId) return;
+                  setDraft(current => ({
+                    ...current,
+                    texts: { ...current.texts, [selectedId]: value },
+                  }));
+                }}
+                onStyleChange={(patch) => {
+                  if (!selectedId) return;
+                  setDraft(current => ({
+                    ...current,
+                    styles: {
+                      ...current.styles,
+                      [selectedId]: { ...(current.styles[selectedId] || {}), ...patch },
+                    },
+                  }));
+                }}
+                onAlign={(align) => {
+                  if (!selectedId) return;
+                  setDraft(current => ({
+                    ...current,
+                    props: {
+                      ...current.props,
+                      [selectedId]: { ...(current.props[selectedId] || {}), align },
+                    },
+                  }));
+                }}
+                onIndent={({ leftCm, firstCm }) => {
+                  if (!selectedId) return;
+                  setDraft(current => {
+                    const next = { ...(current.props[selectedId] || {}) };
+                    if (leftCm !== undefined) next.indLeftCm = leftCm;
+                    if (firstCm !== undefined) next.indFirstCm = firstCm;
+                    return { ...current, props: { ...current.props, [selectedId]: next } };
+                  });
+                }}
+                onDelete={handleDeleteBlock}
+                activeCell={selectedTableCell}
+                onCellSelect={handleCellSelect}
+                cellText={selectedCellText}
+                onCellTextChange={(value) => {
+                  if (!selectedCellKey) return;
+                  setDraft(current => ({
+                    ...current,
+                    cells: { ...current.cells, [selectedCellKey]: value },
+                  }));
+                }}
+                disabled={saving}
               />
-            </div>
-          </>
-        ) : null}
+            </SelectionBar>
+          ) : null}
       </div>
     </div>
   );

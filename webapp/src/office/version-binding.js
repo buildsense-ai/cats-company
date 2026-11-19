@@ -110,6 +110,10 @@ export function writeLocalVersionBinding(source, latest, storage = 'localStorage
   return writeStorageValue(key, JSON.stringify({
     source,
     latest: latestVersionFromUpload(latest),
+    // Stamped so the conversation can keep only the newest save of one document. Without
+    // it, saving the same file five times left five records and every later message
+    // carried five copies of the same document.
+    savedAt: Date.now(),
   }), storage);
 }
 
