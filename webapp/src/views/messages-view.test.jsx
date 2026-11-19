@@ -2070,8 +2070,8 @@ describe('MessagesView composer draft isolation', () => {
   });
 
   // Failure modes: the timeline keeps the source-bearing group with reasoning
-  // hidden, but neither the process nor the Diary graph opens automatically.
-  it.each([true, false])('opens Diary sources from their tool shell with showThinking=%s', async (showThinking) => {
+  // hidden, but neither the process nor the memory list opens automatically.
+  it.each([true, false])('opens Diary sources from the memory list with showThinking=%s', async (showThinking) => {
     sourceJourney.enabled = true;
     localStorage.setItem('cc_show_thinking', String(showThinking));
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
@@ -2086,20 +2086,17 @@ describe('MessagesView composer draft isolation', () => {
     api.getFriends.mockResolvedValueOnce({ friends: [{ id: 2, display_name: 'Agent', is_bot: true }] });
     await mountTopic(root, 'p2p_1_2', { topicName: 'Agent' });
     await act(async () => { await flushPromises(); });
-    expect(container.querySelectorAll('.cc-diary-node')).toHaveLength(0);
+    expect(container.querySelectorAll('.cc-memory-source')).toHaveLength(0);
     expect(container.textContent).toContain('Final reply');
-    const processToggle = container.querySelector('.v3-working-toggle');
-    expect(processToggle?.getAttribute('aria-expanded')).toBe('false');
-    await act(async () => { processToggle.click(); await flushPromises(); });
-    expect(container.querySelectorAll('.cc-diary-node')).toHaveLength(0);
-    const step = container.querySelector('.v3-wpi-tool-header.is-toggle');
-    expect(step?.getAttribute('aria-expanded')).toBe('false');
-    await act(async () => { step.click(); await flushPromises(); });
-    const sources = container.querySelectorAll('.cc-diary-node');
+    expect(container.querySelector('.v3-working-toggle[aria-expanded="true"]')).toBeNull();
+    const memoryToggle = container.querySelector('.cc-memory-toggle');
+    expect(memoryToggle?.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => { memoryToggle.click(); await flushPromises(); });
+    const sources = container.querySelectorAll('.cc-memory-source.is-diary');
     expect(sources).toHaveLength(2);
     const dir = process.env.DIARY_ARTIFACT_DIR || '/tmp/catsco-diary-sources';
     mkdirSync(dir, { recursive: true });
-    writeFileSync(dir + '/timeline-' + showThinking + '.json', JSON.stringify({ showThinking, initialSources: 0, processOnlySources: 0, selectedToolSources: sources.length, finalReplyVisible: true }));
+    writeFileSync(dir + '/timeline-' + showThinking + '.json', JSON.stringify({ showThinking, initialSources: 0, memoryListSources: sources.length, finalReplyVisible: true }));
   });
 
   it.each([true, false])('keeps saved Branch sources in the timeline with showThinking=%s', async (showThinking) => {
@@ -2120,8 +2117,8 @@ describe('MessagesView composer draft isolation', () => {
     const sourcesToggle = container.querySelector('.cc-memory-toggle');
     await act(async () => { sourcesToggle.click(); await flushPromises(); });
     const sources = container.querySelectorAll('.cc-memory-source');
-    expect(sources).toHaveLength(capture.events.at(-1).nodes.length);
-    expect(container.textContent).toContain('回答中明确引用 1 份');
+    expect(sources).toHaveLength(new Set(capture.events.at(-1).nodes.map(node => JSON.stringify(node.reader))).size);
+    expect(container.textContent).toContain('回答引用');
     const dir = '/tmp/catsco-branch-sources';
     mkdirSync(dir, { recursive: true });
     writeFileSync(dir + '/timeline-' + showThinking + '.json', JSON.stringify({ showThinking, sources: sources.length, answerRefs: 1 }));

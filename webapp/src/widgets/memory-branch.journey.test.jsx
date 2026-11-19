@@ -12,7 +12,12 @@ import { setToken } from '../auth-session';
 // refusal or mismatched pins fall back to cached bodies; B6 changing selection
 // admits a stale response; B7 a late event attaches to its origin answer;
 // B8 relation kinds and complete qualifiers are lost; B9 unknown schema is
-// treated as evidence. Browser capture covers actual Canvas and responsive UI.
+// treated as evidence. Production replay (2026-11-18, 54 runs) added:
+// B10 a terminal run without readable sources renders nothing, so the user
+//     cannot tell memory ran (59% of runs); B11 reads that were never
+//     injected disappear once the run leaves running/ready; B12 one row per
+//     node repeats the same readable unit and graphs unlabeled dots, instead
+//     of one row per verified reader with only the state that differs.
 const ref = `ref_${'a'.repeat(64)}`;
 const revision = 'b'.repeat(64);
 const base = { schema: 'catsco.memory_branch.v1', branch_run_id: 'memory-fixture', origin_turn_id: 'turn-1', sequence: 1, status: 'running',
@@ -61,7 +66,7 @@ it('archive read is owner-scoped on click and only the matching pin renders', as
 it('shows the consumed summary from grp_7445 during replay without inventing a readable source', async () => {
   const consumed = { ...base, sequence: 3, status: 'unavailable', consumed_turn_id: base.origin_turn_id, observation_id: 'obs' };
   await render([base, consumed], true);
-  expect(container.textContent).toContain('主 Agent 已收到记忆摘要');
+  expect(container.textContent).toContain('回答参考了记忆摘要');
   expect(container.querySelector('.cc-memory-toggle, canvas')).toBeNull();
   expect(container.querySelector('.cc-memory-source')).toBeNull();
   expect(requests).toHaveLength(0);
@@ -70,12 +75,13 @@ it('shows the consumed summary from grp_7445 during replay without inventing a r
 
 it('B1/B2/B3/B7: live replay deduplicates by run/sequence and distinguishes ready from actual injection', async () => {
   await render([base, { ...graph, status: 'ready', sequence: 2, injected_refs: [], consumed_turn_id: undefined }]);
-  expect(container.textContent).not.toContain('已加入主 Agent 上下文');
+  expect(container.textContent).toContain('尚未送达');
+  expect(container.textContent).not.toContain('回答参考了');
   await render([graph, base, graph]);
-  expect(container.querySelectorAll('[aria-label="记忆探索"]')).toHaveLength(1);
-  expect(container.textContent).toContain('已加入主 Agent 上下文');
-  expect(container.textContent).toContain('来自上一轮');
-  expect(container.textContent).not.toContain('回答中明确引用');
+  expect(container.querySelectorAll('[aria-label="记忆来源"]')).toHaveLength(1);
+  expect(container.textContent).toContain('回答参考了 1 条记忆');
+  expect(container.textContent).toContain('上一轮');
+  expect(container.textContent).not.toContain('回答引用');
   expect(requests).toHaveLength(0);
   evidence.push({ journey: 'live ordering/carryover', injected: 1, eagerReads: 0 });
 });
@@ -105,9 +111,11 @@ it('recorded runtime → persisted blocks → history renderer keeps every node 
   const final = runtimeCapture.events.at(-1);
   expect(JSON.stringify(final).length).toBeGreaterThan(2000);
   await render(runtimeCapture.events, true);
-  expect(container.querySelectorAll('.cc-memory-source')).toHaveLength(final.nodes.length);
-  expect(container.querySelector('canvas').getAttribute('aria-label')).toContain(`${final.edges.length} 条真实关系`);
-  expect(container.textContent).toContain('回答中明确引用 1 份');
+  const readers = new Set(final.nodes.map(node => JSON.stringify(node.reader)));
+  expect(container.querySelectorAll('.cc-memory-source')).toHaveLength(readers.size);
+  expect(container.querySelector('canvas')).toBeNull();
+  expect(container.textContent).toContain(`${final.nodes.length} 个要点`);
+  expect(container.textContent).toContain('回答引用');
   expect(requests).toHaveLength(0);
   evidence.push({ journey: 'actual runtime contract replay', nodes: final.nodes.length, edges: final.edges.length, sequence: final.sequence });
 });
@@ -163,4 +171,51 @@ it('B9: unknown version and invalid graph endpoints never render rich source nav
   expect(container.querySelector('.cc-memory-toggle')).toBeNull();
   await render([{ ...graph, edges: [{ id: 'invented', from: 'foreign', to: 'assertion-1', kind: 'qualifies' }] }]);
   expect(container.querySelector('.cc-memory-source')).toBeNull();
+});
+
+// Each status the production fleet actually ended on without sources.
+it.each([
+  ['deferred', '记忆未赶上本次回答'],
+  ['empty', '未找到相关记忆'],
+  ['cancelled', '记忆查找未完成'],
+  ['failed', '记忆查找未完成'],
+])('B10: a %s run without sources still says so, without a fake disclosure', async (status, copy) => {
+  await render([base, { ...base, sequence: 2, status }]);
+  const line = container.querySelector('.cc-memory-status');
+  expect(line?.textContent).toContain(copy);
+  expect(line.getAttribute('role')).toBe('status');
+  expect(container.querySelector('.cc-memory-toggle, .cc-memory-source')).toBeNull();
+  expect(requests).toHaveLength(0);
+  evidence.push({ journey: 'terminal without sources', status, copy });
+});
+
+it('B11: reads that never reached the answer stay listed and say they were not used', async () => {
+  const archive = (n) => ({ id: `turn-${n}`, kind: 'archive_turn', label: '会话摘录', ref: `local:${String(n).repeat(64)}`,
+    reader: { kind: 'archive_turn', archive: { day: '2026-11-18', offset: n * 100, digest: revision } } });
+  const nodes = [archive(1), archive(2), archive(3)];
+  for (const status of ['unavailable', 'deferred', 'cancelled']) {
+    await render([{ ...base, sequence: 9, status, nodes, read_refs: nodes.map(node => node.ref) }]);
+    expect(container.querySelectorAll('.cc-memory-source')).toHaveLength(3);
+    expect(container.textContent).toContain('未用于本次回答');
+    expect(container.textContent).toContain('2026-11-18');
+  }
+  expect(requests).toHaveLength(0);
+  evidence.push({ journey: 'unused reads stay visible', rows: 3 });
+});
+
+it('B12: one row per readable unit; only rows that differ from the summary carry a state', async () => {
+  const otherRef = `ref_${'d'.repeat(64)}`;
+  const event = structuredClone(graph);
+  event.nodes.push({ id: 'other', kind: 'assertion', label: '记忆断言', ref: otherRef, reader: { kind: 'projection', projection_ref: otherRef } });
+  event.read_refs.push(otherRef);
+  event.status = 'answered'; event.answer_refs = [ref];
+  await render([event]);
+  const rows = [...container.querySelectorAll('.cc-memory-source')];
+  expect(rows).toHaveLength(2);
+  expect(rows[0].textContent).toContain('2 个要点');
+  expect(rows[0].textContent).toContain('回答引用');
+  expect(rows[1].textContent).toContain('未采用');
+  expect(container.textContent).toContain('回答参考了 1 条记忆');
+  expect(container.querySelector('canvas, [role="group"][aria-label*="视图"]')).toBeNull();
+  evidence.push({ journey: 'grouped rows', rows: 2, cited: 1, unused: 1 });
 });

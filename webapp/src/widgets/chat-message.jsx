@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, Maximize2, Minimize2, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
+import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Terminal, Brain, BookOpen, FilePen, FolderSearch, Globe, Search, Send, Sparkles, GitFork, MessageSquareText, FileText, FileCode2, Download, ExternalLink, Maximize2, Minimize2, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
 import { EXECUTION_LABELS, useLiquidConversation } from '../utils/liquid-conversation';
 import { FadingMarkdown, FadingText, LiquidReplySurface, useReplyReveal } from './liquid-reply-motion';
@@ -44,8 +44,7 @@ export { downloadableMediaURL } from '../utils/media-download';
 import { previewPageURL, sharePreviewLink } from './preview-share';
 import { normalizeGatewayAnnotations } from '../gateway-annotations';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
-import DiaryToolResult from './diary-tool-result';
-import MemoryBranchSources from './memory-branch-sources';
+import MemorySources from './memory-sources';
 import { latestMemoryBranches } from './memory-branch';
 import './chat-activity.css';
 import { diaryAgentUID, diaryToolView } from './diary-sources';
@@ -126,6 +125,37 @@ function toolInputSummary(name, input) {
   const first = vals.find(v => typeof v === 'string');
   if (first) return first.slice(0, 120) + (first.length > 120 ? '...' : '');
   return JSON.stringify(input).slice(0, 120);
+}
+
+// Name what happened in product language; unknown tools keep their real name.
+const TOOL_ACTIONS = {
+  execute_shell: ['运行命令', Terminal],
+  read_file: ['读取文件', FileText],
+  write_file: ['写入文件', FilePen],
+  edit_file: ['编辑文件', FilePen],
+  import_file: ['导入文件', FileText],
+  send_file: ['发送文件', Send],
+  send_text: ['发送消息', Send],
+  glob: ['查找文件', FolderSearch],
+  grep: ['搜索内容', Search],
+  ripgrep: ['搜索内容', Search],
+  web_search: ['搜索网页', Globe],
+  web_fetch: ['读取网页', Globe],
+  memory_search: ['搜索记忆', Brain],
+  memory_remote_search: ['搜索记忆', Brain],
+  spawn_subagent: ['启动子任务', GitFork],
+  skill: ['使用技能', Sparkles],
+};
+const DIARY_ACTIONS = { search: '搜索日记', read: '阅读日记', graph: '查看日记关联' };
+
+function toolPresentation(name, input) {
+  if (name === 'catslog_knowledge_recall') {
+    let parsed = input;
+    if (typeof input === 'string') { try { parsed = JSON.parse(input); } catch { parsed = null; } }
+    return { label: DIARY_ACTIONS[parsed?.action] || '查阅日记', Icon: BookOpen, detail: typeof parsed?.query === 'string' ? parsed.query : '' };
+  }
+  const [label, Icon] = TOOL_ACTIONS[name] || [name || 'Tool', Terminal];
+  return { label, Icon, detail: toolInputSummary(name, input) };
 }
 
 function truncateResult(text, max = 300) {
@@ -771,34 +801,22 @@ function toolResultSizeLabel(value) {
   return `${(value.length / 1000).toFixed(value.length >= 10000 ? 0 : 1)}k 字符`;
 }
 
-function WorkingToolStep({ item, orphan = false, agentUid, diaryView, showNarratives = true }) {
+function WorkingToolStep({ item, orphan = false, showNarratives = true }) {
   const [open, setOpen] = useState(false);
   const result = orphan ? item.content : item.result;
   const hasResult = result != null && (typeof result !== 'string' || result.length > 0);
   const name = orphan ? '工具结果' : (item.name || 'Tool');
+  const { label, Icon, detail } = orphan ? { label: name, Icon: Terminal, detail: '' } : toolPresentation(item.name, item.input);
   const resultID = `tool-result-${useId().replace(/:/g, '')}`;
   const narratives = showNarratives ? item.narratives || [] : [];
-
-  if (!hasResult) {
-    return (
-      <div className="v3-wpi-tool-step">
-        {narratives.map((narrative, index) => (
-          <WorkingNarrative key={`${narrative.type}-${index}`} item={narrative} />
-        ))}
-        <div className="v3-wpi-tool">
-          <div className="v3-wpi-tool-header">
-            <Terminal size={14} className="v3-wpi-icon" />
-            <span className="v3-wpi-tool-name">{name}</span>
-            {!orphan && (
-              <span className="oc-wpi-tool-input">
-                {toolInputSummary(item.name, item.input)}
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const heading = (
+    <>
+      <Icon size={14} className="v3-wpi-icon" aria-hidden="true" />
+      <span className="v3-wpi-tool-name" title={orphan ? undefined : name}>{label}</span>
+      {detail && <span className="oc-wpi-tool-input">{detail}</span>}
+      {item.isError && <span className="v3-wpi-tool-status is-error">失败</span>}
+    </>
+  );
 
   return (
     <div className="v3-wpi-tool-step">
@@ -806,30 +824,24 @@ function WorkingToolStep({ item, orphan = false, agentUid, diaryView, showNarrat
         <WorkingNarrative key={`${narrative.type}-${index}`} item={narrative} />
       ))}
       <div className="v3-wpi-tool">
-        <button
-          type="button"
-          className="v3-wpi-tool-header is-toggle"
-          aria-expanded={open}
-          aria-controls={resultID}
-          onClick={() => setOpen((current) => !current)}
-        >
-          <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />
-          <Terminal size={14} className="v3-wpi-icon" />
-          <span className="v3-wpi-tool-name">{name}</span>
-          {!orphan && (
-            <span className="oc-wpi-tool-input">
-              {toolInputSummary(item.name, item.input)}
-            </span>
-          )}
-          <span className="v3-wpi-tool-size">{toolResultSizeLabel(result)}</span>
-        </button>
-        {open && (
+        {hasResult ? (
+          <button
+            type="button"
+            className="v3-wpi-tool-header is-toggle"
+            aria-expanded={open}
+            aria-controls={resultID}
+            onClick={() => setOpen((current) => !current)}
+          >
+            <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />
+            {heading}
+          </button>
+        ) : <div className="v3-wpi-tool-header">{heading}</div>}
+        {open && hasResult && (
           <div id={resultID} className="v3-wpi-tool-result">
-            {diaryView ? <DiaryToolResult item={item} view={diaryView} agentUid={agentUid} /> : (
-              <div className="v3-wpi-code-block result">
-                <pre><code>{serializeToolResult(result)}</code></pre>
-              </div>
-            )}
+            {!orphan && <div className="v3-wpi-tool-raw-name"><code>{name}</code>{toolResultSizeLabel(result) && <span>{toolResultSizeLabel(result)}</span>}</div>}
+            <div className="v3-wpi-code-block result">
+              <pre><code>{serializeToolResult(result)}</code></pre>
+            </div>
           </div>
         )}
       </div>
@@ -963,12 +975,10 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
     return view ? [{ item, view }] : [];
   }), [safeBlocks]);
   const memoryEvents = useMemo(() => latestMemoryBranches(safeBlocks), [safeBlocks]);
-  const detailBlocks = safeBlocks.filter((item) => {
-    if (item.type === 'memory_branch' || item === planItem) return false;
-    // Source inspection stays available with reasoning hidden, but only the
-    // selected tool may mount its graph, reader, and private-read effects.
-    return showDetails || diaryItems.some((diary) => diary.item === item);
-  });
+  const diaryViews = useMemo(() => diaryItems.map((diary) => diary.view), [diaryItems]);
+  // Memory sources live in their own disclosure, so hidden process details
+  // hide every step, including the Diary calls behind those sources.
+  const detailBlocks = showDetails ? safeBlocks.filter((item) => item.type !== 'memory_branch' && item !== planItem) : [];
   // Only explicit user-facing progress messages become conversation bubbles.
   // Keep reasoning blocks, raw tool outputs and subagent logs in the details.
   const progressMessages = safeBlocks.filter((item) => item !== planItem).flatMap((item) => (
@@ -981,7 +991,7 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
   const statusLabel = executionState ? EXECUTION_LABELS[executionState] : stopped ? '已停止' : complete ? '已完成' : '正在执行';
   const running = executionState ? executionState === 'running' : !complete && !stopped;
   const streamingNarrative = replyStreaming || progressMessages.some((item, index) => item.streaming || revealingNarratives[index]);
-  const sourceOnly = safeBlocks.every(item => item.type === 'memory_branch');
+  const sourceOnly = safeBlocks.every(item => item.type === 'memory_branch' || diaryItems.some(diary => diary.item === item)) && !hasDetails;
   const toolCount = detailBlocks.filter(item => ['tool_pair', 'tool_result_orphan', 'subagent_group'].includes(item.type)).length;
   const summary = plan ? `${completedPlanSteps}/${plan.steps.length}` : toolCount ? `${toolCount} 项` : '';
   const branchActive = (memoryBranchActive ?? running) && !finished && !replyStreaming;
@@ -1061,7 +1071,7 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
             {statusContent}
           </div>
         ))}
-        {memoryEvents.length > 0 && <MemoryBranchSources events={memoryEvents} active={branchActive} agentUid={agentUid} />}
+        {(memoryEvents.length > 0 || diaryViews.length > 0) && <MemorySources diaryViews={diaryViews} events={memoryEvents} active={branchActive} finished={finished} agentUid={agentUid} />}
       </div>
       {!open && planContent}
       {open && hasDetails && (
@@ -1083,7 +1093,7 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
                 return <SubAgentWorkingGroup key={i} item={item} />;
               }
               if (item.type === 'tool_pair') {
-                return <WorkingToolStep key={i} item={item} agentUid={agentUid} diaryView={diaryItems.find(diary => diary.item === item)?.view} showNarratives={showDetails} />;
+                return <WorkingToolStep key={i} item={item} showNarratives={showDetails} />;
               }
               if (item.type === 'tool_result_orphan') {
                 return <WorkingToolStep key={i} item={item} orphan />;

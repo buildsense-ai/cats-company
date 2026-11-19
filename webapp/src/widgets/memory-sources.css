@@ -1,4 +1,120 @@
-.cc-memory-summary { color: var(--cc-text-secondary); font-size: 12px; margin: 3px 0 10px; line-height: 1.6; }
+/* Memory sources open inline under the activity strip as one plain list;
+ * the readers own every body. Rows stay one line on wide screens. */
+.cc-chat-activity .cc-memory-panel {
+  flex: 0 0 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin-block: 4px 8px;
+  padding-block-start: 8px;
+  border-block-start: 1px solid var(--v3-border);
+}
+
+.cc-memory-summary {
+  margin: 0 0 4px;
+  padding-inline: 6px;
+  color: var(--cc-text);
+  font: 500 13px/1.5 var(--cc-font-sans);
+}
+
+.cc-memory-note {
+  margin: 6px 0 0;
+  padding-inline: 6px;
+  color: var(--cc-text-secondary);
+  font: 400 12px/1.6 var(--cc-font-sans);
+}
+
+.cc-memory-list { display: grid; }
+
+.cc-memory-group {
+  margin: 12px 0 2px;
+  padding-inline: 6px;
+  color: var(--cc-text-secondary);
+  font: 500 12px/1.5 var(--cc-font-sans);
+}
+.cc-memory-list > .cc-memory-group:first-child { margin-top: 4px; }
+
+.cc-memory-source {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text);
+  font: 400 13px/1.5 var(--cc-font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.cc-memory-source:hover,
+.cc-memory-source[aria-current='true'] { background: var(--cc-hover); }
+.cc-memory-source:active { background: var(--cc-pressed); }
+.cc-memory-source > svg { flex-shrink: 0; color: var(--cc-text-secondary); }
+
+.cc-memory-source-label {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.cc-memory-source-label > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-memory-source-label small {
+  flex-shrink: 0;
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-memory-badge {
+  flex-shrink: 0;
+  color: var(--cc-text-secondary);
+  font: 400 12px/1.5 var(--cc-font-sans);
+}
+.cc-memory-badge.is-cited { color: var(--cc-accent-text); font-weight: 500; }
+
+.cc-memory-more {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  margin-top: 2px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font: 500 12px/1.5 var(--cc-font-sans);
+  cursor: pointer;
+}
+.cc-memory-more:hover { background: var(--cc-hover); color: var(--cc-text); }
+
+.cc-memory-source:focus-visible,
+.cc-memory-more:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
+}
+
 .cc-memory-detail-node { margin-top: 24px; }
 .cc-memory-detail-node h3 { font-size: 13px; color: var(--cc-text-secondary); margin: 0 0 8px; line-height: 1.5; }
 .cc-memory-detail-node .cc-diary-prose { margin: 0; }
+
+/* Narrow screens: titles wrap instead of truncating; meta drops below. */
+@media (max-width: 600px) {
+  .cc-memory-source { min-height: 48px; align-items: flex-start; }
+  .cc-memory-source > svg { margin-top: 3px; }
+  .cc-memory-source-label { flex-direction: column; gap: 2px; }
+  .cc-memory-source-label > span { white-space: normal; overflow-wrap: anywhere; }
+}
+
+@media (pointer: coarse) {
+  .cc-memory-source { min-height: 48px; }
+  .cc-memory-more { min-height: 44px; }
+}

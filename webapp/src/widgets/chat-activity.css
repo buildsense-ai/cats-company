@@ -55,21 +55,6 @@
 .cc-chat-activity svg { flex-shrink: 0; }
 
 .v3-working-toggle .v3-working-label[hidden] { display: none; }
-.cc-chat-activity .cc-memory-branch {
-  flex: 0 0 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  margin-block: 5px 8px;
-  padding: 10px 0 4px;
-  border-block-start: 1px solid var(--v3-border);
-}
-
-.cc-memory-panel-status {
-  margin-block: 0 3px;
-  color: var(--cc-text);
-  font: 600 13px/1.5 var(--cc-font-sans);
-}
-
 .v3-working-process .v3-working-details-inline { margin: 3px 0 8px; }
 .v3-working-process .v3-working-details-inline .v3-working-steps {
   gap: 4px;
@@ -105,11 +90,31 @@
   mask-image: none;
 }
 
-.v3-working-process .v3-wpi-tool-size {
+.v3-working-process .v3-wpi-tool-header .oc-wpi-tool-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-working-process .v3-wpi-tool-status.is-error {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--cc-danger-text);
+  font-weight: 500;
+}
+
+/* The raw tool identity is for people debugging; it sits with the output. */
+.v3-working-process .v3-wpi-tool-raw-name {
+  display: flex;
+  gap: 10px;
+  margin: 2px 0 6px;
   color: var(--cc-text-secondary);
-  font-size: 11px;
+  font: 400 11px/1.5 var(--cc-font-sans);
   font-variant-numeric: tabular-nums;
 }
+.v3-working-process .v3-wpi-tool-raw-name code { font-family: var(--cc-font-mono); }
 
 @media (pointer: coarse) {
   .cc-chat-activity :is(.v3-working-toggle, .cc-memory-toggle),
