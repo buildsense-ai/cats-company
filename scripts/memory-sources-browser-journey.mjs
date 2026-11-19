@@ -57,6 +57,17 @@ try {
     check('collapsed tool details show ' + state, `(()=>{const t=document.querySelector('.v3-working-toggle');return {ok:t?.getAttribute('aria-expanded')==='false'&&t.innerText.includes(${JSON.stringify(label)}),text:t?.innerText}})()`);
   }
 
+  // Tool steps: the description first; the exact call and return on expand.
+  open('memory', '?mode=combined');
+  evaluate(`(()=>{[...document.querySelectorAll('label')].find(l=>l.textContent.includes('执行详情')).querySelector('input').click();return {details:true}})()`);
+  click('.v3-working-toggle');
+  check('collapsed tool step shows a description, not raw output', `(()=>{const h=document.querySelector('.v3-wpi-tool-header');return {ok:h.innerText.trim().length>0&&!h.innerText.includes('{')&&!h.innerText.includes('catslog_knowledge_recall')&&!document.querySelector('.v3-wpi-tool-details'),text:h.innerText}})()`);
+  click('.v3-wpi-tool-header.is-toggle');
+  check('expanded tool step shows the call and structured fields', `(()=>{const d=document.querySelector('.v3-wpi-tool-details');return {ok:!!d.querySelector('.v3-wpi-call .v3-wpi-raw-tool')&&d.querySelectorAll('.v3-wpi-return .v3-wpi-field').length>0&&!d.querySelector('.v3-wpi-return pre'),fields:d.querySelectorAll('.v3-wpi-field').length}})()`);
+  shot('desktop-tool-expanded.png', 1100, 900);
+  click('.v3-wpi-raw-toggle');
+  check('raw content stays one click away', `({ok:document.querySelector('.v3-wpi-return pre')?.innerText.includes('"contract"')})`);
+
   // One list for both sources; nothing mounts or reads until opened.
   open('memory', '?mode=combined');
   check('completed turn starts compact', `({ok:document.querySelector('.cc-memory-toggle').getAttribute('aria-expanded')==='false'&&!document.querySelector('.cc-memory-panel, canvas')&&window.__memoryPreviewLog.length===0})`);
@@ -68,9 +79,10 @@ try {
   click('.cc-memory-source.is-branch');
   cli('wait', 'selector', '.cc-diary-prose');
   check('Branch row opens exact pinned details with scoped qualifiers', `(()=>{const r=document.querySelector('[aria-label="记忆来源详情"]').innerText;return {ok:window.__memoryPreviewLog.length===1&&r.includes('仅当旧版本仍能读取')&&r.includes('来源范围的适用条件')}})()`);
-  shot('desktop-branch-reader.png');
+  check('detail opens in flow directly under its row, not as an overlay', `(()=>{const row=document.querySelector('.cc-memory-source[aria-expanded="true"]'),d=row?.nextElementSibling,r=row?.getBoundingClientRect(),b=d?.getBoundingClientRect(),pos=d&&getComputedStyle(d).position;return {ok:d?.getAttribute('aria-label')==='记忆来源详情'&&pos==='static'&&Math.abs(b.top-r.bottom)<4&&b.right<=innerWidth,pos,gap:b&&b.top-r.bottom}})()`);
+  shot('desktop-branch-detail.png');
   cli('keys', 'Escape');
-  check('escape closes reader and restores row focus', `({ok:!document.querySelector('.cc-diary-reader')&&document.activeElement.classList.contains('cc-memory-source'),focus:document.activeElement.className})`);
+  check('escape closes the row and restores its focus', `({ok:!document.querySelector('.cc-memory-detail')&&!!document.querySelector('.cc-memory-panel')&&document.activeElement.classList.contains('cc-memory-source'),focus:document.activeElement.className})`);
   click('.cc-memory-toggle');
   check('collapsing releases the list', `({ok:!document.querySelector('.cc-memory-panel')})`);
 
@@ -105,10 +117,11 @@ try {
   expand(); click('.cc-memory-source.is-diary');
   cli('wait', 'selector', '.cc-diary-prose');
   check('Diary row opens the exact revision', `({ok:document.querySelector('.cc-diary-prose').innerText.includes('数据库变更向后兼容')&&window.__diaryPreviewLog.every(q=>q.revision==='akr-'+'a'.repeat(64)),requests:window.__diaryPreviewLog.length})`);
-  shot('desktop-diary-reader.png');
-  shot('mobile-diary-reader.png', 390, 844);
+  shot('desktop-diary-detail.png');
+  shot('mobile-diary-detail.png', 390, 844);
+  check('mobile detail fits the column', `({ok:document.documentElement.scrollWidth<=innerWidth,width:innerWidth,scroll:document.documentElement.scrollWidth})`);
   cli('keys', 'Escape');
-  check('Diary reader closes back to its row', `({ok:!document.querySelector('.cc-diary-reader')&&document.activeElement.classList.contains('is-diary')})`);
+  check('Diary detail closes back to its row', `({ok:!document.querySelector('.cc-memory-detail')&&document.activeElement.classList.contains('is-diary')})`);
   open('diary', '?mode=many'); expand();
   check('search hits are listed without reads', `({ok:${rows('diary')}>0&&window.__diaryPreviewLog.length===0,rows:${rows('diary')}})`);
   open('diary', '?refused=1'); expand(); click('.cc-memory-source.is-diary');
