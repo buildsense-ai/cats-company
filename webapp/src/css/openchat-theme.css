@@ -1349,6 +1349,14 @@ body {
   cursor: pointer;
 }
 
+@media (min-width: 769px) {
+  .cloud-artifacts-header .cloud-artifacts-mobile-action { display: none; }
+}
+
+@media (max-width: 768px) {
+  .cloud-artifacts-header .cloud-artifacts-desktop-action { display: none; }
+}
+
 .cloud-artifacts-header .v3-tool[aria-pressed='true'],
 .cloud-artifacts-header .cloud-artifacts-overflow[open] > summary {
   background: var(--cc-selected);

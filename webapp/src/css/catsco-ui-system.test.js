@@ -369,10 +369,10 @@ describe('CatsCo shell styling', () => {
     expect(collapsedHeaderRule).toContain('height: 44.8px;');
     expect(collapsedHeaderRule).toContain('flex-basis: 44.8px;');
     expect(sidebarRule).toContain('font-family: var(--cc-font-sans);');
-    expect(collapseButtonRule).toContain('width: 30.4px;');
-    expect(collapseButtonRule).toContain('height: 30.4px;');
-    expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('width: 19px;');
-    expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('height: 19px;');
+    expect(collapseButtonRule).toContain('width: var(--cc-header-action-size);');
+    expect(collapseButtonRule).toContain('height: var(--cc-header-action-size);');
+    expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('width: var(--cc-header-action-icon-size);');
+    expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('height: var(--cc-header-action-icon-size);');
     const liquidHeaderButtonRule = ruleFor(
       'html[data-theme="liquid"] :is(\n  .v3-sidebar-header-actions .v3-sidebar-collapse-btn,\n  .v3-chat-list .cc-section-add\n)',
     );
