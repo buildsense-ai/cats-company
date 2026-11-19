@@ -226,6 +226,28 @@ function ReaderBody({ state, label, onRetry, children }) {
 
 const prose = text => <div className="cc-diary-prose" dangerouslySetInnerHTML={{ __html: renderSafeMarkdown(text) }} />;
 
+// Consecutive points of one kind read as one list under one heading; order is
+// kept, and a point with an unlinked source scope never joins a bound group.
+function pointGroups(nodes) {
+  const groups = [];
+  for (const [index, item] of nodes.entries()) {
+    const heading = (MEMORY_NODE_LABELS[item.kind] || '记忆内容') + (item.association === 'member_scope_unlinked' ? ' · 来源范围，未绑定到此断言' : '');
+    const last = groups[groups.length - 1];
+    const point = { key: item.id || index, text: item.text };
+    if (last?.heading === heading) last.points.push(point); else groups.push({ heading, points: [point] });
+  }
+  return groups;
+}
+
+function Points({ heading, points }) {
+  return (
+    <section className="cc-memory-detail-node">
+      <h3>{heading}</h3>
+      <ul className="cc-memory-points">{points.map(point => <li key={point.key}>{prose(point.text)}</li>)}</ul>
+    </section>
+  );
+}
+
 function RelatedRow({ source, onSelect }) {
   return (
     <button type="button" className="cc-diary-source" onClick={event => onSelect(source, event.currentTarget)}>
@@ -300,14 +322,14 @@ function MemoryDetail({ id, agentUid, unit }) {
   const detail = current.detail;
   return (
     <div id={id} className="cc-memory-detail" role="region" aria-label="记忆来源详情">
+      {detail?.goal && <p className="cc-memory-detail-title">{detail.goal}</p>}
       <p className="cc-memory-detail-meta"><span>{unit.cited ? '回答中引用' : unit.injected ? '已用于回答' : '未用于本次回答'}</span></p>
       <ReaderBody state={current} label="正在核验记忆来源" onRetry={() => setAttempt(value => value + 1)}>
         {detail && <>
-          {detail.goal && <p className="cc-memory-detail-note">{detail.goal}</p>}
-          {detail.nodes.map((item, index) => <section className="cc-memory-detail-node" key={item.id || index}><h3>{MEMORY_NODE_LABELS[item.kind] || '记忆内容'}{item.association === 'member_scope_unlinked' ? ' · 来源范围，未绑定到此断言' : ''}</h3>{prose(item.text)}</section>)}
-          {detail.conditions.length > 0 && <section className="cc-memory-detail-node"><h3>来源范围的适用条件</h3>{detail.conditions.map((text, i) => <React.Fragment key={i}>{prose(text)}</React.Fragment>)}</section>}
-          {detail.omissions.length > 0 && <section className="cc-memory-detail-node"><h3>来源范围的已知缺口</h3>{detail.omissions.map((text, i) => <React.Fragment key={i}>{prose(text)}</React.Fragment>)}</section>}
-          {detail.gaps && <section className="cc-memory-detail-node"><h3>尚未核验</h3>{prose(detail.gaps)}</section>}
+          {pointGroups(detail.nodes).map((group, index) => <Points key={index} {...group} />)}
+          {detail.conditions.length > 0 && <Points heading="来源范围的适用条件" points={detail.conditions.map((text, key) => ({ key, text }))} />}
+          {detail.omissions.length > 0 && <Points heading="来源范围的已知缺口" points={detail.omissions.map((text, key) => ({ key, text }))} />}
+          {detail.gaps && <Points heading="尚未核验" points={[{ key: 0, text: detail.gaps }]} />}
           {detail.coverage !== 'complete' && <p className="cc-memory-detail-note">这是本次读取的局部记忆，不代表完整历史。</p>}
         </>}
       </ReaderBody>

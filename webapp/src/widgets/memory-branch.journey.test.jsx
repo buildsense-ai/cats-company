@@ -23,6 +23,11 @@ import { setToken } from '../auth-session';
 //    their row; M2 a second row leaves the first open, or two bodies show;
 // M3 Escape closes the whole list or loses focus instead of closing the row
 //    first, then the list.
+// Readability (2026-11-19 review: "too hard to read"):
+// R1 every point repeats its own kind heading, so nine points read as nine
+//    headings; R2 grouping reorders points or merges a point whose source
+//    scope is unlinked into a group that implies it is bound; R3 grouping
+//    drops or shortens a point's verified text.
 const ref = `ref_${'a'.repeat(64)}`;
 const revision = 'b'.repeat(64);
 const base = { schema: 'catsco.memory_branch.v1', branch_run_id: 'memory-fixture', origin_turn_id: 'turn-1', sequence: 1, status: 'running',
@@ -255,4 +260,24 @@ it('B12: one row per readable unit; only rows that differ from the summary carry
   expect(container.textContent).toContain('回答参考了 1 条记忆');
   expect(container.querySelector('canvas, [role="group"][aria-label*="视图"]')).toBeNull();
   evidence.push({ journey: 'grouped rows', rows: 2, cited: 1, unused: 1 });
+});
+
+it('R1/R2/R3: consecutive points of one kind share a heading without reordering or dropping text', async () => {
+  const kinds = ['assertion', 'assertion', 'assertion', 'condition', 'assertion', 'assertion'];
+  const nodes = kinds.map((kind, i) => ({ id: `n${i}`, kind, text: `要点 ${i} 的完整核验正文` }));
+  nodes[5].association = 'member_scope_unlinked';
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify({ ...document, document: { ...document.document, nodes, conditions: [], omissions: [], gap_acknowledgement: undefined } })));
+  await render([graph], true);
+  await click(container.querySelector('.cc-memory-source'));
+  const detail = container.querySelector('.cc-memory-detail');
+  const groups = [...detail.querySelectorAll('.cc-memory-detail-node')].map(section => ({
+    heading: section.querySelector('h3').textContent,
+    points: [...section.querySelectorAll('li')].map(li => li.textContent.trim()) }));
+  expect(groups).toEqual([
+    { heading: '记忆断言', points: ['要点 0 的完整核验正文', '要点 1 的完整核验正文', '要点 2 的完整核验正文'] },
+    { heading: '适用条件', points: ['要点 3 的完整核验正文'] },
+    { heading: '记忆断言', points: ['要点 4 的完整核验正文'] },
+    { heading: '记忆断言 · 来源范围，未绑定到此断言', points: ['要点 5 的完整核验正文'] },
+  ]);
+  evidence.push({ journey: 'grouped points', headings: groups.length, points: nodes.length });
 });

@@ -49,8 +49,12 @@
   text-align: left;
   cursor: pointer;
 }
-.cc-memory-source:hover,
-.cc-memory-source[aria-expanded='true'] { background: var(--cc-hover); }
+.cc-memory-source:hover { background: var(--cc-hover); }
+.cc-memory-source[aria-expanded='true'] {
+  border-radius: var(--cc-radius-sm) var(--cc-radius-sm) 0 0;
+  background: var(--cc-open-tint);
+}
+.cc-memory-source[aria-expanded='true']:hover { background: var(--cc-hover); }
 .cc-memory-source[aria-expanded='true'] .cc-memory-source-label > span { font-weight: 500; }
 .cc-memory-source:active { background: var(--cc-pressed); }
 .cc-memory-source > svg { flex-shrink: 0; color: var(--cc-text-secondary); }
