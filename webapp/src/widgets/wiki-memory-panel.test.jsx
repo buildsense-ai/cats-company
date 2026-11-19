@@ -50,7 +50,7 @@ describe('chat wiki memories', () => {
     await act(async () => button.click());
   }
 
-  const rows = () => Array.from(container.querySelectorAll('.cc-wiki-catalog:not([hidden]) button.cc-wiki-row'));
+  const rows = () => Array.from(container.querySelectorAll('.cc-wiki-workspace:not([hidden]) .cc-wiki-catalog:not([hidden]) button.cc-wiki-row'));
 
   it('opens the current conversation in newest-first order and fetches Markdown only when expanded', async () => {
     api.getWikiMemoryCatalog.mockResolvedValue(page([wiki('older', 11), wiki('newer', 12)]));
@@ -60,25 +60,23 @@ describe('chat wiki memories', () => {
     expect(api.getWikiMemoryDocument).not.toHaveBeenCalled();
     await click(rows()[0]);
     expect(container.querySelector('article h2 strong')?.textContent).toBe('Markdown');
-    await click(rows()[0]);
+    expect(rows()).toHaveLength(0);
+    expect(container.querySelector('.cc-wiki-reader h3').textContent).toBe('Wiki newer');
+    await click(container.querySelector('.cc-wiki-reader-toolbar button'));
     await click(rows()[0]);
     expect(api.getWikiMemoryDocument).toHaveBeenCalledTimes(2);
   });
 
-  it('loads the all-conversation catalog once when switching between graph and folded lists', async () => {
+  it('switches between graph and a single newest-first list without loading Wiki bodies', async () => {
     api.getWikiMemoryCatalog.mockResolvedValue(page([wiki('older', 11), wiki('newer', 12)]));
     await render();
     await click(Array.from(container.querySelectorAll('nav button')).find(button => button.textContent === '助手记忆'));
     expect(api.getWikiMemoryCatalog.mock.calls[1][1].topicId).toBeUndefined();
-    expect(container.querySelector('.cc-wiki-cluster-label').textContent).toBe('设计讨论');
-    expect(container.querySelectorAll('.cc-wiki-node')).toHaveLength(2);
-    await click(container.querySelector('.cc-wiki-node[aria-label="Wiki newer"]'));
-    await click(container.querySelector('button[aria-label="列表"]'));
-    const group = container.querySelector('.cc-wiki-groups details');
-    expect(group.open).toBe(true);
-    expect(group.querySelector('article').textContent).toContain('Markdown');
+    await click(Array.from(container.querySelectorAll('.cc-wiki-view-bar button')).find(button => button.textContent === '列表'));
+    expect(rows().map(row => row.querySelector('.cc-wiki-row-text > span').textContent)).toEqual(['Wiki newer', 'Wiki older']);
+    expect(rows()[0].textContent).toContain('设计讨论');
     expect(api.getWikiMemoryCatalog).toHaveBeenCalledTimes(2);
-    expect(api.getWikiMemoryDocument).toHaveBeenCalledTimes(2);
+    expect(api.getWikiMemoryDocument).not.toHaveBeenCalled();
   });
 
   it('loads the next list page at the bottom and keeps newer rows first', async () => {
@@ -108,7 +106,7 @@ describe('chat wiki memories', () => {
       .mockResolvedValueOnce(page([wiki('b', 11)]));
     await render();
     await click(Array.from(container.querySelectorAll('nav button')).find(button => button.textContent === '助手记忆'));
-    expect(container.querySelectorAll('.cc-wiki-node')).toHaveLength(2);
+    expect(container.querySelector('.cc-wiki-catalog-count').textContent).toContain('2 篇');
     expect(api.getWikiMemoryCatalog.mock.calls.at(-1)[1].cursor).toBe('next');
     expect(api.getWikiMemoryDocument).not.toHaveBeenCalled();
   });

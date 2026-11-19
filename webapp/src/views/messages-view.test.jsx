@@ -1270,6 +1270,7 @@ describe('MessagesView composer draft isolation', () => {
   });
 
   it('shows the Wiki entry in a bot conversation only when the service is configured', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 });
     api.getGroupInfo.mockResolvedValue({
       group: { id: 9, name: '助手会话', kind: 'standard' },
       members: [{ user_id: 1 }, { user_id: 2, is_bot: true }],
@@ -1286,6 +1287,13 @@ describe('MessagesView composer draft isolation', () => {
 
     await mountTopic(root, 'grp_9', { ...props, wikiMemoryEnabled: true });
     expect(wikiButton()).not.toBeNull();
+    await act(async () => Simulate.click(wikiButton()));
+    const handle = container.querySelector('[aria-label="调整记忆侧栏宽度"]');
+    expect(handle).not.toBeNull();
+    const width = () => parseInt(container.querySelector('.v3-message-workspace').style.getPropertyValue('--v3-file-preview-width'), 10);
+    const originalWidth = width();
+    await act(async () => Simulate.keyDown(handle, { key: 'ArrowLeft' }));
+    expect(width()).toBe(originalWidth + 40);
   });
 
   it('selects existing conversation messages and exports a branded sharing image', async () => {
@@ -5263,9 +5271,9 @@ describe('MessagesView composer draft isolation', () => {
     expect(handle).not.toBeNull();
 
     await act(async () => {
-      Simulate.pointerDown(handle, { clientX: 900, pointerId: 1 });
-      window.dispatchEvent(new MouseEvent('pointermove', { clientX: 780 }));
-      window.dispatchEvent(new MouseEvent('pointerup'));
+      Simulate.pointerDown(handle, { clientX: 900, pointerId: 1, button: 0 });
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: 780, pointerId: 1 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }));
       await Promise.resolve();
     });
 
