@@ -74,26 +74,27 @@
   font: 500 12px/1.45 var(--cc-font-sans);
 }
 
-.v3-working-process .v3-wpi-tool-header .v3-wpi-tool-name {
-  min-width: 0;
+/* Collapsed: what the step was for. Expanded: the exact call and return. */
+.v3-working-process .v3-wpi-tool-header .v3-wpi-tool-desc {
   flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--cc-text);
-}
-
-.v3-working-process .v3-wpi-tool-header .oc-wpi-tool-input {
-  margin-left: 0;
-  opacity: 1;
-  color: var(--cc-text-secondary);
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-
-.v3-working-process .v3-wpi-tool-header .oc-wpi-tool-input {
-  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+  color: var(--cc-text);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-working-process .v3-wpi-tool-header .v3-wpi-tool-name {
+  flex: 0 0 auto;
+  color: var(--cc-text-secondary);
+  font-weight: 400;
+}
+.v3-working-process .v3-wpi-tool-header .v3-wpi-tool-name.is-primary {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-text);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -105,16 +106,111 @@
   font-weight: 500;
 }
 
-/* The raw tool identity is for people debugging; it sits with the output. */
-.v3-working-process .v3-wpi-tool-raw-name {
-  display: flex;
-  gap: 10px;
-  margin: 2px 0 6px;
-  color: var(--cc-text-secondary);
-  font: 400 11px/1.5 var(--cc-font-sans);
-  font-variant-numeric: tabular-nums;
+/* An opened step grows the log instead of scrolling inside it; every long
+ * part of the step is capped on its own. */
+.v3-working-process .v3-working-steps:has(.v3-wpi-tool-details) { max-height: none; }
+
+.v3-working-process .v3-wpi-tool-details {
+  display: grid;
+  gap: 12px;
+  margin: 2px 0 8px;
+  padding-inline-start: 28px;
+  font: 400 12px/1.55 var(--cc-font-sans);
 }
-.v3-working-process .v3-wpi-tool-raw-name code { font-family: var(--cc-font-mono); }
+
+.v3-working-process .v3-wpi-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 4px;
+  color: var(--cc-text-secondary);
+  font: 500 12px/1.5 var(--cc-font-sans);
+}
+.v3-working-process .v3-wpi-return.is-error .v3-wpi-section-title > span:first-child { color: var(--cc-danger-text); }
+.v3-working-process .v3-wpi-section-meta { font-weight: 400; font-variant-numeric: tabular-nums; }
+.v3-working-process .v3-wpi-raw-tool {
+  color: var(--cc-text-secondary);
+  font: 400 11px/1.5 var(--cc-font-mono);
+}
+
+.v3-working-process .v3-wpi-fields {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+.v3-working-process .v3-wpi-field {
+  display: grid;
+  grid-template-columns: 17ch minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+}
+.v3-working-process .v3-wpi-field-key {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-text-secondary);
+  font: 400 11px/1.6 var(--cc-font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.v3-working-process .v3-wpi-field-value {
+  min-width: 0;
+  margin: 0;
+  color: var(--cc-text);
+  overflow-wrap: anywhere;
+}
+.v3-working-process .v3-wpi-field-text { white-space: pre-wrap; }
+.v3-working-process .v3-wpi-field-scalar { font: 400 11.5px/1.6 var(--cc-font-mono); font-variant-numeric: tabular-nums; }
+.v3-working-process .v3-wpi-field-value > :is(.v3-wpi-fields, .v3-wpi-items) {
+  padding-inline-start: 10px;
+  border-inline-start: 1px solid var(--cc-border);
+}
+.v3-working-process .v3-wpi-items {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.v3-working-process .v3-wpi-items > li + li {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--cc-border);
+}
+.v3-working-process .v3-wpi-field-rest,
+.v3-working-process .v3-wpi-pending { margin: 2px 0 0; color: var(--cc-text-secondary); }
+
+.v3-working-process :is(.v3-wpi-raw-toggle, .v3-wpi-more) {
+  margin-inline-start: auto;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font: 500 12px/1.6 var(--cc-font-sans);
+  cursor: pointer;
+}
+.v3-working-process .v3-wpi-more { margin-inline-start: 4px; }
+.v3-working-process :is(.v3-wpi-raw-toggle, .v3-wpi-more):hover { background: var(--cc-hover); color: var(--cc-text); }
+.v3-working-process :is(.v3-wpi-raw-toggle, .v3-wpi-more):focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 1px;
+}
+
+.v3-working-process .v3-wpi-plain {
+  max-height: 260px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-code);
+  font: 400 11.5px/1.6 var(--cc-font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .v3-working-process .v3-wpi-tool-details { padding-inline-start: 6px; }
+  .v3-working-process .v3-wpi-field { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
 
 @media (pointer: coarse) {
   .cc-chat-activity :is(.v3-working-toggle, .cc-memory-toggle),

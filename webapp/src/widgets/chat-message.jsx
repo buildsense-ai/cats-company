@@ -148,14 +148,123 @@ const TOOL_ACTIONS = {
 };
 const DIARY_ACTIONS = { search: '搜索日记', read: '阅读日记', graph: '查看日记关联' };
 
+function parseToolInput(input) {
+  if (typeof input !== 'string') return input;
+  try { return JSON.parse(input); } catch { return input; }
+}
+
+// The agent's own one-line purpose wins; otherwise the action's target.
 function toolPresentation(name, input) {
+  const parsed = parseToolInput(input);
+  const own = ['description', 'task', 'task_description'].map(key => parsed?.[key]).find(value => typeof value === 'string' && value.trim());
   if (name === 'catslog_knowledge_recall') {
-    let parsed = input;
-    if (typeof input === 'string') { try { parsed = JSON.parse(input); } catch { parsed = null; } }
-    return { label: DIARY_ACTIONS[parsed?.action] || '查阅日记', Icon: BookOpen, detail: typeof parsed?.query === 'string' ? parsed.query : '' };
+    return { label: DIARY_ACTIONS[parsed?.action] || '查阅日记', Icon: BookOpen, detail: own || (typeof parsed?.query === 'string' ? parsed.query : '') };
   }
   const [label, Icon] = TOOL_ACTIONS[name] || [name || 'Tool', Terminal];
-  return { label, Icon, detail: toolInputSummary(name, input) };
+  return { label, Icon, detail: own ? own.trim() : toolInputSummary(name, parsed) };
+}
+
+// Expanded steps show values as fields. Each level is capped and deep values
+// are summarized, so a large result cannot stall the message.
+const FIELD_LIMIT = 50, FIELD_DEPTH = 3, TEXT_LIMIT = 600;
+
+function parseToolResult(value) {
+  if (value == null || typeof value === 'object') return value;
+  const text = String(value).trim();
+  if (!/^[[{]/.test(text)) return undefined;
+  try { const parsed = JSON.parse(text); return parsed && typeof parsed === 'object' ? parsed : undefined; } catch { return undefined; }
+}
+
+function FieldText({ text }) {
+  const [full, setFull] = useState(false);
+  // Digests and ids are one long token; keep both ends, the rest on hover.
+  if (text.length > 40 && !/\s/.test(text)) return <span className="v3-wpi-field-scalar" title={text}>{text.slice(0, 16)}…{text.slice(-8)}</span>;
+  if (text.length <= TEXT_LIMIT || full) return <span className="v3-wpi-field-text">{text}</span>;
+  return (
+    <span className="v3-wpi-field-text">
+      {text.slice(0, TEXT_LIMIT)}…
+      <button type="button" className="v3-wpi-more" onClick={() => setFull(true)}>展开全部 {text.length} 字符</button>
+    </span>
+  );
+}
+
+function FieldValue({ value, depth }) {
+  if (value === null) return <span className="v3-wpi-field-scalar">null</span>;
+  if (typeof value === 'string') return <FieldText text={value} />;
+  if (typeof value !== 'object') return <span className="v3-wpi-field-scalar">{String(value)}</span>;
+  const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item]) : Object.entries(value);
+  if (!entries.length) return <span className="v3-wpi-field-scalar">{Array.isArray(value) ? '[]' : '{}'}</span>;
+  if (Array.isArray(value) && value.every(item => item === null || typeof item !== 'object')) {
+    const inline = value.map(item => String(item)).join(', ');
+    if (inline.length <= 120) return <span className="v3-wpi-field-scalar">{inline}</span>;
+  }
+  if (depth >= FIELD_DEPTH) return <span className="v3-wpi-field-scalar">{Array.isArray(value) ? `[${entries.length} 项]` : `{${entries.length} 个字段}`}</span>;
+  if (Array.isArray(value)) return <Items items={value} depth={depth + 1} />;
+  return <Fields entries={entries} depth={depth + 1} />;
+}
+
+// Array items stack as blocks; an index column would only cost width.
+function Items({ items, depth }) {
+  const shown = items.slice(0, FIELD_LIMIT);
+  return (
+    <ol className="v3-wpi-items">
+      {shown.map((item, index) => (
+        <li key={index}>
+          {item && typeof item === 'object' && !Array.isArray(item)
+            ? <Fields entries={Object.entries(item)} depth={depth} />
+            : <FieldValue value={item} depth={depth} />}
+        </li>
+      ))}
+      {items.length > shown.length && <li className="v3-wpi-field-rest">还有 {items.length - shown.length} 项</li>}
+    </ol>
+  );
+}
+
+function Fields({ entries, depth = 0 }) {
+  const shown = entries.slice(0, FIELD_LIMIT);
+  return (
+    <dl className="v3-wpi-fields">
+      {shown.map(([key, value]) => (
+        <div className="v3-wpi-field" key={key}>
+          <dt className="v3-wpi-field-key" title={key}>{key}</dt>
+          <dd className="v3-wpi-field-value"><FieldValue value={value} depth={depth} /></dd>
+        </div>
+      ))}
+      {entries.length > shown.length && <div className="v3-wpi-field-rest">还有 {entries.length - shown.length} 项</div>}
+    </dl>
+  );
+}
+
+function StructuredValue({ value }) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return <Fields entries={Object.entries(value)} />;
+  if (Array.isArray(value)) return <Items items={value} depth={0} />;
+  return <pre className="v3-wpi-plain"><code>{String(value ?? '')}</code></pre>;
+}
+
+function ToolReturn({ result, hasResult, isError }) {
+  const [raw, setRaw] = useState(false);
+  const structured = hasResult ? parseToolResult(result) : undefined;
+  const size = hasResult ? toolResultSizeLabel(result) : '';
+  return (
+    <section className={`v3-wpi-return${isError ? ' is-error' : ''}`} aria-label="返回">
+      <h5 className="v3-wpi-section-title">
+        <span>{isError ? '返回 · 失败' : '返回'}</span>
+        {size && <span className="v3-wpi-section-meta">{size}</span>}
+        {structured !== undefined && (
+          <button type="button" className="v3-wpi-raw-toggle" aria-pressed={raw} onClick={() => setRaw(value => !value)}>
+            {raw ? '字段视图' : '原始内容'}
+          </button>
+        )}
+      </h5>
+      {!hasResult && <p className="v3-wpi-pending">等待结果…</p>}
+      {hasResult && structured !== undefined && !raw && <StructuredValue value={structured} />}
+      {hasResult && (structured === undefined || raw) && (
+        <div className="v3-wpi-code-block result">
+          <pre><code>{structured !== undefined ? serializeToolResult(structured) : serializeToolResult(result)}</code></pre>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function truncateResult(text, max = 300) {
@@ -806,14 +915,17 @@ function WorkingToolStep({ item, orphan = false, showNarratives = true }) {
   const result = orphan ? item.content : item.result;
   const hasResult = result != null && (typeof result !== 'string' || result.length > 0);
   const name = orphan ? '工具结果' : (item.name || 'Tool');
+  const input = orphan ? undefined : parseToolInput(item.input);
+  const hasInput = input != null && (typeof input !== 'object' || Object.keys(input).length > 0) && input !== '';
   const { label, Icon, detail } = orphan ? { label: name, Icon: Terminal, detail: '' } : toolPresentation(item.name, item.input);
-  const resultID = `tool-result-${useId().replace(/:/g, '')}`;
+  const detailsID = `tool-result-${useId().replace(/:/g, '')}`;
   const narratives = showNarratives ? item.narratives || [] : [];
+  const expandable = hasResult || hasInput;
   const heading = (
     <>
       <Icon size={14} className="v3-wpi-icon" aria-hidden="true" />
-      <span className="v3-wpi-tool-name" title={orphan ? undefined : name}>{label}</span>
-      {detail && <span className="oc-wpi-tool-input">{detail}</span>}
+      {detail && <span className="v3-wpi-tool-desc">{detail}</span>}
+      <span className={`v3-wpi-tool-name${detail ? '' : ' is-primary'}`} title={orphan ? undefined : name}>{label}</span>
       {item.isError && <span className="v3-wpi-tool-status is-error">失败</span>}
     </>
   );
@@ -824,24 +936,27 @@ function WorkingToolStep({ item, orphan = false, showNarratives = true }) {
         <WorkingNarrative key={`${narrative.type}-${index}`} item={narrative} />
       ))}
       <div className="v3-wpi-tool">
-        {hasResult ? (
+        {expandable ? (
           <button
             type="button"
             className="v3-wpi-tool-header is-toggle"
             aria-expanded={open}
-            aria-controls={resultID}
+            aria-controls={open ? detailsID : undefined}
             onClick={() => setOpen((current) => !current)}
           >
             <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />
             {heading}
           </button>
         ) : <div className="v3-wpi-tool-header">{heading}</div>}
-        {open && hasResult && (
-          <div id={resultID} className="v3-wpi-tool-result">
-            {!orphan && <div className="v3-wpi-tool-raw-name"><code>{name}</code>{toolResultSizeLabel(result) && <span>{toolResultSizeLabel(result)}</span>}</div>}
-            <div className="v3-wpi-code-block result">
-              <pre><code>{serializeToolResult(result)}</code></pre>
-            </div>
+        {open && expandable && (
+          <div id={detailsID} className="v3-wpi-tool-result v3-wpi-tool-details">
+            {!orphan && (
+              <section className="v3-wpi-call" aria-label="调用">
+                <h5 className="v3-wpi-section-title"><span>调用</span><code className="v3-wpi-raw-tool">{name}</code></h5>
+                {hasInput && (typeof input === 'object' ? <StructuredValue value={input} /> : <pre className="v3-wpi-plain"><code>{String(input)}</code></pre>)}
+              </section>
+            )}
+            <ToolReturn result={result} hasResult={hasResult} isError={item.isError} />
           </div>
         )}
       </div>
