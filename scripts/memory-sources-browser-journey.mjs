@@ -47,9 +47,9 @@ try {
   check('live retrieval has one lightweight status', `({ok:document.querySelectorAll('.cc-memory-status').length===1})`);
   click('[data-preview="finish"]');
   // A run without sources still says how it ended, without an empty disclosure.
-  check('unfinished no-result run says so when the turn ends', `({ok:document.querySelector('.cc-memory-status')?.innerText==='记忆查找未完成'&&!document.querySelector('.cc-memory-toggle')})`);
+  check('unfinished no-result run says so when the turn ends', `({ok:document.querySelector('.cc-memory-status')?.innerText==='后台回忆未完成'&&!document.querySelector('.cc-memory-toggle')})`);
   open('memory', '?mode=empty');
-  check('empty run is one status line', `({ok:document.querySelector('.cc-memory-status')?.innerText==='未找到相关记忆'&&!document.querySelector('.cc-memory-toggle')})`);
+  check('empty run is one status line', `({ok:document.querySelector('.cc-memory-status')?.innerText==='后台回忆未找到相关记忆'&&!document.querySelector('.cc-memory-toggle')})`);
   for (const [state, label] of [['failed', '执行失败'], ['cancelled', '已停止']]) {
     open('memory', '?mode=combined&execution=' + state);
     // Diary no longer keeps a tool step in the log, so the log needs details on.
@@ -73,7 +73,7 @@ try {
   check('completed turn starts compact', `({ok:document.querySelector('.cc-memory-toggle').getAttribute('aria-expanded')==='false'&&!document.querySelector('.cc-memory-panel, canvas')&&window.__memoryPreviewLog.length===0})`);
   shot('desktop-collapsed.png');
   expand();
-  check('Diary and Branch share one grouped list', `(()=>{const g=[...document.querySelectorAll('.cc-memory-group')].map(n=>n.innerText);return {ok:g.join('|')==='日记|历史会话'&&${rows('diary')}===2&&${rows('branch')}===2&&!document.querySelector('canvas')&&window.__memoryPreviewLog.length===0,groups:g,summary:document.querySelector('.cc-memory-summary')?.innerText}})()`);
+  check('each origin has its own labelled section', `(()=>{const o=[...document.querySelectorAll('.cc-memory-origin')].map(n=>({h:n.querySelector('.cc-memory-group').textContent,d:n.querySelectorAll('.is-diary').length,b:n.querySelectorAll('.is-branch').length}));return {ok:o.length===2&&o[0].h.startsWith('小八主动查阅日记')&&o[0].d===2&&o[0].b===0&&o[1].h.startsWith('后台自动回忆历史会话')&&o[1].d===0&&o[1].b===2&&!document.querySelector('canvas')&&window.__memoryPreviewLog.length===0,origins:o}})()`);
   check('same-name Branch rows are numbered', `(()=>{const t=[...document.querySelectorAll('.cc-memory-source.is-branch .cc-memory-source-label > span')].map(n=>n.innerText);return {ok:new Set(t).size===t.length,titles:t}})()`);
   shot('desktop-combined.png');
   click('.cc-memory-source.is-branch');
@@ -88,9 +88,9 @@ try {
 
   // Production shape (2026-11-18): archive turns only, no edges, often late.
   open('memory', '?mode=missed');
-  check('Branch that read nothing before the reply still says so', `({ok:document.querySelector('.cc-memory-status')?.innerText==='记忆未赶上本次回答'&&!document.querySelector('.cc-memory-toggle')})`);
+  check('Branch that read nothing before the reply still says so', `({ok:document.querySelector('.cc-memory-status')?.innerText==='后台回忆未赶上本次回答'&&!document.querySelector('.cc-memory-toggle')})`);
   open('memory', '?mode=archive'); expand();
-  check('late archive turns stay visible as unused rows', `({ok:${rows('branch')}===6&&${text}.includes('回答先完成')&&!document.querySelector('.cc-memory-badge.is-cited'),summary:document.querySelector('.cc-memory-summary')?.innerText})`);
+  check('late archive turns stay visible as unused rows', `({ok:${rows('branch')}===6&&${text}.includes('回答先完成')&&!document.querySelector('.cc-memory-badge.is-cited'),heading:document.querySelector('.cc-memory-group')?.textContent})`);
   shot('mobile-archive.png', 390, 844);
   open('memory', '?mode=archive-used&theme=dark'); expand();
   check('cited and unused rows are tagged', `({ok:document.querySelectorAll('.cc-memory-badge.is-cited').length===1&&[...document.querySelectorAll('.cc-memory-badge')].filter(n=>n.innerText==='未采用').length===4&&${text}.includes('另有 4 条未采用')})`);

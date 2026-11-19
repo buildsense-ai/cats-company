@@ -26,6 +26,15 @@ import { anchor, documentId, revision, nextRevision, entries, readPage, searchRe
 //     reasoning hidden by the viewer's setting.
 // D12 tool steps name what happened in product language; unknown tools keep
 //     their real name, failures are visible, raw output stays one click deep.
+// Origin labels (2026-11-19 review: "is this part from the branch, not the
+// main agent's recall?"):
+// O1 a row does not say who fetched it: Diary rows the agent read through
+//    its own tool calls and Branch rows from background recall share
+//    content-type headings, or show no heading when only one origin exists;
+// O2 one count adds the agent's Diary reads to Branch injections, so the
+//    number cannot be traced to either origin;
+// O3 a Branch state (deferred, ready, carried over) is shown above the Diary
+//    rows, or a row sits under the other origin's heading.
 // The journey uses the real ChatMessage, reader, Markdown and authenticated API
 // client; only the HTTP boundary is a fixture. Browser screenshots supplement it.
 const evidence = [];
@@ -136,8 +145,16 @@ it('D7: Diary and Branch share one memory list; no graph, no tool-step detour', 
   expect(container.querySelectorAll('.cc-memory-toggle')).toHaveLength(1);
   expect(container.querySelectorAll('.cc-memory-source.is-diary')).toHaveLength(2);
   expect(container.querySelectorAll('.cc-memory-source.is-branch')).toHaveLength(1);
-  expect(container.textContent).toContain('日记');
-  expect(container.textContent).toContain('历史会话');
+  // O1/O3: each origin has its own heading, rows and state.
+  const origins = [...container.querySelectorAll('.cc-memory-origin')].map(section => ({
+    heading: section.querySelector('.cc-memory-group').textContent,
+    diary: section.querySelectorAll('.cc-memory-source.is-diary').length,
+    branch: section.querySelectorAll('.cc-memory-source.is-branch').length }));
+  expect(origins).toEqual([
+    { heading: '小八主动查阅日记 · 读取 2 条', diary: 2, branch: 0 },
+    { heading: '后台自动回忆历史会话 · 1 条用于回答', diary: 0, branch: 1 }]);
+  // O2: no number that adds both origins together.
+  expect(container.textContent).not.toMatch(/回答参考了 \d/);
   expect(container.querySelector('canvas, .cc-daily-notes-network')).toBeNull();
   // Hidden process details hide every step; sources stay reachable here.
   expect(container.querySelector('.v3-working-toggle')).toBeNull();
