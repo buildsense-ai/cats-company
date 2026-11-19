@@ -24,12 +24,16 @@ describe('bar sits beside the block', () => {
     expect(result.left).toBe(280);
   });
 
-  it('goes below and clamps when neither side fits', () => {
+  it('parks against the right edge when neither side fits', () => {
+    // A Word paragraph spans the page, so both margins are narrower than the bar. Parking it
+    // under the block would cover the next paragraphs and make them unclickable.
     const result = placeBarBeside({
       anchor: { left: 220, top: 120, width: 420, height: 60 }, container, size,
     });
-    expect(result.side).toBe('below');
-    expect(result.left).toBeGreaterThanOrEqual(8);
+    expect(result.side).toBe('edge');
+    expect(result.left).toBe(900 - 330 - 8);
+    // It must sit on the block's row, not below it, so the paragraphs underneath keep working.
+    expect(result.top).toBe(120);
   });
 
   it('never leaves the stage on either axis', () => {

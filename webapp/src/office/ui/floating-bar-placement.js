@@ -60,6 +60,7 @@ export function placeBarBeside({
 
   let side;
   let left;
+  let top = box.top;
   if (rightRoom >= bar.width) {
     side = 'right';
     left = rightEdge + gap;
@@ -67,19 +68,25 @@ export function placeBarBeside({
     side = 'left';
     left = box.left - gap - bar.width;
   } else {
-    // Neither side fits: sit just under the block. Overlapping the canvas still beats a bar
-    // that covers the whole selection or leaves the stage.
-    side = 'below';
-    left = box.left;
+    // No room on either side, which is the normal case for Word: a paragraph spans the page,
+    // so both margins are narrower than the bar.
+    //
+    // Park it against the host's right edge instead of under the block. Dropping it below was
+    // the first attempt and a real-browser check caught the consequence: on a Word page the bar
+    // covered the next three paragraphs, so clicking them hit the bar and the selection never
+    // moved. Edge-parking overlaps only the page's right margin, and every paragraph stays
+    // clickable.
+    side = 'edge';
+    left = stage.width - bar.width - margin;
   }
 
   const maxLeft = Math.max(stage.width - bar.width - margin, margin);
   const maxTop = Math.max(stage.height - bar.height - margin, margin);
   // Vertically the bar starts at the block's top edge, which keeps the grip next to the text
-  // the user clicked, and only slides up when that would run past the bottom.
+  // the user clicked, and only slides when that would run past an edge.
   return {
     left: Math.round(clamp(left, margin, maxLeft)),
-    top: Math.round(clamp(box.top, margin, maxTop)),
+    top: Math.round(clamp(top, margin, maxTop)),
     side,
   };
 }
