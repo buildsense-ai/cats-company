@@ -43,3 +43,25 @@ export function removeStorageValue(key, storage = 'localStorage') {
     return false;
   }
 }
+
+/**
+ * Every key currently stored.
+ *
+ * Needed to find records whose key encodes data (a per-source version pointer), where the
+ * caller knows the prefix but not the full key. Returns an empty list when storage is
+ * unavailable, so callers can treat "nothing found" and "no storage" the same way.
+ */
+export function storageKeys(storage = 'localStorage') {
+  try {
+    const target = resolveStorage(storage);
+    const length = Number(target?.length) || 0;
+    const keys = [];
+    for (let i = 0; i < length; i += 1) {
+      const key = target.key(i);
+      if (typeof key === 'string') keys.push(key);
+    }
+    return keys;
+  } catch {
+    return [];
+  }
+}

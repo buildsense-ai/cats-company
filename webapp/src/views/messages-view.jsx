@@ -27,6 +27,7 @@ import {
   OFFICE_SYNC_NOTICE, OFFICE_VERSION_UNSUPPORTED_CODE,
 } from '../office/version-binding.js';
 import { latestNamedAttachment } from '../office/latest-attachment.js';
+import { listPendingVersions, markVersionSynced, pendingVersionAttachments } from '../office/pending-versions.js';
 import ImageViewport from '../widgets/image-viewport';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
@@ -4383,6 +4384,18 @@ export default function MessagesView({
       invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
 
       const currentReplyTo = switchesTopic ? null : originalReplyTo;
+      // Hand the newest saved version over with this message. Saving an Office file posts
+      // nothing on its own, so without this the agent keeps reading the attachment from
+      // before the edit and every later instruction is applied to stale bytes.
+      const pendingVersions = annotationSendSnapshot.drafts.length
+        ? []
+        : listPendingVersions(topic);
+      if (pendingVersions.length > 0) {
+        attachmentsToSend = [
+          ...attachmentsToSend,
+          ...pendingVersionAttachments(topic, attachmentsToSend),
+        ];
+      }
       const contentBlocks = buildAtomicContentBlocks(protocolText, attachmentsToSend);
       const displayContent = text || summarizeAttachments(attachmentsToSend);
       const payload = attachmentsToSend.length > 0
@@ -4626,6 +4639,9 @@ export default function MessagesView({
           ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
           : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
+      // The newest file is now inside the conversation, so the local "unsent" record has
+      // done its job. Keeping it would attach the same bytes to every later message.
+      for (const entry of pendingVersions) markVersionSynced(entry.source);
       if (liquidConversation && activeTopicRef.current === topic && selectedAgent) {
         markConversationActivity(selectedAgent.uid || selectedAgent.id, 'waiting');
       }

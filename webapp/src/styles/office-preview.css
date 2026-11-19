@@ -73,17 +73,23 @@
 
 .office-preview-body {
   display: grid;
+  position: relative;
   grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   flex: 1 1 auto;
 }
 
 .office-preview-body[data-office-side="on"] {
-  grid-template-columns: minmax(0, 1fr) 6px var(--office-panel-width, 300px);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .office-panel-resizer,
 [data-office-panel-resizer] {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  right: calc(10px + var(--office-panel-width, 300px));
+  z-index: 6;
   width: 6px;
   cursor: col-resize;
   touch-action: none;
@@ -125,12 +131,20 @@
 }
 
 .office-preview-side {
-  border-left: 1px solid #e2e4e9;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  width: var(--office-panel-width, 300px);
+  border: 1px solid #e2e4e9;
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(16, 20, 28, .16);
   background: #fcfcfd;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  z-index: 5;
 }
 
 /* Element list */

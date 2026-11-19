@@ -11,6 +11,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import SlideCanvas from '../pptx/render.jsx';
+import { plainTextOfParagraphs } from './inline-text.js';
 import {
   RESIZE_HANDLES, absoluteFromRelative, clampBoxToSlide, emuPerPixel, moveBox,
   relativeFromAbsolute, resizeBox, snapBox,
@@ -101,10 +102,13 @@ function SelectionOverlay({
 export default function EditableCanvas({
   slide, slideSize, themeColors, selectedId, hoveredId, imageUrls,
   editedBoxes, onSelect, onHover, onGestureStart, onBoxPreview, onBoxCommit, readOnly = false,
+  onTextCommit,
 }) {
   const canvasRef = useRef(null);
   const gestureRef = useRef(null);
   const [guide, setGuide] = useState(null);
+  // Which shape is being edited in place, and the text currently typed into it.
+  const [inline, setInline] = useState(null);
 
   // Measured factor along each axis, recomputed per gesture. Null until a gesture runs.
   const factorOf = useCallback(() => {
@@ -285,6 +289,32 @@ export default function EditableCanvas({
     beginGesture(event, elId, 'resize', position);
   }, [beginGesture]);
 
+  /**
+   * Double-click a text element to edit its words where they are.
+   *
+   * Only text-bearing shapes qualify: a picture or a table has nothing to type into, and
+   * silently doing nothing is better than opening an editor over a shape that cannot hold
+   * text. The event is stopped so the click does not also start a drag.
+   */
+  const handleDoubleClick = useCallback((event) => {
+    if (readOnly || !onTextCommit) return;
+    const node = event.target?.closest?.('[data-office-el]');
+    if (!node) return;
+    const elId = node.getAttribute('data-office-el');
+    const target = slideShape(elId);
+    if (!target?.textBody) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setInline({ elId, value: plainTextOfParagraphs(target.textBody.paragraphs) });
+  }, [onTextCommit, readOnly, slideShape]);
+
+  const commitInline = useCallback(() => {
+    const pending = inline;
+    setInline(null);
+    if (!pending) return;
+    onTextCommit?.(pending.elId, pending.value);
+  }, [inline, onTextCommit]);
+
   // Draft boxes are handed to the renderer so the canvas shows the move while it happens.
   // Rebuilding the slide object here keeps SlideCanvas free of drag concerns. Nested children are
   // covered too: a draft on a grouped element must show while dragging, not only after commit.
@@ -327,8 +357,11 @@ export default function EditableCanvas({
     return out;
   }, [guide]);
 
+  const inlineTarget = inline ? slideShape(inline.elId) : null;
+  const inlineBox = inlineTarget ? absoluteBoxOf(inlineTarget) : null;
+
   return (
-    <div ref={canvasRef} style={{ position: 'relative', width: '100%' }}>
+    <div ref={canvasRef} style={{ position: 'relative', width: '100%' }} onDoubleClick={handleDoubleClick}>
       <SlideCanvas
         slide={renderedSlide}
         slideSize={slideSize}
@@ -351,6 +384,45 @@ export default function EditableCanvas({
       ) : null}
       {guidePercent?.x !== undefined ? <Guide orientation="v" position={guidePercent.x} /> : null}
       {guidePercent?.y !== undefined ? <Guide orientation="h" position={guidePercent.y} /> : null}
+      {inline && inlineBox ? (
+        <textarea
+          data-office-inline-text=""
+          value={inline.value}
+          autoFocus
+          onChange={(event) => setInline({ ...inline, value: event.target.value })}
+          onBlur={commitInline}
+          onPointerDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            // Escape abandons the edit; Enter keeps inserting paragraphs. Ctrl/Cmd+Enter
+            // commits, which is the same gesture the conversation composer uses.
+            if (event.key === 'Escape') { setInline(null); return; }
+            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              commitInline();
+            }
+          }}
+          style={{
+            position: 'absolute',
+            left: `${(inlineBox.x / slideSize.cx) * 100}%`,
+            top: `${(inlineBox.y / slideSize.cy) * 100}%`,
+            width: `${(inlineBox.cx / slideSize.cx) * 100}%`,
+            height: `${(inlineBox.cy / slideSize.cy) * 100}%`,
+            zIndex: 8,
+            margin: 0,
+            padding: 2,
+            border: '1.5px solid #1f5eff',
+            borderRadius: 2,
+            background: 'rgba(255, 255, 255, .97)',
+            color: '#16181b',
+            fontFamily: 'inherit',
+            fontSize: 13,
+            lineHeight: 1.35,
+            resize: 'none',
+            boxSizing: 'border-box',
+            overflow: 'auto',
+          }}
+        />
+      ) : null}
     </div>
   );
 }

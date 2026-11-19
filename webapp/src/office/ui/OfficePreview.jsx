@@ -26,6 +26,7 @@ import EditableCanvas from './EditableCanvas.jsx';
 import InsertMenu from './InsertMenu.jsx';
 import InheritedConfirm from './InheritedConfirm.jsx';
 import { applyDraftToSlide, officeDraftKey, parseOfficeDraftKey } from './draft-render.js';
+import { paragraphsFromPlainText } from './inline-text.js';
 import { OFFICE_SAVE_NOTICE } from '../save.js';
 import { OFFICE_SYNC_NOTICE, OFFICE_SERVER_UNSUPPORTED_NOTICE } from '../version-binding.js';
 import {
@@ -352,6 +353,20 @@ export default function OfficePreview({
       texts: { ...(current.texts || {}), [key]: next.paragraphs },
     }));
   }, [commitDraft, selectedShape, slideIndex]);
+
+  // Text typed straight onto the canvas. It writes the same draft slot the panel writes,
+  // so the two entry points cannot diverge and neither silently overwrites the other.
+  const handleInlineText = useCallback((elId, value) => {
+    if (!elId) return;
+    const shape = slideShape(model, slideIndex, elId);
+    if (!shape) return;
+    const key = officeDraftKey(slideIndex, elId);
+    const paragraphs = paragraphsFromPlainText(shape.textBody?.paragraphs, value);
+    commitDraft(current => ({
+      ...current,
+      texts: { ...(current.texts || {}), [key]: paragraphs },
+    }));
+  }, [commitDraft, model, slideIndex]);
 
   const handleStyleChange = useCallback((index, patch) => {
     if (!selectedShape) return;
@@ -906,6 +921,7 @@ export default function OfficePreview({
             onGestureStart={handleGestureStart}
             onBoxPreview={handleBoxPreview}
             onBoxCommit={handleBoxCommit}
+            onTextCommit={handleInlineText}
             readOnly={!editing}
           />
         </div>
