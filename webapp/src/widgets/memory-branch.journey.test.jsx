@@ -18,6 +18,11 @@ import { setToken } from '../auth-session';
 //     injected disappear once the run leaves running/ready; B12 one row per
 //     node repeats the same readable unit and graphs unlabeled dots, instead
 //     of one row per verified reader with only the state that differs.
+// Inline reading (2026-11-19 review: a side drawer covers the chat):
+// M1 details open in a fixed drawer or body portal instead of directly under
+//    their row; M2 a second row leaves the first open, or two bodies show;
+// M3 Escape closes the whole list or loses focus instead of closing the row
+//    first, then the list.
 const ref = `ref_${'a'.repeat(64)}`;
 const revision = 'b'.repeat(64);
 const base = { schema: 'catsco.memory_branch.v1', branch_run_id: 'memory-fixture', origin_turn_id: 'turn-1', sequence: 1, status: 'running',
@@ -99,6 +104,38 @@ it('B1/B5/B8: stored blocks → authorized pinned detail with all conditions and
   expect(globalThis.document.querySelector('[aria-label="记忆来源详情"]')).toBeNull();
   expect(globalThis.document.activeElement).toBe(button);
   evidence.push({ journey: 'saved/pinned detail', query: requests[0].query, qualifiersRetained: true });
+});
+it('M1/M2: a row expands its verified detail directly beneath it, one row at a time', async () => {
+  const otherRef = `ref_${'c'.repeat(64)}`;
+  const event = structuredClone(graph); event.nodes[1].ref = otherRef; event.nodes[1].reader.projection_ref = otherRef; event.read_refs.push(otherRef); event.injected_refs.push(otherRef);
+  await render([event]);
+  const [first, second] = container.querySelectorAll('.cc-memory-source');
+  expect(first.getAttribute('aria-expanded')).toBe('false');
+  await click(first);
+  const detail = first.nextElementSibling;
+  expect(detail.getAttribute('aria-label')).toBe('记忆来源详情');
+  expect(first.getAttribute('aria-expanded')).toBe('true');
+  expect(first.getAttribute('aria-controls')).toBe(detail.id);
+  expect(detail.textContent).toContain('先确认迁移兼容性');
+  expect([...globalThis.document.body.children].filter(node => node !== container)).toHaveLength(0);
+  await click(second);
+  expect(first.getAttribute('aria-expanded')).toBe('false');
+  expect(container.querySelectorAll('[aria-label="记忆来源详情"]')).toHaveLength(1);
+  expect(second.nextElementSibling.getAttribute('aria-label')).toBe('记忆来源详情');
+  await click(second);
+  expect(container.querySelector('[aria-label="记忆来源详情"]')).toBeNull();
+  evidence.push({ journey: 'inline detail', portals: 0, openRows: 1 });
+});
+it('M3: Escape closes the open row first, then the list, returning focus each time', async () => {
+  await render([graph]);
+  const row = container.querySelector('.cc-memory-source'); row.focus(); await click(row);
+  await act(async () => row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(container.querySelector('[aria-label="记忆来源详情"]')).toBeNull();
+  expect(container.querySelector('.cc-memory-toggle').getAttribute('aria-expanded')).toBe('true');
+  expect(globalThis.document.activeElement).toBe(row);
+  await act(async () => row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(container.querySelector('.cc-memory-panel')).toBeNull();
+  expect(globalThis.document.activeElement).toBe(container.querySelector('.cc-memory-toggle'));
 });
 it('B5: refusal and pin mismatch never reveal a source body', async () => {
   fetch.mockResolvedValueOnce(new Response('{}', { status: 404 }));

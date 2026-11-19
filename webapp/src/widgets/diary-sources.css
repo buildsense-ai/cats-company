@@ -1,56 +1,68 @@
-.cc-diary-source {
-  display: flex; width: 100%; min-width: 0; align-items: center; gap: 10px;
-  min-height: 54px; padding: 9px 4px; border: 0; border-radius: 6px;
-  background: transparent; color: var(--cc-text); font: inherit; text-align: left; cursor: pointer;
+/* A memory row expands its verified body in place, aligned with the row
+ * title, so reading a source never covers the conversation. */
+.cc-memory-detail {
+  min-width: 0;
+  padding: 2px 6px 12px 31px;
+  color: var(--cc-text);
+  font: 400 13px/1.6 var(--cc-font-sans);
 }
-.cc-diary-source + .cc-diary-source { border-top: 1px solid var(--cc-border); border-radius: 0; }
-.cc-diary-source:hover, .cc-diary-source[aria-current="true"] { background: var(--cc-hover); }
-.cc-diary-source:active { background: var(--cc-pressed); }
-.cc-diary-source > svg { flex-shrink: 0; color: var(--cc-text-secondary); }
-.cc-diary-source-label { display: grid; gap: 4px; min-width: 0; flex: 1; }
-.cc-diary-source-label > span { line-height: 1.5; overflow-wrap: anywhere; }
-.cc-diary-source-label small { font-size: 11px; line-height: 1.5; color: var(--cc-text-secondary); font-variant-numeric: tabular-nums; }
-.cc-diary-reader {
-  position: fixed; z-index: 1200; inset: 0 0 0 auto; width: min(460px, 100vw);
-  display: flex; flex-direction: column; background: var(--cc-panel); color: var(--cc-text);
-  box-shadow: -10px 0 32px rgba(0, 0, 0, .14); font-family: var(--cc-font-sans); font-size: 14px;
+.cc-memory-detail-meta {
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+  margin: 0 0 6px; color: var(--cc-text-secondary); font-size: 12px; line-height: 1.6;
 }
-.cc-diary-reader-header { display: flex; align-items: center; justify-content: space-between; min-height: 62px; padding: 10px 20px; border-bottom: 1px solid var(--cc-border); }
-.cc-diary-reader-header > span { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
-.cc-diary-icon-button { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--cc-text-secondary); cursor: pointer; }
-.cc-diary-icon-button:hover { color: var(--cc-text); background: var(--cc-hover); }
-.cc-diary-icon-button:active { background: var(--cc-pressed); }
-.cc-diary-reader-scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; min-height: 0; padding: 24px 24px 36px; }
-.cc-diary-reader h2 { margin: 0 0 12px; font-size: 19px; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; }
-.cc-diary-reader-meta, .cc-diary-version { margin: 6px 0; font-size: 12px; line-height: 1.6; color: var(--cc-text-secondary); }
-.cc-diary-version code { font-family: var(--cc-font-mono); font-variant-numeric: tabular-nums; margin-left: 4px; }
-.cc-diary-reader-note { font-size: 12px; line-height: 1.6; color: var(--cc-text-secondary); }
-.cc-diary-reader-body { margin-top: 24px; }
-.cc-diary-prose { font-size: 14px; line-height: 1.85; overflow-wrap: anywhere; }
+.cc-memory-detail-meta code { margin-left: 4px; font-family: var(--cc-font-mono); font-variant-numeric: tabular-nums; }
+.cc-memory-detail-note { margin: 0 0 8px; color: var(--cc-text-secondary); font-size: 12px; line-height: 1.6; }
+.cc-memory-detail-node { margin-top: 12px; }
+.cc-memory-detail-node:first-child { margin-top: 0; }
+.cc-memory-detail-node h3 { margin: 0 0 4px; color: var(--cc-text-secondary); font-size: 12px; font-weight: 500; line-height: 1.5; }
+.cc-diary-reader-body { min-width: 0; }
+.cc-diary-prose { max-width: 72ch; font-size: 13.5px; line-height: 1.75; overflow-wrap: anywhere; }
 .cc-diary-prose > :first-child { margin-top: 0; }
-.cc-diary-prose p { margin: 0 0 16px; }
-.cc-diary-prose pre { overflow: auto; background: var(--cc-code); padding: 12px; }
+.cc-diary-prose > :last-child { margin-bottom: 0; }
+.cc-diary-prose p { margin: 0 0 10px; }
+.cc-diary-prose pre { overflow: auto; padding: 10px; border-radius: var(--cc-radius-sm); background: var(--cc-code); }
 .cc-diary-prose img { max-width: 100%; }
 .cc-diary-prose table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
 .cc-diary-prose th, .cc-diary-prose td { border: 1px solid var(--cc-border); padding: 6px 10px; }
 .cc-diary-prose a { color: var(--cc-accent-text); text-underline-offset: 3px; }
-.cc-diary-related { margin-top: 28px; border-top: 1px solid var(--cc-border); padding-top: 20px; }
-.cc-diary-related h3 { margin: 0 0 12px; font-size: 13px; font-weight: 600; }
-.cc-diary-related > div > p { margin: 10px 0 0; font-size: 12px; color: var(--cc-text-secondary); }
-.cc-diary-reference { margin-top: 28px; color: var(--cc-text-secondary); font-size: 12px; }
-.cc-diary-reference summary { cursor: pointer; padding: 8px 0; }
+
+.cc-diary-related { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--cc-border); }
+.cc-diary-related h3 { margin: 0 0 2px; color: var(--cc-text-secondary); font-size: 12px; font-weight: 500; }
+.cc-diary-related > div > p { margin: 6px 0 0; color: var(--cc-text-secondary); font-size: 12px; }
+.cc-diary-source {
+  display: flex; width: 100%; min-width: 0; align-items: center; gap: 8px;
+  min-height: 32px; padding: 4px 6px; margin-inline-start: -6px; border: 0; border-radius: var(--cc-radius-sm);
+  background: transparent; color: var(--cc-text); font: inherit; text-align: left; cursor: pointer;
+}
+.cc-diary-source:hover { background: var(--cc-hover); }
+.cc-diary-source:active { background: var(--cc-pressed); }
+.cc-diary-source > svg { flex-shrink: 0; color: var(--cc-text-secondary); }
+.cc-diary-source-label { display: flex; flex: 1; align-items: baseline; gap: 8px; min-width: 0; }
+.cc-diary-source-label > span { overflow-wrap: anywhere; }
+.cc-diary-source-label small { flex-shrink: 0; color: var(--cc-text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.cc-diary-reference { margin-top: 8px; color: var(--cc-text-secondary); font-size: 12px; }
+.cc-diary-reference summary { width: fit-content; padding: 2px 0; cursor: pointer; }
 .cc-diary-reference code { display: block; overflow-wrap: anywhere; font: 11px/1.7 var(--cc-font-mono); user-select: all; }
-.cc-diary-skeleton { display: grid; gap: 12px; padding: 3px 0 20px; }
-.cc-diary-skeleton span { height: 12px; border-radius: 4px; background: var(--cc-control-surface); }
+
+.cc-diary-skeleton { display: grid; gap: 10px; max-width: 72ch; padding: 4px 0 8px; }
+.cc-diary-skeleton span { height: 10px; border-radius: 4px; background: var(--cc-control-surface); }
 .cc-diary-skeleton span:last-child { width: 60%; }
-.cc-diary-read-error { font-size: 13px; line-height: 1.7; }
-.cc-diary-read-error p { color: var(--cc-danger-text); }
-.cc-diary-read-error button { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 10px; border: 0; border-radius: 6px; background: var(--cc-secondary-action-bg); color: var(--cc-secondary-action-text); font: inherit; cursor: pointer; }
+.cc-diary-read-error { font-size: 13px; line-height: 1.6; }
+.cc-diary-read-error p { margin: 0 0 6px; color: var(--cc-danger-text); }
+.cc-diary-read-error button {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 10px; border: 0; border-radius: var(--cc-radius-sm);
+  background: var(--cc-secondary-action-bg); color: var(--cc-secondary-action-text); font: inherit; cursor: pointer;
+}
 .cc-diary-read-error button:hover { background: var(--cc-secondary-action-bg-hover); }
-.cc-diary-reader button:focus-visible, .cc-diary-reader summary:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 3px; }
-.cc-diary-reader ::selection { color: var(--cc-text); background: var(--cc-selected); }
+
+.cc-memory-detail :is(button, summary):focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 2px; }
+.cc-memory-detail ::selection { color: var(--cc-text); background: var(--cc-selected); }
+
 @media (max-width: 600px) {
-  .cc-diary-reader { top: auto; height: 86svh; width: 100%; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 32px rgba(0, 0, 0, .18); }
-  .cc-diary-reader-scroll { padding: 20px 20px max(24px, env(safe-area-inset-bottom)); }
-  .cc-diary-source { min-height: 58px; }
+  .cc-memory-detail { padding-inline-start: 6px; }
+  .cc-diary-source-label { flex-direction: column; gap: 0; }
+}
+@media (pointer: coarse) {
+  .cc-diary-source, .cc-diary-read-error button { min-height: 44px; }
 }

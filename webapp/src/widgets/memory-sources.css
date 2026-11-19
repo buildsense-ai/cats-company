@@ -1,5 +1,5 @@
 /* Memory sources open inline under the activity strip as one plain list;
- * the readers own every body. Rows stay one line on wide screens. */
+ * each row expands its own body beneath it. Rows stay one line when wide. */
 .cc-chat-activity .cc-memory-panel {
   flex: 0 0 100%;
   min-width: 0;
@@ -50,7 +50,8 @@
   cursor: pointer;
 }
 .cc-memory-source:hover,
-.cc-memory-source[aria-current='true'] { background: var(--cc-hover); }
+.cc-memory-source[aria-expanded='true'] { background: var(--cc-hover); }
+.cc-memory-source[aria-expanded='true'] .cc-memory-source-label > span { font-weight: 500; }
 .cc-memory-source:active { background: var(--cc-pressed); }
 .cc-memory-source > svg { flex-shrink: 0; color: var(--cc-text-secondary); }
 
@@ -101,10 +102,6 @@
   outline: 2px solid var(--cc-focus-ring);
   outline-offset: 2px;
 }
-
-.cc-memory-detail-node { margin-top: 24px; }
-.cc-memory-detail-node h3 { font-size: 13px; color: var(--cc-text-secondary); margin: 0 0 8px; line-height: 1.5; }
-.cc-memory-detail-node .cc-diary-prose { margin: 0; }
 
 /* Narrow screens: titles wrap instead of truncating; meta drops below. */
 @media (max-width: 600px) {

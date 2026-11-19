@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { ArrowRight, BookOpen, Brain, ChevronRight, History, RotateCcw, X } from 'lucide-react';
+import { ArrowRight, BookOpen, Brain, ChevronRight, History, RotateCcw } from 'lucide-react';
 import { api } from '../api';
 import { renderSafeMarkdown } from './markdown-utils';
 import { DIARY_RELATIONS, DIARY_STATUS } from './diary-sources';
@@ -10,7 +9,8 @@ import './memory-sources.css';
 
 // One answer to "what memory informed this reply?": Diary entries the agent
 // read itself and Branch sources recalled in the background share one list.
-// Rows come from validated, body-free metadata; bodies load only on click.
+// Rows come from validated, body-free metadata; a row expands its verified
+// body in place, one row at a time, and only then reads it.
 const VISIBLE_ROWS = 6;
 const IN_PROGRESS = new Set(['running', 'ready']);
 
@@ -101,11 +101,11 @@ function summaryLine({ diary, units, events, active }) {
   return `后台回忆找到 ${units.length} 条，未用于本次回答`;
 }
 
-function MemoryRow({ row, selected, onSelect }) {
+function MemoryRow({ row, open, detailId, onToggle }) {
   const Icon = row.type === 'diary' ? BookOpen : History;
   return (
-    <button type="button" className={`cc-memory-source is-${row.type}`} aria-current={selected ? 'true' : undefined}
-      onClick={event => onSelect(row, event.currentTarget)}>
+    <button type="button" className={`cc-memory-source is-${row.type}`} aria-expanded={open} aria-controls={open ? detailId : undefined}
+      onClick={() => onToggle(row)}>
       <Icon size={15} aria-hidden="true" />
       <span className="cc-memory-source-label"><span>{row.title}</span>{row.meta && <small>{row.meta}</small>}</span>
       {row.badge && <span className={`cc-memory-badge${row.cited ? ' is-cited' : ''}`}>{row.badge}</span>}
@@ -151,7 +151,8 @@ export default function MemorySources({ diaryViews = [], events = [], active = f
 function MemoryPanel({ id, diary, units, events, active, agentUid, incomplete }) {
   const [selected, setSelected] = useState(null);
   const [expanded, setExpanded] = useState(false);
-  const triggerRef = useRef(null);
+  const panelRef = useRef(null);
+  const detailId = `${id}-detail`;
   const anyInjected = units.some(unit => unit.injected);
   const rows = [
     ...diary.sources.map(source => ({
@@ -163,46 +164,50 @@ function MemoryPanel({ id, diary, units, events, active, agentUid, incomplete })
       badge: unit.cited ? '回答引用' : !unit.injected && anyInjected ? '未采用' : '',
     })),
   ];
-  const visible = expanded ? rows : rows.slice(0, VISIBLE_ROWS);
+  const openIndex = selected ? rows.findIndex(row => row.key === selected) : -1;
+  const visible = expanded || openIndex >= VISIBLE_ROWS ? rows : rows.slice(0, VISIBLE_ROWS);
   const grouped = diary.sources.length > 0 && units.length > 0;
   const summary = summaryLine({ diary, units, events, active });
   const carried = events.some(event => event.consumed_turn_id && event.consumed_turn_id !== event.origin_turn_id);
-  const select = (row, trigger) => { if (!selected && trigger) triggerRef.current = trigger; setSelected(row); };
   const close = useCallback(() => {
+    const button = panelRef.current?.querySelector('.cc-memory-source[aria-expanded="true"]');
     setSelected(null);
-    if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true });
+    button?.focus({ preventScroll: true });
   }, []);
-  const selectDiary = (source, trigger) => select(rows.find(row => row.key === source.ref) || { type: 'diary', key: source.ref, source }, trigger);
+  // Escape closes the open row before the list, only while focus is here.
+  useEffect(() => {
+    if (!selected) return undefined;
+    const escape = event => {
+      if (event.key !== 'Escape') return;
+      const focus = document.activeElement;
+      if (focus && focus !== document.body && !panelRef.current?.contains(focus)) return;
+      event.preventDefault(); event.stopImmediatePropagation(); close();
+    };
+    document.addEventListener('keydown', escape, true);
+    window.addEventListener('cc:auth-changed', close);
+    return () => { document.removeEventListener('keydown', escape, true); window.removeEventListener('cc:auth-changed', close); };
+  }, [selected, close]);
+  const toggle = row => setSelected(current => current === row.key ? null : row.key);
+  const selectDiary = source => setSelected(source.ref);
   return (
-    <section id={id} className="cc-memory-panel" aria-label="记忆来源" onClick={event => event.stopPropagation()}>
+    <section ref={panelRef} id={id} className="cc-memory-panel" aria-label="记忆来源" onClick={event => event.stopPropagation()}>
       {summary && <p className="cc-memory-summary" role="status">{summary}</p>}
       {carried && <p className="cc-memory-note">这些记忆来自上一轮提问，在本轮才送达。</p>}
       <div className="cc-memory-list">
         {visible.map((row, index) => (
           <React.Fragment key={row.key}>
             {grouped && (index === 0 || visible[index - 1].type !== row.type) && <h4 className="cc-memory-group">{row.type === 'diary' ? '日记' : '历史会话'}</h4>}
-            <MemoryRow row={row} selected={selected?.key === row.key} onSelect={select} />
+            <MemoryRow row={row} open={selected === row.key} detailId={detailId} onToggle={toggle} />
+            {selected === row.key && (row.type === 'diary'
+              ? <DiaryDetail id={detailId} agentUid={agentUid} source={row.source} view={diary} onSelect={selectDiary} />
+              : <MemoryDetail id={detailId} agentUid={agentUid} unit={row.unit} />)}
           </React.Fragment>
         ))}
       </div>
       {rows.length > visible.length && <button type="button" className="cc-memory-more" onClick={() => setExpanded(true)}>再显示 {rows.length - visible.length} 条</button>}
       {incomplete && <p className="cc-memory-note">日记还有更多结果，未在此列出。</p>}
-      {selected?.type === 'diary' && <DiaryReader agentUid={agentUid} source={selected.source} view={diary} onSelect={selectDiary} onClose={close} />}
-      {selected?.type === 'branch' && <MemoryReader agentUid={agentUid} unit={selected.unit} onClose={close} />}
     </section>
   );
-}
-
-function useReaderDismiss(onClose) {
-  useEffect(() => {
-    const escape = event => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault(); event.stopImmediatePropagation(); onClose();
-    };
-    document.addEventListener('keydown', escape, true);
-    window.addEventListener('cc:auth-changed', onClose);
-    return () => { document.removeEventListener('keydown', escape, true); window.removeEventListener('cc:auth-changed', onClose); };
-  }, [onClose]);
 }
 
 function readError(error, refused) {
@@ -231,13 +236,9 @@ function RelatedRow({ source, onSelect }) {
   );
 }
 
-function DiaryReader({ agentUid, source, view, onSelect, onClose }) {
+function DiaryDetail({ id, agentUid, source, view, onSelect }) {
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState({ status: 'loading' });
-  const closeRef = useRef(null);
-  const titleID = `diary-reader-${useId().replace(/:/g, '')}`;
-  useEffect(() => { closeRef.current?.focus({ preventScroll: true }); }, []);
-  useReaderDismiss(onClose);
   useEffect(() => {
     const controller = new AbortController();
     setState({ status: 'loading', ref: source.ref });
@@ -262,31 +263,25 @@ function DiaryReader({ agentUid, source, view, onSelect, onClose }) {
   const current = state.ref === source.ref ? state : { status: 'loading' };
   const linked = (s) => view.relations.filter((r) => r.from === source.ref && r.to === s.ref || r.to === source.ref && r.from === s.ref);
   const related = view.sources.filter((s) => s.ref !== source.ref && linked(s).length > 0);
-  return createPortal(
-    <aside className="cc-diary-reader" role="dialog" aria-modal="false" aria-label="日记引用详情" aria-describedby={titleID} onClick={(event) => event.stopPropagation()}>
-      <header className="cc-diary-reader-header"><span><BookOpen size={17} aria-hidden="true" />日记</span><button ref={closeRef} className="cc-diary-icon-button" type="button" aria-label="关闭日记详情" onClick={onClose}><X size={18} /></button></header>
-      <div className="cc-diary-reader-scroll">
-        <h2 id={titleID}>{source.title}</h2>
-        <p className="cc-diary-reader-meta">{source.day} · {DIARY_STATUS[source.status]}{source.status === 'draft' ? ' · 尚未核验' : ''}</p>
-        <p className="cc-diary-version" title={source.anchor.revision}>引用时版本 <code>{source.anchor.revision.slice(4, 12)}</code></p>
-        {source.currentStatus !== source.status && <p className="cc-diary-reader-note">当前状态：{DIARY_STATUS[source.currentStatus]}。这里展示引用时的版本。</p>}
-        <ReaderBody state={current} label="正在读取引用版本" onRetry={() => setAttempt((n) => n + 1)}>
-          {current.entry?.text ? prose(current.entry.text) : <p>这个条目的正文为空。</p>}
-        </ReaderBody>
-        {related.length > 0 && <section className="cc-diary-related"><h3>同次读取的关联笔记</h3>{related.map((s) => <div key={s.ref}><p>{linked(s).map((r) => `${r.from === source.ref ? '' : '被'}${DIARY_RELATIONS[r.kind]}`).join(' · ')}</p><RelatedRow source={s} onSelect={onSelect} /></div>)}</section>}
-        <details className="cc-diary-reference"><summary>引用标识</summary><code>{source.ref}</code></details>
-      </div>
-    </aside>, document.body,
+  return (
+    <div id={id} className="cc-memory-detail" role="region" aria-label="日记引用详情">
+      <p className="cc-memory-detail-meta">
+        <span title={source.anchor.revision}>引用时版本 <code>{source.anchor.revision.slice(4, 12)}</code></span>
+        {source.currentStatus !== source.status && <span>当前状态已变为{DIARY_STATUS[source.currentStatus]}，这里展示引用时的版本</span>}
+      </p>
+      <ReaderBody state={current} label="正在读取引用版本" onRetry={() => setAttempt((n) => n + 1)}>
+        {current.entry?.text ? prose(current.entry.text) : <p>这个条目的正文为空。</p>}
+      </ReaderBody>
+      {related.length > 0 && <section className="cc-diary-related"><h3>同次读取的关联笔记</h3>{related.map((s) => <div key={s.ref}><p>{linked(s).map((r) => `${r.from === source.ref ? '' : '被'}${DIARY_RELATIONS[r.kind]}`).join(' · ')}</p><RelatedRow source={s} onSelect={onSelect} /></div>)}</section>}
+      <details className="cc-diary-reference"><summary>引用标识</summary><code>{source.ref}</code></details>
+    </div>
   );
 }
 
-function MemoryReader({ agentUid, unit, onClose }) {
+function MemoryDetail({ id, agentUid, unit }) {
   const [attempt, setAttempt] = useState(0), [state, setState] = useState({ status: 'loading' });
-  const closeRef = useRef(null);
   const { node } = unit;
   const requestKey = `${agentUid}:${unit.key}`;
-  useEffect(() => { closeRef.current?.focus({ preventScroll: true }); }, []);
-  useReaderDismiss(onClose);
   useEffect(() => {
     const controller = new AbortController();
     setState({ status: 'loading', key: requestKey });
@@ -303,24 +298,20 @@ function MemoryReader({ agentUid, unit, onClose }) {
   }, [requestKey, attempt]);
   const current = state.key === requestKey ? state : { status: 'loading' };
   const detail = current.detail;
-  return createPortal(
-    <aside className="cc-diary-reader" role="dialog" aria-modal="false" aria-label="记忆来源详情" onClick={event => event.stopPropagation()}>
-      <header className="cc-diary-reader-header"><span><History size={17} aria-hidden="true" />历史会话</span><button ref={closeRef} type="button" className="cc-diary-icon-button" aria-label="关闭记忆详情" onClick={onClose}><X size={18} /></button></header>
-      <div className="cc-diary-reader-scroll">
-        <h2>{unit.title}</h2>
-        <p className="cc-diary-reader-meta">{[unit.meta, unit.cited ? '回答中引用' : unit.injected ? '已用于回答' : '未用于本次回答'].filter(Boolean).join(' · ')}</p>
-        <ReaderBody state={current} label="正在核验记忆来源" onRetry={() => setAttempt(value => value + 1)}>
-          {detail && <>
-            {detail.goal && <p className="cc-diary-reader-note">{detail.goal}</p>}
-            {detail.nodes.map((item, index) => <section className="cc-memory-detail-node" key={item.id || index}><h3>{MEMORY_NODE_LABELS[item.kind] || '记忆内容'}{item.association === 'member_scope_unlinked' ? ' · 来源范围，未绑定到此断言' : ''}</h3>{prose(item.text)}</section>)}
-            {detail.conditions.length > 0 && <section className="cc-memory-detail-node"><h3>来源范围的适用条件</h3>{detail.conditions.map((text, i) => <React.Fragment key={i}>{prose(text)}</React.Fragment>)}</section>}
-            {detail.omissions.length > 0 && <section className="cc-memory-detail-node"><h3>来源范围的已知缺口</h3>{detail.omissions.map((text, i) => <React.Fragment key={i}>{prose(text)}</React.Fragment>)}</section>}
-            {detail.gaps && <section className="cc-memory-detail-node"><h3>尚未核验</h3>{prose(detail.gaps)}</section>}
-            {detail.coverage !== 'complete' && <p className="cc-diary-reader-note">这是本次读取的局部记忆，不代表完整历史。</p>}
-          </>}
-        </ReaderBody>
-        <details className="cc-diary-reference"><summary>引用标识</summary><code>{node.ref}</code></details>
-      </div>
-    </aside>, document.body,
+  return (
+    <div id={id} className="cc-memory-detail" role="region" aria-label="记忆来源详情">
+      <p className="cc-memory-detail-meta"><span>{unit.cited ? '回答中引用' : unit.injected ? '已用于回答' : '未用于本次回答'}</span></p>
+      <ReaderBody state={current} label="正在核验记忆来源" onRetry={() => setAttempt(value => value + 1)}>
+        {detail && <>
+          {detail.goal && <p className="cc-memory-detail-note">{detail.goal}</p>}
+          {detail.nodes.map((item, index) => <section className="cc-memory-detail-node" key={item.id || index}><h3>{MEMORY_NODE_LABELS[item.kind] || '记忆内容'}{item.association === 'member_scope_unlinked' ? ' · 来源范围，未绑定到此断言' : ''}</h3>{prose(item.text)}</section>)}
+          {detail.conditions.length > 0 && <section className="cc-memory-detail-node"><h3>来源范围的适用条件</h3>{detail.conditions.map((text, i) => <React.Fragment key={i}>{prose(text)}</React.Fragment>)}</section>}
+          {detail.omissions.length > 0 && <section className="cc-memory-detail-node"><h3>来源范围的已知缺口</h3>{detail.omissions.map((text, i) => <React.Fragment key={i}>{prose(text)}</React.Fragment>)}</section>}
+          {detail.gaps && <section className="cc-memory-detail-node"><h3>尚未核验</h3>{prose(detail.gaps)}</section>}
+          {detail.coverage !== 'complete' && <p className="cc-memory-detail-note">这是本次读取的局部记忆，不代表完整历史。</p>}
+        </>}
+      </ReaderBody>
+      <details className="cc-diary-reference"><summary>引用标识</summary><code>{node.ref}</code></details>
+    </div>
   );
 }
