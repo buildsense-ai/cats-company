@@ -67,9 +67,9 @@ describe('chat wiki memories', () => {
     expect(api.getWikiMemoryDocument).toHaveBeenCalledTimes(2);
   });
 
-  it('groups the assistant list by conversation and supports a newest-first timeline', async () => {
+  it('orders assistant conversation groups and their Wiki rows newest first', async () => {
     api.getWikiMemoryCatalog.mockResolvedValue({
-      ...page([wiki('older', 11), wiki('newer', 12), wiki('other', 10, 'grp_8')]),
+      ...page([wiki('other', 11, 'grp_8'), wiki('older', 10), wiki('newer', 12)]),
       conversations: [{ id: 'grp_7', title: '设计讨论' }, { id: 'grp_8', title: '部署记录' }],
     });
     await render();
@@ -78,8 +78,7 @@ describe('chat wiki memories', () => {
     await click(Array.from(container.querySelectorAll('.cc-wiki-view-bar button')).find(button => button.textContent === '列表'));
     expect(api.getWikiMemoryCatalog).toHaveBeenCalledTimes(2);
     expect(api.getWikiMemoryDocument).not.toHaveBeenCalled();
-    const groupList = container.querySelector('select[aria-label="列表分组"]');
-    expect(groupList.value).toBe('topic');
+    expect(container.querySelector('select[aria-label="列表分组"]')).toBeNull();
     const groups = Array.from(container.querySelectorAll('.cc-wiki-groups details'));
     expect(groups.map(group => group.querySelector('summary span').textContent)).toEqual(['设计讨论', '部署记录']);
     expect(rows()).toHaveLength(0);
@@ -88,16 +87,11 @@ describe('chat wiki memories', () => {
       group.open = true;
       group.dispatchEvent(new Event('toggle'));
     });
+    expect(rows().map(row => row.querySelector('.cc-wiki-row-text > span').textContent)).toEqual(['Wiki newer', 'Wiki older']);
     await click(rows()[0]);
     expect(container.querySelector('.cc-wiki-reader h3').textContent).toBe('Wiki newer');
     await click(container.querySelector('.cc-wiki-reader-toolbar button'));
     expect(group.open).toBe(true);
-    await act(async () => {
-      groupList.value = 'time';
-      groupList.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    expect(rows().map(row => row.querySelector('.cc-wiki-row-text > span').textContent)).toEqual(['Wiki newer', 'Wiki older', 'Wiki other']);
-    expect(rows()[0].textContent).toContain('设计讨论');
   });
 
   it('loads the next list page at the bottom and keeps newer rows first', async () => {

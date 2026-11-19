@@ -130,7 +130,6 @@ function WikiCatalog({ hidden, paused, agentUid, topicId, visit, visitKey, onOpe
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState(false);
   const [view, setView] = useState(topicId ? 'list' : 'graph');
-  const [groupList, setGroupList] = useState(!topicId);
   const active = useRef(null);
   const started = useRef(false);
   const catalog = useRef(null);
@@ -181,7 +180,7 @@ function WikiCatalog({ hidden, paused, agentUid, topicId, visit, visitKey, onOpe
     started.current = false;
   }, []);
 
-  const paginatedList = view === 'list' && !groupList;
+  const paginatedList = Boolean(topicId);
   const displayedItems = useMemo(() => paginatedList ? items.slice(0, visibleLimit) : items,
     [items, paginatedList, visibleLimit]);
   const hasMore = items.length > visibleLimit || Boolean(nextCursor);
@@ -223,14 +222,13 @@ function WikiCatalog({ hidden, paused, agentUid, topicId, visit, visitKey, onOpe
     return grouped;
   }, [items]);
 
-  function renderList(entries, showConversation) {
+  function renderList(entries) {
     return <ul className="cc-wiki-list">
       {entries.map(item => <li key={item.id}>
         <button type="button" className="cc-wiki-row" onClick={() => onOpen(item, getConversationTitle(item))}>
           <div className="cc-wiki-row-text">
             <span>{item.title}</span>
             <div className="cc-wiki-row-meta">
-              {showConversation && <span>{getConversationTitle(item)}</span>}
               <time dateTime={item.created_at}>{formatDate(item.created_at)}</time>
               {isNew(item) && <small className="cc-wiki-new">新增</small>}
             </div>
@@ -252,22 +250,16 @@ function WikiCatalog({ hidden, paused, agentUid, topicId, visit, visitKey, onOpe
           <button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}><List size={15} aria-hidden="true" />列表</button>
         </div>
       </div>}
-      {!topicId && view === 'list' && <div className="cc-wiki-list-options">
-        <select aria-label="列表分组" value={groupList ? 'topic' : 'time'} onChange={event => setGroupList(event.target.value === 'topic')}>
-          <option value="topic">按会话</option>
-          <option value="time">按时间</option>
-        </select>
-      </div>}
       {view === 'graph' && items.length > 0 &&
         <WikiMemoryGraph {...{ groups, conversations, isNew }} onOpen={item => onOpen(item, getConversationTitle(item))} />}
       <div className={view === 'list' ? 'cc-wiki-list-scroll' : 'cc-wiki-map-status'} ref={catalog}>
-        {view === 'list' && displayedItems.length > 0 && (groupList ?
+        {view === 'list' && displayedItems.length > 0 && (topicId ? renderList(displayedItems) :
           <div className="cc-wiki-groups">
             {[...groups].map(([id, entries]) => <WikiListGroup key={id}
               title={conversations[id] || '其他来源'} count={entries.length}>
-              {() => renderList(entries, false)}
+              {() => renderList(entries)}
             </WikiListGroup>)}
-          </div> : renderList(displayedItems, !topicId))}
+          </div>)}
         {busy && <p className="cc-wiki-feedback" role="status">{items.length ? '正在补齐记忆目录…' : '正在读取记忆…'}</p>}
         {error && <div className="cc-wiki-feedback" role="status">读取失败。<button type="button" onClick={() => load(nextCursor)}>重试</button></div>}
         {!busy && !error && items.length === 0 && <p className="cc-wiki-feedback">还没有可查看的记忆</p>}
@@ -280,7 +272,7 @@ function WikiCatalog({ hidden, paused, agentUid, topicId, visit, visitKey, onOpe
 function WikiListGroup({ title, count, children }) {
   const [open, setOpen] = useState(false);
   return <details onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary><span>{title}</span><small>{count} 篇</small></summary>
+    <summary><ChevronRight size={16} aria-hidden="true" /><span>{title}</span><small>{count} 篇</small></summary>
     {open && children()}
   </details>;
 }
