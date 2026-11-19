@@ -1,4 +1,5 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import GroupDeviceShareCard from './group-device-share-card';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Terminal, Brain, BookOpen, FilePen, FolderSearch, Globe, Send, Sparkles, GitFork, MessageSquareText, FileCode2, Maximize2, Minimize2, Pencil, Eye, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, Image as ImageIcon, Share2 } from 'lucide-react';
 import { Copy, CornerUpLeft, Download, ExternalLink, FileText, MoreHorizontal, Search, X } from './desktop-icons';
@@ -1319,7 +1320,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   const richBlocks = useMemo(() => (
     storedBlocks
       .map((block, index) => ({ ...block, __imageBlockIndex: index }))
-      .filter((block) => ['image', 'file', 'audio', 'voice'].includes(block.type))
+      .filter((block) => ['image', 'file', 'audio', 'voice', 'card'].includes(block.type))
   ), [storedBlocks]);
   const storedTextBlocks = useMemo(() => (
     storedBlocks.filter(
@@ -1422,7 +1423,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     displayTextBlocks,
   ]);
   const renderedMessageText = hasText && (parsed ? (
-    <RichContent
+    <RichContent sourceTopicId={message.topic_id || annotationTopicId} sourceMessageId={Number(message.seq_id || message.id)}
       content={parsed}
       onPreviewFile={onPreviewFile}
       activePreviewFile={activePreviewFile}
@@ -1611,7 +1612,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                 <>
                   <div className="v3-message-deliverables" data-message-part="artifacts">
                     {richBlocks.map((block, index) => (
-                      <RichContent
+                      <RichContent sourceTopicId={message.topic_id || annotationTopicId} sourceMessageId={Number(message.seq_id || message.id)}
                         key={`${block.type}-${index}`}
                         content={block}
                         onPreviewFile={onPreviewFile}
@@ -1630,7 +1631,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
               ) : (
                 <>
                   {artifactsFirst && richBlocks.map((block, index) => (
-                    <RichContent
+                    <RichContent sourceTopicId={message.topic_id || annotationTopicId} sourceMessageId={Number(message.seq_id || message.id)}
                       key={`${block.type}-${index}`}
                       content={block}
                       onPreviewFile={onPreviewFile}
@@ -1656,7 +1657,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                     </>
                   )}
                   {!artifactsFirst && richBlocks.map((block, index) => (
-                    <RichContent
+                    <RichContent sourceTopicId={message.topic_id || annotationTopicId} sourceMessageId={Number(message.seq_id || message.id)}
                       key={`${block.type}-${index}`}
                       content={block}
                       onPreviewFile={onPreviewFile}
@@ -2198,7 +2199,7 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile, onOpe
   );
 }
 
-function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery = null, onOpenImage, imageId = '' }) {
+function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery = null, onOpenImage, imageId = '', sourceTopicId, sourceMessageId }) {
   switch (content.type) {
     case 'image':
       return (
@@ -2219,7 +2220,7 @@ function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery =
     case 'link_preview':
       return <LinkPreviewContent payload={content.payload} />;
     case 'card':
-      return <CardContent payload={content.payload} />;
+      return <CardContent payload={content.payload} sourceTopicId={sourceTopicId} sourceMessageId={sourceMessageId} />;
     default:
       return <TextContent content={content.payload?.text || JSON.stringify(content)} />;
   }
@@ -3902,8 +3903,11 @@ function LinkPreviewContent({ payload }) {
   );
 }
 
-function CardContent({ payload }) {
+function CardContent({ payload, sourceTopicId, sourceMessageId }) {
   if (!payload) return null;
+  if (typeof payload.group_device_share?.request_id === 'string' && typeof payload.group_device_share?.topic_id === 'string') {
+    return <GroupDeviceShareCard reference={payload.group_device_share} sourceTopicId={sourceTopicId} sourceMessageId={sourceMessageId} />;
+  }
   return (
     <div className="oc-rich-card">
       {payload.image && <img src={resolveMediaURL(payload.image)} alt="" style={{ width: '100%', maxHeight: 120, objectFit: 'cover', borderRadius: '4px 4px 0 0' }} />}

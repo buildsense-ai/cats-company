@@ -14,6 +14,8 @@ vi.mock('../api', () => ({
     unlinkDevice: vi.fn(),
     getConversationDevice: vi.fn(),
     confirmConversationDevice: vi.fn(),
+    getGroupDeviceShares: vi.fn(),
+    setGroupDeviceShare: vi.fn(),
   },
   getToken: () => 'test-session',
   getAuthRevision: () => 1,
@@ -149,6 +151,12 @@ describe('DesktopConnectModal', () => {
       { deviceId: 'home', displayName: '家里电脑', runtimeRole: 'desktop', routable: true },
     ];
     api.getDevices.mockResolvedValue({ devices });
+    const group = topicId.startsWith('grp_');
+    devices.forEach(device => { device.ownerUserId = 'usr38'; });
+    api.getGroupDeviceShares.mockResolvedValue({
+      actor_uid: 38, shares: [], devices: [],
+      members: [{ user_id: 38 }, { user_id: 39, username: 'Bob' }, { user_id: 42, is_bot: true, username: 'Bot' }],
+    });
     const snapshot = { status: 'selected', selected_device_id: 'office', revision: 'r1', devices };
     api.getConversationDevice.mockResolvedValue(snapshot);
     api.confirmConversationDevice.mockResolvedValue({ ...snapshot, selected_device_id: 'home', revision: 'r2' });
@@ -156,8 +164,15 @@ describe('DesktopConnectModal', () => {
     api.getDesktopConnectStatus.mockResolvedValue({ state: 'claimed' });
     await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" topicId={topicId} activeAgent={{ uid: 42 }} onClose={vi.fn()} />));
     const expectSingleList = () => {
-      expect(container.querySelectorAll('[role="group"][aria-label="我的电脑"]')).toHaveLength(1);
-      expect(container.querySelectorAll('.cc-device-option')).toHaveLength(2);
+      if (group) {
+        expect(container.querySelectorAll('.cc-group-devices')).toHaveLength(1);
+        expect(container.querySelectorAll('.cc-group-devices input[type=radio]')).toHaveLength(2);
+        expect(container.querySelector('#catsco-desktop-modal-title').textContent).toBe('设备与授权');
+        expect(container.querySelectorAll('.cc-group-devices h2')).toHaveLength(0);
+      } else {
+        expect(container.querySelectorAll('[role="group"][aria-label="我的电脑"]')).toHaveLength(1);
+        expect(container.querySelectorAll('.cc-device-option')).toHaveLength(2);
+      }
       expect(container.querySelector('.catsco-device-card')).toBeNull();
       expect(container.querySelector('[aria-label^="设为本机"]')).toBeNull();
     };
@@ -168,10 +183,17 @@ describe('DesktopConnectModal', () => {
     });
     expect(container.textContent).toContain('选择本机桌面设备');
     expectSingleList();
-    await act(async () => Simulate.change(container.querySelector('input[value="home"]')));
-    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '使用这台电脑').click());
-    expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith(topicId, 42, 'home', 'r1');
-    expect(container.querySelector('input[value="home"]').checked).toBe(true);
+    if (group) {
+      api.getConversationDevice.mockResolvedValue({ ...snapshot, selected_device_id: 'home', revision: 'r2' });
+      await act(async () => Simulate.change(container.querySelector('input[type=radio][aria-label*="家里电脑"]')));
+      expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith(topicId, 'usr42', 'home', 'r1', 38);
+      expect(container.querySelector('input[type=radio][aria-label*="家里电脑"]').checked).toBe(true);
+    } else {
+      await act(async () => Simulate.change(container.querySelector('input[value="home"]')));
+      await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '使用这台电脑').click());
+      expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith(topicId, 42, 'home', 'r1');
+      expect(container.querySelector('input[value="home"]').checked).toBe(true);
+    }
     expectSingleList();
 
     // A remembered browser-local computer must not introduce a second list

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import GroupDeviceSharing from './group-device-sharing';
 import { createPortal } from 'react-dom';
 import { Laptop, RefreshCw, X } from './desktop-icons';
 import { api, getAuthRevision, getToken, isCurrentAuthSession } from '../api';
@@ -8,22 +9,10 @@ import '../css/conversation-device-picker.css';
 export default function ConversationDevicePicker({ topicId, activeAgent, onOpen, embedded = false }) {
   const agentId = activeAgent?.uid || activeAgent?.id;
   if (!topicId) return null;
-  if (!agentId && topicId.startsWith('grp_')) return <GroupDevicePicker key={topicId} topicId={topicId} onOpen={onOpen} embedded={embedded} />;
+  if (topicId.startsWith('grp_')) return <GroupDeviceSharing key={topicId} topicId={topicId} onOpen={onOpen} embedded={embedded} />;
   if (!agentId) return null;
   return <DevicePicker key={`${topicId}:${agentId}`} topicId={topicId} agentId={agentId} onOpen={onOpen} embedded={embedded}
     agentName={activeAgent?.display_name || activeAgent?.name || activeAgent?.username || String(agentId)} />;
-}
-
-function GroupDevicePicker({ topicId, onOpen, embedded }) {
-  const [agent, setAgent] = useState(null);
-  const [visited, setVisited] = useState(false);
-  useEffect(() => {
-    const reset = () => { setAgent(null); setVisited(false); };
-    window.addEventListener('cc:auth-changed', reset);
-    return () => window.removeEventListener('cc:auth-changed', reset);
-  }, []);
-  return <DevicePicker key={agent?.uid || 'choose-agent'} topicId={topicId} agentId={agent?.uid || ''} onOpen={onOpen} embedded={embedded}
-    agentName={agent?.display_name} onAgentPick={(next) => { setAgent(next); setVisited(true); }} initialOpen={visited} />;
 }
 
 function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = false, onOpen, embedded = false }) {

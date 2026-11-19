@@ -1,0 +1,257 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/openchat/openchat/server/store"
+)
+
+func TestGroupDeviceSharingPostgres(t *testing.T) {
+	dsn := os.Getenv("CATS_PG_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set CATS_PG_TEST_DSN for disposable-schema PostgreSQL acceptance")
+	}
+	root := &Adapter{}
+	if err := root.Open(dsn); err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	schema := fmt.Sprintf("sharing_test_%d", time.Now().UnixNano())
+	if _, err := root.db.Exec("CREATE SCHEMA " + schema); err != nil {
+		t.Fatal(err)
+	}
+	defer root.db.Exec("DROP SCHEMA " + schema + " CASCADE")
+	endpoint, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := endpoint.Query()
+	query.Set("search_path", schema)
+	endpoint.RawQuery = query.Encode()
+	db := &Adapter{}
+	if err = db.Open(endpoint.String()); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var currentSchema string
+	if err = db.db.QueryRow("SELECT current_schema()").Scan(&currentSchema); err != nil || currentSchema != schema {
+		t.Fatal("test schema isolation failed", currentSchema, err)
+	}
+
+	for _, ddl := range []string{createUsersTable, createTopicsTable, createGroupsTable, createGroupMembersTable, createConversationDeviceSelectionsTable} {
+		if _, err = db.db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Simulate the pre-080 schema with a retained owner-less selection.
+	var legacyActor int64
+	if err = db.db.QueryRow("INSERT INTO users(username,pass_hash) VALUES('legacy-user',$1) RETURNING id", []byte("fixture")).Scan(&legacyActor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.db.Exec("INSERT INTO conversation_device_selections VALUES($1,'before-upgrade','old-device','old-revision','legacy',1)", legacyActor); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := os.ReadFile("../migrations/postgres/000080_group_device_sharing.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range []string{string(migration), string(migration), createGroupDeviceShares, upgradeConversationDeviceSelectionOwner} {
+		if _, err = db.db.Exec(ddl); err != nil {
+			t.Fatal("upgrade/repeated startup failed", err)
+		}
+	}
+	ctx := context.Background()
+	beforeUpgrade, err := db.GetConversationDeviceSelection(ctx, legacyActor, "before-upgrade")
+	if err != nil || beforeUpgrade == nil || beforeUpgrade.OwnerUID != 0 || beforeUpgrade.DeviceID != "old-device" {
+		t.Fatal("upgrade changed old selection", beforeUpgrade, err)
+	}
+	actors := []int64{}
+	for _, name := range []string{"requester", "owner", "other-owner"} {
+		var id int64
+		if err = db.db.QueryRow("INSERT INTO users(username,pass_hash) VALUES($1,$2) RETURNING id", name, []byte("local-fixture")).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		actors = append(actors, id)
+	}
+	var group int64
+	if err = db.db.QueryRow(`INSERT INTO groups(name,owner_id) VALUES('sharing',$1) RETURNING id`, actors[0]).Scan(&group); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range actors {
+		if err = db.AddGroupMember(group, id, "member"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	topic := fmt.Sprintf("grp_%d", group)
+	for _, owner := range actors[1:] {
+		if err = db.RegisterDeviceShareBinding(ctx, owner, "same-device-id", "same-device-id", time.Now().UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	share := store.GroupDeviceShare{DeviceEpoch: 1, ID: "share-a", OwnerUID: actors[1], GranteeUID: actors[0], TopicID: topic, DeviceID: "same-device-id", Operations: []string{"read_file"}, Status: "active", UpdatedAt: time.Now().UnixMilli()}
+	saved, err := db.SaveGroupDeviceShare(ctx, share, 0)
+	if err != nil || saved.Revision != 1 {
+		t.Fatal(saved, err)
+	}
+	if err = db.UpdateGroupProfile(group, "renamed sharing group", ""); err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := db.GetGroupDeviceShare(ctx, saved.ID)
+	if err != nil || renamed.Status != "active" || renamed.Revision != 1 {
+		t.Fatal("group profile edit invalidated permission", renamed, err)
+	}
+	again, err := db.SaveGroupDeviceShare(ctx, share, 0)
+	if err != nil || again.ID != saved.ID || again.Revision != 1 {
+		t.Fatal("idempotent share", again, err)
+	}
+	other := share
+	other.ID = "share-b"
+	other.OwnerUID = actors[2]
+	if _, err = db.SaveGroupDeviceShare(ctx, other, 0); err != nil {
+		t.Fatal("device ID must be owner-scoped", err)
+	}
+	share.Status = "revoked"
+	revoked, err := db.SaveGroupDeviceShare(ctx, share, 1)
+	if err != nil || revoked.Revision != 2 {
+		t.Fatal(revoked, err)
+	}
+	share.Status = "active"
+	if _, err = db.SaveGroupDeviceShare(ctx, share, 0); !errors.Is(err, store.ErrDeviceShareConflict) {
+		t.Fatal("stale approval revived revoked share", err)
+	}
+	selection := store.ConversationDeviceSelection{DeviceID: "same-device-id", Revision: "v1", Source: "test", UpdatedAt: time.Now().UnixMilli()}
+	if won, err := db.CompareConversationDeviceSelection(ctx, actors[0], "legacy-session", "", selection); err != nil || !won {
+		t.Fatal(won, err)
+	}
+	legacy, err := db.GetConversationDeviceSelection(ctx, actors[0], "legacy-session")
+	if err != nil || legacy.OwnerUID != 0 {
+		t.Fatal("legacy selection compatibility", legacy, err)
+	}
+	selection.OwnerUID = actors[1]
+	selection.Revision = "v2"
+	if won, err := db.CompareConversationDeviceSelection(ctx, actors[0], "legacy-session", "v1", selection); err != nil || !won {
+		t.Fatal(won, err)
+	}
+	selected, err := db.GetConversationDeviceSelection(ctx, actors[0], "legacy-session")
+	if err != nil || selected.OwnerUID != actors[1] {
+		t.Fatal("shared owner lost", selected, err)
+	}
+	request := store.GroupDeviceShareRequest{ID: "request-a", RequesterUID: actors[0], OwnerUID: actors[1], TopicID: topic, ClientRequestID: "request-1", Description: "read the selected PC", CreatedAt: time.Now().UnixMilli()}
+	pending, err := db.CreateGroupDeviceShareRequest(ctx, request)
+	if err != nil || pending.Status != "pending" {
+		t.Fatal(pending, err)
+	}
+	share.ID = "ignored-on-upsert"
+	resolved, err := db.ResolveGroupDeviceShareRequest(ctx, pending.ID, 1, "approved", &share)
+	if err != nil || resolved.Status != "approved" {
+		t.Fatal(resolved, err)
+	}
+	repeated, err := db.ResolveGroupDeviceShareRequest(ctx, pending.ID, 1, "approved", &share)
+	if err != nil || repeated.Revision != resolved.Revision {
+		t.Fatal("approval retry", repeated, err)
+	}
+	if _, err = db.ResolveGroupDeviceShareRequest(ctx, pending.ID, 1, "rejected", nil); !errors.Is(err, store.ErrDeviceShareConflict) {
+		t.Fatal("stale rejection", err)
+	}
+	t.Run("concurrent approval and revocation", func(t *testing.T) {
+		for i := 0; i < 8; i++ {
+			current, err := db.GetGroupDeviceShare(ctx, saved.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			active := share
+			active.Status = "active"
+			current, err = db.SaveGroupDeviceShare(ctx, active, current.Revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.ID = fmt.Sprintf("race-request-%d", i)
+			request.ClientRequestID = request.ID
+			r, err := db.CreateGroupDeviceShareRequest(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raceCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			ready := make(chan struct{})
+			done := make(chan error, 2)
+			go func() {
+				<-ready
+				_, e := db.ResolveGroupDeviceShareRequest(raceCtx, r.ID, r.Revision, "approved", &active)
+				done <- e
+			}()
+			revocation := *current
+			revocation.Status = "revoked"
+			go func() { <-ready; _, e := db.SaveGroupDeviceShare(raceCtx, revocation, current.Revision); done <- e }()
+			close(ready)
+			for n := 0; n < 2; n++ {
+				if e := <-done; e != nil && !errors.Is(e, store.ErrDeviceShareConflict) {
+					cancel()
+					t.Fatal("concurrent transition failed", e)
+				}
+			}
+			cancel()
+			after, e := db.GetGroupDeviceShareRequest(ctx, r.ID)
+			if e != nil {
+				t.Fatal(e)
+			}
+			permission, e := db.GetGroupDeviceShare(ctx, saved.ID)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if permission.Status == "revoked" && after.Status == "approved" {
+				t.Fatal("revoked share retained actionable approval")
+			}
+		}
+	})
+	if err = db.RemoveGroupMember(group, actors[0]); err != nil {
+		t.Fatal(err)
+	}
+	afterLeave, err := db.GetGroupDeviceShare(ctx, saved.ID)
+	if err != nil || afterLeave.Status != "revoked" {
+		t.Fatal("leave did not revoke", afterLeave, err)
+	}
+	if err = db.AddGroupMember(group, actors[0], "member"); err != nil {
+		t.Fatal(err)
+	}
+	afterRejoin, err := db.GetGroupDeviceShare(ctx, saved.ID)
+	if err != nil || afterRejoin.Status != "revoked" {
+		t.Fatal("rejoin revived sharing", afterRejoin, err)
+	}
+	if err = db.InvalidateDeviceShares(ctx, actors[1], "same-device-id"); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := db.GetDeviceShareBinding(ctx, actors[1], "same-device-id")
+	if err != nil || binding.Active {
+		t.Fatal("unlink did not persist binding revocation", binding, err)
+	}
+	if err = db.RegisterDeviceShareBinding(ctx, actors[1], "same-device-id", "same-device-id", 1); err == nil {
+		t.Fatal("old signed binding resurrected after unlink")
+	}
+	if err = db.RegisterDeviceShareBinding(ctx, actors[1], "same-device-id", "same-device-id", time.Now().Add(time.Second).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	rebound, err := db.GetDeviceShareBinding(ctx, actors[1], "same-device-id")
+	if err != nil || !rebound.Active || rebound.Epoch <= 1 {
+		t.Fatal("new binding epoch missing", rebound, err)
+	}
+	current, err := db.GetGroupDeviceShare(ctx, saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	share.Status = "active"
+	share.DeviceEpoch = 1
+	if _, err = db.SaveGroupDeviceShare(ctx, share, current.Revision); !errors.Is(err, store.ErrDeviceShareConflict) {
+		t.Fatal("in-flight old-binding approval was accepted", err)
+	}
+	oldRequest, err := db.GetGroupDeviceShareRequest(ctx, pending.ID)
+	if err != nil || oldRequest.Status != "invalidated" {
+		t.Fatal("old approval card remained actionable", oldRequest, err)
+	}
+
+}

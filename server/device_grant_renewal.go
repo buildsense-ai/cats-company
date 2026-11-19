@@ -134,6 +134,9 @@ func (h *Hub) renewDeviceGrant(client *Client, msg *MsgDeviceGrantRenewal) (Scop
 // device logout/revocation watermark. A later re-login of the same computer
 // must not resurrect an earlier task's capabilities.
 func (h *Hub) deviceGrantWasRevoked(grant ScopedDeviceGrant) bool {
+	if grant.IdentitySource == groupDeviceShareSource && !h.groupDeviceGrantCurrent(grant) {
+		return true
+	}
 	claims := &DeviceConnectorClaims{UID: parseFormattedUID(grant.OwnerUserID), DeviceID: grant.DeviceID}
 	claims.IssuedAt = &jwt.NumericDate{Time: time.UnixMilli(grant.CreatedAt)}
 	return h.isDeviceConnectorRevoked(claims)

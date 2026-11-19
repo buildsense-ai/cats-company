@@ -169,6 +169,8 @@ type MsgClientFriend struct {
 // a selected user device. It is intentionally outside regular chat data so RPC
 // traffic is not persisted or replayed as conversation history.
 type MsgDeviceRPC struct {
+	ShareID              string                 `json:"share_id,omitempty"`
+	ShareRevision        int64                  `json:"share_revision,omitempty"`
 	TargetScope          string                 `json:"target_scope,omitempty"`
 	ID                   string                 `json:"id,omitempty"`
 	Type                 string                 `json:"type"` // "request" or "result"
@@ -230,6 +232,12 @@ type MsgSkillMutationGrant struct {
 // except the reserved skillhub.publication.* protocol: CatsCo validates and
 // projects those requests/results itself, never forwarding raw private reports.
 type MsgThinToolRPC struct {
+	TopicID           string                 `json:"topic_id,omitempty"`
+	TopicType         string                 `json:"topic_type,omitempty"`
+	AgentID           string                 `json:"agent_id,omitempty"`
+	ShareID           string                 `json:"share_id,omitempty"`
+	ShareRevision     int64                  `json:"share_revision,omitempty"`
+	IdentitySource    string                 `json:"identity_source,omitempty"`
 	TargetScope       string                 `json:"target_scope,omitempty"`
 	ID                string                 `json:"id,omitempty"`
 	Type              string                 `json:"type"` // "request" or "result"

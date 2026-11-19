@@ -41,6 +41,8 @@ func (a *Adapter) createSchema(ctx context.Context, conn *sql.Conn) error {
 		createConversationTitlesTable,
 		createConversationNotificationMutesTable,
 		createConversationDeviceSelectionsTable,
+		createGroupDeviceShares,
+		upgradeConversationDeviceSelectionOwner,
 		createMessagesTable,
 createFileUploadsTable,
 		createFileMessageBindingsTable,

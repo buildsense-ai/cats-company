@@ -7,7 +7,7 @@ import { api } from '../api';
 
 const auth = vi.hoisted(() => ({ token: 'fake-user-session', revision: 1 }));
 vi.mock('../api', () => ({
-  api: { getConversationDevice: vi.fn(), confirmConversationDevice: vi.fn() },
+  api: { getConversationDevice: vi.fn(), confirmConversationDevice: vi.fn(), getGroupDeviceShares: vi.fn(), getDevices: vi.fn(), setGroupDeviceShare: vi.fn() },
   getToken: () => auth.token,
   getAuthRevision: () => auth.revision,
   isCurrentAuthSession: (token, revision) => token === auth.token && revision === auth.revision,
@@ -28,6 +28,15 @@ describe('ConversationDevicePicker', () => {
   beforeEach(() => {
     vi.clearAllMocks(); auth.token = 'fake-user-session'; auth.revision = 1;
     api.getConversationDevice.mockResolvedValue(directory);
+    api.getDevices.mockResolvedValue({ devices: directory.devices.map(device => ({ ...device, ownerUserId: 'usr7' })) });
+    api.getGroupDeviceShares.mockResolvedValue({
+      actor_uid: 7, shares: [], devices: [],
+      members: [
+        { user_id: 7, display_name: 'Alice' }, { user_id: 8, display_name: 'Bob' },
+        { user_id: 42, display_name: 'Cloud Bot', is_bot: true },
+        { user_id: 43, display_name: 'Other Bot', is_bot: true },
+      ],
+    });
     api.confirmConversationDevice.mockResolvedValue({ ...directory, revision: 'r2', status: 'selected', selected_device_id: 'b' });
     container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
   });
@@ -143,7 +152,7 @@ describe('ConversationDevicePicker', () => {
     await render('grp_1');
     await act(async () => old.resolve({ ...directory, status: 'selected', selected_device_id: 'old-private', devices: [{ deviceId: 'old-private', displayName: 'PRIVATE' }] }));
     expect(container.textContent).not.toContain('PRIVATE');
-    expect(api.getConversationDevice).toHaveBeenLastCalledWith('grp_1', 42);
+    expect(api.getConversationDevice).toHaveBeenCalledWith('grp_1', 'usr42');
   });
 
   it('clears data and ignores an in-flight confirmation after logout', async () => {
@@ -166,13 +175,33 @@ describe('ConversationDevicePicker', () => {
     expect(button('使用这台电脑').disabled).toBe(true);
   });
 
-  it('lets group members select a Bot scope without committing a device', async () => {
+  it('shows a separate default-device column for each group Bot', async () => {
     api.getConversationDevice.mockImplementation(async (_topic, agent) => agent ? directory : { status: 'choose_agent', agents: [{ uid: 'usr42', display_name: 'Cloud Bot' }, { uid: 'usr43', display_name: 'Other Bot' }] });
     await render('grp_1', null); await open();
-    await click(button('Other Bot · usr43'));
-    expect(api.getConversationDevice).toHaveBeenLastCalledWith('grp_1', 'usr43');
+    expect(api.getConversationDevice).toHaveBeenCalledWith('grp_1', 'usr42');
+    expect(api.getConversationDevice).toHaveBeenCalledWith('grp_1', 'usr43');
+    expect(document.querySelector('[role=dialog]').textContent).toContain('共享使用权');
+    expect(document.querySelectorAll('input[type=checkbox]')).toHaveLength(3);
+    expect(document.querySelectorAll('input[type=radio]')).toHaveLength(6);
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
     expect(document.querySelector('[role=dialog]')).not.toBeNull();
+  });
+
+  it('disables shared selection for an old Bot while keeping the new Bot available', async () => {
+    const shared = { deviceId: 'pcB', displayName: 'pcB', ownerUserId: 'usr8', routable: true };
+    api.getGroupDeviceShares.mockResolvedValue({
+      actor_uid: 7, shares: [], devices: [shared],
+      members: [{ user_id: 7 }, { user_id: 8 }, { user_id: 42, display_name: 'New', is_bot: true }, { user_id: 43, display_name: 'Old', is_bot: true }],
+    });
+    api.getConversationDevice.mockImplementation(async (_topic, bot) => ({
+      ...directory, devices: [{ ...shared, routable: bot === 'usr42', unavailableReason: bot === 'usr43' ? 'group_device_share_upgrade_required' : '' }],
+    }));
+    await render('grp_1'); await open();
+    const radios = [...document.querySelectorAll('input[type=radio]')].filter(input => input.getAttribute('aria-label').includes('pcB'));
+    expect(radios).toHaveLength(2);
+    expect(radios[0].disabled).toBe(false);
+    expect(radios[1].disabled).toBe(true);
+    expect(radios[1].title).toContain('升级');
   });
 
   it('supports Escape and does not request a device without a conversation', async () => {

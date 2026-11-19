@@ -768,9 +768,13 @@ export const api = {
   getDeviceConnectorPairing: (pairingId) =>
     request('GET', `/api/device-connectors/pairings/${encodeURIComponent(pairingId)}`),
   getCatsCoDesktopReleases: () => request('GET', '/api/catsco/desktop-releases'),
+  getGroupDeviceShares: (topicId) => request('GET', `/api/groups/device-shares?${new URLSearchParams({ topic_id: topicId })}`),
+  setGroupDeviceShare: (payload) => request('POST', '/api/groups/device-shares', payload),
+  getGroupDeviceShareRequest: (topicId, requestId) => request('GET', `/api/groups/device-share-requests?${new URLSearchParams({ topic_id: topicId, request_id: requestId })}`),
+  resolveGroupDeviceShareRequest: (payload) => request('POST', '/api/groups/device-share-requests', payload),
   getDevices: (options = {}) => request('GET', '/api/devices', undefined, options),
   getConversationDevice: (topicId, agentId) => request('GET', `/api/conversations/device-selection?${new URLSearchParams({ topic_id: topicId, agent_id: String(agentId) })}`),
-  confirmConversationDevice: (topicId, agentId, deviceId, revision) => request('POST', `/api/conversations/device-selection?${new URLSearchParams({ topic_id: topicId, agent_id: String(agentId) })}`, { device_id: deviceId, expected_revision: revision }),
+  confirmConversationDevice: (topicId, agentId, deviceId, revision, ownerUid) => request('POST', `/api/conversations/device-selection?${new URLSearchParams({ topic_id: topicId, agent_id: String(agentId) })}`, { device_id: deviceId, expected_revision: revision, ...(ownerUid ? { owner_uid: ownerUid } : {}) }),
   unlinkDevice: (deviceId) => request('DELETE', `/api/devices/${encodeURIComponent(deviceId)}`),
   getDeviceAudit: (limit = 20) => request('GET', `/api/devices/audit?limit=${limit}`),
 

@@ -530,7 +530,7 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		return fmt.Errorf("ordinary device tools require an authenticated bot connection")
 	}
 	hasGrantFields := strings.TrimSpace(msg.GrantID) != "" || strings.TrimSpace(msg.SessionKey) != "" || strings.TrimSpace(msg.ActorUserID) != "" || msg.TargetScope != ""
-	if !hasGrantFields && deviceGrantEnforcementRequired() {
+	if !hasGrantFields && (deviceGrantEnforcementRequired() || client.hasRuntimeCapability(groupDeviceShareCapability)) {
 		return &thinToolRPCAuthorizationError{code: "device_authorization_required", message: "device tool authorization is required; upgrade the cloud Bot and start a new user turn"}
 	}
 	if hasGrantFields && (strings.TrimSpace(msg.GrantID) == "" || strings.TrimSpace(msg.SessionKey) == "" || strings.TrimSpace(msg.ActorUserID) == "") {
@@ -547,6 +547,7 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		// Compatibility mode still validates owner, runtime role, liveness and
 		// capabilities. It only omits the new per-turn grant until the Bot has
 		// been upgraded and strict enforcement is enabled.
+
 		if err := h.authorizeOrdinaryThinToolRPCTarget(ownerUID, deviceID); err != nil {
 			return err
 		}
@@ -590,6 +591,15 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	}, grant, operation); err != nil {
 		return err
 	}
+	if grant.IdentitySource == groupDeviceShareSource {
+		_, target := h.findDeviceRPCTarget(ownerUID, UserDevice{DeviceID: deviceID})
+		if target == nil || !target.hasRuntimeCapability(groupDeviceShareCapability) || !client.hasRuntimeCapability(groupDeviceShareCapability) {
+			return &thinToolRPCAuthorizationError{code: "group_device_share_upgrade_required", message: "设备共享需要升级 Bot 和设备 Connector"}
+		}
+		if !h.groupDeviceGrantCurrent(grant) {
+			return fmt.Errorf("group sharing permission is no longer active")
+		}
+	}
 	if err := h.authorizeOrdinaryThinToolRPCTarget(ownerUID, deviceID); err != nil {
 		return err
 	}
@@ -608,6 +618,9 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	if !allowed {
 		return fmt.Errorf("target device no longer supports the authorized operation")
 	}
+	msg.TopicID, msg.TopicType, msg.AgentID = grant.TopicID, grant.TopicType, grant.AgentID
+	msg.IdentitySource = grant.IdentitySource
+	msg.ShareID, msg.ShareRevision = grant.ShareID, grant.ShareRevision
 	// Bound the forwarded execution deadline to the capability, including on
 	// revalidation immediately before dispatch. Never forward an expired request.
 	if msg.ExpiresAt <= 0 || msg.ExpiresAt > grant.ExpiresAt {

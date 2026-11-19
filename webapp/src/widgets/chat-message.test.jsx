@@ -37,6 +37,8 @@ vi.mock('marked', () => ({
 }));
 
 vi.mock('../api', () => ({
+  api: { getGroupDeviceShareRequest: vi.fn(), resolveGroupDeviceShareRequest: vi.fn() },
+  getToken: () => 'test-session', getAuthRevision: () => 1, isCurrentAuthSession: () => true,
   resolveMediaURL: vi.fn((url) => url),
   getApiBaseURL: () => window.location.origin,
 }));
@@ -59,7 +61,7 @@ vi.mock('read-excel-file/browser', () => ({
 }));
 
 import ChatMessage, { artifactSubtitle, createCloudArtifactPreviewFile, FilePreviewPanel, previewFileDescriptor } from './chat-message';
-import { resolveMediaURL } from '../api';
+import { api, resolveMediaURL } from '../api';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
 
@@ -168,6 +170,22 @@ describe('ChatMessage rich file rendering', () => {
     vi.useRealTimers();
     delete document.documentElement.dataset.theme;
     delete document.documentElement.dataset.liquidVariant;
+  });
+
+  it('renders a persisted group sharing card with its original topic and message identity', async () => {
+    const payload = { group_device_share: { topic_id: 'grp_2', request_id: 'request-b' } };
+    api.getGroupDeviceShareRequest.mockResolvedValue({
+      can_resolve: true, devices: [{ deviceId: 'pcB', displayName: 'pcB' }],
+      request: { topic_id: 'grp_2', message_id: 118, description: '借用 pcB', status: 'pending', revision: 1 },
+    });
+    await act(async () => root.render(<ChatMessage message={{
+      id: 118, seq_id: 118, topic_id: 'grp_2', from_uid: 1, msg_type: 'text',
+      content: payload, content_blocks: [{ type: 'card', payload }],
+    }} isSelf={false} isGroup senderName="userA" />));
+    expect(container.querySelector('.cc-share-card')).not.toBeNull();
+    expect(container.textContent).toContain('借用 pcB');
+    expect(container.querySelector('select[aria-label="选择要授权的电脑"]')).not.toBeNull();
+    expect(api.getGroupDeviceShareRequest).toHaveBeenCalledWith('grp_2', 'request-b');
   });
 
   it('previews uploaded HTML as a sandboxed workflow report artifact', async () => {

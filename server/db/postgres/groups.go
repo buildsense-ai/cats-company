@@ -113,14 +113,21 @@ func (a *Adapter) AddGroupMember(groupID, userID int64, role string) error {
 
 // RemoveGroupMember removes a user from a group.
 func (a *Adapter) RemoveGroupMember(groupID, userID int64) error {
-	_, err := a.db.Exec(
-		`DELETE FROM group_members WHERE group_id = $1 AND user_id = $2`,
-		groupID, userID,
-	)
+	tx, err := a.db.Begin()
 	if err != nil {
-		return fmt.Errorf("remove group member: %w", err)
+		return err
 	}
-	return nil
+	defer tx.Rollback()
+	if _, err = tx.Exec(`DELETE FROM group_members WHERE group_id=$1 AND user_id=$2`, groupID, userID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE group_device_shares SET status='revoked',revision=revision+1,updated_at_ms=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint WHERE topic_id=$1 AND (owner_uid=$2 OR grantee_uid=$2) AND status='active'`, fmt.Sprintf("grp_%d", groupID), userID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE group_device_share_requests SET status='invalidated',revision=revision+1 WHERE topic_id=$1 AND (owner_uid=$2 OR requester_uid=$2) AND status IN ('pending','approved')`, fmt.Sprintf("grp_%d", groupID), userID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetGroupMembers returns all members of a group with user info.
@@ -277,6 +284,12 @@ func (a *Adapter) DeleteGroup(groupID int64) error {
 	defer tx.Rollback()
 
 	topicID := fmt.Sprintf("grp_%d", groupID)
+	if _, err = tx.Exec(`UPDATE group_device_shares SET status='revoked',revision=revision+1 WHERE topic_id=$1 AND status='active'`, topicID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE group_device_share_requests SET status='invalidated',revision=revision+1 WHERE topic_id=$1 AND status IN ('pending','approved')`, topicID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM messages WHERE topic_id = $1`, topicID); err != nil {
 		return fmt.Errorf("delete group messages: %w", err)
 	}

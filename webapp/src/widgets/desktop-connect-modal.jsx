@@ -500,7 +500,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
       >
         <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3 id="catsco-desktop-modal-title" tabIndex={-1} className="cc-dialog-reading-focus">{computersMode ? '电脑' : 'CatsCo 桌面端'}</h3>
+            <h3 id="catsco-desktop-modal-title" tabIndex={-1} className="cc-dialog-reading-focus">{computersMode ? topicId?.startsWith('grp_') ? '设备与授权' : '电脑' : 'CatsCo 桌面端'}</h3>
             {!computersMode && <p>连接电脑、查看设备，或下载当前版本。</p>}
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">

@@ -86,10 +86,25 @@ func (h *DeviceHandler) HandleConversationSelection(w http.ResponseWriter, r *ht
 			known = append(known, device)
 		}
 	}
+	if isGroupTopic(topic) {
+		shared, err := h.hub.sharedGroupDevices(r.Context(), actor, topic)
+		if err != nil {
+			writeJSON(w, 503, map[string]string{"error": "sharing storage unavailable"})
+			return
+		}
+		for i := range shared {
+			if peer := h.hub.getClient(bot); peer != nil && !peer.hasRuntimeCapability(groupDeviceShareCapability) {
+				shared[i].Routable = false
+				shared[i].UnavailableReason = "group_device_share_upgrade_required"
+			}
+		}
+		known = append(known, shared...)
+	}
 	sort.Slice(known, func(i, j int) bool { return known[i].DeviceID < known[j].DeviceID })
 	if r.Method == http.MethodPost {
 		var req struct {
 			DeviceID         string  `json:"device_id"`
+			OwnerUID         int64   `json:"owner_uid"`
 			ExpectedRevision *string `json:"expected_revision"`
 		}
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
@@ -98,7 +113,11 @@ func (h *DeviceHandler) HandleConversationSelection(w http.ResponseWriter, r *ht
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "device_id and expected_revision required"})
 			return
 		}
-		device, found := findDeviceByID(known, req.DeviceID)
+		owner := req.OwnerUID
+		if owner <= 0 {
+			owner = actor
+		}
+		device, found := findDeviceByOwner(known, req.DeviceID, owner)
 		if !found {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "device is not available to this account"})
 			return
@@ -107,7 +126,7 @@ func (h *DeviceHandler) HandleConversationSelection(w http.ResponseWriter, r *ht
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "device is offline; refresh and try again"})
 			return
 		}
-		if _, err := h.registry().confirmDeviceSelection(actor, session, device.DeviceID, "user_confirmation", *req.ExpectedRevision); err != nil {
+		if _, err := h.registry().confirmDeviceSelection(actor, session, device.DeviceID, "user_confirmation", *req.ExpectedRevision, device.OwnerUID); err != nil {
 			code := http.StatusServiceUnavailable
 			message := "selection store unavailable"
 			if errors.Is(err, errDeviceSelectionConflict) {
@@ -124,18 +143,21 @@ func (h *DeviceHandler) HandleConversationSelection(w http.ResponseWriter, r *ht
 		return
 	}
 	selectedID, state := preference.DeviceID, "needs_selection"
+	selectedOwner := selectionOwner(preference, actor)
 	if preference.active(unixMillis(h.registry().now())) {
 		state = "unavailable"
-		if device, found := findDeviceByID(known, selectedID); found && device.Routable {
+		if device, found := findDeviceByOwner(known, selectedID, selectionOwner(preference, actor)); found && device.Routable {
 			state = "selected"
 		}
 	} else if preference.DeviceID == "" && len(known) == 1 && known[0].Routable {
 		// Display the single-device default. GET initializes a revision only;
 		// it never chooses a device or issues an execution grant.
 		selectedID, state = known[0].DeviceID, "automatic"
+		selectedOwner = known[0].OwnerUID
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"topic_id": topic, "agent_id": formatUID(bot), "agent_name": displayNameOrUsername(agent.DisplayName, agent.Username), "revision": preference.Revision,
+		"selected_owner_uid": selectedOwner,
 		"selected_device_id": selectedID, "status": state, "devices": deviceSelectionCandidates(known),
 	})
 }

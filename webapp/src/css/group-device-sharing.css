@@ -1,0 +1,32 @@
+.cc-group-devices { width: 100%; min-width: 0; color: var(--cc-text, inherit); }
+.cc-device-table-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
+.cc-group-devices h3 { font-size: 14px; margin: 16px 0 8px; }
+.cc-group-devices table { width: 100%; min-width: 480px; border-collapse: collapse; font-size: 13px; }
+.cc-group-devices th, .cc-group-devices td { padding: 9px; border-bottom: 1px solid var(--cc-border, #8884); text-align: center; }
+.cc-group-devices th[scope="row"] { text-align: left; font-weight: 400; }
+.cc-group-devices small { display: block; color: var(--cc-text-secondary, #888); margin-top: 3px; overflow-wrap: anywhere; }
+.cc-group-devices input { accent-color: var(--cc-accent, var(--cc-text, #536af1)); width: 17px; height: 17px; }
+.cc-group-devices input[type="radio"] { border-radius: 50%; }
+.cc-group-devices input[type="checkbox"] { border-radius: 2px; }
+.cc-group-devices th[colspan] { border-bottom: 2px solid var(--cc-border, #8886); }
+.cc-group-devices td span { font-size: 12px; }
+.cc-share-card { padding: 12px; color: var(--cc-text, inherit); background: var(--cc-panel-raised, transparent); }
+.cc-share-card select { display: block; max-width: 100%; padding: 7px; margin: 8px 0; color: inherit; background: var(--cc-panel-raised, inherit); }
+.cc-share-card button { margin: 4px 8px 4px 0; }
+
+.cc-group-devices p, .cc-share-card p { font-size: 13px; line-height: 1.6; margin: 12px 0; }
+.cc-group-devices button, .cc-share-card button {
+  border: 1px solid var(--cc-border, #8884);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  background: var(--cc-secondary-action-bg, transparent);
+  color: inherit;
+  cursor: pointer;
+}
+.cc-group-devices button:disabled, .cc-share-card button:disabled { opacity: .5; cursor: default; }
+.cc-group-devices :is(button, input, [tabindex]):focus-visible,
+.cc-share-card :is(button, select):focus-visible { outline: 2px solid var(--cc-focus-border, currentColor); outline-offset: 2px; }
+.cc-share-card { border: 1px solid var(--cc-border, #8884); border-radius: 8px; }
+.cc-share-card select { font: inherit; font-size: 13px; border: 1px solid var(--cc-border, #8884); border-radius: 6px; }

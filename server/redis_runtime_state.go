@@ -758,6 +758,11 @@ else
 end
 redis.call('SADD', selectionIndex, grantID)
 redis.call('SADD', deviceIndex, grantID)
+if ARGV[5] ~= '' then
+  redis.call('SADD', KEYS[4], grantID)
+  local shareTTL=redis.call('PTTL',KEYS[4])
+  if ttl > 0 and (shareTTL < 0 or shareTTL < ttl) then redis.call('PEXPIRE',KEYS[4],ttl) end
+end
 if ttl <= 0 then
   redis.call('SADD', selectionIndex, permanentMarker)
   redis.call('SADD', deviceIndex, permanentMarker)
@@ -773,7 +778,7 @@ else
     if currentTTL < 0 or currentTTL < ttl then redis.call('PEXPIRE', deviceIndex, ttl) end
   end
 end
-return 1`, []string{s.deviceGrantKey(grant.GrantID), selectionIndex, deviceIndex}, grant.GrantID, string(payload), ttl.Milliseconds(), permanentDeviceGrantIndexMarker).Result()
+return 1`, []string{s.deviceGrantKey(grant.GrantID), selectionIndex, deviceIndex, s.key("device_grant_share", grant.ShareID)}, grant.GrantID, string(payload), ttl.Milliseconds(), permanentDeviceGrantIndexMarker, grant.ShareID).Result()
 		cancel()
 		if err != nil {
 			s.logDeviceAuthorizationFailure("grant_write", redisAuthorizationErrorClass(err))

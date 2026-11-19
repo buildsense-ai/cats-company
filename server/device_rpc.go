@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -8,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -265,6 +267,16 @@ func (h *Hub) bindClientDeviceFromHi(client *Client, msg *MsgClientHi) (map[stri
 		Capabilities:   msg.Device.Capabilities,
 		ModelStatus:    msg.Device.ModelStatus,
 	}
+	if client.deviceConnector != nil && client.deviceConnector.IssuedAt != nil {
+		if shares, ok := h.db.(store.GroupDeviceShareStore); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			err := shares.RegisterDeviceShareBinding(ctx, ownerUID, req.DeviceID, req.InstallationID, client.deviceConnector.IssuedAt.Time.UnixMilli())
+			cancel()
+			if err != nil {
+				return nil, false
+			}
+		}
+	}
 	device, err := h.userDevices.register(ownerUID, req)
 	if err != nil {
 		return nil, false
@@ -380,6 +392,10 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		return
 	}
 	targetRoute, target := h.findDeviceRPCTarget(ownerUID, device)
+	if grant.IdentitySource == groupDeviceShareSource && (target == nil || !target.hasRuntimeCapability(groupDeviceShareCapability) || !client.hasRuntimeCapability(groupDeviceShareCapability) || !h.groupDeviceGrantCurrent(grant)) {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "group_device_share_upgrade_required or revoked permission", nil)
+		return
+	}
 	if !targetRoute.validAt(nowForRoute(h)) {
 		h.auditDeviceRPC(ownerUID, "rpc_rejected", "unavailable", "device connection unavailable", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device connection unavailable", map[string]interface{}{"request_id": requestID, "device_id": grant.DeviceID})
@@ -404,6 +420,7 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 	forward.ActorUserID = grant.ActorUserID
 	forward.OwnerUserID = ownerUserID
 	forward.IdentitySource = grant.IdentitySource
+	forward.ShareID, forward.ShareRevision = grant.ShareID, grant.ShareRevision
 	forward.AgentID = grant.AgentID
 	forward.AgentBodyID = grant.AgentBodyID
 	forward.DeviceID = device.DeviceID
@@ -645,7 +662,7 @@ func validateDeviceRPCGrant(client *Client, msg *MsgDeviceRPC, grant ScopedDevic
 	if grant.TargetScope != msg.TargetScope {
 		return fmt.Errorf("target_scope does not match grant")
 	}
-	if grant.TargetScope == "explicit_device" && (strings.TrimSpace(msg.DeviceID) != grant.DeviceID || grant.OwnerUserID != grant.ActorUserID) {
+	if grant.TargetScope == "explicit_device" && (strings.TrimSpace(msg.DeviceID) != grant.DeviceID || (grant.OwnerUserID != grant.ActorUserID && grant.IdentitySource != groupDeviceShareSource)) {
 		return fmt.Errorf("explicit device authorization requires an exact same-account device_id")
 	}
 	if grant.Status != "active" || grant.IdentityTrust != "server_canonical" {

@@ -9,6 +9,7 @@ import (
 // to execute tools. Execution still needs a new, short-lived scoped grant.
 // A blank DeviceID is a versioned slot awaiting the user's first selection.
 type ConversationDeviceSelection struct {
+	OwnerUID  int64
 	DeviceID  string
 	Revision  string
 	Source    string
