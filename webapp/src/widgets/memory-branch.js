@@ -60,7 +60,7 @@ export function verifiedMemoryDetail(page, reader) {
   }
   if (reader.kind === 'projection') {
     if (page?.ref !== reader.projection_ref || reader.revision && page.revision !== reader.revision || !object(page.document) || !nodeRows(page.document.nodes)) throw new Error('返回版本与引用不一致，未显示正文。');
-    return { nodes: page.document.nodes, conditions: page.document.conditions || [], omissions: page.document.omissions || [], gaps: page.document.gap_acknowledgement, coverage: page.document.overall_coverage, goal: page.document.goal };
+    return { nodes: page.document.nodes, edges: Array.isArray(page.document.edges) ? page.document.edges : [], conditions: page.document.conditions || [], omissions: page.document.omissions || [], gaps: page.document.gap_acknowledgement, coverage: page.document.overall_coverage, goal: page.document.goal };
   }
   if (reader.kind === 'assertion') {
     if (page?.status !== 'complete' || page.read_required !== false || page.projection_ref !== reader.projection_ref || page.member_ref !== reader.member_ref || page.assertion?.id !== reader.node_id) throw new Error('该断言的完整条件尚不可核验，未显示正文。');
@@ -83,5 +83,5 @@ export function verifiedMemoryDetail(page, reader) {
   if (!context) return { nodes: [{ kind: source.anchor.kind, text: source.text }], conditions: [], omissions: [], coverage: source.coverage };
   if (context.contract_version !== 'memory-graph/3' || !nodeRows(context.nodes)) throw new Error('记忆图谱不完整，未显示正文。');
   const qualifier = key => (context.qualifiers?.[key] || []).flatMap(item => typeof item.text === 'string' ? [item.text] : []);
-  return { nodes: context.nodes, conditions: qualifier('conditions'), omissions: qualifier('omissions'), coverage: 'partial' };
+  return { nodes: context.nodes, edges: Array.isArray(context.edges) ? context.edges : [], conditions: qualifier('conditions'), omissions: qualifier('omissions'), coverage: 'partial' };
 }

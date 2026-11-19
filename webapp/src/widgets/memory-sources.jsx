@@ -3,7 +3,7 @@ import { ArrowRight, BookOpen, Brain, ChevronRight, History, RotateCcw } from 'l
 import { api } from '../api';
 import { renderSafeMarkdown } from './markdown-utils';
 import { DIARY_RELATIONS, DIARY_STATUS } from './diary-sources';
-import { MEMORY_NODE_LABELS, verifiedMemoryDetail } from './memory-branch';
+import { MEMORY_NODE_LABELS, MEMORY_RELATIONS, verifiedMemoryDetail } from './memory-branch';
 import './diary-sources.css';
 import './memory-sources.css';
 
@@ -37,9 +37,10 @@ function branchUnits(events) {
   for (const event of events) {
     for (const node of event.nodes) {
       const key = JSON.stringify(node.reader);
-      const unit = units.get(key) || { key, node, size: 0, refs: new Set() };
+      const unit = units.get(key) || { key, node, size: 0, refs: new Set(), ids: new Set() };
       unit.size += 1;
       unit.refs.add(node.ref);
+      unit.ids.add(node.id);
       units.set(key, unit);
     }
   }
@@ -226,24 +227,62 @@ function ReaderBody({ state, label, onRetry, children }) {
 
 const prose = text => <div className="cc-diary-prose" dangerouslySetInnerHTML={{ __html: renderSafeMarkdown(text) }} />;
 
-// Consecutive points of one kind read as one list under one heading; order is
-// kept, and a point with an unlinked source scope never joins a bound group.
-function pointGroups(nodes) {
-  const groups = [];
-  for (const [index, item] of nodes.entries()) {
-    const heading = (MEMORY_NODE_LABELS[item.kind] || '记忆内容') + (item.association === 'member_scope_unlinked' ? ' · 来源范围，未绑定到此断言' : '');
-    const last = groups[groups.length - 1];
-    const point = { key: item.id || index, text: item.text };
-    if (last?.heading === heading) last.points.push(point); else groups.push({ heading, points: [point] });
+const POINT_TAGS = { assertion: '断言', condition: '条件', omission: '缺口', tool_call: '工具', correction: '更正' };
+// These relation labels name the linking point's role, so they read on the
+// point being limited or supported ("适用条件：条件 1"); the rest
+// ("来源于", "延续", "使用") read on the point they start from.
+const TARGET_RELATIONS = new Set(['supports', 'qualifies', 'omits', 'corrects', 'supplements', 'requires']);
+
+// Points of one kind read as one list under one heading, in document order;
+// a point with an unlinked source scope never joins a bound group. Links
+// between points (often many-to-many) show once, as tags on the linked
+// point, instead of a graph. Hit marks show only when the run hit some,
+// not all, of the source's points.
+function pointGroups(nodes, edges = [], hits = new Set()) {
+  const counts = new Map();
+  const points = nodes.map((item, index) => {
+    const kind = POINT_TAGS[item.kind] || MEMORY_NODE_LABELS[item.kind] || '要点';
+    counts.set(kind, (counts.get(kind) || 0) + 1);
+    return { id: item.id, key: item.id || index, text: item.text, tag: `${kind} ${counts.get(kind)}`, links: new Map(),
+      heading: (MEMORY_NODE_LABELS[item.kind] || '记忆内容') + (item.association === 'member_scope_unlinked' ? ' · 来源范围，未绑定到此断言' : '') };
+  });
+  const byId = new Map();
+  for (const point of points) if (point.id != null && !byId.has(point.id)) byId.set(point.id, point);
+  const linked = edges.filter(edge => edge && edge.from !== edge.to && byId.has(edge.from) && byId.has(edge.to));
+  for (const edge of linked) {
+    const onTarget = TARGET_RELATIONS.has(edge.kind);
+    const holder = byId.get(onTarget ? edge.to : edge.from), other = byId.get(onTarget ? edge.from : edge.to);
+    const label = MEMORY_RELATIONS[edge.kind] || '关联', names = holder.links.get(label) || [];
+    if (!names.includes(other.tag)) holder.links.set(label, [...names, other.tag]);
   }
-  return groups;
+  const hitCount = points.filter(point => hits.has(point.id)).length;
+  const markHits = hitCount > 0 && hitCount < points.length;
+  const groups = new Map();
+  for (const point of points) groups.set(point.heading, [...(groups.get(point.heading) || []), {
+    key: point.key, text: point.text, tag: linked.length ? point.tag : undefined, hit: markHits && hits.has(point.id),
+    links: point.links.size ? [...point.links].map(([label, names]) => `${label}：${names.join('、')}`).join(' · ') : undefined }]);
+  return [...groups].map(([heading, list]) => ({ heading, points: list }));
 }
 
 function Points({ heading, points }) {
+  const tagged = points.some(point => point.tag || point.hit);
   return (
     <section className="cc-memory-detail-node">
       <h3>{heading}</h3>
-      <ul className="cc-memory-points">{points.map(point => <li key={point.key}>{prose(point.text)}</li>)}</ul>
+      <ul className={`cc-memory-points${tagged ? ' is-tagged' : ''}`}>
+        {points.map(point => (
+          <li key={point.key}>
+            {tagged && <span className="cc-memory-point-head">
+              {point.tag && <span className="cc-memory-point-tag">{point.tag}</span>}
+              {point.hit && <span className="cc-memory-point-hit">命中</span>}
+            </span>}
+            <div className="cc-memory-point-body">
+              {prose(point.text)}
+              {point.links && <p className="cc-memory-point-links">{point.links}</p>}
+            </div>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
@@ -326,7 +365,7 @@ function MemoryDetail({ id, agentUid, unit }) {
       <p className="cc-memory-detail-meta"><span>{unit.cited ? '回答中引用' : unit.injected ? '已用于回答' : '未用于本次回答'}</span></p>
       <ReaderBody state={current} label="正在核验记忆来源" onRetry={() => setAttempt(value => value + 1)}>
         {detail && <>
-          {pointGroups(detail.nodes).map((group, index) => <Points key={index} {...group} />)}
+          {pointGroups(detail.nodes, detail.edges, unit.ids).map((group, index) => <Points key={index} {...group} />)}
           {detail.conditions.length > 0 && <Points heading="来源范围的适用条件" points={detail.conditions.map((text, key) => ({ key, text }))} />}
           {detail.omissions.length > 0 && <Points heading="来源范围的已知缺口" points={detail.omissions.map((text, key) => ({ key, text }))} />}
           {detail.gaps && <Points heading="尚未核验" points={[{ key: 0, text: detail.gaps }]} />}

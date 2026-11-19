@@ -22,6 +22,14 @@
 .cc-memory-detail-node h3 { margin: 0 0 4px; color: var(--cc-text-secondary); font-size: 12px; font-weight: 500; line-height: 1.5; }
 .cc-memory-points { display: grid; gap: 4px; max-width: 72ch; margin: 0; padding-inline-start: 1.1em; }
 .cc-memory-points li::marker { color: var(--cc-text-secondary); }
+/* Tagged points: a narrow tag column replaces the bullet so link lines such
+ * as "适用条件：条件 1" can name the point they refer to. */
+.cc-memory-points.is-tagged { gap: 10px; padding-inline-start: 0; list-style: none; }
+.cc-memory-points.is-tagged li { display: grid; grid-template-columns: 5.5em minmax(0, 1fr); gap: 0 10px; align-items: baseline; }
+.cc-memory-point-head { display: grid; gap: 2px; color: var(--cc-text-secondary); font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cc-memory-point-hit { color: var(--cc-accent-text); font-weight: 500; }
+.cc-memory-point-body { min-width: 0; }
+.cc-memory-point-links { margin: 2px 0 0; color: var(--cc-text-secondary); font-size: 12.5px; line-height: 1.6; }
 .cc-diary-reader-body { min-width: 0; }
 .cc-diary-prose { max-width: 72ch; font-size: 14px; line-height: 1.7; text-wrap: pretty; overflow-wrap: anywhere; }
 .cc-diary-prose > :first-child { margin-top: 0; }

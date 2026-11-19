@@ -25,9 +25,17 @@ import { setToken } from '../auth-session';
 //    first, then the list.
 // Readability (2026-11-19 review: "too hard to read"):
 // R1 every point repeats its own kind heading, so nine points read as nine
-//    headings; R2 grouping reorders points or merges a point whose source
-//    scope is unlinked into a group that implies it is bound; R3 grouping
-//    drops or shortens a point's verified text.
+//    headings; R2 grouping reorders points within a kind or merges a point
+//    whose source scope is unlinked into a group that implies it is bound;
+//    R3 grouping drops or shortens a point's verified text.
+// Links kept from the graph (2026-11-19: node hits and links were useful; one
+// production run had 9 points and 10 many-to-many qualifies/supports edges):
+// G1 a point that limits or supports another shows no link to it; G2 a point
+//    linked to several others is repeated or dropped; G3 an edge whose end is
+//    not in the verified document invents a reference; G4 a reference does
+//    not match the tag on the point it names; G5 hit marks appear when every
+//    point (or no point) of the source was hit, or on points the run did not
+//    hit.
 const ref = `ref_${'a'.repeat(64)}`;
 const revision = 'b'.repeat(64);
 const base = { schema: 'catsco.memory_branch.v1', branch_run_id: 'memory-fixture', origin_turn_id: 'turn-1', sequence: 1, status: 'running',
@@ -262,7 +270,7 @@ it('B12: one row per readable unit; only rows that differ from the summary carry
   evidence.push({ journey: 'grouped rows', rows: 2, cited: 1, unused: 1 });
 });
 
-it('R1/R2/R3: consecutive points of one kind share a heading without reordering or dropping text', async () => {
+it('R1/R2/R3: points of one kind share a heading in document order without dropping text', async () => {
   const kinds = ['assertion', 'assertion', 'assertion', 'condition', 'assertion', 'assertion'];
   const nodes = kinds.map((kind, i) => ({ id: `n${i}`, kind, text: `要点 ${i} 的完整核验正文` }));
   nodes[5].association = 'member_scope_unlinked';
@@ -274,10 +282,53 @@ it('R1/R2/R3: consecutive points of one kind share a heading without reordering 
     heading: section.querySelector('h3').textContent,
     points: [...section.querySelectorAll('li')].map(li => li.textContent.trim()) }));
   expect(groups).toEqual([
-    { heading: '记忆断言', points: ['要点 0 的完整核验正文', '要点 1 的完整核验正文', '要点 2 的完整核验正文'] },
+    { heading: '记忆断言', points: ['要点 0 的完整核验正文', '要点 1 的完整核验正文', '要点 2 的完整核验正文', '要点 4 的完整核验正文'] },
     { heading: '适用条件', points: ['要点 3 的完整核验正文'] },
-    { heading: '记忆断言', points: ['要点 4 的完整核验正文'] },
     { heading: '记忆断言 · 来源范围，未绑定到此断言', points: ['要点 5 的完整核验正文'] },
   ]);
+  // No edges and no overlap with the run's node ids: no tags, no hit marks.
+  expect(detail.querySelector('.cc-memory-point-tag, .cc-memory-point-hit')).toBeNull();
   evidence.push({ journey: 'grouped points', headings: groups.length, points: nodes.length });
+});
+
+it('G1-G5: many-to-many links from a production-shaped run resolve to tagged points, each shown once', async () => {
+  // Shape of the only linked production run (2026-11-18): 4 assertions,
+  // 3 conditions, 2 tool calls, 7 qualifies and 3 supports edges.
+  const kinds = { a1: 'assertion', c1: 'condition', a2: 'assertion', a3: 'assertion', a4: 'assertion', c2: 'condition', c3: 'condition', t1: 'tool_call', t2: 'tool_call' };
+  const nodes = Object.entries(kinds).map(([id, kind]) => ({ id, kind, text: `正文 ${id}` }));
+  const edges = [['c1', 'qualifies', 'a1'], ['c1', 'qualifies', 'a3'], ['c1', 'qualifies', 'a4'], ['a2', 'qualifies', 'a1'], ['c2', 'qualifies', 'a2'],
+    ['c2', 'qualifies', 'a1'], ['c3', 'qualifies', 'a3'], ['t1', 'supports', 'a2'], ['t2', 'supports', 'a3'], ['t2', 'supports', 'a4'],
+    ['ghost', 'supports', 'a4'], ['a4', 'qualifies', 'ghost']].map(([from, kind, to]) => ({ from, kind, to }));
+  const hitIds = ['a1', 'c1', 'a2', 'a3', 'c2', 't1', 't2'];
+  const event = { ...graph, nodes: hitIds.map(id => ({ id, kind: kinds[id], label: '', ref, reader: { kind: 'projection', projection_ref: ref, revision } })), edges: [] };
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify({ ...document, document: { ...document.document, nodes, edges, conditions: [], omissions: [], gap_acknowledgement: undefined } })));
+  await render([event], true);
+  await click(container.querySelector('.cc-memory-source'));
+  const points = [...container.querySelectorAll('.cc-memory-detail-node li')].map(li => ({
+    tag: li.querySelector('.cc-memory-point-tag')?.textContent,
+    text: li.querySelector('.cc-diary-prose').textContent.trim(),
+    links: li.querySelector('.cc-memory-point-links')?.textContent,
+    hit: Boolean(li.querySelector('.cc-memory-point-hit')) }));
+  expect(points).toEqual([
+    { tag: '断言 1', text: '正文 a1', links: '适用条件：条件 1、断言 2、条件 2', hit: true },
+    { tag: '断言 2', text: '正文 a2', links: '适用条件：条件 2 · 支持：工具 1', hit: true },
+    { tag: '断言 3', text: '正文 a3', links: '适用条件：条件 1、条件 3 · 支持：工具 2', hit: true },
+    { tag: '断言 4', text: '正文 a4', links: '适用条件：条件 1 · 支持：工具 2', hit: false },
+    { tag: '条件 1', text: '正文 c1', links: undefined, hit: true },
+    { tag: '条件 2', text: '正文 c2', links: undefined, hit: true },
+    { tag: '条件 3', text: '正文 c3', links: undefined, hit: false },
+    { tag: '工具 1', text: '正文 t1', links: undefined, hit: true },
+    { tag: '工具 2', text: '正文 t2', links: undefined, hit: true },
+  ]);
+  // G4: every name used in a link line is the tag of exactly one point.
+  const tags = points.map(point => point.tag);
+  for (const name of points.flatMap(point => (point.links || '').split(/[：、·]/).map(part => part.trim()).filter(part => /\d$/.test(part)))) expect(tags.filter(tag => tag === name)).toHaveLength(1);
+  // G5: when the run hit every point, nothing is marked.
+  await act(async () => root.unmount()); root = createRoot(container);
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify({ ...document, document: { ...document.document, nodes, edges } })));
+  await render([{ ...event, nodes: nodes.map(node => ({ id: node.id, kind: node.kind, label: '', ref, reader: event.nodes[0].reader })) }], true);
+  await click(container.querySelector('.cc-memory-source'));
+  expect(container.querySelector('.cc-memory-point-hit')).toBeNull();
+  expect(container.querySelectorAll('.cc-memory-point-links')).toHaveLength(4);
+  evidence.push({ journey: 'linked points', points: points.length, linkLines: 4, hits: points.filter(point => point.hit).length });
 });
