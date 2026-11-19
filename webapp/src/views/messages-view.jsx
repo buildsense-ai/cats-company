@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, MessageSquare, Minus, RefreshCw, Smartphone, Users, X } from 'lucide-react';
+import { ArrowLeft, Bookmark, BookOpen, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, MessageSquare, Minus, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq, isWSConnected } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel, hasWorkingSources } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
+import WikiMemoryPanel from '../widgets/wiki-memory-panel';
 import { isCloudWorkerPending } from '../cloud-worker-pending';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
@@ -758,6 +759,7 @@ function cacheHistoryPage(cache, key, entry) {
 
 export default function MessagesView({
   topBar = null,
+  renderTopBar,
   topic,
   topicName,
   user,
@@ -1119,6 +1121,19 @@ export default function MessagesView({
       .map((item) => [item.id, item])).values());
   }, [messages, olderGalleryItems]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
+  const [wikiMemoryTopic, setWikiMemoryTopic] = useState('');
+  const wikiMemoryOpen = wikiMemoryTopic === topic && Boolean(topic);
+  useEffect(() => {
+    setWikiMemoryTopic('');
+  }, [topic, user.uid]);
+  useEffect(() => {
+    const clearWiki = () => setWikiMemoryTopic('');
+    window.addEventListener('cc:auth-changed', clearWiki);
+    return () => window.removeEventListener('cc:auth-changed', clearWiki);
+  }, []);
+  useEffect(() => {
+    setWikiMemoryTopic('');
+  }, [previewFile, cloudArtifactsListOpen]);
   // What this conversation's panel shows comes from that conversation's own
   // record, never from the panel state of whichever conversation was on screen a
   // moment ago.
@@ -5456,6 +5471,18 @@ export default function MessagesView({
     () => new Set(availableAgentByUID.keys()),
     [availableAgentByUID],
   );
+  const wikiMemoryAgents = useMemo(() => {
+    if (!isGroup) {
+      return peerIsBot && peerUID > 0 ? [{ uid: String(peerUID), name: resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || '助手' }] : [];
+    }
+    return members.flatMap(member => {
+      const uid = parseUid(member?.user_id);
+      const agent = availableAgentByUID.get(uid);
+      return uid > 0 && (member?.is_bot || agent)
+        ? [{ uid: String(uid), name: member.display_name || agent?.display_name || member.username || '助手' }]
+        : [];
+    });
+  }, [availableAgentByUID, isGroup, members, peerIsBot, peerUID, resolvedPeerProfile]);
   const taskBotUIDs = useMemo(() => {
     if (!isAgentTask) return [];
     return members
@@ -7205,14 +7232,22 @@ export default function MessagesView({
   return (
     <>
       <div
-        className={`v3-message-workspace${sidePanelOpen ? ' has-preview' : ''}${previewExpanded ? ' cc-app-focus' : ''}${previewExpanded && previewContextOpen ? ' cc-app-context-open' : ''}${previewContextPlacement === 'below' ? ' cc-app-context-below' : ''}${previewComposerMinimized ? ' cc-app-composer-minimized' : ''}${previewComposerActive ? ' cc-app-composer-active' : ''}${previewDockDragging ? ' cc-app-dock-dragging' : ''}`}
-        style={sidePanelOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
+        className={`v3-message-workspace${sidePanelOpen || wikiMemoryOpen ? ' has-preview' : ''}${previewExpanded ? ' cc-app-focus' : ''}${previewExpanded && previewContextOpen ? ' cc-app-context-open' : ''}${previewContextPlacement === 'below' ? ' cc-app-context-below' : ''}${previewComposerMinimized ? ' cc-app-composer-minimized' : ''}${previewComposerActive ? ' cc-app-composer-active' : ''}${previewDockDragging ? ' cc-app-dock-dragging' : ''}`}
+        style={wikiMemoryOpen ? { '--v3-file-preview-width': 'min(44vw, 520px)' } : sidePanelOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
       >
         <div ref={chatColumnRef} className="v3-chat-column" data-composer-position={previewDockAnchor} style={previewExpanded && previewDockPoint ? {
           left: `${previewDockPoint.left}px`, right: 'auto', top: `${previewDockPoint.top}px`, bottom: 'auto',
           transform: 'none',
         } : undefined}>
-          {topBar}
+          {renderTopBar ? renderTopBar(wikiMemoryAgents.length > 0 && (
+            <button type="button" className="v3-action-btn" aria-label="记忆" title="记忆" aria-expanded={wikiMemoryOpen}
+              onClick={() => {
+                if (!wikiMemoryOpen && previewExpanded) restorePreviewWorkspace();
+                setWikiMemoryTopic(wikiMemoryOpen ? '' : topic);
+              }}>
+              <BookOpen size={17} aria-hidden="true" />
+            </button>
+          )) : topBar}
           <ConversationForkNotice fork={conversationFork} canCreate={forkEligible} historyLoading={!historyLoaded} />
           <PublicationRepairPanel key={`${user.uid}:${topic}`} userUid={user.uid} topic={topic} isGroup={isGroup} groupId={groupId} />
           {cloudWorkerPending && activeCloudWorker && !cloudWorkerUpdateVisible && (
@@ -7873,7 +7908,7 @@ export default function MessagesView({
           const fileListHidden = isActive && !activePanelOpen && previewFile
             && cloudArtifactsReturnOpen && activePanelTab === 'files';
           if (isActive && !activePanelOpen && !fileListHidden) return null;
-          const isVisible = isActive && !fileListHidden;
+          const isVisible = isActive && !fileListHidden && !wikiMemoryOpen;
           return (
             <div
               key={`artifact-panel-${panelTopic}`}
@@ -7894,7 +7929,7 @@ export default function MessagesView({
               // are only translated outwards, so the application inside does not
               // reflow to a tiny viewport; the sliver is unpaintable, unclickable
               // and out of the accessibility tree.
-              style={isActive ? (fileListHidden ? { display: 'none' } : undefined) : {
+              style={isActive && !wikiMemoryOpen ? (fileListHidden ? { display: 'none' } : undefined) : {
                 position: 'fixed',
                 top: 0,
                 left: 0,
@@ -7952,8 +7987,13 @@ export default function MessagesView({
             </div>
           );
         })}
+        {wikiMemoryOpen && wikiMemoryAgents.length > 0 && (
+          <div className="v3-file-preview-shell cc-wiki-shell">
+            <WikiMemoryPanel viewerUid={user.uid} topicId={topic} agents={wikiMemoryAgents} onClose={() => setWikiMemoryTopic('')} />
+          </div>
+        )}
         {sidePanelOpen && !cloudArtifactsListOpen && (
-          <div className="v3-file-preview-shell">
+          <div className="v3-file-preview-shell" hidden={wikiMemoryOpen} style={wikiMemoryOpen ? { display: 'none' } : undefined}>
             <div
               className="v3-preview-resize-handle"
               role="separator"

@@ -1761,7 +1761,7 @@ function TinodeWebApp({ location }) {
     return <AgentEntryBindView sceneKey={entrySceneKey} />;
   }
 
-  const localAssistantBar = (
+  const renderLocalAssistantBar = (conversationActions = null) => (
     <LocalAssistantBar
       agentModelState={displayedAgentModel}
       activeAgent={displayedActiveAgent}
@@ -1776,8 +1776,10 @@ function TinodeWebApp({ location }) {
       relayAdminAllowed={relayAdminAllowed}
       onOpenRelayAdmin={() => setRelayAdminOpen(true)}
       onOpenServiceAgents={serviceAgentsAllowed ? () => setServiceAgentsOpen(true) : undefined}
+      conversationActions={conversationActions}
     />
   );
+  const localAssistantBar = renderLocalAssistantBar();
 
   return (
     <div
@@ -1990,6 +1992,7 @@ function TinodeWebApp({ location }) {
               <MessagesView
                 key={composerDraftOwner || 'anonymous'}
                 topBar={localAssistantBar}
+                renderTopBar={renderLocalAssistantBar}
                 topic={activeTopic.topicId}
                 topicName={activeTopic.name}
                 user={user}
