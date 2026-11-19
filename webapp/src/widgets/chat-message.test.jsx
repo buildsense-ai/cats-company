@@ -424,7 +424,7 @@ describe('ChatMessage rich file rendering', () => {
                 type: 'tool_use',
                 id: 'verify-1',
                 name: 'execute_shell',
-                input: { command: 'npm test' },
+                input: { command: 'npm test', description: '验证交付文件' },
               },
               {
                 type: 'tool_result',
@@ -461,7 +461,9 @@ describe('ChatMessage rich file rendering', () => {
     const narrative = toolStep?.querySelector('.v3-wpi-narrative');
     const tool = toolStep?.querySelector('.v3-wpi-tool');
     expect(narrative?.textContent).toBe('已完成验收。');
-    expect(tool?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('运行命令');
+    const action = tool?.querySelector('.v3-wpi-tool-name');
+    expect(action?.textContent).toBe('运行命令');
+    expect(action?.nextElementSibling?.textContent).toBe('验证交付文件');
     expect(tool?.querySelector('.v3-wpi-tool-name')?.getAttribute('title')).toBe('execute_shell');
     expect(narrative?.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(container.querySelector('.v3-message-followup-text')?.textContent).not.toContain('已完成验收。');
