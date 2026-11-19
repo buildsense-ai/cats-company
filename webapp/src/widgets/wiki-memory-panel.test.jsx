@@ -18,9 +18,15 @@ const page = (items, cursor = null) => ({ items, conversations: [{ id: 'grp_7', 
 describe('chat wiki memories', () => {
   let container;
   let root;
+  let reachListEnd;
 
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback) { reachListEnd = () => callback([{ isIntersecting: true }]); }
+      observe() {}
+      disconnect() {}
+    });
     localStorage.clear();
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement('div');
@@ -31,6 +37,7 @@ describe('chat wiki memories', () => {
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    vi.unstubAllGlobals();
     container.remove();
   });
 
@@ -74,18 +81,36 @@ describe('chat wiki memories', () => {
     expect(api.getWikiMemoryDocument).toHaveBeenCalledTimes(1);
   });
 
-  it('marks only new rows, consumes only displayed pages, and keeps an empty initial baseline', async () => {
+  it('loads the next list page at the bottom and keeps newer rows first', async () => {
     api.getWikiMemoryCatalog.mockResolvedValueOnce(page([]));
     await render('initial-empty');
     api.getWikiMemoryCatalog.mockResolvedValueOnce(page([wiki('a', 12)], 'older-page'));
+    let resolveOlder;
+    api.getWikiMemoryCatalog.mockReturnValueOnce(new Promise(resolve => { resolveOlder = resolve; }));
     await render('after-a');
+    expect(rows()).toHaveLength(1);
     expect(rows()[0].querySelector('small')?.textContent).toBe('新增');
-    api.getWikiMemoryCatalog.mockResolvedValueOnce(page([wiki('a', 12)], 'older-page'));
+    expect(api.getWikiMemoryCatalog).toHaveBeenCalledTimes(2);
+    await act(async () => reachListEnd());
+    expect(api.getWikiMemoryCatalog.mock.calls.at(-1)[1].cursor).toBe('older-page');
+    await act(async () => resolveOlder(page([wiki('b', 11), wiki('a', 12)])));
+    expect(rows().map(row => row.querySelector('span').textContent)).toEqual(['Wiki a', 'Wiki b']);
+    expect(api.getWikiMemoryDocument).not.toHaveBeenCalled();
+    api.getWikiMemoryCatalog.mockResolvedValueOnce(page([wiki('a', 12), wiki('b', 11)]));
     await render('reopen');
     expect(rows()[0].querySelector('small')).toBeNull();
-    api.getWikiMemoryCatalog.mockResolvedValueOnce(page([wiki('b', 11)]));
-    await click(container.querySelector('button.cc-wiki-more'));
-    expect(rows()[1].querySelector('small')?.textContent).toBe('新增');
+  });
+
+  it('fills the entire graph without a scroll or a click', async () => {
+    api.getWikiMemoryCatalog
+      .mockResolvedValueOnce(page([]))
+      .mockResolvedValueOnce(page([wiki('a', 12)], 'next'))
+      .mockResolvedValueOnce(page([wiki('b', 11)]));
+    await render();
+    await click(Array.from(container.querySelectorAll('nav button')).find(button => button.textContent === '助手记忆'));
+    expect(container.querySelectorAll('.cc-wiki-node')).toHaveLength(2);
+    expect(api.getWikiMemoryCatalog.mock.calls.at(-1)[1].cursor).toBe('next');
+    expect(api.getWikiMemoryDocument).not.toHaveBeenCalled();
   });
 
   it('discards displayed body and rechecks the active scope when the browser regains focus', async () => {
