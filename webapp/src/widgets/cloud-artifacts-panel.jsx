@@ -1294,7 +1294,7 @@ export default function CloudArtifactsPanel({
             {isGatewayPreviewOpen && (topicId || startAnnotationTask) && (
               <button
                 type="button"
-                className={`v3-tool cloud-artifacts-annotation-toggle${gatewayAnnotationMode === 'select' ? ' is-active' : ''}`}
+                className={`v3-tool cloud-artifacts-annotation-toggle cloud-artifacts-mobile-action${gatewayAnnotationMode === 'select' ? ' is-active' : ''}`}
                 aria-label={annotationLabel}
                 aria-pressed={gatewayAnnotationMode === 'select'}
                 aria-busy={annotationStarting}
@@ -1307,6 +1307,12 @@ export default function CloudArtifactsPanel({
                 <Pencil size={16} aria-hidden="true" />
               </button>
             )}
+            {isGatewayPreviewOpen && (
+              <button type="button" className="v3-tool cloud-artifacts-desktop-action" onClick={handleRefresh}
+                disabled={gatewayRefreshing} aria-busy={gatewayRefreshing} aria-label="刷新应用" title="刷新应用">
+                <RefreshCw size={16} aria-hidden="true" className={gatewayRefreshing ? 'is-spinning' : ''} />
+              </button>
+            )}
             {workspacePreviewActive && onToggleWorkspaceFullscreen && (
               <button className="v3-tool cc-workspace-fullscreen-action" type="button"
                 aria-label={workspaceFullscreen ? `还原${workspaceFullscreenLabel}视图` : `全屏查看${workspaceFullscreenLabel}`}
@@ -1315,13 +1321,19 @@ export default function CloudArtifactsPanel({
                 {workspaceFullscreen ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
               </button>
             )}
+            {isGatewayPreviewOpen && (
+              <button type="button" className="v3-tool cloud-artifacts-desktop-action"
+                aria-label={`在新页面打开 ${gatewayTitle}`} title="新页面打开" onClick={() => openGatewayApp(gatewayPreview, 'window')}>
+                <ExternalLink size={16} aria-hidden="true" />
+              </button>
+            )}
             {!isGatewayPreviewOpen && (
               <button type="button" className="v3-tool" onClick={handleRefresh} disabled={loading} aria-label="刷新当前栏目" title="刷新当前栏目">
                 <RefreshCw size={16} aria-hidden="true" className={loading ? 'is-spinning' : ''} />
               </button>
             )}
             {(isGatewayPreviewOpen || (hasAgent && !artifactTabSelected)) && (
-              <details ref={overflowRef} className="cloud-artifacts-overflow" onBlur={(event) => {
+              <details ref={overflowRef} className={`cloud-artifacts-overflow${isGatewayPreviewOpen ? ' cloud-artifacts-mobile-action' : ''}`} onBlur={(event) => {
                 if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) closeToolbarMenu();
               }}>
                 <summary className="v3-tool" aria-label="更多操作" title="更多操作">
