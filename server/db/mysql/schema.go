@@ -41,6 +41,7 @@ func (a *Adapter) CreateSchema() error {
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
+		createWikiCatalog,
 		createGroupInviteRequestsTable,
 		createFeedbackReportsTable,
 		createAuthServicesTable,

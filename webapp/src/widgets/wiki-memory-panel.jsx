@@ -5,6 +5,7 @@ import { renderSafeMarkdown } from './markdown-utils';
 import './wiki-memory-panel.css';
 
 const dateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' });
+const catalogPageSize = 100;
 
 function rank(item) {
   return `${item.created_at} ${item.id}`;
@@ -68,7 +69,6 @@ export default function WikiMemoryPanel({ viewerUid, topicId, agents, onClose })
 function WikiMemoryContent({ viewerUid, agentUid, topicId }) {
   const [isBotView, setBotView] = useState(false);
   const [openedBotView, setOpenedBotView] = useState(false);
-  const documents = useRef(new Map());
   const visitKey = `catsco:wiki-seen:${viewerUid}:${agentUid}`;
   const [visit] = useState(() => readVisit(visitKey));
   const [refreshID, setRefreshID] = useState(0);
@@ -77,7 +77,6 @@ function WikiMemoryContent({ viewerUid, agentUid, topicId }) {
     const refresh = () => {
       if (document.visibilityState !== 'visible' || Date.now() - lastRefresh < 250) return;
       lastRefresh = Date.now();
-      documents.current.clear();
       setRefreshID(previous => previous + 1);
     };
     window.addEventListener('focus', refresh);
@@ -99,16 +98,17 @@ function WikiMemoryContent({ viewerUid, agentUid, topicId }) {
           </>
         )}
       </nav>
-      <WikiCatalog key={`topic:${refreshID}`} hidden={isBotView} topicId={topicId} documents={documents.current} {...{ agentUid, visit, visitKey }} />
-      {openedBotView && <WikiCatalog key={`bot:${refreshID}`} hidden={!isBotView} documents={documents.current} {...{ agentUid, visit, visitKey }} />}
+      <WikiCatalog key={`topic:${refreshID}`} hidden={isBotView} topicId={topicId} {...{ agentUid, visit, visitKey }} />
+      {openedBotView && <WikiCatalog key={`bot:${refreshID}`} hidden={!isBotView} {...{ agentUid, visit, visitKey }} />}
     </>
   );
 }
 
-function WikiCatalog({ hidden, agentUid, topicId, documents, visit, visitKey }) {
+function WikiCatalog({ hidden, agentUid, topicId, visit, visitKey }) {
   const [items, setItems] = useState([]);
   const [conversations, setConversations] = useState({});
   const [nextCursor, setNextCursor] = useState(null);
+  const [visibleLimit, setVisibleLimit] = useState(catalogPageSize);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState(false);
@@ -117,11 +117,13 @@ function WikiCatalog({ hidden, agentUid, topicId, documents, visit, visitKey }) 
   const [expandedGroups, setExpandedGroups] = useState(new Set());
   const active = useRef(null);
   const started = useRef(false);
+  const catalog = useRef(null);
+  const endOfList = useRef(null);
   const visitScope = topicId || 'all';
   const baseline = visit.baselines[visitScope];
   const isNew = item => typeof baseline === 'string' && rank(item) > baseline && !visit.seen.has(item.id);
 
-  const load = useCallback((cursor) => {
+  const load = useCallback(async (cursor) => {
     active.current?.abort();
     const controller = new AbortController();
     active.current = controller;
@@ -133,22 +135,23 @@ function WikiCatalog({ hidden, agentUid, topicId, documents, visit, visitKey }) 
     }
     setBusy(true);
     setError(false);
-    api.getWikiMemoryCatalog(agentUid, { topicId, cursor, signal: controller.signal }).then(page => {
+    try {
+      const page = await api.getWikiMemoryCatalog(agentUid, { topicId, cursor, signal: controller.signal });
       if (controller.signal.aborted) return;
       const fresh = Array.isArray(page.items) ? page.items : [];
       setItems(previous => {
-        const byId = new Map((cursor ? previous : []).map(item => [item.id, item]));
+        const byId = new Map(previous.map(item => [item.id, item]));
         for (const item of fresh) byId.set(item.id, item);
         return newestFirst(byId.values());
       });
       setConversations(previous => ({ ...previous, ...Object.fromEntries((page.conversations || []).map(conversation => [conversation.id, conversation.title])) }));
-      setNextCursor(page.next_cursor || null);
+      setNextCursor(page.next_cursor && page.next_cursor !== cursor ? page.next_cursor : null);
       setLoaded(true);
-    }).catch(() => {
+    } catch {
       if (!controller.signal.aborted) setError(true);
-    }).finally(() => {
+    } finally {
       if (!controller.signal.aborted) setBusy(false);
-    });
+    }
   }, [agentUid, topicId]);
 
   useEffect(() => {
@@ -162,15 +165,37 @@ function WikiCatalog({ hidden, agentUid, topicId, documents, visit, visitKey }) 
     started.current = false;
   }, []);
 
+  const displayedItems = useMemo(() => view === 'list' ? items.slice(0, visibleLimit) : items,
+    [items, view, visibleLimit]);
+  const hasMore = items.length > visibleLimit || Boolean(nextCursor);
+
   useEffect(() => {
-    if (!hidden && loaded) markDisplayed(visitKey, visitScope, items);
-  }, [hidden, visitKey, visitScope, loaded, items]);
+    if (hidden || busy || error || !hasMore) return undefined;
+    if (view === 'graph') {
+      if (nextCursor) load(nextCursor);
+      return undefined;
+    }
+    const sentinel = endOfList.current;
+    if (!sentinel) return undefined;
+    const observer = new IntersectionObserver(entries => {
+      if (!entries.some(entry => entry.isIntersecting)) return;
+      observer.disconnect();
+      setVisibleLimit(limit => limit + catalogPageSize);
+      if (items.length <= visibleLimit && nextCursor) load(nextCursor);
+    }, { root: catalog.current });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hidden, busy, error, hasMore, view, nextCursor, items.length, visibleLimit, load]);
+
+  useEffect(() => {
+    if (!hidden && loaded) markDisplayed(visitKey, visitScope, displayedItems);
+  }, [hidden, visitKey, visitScope, loaded, displayedItems]);
 
   function toggle(id) {
     setSelected(current => current === id ? null : id);
   }
 
-  const read = item => <WikiBody key={`${item.id}:${item.revision}`} {...{ item, agentUid, documents }} />;
+  const read = item => <WikiBody key={`${item.id}:${item.revision}`} {...{ item, agentUid }} />;
   const renderList = entries => <ul className="cc-wiki-list">
     {entries.map(item => (
       <li key={item.id}>
@@ -188,14 +213,14 @@ function WikiCatalog({ hidden, agentUid, topicId, documents, visit, visitKey }) 
   const groups = useMemo(() => {
     const grouped = new Map();
     if (topicId) return grouped;
-    for (const item of items) {
+    for (const item of displayedItems) {
       const source = item.conversation_ids?.[0] || 'other';
       const group = grouped.get(source) || [];
       group.push(item);
       grouped.set(source, group);
     }
     return grouped;
-  }, [items, topicId]);
+  }, [displayedItems, topicId]);
   const selection = items.find(item => item.id === selected);
   const selectListView = () => {
     if (selection) setExpandedGroups(previous => new Set([...previous, selection.conversation_ids?.[0] || 'other']));
@@ -210,7 +235,7 @@ function WikiCatalog({ hidden, agentUid, topicId, documents, visit, visitKey }) 
   });
 
   return (
-    <section className="cc-wiki-catalog" hidden={hidden}>
+    <section className="cc-wiki-catalog" hidden={hidden} ref={catalog}>
       {!topicId && <div className="cc-wiki-view-bar">
         <strong>我可见的记忆</strong>
         <div role="group" aria-label="记忆视图">
@@ -218,7 +243,7 @@ function WikiCatalog({ hidden, agentUid, topicId, documents, visit, visitKey }) 
           <button type="button" className="cc-wiki-icon" aria-label="列表" title="列表" aria-pressed={view === 'list'} onClick={selectListView}><List size={17} /></button>
         </div>
       </div>}
-      {items.length > 0 && (topicId ? renderList(items) : view === 'list' ? (
+      {displayedItems.length > 0 && (topicId ? renderList(displayedItems) : view === 'list' ? (
         <div className="cc-wiki-groups">
           {Array.from(groups, ([id, entries]) => (
             <details key={id} open={expandedGroups.has(id)} onToggle={event => onGroupToggle(id, event.currentTarget.open)}>
@@ -236,10 +261,10 @@ function WikiCatalog({ hidden, agentUid, topicId, documents, visit, visitKey }) 
           </section>}
         </>
       ))}
-      {busy && <p className="cc-wiki-feedback" role="status">正在读取记忆…</p>}
+      {busy && <p className="cc-wiki-feedback" role="status">{items.length ? '正在补齐记忆目录…' : '正在读取记忆…'}</p>}
       {error && <div className="cc-wiki-feedback" role="status">读取失败。<button type="button" onClick={() => load(nextCursor)}>重试</button></div>}
       {!busy && !error && items.length === 0 && <p className="cc-wiki-feedback">还没有可查看的记忆</p>}
-      {!busy && !error && nextCursor && <button type="button" className="cc-wiki-more" onClick={() => load(nextCursor)}>加载更多记忆</button>}
+      {view === 'list' && hasMore && <div className="cc-wiki-list-end" ref={endOfList} aria-hidden="true" />}
     </section>
   );
 }
@@ -269,9 +294,8 @@ function WikiGraph({ groups, conversations, selected, toggle, isNew }) {
   );
 }
 
-function WikiBody({ item, agentUid, documents }) {
-  const cached = documents.get(item.id);
-  const [document, setDocument] = useState(cached?.revision === item.revision ? cached : null);
+function WikiBody({ item, agentUid }) {
+  const [document, setDocument] = useState(null);
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState(false);
 
@@ -280,16 +304,14 @@ function WikiBody({ item, agentUid, documents }) {
     const controller = new AbortController();
     api.getWikiMemoryDocument(agentUid, item.id, { signal: controller.signal }).then(body => {
       if (controller.signal.aborted) return;
-      documents.set(item.id, body);
       setDocument(body);
     }).catch(() => {
       if (!controller.signal.aborted) {
-        documents.delete(item.id);
         setError(true);
       }
     });
     return () => controller.abort();
-  }, [agentUid, item.id, documents, attempt, document]);
+  }, [agentUid, item.id, attempt, document]);
 
   if (error) return <div className="cc-wiki-feedback" role="status">正文不可用。<button type="button" onClick={() => { setError(false); setAttempt(previous => previous + 1); }}>重试</button></div>;
   if (!document) return <p className="cc-wiki-feedback" role="status">正在读取正文…</p>;

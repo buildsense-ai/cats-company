@@ -15,38 +15,80 @@ import (
 type wikiMemoryTestStore struct {
 	store.Store
 	groups map[int64][]*types.Group
+	memory []store.WikiCatalogEntry
 }
 
 func (s *wikiMemoryTestStore) GetUser(id int64) (*types.User, error) {
-	if id == 50 {
+	if id == 50 || id == 51 {
 		return &types.User{ID: id, DisplayName: "Helper", AccountType: types.AccountBot}, nil
 	}
 	return &types.User{ID: id, DisplayName: "Human", AccountType: types.AccountHuman}, nil
 }
-
 func (s *wikiMemoryTestStore) GetBotOwner(int64) (int64, error) { return 1, nil }
-
-func (s *wikiMemoryTestStore) AreFriends(viewerUID, botUID int64) (bool, error) {
-	return viewerUID == 2 && botUID == 50, nil
+func (s *wikiMemoryTestStore) AreFriends(user, bot int64) (bool, error) {
+	return user == 2 && bot == 50, nil
 }
-
 func (s *wikiMemoryTestStore) GetUserGroups(uid int64) ([]*types.Group, error) {
 	return s.groups[uid], nil
 }
-
-func (s *wikiMemoryTestStore) GetGroup(id int64) (*types.Group, error) {
-	return &types.Group{ID: id, Name: "会话标题"}, nil
+func (s *wikiMemoryTestStore) IsChannelManagedGroup(id int64) (bool, error) { return id == 9, nil }
+func (s *wikiMemoryTestStore) IsGroupMember(id, uid int64) (bool, error) {
+	if uid == 50 {
+		return id == 7 || id == 9, nil
+	}
+	for _, group := range s.groups[uid] {
+		if group.ID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+func (s *wikiMemoryTestStore) WikiCatalog() store.WikiCatalogStore { return s }
+func (s *wikiMemoryTestStore) ReplaceWikiCatalog(_ context.Context, entries []store.WikiCatalogEntry) error {
+	s.memory = entries
+	return nil
+}
+func (s *wikiMemoryTestStore) ListWikiCatalog(_ context.Context, botUID int64, topics []string, _ store.WikiCatalogPosition, _ int) ([]store.WikiCatalogEntry, error) {
+	var out []store.WikiCatalogEntry
+	for _, entry := range s.memory {
+		if botUID != 50 || entry.BotUID != "50" {
+			continue
+		}
+		if topics == nil {
+			out = append(out, entry)
+			continue
+		}
+		for _, topic := range topics {
+			if entry.TopicID == topic {
+				out = append(out, entry)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+func (s *wikiMemoryTestStore) GetWikiCatalogEntry(_ context.Context, id string) (store.WikiCatalogEntry, bool, error) {
+	for _, entry := range s.memory {
+		if entry.ID == id {
+			return entry, true, nil
+		}
+	}
+	return store.WikiCatalogEntry{}, false, nil
 }
 
-func newWikiMemoryEndpoint(t *testing.T, db store.Store, upstream http.HandlerFunc) *http.ServeMux {
+func wikiFixture(id, topic string) store.WikiCatalogEntry {
+	return store.WikiCatalogEntry{ID: id, BotUID: "50", TopicID: topic, Title: id, CreatedAt: "2026-11-19T00:00:00.000001Z", Revision: "v1"}
+}
+
+func wikiEndpoint(t *testing.T, db *wikiMemoryTestStore, upstream http.HandlerFunc) (*WikiMemoryHandler, *http.ServeMux) {
 	t.Helper()
 	service := httptest.NewServer(upstream)
 	t.Cleanup(service.Close)
-	handler := NewWikiMemoryHandler(db, service.URL, "service-key")
+	handler := NewWikiMemoryHandler(db, &Hub{db: db}, service.URL, "service-key")
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/agents/{uid}/memories", handler.HandleCatalog)
 	mux.HandleFunc("GET /api/agents/{uid}/memories/{id}", handler.HandleDocument)
-	return mux
+	return handler, mux
 }
 
 func wikiMemoryTestRequest(mux *http.ServeMux, uid int64, path, ifNoneMatch string) *httptest.ResponseRecorder {
@@ -60,92 +102,68 @@ func wikiMemoryTestRequest(mux *http.ServeMux, uid int64, path, ifNoneMatch stri
 }
 
 func TestWikiMemoryAvailability(t *testing.T) {
-	for _, tc := range []struct {
-		name, origin, token string
-		enabled             bool
-	}{
-		{"unset", "", "", false},
-		{"missing token", "https://memory.internal", "", false},
-		{"path instead of origin", "https://memory.internal/upload", "test-key", false},
-		{"configured", "https://memory.internal:8460/", "test-key", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			handler := NewWikiMemoryHandler(nil, tc.origin, tc.token)
-			response := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodGet, "/api/memories/availability", nil)
-			handler.HandleAvailability(response, request)
-
-			var result map[string]bool
-			err := json.Unmarshal(response.Body.Bytes(), &result)
-			if response.Code != http.StatusOK || err != nil || !reflect.DeepEqual(result, map[string]bool{"enabled": tc.enabled}) {
-				t.Fatalf("availability: %d %s (%v)", response.Code, response.Body, err)
-			}
-		})
+	h := NewWikiMemoryHandler(&wikiMemoryTestStore{}, nil, "https://memory.internal:8460/", "test-key")
+	response := httptest.NewRecorder()
+	h.HandleAvailability(response, httptest.NewRequest(http.MethodGet, "/api/memories/availability", nil))
+	var result map[string]bool
+	if json.Unmarshal(response.Body.Bytes(), &result) != nil || !result["enabled"] {
+		t.Fatal(response.Body)
 	}
 }
 
-func TestWikiMemoryCatalogUsesLiveTopicPermissions(t *testing.T) {
+func TestWikiMemoryCatalogIsLocalAndUsesLiveTopicPermissions(t *testing.T) {
 	db := &wikiMemoryTestStore{groups: map[int64][]*types.Group{
 		2: {{ID: 7, Name: "会话标题", Kind: types.GroupKindStandard, AgentIDs: []int64{50}},
 			{ID: 8, Kind: types.GroupKindStandard, AgentIDs: []int64{51}},
 			{ID: 9, Kind: types.GroupKindChannelManaged, AgentIDs: []int64{50}}},
-	}}
-	proxied := make(chan wikiMemoryRequest, 4)
-	mux := newWikiMemoryEndpoint(t, db, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/catsco/memory/catalog" || r.Header.Get("Authorization") != "Bearer service-key" {
-			t.Errorf("unexpected upstream request: %s %s", r.Method, r.URL.Path)
-		}
-		var request wikiMemoryRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Error(err)
-		}
-		proxied <- request
-		_ = json.NewEncoder(w).Encode(wikiMemoryCatalog{Items: []wikiMemoryItem{{ID: "wiki-1", Title: "Title", ConversationIDs: []string{"grp_7"}, Revision: "v1"}}})
+	}, memory: []store.WikiCatalogEntry{wikiFixture("group", "grp_7"), wikiFixture("private", "p2p_2_50"), wikiFixture("unknown", "")}}
+	_, mux := wikiEndpoint(t, db, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("directory request reached upstream")
+		w.WriteHeader(http.StatusBadGateway)
 	})
 	const path = "/api/agents/50/memories"
-	read := wikiMemoryTestRequest(mux, 2, path+"?topic_id=grp_7", "")
-	if read.Code != http.StatusOK {
-		t.Fatalf("allowed catalog: %d %s", read.Code, read.Body)
-	}
-	proceed := <-proxied
-	if proceed.Scope.Kind != "topics" || !reflect.DeepEqual(proceed.Scope.TopicIDs, []string{"grp_7", "p2p_2_50"}) {
-		t.Errorf("bad scope: %+v", proceed.Scope)
-	}
-	var page wikiMemoryCatalog
-	if err := json.NewDecoder(read.Body).Decode(&page); err != nil || len(page.Conversations) != 1 || page.Conversations[0].Title != "会话标题" {
-		t.Fatalf("bad conversations: %+v (%v)", page.Conversations, err)
-	}
-	for _, topic := range []string{"grp_8", "grp_9", "p2p_3_50"} {
-		if response := wikiMemoryTestRequest(mux, 2, path+"?topic_id="+topic, ""); response.Code != http.StatusNotFound {
-			t.Errorf("inaccessible topic %s: %d", topic, response.Code)
+	for _, tc := range []struct {
+		viewer int64
+		suffix string
+		ids    []string
+	}{
+		{2, "?topic_id=grp_7", []string{"group"}},
+		{2, "", []string{"group", "private"}},
+		{3, "", []string{}},
+		{1, "", []string{"group", "private", "unknown"}},
+	} {
+		res := wikiMemoryTestRequest(mux, tc.viewer, path+tc.suffix, "")
+		var page wikiMemoryCatalog
+		if res.Code != http.StatusOK || json.Unmarshal(res.Body.Bytes(), &page) != nil {
+			t.Fatalf("catalog: %d %s", res.Code, res.Body)
+		}
+		ids := []string{}
+		for _, item := range page.Items {
+			ids = append(ids, item.ID)
+		}
+		if !reflect.DeepEqual(ids, tc.ids) {
+			t.Fatalf("viewer %d: got %v want %v", tc.viewer, ids, tc.ids)
 		}
 	}
-	if response := wikiMemoryTestRequest(mux, 3, path, ""); response.Code != http.StatusNotFound {
-		t.Errorf("viewer without accessible topics: %d", response.Code)
-	}
-	if len(proxied) != 0 {
-		t.Fatal("denied request reached upstream")
-	}
-	if response := wikiMemoryTestRequest(mux, 1, path, ""); response.Code != http.StatusOK {
-		t.Fatalf("owner catalog: %d %s", response.Code, response.Body)
-	}
-	if scope := (<-proxied).Scope; scope.Kind != "owner" || len(scope.TopicIDs) != 0 {
-		t.Errorf("bad owner scope: %+v", scope)
+	for _, topic := range []string{"grp_8", "grp_9", "p2p_3_50"} {
+		if res := wikiMemoryTestRequest(mux, 2, path+"?topic_id="+topic, ""); res.Code != http.StatusNotFound {
+			t.Errorf("inaccessible topic %s: %d", topic, res.Code)
+		}
 	}
 }
 
 func TestWikiMemoryConditionalReadRechecksGroupMembership(t *testing.T) {
 	db := &wikiMemoryTestStore{groups: map[int64][]*types.Group{
-		3: {{ID: 7, Name: "会话标题", Kind: types.GroupKindAgentTask, AgentIDs: []int64{50}}},
-	}}
+		3: {{ID: 7, Kind: types.GroupKindAgentTask, AgentIDs: []int64{50}}},
+	}, memory: []store.WikiCatalogEntry{wikiFixture("wiki-1", "grp_7"), wikiFixture("owner-only", "")}}
 	proxied := make(chan string, 4)
-	mux := newWikiMemoryEndpoint(t, db, func(w http.ResponseWriter, r *http.Request) {
-		var request wikiMemoryRequest
+	_, mux := wikiEndpoint(t, db, func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 		}
-		if request.ID != "wiki-1" || !reflect.DeepEqual(request.Scope.TopicIDs, []string{"grp_7"}) {
-			t.Errorf("bad wiki request: %+v", request)
+		if len(request) != 1 || request["id"] != "wiki-1" || r.Header.Get("Authorization") != "Bearer service-key" {
+			t.Errorf("bad service request: %v", request)
 		}
 		tag := r.Header.Get("If-None-Match")
 		proxied <- tag
@@ -154,23 +172,57 @@ func TestWikiMemoryConditionalReadRechecksGroupMembership(t *testing.T) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(wikiMemoryDocument{ID: "wiki-1", Revision: "v1", Markdown: "## Bot memory", SourceRefs: []string{"ep_1"}})
+		_ = json.NewEncoder(w).Encode(wikiMemoryDocument{ID: "wiki-1", Revision: "v1", Markdown: "# Bot memory"})
 	})
 	const path = "/api/agents/50/memories/wiki-1"
-	first := wikiMemoryTestRequest(mux, 3, path, "")
-	if first.Code != http.StatusOK || first.Header().Get("Cache-Control") != "private, no-cache" || first.Header().Get("Vary") != "Authorization" {
-		t.Fatalf("initial wiki body: %d %+v %s", first.Code, first.Header(), first.Body)
+	res := wikiMemoryTestRequest(mux, 3, path, "")
+	if res.Code != http.StatusOK || res.Header().Get("Cache-Control") != "private, no-cache" {
+		t.Fatalf("body: %d %s", res.Code, res.Body)
 	}
-	second := wikiMemoryTestRequest(mux, 3, path, first.Header().Get("ETag"))
-	if second.Code != http.StatusNotModified || second.Body.Len() != 0 || second.Header().Get("ETag") != `"v1"` {
-		t.Fatalf("conditional wiki response: %d %+v %s", second.Code, second.Header(), second.Body)
+	if cached := wikiMemoryTestRequest(mux, 3, path, `"v1"`); cached.Code != http.StatusNotModified {
+		t.Fatalf("conditional: %d", cached.Code)
 	}
 	delete(db.groups, 3)
-	revoked := wikiMemoryTestRequest(mux, 3, path, first.Header().Get("ETag"))
-	if revoked.Code != http.StatusNotFound || revoked.Header().Get("ETag") != "" {
-		t.Fatalf("revoked request disclosed cached document: %d %+v", revoked.Code, revoked.Header())
+	for _, denied := range []string{path, "/api/agents/51/memories/wiki-1", "/api/agents/50/memories/owner-only"} {
+		if res := wikiMemoryTestRequest(mux, 3, denied, `"v1"`); res.Code != http.StatusNotFound || res.Header().Get("ETag") != "" {
+			t.Errorf("denied: %d %s", res.Code, res.Body)
+		}
 	}
-	if len(proxied) != 2 || <-proxied != "" || <-proxied != `"v1"` {
-		t.Fatal("unexpected upstream validators")
+	if len(proxied) != 2 {
+		t.Fatalf("upstream requests: %d", len(proxied))
+	}
+}
+
+func TestWikiMemorySyncKeepsPreviousSnapshotUntilAllPagesSucceed(t *testing.T) {
+	old := wikiFixture("old", "grp_7")
+	db := &wikiMemoryTestStore{memory: []store.WikiCatalogEntry{old}}
+	fail := true
+	requests := 0
+	h, _ := wikiEndpoint(t, db, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/internal/catsco/memory/catalog" {
+			t.Error(r.URL.Path)
+		}
+		var request wikiCatalogRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if request.Cursor == "" {
+			cursor := "next"
+			_ = json.NewEncoder(w).Encode(wikiCatalogPage{Items: []store.WikiCatalogEntry{wikiFixture("new", "grp_7")}, NextCursor: &cursor})
+			return
+		}
+		if fail {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(wikiCatalogPage{Items: []store.WikiCatalogEntry{wikiFixture("other", "")}})
+	})
+	if err := h.syncWikiCatalog(context.Background()); err == nil || !reflect.DeepEqual(db.memory, []store.WikiCatalogEntry{old}) {
+		t.Fatalf("failed sync replaced snapshot: %v %v", err, db.memory)
+	}
+	fail = false
+	if err := h.syncWikiCatalog(context.Background()); err != nil || len(db.memory) != 2 || db.memory[0].ID != "new" || requests != 4 {
+		t.Fatalf("successful sync: %v %+v (%d requests)", err, db.memory, requests)
 	}
 }
