@@ -129,11 +129,13 @@ export default function WikiMemoryGraph({ groups, conversations, onOpen, isNew }
     const radius = region.r * camera.zoom;
     return inView(center, radius + 24, size) ? [{ region, ...center, radius }] : [];
   }) : [];
-  const points = overview ? [] : circles.flatMap(({ region }) => region.members.flatMap(index => {
+  const points = overview ? [] : circles.flatMap(({ region }) => region.members.flatMap((index, order) => {
     const node = layout.nodes[index];
     const item = items.get(node.id);
     const point = pointOnScreen(node, camera, size);
-    return item && inView(point, 12, size) ? [{ item, hue: HUES[region.hue % HUES.length], ...point }] : [];
+    if (!item || !inView(point, 12, size)) return [];
+    const strength = 1 - 0.42 * order / Math.max(1, region.count - 1);
+    return [{ item, hue: HUES[region.hue % HUES.length], strength, ...point }];
   }));
   const labels = camera?.zoom >= TITLE_ZOOM ? titleLabels(points, size) : [];
 
@@ -183,20 +185,28 @@ export default function WikiMemoryGraph({ groups, conversations, onOpen, isNew }
       }}>
       {circles.map(({ region, x, y, radius }) => {
         const title = conversations[region.key] || '其他来源';
-        const style = { left: x, top: y, width: 2 * radius, height: 2 * radius,
-          '--wiki-hue': HUES[region.hue % HUES.length] };
-        const showCaption = overview ? radius >= 19 : radius >= 28;
-        const caption = showCaption && <span className="cc-wiki-map-caption" style={{ maxWidth: Math.min(145, Math.max(42, radius * 1.66)) }}>
-          <strong>{title}</strong>
-          {overview && radius >= 27 && <small>{region.count} 篇</small>}
-        </span>;
-        return overview ?
-          <button key={region.key} type="button" className="cc-wiki-map-region" style={style}
-            aria-label={`${title}，${region.count} 篇 Wiki`} title={title} onClick={() => focusRegion(region)}>{caption}</button> :
-          <div key={region.key} className="cc-wiki-map-region" style={style} aria-hidden="true">{caption}</div>;
+        const hue = HUES[region.hue % HUES.length];
+        if (overview) {
+          const discRadius = radius * 0.9;
+          return <button key={region.key} type="button" className="cc-wiki-map-region"
+            style={{ left: x, top: y, width: 2 * discRadius, height: 2 * discRadius, '--wiki-hue': hue }}
+            aria-label={`${title}，${region.count} 篇 Wiki`} title={title} onClick={() => focusRegion(region)}>
+            {discRadius >= 18 && <span className="cc-wiki-map-caption" style={{ maxWidth: Math.min(145, discRadius * 1.66) }}>
+              <strong>{title}</strong>
+              {discRadius >= 26 && <small>{region.count} 篇</small>}
+            </span>}
+          </button>;
+        }
+        let labelTop = y - radius - 11;
+        // Keep the name of the cluster under the viewport center in frame while zooming.
+        if (labelTop < 12 && Math.hypot(size.width / 2 - x, size.height / 2 - y) < radius) labelTop = 12;
+        if (radius < 24 || x < 36 || x > size.width - 36 || labelTop < 12 || labelTop > size.height - 28) return null;
+        return <span key={region.key} className="cc-wiki-detail-name" title={title}
+          style={{ left: x, top: labelTop, '--wiki-hue': hue }}>{title}</span>;
       })}
-      {points.map(({ item, x, y, hue }) => <button key={item.id} type="button" className="cc-wiki-node"
-        style={{ left: x, top: y, '--wiki-hue': hue }} title={item.title} aria-label={item.title}
+      {points.map(({ item, x, y, hue, strength }) => <button key={item.id} type="button" className="cc-wiki-node"
+        style={{ left: x, top: y, '--wiki-hue': hue, '--wiki-node-strength': strength,
+          '--wiki-node-size': `${Math.min(12, 5 + camera.zoom * 1.7)}px` }} title={item.title} aria-label={item.title}
         data-new={isNew(item) || undefined} onClick={() => onOpen(item)} />)}
       {labels.map(label => <span key={label.id} className="cc-wiki-map-node-title" aria-hidden="true"
         style={{ left: label.x, top: label.y, width: label.width }}>{label.title}</span>)}

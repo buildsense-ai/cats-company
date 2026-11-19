@@ -130,7 +130,7 @@ function WikiCatalog({ hidden, paused, agentUid, topicId, visit, visitKey, onOpe
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState(false);
   const [view, setView] = useState(topicId ? 'list' : 'graph');
-  const [groupList, setGroupList] = useState(false);
+  const [groupList, setGroupList] = useState(!topicId);
   const active = useRef(null);
   const started = useRef(false);
   const catalog = useRef(null);
@@ -254,8 +254,8 @@ function WikiCatalog({ hidden, paused, agentUid, topicId, visit, visitKey, onOpe
       </div>}
       {!topicId && view === 'list' && <div className="cc-wiki-list-options">
         <select aria-label="列表分组" value={groupList ? 'topic' : 'time'} onChange={event => setGroupList(event.target.value === 'topic')}>
-          <option value="time">按时间</option>
           <option value="topic">按会话</option>
+          <option value="time">按时间</option>
         </select>
       </div>}
       {view === 'graph' && items.length > 0 &&
