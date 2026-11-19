@@ -19,6 +19,7 @@ vi.mock('../api', () => {
     getRelayUsage: vi.fn().mockResolvedValue({ summary: null }),
     getRelayConfig: vi.fn().mockResolvedValue({}),
     getMe: mocks.getMe,
+    getWikiMemoryAvailability: vi.fn().mockResolvedValue({ enabled: false }),
     getAgents: vi.fn().mockResolvedValue({ agents: [] }),
     getDevices: vi.fn().mockResolvedValue({ devices: [] }),
     getAgentQuota: vi.fn().mockResolvedValue({}),

@@ -1269,6 +1269,25 @@ describe('MessagesView composer draft isolation', () => {
     });
   });
 
+  it('shows the Wiki entry in a bot conversation only when the service is configured', async () => {
+    api.getGroupInfo.mockResolvedValue({
+      group: { id: 9, name: '助手会话', kind: 'standard' },
+      members: [{ user_id: 1 }, { user_id: 2, is_bot: true }],
+    });
+    const props = {
+      isGroup: true,
+      groupId: 9,
+      renderTopBar: (actions) => <div>{actions}</div>,
+    };
+    const wikiButton = () => container.querySelector('button[aria-label="记忆"]');
+
+    await mountTopic(root, 'grp_9', props);
+    expect(wikiButton()).toBeNull();
+
+    await mountTopic(root, 'grp_9', { ...props, wikiMemoryEnabled: true });
+    expect(wikiButton()).not.toBeNull();
+  });
+
   it('selects existing conversation messages and exports a branded sharing image', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: [

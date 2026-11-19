@@ -485,6 +485,16 @@ async function uploadRawFile(path, file, { authToken = '' } = {}) {
 export const api = {
   ...authApi,
   getMe: () => request('GET', '/api/me'),
+  getWikiMemoryAvailability: ({ signal } = {}) => request('GET', '/api/memories/availability', undefined, { signal }),
+  getWikiMemoryCatalog: (agentUid, { topicId, cursor, signal } = {}) => {
+    const query = new URLSearchParams({ limit: '100' });
+    if (topicId) query.set('topic_id', topicId);
+    if (cursor) query.set('cursor', cursor);
+    return request('GET', `/api/agents/${encodeURIComponent(agentUid)}/memories?${query}`, undefined, { signal });
+  },
+  getWikiMemoryDocument: (agentUid, id, { signal } = {}) => request(
+    'GET', `/api/agents/${encodeURIComponent(agentUid)}/memories/${encodeURIComponent(id)}`, undefined, { signal },
+  ),
   createSTTSession: () => request('POST', '/api/stt/sessions'),
   getRelayAdminAccess: () => request('GET', '/api/admin/relay/access'),
   relayAdminProxyURL: (path) => `/api/admin/relay${path}`,
