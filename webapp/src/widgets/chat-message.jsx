@@ -1075,7 +1075,7 @@ function WorkingPlanCard({ item }) {
   );
 }
 
-function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, memoryBranchActive, showDetails = true }) {
+function WorkingProcess({ blocks, agentUid, agentName, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, memoryBranchActive, showDetails = true }) {
   const liquidConversation = useLiquidConversation();
   const [revealingNarratives, setRevealingNarratives] = useState({});
   const [open, setOpen] = useState(false);
@@ -1186,7 +1186,7 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
             {statusContent}
           </div>
         ))}
-        {(memoryEvents.length > 0 || diaryViews.length > 0) && <MemorySources diaryViews={diaryViews} events={memoryEvents} active={branchActive} finished={finished} agentUid={agentUid} />}
+        {(memoryEvents.length > 0 || diaryViews.length > 0) && <MemorySources diaryViews={diaryViews} events={memoryEvents} active={branchActive} finished={finished} agentUid={agentUid} agentName={agentName} />}
       </div>
       {!open && planContent}
       {open && hasDetails && (
@@ -1604,7 +1604,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
           )}
 
           {!isSelf && (showThinking || executionState || latestMemoryBranches(workingBlocks).length > 0 || workingBlocks.some((item) => item.type === 'tool_pair' && diaryToolView(item))) && (
-            <WorkingProcess blocks={workingBlocks} agentUid={diaryAgentUID(message.from_uid)} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} memoryBranchActive={memoryBranchActive} showDetails={showThinking} />
+            <WorkingProcess blocks={workingBlocks} agentUid={diaryAgentUID(message.from_uid)} agentName={senderIsBot ? displayName : undefined} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} memoryBranchActive={memoryBranchActive} showDetails={showThinking} />
           )}
 
           {workingAnnotationDoc && <GatewayAnnotationCard doc={workingAnnotationDoc} />}
