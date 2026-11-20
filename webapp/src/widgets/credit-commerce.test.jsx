@@ -5,13 +5,15 @@ import CreditTopupForm, { parseTopupAmount } from './plans/credit-topup-form';
 import CloudWorkerUpgrade from './cloud-worker-upgrade';
 vi.mock('../api', () => ({ api: {
   getCloudWorkerUpgradeQuote: vi.fn(), upgradeCloudWorker: vi.fn(), getCloudWorkerUpgradeOperation: vi.fn(),
+  getCloudWorkerUpgradeConfiguration: vi.fn(),
 } }));
 import { api } from '../api';
 
 const config = { enabled: true, min_amount_fen: 100, max_amount_fen: 1000000, credits_per_cny: 100, presets_fen: [1000, 3000, 5000, 10000, 30000, 50000] };
 const worker = { id: 91, tenant_name: 'tenant-a', display_name: '审查助手' };
 const quote = { enabled: true, quote_id: 'quote-a', from_plan: 'light', to_plan: 'standard', cost_units: 2000000000,
-  balance_units: 5000000000, units_per_credit: 1000000, expires_at: new Date(Date.now() + 300000).toISOString(), worker_expires_at: '2027-01-01T00:00:00Z' };
+  balance_units: 5000000000, units_per_credit: 1000000, expires_at: new Date(Date.now() + 300000).toISOString(),
+  worker_expires_at: '2027-01-01T00:00:00Z', remaining_seconds: 15 * 86400 };
 
 describe('credit commerce interactions', () => {
   let container, root;
@@ -26,6 +28,7 @@ describe('credit commerce interactions', () => {
     sessionStorage.clear(); vi.resetAllMocks();
     container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
     api.getCloudWorkerUpgradeQuote.mockResolvedValue(quote);
+    api.getCloudWorkerUpgradeConfiguration.mockResolvedValue({ current_plan: 'light' });
     api.getCloudWorkerUpgradeOperation.mockResolvedValue({ operation_id: 'op-a', status: 'reconciling' });
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
@@ -46,11 +49,23 @@ describe('credit commerce interactions', () => {
     await act(async () => Simulate.change(container.querySelector('input'), { target: { value: '0.99' } }));
     expect(container.querySelector('[type=submit]').disabled).toBe(true);
   });
+  test('shows the current tier and expiry before asking for a quote', async () => {
+    api.getCloudWorkerUpgradeConfiguration.mockResolvedValue({ current_plan: 'standard', upgrade_expires_at: quote.worker_expires_at });
+    await render(<CloudWorkerUpgrade worker={worker} />);
+    expect(container.textContent).toContain('当前计费配置 标准');
+    expect(container.textContent).toContain('已购升配至');
+    expect(container.textContent).toContain('不自动续费或扣点');
+    expect([...container.querySelectorAll('select option')].map(option => option.value)).toEqual(['pro', 'heavy']);
+    expect(api.getCloudWorkerUpgradeQuote).not.toHaveBeenCalled();
+  });
   test('requires a quote and sufficient balance before spending points', async () => {
     api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, balance_units: 1 });
     await render(<CloudWorkerUpgrade worker={worker} />);
     await click('查看升配报价');
-    expect(container.textContent).toContain('余额不足');
+    expect(container.textContent).toContain('还差');
+    expect(container.textContent).toContain('一次性支付 2,000 点');
+    expect(container.textContent).toContain('报价时剩余 15 天');
+    expect(container.textContent).toContain('升配成功才扣点');
     expect([...container.querySelectorAll('button')].find(item => item.textContent === '确认并支付点数').disabled).toBe(true);
     expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
   });

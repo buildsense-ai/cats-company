@@ -486,9 +486,6 @@ export default function CloudWorkerPanel({
                     ) : worker.retention_days > 0 ? (
                       <span>数据保留 <b>普通机器停服后通常 {worker.retention_days} 天，以逐台截止为准</b></span>
                     ) : null}
-                    {isSharedWorker(worker) && (
-                      <span>连接方式 <b>通过平台连接（共享集群无 SSH / 无公网 IP）</b></span>
-                    )}
                     {!worker.app_version && !worker.cloud_version && !worker.cloud_image_id && (
                       <span>
                         {['provisioning', 'creating'].includes(String(shownStatus || '').toLowerCase())

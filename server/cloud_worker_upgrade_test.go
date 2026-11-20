@@ -311,6 +311,67 @@ func TestMachineUpgradeCostIsProratedByRemainingTerm(t *testing.T) {
 	}
 }
 
+func TestMachineUpgradeConfigurationIsOwnerScopedAndReadOnly(t *testing.T) {
+	h, db := machineUpgradeTestHandler(t, "")
+	db.terms["bot-worker"] = &types.MachinePlanTerm{
+		OwnerUID: 77, Plan: types.MachinePlanStandard, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	path := "/api/cloud-workers/upgrade?name=bot-worker&view=configuration"
+	other := httptest.NewRecorder()
+	h.HandleMachineUpgrade(other, machineUpgradeRequest(http.MethodGet, path, "", 78))
+	if other.Code != http.StatusNotFound {
+		t.Fatalf("another owner could read configuration: %d %s", other.Code, other.Body.String())
+	}
+	rec := httptest.NewRecorder()
+	h.HandleMachineUpgrade(rec, machineUpgradeRequest(http.MethodGet, path, "", 77))
+	var view struct {
+		CurrentPlan string `json:"current_plan"`
+		ExpiresAt   string `json:"upgrade_expires_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); rec.Code != http.StatusOK || err != nil ||
+		view.CurrentPlan != types.MachinePlanStandard || view.ExpiresAt != db.terms["bot-worker"].ExpiresAt.UTC().Format(time.RFC3339) {
+		t.Fatalf("unexpected configuration: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(db.quotes) != 0 || len(db.operations) != 0 {
+		t.Fatal("configuration read created a quote or operation")
+	}
+}
+
+func TestMachineUpgradeAfterEarlyRenewalProratesEachTier(t *testing.T) {
+	t.Setenv("CATSCO_MACHINE_PLAN_PRICES_FEN", "")
+	start := time.Now().UTC().Truncate(time.Second)
+	const half = 15 * 24 * time.Hour
+	pricing := machinePlanPricing{base: types.MachinePlanLight, term: &types.MachinePlanTerm{
+		Plan: types.MachinePlanStandard, ExpiresAt: start.Add(half),
+	}}
+	const want = 12000 * commercialTopupUnitsPerFen // 5000 for standard → pro, 7000 for light → pro.
+	if got, ok := pricing.cost(types.MachinePlanPro, start, start.Add(2*half)); !ok || got != want {
+		t.Fatalf("combined cost = %d, %v, want %d", got, ok, want)
+	}
+	if got := pricing.planAt(start.Add(half)); got != types.MachinePlanLight {
+		t.Fatalf("expired upgrade credited as %q", got)
+	}
+
+	h, db := machineUpgradeTestHandler(t, "change-plan-stub")
+	h.credits.(*platformLifecycleStub).lifecycles[0].PackageExpiresAt = start.Add(2 * half)
+	pricing.term.OwnerUID = 77
+	db.terms["bot-worker"] = pricing.term
+	quote := machineUpgradeQuoteForTest(t, h, 77)
+	quotedAt := db.quotes[quote.QuoteID].ExpiresAt.Add(-machineUpgradeQuoteTTL)
+	expected, _ := pricing.cost(types.MachinePlanPro, quotedAt, start.Add(2*half))
+	if quote.FromPlan != types.MachinePlanStandard || quote.CostUnits != expected {
+		t.Fatalf("unexpected split quote: %+v", quote)
+	}
+	// The covered portion changes while the current tier stays the same.
+	pricing.term.ExpiresAt = start.Add(half / 2)
+	before := db.balance
+	rec := httptest.NewRecorder()
+	h.HandleMachineUpgrade(rec, machineUpgradeRequest(http.MethodPost, "/api/cloud-workers/upgrade", `{"name":"bot-worker","plan":"pro","quote_id":"`+quote.QuoteID+`","client_request_id":"split-price-stale"}`, 77))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "price changed") || db.balance != before {
+		t.Fatalf("changed split quote must not charge: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMachineUpgradeQuoteRequiresPackedOwnedActiveWorker(t *testing.T) {
 	const uid = int64(77)
 	t.Setenv("CATSCO_MACHINE_PLAN_PRICES_FEN", "")

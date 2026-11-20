@@ -141,7 +141,7 @@ describe('CloudWorkerPanel', () => {
     // retention_days is a rule of thumb, not this machine's real deadline.
     expect(text).toContain('停服后通常 7 天');
     expect(text).not.toContain('数据保留截止');
-    expect(text).toContain('通过平台连接');
+    expect(text).not.toContain('连接方式');
   });
   test('marks an expiry within 7 days as urgent', async () => {
     const inThreeDays = new Date(Date.now() + 3 * 86400000).toISOString();
@@ -328,7 +328,7 @@ describe('CloudWorkerPanel', () => {
   test('uses registered shared identity while provider status is unavailable', async () => {
     await renderPanel({ workers: [worker({ backend: '', deployment_profile: 'packed_shared', cloud_status: 'unavailable' })] });
     expect(container.querySelector('.cc-cloud-worker-backend').textContent).toBe('共享机');
-    expect(container.textContent).toContain('通过平台连接');
+    expect(container.textContent).not.toContain('通过平台连接');
   });
 
   test.each([false, true])('uses actual retention facts for retained=%s shared workers', async (retain_data) => {
