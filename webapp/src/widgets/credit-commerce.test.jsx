@@ -170,12 +170,40 @@ describe('credit commerce interactions', () => {
     expect(container.textContent).toContain('期间云员工会短暂离线');
     expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
   });
-  test('expired quotes cannot be submitted', async () => {
-    api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, expires_at: '2000-01-01T00:00:00Z' });
+  test('distinguishes quote expiration from machine term and refreshes the amount', async () => {
+    const heavy = { ...quote, to_plan: 'heavy', cost_units: 41120458334, remaining_seconds: 1973782,
+      pricing_term_seconds: 2592000, pricing_segments: [{ from_plan: 'light', remaining_seconds: 1973782, difference_fen: 54000 }] };
+    api.getCloudWorkerUpgradeQuote.mockResolvedValueOnce({ ...heavy, expires_at: '2000-01-01T00:00:00Z' })
+      .mockResolvedValueOnce({ ...heavy, cost_units: 41117458334, remaining_seconds: 1973638,
+        pricing_segments: [{ ...heavy.pricing_segments[0], remaining_seconds: 1973638 }],
+        expires_at: new Date(Date.now() + 300000).toISOString() });
+    await render(<CloudWorkerUpgrade worker={{ ...worker, runtime_plan: 'standard' }} />);
+    await click('升配');
+    await act(async () => {
+      const select = container.querySelector('select');
+      select.value = 'heavy';
+      Simulate.change(select);
+    });
+    await click('查看升配报价');
+    expect(container.textContent).toContain('41,120.46 点');
+    expect(container.textContent).toContain('54,000 点 ×（1,973,782 秒 ÷ 30 天）');
+    expect(container.textContent).toContain('报价已过期，请刷新报价');
+    expect(container.querySelector('.cloud-upgrade-quote button').disabled).toBe(true);
+    await click('刷新报价');
+    expect(container.textContent).toContain('41,117.46 点');
+    expect(container.textContent).toContain('报价将在');
+    expect(container.textContent).toContain('机器到期');
+    expect(api.getCloudWorkerUpgradeQuote).toHaveBeenLastCalledWith(worker.tenant_name, 'heavy', expect.any(Object));
+    expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
+  });
+  test('keeps a tiny shortfall visible and cannot pay based on rounded amounts', async () => {
+    api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, cost_units: 5000001, balance_units: 5000000 });
     await render(<CloudWorkerUpgrade worker={worker} />);
     await click('升配');
     await click('查看升配报价');
-    expect([...container.querySelectorAll('button')].find(item => item.textContent.includes('报价已过期')).disabled).toBe(true);
+    expect(container.textContent).toContain('一次性支付 5 点');
+    expect(container.textContent).toContain('还差 <0.01 点');
+    expect(container.querySelector('.cloud-upgrade-quote button').disabled).toBe(true);
     expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
   });
 });

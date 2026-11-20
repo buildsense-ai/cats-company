@@ -7,7 +7,11 @@ import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 const plans = { light: '轻量', standard: '标准', pro: '专业', heavy: '重载' };
 const terminal = status => ['completed', 'failed'].includes(status);
 const labels = { pending: '等待升配', running: '正在升配', reconciling: '正在核实机器配置', completed: '升配完成', failed: '升配未完成' };
-const formatPoints = (units, scale = 1_000_000) => (Number(units || 0) / scale).toLocaleString('zh-CN', { maximumFractionDigits: 6 });
+function formatPoints(units, scale = 1_000_000) {
+  const points = Number(units || 0) / scale;
+  if (points > 0 && points < 0.01) return '<0.01';
+  return points.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+}
 const planIds = Object.keys(plans);
 const planLabel = id => plans[id] || id;
 const formatDate = value => new Date(value).toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
@@ -151,10 +155,13 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
     } finally { submitting.current = false; setBusy(false); }
   };
 
-  const expired = !quote?.expires_at || new Date(quote.expires_at).getTime() <= clock;
+  const validFor = Math.ceil((new Date(quote?.expires_at).getTime() - clock) / 1000);
+  const expired = !Number.isFinite(validFor) || validFor <= 0;
   const enough = quote && Number.isSafeInteger(Number(quote.balance_units)) && Number(quote.balance_units) >= Number(quote.cost_units);
   const active = record || (operation && !terminal(operation.status));
   const remaining = formatRemaining(quote?.remaining_seconds);
+  const pricingTerm = formatRemaining(quote?.pricing_term_seconds);
+  const pricingSegments = pricingTerm && Array.isArray(quote?.pricing_segments) ? quote.pricing_segments : [];
   const canChooseTarget = !active && !configurationLoading;
   const runtimeExceedsPricing = planIds.includes(currentPlan) && planIds.indexOf(runtimePlan) > planIds.indexOf(currentPlan);
   return (
@@ -179,18 +186,24 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
             <label>目标配置 <select value={target} disabled={disabled || busy} onChange={event => { setTarget(event.target.value); setQuote(null); setError(''); }}>
               {targets.map(id => <option key={id} value={id}>{plans[id]}</option>)}
             </select></label>
-            <button type="button" disabled={disabled || busy} onClick={getQuote}>{busy ? '读取中…' : '查看升配报价'}</button>
+            <button type="button" disabled={disabled || busy} onClick={getQuote}>{busy ? '读取中…' : quote ? '刷新报价' : '查看升配报价'}</button>
           </div>}
           {configurationLoading && !active && <p role="status">正在读取机器配置…</p>}
           {canChooseTarget && !target && <p>已是最高档位。</p>}
           {quote && !active && <div className="cloud-upgrade-quote">
             <strong>升至 {planLabel(quote.to_plan)} · 一次性支付 {formatPoints(quote.cost_units, quote.units_per_credit)} 点</strong>
-            <p>升配至 {formatDate(quote.worker_expires_at)}（机器原到期时间）{remaining && ` · 报价时剩余 ${remaining}`}</p>
+            <p>机器到期 {formatDate(quote.worker_expires_at)}{remaining && ` · 报价时剩余 ${remaining}`}</p>
+            {pricingSegments.length > 0 && <div aria-label="租期折算明细">
+              {pricingSegments.map(segment => <p key={segment.from_plan}>
+                {planLabel(segment.from_plan)} → {planLabel(quote.to_plan)} · {pricingTerm}差价 {formatPoints(segment.difference_fen, 1)} 点 ×（{Number(segment.remaining_seconds).toLocaleString('zh-CN')} 秒 ÷ {pricingTerm}）
+              </p>)}
+            </div>}
+            <p>{expired ? '报价已过期，请刷新报价' : `报价将在 ${Math.floor(validFor / 60)} 分 ${validFor % 60} 秒后失效`}</p>
             <p>确认后预留点数，升配成功才扣点。容量不足时可能迁移，期间云员工会短暂离线。</p>
             <p>可用 {formatPoints(quote.balance_units, quote.units_per_credit)} 点{!enough && ` · 还差 ${formatPoints(Number(quote.cost_units) - Number(quote.balance_units), quote.units_per_credit)} 点，请到「套餐与权益」充值后重新报价。`}</p>
             {quote.needs_migration && <p>当前容量不足，请联系支持。</p>}
             <button type="button" disabled={disabled || busy || expired || !enough || quote.needs_migration} onClick={submit}>
-              {expired ? '报价已过期，请重新获取' : '确认并支付点数'}
+              确认并支付点数
             </button>
           </div>}
           {operation && <div role="status" className="cloud-upgrade-progress">

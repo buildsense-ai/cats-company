@@ -97,17 +97,29 @@ func (p machinePlanPricing) planAt(at time.Time) string {
 	return p.base
 }
 
+type machineUpgradePriceSegment struct {
+	FromPlan      string `json:"from_plan"`
+	Remaining     int64  `json:"remaining_seconds"`
+	DifferenceFen int64  `json:"difference_fen"`
+}
+
 func (p machinePlanPricing) cost(target string, start, end time.Time) (int64, bool) {
+	cost, _, ok := p.price(target, start, end)
+	return cost, ok
+}
+
+func (p machinePlanPricing) price(target string, start, end time.Time) (int64, []machineUpgradePriceSegment, bool) {
 	seconds := int64(end.Sub(start) / time.Second)
 	if seconds <= 0 || seconds > machineUpgradeMaxRemainingSeconds {
-		return 0, false
+		return 0, nil, false
 	}
 	prices := machinePlanPricesFen()
 	targetPrice, ok := prices[target]
 	if !ok {
-		return 0, false
+		return 0, nil, false
 	}
 	var numerator int64
+	segments := make([]machineUpgradePriceSegment, 0, 2)
 	add := func(plan string, duration int64) bool {
 		if duration == 0 {
 			return true
@@ -117,7 +129,9 @@ func (p machinePlanPricing) cost(target string, start, end time.Time) (int64, bo
 			(int64(^uint64(0)>>1)-machineUpgradeTermSeconds-numerator)/commercialTopupUnitsPerFen/duration {
 			return false
 		}
-		numerator += (targetPrice - price) * commercialTopupUnitsPerFen * duration
+		difference := targetPrice - price
+		numerator += difference * commercialTopupUnitsPerFen * duration
+		segments = append(segments, machineUpgradePriceSegment{FromPlan: plan, Remaining: duration, DifferenceFen: difference})
 		return true
 	}
 	// An early renewal can extend the machine beyond a previous paid upgrade.
@@ -125,14 +139,14 @@ func (p machinePlanPricing) cost(target string, start, end time.Time) (int64, bo
 	if p.term != nil && p.term.ExpiresAt.After(start) {
 		covered := min(seconds, int64(p.term.ExpiresAt.Sub(start)/time.Second))
 		if !add(p.term.Plan, covered) {
-			return 0, false
+			return 0, nil, false
 		}
 		seconds -= covered
 	}
 	if !add(p.base, seconds) {
-		return 0, false
+		return 0, nil, false
 	}
-	return (numerator + machineUpgradeTermSeconds - 1) / machineUpgradeTermSeconds, true
+	return (numerator + machineUpgradeTermSeconds - 1) / machineUpgradeTermSeconds, segments, true
 }
 
 // machineUpgradeStore is the persistence this feature needs. It is optional: a
@@ -250,19 +264,21 @@ func (h *CloudWorkerHandler) machineCurrentPlan(store machineUpgradeStore, uid i
 }
 
 // machineUpgradeQuoteView is the GET response body.
-func machineUpgradeQuoteView(tenant, fromPlan, toPlan string, costUnits, balanceUnits int64, quoteID string, expiresAt, workerExpiresAt time.Time) map[string]interface{} {
+func machineUpgradeQuoteView(tenant, fromPlan, toPlan string, costUnits, balanceUnits int64, quoteID string, expiresAt, workerExpiresAt time.Time, segments []machineUpgradePriceSegment) map[string]interface{} {
 	return map[string]interface{}{
-		"enabled":           true,
-		"quote_id":          quoteID,
-		"tenant_name":       tenant,
-		"from_plan":         fromPlan,
-		"to_plan":           toPlan,
-		"cost_units":        costUnits,
-		"units_per_credit":  commercialTopupUnitsPerFen,
-		"balance_units":     balanceUnits,
-		"expires_at":        expiresAt.UTC().Format(time.RFC3339),
-		"worker_expires_at": workerExpiresAt.UTC().Format(time.RFC3339),
-		"remaining_seconds": int64(workerExpiresAt.Sub(expiresAt.Add(-machineUpgradeQuoteTTL)) / time.Second),
+		"enabled":              true,
+		"quote_id":             quoteID,
+		"tenant_name":          tenant,
+		"from_plan":            fromPlan,
+		"to_plan":              toPlan,
+		"cost_units":           costUnits,
+		"units_per_credit":     commercialTopupUnitsPerFen,
+		"balance_units":        balanceUnits,
+		"expires_at":           expiresAt.UTC().Format(time.RFC3339),
+		"worker_expires_at":    workerExpiresAt.UTC().Format(time.RFC3339),
+		"remaining_seconds":    int64(workerExpiresAt.Sub(expiresAt.Add(-machineUpgradeQuoteTTL)) / time.Second),
+		"pricing_term_seconds": machineUpgradeTermSeconds,
+		"pricing_segments":     segments,
 		// Capacity is checked by the adapter when executing the quote.
 		"needs_migration": false,
 		"prices_fen":      machinePlanPricesFen(),
@@ -444,7 +460,7 @@ func (h *CloudWorkerHandler) handleMachineUpgradeQuote(w http.ResponseWriter, ui
 		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, fromPlan, toPlan, "已有进行中的升配"))
 		return
 	}
-	costUnits, ok := pricing.cost(toPlan, now, lifecycle.PackageExpiresAt)
+	costUnits, segments, ok := pricing.price(toPlan, now, lifecycle.PackageExpiresAt)
 	if !ok {
 		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, fromPlan, toPlan, "当前剩余时长不足以计算升配差价"))
 		return
@@ -476,7 +492,7 @@ func (h *CloudWorkerHandler) handleMachineUpgradeQuote(w http.ResponseWriter, ui
 		return
 	}
 	writeJSON(w, http.StatusOK, machineUpgradeQuoteView(tenant, fromPlan, toPlan, costUnits, balanceUnits,
-		quote.QuoteID, quote.ExpiresAt, quote.WorkerExpiresAt))
+		quote.QuoteID, quote.ExpiresAt, quote.WorkerExpiresAt, segments))
 }
 
 func (h *CloudWorkerHandler) handleMachineUpgradeExecute(w http.ResponseWriter, r *http.Request, uid int64) {

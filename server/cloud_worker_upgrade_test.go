@@ -367,6 +367,13 @@ func TestMachineUpgradeAfterEarlyRenewalProratesEachTier(t *testing.T) {
 	if got, ok := pricing.cost(types.MachinePlanPro, start, start.Add(2*half)); !ok || got != want {
 		t.Fatalf("combined cost = %d, %v, want %d", got, ok, want)
 	}
+	_, segments, ok := pricing.price(types.MachinePlanPro, start, start.Add(2*half))
+	const halfSeconds = int64(half / time.Second)
+	if !ok || len(segments) != 2 ||
+		segments[0] != (machineUpgradePriceSegment{FromPlan: types.MachinePlanStandard, Remaining: halfSeconds, DifferenceFen: 10000}) ||
+		segments[1] != (machineUpgradePriceSegment{FromPlan: types.MachinePlanLight, Remaining: halfSeconds, DifferenceFen: 14000}) {
+		t.Fatalf("incorrect split price breakdown: %+v", segments)
+	}
 	if got := pricing.planAt(start.Add(half)); got != types.MachinePlanLight {
 		t.Fatalf("expired upgrade credited as %q", got)
 	}
@@ -391,6 +398,22 @@ func TestMachineUpgradeAfterEarlyRenewalProratesEachTier(t *testing.T) {
 	}
 }
 
+func TestMachineUpgradeHeavyQuoteShowsLegacyProration(t *testing.T) {
+	t.Setenv("CATSCO_MACHINE_PLAN_PRICES_FEN", "")
+	start := time.Unix(0, 0).UTC()
+	const remaining = 1973782
+	end := start.Add(remaining * time.Second)
+	cost, segments, ok := (machinePlanPricing{base: types.MachinePlanLight}).price(types.MachinePlanHeavy, start, end)
+	if !ok || cost != 41120458334 || len(segments) != 1 ||
+		segments[0] != (machineUpgradePriceSegment{FromPlan: types.MachinePlanLight, Remaining: remaining, DifferenceFen: 54000}) {
+		t.Fatalf("legacy quote: %d, %+v, %v", cost, segments, ok)
+	}
+	full, ok := machineUpgradeCostUnits(types.MachinePlanLight, types.MachinePlanHeavy, 30*24*time.Hour)
+	if !ok || full != 54000*commercialTopupUnitsPerFen {
+		t.Fatalf("full price: %d, %v", full, ok)
+	}
+}
+
 func TestMachineUpgradeQuoteRequiresPackedOwnedActiveWorker(t *testing.T) {
 	const uid = int64(77)
 	t.Setenv("CATSCO_MACHINE_PLAN_PRICES_FEN", "")
@@ -403,19 +426,21 @@ func TestMachineUpgradeQuoteRequiresPackedOwnedActiveWorker(t *testing.T) {
 		t.Fatalf("quote: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var quote struct {
-		Enabled        bool              `json:"enabled"`
-		QuoteID        string            `json:"quote_id"`
-		FromPlan       string            `json:"from_plan"`
-		ToPlan         string            `json:"to_plan"`
-		CostUnits      int64             `json:"cost_units"`
-		BalanceUnits   int64             `json:"balance_units"`
-		NeedsMigration bool              `json:"needs_migration"`
-		Prices         map[string]int64  `json:"prices_fen"`
-		UnitsPerCredit int64             `json:"units_per_credit"`
-		WorkerExpires  string            `json:"worker_expires_at"`
-		ExpiresAt      string            `json:"expires_at"`
-		Reason         string            `json:"reason"`
-		Extra          map[string]string `json:"-"`
+		Enabled        bool                         `json:"enabled"`
+		QuoteID        string                       `json:"quote_id"`
+		FromPlan       string                       `json:"from_plan"`
+		ToPlan         string                       `json:"to_plan"`
+		CostUnits      int64                        `json:"cost_units"`
+		BalanceUnits   int64                        `json:"balance_units"`
+		NeedsMigration bool                         `json:"needs_migration"`
+		Prices         map[string]int64             `json:"prices_fen"`
+		UnitsPerCredit int64                        `json:"units_per_credit"`
+		WorkerExpires  string                       `json:"worker_expires_at"`
+		ExpiresAt      string                       `json:"expires_at"`
+		PricingTerm    int64                        `json:"pricing_term_seconds"`
+		Segments       []machineUpgradePriceSegment `json:"pricing_segments"`
+		Reason         string                       `json:"reason"`
+		Extra          map[string]string            `json:"-"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &quote); err != nil {
 		t.Fatalf("decode quote: %v %s", err, recorder.Body.String())
@@ -428,6 +453,9 @@ func TestMachineUpgradeQuoteRequiresPackedOwnedActiveWorker(t *testing.T) {
 	}
 	if quote.UnitsPerCredit != commercialTopupUnitsPerFen || quote.Prices[types.MachinePlanPro] != 19900 {
 		t.Fatalf("quote must carry the price basis: %s", recorder.Body.String())
+	}
+	if quote.PricingTerm != machineUpgradeTermSeconds || len(quote.Segments) != 1 || quote.Segments[0].DifferenceFen != 14000 {
+		t.Fatalf("quote must explain the remaining-term discount: %s", recorder.Body.String())
 	}
 	if quote.CostUnits <= 0 || quote.BalanceUnits != 20000*commercialTopupUnitsPerFen {
 		t.Fatalf("quote must carry cost and balance: %s", recorder.Body.String())
