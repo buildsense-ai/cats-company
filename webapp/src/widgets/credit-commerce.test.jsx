@@ -49,6 +49,12 @@ describe('credit commerce interactions', () => {
     await act(async () => Simulate.change(container.querySelector('input'), { target: { value: '0.99' } }));
     expect(container.querySelector('[type=submit]').disabled).toBe(true);
   });
+  test('excludes tiers the machine already runs while keeping the billing tier visible', async () => {
+    await render(<CloudWorkerUpgrade worker={{ ...worker, runtime_plan: 'standard' }} />);
+    expect(container.textContent).toContain('当前计费配置 轻量 · 运行配置 标准');
+    expect([...container.querySelectorAll('select option')].map(option => option.value)).toEqual(['pro', 'heavy']);
+  });
+
   test('shows the current tier and expiry before asking for a quote', async () => {
     api.getCloudWorkerUpgradeConfiguration.mockResolvedValue({ current_plan: 'standard', upgrade_expires_at: quote.worker_expires_at });
     await render(<CloudWorkerUpgrade worker={worker} />);

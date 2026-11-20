@@ -39,7 +39,8 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   };
 
   const currentPlan = configuration?.current_plan;
-  const targets = planIds.slice(Math.max(1, planIds.indexOf(currentPlan) + 1));
+  const runtimePlan = operation?.status === 'completed' ? operation.to_plan : worker.runtime_plan || configuration?.runtime_plan;
+  const targets = planIds.slice(1 + Math.max(0, planIds.indexOf(currentPlan), planIds.indexOf(runtimePlan)));
   const target = targets.includes(targetChoice) ? targetChoice : targets[0];
 
   const showOperation = (next) => {
@@ -156,6 +157,7 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
     <section className="cloud-upgrade-card" aria-label={`${worker.display_name || worker.tenant_name}机器升配`}>
       <div className="cloud-upgrade-heading"><strong>机器配置升配</strong></div>
       <p>当前计费配置 <strong>{planLabel(currentPlan) || (configurationLoading ? '读取中…' : '暂未读取')}</strong>
+        {' · '}运行配置 <strong>{planLabel(runtimePlan) || '暂未读取'}</strong>
         {configuration?.upgrade_expires_at && <> · 已购升配至 {formatDate(configuration.upgrade_expires_at)}</>}
       </p>
       {canChooseTarget && target && <div className="cloud-upgrade-select">
@@ -166,7 +168,7 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
       </div>}
       {canChooseTarget && !target && <p>已是最高档位。</p>}
       {quote && !active && <div className="cloud-upgrade-quote">
-        <strong>{planLabel(quote.from_plan)} → {planLabel(quote.to_plan)} · 一次性支付 {formatPoints(quote.cost_units, quote.units_per_credit)} 点</strong>
+        <strong>升至 {planLabel(quote.to_plan)} · 一次性支付 {formatPoints(quote.cost_units, quote.units_per_credit)} 点</strong>
         <p>升配至 {formatDate(quote.worker_expires_at)}（机器原到期时间）{remaining && ` · 报价时剩余 ${remaining}`}</p>
         <p>确认后预留点数，升配成功才扣点。容量不足时可能迁移，期间云员工会短暂离线。</p>
         <p>可用 {formatPoints(quote.balance_units, quote.units_per_credit)} 点{!enough && ` · 还差 ${formatPoints(Number(quote.cost_units) - Number(quote.balance_units), quote.units_per_credit)} 点，请到「套餐与权益」充值后重新报价。`}</p>
