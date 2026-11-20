@@ -1,6 +1,5 @@
 /* Keep foregrounds and surfaces on the same theme token family. */
-.credit-topup-card,
-.cloud-upgrade-card {
+.credit-topup-card {
   box-sizing: border-box;
   min-width: 0;
   padding: 24px;
@@ -12,7 +11,6 @@
 }
 
 .credit-topup-heading,
-.cloud-upgrade-heading,
 .credit-topup-footer {
   display: flex;
   align-items: center;
@@ -21,15 +19,13 @@
   flex-wrap: wrap;
 }
 
-.credit-topup-card .credit-topup-heading strong,
-.cloud-upgrade-card .cloud-upgrade-heading strong {
+.credit-topup-card .credit-topup-heading strong {
   color: var(--cc-text, #1f1f1f);
   font-size: 16px;
   font-weight: 600;
 }
 
 .credit-topup-heading span,
-.cloud-upgrade-heading span,
 .credit-topup-card p,
 .cloud-upgrade-card p,
 .credit-topup-note,
@@ -123,19 +119,57 @@
 .cloud-upgrade-card button:disabled { opacity: .5; cursor: not-allowed; }
 .credit-topup-card input:disabled,
 .cloud-upgrade-card select:disabled { opacity: .6; cursor: not-allowed; }
-.cloud-upgrade-select { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.cloud-upgrade-card {
+  min-width: 0;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--cc-border, #ececef);
+  color: var(--cc-text, #1f1f1f);
+}
+.cloud-upgrade-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.cloud-upgrade-configuration {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  color: var(--cc-text-secondary, #454549);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.cloud-upgrade-configuration strong {
+  color: var(--cc-text, #1f1f1f);
+  font-weight: 600;
+}
+.cloud-upgrade-card .cloud-upgrade-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  padding: 4px 8px;
+  border-color: transparent;
+  background: transparent;
+  white-space: nowrap;
+}
+.cloud-upgrade-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.cloud-upgrade-body { padding-bottom: 4px; }
+.cloud-upgrade-select { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; }
+.cloud-upgrade-select select { width: 112px; }
+.cloud-upgrade-rules { color: var(--cc-text-secondary, #454549); font-size: 12px; }
+.cloud-upgrade-rules summary { width: fit-content; cursor: pointer; }
 .cloud-upgrade-quote,
-.cloud-upgrade-progress { padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--cc-border, #ececef); font-size: 13px; }
+.cloud-upgrade-progress { padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--cc-border, #ececef); font-size: 13px; }
 .credit-topup-card .credit-topup-error,
 .cloud-upgrade-card .cloud-upgrade-error { color: var(--cc-danger-text, #b42318); }
 
 @media (max-width: 520px) {
-  .credit-topup-card,
-  .cloud-upgrade-card { padding: 16px; }
+  .credit-topup-card { padding: 16px; }
   .credit-topup-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .credit-topup-presets button { min-width: 0; padding-inline: 8px; }
-  .credit-topup-amount,
-  .cloud-upgrade-select label { width: 100%; justify-content: space-between; flex-wrap: wrap; }
+  .credit-topup-amount { width: 100%; justify-content: space-between; flex-wrap: wrap; }
   .credit-topup-footer { align-items: stretch; }
   .credit-topup-footer > button { width: 100%; }
 }

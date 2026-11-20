@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import './plans/credit-commerce.css';
 import { api } from '../api';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
@@ -24,6 +25,8 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   const [record, setRecord] = useState(() => {
     try { return JSON.parse(readStorageValue(storageKey, 'sessionStorage') || 'null'); } catch { return null; }
   });
+  const [expanded, setExpanded] = useState(() => Boolean(record));
+  const panelId = useId();
   const [targetChoice, setTarget] = useState('standard');
   const [configuration, setConfiguration] = useState(null);
   const [configurationLoading, setConfigurationLoading] = useState(true);
@@ -155,43 +158,56 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   const canChooseTarget = !active && !configurationLoading;
   return (
     <section className="cloud-upgrade-card" aria-label={`${worker.display_name || worker.tenant_name}机器升配`}>
-      <div className="cloud-upgrade-heading"><strong>机器配置升配</strong></div>
-      <p>当前计费配置 <strong>{planLabel(currentPlan) || (configurationLoading ? '读取中…' : '暂未读取')}</strong>
-        {' · '}运行配置 <strong>{planLabel(runtimePlan) || '暂未读取'}</strong>
-        {configuration?.upgrade_expires_at && <> · 已购升配至 {formatDate(configuration.upgrade_expires_at)}</>}
-      </p>
-      {canChooseTarget && target && <div className="cloud-upgrade-select">
-        <label>目标配置 <select value={target} disabled={disabled || busy} onChange={event => { setTarget(event.target.value); setQuote(null); setError(''); }}>
-          {targets.map(id => <option key={id} value={id}>{plans[id]}</option>)}
-        </select></label>
-        <button type="button" disabled={disabled || busy} onClick={getQuote}>{busy ? '读取中…' : '查看升配报价'}</button>
-      </div>}
-      {canChooseTarget && !target && <p>已是最高档位。</p>}
-      {quote && !active && <div className="cloud-upgrade-quote">
-        <strong>升至 {planLabel(quote.to_plan)} · 一次性支付 {formatPoints(quote.cost_units, quote.units_per_credit)} 点</strong>
-        <p>升配至 {formatDate(quote.worker_expires_at)}（机器原到期时间）{remaining && ` · 报价时剩余 ${remaining}`}</p>
-        <p>确认后预留点数，升配成功才扣点。容量不足时可能迁移，期间云员工会短暂离线。</p>
-        <p>可用 {formatPoints(quote.balance_units, quote.units_per_credit)} 点{!enough && ` · 还差 ${formatPoints(Number(quote.cost_units) - Number(quote.balance_units), quote.units_per_credit)} 点，请到「套餐与权益」充值后重新报价。`}</p>
-        {quote.needs_migration && <p>当前容量不足，请联系支持。</p>}
-        <button type="button" disabled={disabled || busy || expired || !enough || quote.needs_migration} onClick={submit}>
-          {expired ? '报价已过期，请重新获取' : '确认并支付点数'}
+      <div className="cloud-upgrade-heading">
+        <div className="cloud-upgrade-configuration">
+          <span>当前计费配置 <strong>{planLabel(currentPlan) || (configurationLoading ? '读取中…' : '暂未读取')}</strong></span>
+          <span>运行配置 <strong>{planLabel(runtimePlan) || '暂未读取'}</strong></span>
+          {configuration?.upgrade_expires_at && <span>已购升配至 <strong>{formatDate(configuration.upgrade_expires_at)}</strong></span>}
+          {!expanded && operation && <span role="status">{labels[operation.status] || '正在查询升配状态'}</span>}
+          {!expanded && record && !operation && <span role="status">待确认升配结果</span>}
+        </div>
+        <button type="button" className="cloud-upgrade-toggle" aria-expanded={expanded} aria-controls={panelId} onClick={() => setExpanded(value => !value)}>
+          {expanded ? '收起' : active || operation ? '查看升配' : canChooseTarget && !target ? '升配规则' : '升配'}
+          <ChevronDown size={14} aria-hidden="true" />
         </button>
-      </div>}
-      <p>按剩余机器租期补差价。已购升配到期后不自动续费或扣点。</p>
-      <details>
-        <summary>计费与续租规则</summary>
-        <p>以 30 天档位差价为基准，按剩余秒数折算。例如剩 15 天就付一半。提前续租只延长机器使用期限，已购升配仍按原日期到期。再次升档时，已覆盖和未覆盖的时段分别补差。</p>
-        <p>可用套餐月额度和充值点数付款。赠送点数和模型用量单独计算。升配明确失败会释放预留，结果待核实时保留预留。</p>
-        <p>后续按续租权益计费，继续购买高档权益需重新报价。平台目前不自动缩减容器配置。</p>
-      </details>
-      {operation && <div role="status" className="cloud-upgrade-progress">
-        <strong>{labels[operation.status] || '正在查询升配状态'}</strong>
-        {operation.message && <p>{operation.message}</p>}
-        {operation.status === 'completed' && <p>已结算 {formatPoints(operation.cost_units)} 点{operation.worker_expires_at && ` · 升配至 ${formatDate(operation.worker_expires_at)}`}。</p>}
-        {!terminal(operation.status) && <p>操作已保存，重新打开面板可继续查看。结果待核实时请勿重复支付。</p>}
-      </div>}
-      {record && !record.operation_id && <button type="button" disabled={busy || disabled} onClick={submit}>{busy ? '查询中…' : '继续查询本次升配'}</button>}
-      {error && <p role="alert" className="cloud-upgrade-error">{error}</p>}
+      </div>
+      <div id={panelId} className="cloud-upgrade-body" hidden={!expanded}>
+        {expanded && <>
+          {canChooseTarget && target && <div className="cloud-upgrade-select">
+            <label>目标配置 <select value={target} disabled={disabled || busy} onChange={event => { setTarget(event.target.value); setQuote(null); setError(''); }}>
+              {targets.map(id => <option key={id} value={id}>{plans[id]}</option>)}
+            </select></label>
+            <button type="button" disabled={disabled || busy} onClick={getQuote}>{busy ? '读取中…' : '查看升配报价'}</button>
+          </div>}
+          {configurationLoading && !active && <p role="status">正在读取机器配置…</p>}
+          {canChooseTarget && !target && <p>已是最高档位。</p>}
+          {quote && !active && <div className="cloud-upgrade-quote">
+            <strong>升至 {planLabel(quote.to_plan)} · 一次性支付 {formatPoints(quote.cost_units, quote.units_per_credit)} 点</strong>
+            <p>升配至 {formatDate(quote.worker_expires_at)}（机器原到期时间）{remaining && ` · 报价时剩余 ${remaining}`}</p>
+            <p>确认后预留点数，升配成功才扣点。容量不足时可能迁移，期间云员工会短暂离线。</p>
+            <p>可用 {formatPoints(quote.balance_units, quote.units_per_credit)} 点{!enough && ` · 还差 ${formatPoints(Number(quote.cost_units) - Number(quote.balance_units), quote.units_per_credit)} 点，请到「套餐与权益」充值后重新报价。`}</p>
+            {quote.needs_migration && <p>当前容量不足，请联系支持。</p>}
+            <button type="button" disabled={disabled || busy || expired || !enough || quote.needs_migration} onClick={submit}>
+              {expired ? '报价已过期，请重新获取' : '确认并支付点数'}
+            </button>
+          </div>}
+          {operation && <div role="status" className="cloud-upgrade-progress">
+            <strong>{labels[operation.status] || '正在查询升配状态'}</strong>
+            {operation.message && <p>{operation.message}</p>}
+            {operation.status === 'completed' && <p>已结算 {formatPoints(operation.cost_units)} 点{operation.worker_expires_at && ` · 升配至 ${formatDate(operation.worker_expires_at)}`}。</p>}
+            {!terminal(operation.status) && <p>操作已保存，重新打开面板可继续查看。结果待核实时请勿重复支付。</p>}
+          </div>}
+          {record && !record.operation_id && <button type="button" disabled={busy || disabled} onClick={submit}>{busy ? '查询中…' : '继续查询本次升配'}</button>}
+          {error && <p role="alert" className="cloud-upgrade-error">{error}</p>}
+          <p>按剩余机器租期补差价。已购升配到期后不自动续费或扣点。</p>
+          <details className="cloud-upgrade-rules">
+            <summary>计费与续租规则</summary>
+            <p>以 30 天档位差价为基准，按剩余秒数折算。例如剩 15 天就付一半。提前续租只延长机器使用期限，已购升配仍按原日期到期。再次升档时，已覆盖和未覆盖的时段分别补差。</p>
+            <p>可用套餐月额度和充值点数付款。赠送点数和模型用量单独计算。升配明确失败会释放预留，结果待核实时保留预留。</p>
+            <p>后续按续租权益计费，继续购买高档权益需重新报价。平台目前不自动缩减容器配置。</p>
+          </details>
+        </>}
+      </div>
     </section>
   );
 }
