@@ -275,6 +275,7 @@ func machineUpgradeQuoteView(tenant, fromPlan, toPlan string, costUnits, balance
 		"units_per_credit":     commercialTopupUnitsPerFen,
 		"balance_units":        balanceUnits,
 		"expires_at":           expiresAt.UTC().Format(time.RFC3339),
+		"expires_in_ms":        max(0, min(machineUpgradeQuoteTTL, time.Until(expiresAt)).Milliseconds()),
 		"worker_expires_at":    workerExpiresAt.UTC().Format(time.RFC3339),
 		"remaining_seconds":    int64(workerExpiresAt.Sub(expiresAt.Add(-machineUpgradeQuoteTTL)) / time.Second),
 		"pricing_term_seconds": machineUpgradeTermSeconds,

@@ -31,7 +31,12 @@ describe('credit commerce interactions', () => {
     api.getCloudWorkerUpgradeConfiguration.mockResolvedValue({ current_plan: 'light' });
     api.getCloudWorkerUpgradeOperation.mockResolvedValue({ operation_id: 'op-a', status: 'reconciling' });
   });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
 
   test.each([['1.01', 101], ['10.29', 1029], ['10000', 1000000], ['1e3', null], ['1.001', null], ['-10', null], ['', null]])('parses exact decimal %s', (input, expected) => {
     expect(parseTopupAmount(input)).toBe(expected);
@@ -104,7 +109,59 @@ describe('credit commerce interactions', () => {
     expect([...container.querySelectorAll('button')].find(item => item.textContent === '确认并支付点数').disabled).toBe(true);
     expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
   });
+  test.each([-1, 1])('uses the server duration with a client clock skew of %i hours', async hours => {
+    const serverNow = Date.now();
+    const monotonic = vi.spyOn(performance, 'now').mockReturnValue(10_000);
+    const wallClock = vi.spyOn(Date, 'now').mockReturnValue(serverNow + hours * 3_600_000);
+    api.getCloudWorkerUpgradeQuote.mockImplementation(async () => {
+      monotonic.mockReturnValue(10_300);
+      return { ...quote, expires_in_ms: 300_000, expires_at: new Date(serverNow + 300_000).toISOString() };
+    });
+    await render(<CloudWorkerUpgrade worker={worker} />);
+    await click('升配');
+    await click('查看升配报价');
+    expect(container.textContent).toContain('报价将在 5 分 0 秒后失效');
+    expect(container.querySelector('.cloud-upgrade-quote button').disabled).toBe(false);
+    monotonic.mockReturnValue(11_100);
+    wallClock.mockReturnValue(serverNow - hours * 3_600_000);
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    expect(container.textContent).toContain('报价将在 4 分 59 秒后失效');
+  });
+  test('disables payment at a subsecond expiry and stays expired when refresh fails', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    let rejectRefresh;
+    api.getCloudWorkerUpgradeQuote.mockResolvedValueOnce({ ...quote, expires_in_ms: 1250 })
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectRefresh = reject; }));
+    await render(<CloudWorkerUpgrade worker={worker} />);
+    await click('升配');
+    await click('查看升配报价');
+    await act(async () => vi.advanceTimersByTime(1249));
+    expect(container.querySelector('.cloud-upgrade-quote button').disabled).toBe(false);
+    await click('刷新报价');
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(container.textContent).toContain('报价已过期，请刷新报价');
+    await act(async () => rejectRefresh(new Error('网络暂时不可用')));
+    expect(container.querySelector('.cloud-upgrade-quote button').disabled).toBe(true);
+    expect(container.textContent).toContain('一次性支付 2,000 点');
+    expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
+  });
+  test('checks the deadline on click even if the timer has not rendered yet', async () => {
+    const monotonic = vi.spyOn(performance, 'now').mockReturnValue(10_000);
+    api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, expires_in_ms: 1200 });
+    await render(<CloudWorkerUpgrade worker={worker} />);
+    await click('升配');
+    await click('查看升配报价');
+    monotonic.mockReturnValue(11_200);
+    expect(container.querySelector('.cloud-upgrade-quote button').disabled).toBe(false);
+    await click('确认并支付点数');
+    expect(container.textContent).toContain('报价已过期，请刷新报价');
+    expect(container.querySelector('.cloud-upgrade-quote button').disabled).toBe(true);
+    expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('catsco_machine_upgrade_v1:91:tenant-a')).toBeNull();
+  });
   test('keeps the same request on ambiguous timeout and resumes operation polling', async () => {
+    const monotonic = vi.spyOn(performance, 'now').mockReturnValue(10_000);
+    api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, expires_in_ms: 1000 });
     api.upgradeCloudWorker.mockRejectedValueOnce(Object.assign(new Error('timeout'), { code: 'REQUEST_TIMEOUT' }))
       .mockResolvedValueOnce({ operation_id: 'op-a', status: 'reconciling' });
     await render(<CloudWorkerUpgrade worker={worker} />);
@@ -113,6 +170,8 @@ describe('credit commerce interactions', () => {
     await click('确认并支付点数');
     expect(container.textContent).toContain('暂未确认升配结果');
     const first = api.upgradeCloudWorker.mock.calls[0];
+    monotonic.mockReturnValue(11_000);
+    await act(async () => window.dispatchEvent(new Event('pageshow')));
     await click('继续查询本次升配');
     expect(api.upgradeCloudWorker.mock.calls[1].slice(0, 4)).toEqual(first.slice(0, 4));
     expect(api.getCloudWorkerUpgradeOperation).toHaveBeenCalledWith('op-a', expect.any(Object));
