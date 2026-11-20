@@ -107,6 +107,13 @@ describe('credit commerce interactions', () => {
     expect(api.getCloudWorkerUpgradeOperation).toHaveBeenCalledWith('op-a', expect.any(Object));
     expect(container.textContent).toContain('升配完成');
     expect(JSON.parse(sessionStorage.getItem('catsco_machine_upgrade_v1:91:tenant-a'))).toBeNull();
+    expect([...container.querySelectorAll('select option')].map(option => option.value)).toEqual(['pro', 'heavy']);
+    api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, from_plan: 'standard', to_plan: 'pro' });
+    await click('查看升配报价');
+    expect(api.getCloudWorkerUpgradeQuote).toHaveBeenCalledWith(worker.tenant_name, 'pro', expect.any(Object));
+    expect(container.textContent).toContain('升配完成');
+    expect(container.textContent).toContain('期间云员工会短暂离线');
+    expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
   });
   test('expired quotes cannot be submitted', async () => {
     api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, expires_at: '2000-01-01T00:00:00Z' });

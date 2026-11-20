@@ -142,6 +142,20 @@ describe('RelayAccessModal commercial rollout', () => {
     return [...container.querySelectorAll('button')].find(button => button.textContent.includes(label));
   }
 
+  it('opens cloud management separately from the model plan chooser', async () => {
+    const onClose = await renderModal();
+    const onOpenCloud = vi.fn();
+    window.addEventListener('cc:open-cloud-worker-manager', onOpenCloud, { once: true });
+    try {
+      await act(async () => { findButton('机器配置升配').click(); });
+      expect(onClose).toHaveBeenCalledOnce();
+      expect(onOpenCloud).toHaveBeenCalledWith(expect.objectContaining({ detail: { showAll: true } }));
+      expect(container.querySelector('[aria-label="升级套餐"]')).toBeNull();
+    } finally {
+      window.removeEventListener('cc:open-cloud-worker-manager', onOpenCloud);
+    }
+  });
+
   it('shows a loading state until entitlements and orders arrive without flashing the disabled fallback', async () => {
     let finishCommercial;
     let finishOrders;
