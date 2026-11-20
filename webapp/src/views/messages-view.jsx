@@ -1530,27 +1530,32 @@ export default function MessagesView({
   }, []);
 
   const handlePreviewResizePointerDown = useCallback((event) => {
-    if (!sidePanelOpen) return;
+    if ((!sidePanelOpen && !wikiMemoryOpen) || event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     const startX = event.clientX;
     const startWidth = previewWidthRef.current;
+    const pointerId = event.pointerId;
 
     const handlePointerMove = (moveEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
       const nextWidth = startWidth + (startX - moveEvent.clientX);
       updatePreviewWidth(nextWidth);
     };
-    const handlePointerUp = () => {
+    const handlePointerUp = (endEvent) => {
+      if (endEvent.pointerId !== pointerId) return;
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
     };
 
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
-  }, [sidePanelOpen, updatePreviewWidth]);
+    window.addEventListener('pointercancel', handlePointerUp);
+  }, [sidePanelOpen, wikiMemoryOpen, updatePreviewWidth]);
 
   const handlePreviewResizeKeyDown = useCallback((event) => {
-    if (!sidePanelOpen) return;
+    if (!sidePanelOpen && !wikiMemoryOpen) return;
     if (event.key === 'ArrowLeft') {
       event.preventDefault();
       updatePreviewWidth(previewWidthRef.current + 40);
@@ -1564,7 +1569,7 @@ export default function MessagesView({
       event.preventDefault();
       updatePreviewWidth(PREVIEW_WIDTH_MAX);
     }
-  }, [sidePanelOpen, updatePreviewWidth]);
+  }, [sidePanelOpen, wikiMemoryOpen, updatePreviewWidth]);
 
   const invalidateArtifactSnapshot = useCallback((snapshot = activeArtifactSnapshotRef.current) => {
     const contextRef = String(snapshot?.contextRef || '');
@@ -7234,7 +7239,7 @@ export default function MessagesView({
     <>
       <div
         className={`v3-message-workspace${sidePanelOpen || wikiMemoryOpen ? ' has-preview' : ''}${previewExpanded ? ' cc-app-focus' : ''}${previewExpanded && previewContextOpen ? ' cc-app-context-open' : ''}${previewContextPlacement === 'below' ? ' cc-app-context-below' : ''}${previewComposerMinimized ? ' cc-app-composer-minimized' : ''}${previewComposerActive ? ' cc-app-composer-active' : ''}${previewDockDragging ? ' cc-app-dock-dragging' : ''}`}
-        style={wikiMemoryOpen ? { '--v3-file-preview-width': 'min(44vw, 520px)' } : sidePanelOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
+        style={sidePanelOpen || wikiMemoryOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
       >
         <div ref={chatColumnRef} className="v3-chat-column" data-composer-position={previewDockAnchor} style={previewExpanded && previewDockPoint ? {
           left: `${previewDockPoint.left}px`, right: 'auto', top: `${previewDockPoint.top}px`, bottom: 'auto',
@@ -7990,6 +7995,17 @@ export default function MessagesView({
         })}
         {wikiMemoryOpen && wikiMemoryAgents.length > 0 && (
           <div className="v3-file-preview-shell cc-wiki-shell">
+            <div
+              className="v3-preview-resize-handle"
+              role="separator"
+              aria-label="调整记忆侧栏宽度"
+              aria-orientation="vertical"
+              aria-valuenow={Math.round(previewWidth)}
+              tabIndex={0}
+              onPointerDown={handlePreviewResizePointerDown}
+              onKeyDown={handlePreviewResizeKeyDown}
+              title="拖动调整记忆侧栏宽度"
+            />
             <WikiMemoryPanel viewerUid={user.uid} topicId={topic} agents={wikiMemoryAgents} onClose={() => setWikiMemoryTopic('')} />
           </div>
         )}
