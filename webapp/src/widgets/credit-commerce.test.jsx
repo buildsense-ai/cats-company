@@ -49,10 +49,27 @@ describe('credit commerce interactions', () => {
     await act(async () => Simulate.change(container.querySelector('input'), { target: { value: '0.99' } }));
     expect(container.querySelector('[type=submit]').disabled).toBe(true);
   });
-  test('excludes tiers the machine already runs while keeping the billing tier visible', async () => {
+  test('keeps billing and runtime tiers visible and waits for the user to open and request a quote', async () => {
     await render(<CloudWorkerUpgrade worker={{ ...worker, runtime_plan: 'standard' }} />);
-    expect(container.textContent).toContain('当前计费配置 轻量 · 运行配置 标准');
+    expect(container.textContent).toContain('当前计费配置 轻量');
+    expect(container.textContent).toContain('运行配置 标准');
+    const toggle = container.querySelector('.cloud-upgrade-toggle');
+    const body = document.getElementById(toggle.getAttribute('aria-controls'));
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(body.hidden).toBe(true);
+    expect(container.querySelector('select')).toBeNull();
+    await click('升配');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(body.hidden).toBe(false);
     expect([...container.querySelectorAll('select option')].map(option => option.value)).toEqual(['pro', 'heavy']);
+    expect(api.getCloudWorkerUpgradeQuote).not.toHaveBeenCalled();
+    await click('查看升配报价');
+    await click('收起');
+    expect(container.querySelector('.cloud-upgrade-quote')).toBeNull();
+    await click('升配');
+    expect(container.querySelector('.cloud-upgrade-quote')).not.toBeNull();
+    expect(api.getCloudWorkerUpgradeQuote).toHaveBeenCalledTimes(1);
+    expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
   });
 
   test('shows the current tier and expiry before asking for a quote', async () => {
@@ -60,13 +77,15 @@ describe('credit commerce interactions', () => {
     await render(<CloudWorkerUpgrade worker={worker} />);
     expect(container.textContent).toContain('当前计费配置 标准');
     expect(container.textContent).toContain('已购升配至');
+    expect(api.getCloudWorkerUpgradeQuote).not.toHaveBeenCalled();
+    await click('升配');
     expect(container.textContent).toContain('不自动续费或扣点');
     expect([...container.querySelectorAll('select option')].map(option => option.value)).toEqual(['pro', 'heavy']);
-    expect(api.getCloudWorkerUpgradeQuote).not.toHaveBeenCalled();
   });
   test('requires a quote and sufficient balance before spending points', async () => {
     api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, balance_units: 1 });
     await render(<CloudWorkerUpgrade worker={worker} />);
+    await click('升配');
     await click('查看升配报价');
     expect(container.textContent).toContain('还差');
     expect(container.textContent).toContain('一次性支付 2,000 点');
@@ -79,6 +98,7 @@ describe('credit commerce interactions', () => {
     api.upgradeCloudWorker.mockRejectedValueOnce(Object.assign(new Error('timeout'), { code: 'REQUEST_TIMEOUT' }))
       .mockResolvedValueOnce({ operation_id: 'op-a', status: 'reconciling' });
     await render(<CloudWorkerUpgrade worker={worker} />);
+    await click('升配');
     await click('查看升配报价');
     await click('确认并支付点数');
     expect(container.textContent).toContain('暂未确认升配结果');
@@ -94,6 +114,7 @@ describe('credit commerce interactions', () => {
       .mockRejectedValueOnce(Object.assign(new Error('busy'), { status: 409, data: { code: 'cloud_worker_operation_busy' } }))
       .mockResolvedValueOnce({ operation_id: 'op-a', status: 'reconciling' });
     await render(<CloudWorkerUpgrade worker={worker} />);
+    await click('升配');
     await click('查看升配报价'); await click('确认并支付点数');
     const original = api.upgradeCloudWorker.mock.calls[0].slice(0, 4);
     await click('继续查询本次升配');
@@ -107,6 +128,7 @@ describe('credit commerce interactions', () => {
       status: 503, data: { operation_id: 'op-a', status: 'reconciling' },
     }));
     await render(<CloudWorkerUpgrade worker={worker} />);
+    await click('升配');
     await click('查看升配报价'); await click('确认并支付点数');
     expect(api.getCloudWorkerUpgradeOperation).toHaveBeenCalledWith('op-a', expect.any(Object));
     expect(container.textContent).toContain('正在核实机器配置');
@@ -116,6 +138,7 @@ describe('credit commerce interactions', () => {
       status: 409, data: { code: 'machine_upgrade_quote_conflict' },
     }));
     await render(<CloudWorkerUpgrade worker={worker} />);
+    await click('升配');
     await click('查看升配报价'); await click('确认并支付点数');
     expect(container.textContent).toContain('报价已过期');
     expect(container.querySelector('select')).not.toBeNull();
@@ -125,6 +148,7 @@ describe('credit commerce interactions', () => {
     sessionStorage.setItem('catsco_machine_upgrade_v1:91:tenant-a', JSON.stringify({ operation_id: 'op-a' }));
     api.getCloudWorkerUpgradeOperation.mockResolvedValue({ operation_id: 'op-a', status: 'completed', to_plan: 'standard' });
     await render(<CloudWorkerUpgrade worker={worker} />);
+    expect(container.querySelector('.cloud-upgrade-toggle').getAttribute('aria-expanded')).toBe('true');
     expect(api.getCloudWorkerUpgradeOperation).toHaveBeenCalledWith('op-a', expect.any(Object));
     expect(container.textContent).toContain('升配完成');
     expect(JSON.parse(sessionStorage.getItem('catsco_machine_upgrade_v1:91:tenant-a'))).toBeNull();
@@ -139,6 +163,7 @@ describe('credit commerce interactions', () => {
   test('expired quotes cannot be submitted', async () => {
     api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, expires_at: '2000-01-01T00:00:00Z' });
     await render(<CloudWorkerUpgrade worker={worker} />);
+    await click('升配');
     await click('查看升配报价');
     expect([...container.querySelectorAll('button')].find(item => item.textContent.includes('报价已过期')).disabled).toBe(true);
     expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
