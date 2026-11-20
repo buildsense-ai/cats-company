@@ -156,12 +156,13 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   const active = record || (operation && !terminal(operation.status));
   const remaining = formatRemaining(quote?.remaining_seconds);
   const canChooseTarget = !active && !configurationLoading;
+  const runtimeExceedsPricing = planIds.includes(currentPlan) && planIds.indexOf(runtimePlan) > planIds.indexOf(currentPlan);
   return (
     <section className="cloud-upgrade-card" aria-label={`${worker.display_name || worker.tenant_name}机器升配`}>
       <div className="cloud-upgrade-heading">
         <div className="cloud-upgrade-configuration">
-          <span>当前计费配置 <strong>{planLabel(currentPlan) || (configurationLoading ? '读取中…' : '暂未读取')}</strong></span>
-          <span>运行配置 <strong>{planLabel(runtimePlan) || '暂未读取'}</strong></span>
+          <span>实际运行档位 <strong>{planLabel(runtimePlan) || '暂未读取'}</strong></span>
+          <span>升配计价基准 <strong>{planLabel(currentPlan) || (configurationLoading ? '读取中…' : '暂未读取')}</strong></span>
           {configuration?.upgrade_expires_at && <span>已购升配至 <strong>{formatDate(configuration.upgrade_expires_at)}</strong></span>}
           {!expanded && operation && <span role="status">{labels[operation.status] || '正在查询升配状态'}</span>}
           {!expanded && record && !operation && <span role="status">待确认升配结果</span>}
@@ -173,6 +174,7 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
       </div>
       <div id={panelId} className="cloud-upgrade-body" hidden={!expanded}>
         {expanded && <>
+          {runtimeExceedsPricing && <p>机器已运行在{planLabel(runtimePlan)}档，只能选择更高档。报价按已购权益折算，目前从{planLabel(currentPlan)}档补差。</p>}
           {canChooseTarget && target && <div className="cloud-upgrade-select">
             <label>目标配置 <select value={target} disabled={disabled || busy} onChange={event => { setTarget(event.target.value); setQuote(null); setError(''); }}>
               {targets.map(id => <option key={id} value={id}>{plans[id]}</option>)}
@@ -202,7 +204,7 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
           <p>按剩余机器租期补差价。已购升配到期后不自动续费或扣点。</p>
           <details className="cloud-upgrade-rules">
             <summary>计费与续租规则</summary>
-            <p>以 30 天档位差价为基准，按剩余秒数折算。例如剩 15 天就付一半。提前续租只延长机器使用期限，已购升配仍按原日期到期。再次升档时，已覆盖和未覆盖的时段分别补差。</p>
+            <p>目标档位须高于实际运行档位和已购档位。差价按已购权益计算，以 30 天档位差价为基准，按剩余秒数折算。例如剩 15 天就付一半。提前续租只延长机器使用期限，已购升配仍按原日期到期。再次升档时，已覆盖和未覆盖的时段分别补差。</p>
             <p>可用套餐月额度和充值点数付款。赠送点数和模型用量单独计算。升配明确失败会释放预留，结果待核实时保留预留。</p>
             <p>后续按续租权益计费，继续购买高档权益需重新报价。平台目前不自动缩减容器配置。</p>
           </details>
