@@ -196,6 +196,40 @@ describe('credit commerce interactions', () => {
     expect(api.getCloudWorkerUpgradeQuote).toHaveBeenLastCalledWith(worker.tenant_name, 'heavy', expect.any(Object));
     expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
   });
+  test('keeps the previous quote when refresh has a transient failure', async () => {
+    api.getCloudWorkerUpgradeQuote.mockResolvedValueOnce(quote)
+      .mockRejectedValueOnce(new Error('网络暂时不可用'));
+    await render(<CloudWorkerUpgrade worker={{ ...worker, runtime_plan: 'standard' }} />);
+    await click('升配');
+    await click('查看升配报价');
+    const amount = '一次性支付 2,000 点';
+    expect(container.textContent).toContain(amount);
+    await click('刷新报价');
+    expect(container.textContent).toContain(amount);
+    expect(container.textContent).toContain('网络暂时不可用');
+    expect(container.querySelector('.cloud-upgrade-quote button').disabled).toBe(false);
+  });
+
+  test('clears a previous quote when refresh is definitely rejected', async () => {
+    api.getCloudWorkerUpgradeQuote.mockResolvedValueOnce(quote)
+      .mockRejectedValueOnce(Object.assign(new Error('机器已变化'), { status: 409 }));
+    await render(<CloudWorkerUpgrade worker={{ ...worker, runtime_plan: 'standard' }} />);
+    await click('升配');
+    await click('查看升配报价');
+    await click('刷新报价');
+    expect(container.querySelector('.cloud-upgrade-quote')).toBeNull();
+    expect(container.textContent).toContain('机器已变化');
+  });
+  test('clears a previous quote when refresh reports the machine is unavailable', async () => {
+    api.getCloudWorkerUpgradeQuote.mockResolvedValueOnce(quote)
+      .mockResolvedValueOnce({ enabled: false, reason: '机器当前状态不支持升配' });
+    await render(<CloudWorkerUpgrade worker={{ ...worker, runtime_plan: 'standard' }} />);
+    await click('升配');
+    await click('查看升配报价');
+    await click('刷新报价');
+    expect(container.querySelector('.cloud-upgrade-quote')).toBeNull();
+    expect(container.textContent).toContain('机器当前状态不支持升配');
+  });
   test('keeps a tiny shortfall visible and cannot pay based on rounded amounts', async () => {
     api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, cost_units: 5000001, balance_units: 5000000 });
     await render(<CloudWorkerUpgrade worker={worker} />);
