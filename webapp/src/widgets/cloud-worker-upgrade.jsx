@@ -15,6 +15,17 @@ function formatPoints(units, scale = 1_000_000) {
 const planIds = Object.keys(plans);
 const planLabel = id => plans[id] || id;
 const formatDate = value => new Date(value).toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
+const maxQuoteLifetimeMs = 5 * 60 * 1000;
+
+function quoteDeadline(result, startedAt, receivedAt) {
+  // Older servers send only an absolute expiry.
+  let remaining = Date.parse(result.expires_at) - Date.now();
+  if (result.expires_in_ms !== undefined) {
+    // Subtract the full round trip as a conservative bound on response transit time.
+    remaining = Number.isSafeInteger(result.expires_in_ms) ? result.expires_in_ms - (receivedAt - startedAt) : 0;
+  }
+  return receivedAt + (Number.isFinite(remaining) ? Math.max(0, Math.min(maxQuoteLifetimeMs, remaining)) : 0);
+}
 
 function formatRemaining(seconds) {
   if (!Number.isFinite(seconds) || seconds <= 0) return '';
@@ -38,7 +49,7 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   const [operation, setOperation] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [clock, setClock] = useState(Date.now());
+  const [clock, setClock] = useState(() => performance.now());
   const submitting = useRef(false);
   const saveRecord = value => {
     writeStorageValue(storageKey, JSON.stringify(value), 'sessionStorage');
@@ -76,10 +87,26 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   }, [worker.tenant_name]);
 
   useEffect(() => {
-    if (!quote) return undefined;
-    const timer = window.setInterval(() => setClock(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [quote]);
+    if (!quote || !expanded) return undefined;
+    let timer;
+    const update = () => {
+      window.clearTimeout(timer);
+      const now = performance.now();
+      setClock(now);
+      const remaining = quote.deadline - now;
+      if (remaining > 0) timer = window.setTimeout(update, Math.min(1000, Math.ceil(remaining)));
+    };
+    update();
+    window.addEventListener('focus', update);
+    window.addEventListener('pageshow', update);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('focus', update);
+      window.removeEventListener('pageshow', update);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, [quote, expanded]);
 
   useEffect(() => {
     if (!record?.operation_id) return undefined;
@@ -112,7 +139,9 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
     setBusy(true); setError('');
     setOperation(current => current?.status === 'completed' ? current : null);
     try {
+      const startedAt = performance.now();
       const result = await api.getCloudWorkerUpgradeQuote(worker.tenant_name, target, { timeoutMs: 20_000 });
+      const receivedAt = performance.now();
       if (planIds.includes(result.from_plan)) {
         setConfiguration(current => ({
           current_plan: result.from_plan,
@@ -123,7 +152,8 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
         preservePreviousOnError = false;
         throw new Error(result.reason || '这台机器暂不可升配。');
       }
-      setClock(Date.now()); setQuote(result);
+      setClock(receivedAt);
+      setQuote({ ...result, deadline: quoteDeadline(result, startedAt, receivedAt) });
     } catch (err) {
       const status = Number(err.status);
       const transient = !Number.isFinite(status) || status >= 500 || [408, 429].includes(status);
@@ -134,12 +164,19 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   };
 
   const submit = async () => {
-    if (submitting.current || disabled || (record?.operation_id)) return;
-    const request = record || (quote && {
+    if (submitting.current || busy || disabled || record?.operation_id) return;
+    if (!record) {
+      if (!quote || !enough || quote.needs_migration) return;
+      const now = performance.now();
+      if (now >= quote.deadline) {
+        setClock(now);
+        return;
+      }
+    }
+    const request = record || {
       name: worker.tenant_name, plan: quote.to_plan, quote_id: quote.quote_id,
       client_request_id: `upgrade_${globalThis.crypto?.randomUUID?.().replaceAll('-', '') || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`,
-    });
-    if (!request) return;
+    };
     submitting.current = true; setBusy(true); setError('');
     saveRecord(request);
     try {
@@ -165,7 +202,7 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
     } finally { submitting.current = false; setBusy(false); }
   };
 
-  const validFor = Math.ceil((new Date(quote?.expires_at).getTime() - clock) / 1000);
+  const validFor = Math.ceil((quote?.deadline - clock) / 1000);
   const expired = !Number.isFinite(validFor) || validFor <= 0;
   const enough = quote && Number.isSafeInteger(Number(quote.balance_units)) && Number(quote.balance_units) >= Number(quote.cost_units);
   const active = record || (operation && !terminal(operation.status));

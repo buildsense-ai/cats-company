@@ -421,6 +421,7 @@ func TestMachineUpgradeQuoteRequiresPackedOwnedActiveWorker(t *testing.T) {
 
 	// 正常报价：绑定 owner、机器、当前档、到期时间、目标档与费用。
 	recorder := httptest.NewRecorder()
+	requestStarted := time.Now()
 	h.HandleMachineUpgrade(recorder, machineUpgradeRequest(http.MethodGet, "/api/cloud-workers/upgrade?name=bot-worker&plan=pro", "", uid))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("quote: status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -437,6 +438,7 @@ func TestMachineUpgradeQuoteRequiresPackedOwnedActiveWorker(t *testing.T) {
 		UnitsPerCredit int64                        `json:"units_per_credit"`
 		WorkerExpires  string                       `json:"worker_expires_at"`
 		ExpiresAt      string                       `json:"expires_at"`
+		ExpiresInMS    *int64                       `json:"expires_in_ms"`
 		PricingTerm    int64                        `json:"pricing_term_seconds"`
 		Segments       []machineUpgradePriceSegment `json:"pricing_segments"`
 		Reason         string                       `json:"reason"`
@@ -461,8 +463,15 @@ func TestMachineUpgradeQuoteRequiresPackedOwnedActiveWorker(t *testing.T) {
 		t.Fatalf("quote must carry cost and balance: %s", recorder.Body.String())
 	}
 	expires, err := time.Parse(time.RFC3339, quote.ExpiresAt)
-	if err != nil || expires.Sub(time.Now().UTC()) > 5*time.Minute+time.Second {
-		t.Fatalf("quote TTL must be 5 minutes: %s", quote.ExpiresAt)
+	if err != nil || quote.ExpiresInMS == nil || *quote.ExpiresInMS < 0 || *quote.ExpiresInMS > machineUpgradeQuoteTTL.Milliseconds() {
+		t.Fatalf("quote must carry a valid remaining duration: %s", recorder.Body.String())
+	}
+	if expires.After(time.Now().Add(machineUpgradeQuoteTTL)) {
+		t.Fatalf("quote TTL must be at most 5 minutes: %s", quote.ExpiresAt)
+	}
+	reported := time.Duration(*quote.ExpiresInMS) * time.Millisecond
+	if difference := reported - max(0, time.Until(expires)); difference < -time.Millisecond || difference > time.Since(requestStarted) {
+		t.Fatalf("remaining duration %v does not match quote expiry %s", reported, expires)
 	}
 	if len(db.quotes) != 1 {
 		t.Fatalf("quote was not persisted: %#v", db.quotes)
@@ -569,7 +578,7 @@ func TestMachineUpgradeExecuteRejectsStaleQuote(t *testing.T) {
 	}
 	// 操作行会被留下来并标记失败：既没有扣费，也不占着这台机器的「进行中」名额。
 	for _, op := range db.operations {
-		if op.Status != types.MachineUpgradeStatusFailed || op.Held {
+		if op.Status != types.MachineUpgradeStatusFailed || op.Held || op.Settled || op.Attempts != 0 {
 			t.Fatalf("a refused quote must leave a failed, unheld operation: %#v", op)
 		}
 	}
