@@ -353,6 +353,18 @@ func machineUpgradeOperationView(op *types.MachineUpgradeOperation) map[string]i
 	return view
 }
 
+// observedMachinePlan returns a fresh-enough provider observation when the
+// installed status adapter reports one.
+func (h *CloudWorkerHandler) observedMachinePlan(tenant string) string {
+	h.requestCloudStatusRefresh(false)
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	if !h.statusLoaded || time.Since(h.statusUpdatedAt) > cloudWorkerStatusMaxTrustAge {
+		return ""
+	}
+	return h.statusSnapshot[tenant].RuntimePlan
+}
+
 func (h *CloudWorkerHandler) handleMachineUpgradeQuote(w http.ResponseWriter, uid int64, r *http.Request) {
 	tenant := strings.TrimSpace(r.URL.Query().Get("name"))
 	toPlan := strings.TrimSpace(r.URL.Query().Get("plan"))
@@ -387,6 +399,9 @@ func (h *CloudWorkerHandler) handleMachineUpgradeQuote(w http.ResponseWriter, ui
 		}
 		now := time.Now().UTC()
 		view := map[string]interface{}{"current_plan": pricing.planAt(now)}
+		if plan := h.observedMachinePlan(tenant); plan != "" {
+			view["runtime_plan"] = plan
+		}
 		if pricing.term != nil && pricing.term.ExpiresAt.After(now) {
 			view["upgrade_expires_at"] = pricing.term.ExpiresAt.UTC().Format(time.RFC3339)
 		}
@@ -412,6 +427,10 @@ func (h *CloudWorkerHandler) handleMachineUpgradeQuote(w http.ResponseWriter, ui
 		return
 	}
 	fromPlan := pricing.planAt(now)
+	if types.MachinePlanRank(toPlan) <= types.MachinePlanRank(h.observedMachinePlan(tenant)) {
+		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, fromPlan, toPlan, "目标档位须高于机器当前运行配置"))
+		return
+	}
 	if types.MachinePlanRank(toPlan) <= types.MachinePlanRank(fromPlan) {
 		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, fromPlan, toPlan, "只能升级到更高档位"))
 		return
@@ -575,6 +594,8 @@ func (h *CloudWorkerHandler) handleMachineUpgradeExecute(w http.ResponseWriter, 
 			!lifecycle.PackageExpiresAt.Equal(quote.WorkerExpiresAt) || !lifecycle.PackageExpiresAt.After(now) ||
 			!h.tenantRunsOnPackedShared(req.Name):
 			staleReason = "the machine changed since this quote was issued"
+		case types.MachinePlanRank(quote.ToPlan) <= types.MachinePlanRank(h.observedMachinePlan(req.Name)):
+			staleReason = "the target no longer exceeds the running machine plan"
 		default:
 			pricing, planErr := h.readMachinePlanPricing(store, uid, req.Name)
 			if planErr != nil {

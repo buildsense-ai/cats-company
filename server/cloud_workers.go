@@ -640,6 +640,9 @@ type cloudWorkerSummary struct {
 	RetentionDays    int    `json:"retention_days,omitempty"`
 	LifecycleState   string `json:"lifecycle_state,omitempty"`
 	BillingMode      string `json:"billing_mode,omitempty"`
+	ExpiryMode       string `json:"expiry_mode,omitempty"`
+	CatsAutoRenew    *bool  `json:"cats_auto_renew,omitempty"`
+	RuntimePlan      string `json:"runtime_plan,omitempty"`
 }
 
 // cloudWorkerOperation is a short-lived, in-memory record for a long-running
@@ -723,6 +726,7 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 			}
 			w.RetentionDays = lifecycle.RetentionDays
 			w.LifecycleState = lifecycle.State
+			w.ExpiryMode = lifecycle.ExpiryMode
 			w.BillingMode = lifecycle.BillingMode
 			w.RetainData = lifecycle.RetainData
 			w.BillingAction = lifecycle.BillingAction
@@ -826,6 +830,9 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 			workers[i].CloudVersion = info.Version
 			workers[i].AppVersion = info.AppVersion
 			workers[i].Backend = info.Backend
+			if workers[i].DeploymentProfile == types.CloudWorkerPackedShared {
+				workers[i].RuntimePlan = info.RuntimePlan
+			}
 		}
 	}
 	// The release catalog is independently cached and never blocks this request.
@@ -840,6 +847,26 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 				current := strings.TrimPrefix(strings.TrimSpace(workers[i].AppVersion), "v")
 				workers[i].UpdateAvailable = current != "" && current != latest
 			}
+		}
+	}
+
+	if reader, ok := h.db.(interface {
+		GetCommercialAutoRenewConfig(int64) (*types.CommercialAutoRenewConfig, error)
+	}); ok {
+		var enabled *bool
+		for i := range workers {
+			if workers[i].ExpiryMode != types.CloudWorkerExpiryFollowPlan {
+				continue
+			}
+			if enabled == nil {
+				config, err := reader.GetCommercialAutoRenewConfig(uid)
+				if err != nil {
+					break // Omit the field when the opt-in could not be read.
+				}
+				value := config != nil && config.Enabled && !envBoolValue("CATS_COMMERCIAL_AUTO_RENEW_DISABLED")
+				enabled = &value
+			}
+			workers[i].CatsAutoRenew = enabled
 		}
 	}
 
@@ -883,7 +910,8 @@ type cloudInstanceInfo struct {
 	// Backend distinguishes the shared-container fleet ("packed") from a
 	// dedicated ECS instance (empty). It comes from the status script's
 	// optional eighth column, so older scripts keep working unchanged.
-	Backend string
+	Backend     string
+	RuntimePlan string
 }
 
 // parseCloudWorkerStatusTSV parses status-worker.sh output lines of the form
@@ -918,6 +946,11 @@ func parseCloudWorkerStatusTSV(out string) map[string]cloudInstanceInfo {
 		}
 		if len(parts) >= 8 {
 			info.Backend = strings.ToLower(strings.TrimSpace(parts[7]))
+		}
+		if len(parts) >= 9 && info.Backend == "packed" {
+			if plan := strings.TrimSpace(parts[8]); types.MachinePlanRank(plan) > 0 {
+				info.RuntimePlan = plan
+			}
 		}
 		infos[strings.TrimPrefix(name, "worker-")] = info
 	}

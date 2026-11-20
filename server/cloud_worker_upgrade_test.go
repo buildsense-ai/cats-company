@@ -337,6 +337,25 @@ func TestMachineUpgradeConfigurationIsOwnerScopedAndReadOnly(t *testing.T) {
 	}
 }
 
+func TestMachineUpgradeRejectsTargetAlreadyRunning(t *testing.T) {
+	h, db := machineUpgradeTestHandler(t, "change-plan-stub")
+	quoted := machineUpgradeQuoteForTest(t, h, 77)
+	h.statusLoaded = true
+	h.statusUpdatedAt = time.Now()
+	h.statusSnapshot = parseCloudWorkerStatusTSV("worker-bot-worker\trunning\t-\t-\t1.6.9\t-\t\tpacked\tpro\n")
+	rec := httptest.NewRecorder()
+	h.HandleMachineUpgrade(rec, machineUpgradeRequest(http.MethodGet, "/api/cloud-workers/upgrade?name=bot-worker&plan=pro", "", 77))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) || len(db.quotes) != 1 {
+		t.Fatalf("same tier quote must be disabled: %d %s", rec.Code, rec.Body.String())
+	}
+	before := db.balance
+	rec = httptest.NewRecorder()
+	h.HandleMachineUpgrade(rec, machineUpgradeRequest(http.MethodPost, "/api/cloud-workers/upgrade", `{"name":"bot-worker","plan":"pro","quote_id":"`+quoted.QuoteID+`","client_request_id":"already-running-1"}`, 77))
+	if rec.Code != http.StatusConflict || db.balance != before {
+		t.Fatalf("same running tier must not charge: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMachineUpgradeAfterEarlyRenewalProratesEachTier(t *testing.T) {
 	t.Setenv("CATSCO_MACHINE_PLAN_PRICES_FEN", "")
 	start := time.Now().UTC().Truncate(time.Second)

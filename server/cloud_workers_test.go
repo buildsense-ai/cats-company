@@ -705,12 +705,12 @@ func TestParseCloudWorkerStatusTSV(t *testing.T) {
 
 func TestParseCloudWorkerStatusTSVBackendColumn(t *testing.T) {
 	// 第 8 列是后端标记：打包行 packed，ECS 行留空。
-	out := "worker-packed-a\trunning\t-\t-\t1.6.3\t10.81.251.9\t\tpacked\n" +
+	out := "worker-packed-a\trunning\t-\t-\t1.6.3\t10.81.251.9\t\tpacked\tstandard\n" +
 		"worker-ecs-b\trunning\timg-1\tv1.2.3\t1.2.4\t192.168.2.16\t\n" +
 		"worker-legacy-c\trunning\timg-2\tv1\t1.0.0\n"
 	infos := parseCloudWorkerStatusTSV(out)
-	if got := infos["packed-a"]; got.Backend != "packed" {
-		t.Fatalf("packed-a backend = %q, want packed (%+v)", got.Backend, got)
+	if got := infos["packed-a"]; got.Backend != "packed" || got.RuntimePlan != "standard" {
+		t.Fatalf("packed-a backend or runtime plan: %+v", got)
 	}
 	if got := infos["ecs-b"]; got.Backend != "" {
 		t.Fatalf("ecs-b backend = %q, want empty", got.Backend)
