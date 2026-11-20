@@ -107,7 +107,9 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
 
   const getQuote = async () => {
     if (busy || record || !target) return;
-    setBusy(true); setError(''); setQuote(null);
+    const previousQuote = quote;
+    let preservePreviousOnError = true;
+    setBusy(true); setError('');
     setOperation(current => current?.status === 'completed' ? current : null);
     try {
       const result = await api.getCloudWorkerUpgradeQuote(worker.tenant_name, target, { timeoutMs: 20_000 });
@@ -117,9 +119,17 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
           upgrade_expires_at: current?.current_plan === result.from_plan ? current.upgrade_expires_at : undefined,
         }));
       }
-      if (result.enabled !== true || !result.quote_id) throw new Error(result.reason || '这台机器暂不可升配。');
+      if (result.enabled !== true || !result.quote_id) {
+        preservePreviousOnError = false;
+        throw new Error(result.reason || '这台机器暂不可升配。');
+      }
       setClock(Date.now()); setQuote(result);
-    } catch (err) { setError(err.message || '报价读取失败，请稍后重试。'); }
+    } catch (err) {
+      const status = Number(err.status);
+      const transient = !Number.isFinite(status) || status >= 500 || [408, 429].includes(status);
+      setQuote(preservePreviousOnError && transient ? previousQuote : null);
+      setError(err.message || '报价读取失败，请稍后重试。');
+    }
     finally { setBusy(false); }
   };
 
