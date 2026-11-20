@@ -13,7 +13,8 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   const [record, setRecord] = useState(() => {
     try { return JSON.parse(readStorageValue(storageKey, 'sessionStorage') || 'null'); } catch { return null; }
   });
-  const [target, setTarget] = useState('standard');
+  const [targetChoice, setTarget] = useState('standard');
+  const [completedPlan, setCompletedPlan] = useState('');
   const [quote, setQuote] = useState(null);
   const [operation, setOperation] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -23,6 +24,15 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   const saveRecord = value => {
     writeStorageValue(storageKey, JSON.stringify(value), 'sessionStorage');
     setRecord(value);
+  };
+
+  const planIds = Object.keys(plans);
+  const targets = planIds.slice(planIds.indexOf(completedPlan) + 1);
+  const target = targets.includes(targetChoice) ? targetChoice : targets[0];
+
+  const showOperation = (next) => {
+    setOperation(next);
+    if (next.status === 'completed' && next.to_plan) setCompletedPlan(next.to_plan);
   };
 
   useEffect(() => {
@@ -42,7 +52,7 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
         const result = await api.getCloudWorkerUpgradeOperation(record.operation_id, { signal: controller.signal, timeoutMs: 20_000 });
         if (stopped) return;
         const next = result.operation || result;
-        setOperation(next);
+        showOperation(next);
         setError('');
         done = terminal(next.status);
         if (done) saveRecord(null);
@@ -56,8 +66,9 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   }, [record?.operation_id]);
 
   const getQuote = async () => {
-    if (busy || record) return;
-    setBusy(true); setError(''); setQuote(null); setOperation(null);
+    if (busy || record || !target) return;
+    setBusy(true); setError(''); setQuote(null);
+    setOperation(current => current?.status === 'completed' ? current : null);
     try {
       const result = await api.getCloudWorkerUpgradeQuote(worker.tenant_name, target, { timeoutMs: 20_000 });
       if (result.enabled !== true || !result.quote_id) throw new Error(result.reason || '这台机器暂不可升配。');
@@ -79,12 +90,12 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
       const result = await api.upgradeCloudWorker(request.name, request.plan, request.quote_id, request.client_request_id, { timeoutMs: 40_000 });
       const next = result.operation || result;
       if (!next.operation_id || !next.status) throw new Error('升配请求已发送，暂未取得操作状态。请继续查询同一请求。');
-      setOperation(next); setQuote(null);
+      showOperation(next); setQuote(null);
       saveRecord(terminal(next.status) ? null : { ...request, operation_id: next.operation_id });
     } catch (err) {
       const result = err.data;
       if (result?.operation_id && result?.status) {
-        setOperation(result); setQuote(null);
+        showOperation(result); setQuote(null);
         saveRecord(terminal(result.status) ? null : { ...request, operation_id: result.operation_id });
         setError(err.message || '正在核实本次升配。');
       } else {
@@ -104,9 +115,9 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
   return (
     <section className="cloud-upgrade-card" aria-label={`${worker.display_name || worker.tenant_name}机器升配`}>
       <div className="cloud-upgrade-heading"><strong>机器配置升配</strong><span>点数支付</span></div>
-      {!active && operation?.status !== 'completed' && <div className="cloud-upgrade-select">
+      {!active && target && <div className="cloud-upgrade-select">
         <label>目标配置 <select value={target} disabled={disabled || busy} onChange={event => { setTarget(event.target.value); setQuote(null); setError(''); }}>
-          {Object.entries(plans).map(([id, title]) => <option key={id} value={id}>{title}（{id}）</option>)}
+          {targets.map(id => <option key={id} value={id}>{plans[id]}（{id}）</option>)}
         </select></label>
         <button type="button" disabled={disabled || busy} onClick={getQuote}>{busy ? '读取中…' : '查看升配报价'}</button>
       </div>}
@@ -115,6 +126,7 @@ export default function CloudWorkerUpgrade({ worker, disabled = false }) {
         <p>本次支付 {formatPoints(quote.cost_units, quote.units_per_credit)} 点 · 可用 {formatPoints(quote.balance_units, quote.units_per_credit)} 点</p>
         <p>按剩余租期补差价，到期日保持 {new Date(quote.worker_expires_at).toLocaleDateString('zh-CN')}。升配只调整机器配置，模型按实际用量另扣点数。</p>
         <p>使用套餐月额度和充值余额支付，邀请赠送点数仅用于模型调用。</p>
+        <p>宿主机容量不足时，升配可能迁移至其他节点，期间云员工会短暂离线。</p>
         {quote.needs_migration && <p>当前容量不足，需要迁移后才能升配，请联系支持。</p>}
         {!enough && <p>余额不足，请先到「套餐与点数」充值，再重新报价。</p>}
         <button type="button" disabled={disabled || busy || expired || !enough || quote.needs_migration} onClick={submit}>

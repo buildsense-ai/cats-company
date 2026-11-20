@@ -68,6 +68,7 @@ vi.mock('../widgets/agent-store-modal', () => ({
         data-testid="agent-store-modal"
         data-initial-agent-id={initialAgentId ?? ''}
         data-cloud-worker-uid={initialCloudWorker?.workerUid || ''}
+        data-cloud-manager={Boolean(initialCloudWorker)}
         data-cloud-tenant-name={initialCloudWorker?.tenantName || ''}
       >
         <button type="button" onClick={() => onOpenSkillHub?.(initialAgentId)}>管理能力</button>
@@ -1053,6 +1054,17 @@ describe('ChatListView sidebar sections', () => {
     expect(modal.dataset.initialAgentId).toBe('');
     expect(modal.dataset.cloudWorkerUid).toBe('202');
     expect(modal.dataset.cloudTenantName).toBe('tenant-worker-b');
+  });
+
+  it('opens all cloud workers when requested from the account dialog', async () => {
+    await mount();
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('cc:open-cloud-worker-manager', { detail: { showAll: true } }));
+    });
+    const modal = document.body.querySelector('[data-testid="agent-store-modal"]');
+    expect(modal.dataset.cloudManager).toBe('true');
+    expect(modal.dataset.cloudWorkerUid).toBe('');
+    expect(modal.dataset.cloudTenantName).toBe('');
   });
 
   it('forwards the managed assistant to SkillHub and closes assistant management', async () => {

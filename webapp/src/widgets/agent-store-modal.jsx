@@ -454,6 +454,8 @@ const mergeCloudWorkerFacts = (bots, workers) => {
       ...bot,
       cloud_status: cloudStatus,
       runtime_status: cloud.runtime_status || 'unknown',
+      deployment_profile: cloud.deployment_profile ?? bot.deployment_profile,
+      backend: cloud.backend ?? (cloud.deployment_profile ? '' : bot.backend),
       trial_notice: cloud.trial_notice || '',
       // The cloud-worker API owns runtime version truth. An explicit empty
       // value means unknown and must not fall back to the assistant definition.
@@ -1840,7 +1842,7 @@ export default function AgentStoreModal({
                     <ArrowLeft size={15} /> 返回助手列表
                   </button>
                   <h3><Cloud size={16} /> 云托管管理</h3>
-                  <span>创建权益 · 创建 · 更新/回滚/重置/删除</span>
+                  <span>创建权益 · 机器配置升配 · 应用版本管理</span>
                 </div>
                 <CloudWorkerPanel
                   quota={cloudQuota}
