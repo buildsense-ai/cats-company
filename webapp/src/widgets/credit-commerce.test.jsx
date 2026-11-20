@@ -50,9 +50,10 @@ describe('credit commerce interactions', () => {
     expect(container.querySelector('[type=submit]').disabled).toBe(true);
   });
   test('keeps billing and runtime tiers visible and waits for the user to open and request a quote', async () => {
+    api.getCloudWorkerUpgradeQuote.mockResolvedValue({ ...quote, to_plan: 'pro' });
     await render(<CloudWorkerUpgrade worker={{ ...worker, runtime_plan: 'standard' }} />);
-    expect(container.textContent).toContain('当前计费配置 轻量');
-    expect(container.textContent).toContain('运行配置 标准');
+    expect(container.textContent).toContain('实际运行档位 标准');
+    expect(container.textContent).toContain('升配计价基准 轻量');
     const toggle = container.querySelector('.cloud-upgrade-toggle');
     const body = document.getElementById(toggle.getAttribute('aria-controls'));
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
@@ -62,8 +63,10 @@ describe('credit commerce interactions', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(body.hidden).toBe(false);
     expect([...container.querySelectorAll('select option')].map(option => option.value)).toEqual(['pro', 'heavy']);
+    expect(container.textContent).toContain('机器已运行在标准档，只能选择更高档。报价按已购权益折算，目前从轻量档补差。');
     expect(api.getCloudWorkerUpgradeQuote).not.toHaveBeenCalled();
     await click('查看升配报价');
+    expect(api.getCloudWorkerUpgradeQuote).toHaveBeenCalledWith(worker.tenant_name, 'pro', expect.any(Object));
     await click('收起');
     expect(container.querySelector('.cloud-upgrade-quote')).toBeNull();
     await click('升配');
@@ -72,10 +75,17 @@ describe('credit commerce interactions', () => {
     expect(api.upgradeCloudWorker).not.toHaveBeenCalled();
   });
 
+  test('offers all three higher targets to a machine running and billed at light', async () => {
+    await render(<CloudWorkerUpgrade worker={{ ...worker, runtime_plan: 'light' }} />);
+    await click('升配');
+    expect([...container.querySelectorAll('select option')].map(option => option.value)).toEqual(['standard', 'pro', 'heavy']);
+    expect(container.textContent).not.toContain('机器已运行在轻量档');
+  });
+
   test('shows the current tier and expiry before asking for a quote', async () => {
     api.getCloudWorkerUpgradeConfiguration.mockResolvedValue({ current_plan: 'standard', upgrade_expires_at: quote.worker_expires_at });
     await render(<CloudWorkerUpgrade worker={worker} />);
-    expect(container.textContent).toContain('当前计费配置 标准');
+    expect(container.textContent).toContain('升配计价基准 标准');
     expect(container.textContent).toContain('已购升配至');
     expect(api.getCloudWorkerUpgradeQuote).not.toHaveBeenCalled();
     await click('升配');
