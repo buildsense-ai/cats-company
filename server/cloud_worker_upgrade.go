@@ -82,32 +82,57 @@ func machinePlanPricesFen() map[string]int64 {
 // It never rounds to a whole fen: the ledger is denominated in micro units, so a
 // short remainder legitimately buys a fraction of a fen's worth of upgrade.
 func machineUpgradeCostUnits(fromPlan, toPlan string, remaining time.Duration) (int64, bool) {
-	prices := machinePlanPricesFen()
-	fromFen, ok := prices[fromPlan]
-	if !ok {
-		return 0, false
+	return machinePlanPricing{base: fromPlan}.cost(toPlan, time.Time{}, time.Time{}.Add(remaining))
+}
+
+type machinePlanPricing struct {
+	base string
+	term *types.MachinePlanTerm
+}
+
+func (p machinePlanPricing) planAt(at time.Time) string {
+	if p.term != nil && p.term.ExpiresAt.After(at) {
+		return p.term.Plan
 	}
-	toFen, ok := prices[toPlan]
-	if !ok {
-		return 0, false
-	}
-	if toFen <= fromFen {
-		return 0, false
-	}
-	seconds := int64(remaining / time.Second)
+	return p.base
+}
+
+func (p machinePlanPricing) cost(target string, start, end time.Time) (int64, bool) {
+	seconds := int64(end.Sub(start) / time.Second)
 	if seconds <= 0 || seconds > machineUpgradeMaxRemainingSeconds {
 		return 0, false
 	}
-	// 拒绝不能安全计算的价格配置，避免整数乘法溢出变成低价。
-	if toFen-fromFen > (int64(^uint64(0)>>1)-machineUpgradeTermSeconds)/commercialTopupUnitsPerFen/seconds {
+	prices := machinePlanPricesFen()
+	targetPrice, ok := prices[target]
+	if !ok {
 		return 0, false
 	}
-	numerator := (toFen - fromFen) * commercialTopupUnitsPerFen * seconds
-	cost := (numerator + machineUpgradeTermSeconds - 1) / machineUpgradeTermSeconds
-	if cost <= 0 {
-		cost = 1
+	var numerator int64
+	add := func(plan string, duration int64) bool {
+		if duration == 0 {
+			return true
+		}
+		price, ok := prices[plan]
+		if !ok || targetPrice <= price || targetPrice-price >
+			(int64(^uint64(0)>>1)-machineUpgradeTermSeconds-numerator)/commercialTopupUnitsPerFen/duration {
+			return false
+		}
+		numerator += (targetPrice - price) * commercialTopupUnitsPerFen * duration
+		return true
 	}
-	return cost, true
+	// An early renewal can extend the machine beyond a previous paid upgrade.
+	// Credit the higher tier only for the seconds it actually covers.
+	if p.term != nil && p.term.ExpiresAt.After(start) {
+		covered := min(seconds, int64(p.term.ExpiresAt.Sub(start)/time.Second))
+		if !add(p.term.Plan, covered) {
+			return 0, false
+		}
+		seconds -= covered
+	}
+	if !add(p.base, seconds) {
+		return 0, false
+	}
+	return (numerator + machineUpgradeTermSeconds - 1) / machineUpgradeTermSeconds, true
 }
 
 // machineUpgradeStore is the persistence this feature needs. It is optional: a
@@ -177,16 +202,16 @@ func (h *CloudWorkerHandler) lifecycleByName(uid int64, name string) (*types.Clo
 	return nil, nil
 }
 
-// machineCurrentPlan uses the same package and purchased-upgrade floors as plan
-// synchronization, so a stale provisioning credit cannot sell an existing tier.
-func (h *CloudWorkerHandler) machineCurrentPlan(store machineUpgradeStore, uid int64, tenant string) (string, error) {
+// readMachinePlanPricing applies the same package and purchased-tier floors as
+// the quote and its execution check.
+func (h *CloudWorkerHandler) readMachinePlanPricing(store machineUpgradeStore, uid int64, tenant string) (machinePlanPricing, error) {
 	plan := types.MachinePlanLight
 	if reader, ok := h.credits.(interface {
 		CloudWorkerLifecycleRuntimePlan(string) (string, error)
 	}); ok {
 		base, err := reader.CloudWorkerLifecycleRuntimePlan(tenant)
 		if err != nil {
-			return "", err
+			return machinePlanPricing{}, err
 		}
 		if types.MachinePlanRank(strings.TrimSpace(base)) > types.MachinePlanRank(plan) {
 			plan = strings.TrimSpace(base)
@@ -197,7 +222,7 @@ func (h *CloudWorkerHandler) machineCurrentPlan(store machineUpgradeStore, uid i
 	}); ok {
 		summary, err := reader.GetCommercialSummary(uid)
 		if err != nil {
-			return "", err
+			return machinePlanPricing{}, err
 		}
 		if summary != nil && summary.CloudWorkerPackageTerm != nil {
 			packagePlan := planRuntimeTier(summary.Plans, summary.CloudWorkerPackageTerm.PlanID)
@@ -208,13 +233,20 @@ func (h *CloudWorkerHandler) machineCurrentPlan(store machineUpgradeStore, uid i
 	}
 	term, err := store.MachinePlanTerm(tenant)
 	if err != nil {
+		return machinePlanPricing{}, err
+	}
+	if term == nil || term.OwnerUID != uid || types.MachinePlanRank(term.Plan) <= types.MachinePlanRank(plan) {
+		term = nil
+	}
+	return machinePlanPricing{base: plan, term: term}, nil
+}
+
+func (h *CloudWorkerHandler) machineCurrentPlan(store machineUpgradeStore, uid int64, tenant string) (string, error) {
+	pricing, err := h.readMachinePlanPricing(store, uid, tenant)
+	if err != nil {
 		return "", err
 	}
-	if term != nil && term.OwnerUID == uid && term.ExpiresAt.After(time.Now().UTC()) &&
-		types.MachinePlanRank(term.Plan) > types.MachinePlanRank(plan) {
-		plan = term.Plan
-	}
-	return plan, nil
+	return pricing.planAt(time.Now().UTC()), nil
 }
 
 // machineUpgradeQuoteView is the GET response body.
@@ -230,8 +262,8 @@ func machineUpgradeQuoteView(tenant, fromPlan, toPlan string, costUnits, balance
 		"balance_units":     balanceUnits,
 		"expires_at":        expiresAt.UTC().Format(time.RFC3339),
 		"worker_expires_at": workerExpiresAt.UTC().Format(time.RFC3339),
-		// 共享容器是原地改限额，不搬机器、不重建，所以永远没有迁移这回事；
-		// 报 true 会是假承诺。
+		"remaining_seconds": int64(workerExpiresAt.Sub(expiresAt.Add(-machineUpgradeQuoteTTL)) / time.Second),
+		// Capacity is checked by the adapter when executing the quote.
 		"needs_migration": false,
 		"prices_fen":      machinePlanPricesFen(),
 	}
@@ -306,6 +338,9 @@ func machineUpgradeOperationView(op *types.MachineUpgradeOperation) map[string]i
 		"attempts":     op.Attempts,
 		"needs_review": (op.Status == types.MachineUpgradeStatusRunning || op.Status == types.MachineUpgradeStatusReconciling) && op.Attempts >= types.MachineUpgradeMaxAutomaticAttempts,
 	}
+	if !op.MachineExpiresAt.IsZero() {
+		view["worker_expires_at"] = op.MachineExpiresAt.UTC().Format(time.RFC3339)
+	}
 	if op.Message != "" {
 		view["message"] = op.Message
 	}
@@ -321,7 +356,8 @@ func machineUpgradeOperationView(op *types.MachineUpgradeOperation) map[string]i
 func (h *CloudWorkerHandler) handleMachineUpgradeQuote(w http.ResponseWriter, uid int64, r *http.Request) {
 	tenant := strings.TrimSpace(r.URL.Query().Get("name"))
 	toPlan := strings.TrimSpace(r.URL.Query().Get("plan"))
-	if tenant == "" || types.MachinePlanRank(toPlan) == 0 {
+	readConfiguration := r.URL.Query().Get("view") == "configuration"
+	if tenant == "" || (!readConfiguration && types.MachinePlanRank(toPlan) == 0) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "worker name and plan are required"})
 		return
 	}
@@ -339,12 +375,26 @@ func (h *CloudWorkerHandler) handleMachineUpgradeQuote(w http.ResponseWriter, ui
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "cloud worker not found"})
 		return
 	}
-	if h.changePlanScript == "" {
-		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, "", toPlan, "升配通道未配置"))
-		return
-	}
 	if !h.tenantRunsOnPackedShared(tenant) {
 		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, "", toPlan, "只有共享机器支持点数升配"))
+		return
+	}
+	if readConfiguration {
+		pricing, err := h.readMachinePlanPricing(store, uid, tenant)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to read machine plan"})
+			return
+		}
+		now := time.Now().UTC()
+		view := map[string]interface{}{"current_plan": pricing.planAt(now)}
+		if pricing.term != nil && pricing.term.ExpiresAt.After(now) {
+			view["upgrade_expires_at"] = pricing.term.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+		writeJSON(w, http.StatusOK, view)
+		return
+	}
+	if h.changePlanScript == "" {
+		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, "", toPlan, "升配通道未配置"))
 		return
 	}
 	if lifecycle.State != "active" {
@@ -356,11 +406,12 @@ func (h *CloudWorkerHandler) handleMachineUpgradeQuote(w http.ResponseWriter, ui
 		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, "", toPlan, "机器已过期，请先续费"))
 		return
 	}
-	fromPlan, err := h.machineCurrentPlan(store, uid, tenant)
+	pricing, err := h.readMachinePlanPricing(store, uid, tenant)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to read machine plan"})
 		return
 	}
+	fromPlan := pricing.planAt(now)
 	if types.MachinePlanRank(toPlan) <= types.MachinePlanRank(fromPlan) {
 		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, fromPlan, toPlan, "只能升级到更高档位"))
 		return
@@ -374,7 +425,7 @@ func (h *CloudWorkerHandler) handleMachineUpgradeQuote(w http.ResponseWriter, ui
 		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, fromPlan, toPlan, "已有进行中的升配"))
 		return
 	}
-	costUnits, ok := machineUpgradeCostUnits(fromPlan, toPlan, lifecycle.PackageExpiresAt.Sub(now))
+	costUnits, ok := pricing.cost(toPlan, now, lifecycle.PackageExpiresAt)
 	if !ok {
 		writeJSON(w, http.StatusOK, machineUpgradeDisabledView(tenant, fromPlan, toPlan, "当前剩余时长不足以计算升配差价"))
 		return
@@ -525,15 +576,15 @@ func (h *CloudWorkerHandler) handleMachineUpgradeExecute(w http.ResponseWriter, 
 			!h.tenantRunsOnPackedShared(req.Name):
 			staleReason = "the machine changed since this quote was issued"
 		default:
-			fromPlan, planErr := h.machineCurrentPlan(store, uid, req.Name)
+			pricing, planErr := h.readMachinePlanPricing(store, uid, req.Name)
 			if planErr != nil {
 				_, _ = store.FailMachineUpgrade(op.OperationID, "failed to read machine plan before execution")
 				writeJSON(w, http.StatusInternalServerError, machineUpgradeOperationView(op))
 				return
 			}
-			if fromPlan != quote.FromPlan {
+			if pricing.planAt(now) != quote.FromPlan {
 				staleReason = "the machine plan changed since this quote was issued"
-			} else if costUnits, ok := machineUpgradeCostUnits(quote.FromPlan, quote.ToPlan, lifecycle.PackageExpiresAt.Sub(quote.ExpiresAt.Add(-machineUpgradeQuoteTTL))); !ok || costUnits != quote.CostUnits {
+			} else if costUnits, ok := pricing.cost(quote.ToPlan, quote.ExpiresAt.Add(-machineUpgradeQuoteTTL), lifecycle.PackageExpiresAt); !ok || costUnits != quote.CostUnits {
 				staleReason = "the machine upgrade price changed since this quote was issued"
 			}
 		}

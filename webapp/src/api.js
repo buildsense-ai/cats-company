@@ -721,6 +721,7 @@ export const api = {
     kind: 'credit_topup', amount_fen: amountFen, channel: 'alipay_page', client_request_id: clientRequestId,
   }, options),
   getCloudWorkerUpgradeQuote: (name, plan, options = {}) => request('GET', `/api/cloud-workers/upgrade?${new URLSearchParams({ name, plan })}`, undefined, options),
+  getCloudWorkerUpgradeConfiguration: (name, options = {}) => request('GET', `/api/cloud-workers/upgrade?${new URLSearchParams({ name, view: 'configuration' })}`, undefined, options),
   getCloudWorkerUpgradeOperation: (operationId, options = {}) => request('GET', `/api/cloud-workers/upgrade?${new URLSearchParams({ operation_id: operationId })}`, undefined, options),
   upgradeCloudWorker: (name, plan, quoteId, clientRequestId, options = {}) => request('POST', '/api/cloud-workers/upgrade', {
     name, plan, quote_id: quoteId, client_request_id: clientRequestId,
