@@ -125,6 +125,12 @@ export function AuthView({
       setError('');
       setSentHint('验证码已发送，请使用最新邮件中的验证码（旧验证码将失效）');
     } catch (err) {
+      // A 429 carries how long the bucket needs; mirror it in the button
+      // countdown so the user does not keep clicking into the same rejection.
+      const retrySeconds = Number(err?.data?.retry_after_seconds || 0);
+      if (err?.status === 429 && retrySeconds > 0) {
+        setCountdown(Math.min(Math.max(Math.ceil(retrySeconds), 1), 600));
+      }
       setSentHint('');
       setError(err.message || '发送验证码失败，请稍后再试');
     } finally {

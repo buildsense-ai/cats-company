@@ -53,6 +53,12 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
       setCountdown(60);
       setStatus('如果该邮箱已注册，验证码会发送到对应邮箱。请使用最新邮件中的验证码（旧验证码将失效）。');
     } catch (err) {
+      // Same contract as the registration form: honour retry_after_seconds so
+      // the resend button waits exactly as long as the bucket needs.
+      const retrySeconds = Number(err?.data?.retry_after_seconds || 0);
+      if (err?.status === 429 && retrySeconds > 0) {
+        setCountdown(Math.min(Math.max(Math.ceil(retrySeconds), 1), 600));
+      }
       setError(formatResetError(err.message));
     } finally {
       sendingCodeRef.current = false;

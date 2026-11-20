@@ -867,16 +867,16 @@ func main() {
 	// usageHandler := server.NewUsageHandler(db)
 
 	authSendCodeIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
-		Name: "auth_send_code_ip", Limit: 20, Window: time.Minute, Burst: 5,
+		Name: "auth_send_code_ip", Limit: 30, Window: time.Minute, Burst: 10,
 	})
 	authSendCodeEmailLimit := httpLimiter.LimitJSONField(server.HTTPRateLimitConfig{
-		Name: "auth_send_code_email", Limit: 3, Window: 10 * time.Minute, Burst: 3,
+		Name: "auth_send_code_email", Limit: 6, Window: 10 * time.Minute, Burst: 4,
 	}, "email")
 	authResetCodeIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
-		Name: "auth_reset_code_ip", Limit: 10, Window: time.Minute, Burst: 3,
+		Name: "auth_reset_code_ip", Limit: 20, Window: time.Minute, Burst: 6,
 	})
 	authResetCodeEmailLimit := httpLimiter.LimitJSONField(server.HTTPRateLimitConfig{
-		Name: "auth_reset_code_email", Limit: 3, Window: 10 * time.Minute, Burst: 3,
+		Name: "auth_reset_code_email", Limit: 6, Window: 10 * time.Minute, Burst: 4,
 	}, "email")
 	authResetPasswordIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "auth_reset_password_ip", Limit: 20, Window: time.Minute, Burst: 5,

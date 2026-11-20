@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -92,5 +93,114 @@ func TestHTTPRateLimiterJSONFieldRestoresRequestBody(t *testing.T) {
 	handler(resp, req)
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", resp.Code, http.StatusNoContent)
+	}
+}
+
+func TestHTTPRateLimitExceededReportsBucketRetryAfter(t *testing.T) {
+	limiter := NewHTTPRateLimiter()
+	handler := limiter.LimitIP(HTTPRateLimitConfig{
+		Name: "auth_send_code_slow", Limit: 3, Window: 10 * time.Minute, Burst: 3,
+	})(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/send-code", nil)
+		req.RemoteAddr = "203.0.113.20:1234"
+		resp := httptest.NewRecorder()
+		handler(resp, req)
+		if resp.Code != http.StatusNoContent {
+			t.Fatalf("request %d status = %d, want %d", i+1, resp.Code, http.StatusNoContent)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/send-code", nil)
+	req.RemoteAddr = "203.0.113.20:1234"
+	resp := httptest.NewRecorder()
+	handler(resp, req)
+	if resp.Code != http.StatusTooManyRequests {
+		t.Fatalf("exceeded status = %d, want %d", resp.Code, http.StatusTooManyRequests)
+	}
+
+	var body struct {
+		Error             string `json:"error"`
+		RetryAfterSeconds int    `json:"retry_after_seconds"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v (raw %q)", err, resp.Body.String())
+	}
+	// This bucket refills one token every 200s, so a fixed 60s hint would send
+	// the client straight back into the same rejection.
+	if body.RetryAfterSeconds < 190 || body.RetryAfterSeconds > 200 {
+		t.Fatalf("retry_after_seconds = %d, want 190..200", body.RetryAfterSeconds)
+	}
+	if got := resp.Header().Get("Retry-After"); got != strconv.Itoa(body.RetryAfterSeconds) {
+		t.Fatalf("Retry-After = %q, want %d", got, body.RetryAfterSeconds)
+	}
+	if body.Error == "" || body.Error == "rate limit exceeded" {
+		t.Fatalf("error = %q, want a user-facing Chinese hint", body.Error)
+	}
+}
+
+func TestHTTPRateLimiterAllowsRelaxedSendCodeBurst(t *testing.T) {
+	limiter := NewHTTPRateLimiter()
+	handler := limiter.LimitJSONField(HTTPRateLimitConfig{
+		Name: "auth_send_code_relaxed", Limit: 6, Window: 10 * time.Minute, Burst: 4,
+	}, "email")(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/send-code", strings.NewReader(`{"email":"demo@example.com"}`))
+		resp := httptest.NewRecorder()
+		handler(resp, req)
+		return resp
+	}
+
+	// The regression this guards: a user who resends on the 60s UI countdown
+	// reached the fourth attempt at ~3 minutes and the old burst of 3 refused it.
+	for i := 0; i < 4; i++ {
+		if resp := send(); resp.Code != http.StatusNoContent {
+			t.Fatalf("send %d status = %d, want %d", i+1, resp.Code, http.StatusNoContent)
+		}
+	}
+
+	resp := send()
+	if resp.Code != http.StatusTooManyRequests {
+		t.Fatalf("fifth send status = %d, want %d", resp.Code, http.StatusTooManyRequests)
+	}
+	var body struct {
+		RetryAfterSeconds int `json:"retry_after_seconds"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v (raw %q)", err, resp.Body.String())
+	}
+	// 6 per 10 minutes = one token every 100s.
+	if body.RetryAfterSeconds < 90 || body.RetryAfterSeconds > 100 {
+		t.Fatalf("retry_after_seconds = %d, want 90..100", body.RetryAfterSeconds)
+	}
+}
+
+func TestHTTPRateLimitFastBucketWaitsAtLeastOneSecond(t *testing.T) {
+	limiter := NewHTTPRateLimiter()
+	handler := limiter.LimitIP(HTTPRateLimitConfig{
+		Name: "auth_login_fast", Limit: 60, Window: time.Minute, Burst: 1,
+	})(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	first := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	first.RemoteAddr = "203.0.113.30:1234"
+	handler(httptest.NewRecorder(), first)
+
+	second := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	second.RemoteAddr = "203.0.113.30:1234"
+	resp := httptest.NewRecorder()
+	handler(resp, second)
+	if resp.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusTooManyRequests)
+	}
+	if got := resp.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q, want 1", got)
 	}
 }
