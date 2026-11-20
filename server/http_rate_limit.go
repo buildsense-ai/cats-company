@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -48,8 +49,8 @@ func (rl *HTTPRateLimiter) LimitIP(config HTTPRateLimitConfig) func(http.Handler
 			if key == "" {
 				key = "unknown"
 			}
-			if !rl.allow(config, "ip:"+key) {
-				writeRateLimitExceeded(w)
+			if ok, retryAfter := rl.allowWithRetry(config, "ip:"+key); !ok {
+				writeRateLimitExceeded(w, retryAfter)
 				return
 			}
 			next(w, r)
@@ -60,10 +61,11 @@ func (rl *HTTPRateLimiter) LimitIP(config HTTPRateLimitConfig) func(http.Handler
 func (rl *HTTPRateLimiter) LimitUser(config HTTPRateLimitConfig) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			uid := UIDFromContext(r.Context())
-			if uid != 0 && !rl.allow(config, "uid:"+strconv.FormatInt(uid, 10)) {
-				writeRateLimitExceeded(w)
-				return
+			if uid := UIDFromContext(r.Context()); uid != 0 {
+				if ok, retryAfter := rl.allowWithRetry(config, "uid:"+strconv.FormatInt(uid, 10)); !ok {
+					writeRateLimitExceeded(w, retryAfter)
+					return
+				}
 			}
 			next(w, r)
 		}
@@ -73,19 +75,27 @@ func (rl *HTTPRateLimiter) LimitUser(config HTTPRateLimitConfig) func(http.Handl
 func (rl *HTTPRateLimiter) LimitJSONField(config HTTPRateLimitConfig, field string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			value := normalizedJSONField(r, field)
-			if value != "" && !rl.allow(config, "field:"+value) {
-				writeRateLimitExceeded(w)
-				return
+			if value := normalizedJSONField(r, field); value != "" {
+				if ok, retryAfter := rl.allowWithRetry(config, "field:"+value); !ok {
+					writeRateLimitExceeded(w, retryAfter)
+					return
+				}
 			}
 			next(w, r)
 		}
 	}
 }
 
+// allow keeps the original one-value shape for callers that only need the
+// verdict; allowWithRetry also reports how long the caller should wait.
 func (rl *HTTPRateLimiter) allow(config HTTPRateLimitConfig, key string) bool {
+	ok, _ := rl.allowWithRetry(config, key)
+	return ok
+}
+
+func (rl *HTTPRateLimiter) allowWithRetry(config HTTPRateLimitConfig, key string) (bool, time.Duration) {
 	if config.Limit <= 0 || config.Window <= 0 {
-		return true
+		return true, 0
 	}
 	burst := config.Burst
 	if burst <= 0 {
@@ -120,10 +130,25 @@ func (rl *HTTPRateLimiter) allow(config HTTPRateLimitConfig, key string) bool {
 	b.lastRefill = now
 
 	if b.tokens < 1 {
-		return false
+		// Tell the caller how long the wait really is. A fixed 60s is wrong for
+		// slow buckets (3 per 10 minutes refills one token every 200s), and a
+		// client that trusts a too-short Retry-After retries straight into the
+		// same limit.
+		wait := time.Second
+		if b.refillRate > 0 {
+			seconds := (1 - b.tokens) / b.refillRate
+			wait = time.Duration(math.Ceil(seconds)) * time.Second
+			if wait < time.Second {
+				wait = time.Second
+			}
+			if wait > config.Window {
+				wait = config.Window
+			}
+		}
+		return false, wait
 	}
 	b.tokens--
-	return true
+	return true, 0
 }
 
 func (rl *HTTPRateLimiter) cleanupLocked(now time.Time) {
@@ -136,9 +161,16 @@ func (rl *HTTPRateLimiter) cleanupLocked(now time.Time) {
 	rl.lastCleanup = now
 }
 
-func writeRateLimitExceeded(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", "60")
-	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+func writeRateLimitExceeded(w http.ResponseWriter, retryAfter time.Duration) {
+	seconds := int(math.Ceil(retryAfter.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	writeJSON(w, http.StatusTooManyRequests, map[string]any{
+		"error":               "操作太频繁，请稍后再试",
+		"retry_after_seconds": seconds,
+	})
 }
 
 func clientIPFromRequest(r *http.Request) string {
