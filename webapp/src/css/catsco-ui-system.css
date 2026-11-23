@@ -38,6 +38,7 @@
   --cc-text-secondary: #454549;
   --cc-voice-notice: var(--cc-text-secondary);
   --cc-muted: #747479;
+  --cc-icon-action-text: color-mix(in srgb, var(--cc-muted) 50%, var(--cc-text-secondary));
   --cc-helper-text: color-mix(in srgb, var(--cc-text) 58%, transparent);
   --cc-placeholder: color-mix(in srgb, var(--cc-text) 46%, transparent);
   --cc-accent: #29bc95;
@@ -1211,6 +1212,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
   height: var(--cc-header-action-size);
 }
 
+.v3-sidebar-collapse-btn:where(:not(:disabled)),
+:where(.v3-shell-actions) > .v3-action-btn:where(:not(:disabled)),
+:where(.v3-composer-row) :is(.v3-composer-plus, .v3-voice-button):where(:not(:disabled)) {
+  color: var(--cc-icon-action-text);
+}
+
 .v3-sidebar-collapse-btn > svg {
   width: var(--cc-header-action-icon-size);
   height: var(--cc-header-action-icon-size);
@@ -1247,30 +1254,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
   color: var(--cc-text);
 }
 
-.v3-sidebar.collapsed .v3-sidebar-collapse-btn .catsco-brand-mark {
-  width: 34px;
-  height: 26px;
-}
-
 .v3-sidebar.collapsed .v3-sidebar-collapse-btn,
 .v3-sidebar.collapsed .v3-sidebar-collapse-btn:hover,
 .v3-sidebar.collapsed .v3-sidebar-collapse-btn:active {
   border-color: transparent;
   background: transparent;
   box-shadow: none;
-}
-
-.v3-collapsed-expand-icon {
-  display: none;
-  transform: scaleX(-1);
-}
-
-.v3-sidebar.collapsed .v3-sidebar-collapse-btn:hover .v3-collapsed-brand-icon {
-  display: none;
-}
-
-.v3-sidebar.collapsed .v3-sidebar-collapse-btn:hover .v3-collapsed-expand-icon {
-  display: block;
 }
 
 .relay-access-copy-btn,
@@ -2909,7 +2898,6 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .cc-contact-item .cc-agent-contact-icon.offline {
   color: var(--cc-muted);
-  opacity: 0.62;
 }
 
 .cc-conversation-presence {
@@ -4417,7 +4405,10 @@ html[data-theme="liquid"] .catsco-brand-mark {
   width: 32px;
   height: 32px;
   border-radius: 9px;
-  color: var(--cc-muted);
+}
+
+.v3-message-footer .v3-action-btn:where(:not(:disabled)) {
+  color: var(--cc-icon-action-text);
 }
 
 .v3-message-footer .v3-action-btn svg {
@@ -12016,7 +12007,7 @@ html[data-theme="liquid"] .v3-composer-plus {
   position: relative;
   border: 1px solid var(--cc-liquid-edge);
   background: rgba(255, 255, 255, 0.68);
-  color: #46506a;
+  color: var(--cc-icon-action-text);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
   transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 100ms ease;
 }

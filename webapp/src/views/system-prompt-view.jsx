@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
-  Bot,
   Check,
   CheckCircle2,
   Cloud,
@@ -12,6 +11,7 @@ import {
   RefreshCw,
   Save,
 } from 'lucide-react';
+import { AssistantBadge } from '../widgets/desktop-icons';
 import { api } from '../api';
 import LoadingState from '../widgets/loading-state';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
@@ -581,7 +581,7 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
             <p>查看 Agent 当前使用的基础提示词；只有创建者可以修改。</p>
           </div>
           <label className="cc-system-prompt-agent-picker">
-            <span><Bot size={15} /> Agent</span>
+            <span><AssistantBadge size={15} /> Agent</span>
             <select
               value={selectedBotUID}
               disabled={loadingBots || busySaving || bots.length === 0}
@@ -610,7 +610,7 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
           </div>
         ) : bots.length === 0 ? (
           <section className="cc-system-prompt-empty">
-            <Bot size={24} />
+            <AssistantBadge size={24} />
             <h2>暂无联系人 Agent</h2>
             <p>创建 Agent 或添加机器人好友后，即可在这里查看其系统提示词。</p>
           </section>

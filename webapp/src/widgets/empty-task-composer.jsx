@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { CircleAlert, FileText, Image, Plus, Smartphone, X } from 'lucide-react';
+import { CircleAlert, Image, Smartphone } from 'lucide-react';
+import { FileText, Plus, X } from './desktop-icons';
 import { api } from '../api';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import { readLastTaskAgent, rememberLastTaskAgent } from '../utils/agent-task-topic';

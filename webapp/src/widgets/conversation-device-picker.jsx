@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Laptop, RefreshCw, X } from 'lucide-react';
+import { Laptop, RefreshCw, X } from './desktop-icons';
 import { api, getAuthRevision, getToken, isCurrentAuthSession } from '../api';
 import LoadingState from './loading-state';
 import '../css/conversation-device-picker.css';

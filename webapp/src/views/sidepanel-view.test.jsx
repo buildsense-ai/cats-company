@@ -4063,7 +4063,7 @@ describe('ChatListView sidebar sections', () => {
     expect(menuItems.map((item) => item.textContent.trim())).toEqual(['添加好友/助手', '创建群组', 'Agent 助手']);
     expect(menuItems[0].querySelector('.lucide-user-plus')).toBeTruthy();
     expect(menuItems[1].querySelector('.lucide-users')).toBeTruthy();
-    expect(menuItems[2].querySelector('.lucide-bot')).toBeTruthy();
+    expect(menuItems[2].querySelector('.lucide-assistant-badge')).toBeTruthy();
 
     await act(async () => {
       document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));

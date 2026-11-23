@@ -337,8 +337,6 @@ describe('CatsCo shell styling', () => {
     expect(css).toMatch(
       /@media \(forced-colors: active\)[\s\S]*?\.v3-sidebar-header \.catsco-brand-name\s*\{[^}]*-webkit-mask: none;[^}]*mask: none;[^}]*font-size: 19px;/,
     );
-    expect(ruleFor('.v3-sidebar.collapsed .v3-sidebar-collapse-btn .catsco-brand-mark'))
-      .toContain('width: 34px;');
     const collapsedButtonRule = ruleFor(
       '.v3-sidebar.collapsed .v3-sidebar-collapse-btn,\n'
       + '.v3-sidebar.collapsed .v3-sidebar-collapse-btn:hover,\n'
@@ -858,7 +856,7 @@ describe('CatsCo shell styling', () => {
 
     expect(attachmentRule).toContain('border: 1px solid var(--cc-liquid-edge);');
     expect(attachmentRule).toContain('background: rgba(255, 255, 255, 0.68);');
-    expect(attachmentRule).toContain('color: #46506a;');
+    expect(attachmentRule).toContain('color: var(--cc-icon-action-text);');
     expect(attachmentRule).toContain('box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9)');
     expect(attachmentRule).not.toContain('0 2px 5px rgba(79, 91, 148, 0.11)');
     expect(attachmentRule).not.toContain('gradient');

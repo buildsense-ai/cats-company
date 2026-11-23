@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { Bot, ChevronRight, UserPlus } from 'lucide-react';
+import { ChevronRight, UserPlus } from 'lucide-react';
+import { AssistantBadge } from './desktop-icons';
 
 export default function AgentSettingsMenu({ onManage, onAdd, inMenu = true }) {
   const [open, setOpen] = useState(false);
@@ -95,13 +96,13 @@ export default function AgentSettingsMenu({ onManage, onAdd, inMenu = true }) {
           }
         }}
       >
-        <Bot size={16} aria-hidden="true" />
+        <AssistantBadge size={16} aria-hidden="true" />
         <span>Agent 助手</span>
         <ChevronRight size={15} className="cc-agent-settings-chevron" aria-hidden="true" />
       </button>
       {open && (
         <div ref={menuRef} id={menuId} role="menu" aria-label="Agent 助手" className="cc-agent-settings-submenu" onKeyDown={handleMenuKeyDown}>
-          <button type="button" role="menuitem" onClick={() => { close(); onManage(); }}><Bot size={16} aria-hidden="true" /><span>Agent 助手管理</span></button>
+          <button type="button" role="menuitem" onClick={() => { close(); onManage(); }}><AssistantBadge size={16} aria-hidden="true" /><span>Agent 助手管理</span></button>
           <button type="button" role="menuitem" onClick={() => { close(); onAdd(); }}><UserPlus size={16} aria-hidden="true" /><span>添加AI 助手</span></button>
         </div>
       )}
