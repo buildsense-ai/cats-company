@@ -58,11 +58,52 @@ func TestOwnDeviceUnaffectedBySharingStoreFailure(t *testing.T) {
 	}
 }
 
+func TestGroupDeviceContextHonorsExplicitTargetDecision(t *testing.T) {
+	for _, unavailable := range []bool{false, true} {
+		for _, enabled := range []bool{false, true} {
+			name := "sharing_store_healthy"
+			if unavailable {
+				name = "sharing_store_unavailable"
+			}
+			if enabled {
+				name += "/explicit_enabled"
+			} else {
+				name += "/explicit_disabled"
+			}
+			t.Run(name, func(t *testing.T) {
+				h, bot, db := groupShareCompatibilityFixture(t)
+				session := buildCatsCoSessionKey("grp_1", "group", "usr42", 7)
+				if _, err := h.userDevices.confirmDeviceSelection(7, session, "own-pc", "test", "", 7); err != nil {
+					t.Fatal(err)
+				}
+				if unavailable {
+					db.failure = errors.New("sharing query unavailable")
+				}
+				own, missing := h.classifyUserDevices(7, h.userDevices.list(7))
+				turn := h.groupDeviceTurnContext(7, "grp_1", bot, own, missing, enabled)
+				if len(turn.Grants) != 1 || turn.Grants[0].OwnerUserID != "usr7" {
+					t.Fatal("explicit target decision changed the own-device default grant")
+				}
+				want := 0
+				if enabled {
+					want = 2
+					if unavailable {
+						want = 1
+					}
+				}
+				if len(turn.ExplicitGrants) != want {
+					t.Fatalf("explicit grants = %d, want %d", len(turn.ExplicitGrants), want)
+				}
+			})
+		}
+	}
+}
+
 func TestAutomaticOwnDeviceUnaffectedBySharingStoreFailure(t *testing.T) {
 	h, bot, db := groupShareCompatibilityFixture(t)
 	db.failure = errors.New("sharing query unavailable")
 	devices, unavailable := h.classifyUserDevices(7, h.userDevices.list(7))
-	ctx := h.groupDeviceTurnContext(7, "grp_1", bot, devices, unavailable)
+	ctx := h.groupDeviceTurnContext(7, "grp_1", bot, devices, unavailable, xiaobaRuntimeV2EnabledForClient(bot))
 	if len(ctx.Grants) != 1 || ctx.Grants[0].OwnerUserID != "usr7" {
 		t.Fatal("automatic own device lost its grant during a sharing-store outage")
 	}
@@ -74,7 +115,7 @@ func TestActiveSharedGrantCanRenew(t *testing.T) {
 	if _, e := h.userDevices.confirmDeviceSelection(7, session, "shared-pc", "test", "", 8); e != nil {
 		t.Fatal(e)
 	}
-	ctx := h.groupDeviceTurnContext(7, "grp_1", bot, nil, nil)
+	ctx := h.groupDeviceTurnContext(7, "grp_1", bot, nil, nil, xiaobaRuntimeV2EnabledForClient(bot))
 	if len(ctx.Grants) != 1 {
 		t.Fatal("fixture missing shared grant")
 	}
@@ -149,7 +190,7 @@ func TestOnlySharedDeviceNeedsExplicitDefaultConfirmation(t *testing.T) {
 	if snapshot["status"] != "needs_selection" || snapshot["selected_device_id"] != "" {
 		t.Fatalf("picker suggested an implicit shared default: %+v", snapshot)
 	}
-	ctx := h.groupDeviceTurnContext(7, "grp_1", bot, nil, nil)
+	ctx := h.groupDeviceTurnContext(7, "grp_1", bot, nil, nil, xiaobaRuntimeV2EnabledForClient(bot))
 	if ctx.Selection == nil || ctx.Selection.Status != DeviceSelectionNeedsSelection || ctx.Selection.SelectedDevice != nil {
 		t.Fatalf("shared device became implicit default: %+v", ctx.Selection)
 	}
@@ -161,7 +202,7 @@ func TestOnlySharedDeviceNeedsExplicitDefaultConfirmation(t *testing.T) {
 	if _, err := h.userDevices.confirmDeviceSelection(7, session, "shared-pc", "user_confirmation", pref.Revision, 8); err != nil {
 		t.Fatal(err)
 	}
-	ctx = h.groupDeviceTurnContext(7, "grp_1", bot, nil, nil)
+	ctx = h.groupDeviceTurnContext(7, "grp_1", bot, nil, nil, xiaobaRuntimeV2EnabledForClient(bot))
 	if ctx.Selection.Status != DeviceSelectionSelected || ctx.Selection.OwnerUserID != "usr8" || len(ctx.Grants) == 0 {
 		t.Fatalf("confirmed shared default unavailable: %+v", ctx)
 	}

@@ -92,7 +92,7 @@ func TestGroupDeviceSharingRevocationAndProtocolFence(t *testing.T) {
 	if _, err := hub.userDevices.confirmDeviceSelection(7, session, "same-device", "user_confirmation", preference.Revision, 8); err != nil {
 		t.Fatal(err)
 	}
-	turn := hub.groupDeviceTurnContext(7, "grp_1", bot, nil, nil)
+	turn := hub.groupDeviceTurnContext(7, "grp_1", bot, nil, nil, xiaobaRuntimeV2EnabledForClient(bot))
 	if len(turn.Grants) != 1 || turn.Grants[0].OwnerUserID != "usr8" || turn.Grants[0].ActorUserID != "usr7" || turn.Grants[0].ShareID != "share-b" {
 		t.Fatalf("shared identity lost: %+v", turn)
 	}

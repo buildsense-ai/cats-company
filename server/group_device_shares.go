@@ -124,7 +124,7 @@ func (h *Hub) sharedGroupDevices(ctx context.Context, actor int64, topic string)
 	return devices, nil
 }
 
-func (h *Hub) groupDeviceTurnContext(actor int64, topic string, agent *Client, own, unavailable []UserDevice) DeviceTurnContext {
+func (h *Hub) groupDeviceTurnContext(actor int64, topic string, agent *Client, own, unavailable []UserDevice, explicitTargetsEnabled bool) DeviceTurnContext {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	shared, err := h.sharedGroupDevices(ctx, actor, topic)
@@ -132,7 +132,7 @@ func (h *Hub) groupDeviceTurnContext(actor int64, topic string, agent *Client, o
 		session := buildCatsCoSessionKey(topic, "group", formatUID(agent.uid), actor)
 		preference, readErr := h.userDevices.selectionRecord(actor, session)
 		if readErr == nil && (preference.DeviceID == "" || selectionOwner(preference, actor) == actor) {
-			return h.userDevices.turnContextForOwnerDevicesWithExplicitTargets(actor, actor, topic, "group", agent.uid, agent.bodyID, own, unavailable, xiaobaRuntimeV2EnabledForClient(agent))
+			return h.userDevices.turnContextForOwnerDevicesWithExplicitTargets(actor, actor, topic, "group", agent.uid, agent.bodyID, own, unavailable, explicitTargetsEnabled)
 		}
 		return DeviceTurnContext{Selection: &DeviceSelection{Status: DeviceSelectionUnavailable, SelectionSource: "sharing_store_unavailable"}}
 	}
@@ -170,7 +170,7 @@ func (h *Hub) groupDeviceTurnContext(actor int64, topic string, agent *Client, o
 			selection.SelectionSource = "group_device_share_upgrade_required"
 		}
 	}
-	if xiaobaRuntimeV2EnabledForClient(agent) {
+	if explicitTargetsEnabled {
 		for _, device := range devices {
 			if device.ShareID != "" && !agent.hasRuntimeCapability(groupDeviceShareCapability) {
 				continue

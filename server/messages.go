@@ -1124,7 +1124,7 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 			knownDevices, unavailableDevices := h.classifyUserDevices(deviceOwnerUID, humanToolTargetDevices(h.userDevices.list(deviceOwnerUID)))
 			var deviceContext DeviceTurnContext
 			if topicType == "group" && deviceOwnerUID == actorUID {
-				deviceContext = h.groupDeviceTurnContext(actorUID, topicID, client, routableDevices(knownDevices), unavailableDevices)
+				deviceContext = h.groupDeviceTurnContext(actorUID, topicID, client, routableDevices(knownDevices), unavailableDevices, explicitTargetsEnabled)
 			} else {
 				deviceContext = h.userDevices.turnContextForOwnerDevicesWithExplicitTargets(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, routableDevices(knownDevices), unavailableDevices, explicitTargetsEnabled)
 			}

@@ -16,7 +16,7 @@ func permanentSharedTurn(t *testing.T, h *Hub, bot *Client) ScopedDeviceGrant {
 	if _, err := h.userDevices.confirmDeviceSelection(7, session, "shared-pc", "user_confirmation", "", 8); err != nil {
 		t.Fatal(err)
 	}
-	ctx := h.groupDeviceTurnContext(7, "grp_1", bot, nil, nil)
+	ctx := h.groupDeviceTurnContext(7, "grp_1", bot, nil, nil, xiaobaRuntimeV2EnabledForClient(bot))
 	if len(ctx.Grants) != 1 {
 		t.Fatalf("missing shared route: %+v", ctx)
 	}
