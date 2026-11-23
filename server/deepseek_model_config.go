@@ -20,6 +20,17 @@ const gpt56RetirementTarget = "gpt-6.1-sol"
 // successor and are rewritten on the next save or admin reapply.
 var gpt56RetiredModelIDs = []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
 
+// claudeSonnetRetirementTarget is the public model every retired Claude
+// Sonnet 5.5 selection migrates to. The Foxcode Anthropic channel behind it
+// ran out of credit, and the model had failed every request for a week, so
+// the catalog dropped it on 2026-11-23.
+const claudeSonnetRetirementTarget = deepSeekPublicModelID
+
+// claudeSonnetRetiredModelIDs stay accepted as legacy aliases so stored
+// selections keep resolving to the successor and are rewritten on the next
+// save or admin reapply.
+var claudeSonnetRetiredModelIDs = []string{"claude-sonnet-5-5"}
+
 // resolveLegacyCatalogModelID maps retired catalog ids onto the current public
 // model. Unknown ids are returned unchanged.
 func resolveLegacyCatalogModelID(modelID string) string {
@@ -34,6 +45,11 @@ func resolveLegacyCatalogModelID(modelID string) string {
 			return gpt56RetirementTarget
 		}
 	}
+	for _, retired := range claudeSonnetRetiredModelIDs {
+		if normalized == retired {
+			return claudeSonnetRetirementTarget
+		}
+	}
 	return modelID
 }
 
@@ -42,6 +58,11 @@ func resolveLegacyCatalogModelID(modelID string) string {
 func isRetiredCatalogModel(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
 	for _, retired := range gpt56RetiredModelIDs {
+		if normalized == retired {
+			return true
+		}
+	}
+	for _, retired := range claudeSonnetRetiredModelIDs {
 		if normalized == retired {
 			return true
 		}

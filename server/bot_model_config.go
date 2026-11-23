@@ -129,10 +129,10 @@ var botModelCatalog = []botModelCatalogItem{
 		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: types.GPT62Sol,
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
-	{
-		ID: "claude-sonnet-5-5", Label: "Claude Sonnet 5.5", Description: "Claude 长上下文模型，1M 上下文与深度推理",
-		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000, Vision: true, RuntimeModel: "claude-sonnet-5-5",
-	},
+	// Claude Sonnet 5.5 retired 2026-11-23: the Foxcode Anthropic channel
+	// behind it ran out of credit and the model had failed every request for a
+	// week. Stored selections resolve through resolveLegacyCatalogModelID onto
+	// deepseek-flash and are rewritten on the next save or admin reapply.
 }
 
 type botModelUpdateRequest struct {
