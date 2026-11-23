@@ -286,7 +286,15 @@ export default function WordPreview({
   const [askText, setAskText] = useState('');
   const [panelWidth, setPanelWidth] = useState(() => readOfficePanelWidth());
   const [barDocked, setBarDocked] = useState(() => readBarDocked());
+  // Double-clicking a paragraph edits it in place, the same gesture the PPT canvas uses. Word
+  // has no model coordinates, but a paragraph does have a layout box, so the editor is drawn
+  // over the block the user actually double-clicked.
+  const [inline, setInline] = useState(null);
   const canvasHostRef = useRef(null);
+  const stageRef = useRef(null);
+  // Set while Escape is unwinding the editor, so the blur it triggers does not commit the
+  // text the user just cancelled.
+  const abandonedInlineRef = useRef(false);
   const pendingBytesRef = useRef(null);
   const [hasPending, setHasPending] = useState(false);
   const imageInputRef = useRef(null);
@@ -593,6 +601,72 @@ export default function WordPreview({
   }, [model, selectedId]);
 
   /**
+   * Double-click a paragraph to edit it where it sits.
+   *
+   * Delegated from the stage rather than wired into the renderer: the renderer draws the
+   * document faithfully, and a preview-only surface should be able to reuse it untouched.
+   * A paragraph has no model coordinates, so its layout box is measured at the moment the
+   * gesture happens. Re-measuring on every render would fight the textarea for focus.
+   */
+  const handleStageDoubleClick = useCallback((event) => {
+    if (!editing) return;
+    const node = event.target?.closest?.('[data-office-block]');
+    if (!node) return;
+    // Only paragraphs. A table is edited one cell at a time and a picture has no text,
+    // so grabbing the whole block would be the wrong target for both.
+    if (node.getAttribute('data-office-block-kind') !== 'paragraph') return;
+    const blockId = node.getAttribute('data-office-block');
+    const block = model?.blocks?.find(item => item.id === blockId);
+    if (!block || block.kind !== BLOCK_KINDS.PARAGRAPH) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    const rect = node.getBoundingClientRect();
+    const hostRect = stage.getBoundingClientRect();
+    event.preventDefault();
+    event.stopPropagation();
+    // A fresh edit clears the cancel flag: otherwise one Escape would keep swallowing the
+    // commit of the next edit.
+    abandonedInlineRef.current = false;
+    setSelectedId(blockId);
+    setInline({
+      blockId,
+      // Start from the draft when there is one: reopening the editor must not look like it
+      // discarded the edit that is already on screen.
+      value: draft.texts[blockId] !== undefined ? draft.texts[blockId] : (block.text || ''),
+      left: rect.left - hostRect.left + stage.scrollLeft,
+      top: rect.top - hostRect.top + stage.scrollTop,
+      width: Math.max(rect.width, 120),
+      height: Math.max(rect.height, 24),
+    });
+  }, [draft.texts, editing, model]);
+
+  /**
+   * Commit the in-place edit.
+   *
+   * The value comes from the textarea itself rather than from state. Typing and blurring in the
+   * same frame would otherwise commit the value captured when the handler was created — the
+   * characters typed since then are dropped, which is exactly the kind of bug that only shows
+   * up when someone types fast and clicks away.
+   *
+   * `abandoned` covers the other direction: Escape closes the editor first, and the blur that
+   * follows must not resurrect what the user just cancelled.
+   */
+  const commitInline = useCallback((value) => {
+    const pending = inline;
+    setInline(null);
+    if (abandonedInlineRef.current) {
+      abandonedInlineRef.current = false;
+      return;
+    }
+    if (!pending) return;
+    const next = value === undefined ? pending.value : value;
+    setDraft(current => ({
+      ...current,
+      texts: { ...current.texts, [pending.blockId]: next },
+    }));
+  }, [inline]);
+
+  /**
    * Insert a picture.
    *
    * A picture needs the package (media part + relationship + content type), so it cannot go
@@ -710,7 +784,8 @@ export default function WordPreview({
         {/* The bar is a sibling of the scrollable stage, not a child of it: inside the stage it
             would scroll away with the document and be clipped by overflow. It still positions
             itself against this container, which is the box the anchor was measured in. */}
-        <div className="office-preview-stage office-docx-stage">
+        <div className="office-preview-stage office-docx-stage" ref={stageRef}
+          onDoubleClick={handleStageDoubleClick}>
           <DocxCanvas
             model={renderedModel}
             selectedId={selectedId}
@@ -721,6 +796,51 @@ export default function WordPreview({
             onCellSelect={editing ? handleCellSelect : undefined}
           />
 
+          {inline ? (
+            <textarea
+              data-office-inline-text=""
+              className="office-inline-text"
+              value={inline.value}
+              autoFocus
+              onChange={(event) => setInline({ ...inline, value: event.target.value })}
+              onBlur={(event) => commitInline(event.target.value)}
+              onPointerDown={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                // Escape abandons the edit; Enter keeps inserting paragraphs. Ctrl/Cmd+Enter
+                // commits, the same gesture the PPT canvas and the composer use.
+                if (event.key === 'Escape') {
+                  abandonedInlineRef.current = true;
+                  setInline(null);
+                  return;
+                }
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  commitInline();
+                }
+              }}
+              style={{
+                position: 'absolute',
+                left: inline.left,
+                top: inline.top,
+                width: inline.width,
+                minHeight: inline.height,
+                zIndex: 8,
+                margin: 0,
+                padding: 2,
+                border: '1.5px solid #1f5eff',
+                borderRadius: 2,
+                background: 'rgba(255, 255, 255, .97)',
+                color: '#16181b',
+                fontFamily: 'inherit',
+                fontSize: 13,
+                lineHeight: 1.35,
+                resize: 'none',
+                boxSizing: 'border-box',
+                overflow: 'auto',
+              }}
+            />
+          ) : null}
         </div>
           {editing && selectedBlock ? (
             <SelectionBar
