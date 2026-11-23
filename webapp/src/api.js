@@ -709,7 +709,7 @@ export const api = {
   getRelayConfig: (options = {}) => request('GET', '/api/relay/config', undefined, options),
   getRelayCommercial: (options = {}) => request('GET', '/api/relay/commercial', undefined, options),
   getModelCreditAccount: (options = {}) => request('GET', '/api/relay/credits', undefined, options),
-  redeemRelayInvite: (code) => request('POST', '/api/relay/invite/redeem', { code }),
+  redeemRelayInvite: (code) => request('POST', '/api/relay/invite/redeem', { code }, { timeoutMs: DIRECT_REQUEST_TIMEOUT_MS }),
   getCommercialCatalog: (options = {}) => request('GET', '/api/relay/commercial/catalog', undefined, options),
   getCommercialOrders: (orderNo = '', options = {}) => request('GET', `/api/relay/commercial/orders${orderNo ? `?order_no=${encodeURIComponent(orderNo)}` : ''}`, undefined, options),
   createCommercialOrder: (planId, channel, clientRequestId, options = {}) => request('POST', '/api/relay/commercial/orders', {
