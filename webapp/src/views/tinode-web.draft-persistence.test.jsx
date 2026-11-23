@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   connectWS: vi.fn(),
   disconnectWS: vi.fn(),
   getMe: vi.fn(),
-  redeemBotInviteCode: vi.fn(),
+  redeemRelayInvite: vi.fn(),
   updateMe: vi.fn(),
 }));
 
@@ -34,7 +34,7 @@ vi.mock('../api', () => {
     assignProjectTopic: vi.fn().mockResolvedValue({}),
     disbandGroup: vi.fn().mockResolvedValue({}),
     sendMessage: vi.fn(),
-    redeemBotInviteCode: mocks.redeemBotInviteCode,
+    redeemRelayInvite: mocks.redeemRelayInvite,
     unsubscribePush: vi.fn().mockResolvedValue({}),
     updateConversationTitle: vi.fn(),
     updateGroup: vi.fn(),
@@ -250,7 +250,7 @@ beforeEach(() => {
   api.sendMessage.mockReset();
   api.openAgent.mockReset();
   mocks.getMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', created_at: '2026-01-01T00:00:00Z' });
-  mocks.redeemBotInviteCode.mockReset().mockResolvedValue({});
+  mocks.redeemRelayInvite.mockReset().mockResolvedValue({ ok: true });
   mocks.updateMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', display_name: 'Cats' });
   window.matchMedia = vi.fn(() => ({ matches: false }));
   localStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
@@ -680,7 +680,7 @@ test('keeps exactly one onboarding card when replaying the local onboarding prev
   expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
 });
 
-test('replays onboarding from the settings entry over an active conversation and redeems invites', async () => {
+test('replays onboarding from settings over an active conversation and redeems a package invite', async () => {
   setCachedUser('2026-09-17T23:59:59Z');
   await act(async () => renderWorkspace());
   await openOnboardingReplayFromSettingsEntry();
@@ -689,7 +689,7 @@ test('replays onboarding from the settings entry over an active conversation and
   expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1);
   await act(async () => {
     Simulate.click([...document.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('使用邀请码')));
+      .find((button) => button.textContent.includes('兑换套餐邀请码')));
   });
   const input = document.querySelector('#workspace-onboarding-invite');
   await act(async () => {
@@ -701,8 +701,8 @@ test('replays onboarding from the settings entry over an active conversation and
     await Promise.resolve();
   });
 
-  expect(mocks.redeemBotInviteCode).toHaveBeenCalledWith('REPLAY-123');
-  expect(document.querySelector('#workspace-invite-title')?.textContent).toBe('云端助手已添加');
+  expect(mocks.redeemRelayInvite).toHaveBeenCalledWith('replay-123');
+  expect(document.querySelector('#workspace-invite-title')?.textContent).toBe('兑换成功');
 });
 
 test.each(['Escape', 'close button'])('restores active conversation composer focus when replay onboarding closes via %s', async (method) => {
