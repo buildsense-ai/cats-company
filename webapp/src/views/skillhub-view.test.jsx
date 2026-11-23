@@ -4518,7 +4518,7 @@ describe('SkillHubView', () => {
     expect(container.querySelector('#skillhub-catalogue-tab').getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('.cc-skillhub-bot-picker select').value).toBe('44');
     expect(container.querySelector('#cc-skillhub-search-input').value).toBe('Code');
-    expect(container.querySelector('.cc-skillhub-category-filter button[aria-pressed="true"]').textContent).toBe('推荐');
+    expect(container.querySelector('.cc-skillhub-category-filter button[aria-pressed="true"]').textContent).toBe('全部');
     expect(container.querySelector('.cc-skillhub-page').scrollTop).toBe(240);
     await openCatalogue();
     expect(container.querySelector('.cc-skillhub-card h3').textContent).toBe('Code helper');

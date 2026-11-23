@@ -56,7 +56,7 @@ Cats Company 是一个独立的即时通讯平台，提供：
 | --- | --- |
 | `GET /capabilities` | `{schemaVersion:1, enabled, writesEnabled, visibilityEnabled, visibilityWritesEnabled}`，表示 CatsCo 本地开关，不保证上游已启用 |
 | `GET /catalogue/categories` | 分类列表 |
-| `GET /catalogue/skills` | 分类搜索与分页；允许 `q/category/platform/agent_version/search_mode/limit/cursor` |
+| `GET /catalogue/skills` | 分类搜索与分页；允许 `q/category/platform/agent_version/search_mode/scope/limit/cursor`。`scope=recommended` 请求管理员编排的推荐列表。 |
 | `GET /presentations?skillId=author%2Fname&version=1.0.0` | 精确公开版本的已确认介绍 |
 | `GET /presentations/draft?skillId=author%2Fname&version=1.0.0` | 发布者/Admin 私有草稿 |
 | `PUT /presentations/draft` | 保存结构化草稿；使用 SkillHub 原有 `expectedRevision` CAS 契约 |

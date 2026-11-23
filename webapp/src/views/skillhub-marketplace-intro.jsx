@@ -58,7 +58,7 @@ export function RichIntroduction({ content, preview = false }) {
       <div className='cc-market-section-title'><h3>看懂一个例子</h3><span>示意 / 非实测</span></div>
       {example && <div className={`cc-market-io is-${example.kind}`}>
         <div><MessageSquare size={21} aria-hidden='true' /><small>你提供 / 你对 Bot 说</small><p>{example.input}</p>
-          {example.copyAsPrompt && <><button type='button' className='cc-market-more' onClick={async () => {
+          {example.copyAsPrompt && <><button type='button' className='cc-market-copy-prompt' onClick={async () => {
             setCopyStatus('');
             try {
               await navigator.clipboard.writeText(example.input);

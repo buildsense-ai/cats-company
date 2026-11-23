@@ -89,6 +89,7 @@ export function useMarketplaceCatalogue(query, { loadAll = false, recommended = 
   const [category, setCategory] = useState(savedCurrent?.category || '');
   const [reload, setReload] = useState(0);
   const pending = useRef(null);
+  const lastRecommendation = useRef(null);
   const key = JSON.stringify([query, category, recommended, reload, loadAll]);
   const filterKey = JSON.stringify(recommended ? [query, 'recommended', true] : [query, category]);
   const [state, setState] = useState(() => savedCurrent?.filterKey === filterKey
@@ -129,10 +130,12 @@ export function useMarketplaceCatalogue(query, { loadAll = false, recommended = 
       if (browseStateRef?.current) browseStateRef.current.marketplace = {
         authRevision: getAuthRevision(), filterKey, category, data,
       };
+      if (recommended) lastRecommendation.current = { authRevision: getAuthRevision(), skills: data.skills };
       setState({ ...data, key, loading: false });
     } catch (error) {
       if (controller.signal.aborted || keyRef.current !== key) return;
       if ([401, 403].includes(error?.status)) {
+        lastRecommendation.current = null;
         if (browseStateRef?.current) delete browseStateRef.current.marketplace;
         setState({ key, loading: false, error: '当前能力库不可访问，请重新登录或检查权限。' });
       } else if (cursor && error.status === 409) {
@@ -161,6 +164,12 @@ export function useMarketplaceCatalogue(query, { loadAll = false, recommended = 
     : null;
   if (!enabled && capabilitiesUnavailable && visibleState?.skills) visibleState = { ...visibleState, loading: false,
     error: '暂时无法确认能力库服务状态，已保留上次加载的能力。请稍后重试。' };
+  const last = lastRecommendation.current;
+  if (enabled && recommended && !visibleState?.skills && (!visibleState || visibleState.loading)
+    && last?.authRevision === getAuthRevision()) {
+    // Keep the previous curated cards while searching. Their cursor and counts belong to the previous query.
+    visibleState = { key, loading: true, skills: last.skills };
+  }
   return { enabled, checkingCapabilities, cached: allowCachedCatalogue && Boolean(visibleState?.skills), category, setCategory, state: visibleState,
     more: () => { if (enabled && visibleState?.cursor && !visibleState.loading) load(visibleState.cursor, visibleState); },
     refresh: () => {

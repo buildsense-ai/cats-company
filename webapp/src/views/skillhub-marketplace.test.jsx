@@ -209,6 +209,54 @@ it('does not show the full catalogue as recommended if an older upstream ignores
   expect(container.textContent).not.toContain('not-selected');
   expect(container.textContent).toContain('暂时无法读取推荐');
 });
+it.each(['disabled', 'probe failed', 'guest', 'old upstream', 'request failed'])(
+  'keeps the legacy catalogue available when recommendations are unavailable (%s)',
+  async (scenario) => {
+    vi.useFakeTimers();
+    const legacy = [{ skillId: 'owner/legacy', displayName: 'Legacy skill' }];
+    if (scenario === 'disabled') marketplaceApi.capabilities.mockResolvedValue({ schemaVersion: 1, enabled: false });
+    if (scenario === 'probe failed') marketplaceApi.capabilities.mockRejectedValue(new Error('Capabilities unavailable'));
+    if (scenario === 'guest') setToken(null);
+    marketplaceApi.catalogue.mockImplementation(async ({ scope }) => {
+      if (scope !== 'recommended') return { skills: legacy, total: legacy.length };
+      if (scenario === 'request failed') throw new Error('Recommendations unavailable');
+      return { skills: [{ skillId: 'owner/ordinary', displayName: 'Ordinary skill' }], total: 1 };
+    });
+    await render(<MarketplaceProvider><SkillHubContent activeSection='catalogue'
+      agentOptions={[]} definition={{ skills: [] }} librarySkills={legacy} installedByID={new Map()} /></MarketplaceProvider>);
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    expect(button('全部').getAttribute('aria-pressed')).toBe('true');
+    expect([...container.querySelectorAll('article h3')].map(node => node.textContent)).toEqual(['Legacy skill']);
+    const scopes = () => marketplaceApi.catalogue.mock.calls.map(([request]) => request.scope);
+    if (['old upstream', 'request failed'].includes(scenario)) {
+      expect(container.textContent).toContain('推荐暂不可用，已切换到「全部」');
+      await act(async () => vi.advanceTimersByTimeAsync(50));
+      expect(scopes()).toEqual(['recommended', undefined]);
+      expect(container.textContent).toContain('Legacy skill');
+    } else {
+      expect(scopes()).toEqual([]);
+    }
+  },
+);
+
+it('keeps curated cards visible while a new recommended search loads', async () => {
+  vi.useFakeTimers();
+  const next = deferred();
+  marketplaceApi.catalogue
+    .mockResolvedValueOnce({ scope: 'recommended', skills: [{ skillId: 'owner/alpha' }], total: 1 })
+    .mockReturnValueOnce(next.promise);
+  const show = (query) => render(<MarketplaceProvider><CatalogueHarness recommended query={query} /></MarketplaceProvider>);
+  await show('');
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  await show('Zulu');
+  expect(container.querySelector('pre').textContent).toContain('owner/alpha');
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect(container.querySelector('pre').textContent).toContain('owner/alpha');
+  await act(async () => next.resolve({ scope: 'recommended', skills: [{ skillId: 'owner/zulu' }], total: 1 }));
+  expect(container.querySelector('pre').textContent).toContain('owner/zulu');
+  expect(container.querySelector('pre').textContent).not.toContain('owner/alpha');
+});
+
 it('loads every page for name/oldest sorting and caches the complete result', async () => {
   vi.useFakeTimers();
   const browseStateRef = { current: {} };

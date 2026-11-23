@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import SlidingSegments from '../widgets/sliding-segments';
 import ToolbarSearch from '../widgets/toolbar-search';
 import { createPortal } from 'react-dom';
@@ -37,10 +37,19 @@ function normalizeSkillSearchValue(value) {
 }
 
 export default function SkillHubContent(props) {
-  const { navigate } = useMarketplace();
+  const { navigate, enabled: marketplaceEnabled } = useMarketplace();
   const categoryOwner = props.categoryOwnerUID || 'guest';
   const [category, setCategory] = useState(props.browseStateRef?.current?.category || '');
   const [catalogueCategory, setCatalogueCategory] = useState('recommended');
+  const [recommendationsUnavailable, setRecommendationsUnavailable] = useState(false);
+  const selectCatalogueCategory = (value) => {
+    setRecommendationsUnavailable(false);
+    setCatalogueCategory(value);
+  };
+  const fallBackToAll = useCallback(() => {
+    setRecommendationsUnavailable(true);
+    setCatalogueCategory('');
+  }, []);
   const pageRef = useRef(null);
   const restoreScrollRef = useRef(props.browseStateRef?.current?.scrollTop || 0);
   useEffect(() => {
@@ -90,7 +99,7 @@ export default function SkillHubContent(props) {
     onChangeSection: (value) => {
       const change = () => {
         if (value === 'added') setCategory('');
-        if (value === 'catalogue' && props.activeSection !== 'catalogue') setCatalogueCategory('recommended');
+        if (value === 'catalogue' && props.activeSection !== 'catalogue') selectCatalogueCategory('recommended');
         props.onChangeSection(value);
       };
       if (navigate) navigate(change); else change();
@@ -107,7 +116,8 @@ export default function SkillHubContent(props) {
     ? 'added'
     : activeSection;
   const inCatalogue = visibleSection === 'catalogue';
-  const visibleCategory = inCatalogue ? catalogueCategory : category;
+  const catalogueFilter = !marketplaceEnabled && catalogueCategory === 'recommended' ? '' : catalogueCategory;
+  const visibleCategory = inCatalogue ? catalogueFilter : category;
   return (
     <main ref={pageRef} className='cc-skillhub-page' onScroll={rememberScroll}
       onWheel={cancelScrollRestore} onTouchStart={cancelScrollRestore} onKeyDown={cancelScrollRestore}>
@@ -124,7 +134,7 @@ export default function SkillHubContent(props) {
         <SkillNavigation
           {...guardedProps}
           activeSection={visibleSection}
-          curatedOrder={inCatalogue && catalogueCategory === 'recommended'}
+          curatedOrder={inCatalogue && catalogueFilter === 'recommended'}
           addedCount={definition.skills.length}
           sortOrder={sortOrders[visibleSection]}
           onSortChange={value => changeSort(visibleSection, value)}
@@ -132,8 +142,8 @@ export default function SkillHubContent(props) {
         {visibleSection === 'custom' ? <CustomSkills {...categorizedProps} /> : (
           <>
             <div className='cc-skillhub-category-toolbar'>
-              <SkillCategoryFilters value={visibleCategory} onChange={inCatalogue ? setCatalogueCategory : setCategory}
-                showRecommended={inCatalogue} showOther={visibleCategory === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other')} />
+              <SkillCategoryFilters value={visibleCategory} onChange={inCatalogue ? selectCatalogueCategory : setCategory}
+                showRecommended={inCatalogue && marketplaceEnabled} showOther={visibleCategory === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other')} />
               <SlidingSegments value={language} className='cc-skillhub-language' role='group' aria-label='能力介绍语言'>
                 <button type='button' aria-pressed={language === 'source'} onClick={() => changeLanguage('source')}>原文</button>
                 <button type='button' aria-pressed={language === 'zh-CN'} onClick={() => changeLanguage('zh-CN')}>中文</button>
@@ -145,7 +155,8 @@ export default function SkillHubContent(props) {
                 {skillAction?.type === 'remove' ? '正在移除能力…' : skillAction?.update ? '正在更新能力…' : '正在添加能力…'}
               </div>
             )}
-            {visibleSection === 'added' ? <AddedSkills key={props.selectedBotUID} {...categorizedProps} onChangeSection={guardedProps.onChangeSection} /> : <Catalogue key={props.selectedBotUID} {...categorizedProps} selectedCategory={catalogueCategory} />}
+            {visibleSection === 'added' ? <AddedSkills key={props.selectedBotUID} {...categorizedProps} onChangeSection={guardedProps.onChangeSection} /> : <Catalogue key={props.selectedBotUID} {...categorizedProps} selectedCategory={catalogueFilter}
+              recommendationsUnavailable={recommendationsUnavailable} onRecommendationsUnavailable={fallBackToAll} />}
           </>
         )}
       </div>
@@ -836,6 +847,10 @@ function Catalogue(props) {
   const completeSort = props.sortOrders.catalogue !== 'time-desc' || hasUpdates;
   const recommended = props.selectedCategory === 'recommended';
   const market = useMarketplaceCatalogue(skillSourceQuery(props.query || ''), { loadAll: !recommended && completeSort, recommended });
+  const needsCatalogueFallback = recommended && Boolean(market.state?.error) && !market.state?.skills;
+  useEffect(() => {
+    if (needsCatalogueFallback) props.onRecommendationsUnavailable();
+  }, [needsCatalogueFallback, props.onRecommendationsUnavailable]);
   const hasMarketPage = (market.enabled || market.cached) && Boolean(market.state?.skills);
   // Render the legacy catalogue immediately while the optional marketplace
   // request is warming up. The cloud response replaces it in place once it
@@ -852,11 +867,11 @@ function Catalogue(props) {
   });
   const loading = recommended ? market.checkingCapabilities || (market.enabled && (!market.state || market.state.loading))
     : (market.enabled ? Boolean(market.state?.loading) : loadingCatalogue) || loadingLibraryLocalSkills;
-  const empty = recommended && !market.enabled ? <EmptyState icon={<Sparkles size={21} />} title='推荐暂不可用' copy='可切换到「全部」浏览能力。' />
-    : recommended && !search ? <EmptyState icon={<Sparkles size={21} />} title='暂无推荐能力' copy='可切换到「全部」浏览能力。' />
+  const empty = recommended && !search ? <EmptyState icon={<Sparkles size={21} />} title='暂无推荐能力' copy='可切换到「全部」浏览能力。' />
       : <EmptyState icon={<Search size={21} />} title='没有找到匹配的能力' copy='换一个更宽泛的关键词再试试。' />;
   return (
     <section id='skillhub-catalogue-panel' data-loading-region='' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
+      {props.recommendationsUnavailable && <div className='cc-skillhub-alert' role='status'>推荐暂不可用，已切换到「全部」。</div>}
       {market.state?.error && <div className='cc-skillhub-alert error' role='status'>{market.state.error}<button type='button' className='icon-button' disabled={market.state.loading} onClick={market.refresh} aria-label='重新加载能力分类' title='重试'><RefreshCw size={15} /></button></div>}
       {!recommended && !hasMarketPage && catalogueError && <div className='cc-skillhub-alert error' role='alert'>{catalogueError}
         {legacySkills.length > 0 && <span> · 已保留上次加载的能力。</span>}
