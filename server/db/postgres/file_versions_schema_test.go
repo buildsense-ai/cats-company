@@ -29,16 +29,16 @@ func TestFileVersionBindingsSchemaColumnsUniqueAndIndex(t *testing.T) {
 }
 
 func TestFileVersionBindingsSchemaMigrationUpDown(t *testing.T) {
-	up, err := os.ReadFile("../migrations/postgres/000079_file_version_bindings.up.sql")
+	up, err := os.ReadFile("../migrations/postgres/000081_file_version_bindings.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	down, err := os.ReadFile("../migrations/postgres/000079_file_version_bindings.down.sql")
+	down, err := os.ReadFile("../migrations/postgres/000081_file_version_bindings.down.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.TrimSpace(string(up)) != strings.TrimSpace(createFileVersionBindingsTable) {
-		t.Fatal("startup schema and 000067 up migration differ")
+		t.Fatal("startup schema and 000081 up migration differ")
 	}
 	if !strings.Contains(strings.ToLower(string(down)), "drop table if exists file_version_bindings") {
 		t.Fatal("down migration does not remove exactly the new table")
