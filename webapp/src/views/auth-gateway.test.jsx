@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   login: vi.fn(),
   register: vi.fn(),
+  request: vi.fn(),
+  notify: vi.fn(),
   getToken: vi.fn(() => ''),
   isTokenExpired: vi.fn(() => false),
   setToken: vi.fn(),
@@ -19,6 +21,7 @@ vi.mock('../auth-session', () => ({
   },
   getToken: mocks.getToken,
   isTokenExpired: mocks.isTokenExpired,
+  request: mocks.request,
   setToken: mocks.setToken,
 }));
 
@@ -39,6 +42,7 @@ vi.mock('../components/auth-flow-background', () => ({
 
 vi.mock('../components/feedback-system', () => ({
   InlineFeedback: ({ children }) => <div role="alert">{children}</div>,
+  useFeedback: () => ({ notify: mocks.notify }),
 }));
 
 vi.mock('../widgets/password-reset-form', () => ({
@@ -59,6 +63,8 @@ describe('AuthGateway login', () => {
   beforeEach(() => {
     mocks.login.mockReset();
     mocks.register.mockReset();
+    mocks.request.mockReset().mockResolvedValue({ ok: true });
+    mocks.notify.mockReset();
     mocks.getToken.mockReturnValue('');
     mocks.isTokenExpired.mockReturnValue(false);
     mocks.setToken.mockReset();
@@ -102,8 +108,13 @@ describe('AuthGateway login', () => {
     expect(container.querySelector('[role="alert"]')).toBeFalsy();
   });
 
-  test('keeps the registration timestamp and enters name onboarding after signup', async () => {
+  test.each([
+    ['', null],
+    ['  Plan-123  ', 'success'],
+    ['expired-code', 'error'],
+  ])('enters name onboarding after signup with package code %j (%s)', async (invite, result) => {
     mocks.register.mockResolvedValue({});
+    if (result === 'error') mocks.request.mockRejectedValueOnce(new Error('invite code could not be redeemed'));
     mocks.login.mockResolvedValue({
       token: 'session-token',
       uid: 42,
@@ -129,6 +140,7 @@ describe('AuthGateway login', () => {
       setInputValue('邮箱地址', 'new@example.com');
       setInputValue('邮箱验证码', '123456');
       setInputValue('设置密码（至少6位）', 'secret123');
+      setInputValue('套餐邀请码（可选）', invite);
     });
     await act(async () => {
       container.querySelector('form').dispatchEvent(new Event('submit', {
@@ -143,8 +155,26 @@ describe('AuthGateway login', () => {
       email: 'new@example.com',
       password: 'secret123',
       code: '123456',
-      bot_invite_code: '',
     });
+    if (invite) {
+      expect(mocks.request).toHaveBeenCalledExactlyOnceWith(
+        'POST',
+        '/api/relay/invite/redeem',
+        { code: invite.trim() },
+        expect.objectContaining({ authToken: 'session-token' }),
+      );
+      expect(mocks.request.mock.invocationCallOrder[0]).toBeGreaterThan(mocks.login.mock.invocationCallOrder[0]);
+      expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ tone: result }));
+    } else {
+      expect(mocks.request).not.toHaveBeenCalled();
+    }
+    if (result === 'error') {
+      expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
+        title: '账号已注册，套餐兑换失败',
+        message: expect.stringContaining('可在「套餐与权益」中重试'),
+      }));
+    }
+    expect(mocks.setToken).toHaveBeenCalledWith('session-token');
     expect(mocks.navigateBrowserPath).toHaveBeenCalledWith('/onboarding/name', { replace: true });
     expect(JSON.parse(localStorage.getItem('oc_user'))).toMatchObject({
       uid: 42,

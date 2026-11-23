@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { authApi, getToken, isTokenExpired, setToken } from '../auth-session';
-import { InlineFeedback } from '../components/feedback-system';
+import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import AuthFlowBackground from '../components/auth-flow-background';
 import t from '../i18n';
 import { isValidEmailFormat } from '../utils/email-format';
 import { formatSharedAuthError } from '../utils/auth-error';
+import { describePlanInviteError, redeemRelayInvite } from '../utils/plan-invite';
 import { normalizeUserProfile, writeStoredUserProfile } from '../utils/user-profile';
 import {
   authModeForPathname,
@@ -92,7 +93,7 @@ export function AuthView({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [botInviteCode, setBotInviteCode] = useState('');
+  const [planInviteCode, setPlanInviteCode] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [codeSent, setCodeSent] = useState(false);
@@ -148,7 +149,7 @@ export function AuthView({
       if (mode === 'login') {
         await onLogin(username, password);
       } else {
-        await onRegister(email, password, code, botInviteCode);
+        await onRegister(email, password, code, planInviteCode);
       }
       onAuthenticationIntent?.();
     } catch (err) {
@@ -266,11 +267,14 @@ export function AuthView({
           />
           <input
             className="oc-auth-input"
-            placeholder="机器人邀请码（可选）"
-            aria-label="机器人邀请码（可选）"
+            name="planInviteCode"
+            placeholder="套餐邀请码（可选）"
+            aria-label="套餐邀请码（可选）"
             autoComplete="off"
-            value={botInviteCode}
-            onChange={(event) => setBotInviteCode(event.target.value.toUpperCase())}
+            autoCapitalize="off"
+            spellCheck={false}
+            value={planInviteCode}
+            onChange={(event) => setPlanInviteCode(event.target.value)}
           />
         </>
       )}
@@ -312,6 +316,7 @@ export default function AuthGateway({
 } = {}) {
   const { pathname = '/', search = '', hash = '' } = location;
   const mode = authModeForPathname(pathname);
+  const feedback = useFeedback();
 
   useEffect(() => {
     const redirectPath = authenticationRedirectPath({
@@ -325,12 +330,16 @@ export default function AuthGateway({
     navigateBrowserPath(authPathForMode(nextMode, postAuthenticationPathFromSearch(search)));
   };
 
-  const establishSession = async (account, password) => {
+  const authenticate = async (account, password) => {
     const response = await authApi.login({ account, password });
     const profile = normalizeUserProfile(response);
     if (!response?.token || !profile) {
       throw new Error('登录响应缺少有效的用户资料');
     }
+    return { token: response.token, profile };
+  };
+
+  const establishSession = ({ token, profile }) => {
     // The profile cache is only an optimization. A valid server response must
     // still establish the in-memory session when browser storage is unavailable.
     try {
@@ -338,22 +347,38 @@ export default function AuthGateway({
     } catch {
       // Keep the authenticated session in memory when browser storage is unavailable.
     }
-    setToken(response.token);
-    return profile;
+    setToken(token);
   };
 
   const handleLogin = async (account, password) => {
-    await establishSession(account, password);
+    establishSession(await authenticate(account, password));
     navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
   };
 
-  const handleRegister = async (email, password, code, botInviteCode = '') => {
-    await authApi.register({ email, password, code, bot_invite_code: botInviteCode.trim() });
-    await establishSession(email, password);
+  const handleRegister = async (email, password, code, planInviteCode = '') => {
+    await authApi.register({ email, password, code });
+    const session = await authenticate(email, password);
+    const invite = planInviteCode.trim();
+    let inviteFeedback;
+    if (invite) {
+      try {
+        await redeemRelayInvite(invite, { authToken: session.token });
+        inviteFeedback = { tone: 'success', message: '套餐邀请码已兑换' };
+      } catch (error) {
+        inviteFeedback = {
+          tone: 'error',
+          title: '账号已注册，套餐兑换失败',
+          message: `${describePlanInviteError(error)} 可在「套餐与权益」中重试。`,
+          duration: 8000,
+        };
+      }
+    }
+    establishSession(session);
     navigateBrowserPath(
       nameOnboardingPathForNext(postAuthenticationPathFromSearch(search)),
       { replace: true },
     );
+    if (inviteFeedback) feedback.notify(inviteFeedback);
   };
 
   return (

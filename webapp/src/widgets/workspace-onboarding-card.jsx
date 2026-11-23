@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronRight, Layers3, Ticket, X } from 'lucide-react';
 import { api } from '../api';
+import { describePlanInviteError } from '../utils/plan-invite';
 import { writeStorageValue } from '../utils/storage-access';
 import {
   WORKSPACE_ONBOARDING_DISMISSED_VALUE,
@@ -71,9 +72,7 @@ function PlanInviteDialog({ onPersist, onComplete, onClose }) {
       window.dispatchEvent(new Event('cc:data-changed'));
       setCompleted(true);
     } catch (requestError) {
-      setError(requestError?.message === 'invite code could not be redeemed'
-        ? '无法兑换这个套餐邀请码，请核对后重试。'
-        : requestError?.message || '兑换失败，请稍后重试。');
+      setError(describePlanInviteError(requestError));
     } finally {
       setSubmitting(false);
     }

@@ -13,6 +13,7 @@ import {
   setToken as setSessionToken,
 } from './auth-session';
 import { fetchWithRequestError } from './utils/request-error';
+import { redeemRelayInvite } from './utils/plan-invite';
 import { normalizeArtifactOpenBinding } from './gateway-annotations';
 
 // Each browser tab owns its opens. Capture the original auth token solely for
@@ -709,7 +710,7 @@ export const api = {
   getRelayConfig: (options = {}) => request('GET', '/api/relay/config', undefined, options),
   getRelayCommercial: (options = {}) => request('GET', '/api/relay/commercial', undefined, options),
   getModelCreditAccount: (options = {}) => request('GET', '/api/relay/credits', undefined, options),
-  redeemRelayInvite: (code) => request('POST', '/api/relay/invite/redeem', { code }, { timeoutMs: DIRECT_REQUEST_TIMEOUT_MS }),
+  redeemRelayInvite,
   getCommercialCatalog: (options = {}) => request('GET', '/api/relay/commercial/catalog', undefined, options),
   getCommercialOrders: (orderNo = '', options = {}) => request('GET', `/api/relay/commercial/orders${orderNo ? `?order_no=${encodeURIComponent(orderNo)}` : ''}`, undefined, options),
   createCommercialOrder: (planId, channel, clientRequestId, options = {}) => request('POST', '/api/relay/commercial/orders', {

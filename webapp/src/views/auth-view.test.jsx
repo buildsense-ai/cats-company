@@ -236,11 +236,11 @@ describe('AuthView route links', () => {
     expect(container.querySelector('input[name="email"]')).toBeTruthy();
     expect(container.querySelector('input[name="verificationCode"]')).toBeTruthy();
     expect(container.querySelector('input[name="newPassword"]')).toBeTruthy();
-    expect(container.querySelector('input[aria-label="机器人邀请码（可选）"]')).toBeTruthy();
+    expect(container.querySelector('input[aria-label="套餐邀请码（可选）"]')).toBeTruthy();
     expect(container.textContent).not.toContain('登录名称');
   });
 
-  test('submits an optional bot invite code only during registration', async () => {
+  test('submits an optional package invite code only during registration', async () => {
     const onRegister = vi.fn().mockResolvedValue(undefined);
     await act(async () => {
       root.render(
@@ -261,7 +261,7 @@ describe('AuthView route links', () => {
     await setInput('input[name="email"]', 'invite-user@example.com');
     await setInput('input[name="verificationCode"]', '123456');
     await setInput('input[name="newPassword"]', 'secret123');
-    await setInput('input[aria-label="机器人邀请码（可选）"]', 'abc123def456');
+    await setInput('input[aria-label="套餐邀请码（可选）"]', 'abc123def456');
 
     await act(async () => {
       container.querySelector('form')?.dispatchEvent(new Event('submit', {
@@ -275,7 +275,7 @@ describe('AuthView route links', () => {
       'invite-user@example.com',
       'secret123',
       '123456',
-      'ABC123DEF456',
+      'abc123def456',
     );
 
     await act(async () => {
@@ -287,6 +287,6 @@ describe('AuthView route links', () => {
         />,
       );
     });
-    expect(container.querySelector('input[aria-label="机器人邀请码（可选）"]')).toBeNull();
+    expect(container.querySelector('input[aria-label="套餐邀请码（可选）"]')).toBeNull();
   });
 });
