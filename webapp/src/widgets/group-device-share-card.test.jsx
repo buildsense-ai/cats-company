@@ -62,9 +62,34 @@ it('rejects a reference copied from a different group before loading private sta
   expect(container.querySelector('button')).toBeNull();
 });
 
+it('distinguishes a saved approval from a pending chat notice', async () => {
+  api.getGroupDeviceShareRequest.mockResolvedValue(pending);
+  api.resolveGroupDeviceShareRequest.mockResolvedValue({ status: 'approved', notice: { pending: true } });
+  await render();
+  await act(async () => Simulate.change(container.querySelector('select'), { target: { value: 'pcb' } }));
+  api.getGroupDeviceShareRequest.mockResolvedValue({ request: { ...pending.request, status: 'approved', revision: 5 }, can_resolve: true });
+  await act(async () => Simulate.click([...container.querySelectorAll('button')].find(button => button.textContent === '授权所选设备')));
+  expect(container.textContent).toContain('授权已保存，对话提示暂未确认');
+  expect(container.querySelector('select')).toBeNull();
+});
+
 it('keeps a copied card in the same group read-only', async () => {
   api.getGroupDeviceShareRequest.mockResolvedValue(pending);
   await act(async () => root.render(<GroupDeviceShareCard reference={reference} sourceTopicId="grp_2" sourceMessageId={101} />));
   expect(container.querySelector('select')).toBeNull();
+  expect(container.querySelector('button')).toBeNull();
+});
+
+it('identifies a Bot-generated request and its originating human message', async () => {
+  api.getGroupDeviceShareRequest.mockResolvedValue(pending);
+  await act(async () => root.render(<GroupDeviceShareCard reference={{...reference, requested_by_bot: 'usr3', requested_by_name: 'botB', requester_name: 'userA', origin_message_id: 42}} sourceTopicId="grp_2" sourceMessageId={100} />));
+  expect(container.textContent).toContain('botB 代 userA 申请 · 原消息 #42');
+});
+
+it('does not render arbitrary objects from untrusted attribution fields', async () => {
+  api.getGroupDeviceShareRequest.mockResolvedValue(pending);
+  await act(async () => root.render(<GroupDeviceShareCard reference={{...reference, requested_by_bot: 'usr3', requested_by_name: {}, requester_name: {}, origin_message_id: {}}} sourceTopicId="grp_2" sourceMessageId={101} />));
+  expect(container.textContent).toContain('Bot 代 群成员 申请');
+  expect(container.textContent).not.toContain('原消息 #');
   expect(container.querySelector('button')).toBeNull();
 });

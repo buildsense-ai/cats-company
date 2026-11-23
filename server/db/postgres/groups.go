@@ -284,6 +284,11 @@ func (a *Adapter) DeleteGroup(groupID int64) error {
 	defer tx.Rollback()
 
 	topicID := fmt.Sprintf("grp_%d", groupID)
+	// Approvals lock membership before permissions. Keep the same order here:
+	// revoking a permission first would deadlock with its in-flight approval.
+	if _, err = tx.Exec(`SELECT user_id FROM group_members WHERE group_id=$1 ORDER BY user_id FOR UPDATE`, groupID); err != nil {
+		return fmt.Errorf("lock group members for deletion: %w", err)
+	}
 	if _, err = tx.Exec(`UPDATE group_device_shares SET status='revoked',revision=revision+1 WHERE topic_id=$1 AND status='active'`, topicID); err != nil {
 		return err
 	}

@@ -1128,13 +1128,22 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 			} else {
 				deviceContext = h.userDevices.turnContextForOwnerDevicesWithExplicitTargets(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, routableDevices(knownDevices), unavailableDevices, explicitTargetsEnabled)
 			}
-			if len(deviceContext.Grants) > 0 {
-				identity["device_grants"] = deviceContext.Grants
+			// Live messages carry a complete authorization snapshot. [] clears
+			// stale client grants; absent fields remain reserved for no update
+			// (for example non-executable history replay).
+			grants := deviceContext.Grants
+			if grants == nil {
+				grants = []ScopedDeviceGrant{}
 			}
-			if len(deviceContext.ExplicitGrants) > 0 {
+			identity["device_grants"] = grants
+			if explicitTargetsEnabled {
+				explicitGrants := deviceContext.ExplicitGrants
+				if explicitGrants == nil {
+					explicitGrants = []ScopedDeviceGrant{}
+				}
 				identity["device_target_authorizations"] = map[string]interface{}{
 					"schema": "catsco.device-targets.v1",
-					"grants": deviceContext.ExplicitGrants,
+					"grants": explicitGrants,
 				}
 			}
 			if deviceContext.Selection != nil {

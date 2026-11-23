@@ -124,8 +124,8 @@ func TestGroupDeviceSharingRevocationAndProtocolFence(t *testing.T) {
 		t.Fatal("new peer bypassed grants in compatibility mode")
 	}
 	peer.setRuntimeCapabilities(nil)
-	if err := hub.authorizeOrdinaryThinToolRPC(bot, request, 8, device.DeviceID, "read_file"); err == nil {
-		t.Fatal("old receiver received delegated request")
+	if err := hub.authorizeOrdinaryThinToolRPC(bot, request, 8, device.DeviceID, "read_file"); err != nil {
+		t.Fatal("owner-protocol receiver was rejected", err)
 	}
 	peer.setRuntimeCapabilities([]string{groupDeviceShareCapability})
 	db.share.Status = "revoked"

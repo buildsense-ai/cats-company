@@ -326,7 +326,7 @@ func (a *Adapter) InvalidateDeviceShares(ctx context.Context, owner int64, devic
 
 func lockDeviceShareMembers(ctx context.Context, q shareQuery, topic string, owner, actor int64) error {
 	var members int
-	err := q.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT user_id FROM group_members WHERE group_id=split_part($1,'_',2)::bigint AND user_id IN ($2,$3) FOR KEY SHARE) members`, topic, owner, actor).Scan(&members)
+	err := q.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT user_id FROM group_members WHERE group_id=split_part($1,'_',2)::bigint AND user_id IN ($2,$3) ORDER BY user_id FOR KEY SHARE) members`, topic, owner, actor).Scan(&members)
 	if err != nil {
 		return err
 	}

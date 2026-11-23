@@ -57,6 +57,8 @@ type thinToolRPCPending struct {
 	createdAt      time.Time
 	expiresAt      time.Time
 	publication    *publicationWorkspaceProbe
+	// Original, server-validated caller scope. Never contains tool payloads.
+	sharingScope *MsgThinToolRPC
 }
 
 type thinToolRPCRouter struct {
@@ -279,6 +281,11 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 		createdAt:      now,
 		expiresAt:      expiresAt,
 	}
+	if !isSkillHubThinToolOperation(DeviceGrantOperation(toolName)) && forward.IdentitySource == groupDeviceShareSource {
+		scope := forward
+		scope.Payload, scope.Result, scope.Error = nil, nil, nil
+		pending.sharingScope = &scope
+	}
 	if !h.thinToolRPC.add(pending) {
 		log.Printf("[thin_tool_rpc] request duplicate: request_id=%s target_owner=%s target_device=%s tool=%s", requestID, formatUID(ownerUID), deviceID, toolName)
 		h.sendThinToolRPCResultToRequester(client, requestID, msg, "request_id_duplicate", "thin_tool_rpc request_id is already pending")
@@ -324,6 +331,14 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 		}
 	}
 
+	if pending.sharingScope != nil {
+		// Execute through the owner's existing Connector protocol. The original
+		// actor stays in pending state and is restored on the response.
+		forward.ActorUserID = formatUID(ownerUID)
+		forward.SessionKey = buildCatsCoSessionKey(forward.TopicID, forward.TopicType, forward.AgentID, ownerUID)
+		forward.IdentitySource = "device_rpc_forward"
+		forward.ShareID, forward.ShareRevision = "", 0
+	}
 	if !h.sendThinToolRPCToRoute(route, &forward) {
 		log.Printf("[thin_tool_rpc] forward failed: request_id=%s target_owner=%s target_device=%s route=%s", requestID, formatUID(ownerUID), deviceID, describeRuntimeRoute(route))
 		if _, ok := h.thinToolRPC.finishMatching(pending); ok {
@@ -333,6 +348,7 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 		return
 	}
 	log.Printf("[thin_tool_rpc] forward accepted: request_id=%s target_owner=%s target_device=%s tool=%s route=%s expires_at=%d", requestID, formatUID(ownerUID), deviceID, toolName, describeRuntimeRoute(route), forward.ExpiresAt)
+	h.auditSharedThinToolRPC(pending, "rpc_forwarded", "ok")
 	h.sendThinToolRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{"request_id": requestID, "target_device_id": deviceID})
 }
 
@@ -410,6 +426,10 @@ func (h *Hub) handleThinToolRPCResult(client *Client, msg *MsgThinToolRPC) {
 		return
 	}
 	forward := *msg
+	if pending.sharingScope != nil {
+		forward = *pending.sharingScope
+		forward.Result, forward.Error = msg.Result, msg.Error
+	}
 	forward.ID = ""
 	forward.Type = thinToolRPCTypeResult
 	forward.RequestID = requestID
@@ -417,6 +437,11 @@ func (h *Hub) handleThinToolRPCResult(client *Client, msg *MsgThinToolRPC) {
 	forward.TargetDeviceID = pending.targetDeviceID
 	forward.DeviceID = pending.targetDeviceID
 	forward.ToolName = pending.toolName
+	result := "ok"
+	if msg.Error != nil {
+		result = "error"
+	}
+	h.auditSharedThinToolRPC(pending, "rpc_result", result)
 	if !h.sendThinToolRPCToRoute(pending.requesterRoute, &forward) {
 		log.Printf("[thin_tool_rpc] result forward failed: request_id=%s requester_route=%s requester_registered=%t", requestID, describeRuntimeRoute(pending.requesterRoute), h.isClientRegistered(pending.requester))
 		if h.isClientRegistered(pending.requester) {
@@ -522,14 +547,15 @@ func (h *Hub) authorizeSkillHubDesktopBotBinding(botUID int64, device UserDevice
 	}
 }
 
-// Ordinary Bot tools require a server-issued capability for this user turn.
-// Bot ownership is deliberately not used: a shared cloud Bot may legitimately
-// serve many users, but may not choose an arbitrary user's device without a grant.
+// Scoped requests use a server-issued capability for the speaking user, who
+// need not own the Bot. Legacy requests without actor proof are restricted to
+// the Bot owner's devices and cannot access other users through this fallback.
 func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, ownerUID int64, deviceID, toolName string) error {
 	if h == nil || h.userDevices == nil || client == nil || client.accountType != types.AccountBot || client.wikiAgentUID > 0 {
 		return fmt.Errorf("ordinary device tools require an authenticated bot connection")
 	}
-	hasGrantFields := strings.TrimSpace(msg.GrantID) != "" || strings.TrimSpace(msg.SessionKey) != "" || strings.TrimSpace(msg.ActorUserID) != "" || msg.TargetScope != ""
+	hasGrantFields := strings.TrimSpace(msg.GrantID) != "" || strings.TrimSpace(msg.SessionKey) != "" || strings.TrimSpace(msg.ActorUserID) != "" || msg.TargetScope != "" ||
+		msg.IdentitySource != "" || msg.ShareID != "" || msg.ShareRevision != 0 || msg.TopicID != "" || msg.TopicType != "" || msg.AgentID != ""
 	if !hasGrantFields && (deviceGrantEnforcementRequired() || client.hasRuntimeCapability(groupDeviceShareCapability)) {
 		return &thinToolRPCAuthorizationError{code: "device_authorization_required", message: "device tool authorization is required; upgrade the cloud Bot and start a new user turn"}
 	}
@@ -544,10 +570,15 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		return fmt.Errorf("tool is not supported by ordinary device rpc")
 	}
 	if !hasGrantFields {
-		// Compatibility mode still validates owner, runtime role, liveness and
-		// capabilities. It only omits the new per-turn grant until the Bot has
-		// been upgraded and strict enforcement is enabled.
-
+		// Legacy clients have no per-turn actor proof. Restrict them to their
+		// durable Bot owner's devices; serving any other user requires a grant.
+		if h.db == nil {
+			return fmt.Errorf("bot ownership is unavailable")
+		}
+		botOwner, err := h.db.GetBotOwner(client.uid)
+		if err != nil || botOwner <= 0 || botOwner != ownerUID {
+			return &thinToolRPCAuthorizationError{code: "device_authorization_required", message: "a device grant is required to access another user's device"}
+		}
 		if err := h.authorizeOrdinaryThinToolRPCTarget(ownerUID, deviceID); err != nil {
 			return err
 		}
@@ -593,8 +624,8 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	}
 	if grant.IdentitySource == groupDeviceShareSource {
 		_, target := h.findDeviceRPCTarget(ownerUID, UserDevice{DeviceID: deviceID})
-		if target == nil || !target.hasRuntimeCapability(groupDeviceShareCapability) || !client.hasRuntimeCapability(groupDeviceShareCapability) {
-			return &thinToolRPCAuthorizationError{code: "group_device_share_upgrade_required", message: "设备共享需要升级 Bot 和设备 Connector"}
+		if target == nil || !client.hasRuntimeCapability(groupDeviceShareCapability) {
+			return &thinToolRPCAuthorizationError{code: "group_device_share_upgrade_required", message: "设备共享需要支持共享目标的 Bot 和在线设备"}
 		}
 		if !h.groupDeviceGrantCurrent(grant) {
 			return fmt.Errorf("group sharing permission is no longer active")
@@ -925,5 +956,17 @@ func (h *Hub) sendThinToolRPCAck(client *Client, id string, code int, text strin
 			Text:   text,
 			Params: params,
 		},
+	})
+}
+
+// Device-side execution uses its owner; server-side audit keeps the real actor.
+func (h *Hub) auditSharedThinToolRPC(pending thinToolRPCPending, phase, result string) {
+	scope := pending.sharingScope
+	if scope == nil {
+		return
+	}
+	h.addDeviceAudit(pending.targetOwnerUID, DeviceAuditEvent{
+		ActorUserID: scope.ActorUserID, AgentID: scope.AgentID, DeviceID: pending.targetDeviceID,
+		SessionKey: scope.SessionKey, Operation: pending.toolName, ToolName: pending.toolName, Phase: phase, Result: result,
 	})
 }

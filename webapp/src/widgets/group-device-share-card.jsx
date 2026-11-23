@@ -9,6 +9,7 @@ export default function GroupDeviceShareCard({ reference, sourceTopicId, sourceM
   const [deviceId, setDeviceId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [noticePending, setNoticePending] = useState(false);
   const [authVersion, setAuthVersion] = useState(0);
   const sequence = useRef(0);
 
@@ -30,7 +31,7 @@ export default function GroupDeviceShareCard({ reference, sourceTopicId, sourceM
     };
     if (reference.topic_id === sourceTopicId && sourceMessageId > 0) void refresh();
     const timer = setInterval(() => { if (reference.topic_id === sourceTopicId && sourceMessageId > 0) void refresh(); }, 3000);
-    const reset = () => { ++sequence.current; setSnapshot(null); setDeviceId(''); setBusy(false); setAuthVersion(version => version + 1); };
+    const reset = () => { ++sequence.current; setSnapshot(null); setDeviceId(''); setBusy(false); setNoticePending(false); setAuthVersion(version => version + 1); };
     window.addEventListener('cc:auth-changed', reset);
     return () => { stopped = true; clearInterval(timer); window.removeEventListener('cc:auth-changed', reset); };
   }, [reference.topic_id, reference.request_id, authVersion, sourceTopicId, sourceMessageId]);
@@ -42,11 +43,12 @@ export default function GroupDeviceShareCard({ reference, sourceTopicId, sourceM
     ++sequence.current;
     setBusy(true);
     try {
-      await api.resolveGroupDeviceShareRequest({
+      const result = await api.resolveGroupDeviceShareRequest({
         action, topic_id: reference.topic_id, request_id: reference.request_id,
         expected_revision: snapshot.request.revision, ...(action === 'approve' ? { device_id: deviceId } : {}),
       });
       if (!isCurrentAuthSession(token, revision)) return;
+      setNoticePending(result?.notice?.pending === true);
       const next = await api.getGroupDeviceShareRequest(reference.topic_id, reference.request_id);
       if (!isCurrentAuthSession(token, revision)) return;
       setSnapshot(next);
@@ -64,7 +66,12 @@ export default function GroupDeviceShareCard({ reference, sourceTopicId, sourceM
   }
   return <section className="cc-share-card" aria-label="设备使用授权申请">
     <strong>设备使用授权申请</strong>
+    {typeof reference.requested_by_bot === 'string' && <p>
+      {typeof reference.requested_by_name === 'string' ? reference.requested_by_name : 'Bot'} 代 {typeof reference.requester_name === 'string' ? reference.requester_name : '群成员'} 申请
+      {Number.isSafeInteger(reference.origin_message_id) && reference.origin_message_id > 0 ? ` · 原消息 #${reference.origin_message_id}` : ''}
+    </p>}
     {error && <p role="alert">{error}</p>}
+    {noticePending && <p role="status">授权已保存，对话提示暂未确认，请刷新对话核对。</p>}
     {snapshot && <>
       <p>{snapshot.request.description}</p>
       <p role="status">{snapshot.share_status === 'revoked' ? '授权已撤销' : labels[snapshot.request.status] || '申请状态未知'}</p>

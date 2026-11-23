@@ -49,7 +49,7 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Simulate the pre-080 schema with a retained owner-less selection.
+	// Simulate the pre-sharing schema with a retained owner-less selection.
 	var legacyActor int64
 	if err = db.db.QueryRow("INSERT INTO users(username,pass_hash) VALUES('legacy-user',$1) RETURNING id", []byte("fixture")).Scan(&legacyActor); err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 	if _, err = db.db.Exec("INSERT INTO conversation_device_selections VALUES($1,'before-upgrade','old-device','old-revision','legacy',1)", legacyActor); err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile("../migrations/postgres/000080_group_device_sharing.up.sql")
+	migration, err := os.ReadFile("../migrations/postgres/000081_group_device_sharing.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,5 +253,99 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 	if err != nil || oldRequest.Status != "invalidated" {
 		t.Fatal("old approval card remained actionable", oldRequest, err)
 	}
+
+	t.Run("approval completes before concurrent group deletion", func(t *testing.T) {
+		if _, err := db.db.Exec(createMessagesTable); err != nil {
+			t.Fatal(err)
+		}
+		var deletingGroup int64
+		if err := db.db.QueryRow(`INSERT INTO groups(name,owner_id) VALUES('delete race',$1) RETURNING id`, actors[0]).Scan(&deletingGroup); err != nil {
+			t.Fatal(err)
+		}
+		for _, uid := range actors[:2] {
+			if err := db.AddGroupMember(deletingGroup, uid, "member"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := db.RegisterDeviceShareBinding(ctx, actors[1], "delete-race-device", "delete-race-install", time.Now().UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		permission := store.GroupDeviceShare{DeviceEpoch: 1, ID: "delete-race-share", OwnerUID: actors[1], GranteeUID: actors[0], TopicID: fmt.Sprintf("grp_%d", deletingGroup), DeviceID: "delete-race-device", Operations: []string{"read_file"}, Status: "active", UpdatedAt: time.Now().UnixMilli()}
+		if _, err := db.SaveGroupDeviceShare(ctx, permission, 0); err != nil {
+			t.Fatal(err)
+		}
+		approval, err := db.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer approval.Rollback()
+		if err := lockDeviceShareMembers(ctx, approval, permission.TopicID, permission.OwnerUID, permission.GranteeUID); err != nil {
+			t.Fatal(err)
+		}
+		deleteURL, err := url.Parse(endpoint.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		application := fmt.Sprintf("sharing-delete-%d", time.Now().UnixNano())
+		options := deleteURL.Query()
+		options.Set("application_name", application)
+		deleteURL.RawQuery = options.Encode()
+		deleting := &Adapter{}
+		if err := deleting.Open(deleteURL.String()); err != nil {
+			t.Fatal(err)
+		}
+		defer deleting.Close()
+		done := make(chan error, 1)
+		go func() { done <- deleting.DeleteGroup(deletingGroup) }()
+		finished := false
+		defer func() {
+			_ = approval.Rollback()
+			if !finished {
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Error("group deletion did not finish after rollback")
+				}
+			}
+		}()
+		// Inspect the database lock wait rather than depending on goroutine timing.
+		blocked := false
+		deadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(deadline) {
+			var waiting int
+			if err := db.db.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'`, application).Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+			if waiting > 0 {
+				blocked = true
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !blocked {
+			t.Fatal("group deletion did not wait for in-flight membership locks")
+		}
+		writeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+		if _, err := saveDeviceShare(writeCtx, approval, permission, 1); err != nil {
+			t.Fatalf("group deletion locked a permission before its members, blocking approval: %v", err)
+		}
+		if err := approval.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-done:
+			finished = true
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("group deletion stalled after approval committed")
+		}
+		after, err := db.GetGroupDeviceShare(ctx, permission.ID)
+		if err != nil || after == nil || after.Status != "revoked" {
+			t.Fatal("group deletion retained live permission", after, err)
+		}
+	})
 
 }

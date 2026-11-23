@@ -65,6 +65,18 @@ func HandleCatsCoDesktopReleases(w http.ResponseWriter, r *http.Request) {
 
 	baseURL := catsCoDesktopReleaseBaseURL()
 	response := cachedCatsCoDesktopReleases(r.Context(), baseURL)
+	// Local package mirrors may only publish a subset of desktop platforms.
+	// Keep the default response unchanged when no allowlist is configured.
+	if allowed := strings.TrimSpace(os.Getenv("CATSCO_DESKTOP_RELEASE_PLATFORMS")); allowed != "" {
+		downloads := make(map[string]string)
+		for _, key := range strings.Split(allowed, ",") {
+			key = strings.TrimSpace(key)
+			if link, ok := response.Downloads[key]; ok {
+				downloads[key] = link
+			}
+		}
+		response.Downloads = downloads
+	}
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	writeJSON(w, http.StatusOK, response)
 }

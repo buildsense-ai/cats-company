@@ -12,6 +12,12 @@ import (
 
 var errDeviceSelectionConflict = errors.New("device selection changed; refresh and confirm again")
 
+const deviceSelectionUnspecifiedSource = "user_unspecified"
+
+func (p deviceSelectionPreference) unspecified() bool {
+	return p.DeviceID == "" && p.Source == deviceSelectionUnspecifiedSource
+}
+
 func (p deviceSelectionPreference) active(now int64) bool {
 	return p.DeviceID != "" && (p.Durable || p.ExpiresAt > now)
 }

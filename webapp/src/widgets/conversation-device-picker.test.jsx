@@ -28,6 +28,7 @@ describe('ConversationDevicePicker', () => {
   beforeEach(() => {
     vi.clearAllMocks(); auth.token = 'fake-user-session'; auth.revision = 1;
     api.getConversationDevice.mockResolvedValue(directory);
+    api.setGroupDeviceShare.mockResolvedValue({ notice: { message_id: 100 } });
     api.getDevices.mockResolvedValue({ devices: directory.devices.map(device => ({ ...device, ownerUserId: 'usr7' })) });
     api.getGroupDeviceShares.mockResolvedValue({
       actor_uid: 7, shares: [], devices: [],
@@ -50,12 +51,12 @@ describe('ConversationDevicePicker', () => {
 
   it('shows same names with IDs and offline devices, only commits after confirmation', async () => {
     await render(); await open();
-    expect(document.querySelectorAll('input[type=radio]')).toHaveLength(3);
+    expect(document.querySelectorAll('input[type=radio]')).toHaveLength(4);
     expect(document.querySelector('input[value=offline]').disabled).toBe(true);
     expect(document.querySelector('[role=dialog]').textContent).toContain('Cloud Bot');
     await act(async () => Simulate.change(document.querySelector('input[value=b]')));
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
-    await click(button('使用这台电脑'));
+    await click(button('确认'));
     expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('p2p_7_42', 42, 'b', 'r1');
     expect(document.querySelector('[role=dialog]')).toBeNull();
     expect(container.querySelector('.cc-device-trigger').title).toContain('同名电脑');
@@ -89,10 +90,10 @@ describe('ConversationDevicePicker', () => {
     expect(container.querySelector('.cc-device-trigger')).toBeNull();
     expect(container.querySelector('h2')).toBeNull();
     expect(container.querySelector('.cc-device-option small')).toBeNull();
-    expect(button('使用这台电脑')).toBeUndefined();
+    expect(button('确认').disabled).toBe(true);
     await act(async () => Simulate.change(document.querySelector('input[value=b]')));
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
-    await click(button('使用这台电脑'));
+    await click(button('确认'));
     expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('p2p_7_42', 42, 'b', 'r1');
     expect(container.querySelector('.cc-device-selection')).not.toBeNull();
   });
@@ -106,11 +107,11 @@ describe('ConversationDevicePicker', () => {
     await act(async () => Simulate.change(container.querySelector('.cc-device-selection input[value=b]')));
     const confirmed = { ...directory, revision: 'r2', status: 'selected', selected_device_id: 'b' };
     api.getConversationDevice.mockResolvedValue(confirmed);
-    await click(button('使用这台电脑'));
+    await click(button('确认'));
     expect(api.getConversationDevice).toHaveBeenCalledTimes(3);
     expect(container.querySelector('.cc-device-selection input[value=b]').checked).toBe(true);
     expect(container.querySelector('.cc-device-trigger').title).toContain('同名电脑');
-    expect(button('使用这台电脑')).toBeUndefined();
+    expect(button('确认').disabled).toBe(true);
     // Device updates from outside this instance still refresh both surfaces.
     await act(async () => window.dispatchEvent(new Event('cc:devices-changed')));
     expect(api.getConversationDevice).toHaveBeenCalledTimes(5);
@@ -124,11 +125,11 @@ describe('ConversationDevicePicker', () => {
     expect(container.textContent).not.toContain('还没有连接电脑');
     await act(async () => pending.resolve(directory));
     expect(container.querySelector('[data-loading-kind]')).toBeNull();
-    expect(container.querySelectorAll('input[type=radio]')).toHaveLength(3);
+    expect(container.querySelectorAll('input[type=radio]')).toHaveLength(4);
     const refresh = deferred();
     api.getConversationDevice.mockReturnValueOnce(refresh.promise);
-    await click(container.querySelector('[aria-label="刷新电脑列表"]'));
-    expect(container.querySelectorAll('input[type=radio]')).toHaveLength(3);
+    await click(container.querySelector('[aria-label="刷新设备列表"]'));
+    expect(container.querySelectorAll('input[type=radio]')).toHaveLength(4);
     expect(container.querySelector('[data-loading-kind]')).toBeNull();
     await act(async () => refresh.resolve(directory));
   });
@@ -137,11 +138,11 @@ describe('ConversationDevicePicker', () => {
     api.confirmConversationDevice.mockRejectedValue(new Error('conflict'));
     await render(); await open();
     await act(async () => Simulate.change(document.querySelector('input[value=b]')));
-    await click(button('使用这台电脑'));
+    await click(button('确认'));
     expect(document.querySelector('[role=alert]').textContent).toContain('不会自动重试');
-    expect(button('使用这台电脑').disabled).toBe(true);
+    expect(button('确认').disabled).toBe(true);
     expect(api.confirmConversationDevice).toHaveBeenCalledTimes(1);
-    await click(document.querySelector('[aria-label="刷新电脑列表"]'));
+    await click(document.querySelector('[aria-label="刷新设备列表"]'));
     expect(api.confirmConversationDevice).toHaveBeenCalledTimes(1);
   });
 
@@ -159,7 +160,7 @@ describe('ConversationDevicePicker', () => {
     const pending = deferred(); api.confirmConversationDevice.mockReturnValueOnce(pending.promise);
     await render(); await open();
     await act(async () => Simulate.change(document.querySelector('input[value=b]')));
-    await click(button('使用这台电脑'));
+    await click(button('确认'));
     await act(async () => { auth.token = ''; auth.revision++; window.dispatchEvent(new Event('cc:auth-changed')); });
     await act(async () => pending.resolve({ ...directory, status: 'selected', selected_device_id: 'b' }));
     expect(document.querySelector('[role=dialog]')).toBeNull();
@@ -172,7 +173,7 @@ describe('ConversationDevicePicker', () => {
     expect(container.querySelector('.cc-device-trigger').title).toContain('离线');
     expect(document.querySelector('input[value=offline]').checked).toBe(true);
     expect(document.querySelector('input[value=b]').checked).toBe(false);
-    expect(button('使用这台电脑').disabled).toBe(true);
+    expect(button('确认').disabled).toBe(true);
   });
 
   it('shows a separate default-device column for each group Bot', async () => {
@@ -182,7 +183,7 @@ describe('ConversationDevicePicker', () => {
     expect(api.getConversationDevice).toHaveBeenCalledWith('grp_1', 'usr43');
     expect(document.querySelector('[role=dialog]').textContent).toContain('共享使用权');
     expect(document.querySelectorAll('input[type=checkbox]')).toHaveLength(3);
-    expect(document.querySelectorAll('input[type=radio]')).toHaveLength(6);
+    expect(document.querySelectorAll('input[type=radio]')).toHaveLength(8);
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
     expect(document.querySelector('[role=dialog]')).not.toBeNull();
   });
@@ -191,7 +192,7 @@ describe('ConversationDevicePicker', () => {
     const shared = { deviceId: 'pcB', displayName: 'pcB', ownerUserId: 'usr8', routable: true };
     api.getGroupDeviceShares.mockResolvedValue({
       actor_uid: 7, shares: [], devices: [shared],
-      members: [{ user_id: 7 }, { user_id: 8 }, { user_id: 42, display_name: 'New', is_bot: true }, { user_id: 43, display_name: 'Old', is_bot: true }],
+      members: [{ user_id: 7 }, { user_id: 8, display_name: 'Bob' }, { user_id: 9, display_name: 'Charlie' }, { user_id: 42, display_name: 'New', is_bot: true }, { user_id: 43, display_name: 'Old', is_bot: true }],
     });
     api.getConversationDevice.mockImplementation(async (_topic, bot) => ({
       ...directory, devices: [{ ...shared, routable: bot === 'usr42', unavailableReason: bot === 'usr43' ? 'group_device_share_upgrade_required' : '' }],
@@ -202,6 +203,17 @@ describe('ConversationDevicePicker', () => {
     expect(radios[0].disabled).toBe(false);
     expect(radios[1].disabled).toBe(true);
     expect(radios[1].title).toContain('升级');
+    const panel = document.querySelector('[role=dialog]');
+    expect(panel.querySelectorAll('table')).toHaveLength(1);
+    expect(panel.querySelectorAll('thead')).toHaveLength(1);
+    const sharedRow = radios[0].closest('tr');
+    expect(sharedRow.querySelector('td[colspan="2"]').textContent).toBe('由 Bob 授权');
+    expect(sharedRow.querySelector('input[type=checkbox]')).toBeNull();
+    await act(async () => Simulate.change(radios[0]));
+    expect(api.confirmConversationDevice).not.toHaveBeenCalled();
+    await click(button('确认'));
+    expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('grp_1', 'usr42', 'pcB', 'r1', 8);
+    expect(api.setGroupDeviceShare).not.toHaveBeenCalled();
   });
 
   it('supports Escape and does not request a device without a conversation', async () => {
@@ -211,4 +223,113 @@ describe('ConversationDevicePicker', () => {
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     expect(document.querySelector('[role=dialog]')).toBeNull();
   });
+  it('keeps group sharing and default edits local until confirmation', async () => {
+    await render('grp_1'); await open();
+    const checkbox = document.querySelector('input[type=checkbox]');
+    const radio = document.querySelector('input[type=radio][aria-label^="为 Cloud Bot 选择"]');
+    await act(async () => Simulate.change(checkbox, { target: { checked: true } }));
+    await act(async () => Simulate.change(radio));
+    expect(api.setGroupDeviceShare).not.toHaveBeenCalled();
+    expect(api.confirmConversationDevice).not.toHaveBeenCalled();
+    expect(document.querySelector('[role=dialog]').textContent).toContain('2 项待确认');
+    await click(button('确认'));
+    expect(api.setGroupDeviceShare).toHaveBeenCalledExactlyOnceWith({ action: 'share', topic_id: 'grp_1', grantee_uid: 8, device_id: 'a', expected_revision: 0 });
+    expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('grp_1', 'usr42', 'a', 'r1', 7);
+  });
+
+  it('keeps own devices available when one group Bot cannot be queried', async () => {
+    api.getConversationDevice.mockImplementation(async (_topic, bot) => {
+      if (bot === 'usr43') throw new Error('403 bot unavailable');
+      return directory;
+    });
+    await render('grp_1'); await open();
+    expect(document.querySelector('[role=dialog]').querySelector('[aria-label="设备与授权表格"]')).not.toBeNull();
+    const radios = [...document.querySelectorAll('input[type=radio]')];
+    expect(radios.some(input => !input.disabled)).toBe(true);
+  });
+
+  it('cancels draft group edits without saving', async () => {
+    await render('grp_1'); await open();
+    await act(async () => Simulate.change(document.querySelector('input[type=checkbox]'), { target: { checked: true } }));
+    await click(button('取消更改'));
+    expect(document.querySelector('input[type=checkbox]').checked).toBe(false);
+    expect(button('确认').disabled).toBe(true);
+    expect(api.setGroupDeviceShare).not.toHaveBeenCalled();
+  });
+
+  it('clears a private default only after confirmation', async () => {
+    api.getConversationDevice.mockResolvedValue({ ...directory, status: 'selected', selected_device_id: 'a' });
+    api.confirmConversationDevice.mockResolvedValue({ ...directory, status: 'unspecified', selected_device_id: '', revision: 'r2' });
+    await render(); await open();
+    await act(async () => Simulate.change(document.querySelector('input[aria-label="清除默认设备"]')));
+    expect(api.confirmConversationDevice).not.toHaveBeenCalled();
+    expect(button('确认').disabled).toBe(false);
+    await click(button('确认'));
+    expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('p2p_7_42', 42, '', 'r1');
+    expect(container.querySelector('.cc-device-trigger').title).toContain('未指定');
+  });
+
+  it('clears one group Bot default without changing device sharing', async () => {
+    api.getConversationDevice.mockResolvedValue({ ...directory, status: 'selected', selected_device_id: 'a', selected_owner_uid: 7 });
+    await render('grp_1'); await open();
+    await act(async () => Simulate.change(document.querySelector('input[aria-label="为 Cloud Bot 清除默认设备"]')));
+    expect(api.confirmConversationDevice).not.toHaveBeenCalled();
+    await click(button('确认'));
+    expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('grp_1', 'usr42', '', 'r1', undefined);
+    expect(api.setGroupDeviceShare).not.toHaveBeenCalled();
+  });
+
+  it('allows clearing the only offline selected device', async () => {
+    api.getConversationDevice.mockResolvedValue({ ...directory, status: 'unavailable', selected_device_id: 'offline', devices: directory.devices.slice(2) });
+    await render(); await open();
+    await act(async () => Simulate.change(document.querySelector('input[aria-label="清除默认设备"]')));
+    expect(button('确认').disabled).toBe(false);
+    await click(button('确认'));
+    expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('p2p_7_42', 42, '', 'r1');
+  });
+
+  it('keeps a persisted private selection while warning that its notice is pending', async () => {
+    api.confirmConversationDevice.mockResolvedValue({ ...directory, status: 'selected', selected_device_id: 'b', notice: { pending: true } });
+    await render(); await open();
+    await act(async () => Simulate.change(document.querySelector('input[value=b]')));
+    await click(button('确认'));
+    expect(document.querySelector('[role=alert]').textContent).toContain('设备已保存');
+    expect(document.querySelector('input[value=b]').checked).toBe(true);
+    expect(button('确认').disabled).toBe(true);
+    expect(api.confirmConversationDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a partially committed group confirmation', async () => {
+    api.confirmConversationDevice.mockRejectedValue(new Error('timeout'));
+    await render('grp_1'); await open();
+    await act(async () => {
+      Simulate.change(document.querySelector('input[type=checkbox]'), { target: { checked: true } });
+      Simulate.change(document.querySelector('input[type=radio][aria-label^="为 Cloud Bot 选择"]'));
+    });
+    await click(button('确认'));
+    expect(document.querySelector('[role=alert]').textContent).toContain('已确认 1 项');
+    expect(button('确认').disabled).toBe(true);
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(api.setGroupDeviceShare).toHaveBeenCalledTimes(1);
+    expect(api.confirmConversationDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops the rest of a confirmation batch after account switch', async () => {
+    const pending = deferred();
+    api.setGroupDeviceShare.mockReturnValue(pending.promise);
+    await render('grp_1'); await open();
+    await act(async () => {
+      Simulate.change(document.querySelector('input[type=checkbox]'), { target: { checked: true } });
+      Simulate.change(document.querySelector('input[type=radio][aria-label^="为 Cloud Bot 选择"]'));
+    });
+    await click(button('确认'));
+    await act(async () => {
+      auth.token = 'next-user'; auth.revision++;
+      window.dispatchEvent(new Event('cc:auth-changed'));
+      pending.resolve({ notice: { message_id: 101 } });
+    });
+    expect(api.confirmConversationDevice).not.toHaveBeenCalled();
+    expect(document.querySelector('[role=dialog]')).toBeNull();
+  });
+
 });

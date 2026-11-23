@@ -392,7 +392,7 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		return
 	}
 	targetRoute, target := h.findDeviceRPCTarget(ownerUID, device)
-	if grant.IdentitySource == groupDeviceShareSource && (target == nil || !target.hasRuntimeCapability(groupDeviceShareCapability) || !client.hasRuntimeCapability(groupDeviceShareCapability) || !h.groupDeviceGrantCurrent(grant)) {
+	if grant.IdentitySource == groupDeviceShareSource && (target == nil || !client.hasRuntimeCapability(groupDeviceShareCapability) || !h.groupDeviceGrantCurrent(grant)) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "group_device_share_upgrade_required or revoked permission", nil)
 		return
 	}
@@ -467,6 +467,19 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		return
 	}
 
+	if grant.IdentitySource == groupDeviceShareSource {
+		if !h.groupDeviceGrantCurrent(grant) {
+			h.deviceRPC.finish(requestID)
+			h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "group permission is no longer active", nil)
+			return
+		}
+		// Connector executes as its owner. Keep the actual caller in pending
+		// and audit records; the result path restores that original identity.
+		forward.ActorUserID = ownerUserID
+		forward.SessionKey = buildCatsCoSessionKey(grant.TopicID, grant.TopicType, grant.AgentID, ownerUID)
+		forward.IdentitySource = "device_rpc_forward"
+		forward.ShareID, forward.ShareRevision = "", 0
+	}
 	if !h.sendDeviceRPCToRoute(targetRoute, &forward) {
 		h.deviceRPC.finish(requestID)
 		h.auditDeviceRPC(ownerUID, "rpc_rejected", "unavailable", "device connection unavailable", msg, grant)

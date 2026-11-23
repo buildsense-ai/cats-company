@@ -30,3 +30,5 @@
 .cc-share-card :is(button, select):focus-visible { outline: 2px solid var(--cc-focus-border, currentColor); outline-offset: 2px; }
 .cc-share-card { border: 1px solid var(--cc-border, #8884); border-radius: 8px; }
 .cc-share-card select { font: inherit; font-size: 13px; border: 1px solid var(--cc-border, #8884); border-radius: 6px; }
+
+.cc-device-confirm-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 12px; }

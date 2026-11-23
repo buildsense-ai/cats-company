@@ -122,7 +122,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
       return nextDevices;
     } catch (err) {
       console.warn('Failed to load CatsCo device state:', err);
-      setDevicesError('暂时无法读取电脑，请重试。');
+      setDevicesError('暂时无法读取设备，请重试。');
       setDevicesLoaded(true);
       return null;
     }
@@ -500,7 +500,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
       >
         <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3 id="catsco-desktop-modal-title" tabIndex={-1} className="cc-dialog-reading-focus">{computersMode ? topicId?.startsWith('grp_') ? '设备与授权' : '电脑' : 'CatsCo 桌面端'}</h3>
+            <h3 id="catsco-desktop-modal-title" tabIndex={-1} className="cc-dialog-reading-focus">{computersMode ? topicId?.startsWith('grp_') ? '设备与授权' : '设备' : 'CatsCo 桌面端'}</h3>
             {!computersMode && <p>连接电脑、查看设备，或下载当前版本。</p>}
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
@@ -530,7 +530,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
                 </strong>
                 <span className={`catsco-connect-status ${statusTone}`} aria-live="polite">{statusLabel}</span>
               </div>
-              <div className="catsco-connect-description">
+              {!computersMode && <div className="catsco-connect-description">
                 {selectionRequired
                   ? '检测到多台本地桌面设备，请选择当前浏览器所在的电脑。'
                   : connectionReady
@@ -542,7 +542,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
                   : launchDetected
                   ? '已检测到浏览器正在尝试打开 CatsCo，连接完成后这里会自动更新。'
                   : '点击后浏览器可能会询问是否允许打开 CatsCo，请选择允许。'}
-              </div>
+              </div>}
               {preferredDesktopDeviceId && (desktopDevices.length > 1 || preferredDesktopUnavailable) && (
                 <button type="button" className="catsco-connect-reselect" onClick={beginDesktopSelection}>
                   重新选择本机
@@ -562,7 +562,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
 
           {state === 'connected' && connectionReady && (
             <div className="catsco-connect-feedback is-success">
-              {computersMode ? hasConversationSelection ? '电脑已连接，可在上方选择使用。' : '电脑已连接。' : '已连接到本地 CatsCo 桌面助手，正在为你打开对话。'}
+              {computersMode ? '设备已连接' : '已连接到本地 CatsCo 桌面助手，正在为你打开对话。'}
             </div>
           )}
 
@@ -573,14 +573,14 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
               {!devicesLoaded
                 ? <LoadingState kind="connect" className="cc-computer-list-loading" label="正在读取电脑" compact />
                 : <div data-loading-content="">
-                  {renderDeviceSection('我的电脑', desktopDevices, 'desktop', desktopSectionRef)}
-                  {!desktopDevices.length && !devicesError && <p className="cc-device-note">还没有连接电脑。</p>}
+                  {renderDeviceSection('我的设备', desktopDevices, 'desktop', desktopSectionRef)}
+                  {!desktopDevices.length && !devicesError && <p className="cc-device-note">暂无设备</p>}
                   {devicesError && <div className="cc-device-note" role="alert">
                     <p>{devicesError}</p>
                     <button type="button" className="oc-btn oc-btn-default" onClick={() => {
                       if (!devices.length) setDevicesLoaded(false);
                       void loadDevices();
-                    }}>重新读取电脑</button>
+                    }}>重新读取设备</button>
                   </div>}
                 </div>}
             </div>

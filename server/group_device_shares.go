@@ -117,12 +117,8 @@ func (h *Hub) sharedGroupDevices(ctx context.Context, actor int64, topic string)
 			}
 		}
 		device.Capabilities = permitted
-		// A peer without capability negotiation must never receive a delegated RPC.
-		_, peer := h.findDeviceRPCTarget(s.OwnerUID, device)
-		if peer != nil && !peer.hasRuntimeCapability(groupDeviceShareCapability) {
-			device.Routable = false
-			device.UnavailableReason = "group_device_share_upgrade_required"
-		}
+		// Connector receives the owner's ordinary RPC after server-side sharing
+		// checks. Only the requesting Bot needs to understand shared targets.
 		devices = append(devices, device)
 	}
 	return devices, nil
@@ -133,6 +129,11 @@ func (h *Hub) groupDeviceTurnContext(actor int64, topic string, agent *Client, o
 	defer cancel()
 	shared, err := h.sharedGroupDevices(ctx, actor, topic)
 	if err != nil {
+		session := buildCatsCoSessionKey(topic, "group", formatUID(agent.uid), actor)
+		preference, readErr := h.userDevices.selectionRecord(actor, session)
+		if readErr == nil && (preference.DeviceID == "" || selectionOwner(preference, actor) == actor) {
+			return h.userDevices.turnContextForOwnerDevicesWithExplicitTargets(actor, actor, topic, "group", agent.uid, agent.bodyID, own, unavailable, xiaobaRuntimeV2EnabledForClient(agent))
+		}
 		return DeviceTurnContext{Selection: &DeviceSelection{Status: DeviceSelectionUnavailable, SelectionSource: "sharing_store_unavailable"}}
 	}
 	available, missing := h.classifyUserDevices(0, shared)
@@ -312,7 +313,11 @@ func (h *GroupDeviceShareHandler) HandleShares(w http.ResponseWriter, r *http.Re
 	if saved.Status == "revoked" {
 		h.hub.revokeGroupShareGrants(saved.ID)
 	}
-	writeJSON(w, 200, saved)
+	notice := h.hub.publishGroupShareNotice(saved)
+	writeJSON(w, 200, struct {
+		*store.GroupDeviceShare
+		Notice deviceChangeNotice `json:"notice"`
+	}{saved, notice})
 }
 
 func (h *GroupDeviceShareHandler) newShare(topic string, owner, actor int64, deviceID string) (*store.GroupDeviceShare, error) {
@@ -451,10 +456,21 @@ func (h *GroupDeviceShareHandler) HandleRequests(w http.ResponseWriter, r *http.
 			return
 		}
 		if req.MessageID == 0 {
-			card := map[string]any{"title": "设备使用授权申请", "text": req.Description, "group_device_share": map[string]any{"request_id": req.ID, "topic_id": req.TopicID}}
+			reference := map[string]any{"request_id": req.ID, "topic_id": req.TopicID}
+			role := "user"
+			if user.AccountType == types.AccountBot {
+				role = "assistant"
+				reference["requested_by_bot"] = formatUID(uid)
+				reference["requested_by_name"] = h.hub.deviceNoticeName(uid)
+				reference["requester_name"] = h.hub.deviceNoticeName(actor)
+				reference["origin_message_id"] = input.MessageID
+			}
+			card := map[string]any{"title": "设备使用授权申请", "text": req.Description, "group_device_share": reference}
 			body, _ := json.Marshal(card)
 			blocks := []types.ContentBlock{{Type: "card", Payload: card}}
-			messageID, _, err := h.hub.db.SaveMessageIdempotent(req.TopicID, actor, string(body), blocks, "normal", "user", "text", 0, "device-share-request-"+req.ID)
+			// The requester remains the human whose message addressed this Bot,
+			// but generated text must be attributed to its authenticated author.
+			messageID, _, err := h.hub.db.SaveMessageIdempotent(req.TopicID, uid, string(body), blocks, "normal", role, "text", 0, "device-share-request-"+req.ID)
 			if err != nil {
 				shareError(w, err)
 				return
@@ -464,7 +480,7 @@ func (h *GroupDeviceShareHandler) HandleRequests(w http.ResponseWriter, r *http.
 				return
 			}
 			req.MessageID = messageID
-			h.hub.fanoutNormalizedMessage(actor, req.TopicID, 0, &normalizedMessagePayload{StoredContent: string(body), DisplayContent: card, StoredType: "text", DisplayType: "card", ContentBlocks: blocks}, messageID, nil)
+			h.hub.fanoutNormalizedMessage(uid, req.TopicID, 0, &normalizedMessagePayload{StoredContent: string(body), DisplayContent: card, StoredType: "text", DisplayType: "card", ContentBlocks: blocks, Role: role}, messageID, nil)
 		}
 		writeJSON(w, 200, req)
 		return
@@ -506,14 +522,30 @@ func (h *GroupDeviceShareHandler) HandleRequests(w http.ResponseWriter, r *http.
 		shareError(w, err)
 		return
 	}
-	writeJSON(w, 200, resolved)
+	var notice *deviceChangeNotice
+	if status == "approved" {
+		notice = &deviceChangeNotice{Pending: true}
+		if share, err := db.GetGroupDeviceShare(r.Context(), resolved.ShareID); err == nil && share != nil && share.Status == "active" {
+			receipt := h.hub.publishGroupShareNotice(share)
+			notice = &receipt
+		}
+	}
+	writeJSON(w, 200, struct {
+		*store.GroupDeviceShareRequest
+		Notice *deviceChangeNotice `json:"notice,omitempty"`
+	}{resolved, notice})
 }
 
 // Cleanup is best-effort; every dispatch still reads the authoritative SQL
 // revision, including a grant persisted concurrently with revocation.
 func (h *Hub) revokeGroupShareGrants(id string) {
+	var state *RedisRuntimeState
 	if auth, ok := h.deviceAuthorization.(*RedisDeviceAuthorizationStore); ok {
-		state := auth.state
+		state = auth.state
+	} else if shared, ok := h.userDevices.shared.(*RedisRuntimeState); ok {
+		state = shared
+	}
+	if state != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), redisRuntimeWriteTimeout)
 		defer cancel()
 		key := state.key("device_grant_share", id)
@@ -522,11 +554,24 @@ func (h *Hub) revokeGroupShareGrants(id string) {
 			return
 		}
 		for _, grantID := range ids {
+			if grantID == permanentDeviceGrantIndexMarker {
+				continue
+			}
 			if grant, ok := state.lookupDeviceGrant(grantID, unixMillis(time.Now())); ok {
 				state.revokeDeviceGrant(grant)
 			}
 		}
 		state.client.Del(ctx, key)
+		return
+	}
+	if shared, ok := h.userDevices.shared.(*sharedMemoryRuntimeState); ok {
+		shared.mu.Lock()
+		defer shared.mu.Unlock()
+		for grantID, grant := range shared.grants {
+			if grant.ShareID == id {
+				delete(shared.grants, grantID)
+			}
+		}
 		return
 	}
 	h.userDevices.mu.Lock()

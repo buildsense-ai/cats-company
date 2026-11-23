@@ -674,8 +674,8 @@ func (r *userDeviceRegistry) issueDeviceGrants(actorUID int64, ownerUID int64, t
 		if device.ShareID != "" {
 			grant.IdentitySource = groupDeviceShareSource
 			grant.ShareID, grant.ShareRevision = device.ShareID, device.ShareRevision
-			grant.Permanent = false
-			grant.ExpiresAt = createdAt + defaultDeviceGrantTTL.Milliseconds()
+			// The live SQL permission controls validity, just as the current
+			// device binding and selection do. Group sharing has no time lease.
 			if r.groupShareCurrent == nil || !r.groupShareCurrent(grant) {
 				continue
 			}
@@ -896,6 +896,10 @@ func (r *userDeviceRegistry) selectDeviceForOwnerTurn(
 	}
 	base.OwnerUserID = formatUID(targetOwner)
 	base.Revision = preference.Revision
+	if preference.unspecified() {
+		base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, deviceSelectionUnspecifiedSource
+		return &base, nil
+	}
 	if len(devices) == 0 {
 		base.Status = DeviceSelectionUnavailable
 		base.SelectionSource = "no_routable_devices"
@@ -934,6 +938,10 @@ func (r *userDeviceRegistry) selectDeviceForOwnerTurn(
 		return &base, nil
 	}
 	selected := devices[0]
+	if selected.OwnerUID != actorUID && selected.OwnerUID != delegatedOwner {
+		base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, "shared_device_requires_confirmation"
+		return &base, nil
+	}
 	base.Status = DeviceSelectionSelected
 	base.SelectionSource = "single_active_device"
 	base.SelectedDevice = deviceSelectionDevice(selected)
@@ -965,6 +973,9 @@ func (r *userDeviceRegistry) rememberDeviceSelection(actorUID int64, sessionKey 
 	}
 	current, err := r.selectionRecord(actorUID, sessionKey)
 	if err != nil {
+		return
+	}
+	if current.unspecified() {
 		return
 	}
 	// Automatic selection and preference renewal must never overwrite a

@@ -883,7 +883,7 @@ func TestBotRecipientIdentityRejectsSpoofedChannelDeviceOwnerMetadata(t *testing
 	if _, ok := permissions["device_owner_user_id"]; ok {
 		t.Fatalf("untrusted channel metadata must not grant device owner permissions: %#v", permissions)
 	}
-	if _, ok := identity["device_grants"]; ok {
+	if grants, ok := identity["device_grants"].([]interface{}); !ok || len(grants) != 0 {
 		t.Fatalf("untrusted channel metadata must not issue delegated device grants: %#v", identity["device_grants"])
 	}
 	if _, ok := identity["device_selection"]; ok {
@@ -1177,7 +1177,7 @@ func TestBotRecipientIdentityDoesNotUseAgentOwnerDeviceWithoutChannelLink(t *tes
 	if _, ok := permissions["device_owner_user_id"]; ok {
 		t.Fatalf("unlinked channel actor must not receive device owner permissions: %#v", permissions)
 	}
-	if _, ok := identity["device_grants"]; ok {
+	if grants, ok := identity["device_grants"].([]interface{}); !ok || len(grants) != 0 {
 		t.Fatalf("unlinked channel actor should not receive owner device grants: %#v", identity["device_grants"])
 	}
 	if _, ok := identity["device_selection"]; ok {
@@ -1221,7 +1221,7 @@ func TestBotRecipientIdentityDoesNotGrantActiveButUnroutableDevice(t *testing.T)
 	var msg ServerMessage
 	decodeQueuedServerMessage(t, botClient.send, &msg)
 	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
-	if _, ok := identity["device_grants"]; ok {
+	if grants, ok := identity["device_grants"].([]interface{}); !ok || len(grants) != 0 {
 		t.Fatalf("unroutable device should not receive grants: %#v", identity["device_grants"])
 	}
 	selection := deviceSelectionMap(t, identity)

@@ -760,8 +760,13 @@ redis.call('SADD', selectionIndex, grantID)
 redis.call('SADD', deviceIndex, grantID)
 if ARGV[5] ~= '' then
   redis.call('SADD', KEYS[4], grantID)
-  local shareTTL=redis.call('PTTL',KEYS[4])
-  if ttl > 0 and (shareTTL < 0 or shareTTL < ttl) then redis.call('PEXPIRE',KEYS[4],ttl) end
+  if ttl <= 0 then
+    redis.call('SADD', KEYS[4], permanentMarker)
+    redis.call('PERSIST', KEYS[4])
+  elseif redis.call('SISMEMBER', KEYS[4], permanentMarker) == 0 then
+    local shareTTL=redis.call('PTTL',KEYS[4])
+    if shareTTL < 0 or shareTTL < ttl then redis.call('PEXPIRE',KEYS[4],ttl) end
+  end
 end
 if ttl <= 0 then
   redis.call('SADD', selectionIndex, permanentMarker)
@@ -820,6 +825,7 @@ func (s *RedisRuntimeState) revokeDeviceGrant(grant ScopedDeviceGrant) {
 	deviceIndex := s.deviceGrantDeviceKey(parseFormattedUID(grant.OwnerUserID), grant.DeviceID)
 	pipe := s.client.TxPipeline()
 	pipe.Del(ctx, s.deviceGrantKey(grant.GrantID))
+	s.removeDeviceGrantShareIndex(ctx, pipe, grant)
 	pipe.SRem(ctx, selectionIndex, grant.GrantID)
 	pipe.SRem(ctx, deviceIndex, grant.GrantID)
 	pipe.Eval(ctx, cleanupPermanentDeviceGrantIndexScript, []string{selectionIndex}, permanentDeviceGrantIndexMarker)
@@ -827,6 +833,16 @@ func (s *RedisRuntimeState) revokeDeviceGrant(grant ScopedDeviceGrant) {
 	if _, err := pipe.Exec(ctx); err != nil {
 		s.logDeviceAuthorizationFailure("grant_revoke", redisAuthorizationErrorClass(err))
 	}
+}
+
+// Sharing indices must remain discoverable until their last grant is revoked.
+func (s *RedisRuntimeState) removeDeviceGrantShareIndex(ctx context.Context, pipe redis.Pipeliner, grant ScopedDeviceGrant) {
+	if grant.ShareID == "" {
+		return
+	}
+	key := s.key("device_grant_share", grant.ShareID)
+	pipe.SRem(ctx, key, grant.GrantID)
+	pipe.Eval(ctx, cleanupPermanentDeviceGrantIndexScript, []string{key}, permanentDeviceGrantIndexMarker)
 }
 
 func (s *RedisRuntimeState) revokeDeviceGrantsForSelection(actorUID int64, sessionKey string) {
@@ -848,6 +864,9 @@ func (s *RedisRuntimeState) revokeDeviceGrantsForSelection(actorUID int64, sessi
 			continue
 		}
 		pipe.Del(ctx, s.deviceGrantKey(id))
+		if grant, ok := s.deviceGrantForIndex(ctx, id); ok {
+			s.removeDeviceGrantShareIndex(ctx, pipe, grant)
+		}
 		if deviceKey := s.deviceGrantDeviceKeyForGrant(ctx, id); deviceKey != "" {
 			pipe.SRem(ctx, deviceKey, id)
 			otherIndices[deviceKey] = struct{}{}
@@ -886,6 +905,9 @@ func (s *RedisRuntimeState) revokeDeviceGrantsForDevice(ownerUID int64, deviceID
 			continue
 		}
 		pipe.Del(ctx, s.deviceGrantKey(id))
+		if grant, ok := s.deviceGrantForIndex(ctx, id); ok {
+			s.removeDeviceGrantShareIndex(ctx, pipe, grant)
+		}
 		if selectionKey := s.deviceGrantSelectionKeyForGrant(ctx, id); selectionKey != "" {
 			pipe.SRem(ctx, selectionKey, id)
 			otherIndices[selectionKey] = struct{}{}
