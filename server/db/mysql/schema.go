@@ -19,9 +19,10 @@ func (a *Adapter) CreateSchema() error {
 		createConversationNotificationMutesTable,
 		createConversationDeviceSelectionsTable,
 		createMessagesTable,
-		createFileUploadsTable,
+createFileUploadsTable,
 		createFileMessageBindingsTable,
 		createFileMediaSessionsTable,
+		createFileVersionBindingsTable,
 		createArtifactAppMetadataTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
@@ -358,6 +359,28 @@ CREATE TABLE IF NOT EXISTS messages (
     UNIQUE KEY uk_messages_client_msg_id (topic_id, from_uid, client_msg_id),
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
     FOREIGN KEY (from_uid) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createFileVersionBindingsTable = `
+CREATE TABLE IF NOT EXISTS file_version_bindings (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    topic_id VARCHAR(64) NOT NULL,
+    source_message_id BIGINT NOT NULL,
+    source_attachment_index INT NOT NULL,
+    source_file_key VARCHAR(255) NOT NULL,
+    latest_file_key VARCHAR(255) NOT NULL,
+    latest_url VARCHAR(1024) NOT NULL,
+    latest_name VARCHAR(255) NOT NULL,
+    latest_size BIGINT NOT NULL DEFAULT 0,
+    latest_mime_type VARCHAR(255) NOT NULL,
+    updated_by_uid BIGINT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_file_version_bindings_source (topic_id, source_message_id, source_attachment_index),
+    INDEX idx_file_version_bindings_topic_updated (topic_id, updated_at),
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (updated_by_uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

@@ -20,6 +20,19 @@ import PublicationRepairPanel from '../widgets/skillhub-publication-repair-panel
 import { useConversationFork } from '../utils/use-conversation-fork';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
 import PwaDownloadLink from '../widgets/pwa-download-link';
+import {
+  OFFICE_SAVE_NOTICE,
+  countChangedOps,
+} from '../office/save.js';
+import {
+  performExplicitOfficeSync, performQuietOfficeSave, resolveLatestOfficeVersion,
+  OFFICE_SYNC_NOTICE, OFFICE_VERSION_UNSUPPORTED_CODE,
+} from '../office/version-binding.js';
+import { latestNamedAttachment } from '../office/latest-attachment.js';
+import ConfirmDialog from '../office/ui/ConfirmDialog.jsx';
+import {
+  listPendingVersionDocuments, markVersionsSynced, pendingVersionAttachments,
+} from '../office/pending-versions.js';
 import ImageViewport from '../widgets/image-viewport';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
@@ -872,6 +885,7 @@ export default function MessagesView({
   const [commandActiveIndex, setCommandActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const previewResolveTokenRef = useRef(0);
   const [previewExpanded, setPreviewExpanded] = useState(false);
   const [previewContextOpen, setPreviewContextOpen] = useState(false);
   const [previewComposerMinimized, setPreviewComposerMinimized] = useState(false);
@@ -1083,6 +1097,9 @@ export default function MessagesView({
     return () => clearTimeout(timer);
   }, [conversationTasks, conversationTaskExpiryRevision, topic]);
   const [conversationNotice, setConversationNotice] = useState('');
+  // Pending "send these edited documents along?" question. Holds the names plus the promise
+  // resolver, so the send path can await a real answer without branching into callbacks.
+  const [attachApproval, setAttachApproval] = useState(null);
   const reconnectingConversation = conversationConnection === 'reconnecting';
   useEffect(() => {
     if (!liquidConversation || !topic) return undefined;
@@ -1609,7 +1626,7 @@ export default function MessagesView({
     artifactPreviewCoordinatorRef.current?.claimSidebar();
   }, [cancelArtifactViewerHandoff]);
 
-  const setPreviewFileWithFocus = useCallback((file) => {
+  const applyPreviewFileWithFocus = useCallback((file) => {
     if (artifactRefFromPreviewFile(file, Number(file?.artifact_agent_uid || 0))) {
       claimArtifactSidebarControl();
     }
@@ -1624,6 +1641,11 @@ export default function MessagesView({
     activeArtifactFrameRef.current = null;
     setPreviewFile(file);
   }, [claimArtifactSidebarControl, invalidateArtifactSnapshot]);
+
+  const setPreviewFileWithFocus = useCallback((file) => {
+    previewResolveTokenRef.current += 1;
+    applyPreviewFileWithFocus(file);
+  }, [applyPreviewFileWithFocus]);
 
   const handleRemoteArtifactFrameChange = useCallback((binding) => {
     const activeBinding = artifactBindingMatchesFocus(
@@ -2560,6 +2582,111 @@ export default function MessagesView({
     };
   }, []);
 
+  /**
+   * Persist an Office edit quietly: upload, then store a durable source→latest pointer. No
+   * message is appended, so search, 小八's context and the conversation stay unchanged until
+   * the user explicitly asks to sync.
+   */
+  const handleOfficeSave = useCallback(async (saved) => {
+    if (!saved?.bytes) return null;
+    const topic = String(activeTopicRef.current || '');
+    if (!topic) return null;
+
+    try {
+      const originalName = saved.fileName || previewFile?.name || 'presentation.pptx';
+      const family = /\.docx$/i.test(originalName) ? 'docx' : 'pptx';
+      const result = await performQuietOfficeSave({
+        file: previewFile,
+        bytes: saved.bytes,
+        fileName: originalName,
+        family,
+        topicId: topic,
+        uploadFile: api.uploadFile,
+        upsertBinding: api.upsertFileVersionBinding,
+        sendMessage: api.sendMessage,
+        requirement: saved.requirement || '',
+        slideCount: saved.slideCount,
+        changedParts: countChangedOps(saved.changes),
+      });
+
+      const nextFile = {
+        ...(previewFile || {}),
+        ...(result.nextFile || {}),
+        annotation_source: undefined,
+        office_version_unsynced: Boolean(result.source),
+      };
+      setPreviewFileWithFocus(nextFile);
+      feedback.notify({ tone: 'success', message: result.notice || OFFICE_SAVE_NOTICE });
+      window.dispatchEvent(new Event('cc:data-changed'));
+      return {
+        ...result.latest,
+        localOnly: result.localOnly,
+        notice: result.notice || OFFICE_SAVE_NOTICE,
+      };
+    } catch (err) {
+      // A falsy result keeps drafts and pending bytes retryable. A backend that lacks the
+      // version route is reported separately, because asking the user to retry would be
+      // asking them to repeat something that cannot succeed until that route ships.
+      if (err?.code === OFFICE_VERSION_UNSUPPORTED_CODE) return { unsupported: true };
+      return null;
+    }
+  }, [feedback, previewFile, setPreviewFileWithFocus]);
+
+  const handleOfficeSync = useCallback(async (request = {}) => {
+    const topic = String(activeTopicRef.current || '');
+    const latestVersion = request.latestVersion || previewFile?.office_latest;
+    if (!topic || !latestVersion) return null;
+    const originalName = request.fileName || previewFile?.name || latestVersion.name || 'presentation.pptx';
+    const family = /\.docx$/i.test(originalName) || /\.docx$/i.test(latestVersion.name || '')
+      ? 'docx' : 'pptx';
+    try {
+      const { message, result } = await performExplicitOfficeSync({
+        file: previewFile,
+        latestVersion,
+        family,
+        topicId: topic,
+        sendMessage: api.sendMessage,
+        slideCount: request.slideCount,
+        changes: request.changes || [],
+      });
+      const messageID = historyMessageID(result);
+      if (!messageID) return null;
+      const { visibleMessages } = normalizeHistoryMessages([{
+        ...result,
+        created_at: result.created_at || new Date().toISOString(),
+      }]);
+      if (visibleMessages.length) {
+        const cacheKey = historyCacheKey(user.uid, topic);
+        const cached = historyCacheRef.current.get(cacheKey);
+        if (cached) {
+          cacheHistoryPage(historyCacheRef.current, cacheKey, {
+            ...cached, messages: mergeMessages(cached.messages, visibleMessages),
+          });
+        }
+        if (activeTopicRef.current === topic) {
+          setMessages(current => mergeMessages(current, visibleMessages));
+        }
+      }
+      setPreviewFileWithFocus({
+        ...(previewFile || {}),
+        name: message.payload.name,
+        url: message.payload.url,
+        file_key: message.payload.file_key,
+        size: message.payload.size,
+        mime_type: message.payload.mime_type,
+        annotation_source: { topic_id: topic, message_id: messageID, attachment_index: 0 },
+        office_latest: undefined,
+        office_version_source: undefined,
+        office_version_unsynced: false,
+      });
+      feedback.notify({ tone: 'success', message: OFFICE_SYNC_NOTICE });
+      window.dispatchEvent(new Event('cc:data-changed'));
+      return { ...message.payload, messageId: messageID };
+    } catch {
+      return null;
+    }
+  }, [feedback, previewFile, setPreviewFileWithFocus, user.uid]);
+
   const handleFileAnnotationSent = useCallback((result, sourceTopic) => {
     if (!result || !historyMessageID(result) || result.topic_id !== sourceTopic
       || !sameUID(result.from_uid, user.uid)) return;
@@ -2578,15 +2705,43 @@ export default function MessagesView({
     window.dispatchEvent(new Event('cc:data-changed'));
   }, [feedback, user.uid]);
 
-  const openFilePreview = useCallback((file) => {
+  const openFilePreview = useCallback(async (file) => {
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
     setCloudArtifactsReturnOpen(false);
     setPendingArtifactRefresh(null);
-    setPreviewFileWithFocus(file);
-  }, [setPreviewFileWithFocus]);
+    const token = previewResolveTokenRef.current + 1;
+    previewResolveTokenRef.current = token;
+    if (!file) {
+      applyPreviewFileWithFocus(file);
+      return;
+    }
+
+    // The thread can hold several attachments with the same name, and the one the user
+    // clicked is often the earliest. Opening those bytes while the real newest version
+    // sits further down reads as "my edit was lost", so jump to the last matching one.
+    const newer = latestNamedAttachment(messages, file);
+    let opened = file;
+    if (newer) {
+      const { messageId, ...latest } = newer;
+      opened = {
+        ...file,
+        ...latest,
+        annotation_source: {
+          topic_id: String(activeTopicRef.current || ''),
+          message_id: messageId,
+          attachment_index: 0,
+        },
+      };
+    }
+    applyPreviewFileWithFocus(opened);
+    const resolved = await resolveLatestOfficeVersion(opened, api.getFileVersionBinding);
+    if (previewResolveTokenRef.current !== token) return;
+    applyPreviewFileWithFocus(resolved);
+  }, [applyPreviewFileWithFocus, messages]);
 
   const closeSidePanel = useCallback(() => {
+    previewResolveTokenRef.current += 1;
     pendingGatewayAnnotationStartRef.current = null;
     cancelArtifactViewerHandoff();
     setPendingArtifactRefresh(null);
@@ -4156,6 +4311,24 @@ export default function MessagesView({
     setMessages((prev) => prev.filter((message) => message.id !== tempId));
   }, []);
 
+  /**
+   * Ask before carrying edited documents into an outgoing message.
+   *
+   * Resolves true/false. Two answers mean "do not attach": the user skipped the files and
+   * sent text only, or they abandoned the send entirely. Both leave the local record alone,
+   * so the file is offered again next time rather than silently lost.
+   */
+  const askAttachApproval = useCallback((names) => new Promise((resolve) => {
+    setAttachApproval({ names: Array.isArray(names) ? names : [], resolve });
+  }), []);
+
+  const settleAttachApproval = useCallback((approved) => {
+    setAttachApproval((current) => {
+      current?.resolve?.(approved);
+      return null;
+    });
+  }, []);
+
   const handleSend = useCallback(async () => {
     if (conversationFork.blocked) return;
     const isConversationFollowup = liquidConversation && activeBotWorking;
@@ -4257,6 +4430,27 @@ export default function MessagesView({
       invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
 
       const currentReplyTo = switchesTopic ? null : originalReplyTo;
+      // Saving an Office file posts nothing on its own, so without this the agent keeps
+      // reading the attachment from before the edit and every later instruction is applied
+      // to stale bytes. Two rules keep that from turning into an avalanche of files: only
+      // the newest save of each document is carried, and the user is asked before anything
+      // is attached. A message that silently grows four attachments reads as a bug.
+      const pendingDocuments = annotationSendSnapshot.drafts.length
+        ? { latest: [], superseded: [] }
+        : listPendingVersionDocuments(topic);
+      const pendingVersions = pendingDocuments.latest;
+      if (pendingVersions.length > 0) {
+        const carry = pendingVersionAttachments(topic, attachmentsToSend);
+        if (carry.length > 0) {
+          // Asking inside the page rather than with window.confirm: the browser dialog looks
+          // like a warning, cannot be styled, and is silently auto-accepted in some webviews,
+          // which is how unattended attachments happened in the first place.
+          const approved = await askAttachApproval(carry.map(item => item.name || '未命名文档'));
+          // Declining is not a failure: the record stays, so the file is offered again on
+          // the next message instead of being silently dropped.
+          if (approved) attachmentsToSend = [...attachmentsToSend, ...carry];
+        }
+      }
       const contentBlocks = buildAtomicContentBlocks(protocolText, attachmentsToSend);
       const displayContent = text || summarizeAttachments(attachmentsToSend);
       const payload = attachmentsToSend.length > 0
@@ -4500,6 +4694,10 @@ export default function MessagesView({
           ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
           : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
+      // The newest file is now inside the conversation, so the local "unsent" record has
+      // done its job. Clear the older saves it replaced as well, or they keep their place
+      // in storage and reappear as extra attachments on a later message.
+      markVersionsSynced([...pendingVersions, ...pendingDocuments.superseded]);
       if (liquidConversation && activeTopicRef.current === topic && selectedAgent) {
         markConversationActivity(selectedAgent.uid || selectedAgent.id, 'waiting');
       }
@@ -4735,7 +4933,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [conversationFork.blocked, activeBotWorking, liquidConversation, markConversationActivity, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
+  }, [conversationFork.blocked, activeBotWorking, liquidConversation, markConversationActivity, askAttachApproval, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!canStopActiveBotWorking || isStopRequested) return;
@@ -7238,6 +7436,17 @@ export default function MessagesView({
 
   return (
     <>
+      {attachApproval ? (
+        <ConfirmDialog
+          title={`这条消息会带上 ${attachApproval.names.length} 个改过的文档`}
+          lines={attachApproval.names}
+          hint="一起发送，小八下一步读到的就是你改后的版本；只发文字的话，文档留在本地，下次再问还会提示。"
+          confirmLabel="一起发送"
+          cancelLabel="只发文字"
+          onConfirm={() => settleAttachApproval(true)}
+          onCancel={() => settleAttachApproval(false)}
+        />
+      ) : null}
       <div
         className={`v3-message-workspace${sidePanelOpen || wikiMemoryOpen ? ' has-preview' : ''}${previewExpanded ? ' cc-app-focus' : ''}${previewExpanded && previewContextOpen ? ' cc-app-context-open' : ''}${previewContextPlacement === 'below' ? ' cc-app-context-below' : ''}${previewComposerMinimized ? ' cc-app-composer-minimized' : ''}${previewComposerActive ? ' cc-app-composer-active' : ''}${previewDockDragging ? ' cc-app-dock-dragging' : ''}`}
         style={sidePanelOpen || wikiMemoryOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
@@ -8037,6 +8246,8 @@ export default function MessagesView({
               allowWorkspaceFullscreen
               annotationApi={api}
               onFileAnnotationSent={handleFileAnnotationSent}
+              onOfficeSave={handleOfficeSave}
+              onOfficeSync={handleOfficeSync}
             />
           </div>
         )}

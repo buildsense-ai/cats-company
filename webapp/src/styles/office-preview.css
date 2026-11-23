@@ -1,0 +1,968 @@
+/* Office canvas styles.
+   Kept in src/styles next to file-annotations.css so the office preview can be
+   imported by chat-message.jsx the same way the annotation styles already are. */
+
+.office-preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: #f4f5f7;
+  font-size: 13px;
+}
+
+.office-preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #e2e4e9;
+  background: #fff;
+  flex: 0 0 auto;
+}
+
+.office-preview-toolbar .office-page-btn {
+  border: 1px solid #dcdfe5;
+  background: #fff;
+  color: #2c323d;
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+  min-width: 28px;
+}
+
+.office-preview-toolbar .office-page-btn:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.office-preview-toolbar .office-page-label {
+  font-size: 12px;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
+.office-preview-toolbar .office-toolbar-spacer { flex: 1; }
+
+.office-preview-toolbar .office-dirty {
+  font-size: 11.5px;
+  color: #a06207;
+  background: #fdf6ea;
+  border: 1px solid #ecd9b5;
+  border-radius: 20px;
+  padding: 1px 9px;
+}
+
+.office-preview-toolbar .office-save-btn {
+  border: 1px solid #1f5eff;
+  background: #1f5eff;
+  color: #fff;
+  border-radius: 6px;
+  padding: 3px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.office-preview-toolbar .office-save-btn:disabled {
+  background: #c7d3f5;
+  border-color: #c7d3f5;
+  cursor: default;
+}
+
+.office-preview-body {
+  display: grid;
+  position: relative;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.office-preview-body[data-office-side="on"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.office-panel-resizer,
+[data-office-panel-resizer] {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  right: calc(10px + var(--office-panel-width, 300px));
+  z-index: 6;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  background: #eef0f4;
+  border-left: 1px solid #e2e4e9;
+  border-right: 1px solid #e2e4e9;
+  outline: none;
+}
+
+.office-panel-resizer:hover,
+.office-panel-resizer:focus-visible,
+[data-office-panel-resizer]:hover,
+[data-office-panel-resizer]:focus-visible {
+  background: #b9c9f8;
+  border-color: #8ea9f5;
+}
+
+@media (max-width: 900px) {
+  .office-preview-body { grid-template-columns: 1fr; }
+  .office-preview-body[data-office-side="on"] { grid-template-columns: 1fr; }
+  .office-preview-side { border-left: none; border-top: 1px solid #e2e4e9; }
+  .office-panel-resizer,
+  [data-office-panel-resizer] { display: none; }
+}
+
+.office-preview-stage {
+  /* Relative so the editing bar positions itself against the document rather than the page.
+     Without it the bar's absolute coordinates resolve against whichever ancestor happens to
+     be positioned, which is how a toolbar ends up far from the block it edits. */
+  position: relative;
+  padding: 18px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: auto;
+  min-height: 0;
+}
+
+.office-preview-stage .office-slide-canvas {
+  max-width: 100%;
+  box-shadow: 0 2px 14px rgba(16, 20, 28, .14);
+  border-radius: 2px;
+}
+
+/* Drag handle. Without a place to grab, a floating panel can only sit in one corner,
+   which is the same problem the fixed column had. */
+.office-panel-grip {
+  flex: 0 0 auto;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+  color: #9aa0ab;
+  font-size: 10px;
+  letter-spacing: .08em;
+  border-bottom: 1px solid #e2e4e9;
+  background: #f4f5f8;
+  border-radius: 10px 10px 0 0;
+}
+
+.office-panel-grip:hover,
+.office-panel-grip:active {
+  background: #e8ecf6;
+  color: #4b5563;
+}
+
+.office-panel-grip-dots { letter-spacing: .16em; }
+
+.office-preview-side {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  /* Height is a variable, not a stretch to the bottom edge: the panel floats now, so it
+     must be able to end above the slide it is parked on. max-height keeps a tall
+     choice from running past the preview in a short window. */
+  height: var(--office-panel-height, 520px);
+  max-height: calc(100% - 20px);
+  width: var(--office-panel-width, 300px);
+  border: 1px solid #e2e4e9;
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(16, 20, 28, .16);
+  background: #fcfcfd;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  z-index: 5;
+}
+
+/* Element list */
+.office-el-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 44%;
+  border-bottom: 1px solid #e2e4e9;
+}
+
+.office-el-list-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 12px 6px;
+  font-size: 10.5px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: #7c818b;
+  font-weight: 650;
+}
+
+.office-el-list-page { text-transform: none; letter-spacing: 0; }
+
+.office-el-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.office-el-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #474c56;
+  font-size: 12.5px;
+}
+
+.office-el-row:hover { background: #eef1f6; }
+.office-el-row.is-selected { background: #e8efff; color: #1f5eff; font-weight: 600; }
+
+.office-el-glyph {
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+  color: #9aa0ab;
+  flex: 0 0 auto;
+}
+
+.office-el-row.is-selected .office-el-glyph { color: #1f5eff; }
+
+.office-el-label { flex: 0 0 auto; }
+
+.office-el-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9aa0ab;
+  font-weight: 400;
+}
+
+.office-el-badge {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  color: #a06207;
+  background: #fdf6ea;
+  border: 1px solid #ecd9b5;
+  border-radius: 3px;
+  padding: 0 3px;
+  font-weight: 500;
+}
+
+.office-el-empty {
+  padding: 10px 12px;
+  color: #9aa0ab;
+  font-size: 12px;
+}
+
+/* Property panel */
+.office-props {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 12px 20px;
+}
+
+.office-props-empty {
+  color: #7c818b;
+  font-size: 12.5px;
+  padding-top: 20px;
+}
+
+.office-props-tip { color: #9aa0ab; font-size: 12px; }
+
+.office-props-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.office-props-title { font-size: 13px; font-weight: 650; }
+
+.office-props-path {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: #9aa0ab;
+  word-break: break-all;
+}
+
+.office-props-delete {
+  border: 1px solid #f2cdc9;
+  background: #fdeeec;
+  color: #b02a1f;
+  border-radius: 5px;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.office-props-delete:disabled { opacity: .4; cursor: default; }
+
+.office-field-group {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid #eef0f3;
+}
+
+.office-field-group-title {
+  font-size: 11px;
+  font-weight: 650;
+  color: #474c56;
+  margin-bottom: 7px;
+}
+
+.office-field {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.office-field-label {
+  display: block;
+  font-size: 10.5px;
+  color: #7c818b;
+  margin-bottom: 2px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+.office-field input,
+.office-field textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 7px;
+  border: 1px solid #dcdfe5;
+  border-radius: 5px;
+  background: #fff;
+  color: #222832;
+  resize: vertical;
+}
+
+.office-field input:focus,
+.office-field textarea:focus,
+.office-field select:focus {
+  outline: none;
+  border-color: #1f5eff;
+  box-shadow: 0 0 0 3px #e6edff;
+}
+
+.office-field select {
+  width: 100%;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 7px;
+  border: 1px solid #dcdfe5;
+  border-radius: 5px;
+  background: #fff;
+  color: #222832;
+}
+
+.office-field input[type="color"] {
+  padding: 2px;
+  height: 28px;
+}
+
+.office-field-scope {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 400;
+  color: #7c818b;
+  text-transform: none;
+}
+
+.office-toggle-row {
+  display: flex;
+  gap: 5px;
+}
+
+.office-toggle {
+  flex: 1 1 0;
+  min-width: 0;
+  border: 1px solid #dcdfe5;
+  background: #fff;
+  color: #474c56;
+  border-radius: 5px;
+  font-size: 11.5px;
+  padding: 4px 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.office-toggle:hover:not(:disabled) { border-color: #b9c0cc; }
+
+.office-toggle.is-on {
+  border-color: #1f5eff;
+  background: #e8efff;
+  color: #1f5eff;
+  font-weight: 600;
+}
+
+.office-toggle:disabled { opacity: .45; cursor: default; }
+
+.office-preview-notice {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #a06207;
+  background: #fdf6ea;
+  border-bottom: 1px solid #ecd9b5;
+}
+
+.office-preview-hint {
+  font-size: 11px;
+  color: #9aa0ab;
+}
+
+/* Insert menu */
+.office-insert { position: relative; }
+
+.office-insert-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  margin: 4px 0 0;
+  padding: 4px;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #e2e4e9;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(16, 20, 28, .12);
+  min-width: 172px;
+}
+
+.office-insert-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 6px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.office-insert-menu button:hover { background: #f0f2f6; }
+
+.office-insert-label {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #2c323d;
+}
+
+.office-insert-hint {
+  display: block;
+  font-size: 10.5px;
+  color: #9aa0ab;
+}
+
+.office-toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: #e2e4e9;
+  margin: 0 2px;
+}
+
+.office-el-row.is-picked {
+  background: #eef4ff;
+  color: #1f5eff;
+}
+
+.office-el-list-picked {
+  color: #1f5eff;
+  font-weight: 650;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.office-field input:disabled,
+.office-field textarea:disabled,
+.office-field select:disabled {
+  background: #f6f7f9;
+  color: #9aa0ab;
+}
+
+.office-field-hint { display: block; font-size: 10px; color: #9aa0ab; margin-top: 2px; }
+
+.office-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.office-field-readonly .office-field-value {
+  display: block;
+  font-size: 11.5px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: #474c56;
+  padding: 3px 7px;
+  background: #f6f7f9;
+  border: 1px solid #eef0f3;
+  border-radius: 5px;
+  word-break: break-all;
+}
+
+.office-field-note {
+  font-size: 11px;
+  color: #a06207;
+  background: #fdf6ea;
+  border: 1px solid #ecd9b5;
+  border-radius: 5px;
+  padding: 5px 8px;
+  margin: 0 0 8px;
+  line-height: 1.5;
+}
+
+.office-field-empty { font-size: 12px; color: #9aa0ab; margin: 0 0 8px; }
+
+.office-table-preview {
+  border: 1px solid #e2e4e9;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.office-table-row { display: flex; }
+
+.office-table-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  border-right: 1px solid #eef0f3;
+  border-bottom: 1px solid #eef0f3;
+  padding: 3px 5px;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Loading and error states reuse the preview panel's own placeholder rows. */
+.office-preview-state {
+  padding: 28px 18px;
+  text-align: center;
+  color: #7c818b;
+  font-size: 12.5px;
+}
+
+.office-preview-state.is-error { color: #b02a1f; }
+
+/* Write-to-document prompt. It asks for one optional sentence, so it stays small and
+   centred instead of taking over the panel. */
+.office-ask-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(16, 20, 28, .32);
+}
+
+.office-ask {
+  width: min(420px, calc(100% - 32px));
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(16, 20, 28, .22);
+  padding: 16px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.office-ask-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: #16181b;
+}
+
+.office-ask-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #6b7280;
+}
+
+.office-ask-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 72px;
+  border: 1px solid #dcdfe5;
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #16181b;
+  font-family: inherit;
+}
+
+.office-ask-input:focus {
+  outline: none;
+  border-color: #1f5eff;
+  box-shadow: 0 0 0 2px rgba(31, 94, 255, .14);
+}
+
+.office-ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.office-ask-actions .office-page-btn {
+  border: 1px solid #dcdfe5;
+  background: #fff;
+  color: #2c323d;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.office-ask-actions .office-save-btn {
+  border: 1px solid #1f5eff;
+  background: #1f5eff;
+  color: #fff;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Bottom-edge resize. Inside the panel so it tracks the real bottom even when max-height
+   cuts the chosen height short. */
+.office-panel-height-resizer {
+  flex: 0 0 auto;
+  height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+  background: #f4f5f8;
+  border-top: 1px solid #e2e4e9;
+  border-radius: 0 0 10px 10px;
+  position: relative;
+}
+
+.office-panel-height-resizer::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 26px;
+  height: 3px;
+  margin-left: -13px;
+  border-radius: 2px;
+  background: #c8ccd6;
+}
+
+.office-panel-height-resizer:hover,
+.office-panel-height-resizer:focus-visible {
+  background: #e8ecf6;
+  outline: none;
+}
+
+.office-panel-height-resizer:hover::after,
+.office-panel-height-resizer:focus-visible::after { background: #8ea9f5; }
+
+/* Scroll buttons for a panel shrunk below the point where its rows fit. The wheel still
+   scrolls; these give the bottom edge of a small panel something to press. */
+.office-panel-scroll {
+  display: none;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid #e2e4e9;
+  background: #f7f8fa;
+}
+
+.office-preview-side[data-office-panel-short] .office-panel-scroll { display: flex; }
+
+.office-panel-scroll-btn {
+  flex: 1 1 0;
+  height: 22px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #fff;
+  color: #5a616d;
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.office-panel-scroll-btn:hover:not(:disabled) { background: #eef0f4; border-color: #c3c8d2; }
+.office-panel-scroll-btn:disabled { opacity: .38; cursor: default; }
+/* ---------------------------------------------------------------------------
+   Editing bar: the compact toolbar that sits beside the block you clicked.
+
+   The property column used to be the only way in, so entering edit mode shoved the
+   document sideways and then left a permanent card parked over one corner. This bar
+   follows the selection instead, and only becomes a column when dragged to the edge.
+   --------------------------------------------------------------------------- */
+
+.office-bar {
+  position: absolute;
+  z-index: 9;
+  width: 330px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 0 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(16, 20, 28, .18);
+  font-size: 12px;
+  color: #303540;
+}
+
+.office-bar.is-dragging { box-shadow: 0 16px 40px rgba(16, 20, 28, .26); }
+
+.office-bar-grip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid #eceef2;
+  border-radius: 10px 10px 0 0;
+  background: #f6f7fa;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+  color: #7c818b;
+  font-size: 11px;
+}
+
+.office-bar-grip:hover { background: #eef1f8; color: #4b5563; }
+.office-bar-dots { letter-spacing: -1px; font-size: 11px; }
+.office-bar-name { font-weight: 600; color: #4b5563; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-bar-spacer { flex: 1 1 auto; }
+
+.office-bar-icon {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.office-bar-icon:hover { background: #e6eaf4; border-color: #d3d8e2; color: #303540; }
+
+.office-bar-text {
+  margin: 0 8px;
+  width: calc(100% - 16px);
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #16181b;
+  background: #fff;
+  resize: vertical;
+}
+
+.office-bar-text:focus { border-color: #1f5eff; outline: none; }
+
+.office-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  flex-wrap: wrap;
+}
+
+.office-bar-btn {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  border: 1px solid #dcdfe6;
+  border-radius: 5px;
+  background: #fff;
+  color: #303540;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.office-bar-btn:hover:not(:disabled) { border-color: #b9c0cc; background: #f6f7fa; }
+.office-bar-btn.is-on { border-color: #1f5eff; background: #e8efff; color: #1f5eff; font-weight: 700; }
+.office-bar-btn:disabled { opacity: .45; cursor: default; }
+
+/* Italic needs to look italic in the toolbar too, otherwise the button is unreadable as a
+   state: a slanted I is the only thing that tells the user which way it is set. */
+.office-bar-btn[title="斜体"] { font-style: italic; font-family: Georgia, "Times New Roman", serif; }
+
+.office-bar-swatch {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, .18);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.office-bar-swatch:hover:not(:disabled) { transform: scale(1.12); }
+.office-bar-swatch:disabled { opacity: .4; cursor: default; }
+
+.office-bar-sep { width: 1px; height: 16px; background: #e4e7ec; margin: 0 2px; }
+
+.office-bar-select {
+  height: 24px;
+  border: 1px solid #dcdfe6;
+  border-radius: 5px;
+  background: #fff;
+  color: #303540;
+  font-size: 11.5px;
+  padding: 0 2px;
+}
+
+.office-bar-note { margin: 0; padding: 2px 8px 0; color: #8a909b; font-size: 11.5px; }
+
+.office-bar-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 8px 0;
+  border-top: 1px solid #eceef2;
+  margin-top: 2px;
+}
+
+.office-bar-danger {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid #e6c6c6;
+  border-radius: 5px;
+  background: #fff;
+  color: #b4362f;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.office-bar-danger:hover:not(:disabled) { background: #fdf2f1; border-color: #d9a3a0; }
+.office-bar-danger:disabled { opacity: .45; cursor: default; }
+
+/* Docked posture. Same bar, pushed against the right edge and grown into a column: this is
+   the tools-palette shape the user asked for, and it is also where the full property panel
+   lives, so the floating bar can stay small. */
+.office-bar.is-docked {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: auto;
+  width: var(--office-panel-width, 320px);
+  border-radius: 0;
+  border: none;
+  border-left: 1px solid #e8eaef;
+  box-shadow: -10px 0 26px rgba(16, 20, 28, .07);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.office-bar.is-docked .office-bar-grip {
+  border-radius: 0;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.office-bar.is-docked .office-bar-text { resize: none; }
+
+/* The docked column is a real column: the document gives up the space instead of being
+   covered by a card. Without this the page slides underneath the palette and the right
+   edge of every line becomes unreadable while editing. */
+.office-preview-body[data-office-bar-docked="on"] .office-preview-stage {
+  padding-right: calc(var(--office-panel-width, 320px) + 18px);
+}
+
+/* The full property panel inside the docked column needs no frame of its own: the column
+   already is the frame. */
+.office-bar.is-docked .office-props {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 4px 10px 24px;
+}
+
+/* ---------------------------------------------------------------------------
+   In-page confirmation. window.confirm cannot be styled, reads as a browser warning,
+   and some webviews answer it automatically: all three are reasons a user could not
+   tell whether their document was about to be sent.
+   --------------------------------------------------------------------------- */
+
+.office-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(18, 21, 28, .38);
+}
+
+.office-confirm {
+  width: min(380px, 100%);
+  padding: 16px 18px 14px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgba(16, 20, 28, .28);
+  color: #23262d;
+}
+
+.office-confirm-title { font-size: 14px; font-weight: 650; line-height: 1.5; }
+
+.office-confirm-list {
+  margin: 10px 0 0;
+  padding: 8px 10px 8px 24px;
+  max-height: 132px;
+  overflow-y: auto;
+  border-radius: 8px;
+  background: #f6f7fa;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #40454f;
+  list-style: disc;
+}
+
+.office-confirm-hint { margin: 10px 0 0; font-size: 11.5px; line-height: 1.65; color: #7c818b; }
+
+.office-confirm-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.office-confirm-spacer { flex: 1 1 auto; }
+
+.office-confirm-btn {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid #dcdfe6;
+  border-radius: 7px;
+  background: #fff;
+  color: #40454f;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.office-confirm-btn:hover { background: #f4f6fa; border-color: #c3c8d2; }
+.office-confirm-btn.is-primary { background: #1f5eff; border-color: #1f5eff; color: #fff; font-weight: 600; }
+.office-confirm-btn.is-primary:hover { background: #1a51e0; border-color: #1a51e0; }
+.office-confirm-btn.is-quiet { border-color: transparent; color: #9aa0ab; }

@@ -3,6 +3,10 @@ import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const characters = text => segmenter ? Array.from(segmenter.segment(text), part => part.segment) : Array.from(text);
 const TAIL_CHARS = 6;
+// Matches the `cc-reply-text-arrive` duration in catsco-liquid-messages.css.
+// A character that is no longer the newest one is pushed past the end of its
+// own animation, so it renders at its final opacity instead of replaying.
+const ARRIVE_MS = 170;
 
 function useReducedMotion() {
   const [reduced, setReduced] = useState(() => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches));
@@ -20,7 +24,6 @@ function useReducedMotion() {
 // Remember consumed tokens so returning to a mounted/virtualized history does not replay.
 const seenArrivals = new WeakSet();
 const NORMAL_RATE = 24;
-const CHARACTER_MS = 1000 / NORMAL_RATE;
 
 export function useReplyReveal(text, streaming, { arrival, immediate = false } = {}) {
   const reduced = useReducedMotion();
@@ -88,10 +91,14 @@ export function FadingText({ text, enabled, reveal, tail = false }) {
   if (!state.animate && !tail) return text;
   const visible = state.parts.slice(0, state.count);
   const start = Math.max(0, visible.length - TAIL_CHARS);
-  return <>{visible.slice(0, start).join('')}{visible.slice(start).map((char, index) => (
-    <span className="cc-reply-new-text" key={start + index}
-      style={{ animationDelay: `${-(visible.length - start - index - 1) * CHARACTER_MS}ms` }}>{char}</span>
-  ))}</>;
+  return <>{visible.slice(0, start).join('')}{visible.slice(start).map((char, index) => {
+    const position = start + index;
+    // Only the newest character arrives. Everything before it is pushed past
+    // the end of the arrival animation so it renders settled: replaying the
+    // fade on every reveal tick is what made the whole reply shimmer.
+    return <span className="cc-reply-new-text" key={position}
+      style={position < visible.length - 1 ? { animationDelay: `-${ARRIVE_MS}ms` } : undefined}>{char}</span>;
+  })}</>;
 }
 
 function htmlText(html) {
@@ -112,6 +119,9 @@ function progressiveHtml(html, visibleCount) {
     nodes.push({ node, parts, offset });
     offset += parts.length;
   }
+  // Which visible character is the newest one overall. Only it may carry a
+  // running arrival animation; every earlier character is already settled.
+  const newest = visibleCount - 1;
   for (const { node, parts, offset: start } of nodes) {
     const end = Math.max(0, Math.min(parts.length, visibleCount - start));
     const stable = Math.max(0, Math.min(end, visibleCount - TAIL_CHARS - start));
@@ -120,8 +130,10 @@ function progressiveHtml(html, visibleCount) {
     for (let i = stable; i < end; i += 1) {
       const span = document.createElement('span');
       span.className = 'cc-reply-new-text';
-      // Preserve a character's arrival time across sanitized HTML replacements.
-      span.style.animationDelay = `${-Math.max(0, visibleCount - start - i - 1) * CHARACTER_MS}ms`;
+      // Re-rendering the sanitized HTML replaces every span, which restarts its
+      // animation. Push settled characters past the end of the fade so they are
+      // painted at full opacity immediately instead of shimmering again.
+      if (start + i < newest) span.style.animationDelay = `-${ARRIVE_MS}ms`;
       span.textContent = parts[i];
       fragment.appendChild(span);
     }
@@ -134,11 +146,18 @@ function progressiveHtml(html, visibleCount) {
   return template.innerHTML;
 }
 
-export function FadingMarkdown({ html, enabled, receivedVisible = false, className }) {
+export function FadingMarkdown({ html, enabled, receivedVisible = false, visibleCount = null, className }) {
   const text = useMemo(() => htmlText(html), [html]);
   const { count, animate } = useReplyReveal(text, enabled && !receivedVisible);
-  const decorated = useMemo(() => receivedVisible && enabled ? progressiveHtml(html, characters(text).length)
-    : animate ? progressiveHtml(html, count) : html, [animate, enabled, receivedVisible, text, html, count]);
+  // `visibleCount` lets the caller own how much is drawn while the HTML itself
+  // comes from the complete reply. The render branch then never changes as the
+  // reply arrives; only the number of characters inside it grows.
+  const decorated = useMemo(() => {
+    const total = characters(text).length;
+    if (visibleCount != null && enabled) return progressiveHtml(html, Math.max(0, Math.min(visibleCount, total)));
+    return receivedVisible && enabled ? progressiveHtml(html, total)
+      : animate ? progressiveHtml(html, count) : html;
+  }, [animate, count, enabled, receivedVisible, text, html, visibleCount]);
   return <div className={className} dangerouslySetInnerHTML={{ __html: decorated }} />;
 }
 

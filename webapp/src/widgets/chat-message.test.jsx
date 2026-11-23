@@ -290,6 +290,26 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.image-viewport-percentage').textContent).not.toBe('—');
   });
 
+  it('hides file annotations while the displayed Office file is unsynced', async () => {
+    const file = {
+      type: 'image', name: 'preview.png', url: '/uploads/images/preview.png', mime_type: 'image/png',
+      annotation_source: { topic_id: 'p2p_1_2', message_id: 30, attachment_index: 0, file_key: 'source.pptx' },
+      office_version_unsynced: true,
+    };
+    await act(async () => {
+      root.render(<FilePreviewPanel file={file} annotationApi={{}} onClose={vi.fn()} />);
+      await flushAsync();
+    });
+    expect(container.querySelector('.file-annotation-editor')).toBeNull();
+
+    await act(async () => {
+      root.render(<FilePreviewPanel file={{ ...file, office_version_unsynced: false }}
+        annotationApi={{}} onClose={vi.fn()} />);
+      await flushAsync();
+    });
+    expect(container.querySelector('.file-annotation-editor')).not.toBeNull();
+  });
+
   it('normalizes a disconnected media endpoint instead of showing the browser error', async () => {
     global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
 
@@ -4155,7 +4175,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('video.oc-rich-video-thumb').getAttribute('src')).toBe('/uploads/files/second.mp4');
   });
 
-  it('marks DOCX as downloadable without claiming browser preview support', async () => {
+  it('offers an in-browser preview for DOCX instead of a download-only card', async () => {
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -4181,8 +4201,10 @@ describe('ChatMessage rich file rendering', () => {
 
     expect(container.querySelector('.v3-attachment-name').textContent).toBe('handout.docx');
     expect(container.querySelector('.v3-attachment-size').textContent).toContain('Word');
+    // DOCX moved from download-only to the office canvas. The download link stays, so
+    // a user who wants the original file is not worse off than before.
     const previewButton = container.querySelector('button.v3-artifact-action');
-    expect(previewButton.disabled).toBe(true);
+    expect(previewButton.disabled).toBe(false);
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toBe('/uploads/files/handout.docx?download=1&name=handout.docx');
   });
 
