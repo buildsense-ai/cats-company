@@ -20,7 +20,7 @@ func legacyGrantFixture(now time.Time) (*commercialTestStore, commercialRelayUsa
 		{Model: "MiniMax-M3", Provider: "minimax", AllowedModels: []string{"MiniMax-M3"}},
 		{Model: "glm-5.3-flash", Provider: "glm-openai", AllowedModels: []string{"glm-5.3-flash"}},
 		{Model: "glm-5.3-flash", Provider: "glm-anthropic", AllowedModels: []string{"glm-5.3-flash"}},
-		{Model: "claude-sonnet-5-5", Provider: "foxcode-anthropic", AllowedModels: []string{"claude-sonnet-5-5"}},
+		{Model: "gpt-6-sol", Provider: "runtoken-codex-openai", AllowedModels: []string{"gpt-6-sol"}},
 	}
 	return store, commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{AvailableModelLimits: limits}}
 }
@@ -31,6 +31,9 @@ func TestCommercialGrantOptionsLegacyCatalogAndPaidRestrictions(t *testing.T) {
 	summary, _ := store.GetCommercialSummary(61)
 	relay.Limits.AvailableModelLimits = append(relay.Limits.AvailableModelLimits,
 		commercialRelayModelLimit{Model: "gpt-5.6-luna", Provider: "gpt", AllowedModels: []string{"gpt-5.6-luna"}},
+		// Production still lists the retired Claude Sonnet 5.5 in existing key
+		// scopes; the grant picker must never offer it again.
+		commercialRelayModelLimit{Model: "claude-sonnet-5-5", Provider: "foxcode-anthropic", AllowedModels: []string{"claude-sonnet-5-5"}},
 		commercialRelayModelLimit{Model: "broken-route"})
 	options := commercialGrantModels(summary, &relay, now)
 	if len(options) != 3 {
@@ -39,11 +42,14 @@ func TestCommercialGrantOptionsLegacyCatalogAndPaidRestrictions(t *testing.T) {
 	offered := false
 	for _, option := range options {
 		if option.ID == "claude-sonnet-5-5" {
+			t.Fatalf("retired model offered as a grant choice: %+v", options)
+		}
+		if option.ID == "gpt-6-sol" {
 			offered = true
 		}
 	}
 	if !offered {
-		t.Fatalf("claude-sonnet-5-5 unavailable: %+v", options)
+		t.Fatalf("gpt-6-sol unavailable: %+v", options)
 	}
 	relay.Limits.ModelLimits = relay.Limits.AvailableModelLimits
 	relay.Limits.AvailableModelLimits = nil
