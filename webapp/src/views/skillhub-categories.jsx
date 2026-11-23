@@ -87,8 +87,8 @@ export function readCategoryDrafts(uid) {
   } catch { return {}; }
 }
 
-export function SkillCategoryFilters({ value, onChange, showOther }) {
-  const categories = [['', '全部'], ...SKILL_CATEGORIES.filter(([id]) => id !== 'other' || showOther)];
+export function SkillCategoryFilters({ value, onChange, showOther, showRecommended }) {
+  const categories = [...(showRecommended ? [['recommended', '推荐']] : []), ['', '全部'], ...SKILL_CATEGORIES.filter(([id]) => id !== 'other' || showOther)];
   return <div className='cc-skillhub-category-filter' role='group' aria-label='按能力分类筛选'>
     {categories.map(([id, label]) => <button key={id} type='button' aria-pressed={value === id} onClick={() => onChange(id)}>{label}</button>)}
   </div>;

@@ -443,10 +443,13 @@ describe('SkillHubView', () => {
     vi.unstubAllGlobals();
   });
 
-  async function openCatalogue() {
+  async function openCatalogue({ all = true } = {}) {
     await act(async () => {
       Simulate.click(container.querySelector('#skillhub-catalogue-tab'));
       await Promise.resolve();
+    });
+    if (all) await act(async () => {
+      [...container.querySelectorAll('.cc-skillhub-category-filter button')].find(button => button.textContent === '全部').click();
     });
   }
 
@@ -4515,8 +4518,9 @@ describe('SkillHubView', () => {
     expect(container.querySelector('#skillhub-catalogue-tab').getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('.cc-skillhub-bot-picker select').value).toBe('44');
     expect(container.querySelector('#cc-skillhub-search-input').value).toBe('Code');
-    expect(container.querySelector('.cc-skillhub-category-filter button[aria-pressed="true"]').textContent).toBe('开发工具');
+    expect(container.querySelector('.cc-skillhub-category-filter button[aria-pressed="true"]').textContent).toBe('全部');
     expect(container.querySelector('.cc-skillhub-page').scrollTop).toBe(240);
+    await openCatalogue();
     expect(container.querySelector('.cc-skillhub-card h3').textContent).toBe('Code helper');
     expect(addButton(container).disabled).toBe(true);
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
@@ -4561,6 +4565,7 @@ describe('SkillHubView', () => {
     } };
     api.searchSkillHubSkills.mockRejectedValueOnce(Object.assign(new Error('Access denied'), { status }));
     await act(async () => root.render(<SkillHubView user={{ uid: 7 }} viewStateRef={viewStateRef} />));
+    await openCatalogue();
     expect(container.textContent).not.toContain('Private cached skill');
     expect(container.textContent).toContain('Access denied');
     expect(viewStateRef.current.catalogue).toEqual([]);

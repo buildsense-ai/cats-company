@@ -90,7 +90,7 @@ func resolveMarketplaceRoute(path string) (marketplaceRoute, bool) {
 		// Catalogue results are visibility-filtered. Exchange the current
 		// CatsCo identity even for GET so shared/private Skills remain visible
 		// to their owner and explicitly granted users.
-		return marketplaceRoute{upstream: "/api/catalogue/skills", methods: "GET", private: true, queries: []string{"q", "category", "platform", "agent_version", "search_mode", "limit", "cursor"}}, true
+		return marketplaceRoute{upstream: "/api/catalogue/skills", methods: "GET", private: true, queries: []string{"q", "category", "platform", "agent_version", "search_mode", "limit", "cursor", "scope"}}, true
 	case "/presentations":
 		return marketplaceRoute{upstream: "/api/skill-presentations", methods: "GET", private: true, queries: []string{"skillId", "version"}}, true
 	case "/presentations/draft":

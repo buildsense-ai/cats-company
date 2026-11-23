@@ -181,6 +181,7 @@ func TestSkillHubMarketplaceVisibilityReadsUseTemporarySession(t *testing.T) {
 	for _, path := range []string{
 		"/catalogue/skills?q=read&limit=20&cursor=abc&search_mode=name&category=documents&token=secret&url=http://evil",
 		"/presentations?skillId=author%2Fread&version=1.0.0&draft=true",
+		"/catalogue/skills?scope=recommended",
 	} {
 		r := marketplaceRequest("GET", path, "", 7)
 		r.Header.Set("Cookie", "catsco_session=another-account")
@@ -191,6 +192,7 @@ func TestSkillHubMarketplaceVisibilityReadsUseTemporarySession(t *testing.T) {
 		}
 	}
 	want := "exchange,GET:/api/catalogue/skills:category=documents&cursor=abc&limit=20&q=read&search_mode=name:session-7,POST:/api/auth/logout::session-7,exchange,GET:/api/skill-presentations:skillId=author%2Fread&version=1.0.0:session-7,POST:/api/auth/logout::session-7"
+	want += ",exchange,GET:/api/catalogue/skills:scope=recommended:session-7,POST:/api/auth/logout::session-7"
 	if strings.Join(actions, ",") != want {
 		t.Fatalf("actions=%v", actions)
 	}
