@@ -13,7 +13,8 @@ export function validIntro(c) {
     && strings(c.tags, 5, 40) && strings(c.steps, 6, 400) && strings(c.requirements, 8, 300) && strings(c.limitations, 8, 300)
     && (c.details === undefined || plain(c.details, 8000))
     && (c.scenarios === undefined || (Array.isArray(c.scenarios) && c.scenarios.length <= 3 && c.scenarios.every((s) => s && plain(s.title, 80) && plain(s.description, 400))))
-    && (!c.example || (['document', 'image', 'generic'].includes(c.example.kind) && plain(c.example.input, 2000) && plain(c.example.output, 2000)))
+    && (!c.example || (['document', 'image', 'generic'].includes(c.example.kind) && plain(c.example.input, 2000) && plain(c.example.output, 2000)
+      && (c.example.copyAsPrompt === undefined || typeof c.example.copyAsPrompt === 'boolean')))
     && (c.images === undefined || (Array.isArray(c.images) && c.images.length <= 6 && c.images.every((i) => i && /^pa_[a-f0-9]{32}$/.test(i.assetId) && plain(i.alt, 240) && i.alt.trim() && (i.caption === undefined || plain(i.caption, 500))))));
 }
 export const matchesTarget = (value, target) => value?.skillId === target.skillId && value?.version === target.version;
@@ -43,6 +44,7 @@ export function IntroImage({ image, preview = false }) {
 }
 
 export function RichIntroduction({ content, preview = false }) {
+  const [copyStatus, setCopyStatus] = useState('');
   if (!validIntro(content)) return null;
   const { example, images = [], scenarios = [], steps = [], requirements = [], limitations = [] } = content;
   const ResultIcon = example?.kind === 'image' ? ImageIcon : FileText;
@@ -55,7 +57,17 @@ export function RichIntroduction({ content, preview = false }) {
     {(example || images.length > 0) && <section className='cc-market-example' aria-label='输入与结果示例'>
       <div className='cc-market-section-title'><h3>看懂一个例子</h3><span>示意 / 非实测</span></div>
       {example && <div className={`cc-market-io is-${example.kind}`}>
-        <div><MessageSquare size={21} aria-hidden='true' /><small>你提供 / 你对 Bot 说</small><p>{example.input}</p></div>
+        <div><MessageSquare size={21} aria-hidden='true' /><small>你提供 / 你对 Bot 说</small><p>{example.input}</p>
+          {example.copyAsPrompt && <><button type='button' className='cc-market-more' onClick={async () => {
+            setCopyStatus('');
+            try {
+              await navigator.clipboard.writeText(example.input);
+              setCopyStatus('已复制');
+            } catch {
+              setCopyStatus('复制失败，可手动选中上方文字复制。');
+            }
+          }}>复制提示词</button><small role='status'>{copyStatus}</small></>}
+        </div>
         <ArrowRight className='cc-market-arrow' size={22} aria-hidden='true' />
         <div><ResultIcon size={23} aria-hidden='true' /><small>期望得到的结果</small><p>{example.output}</p>
           {example.kind === 'image' && !images.length && <small>作者尚未提供效果图；这里是文字说明。</small>}
@@ -219,7 +231,11 @@ export function IntroductionEditor({ target, initialHead, onState, onDone }) {
           const next = { ...content }; if (kind) next.example = { input: '', output: '', ...next.example, kind }; else delete next.example;
           setContent(next); setPreview(false);
         }}><option value=''>暂不添加示例</option><option value='document'>文档 / 信息整理</option><option value='image'>图像 / 视觉</option><option value='generic'>通用输入与结果</option></select></label>
-        {content.example && <><label>示例输入<textarea maxLength={2000} value={content.example.input} onChange={(e) => field('example', { ...content.example, input: e.target.value })} /></label><label>示例结果（示意 / 非实测）<textarea maxLength={2000} value={content.example.output} onChange={(e) => field('example', { ...content.example, output: e.target.value })} /></label></>}
+        {content.example && <>
+          <label>示例输入<textarea maxLength={2000} value={content.example.input} onChange={(e) => field('example', { ...content.example, input: e.target.value })} /></label>
+          <label><input type='checkbox' checked={content.example.copyAsPrompt === true} onChange={(e) => field('example', { ...content.example, copyAsPrompt: e.target.checked })} /> 允许用户复制示例输入作为提示词</label>
+          <label>示例结果（示意 / 非实测）<textarea maxLength={2000} value={content.example.output} onChange={(e) => field('example', { ...content.example, output: e.target.value })} /></label>
+        </>}
         {(content.scenarios || []).map((s, i) => <div className='cc-market-scenario-edit' key={i}>
           <label>场景 {i + 1} 标题<input maxLength={80} value={s.title} onChange={(e) => field('scenarios', content.scenarios.map((v, n) => n === i ? { ...v, title: e.target.value } : v))} /></label>
           <label>场景 {i + 1} 好处<textarea maxLength={400} value={s.description} onChange={(e) => field('scenarios', content.scenarios.map((v, n) => n === i ? { ...v, description: e.target.value } : v))} /></label>

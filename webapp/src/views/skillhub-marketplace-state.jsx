@@ -81,7 +81,7 @@ export function MarketplaceProvider({ children, browseStateRef }) {
 
 // The new filtered catalogue is display-only. It does not replace the legacy
 // metadata map used by Agent status, update detection, or installation rules.
-export function useMarketplaceCatalogue(query, { loadAll = false } = {}) {
+export function useMarketplaceCatalogue(query, { loadAll = false, recommended = false } = {}) {
   const { enabled, checkingCapabilities, capabilitiesUnavailable, refreshCapabilities, browseStateRef } = useMarketplace();
   const allowCachedCatalogue = checkingCapabilities || capabilitiesUnavailable;
   const saved = browseStateRef?.current?.marketplace;
@@ -89,8 +89,8 @@ export function useMarketplaceCatalogue(query, { loadAll = false } = {}) {
   const [category, setCategory] = useState(savedCurrent?.category || '');
   const [reload, setReload] = useState(0);
   const pending = useRef(null);
-  const key = JSON.stringify([query, category, reload, loadAll]);
-  const filterKey = JSON.stringify([query, category]);
+  const key = JSON.stringify([query, category, recommended, reload, loadAll]);
+  const filterKey = JSON.stringify(recommended ? [query, 'recommended', true] : [query, category]);
   const [state, setState] = useState(() => savedCurrent?.filterKey === filterKey
     ? { ...savedCurrent.data, key, loading: false, error: '' }
     : null);
@@ -108,8 +108,10 @@ export function useMarketplaceCatalogue(query, { loadAll = false } = {}) {
       let pageCount = previous?.pageCount || 0;
       const seenCursors = new Set();
       do {
-        result = await marketplaceApi.catalogue({ q: query, category, search_mode: 'name', limit: '30', ...(pageCursor ? { cursor: pageCursor } : {}) }, controller.signal);
+        result = await marketplaceApi.catalogue({ q: query, category: recommended ? '' : category, search_mode: 'name', limit: '30',
+          ...(recommended ? { scope: 'recommended' } : {}), ...(pageCursor ? { cursor: pageCursor } : {}) }, controller.signal);
         if (controller.signal.aborted || keyRef.current !== key) return;
+        if (recommended && result?.scope !== 'recommended') throw new Error('推荐接口暂不可用');
         if (!Array.isArray(result?.skills) || !Number.isSafeInteger(result.total) || result.total < 0
           || (result.nextCursor != null && typeof result.nextCursor !== 'string')) throw new Error('能力库数据格式暂不支持');
         entries = [...new Map([...entries, ...normalizeSkillHubSkills(result)].map((s) => [s.skillId, s])).values()];
@@ -137,7 +139,8 @@ export function useMarketplaceCatalogue(query, { loadAll = false } = {}) {
         setState(null);
         setReload((value) => value + 1); // Restart page one, never retry a mutation.
       } else setState({ ...(previous || retained || {}), key, loading: false,
-        error: loadAll ? '完整能力库暂未加载完成，以下仅对当前已加载的能力排序，请重试。'
+        error: recommended ? '暂时无法读取推荐，可重试或切换到「全部」。'
+          : loadAll ? '完整能力库暂未加载完成，以下仅对当前已加载的能力排序，请重试。'
           : previous ? '后续页面暂不可用，已保留当前结果。' : retained ? '刷新暂不可用，已保留上次加载的能力。请稍后重试。' : '新版分类暂不可用，以下显示原有能力库（未按分类筛选）。' });
     }
   };
@@ -158,7 +161,7 @@ export function useMarketplaceCatalogue(query, { loadAll = false } = {}) {
     : null;
   if (!enabled && capabilitiesUnavailable && visibleState?.skills) visibleState = { ...visibleState, loading: false,
     error: '暂时无法确认能力库服务状态，已保留上次加载的能力。请稍后重试。' };
-  return { enabled, cached: allowCachedCatalogue && Boolean(visibleState?.skills), category, setCategory, state: visibleState,
+  return { enabled, checkingCapabilities, cached: allowCachedCatalogue && Boolean(visibleState?.skills), category, setCategory, state: visibleState,
     more: () => { if (enabled && visibleState?.cursor && !visibleState.loading) load(visibleState.cursor, visibleState); },
     refresh: () => {
       if (!enabled) refreshCapabilities?.();

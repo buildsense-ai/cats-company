@@ -44,6 +44,22 @@ it('renders concrete escaped input/output, prerequisites and steps without raw H
   expect(container.textContent).toContain('有权访问源文档');
   expect(container.querySelector('img')).toBeNull();
   expect(container.textContent).toContain('<img src=x onerror=alert(1)>');
+  expect(button('复制提示词')).toBeUndefined();
+});
+
+it('copies only an explicitly enabled example prompt', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  const old = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  try {
+    await render(<RichIntroduction content={{ ...content, example: { ...content.example, copyAsPrompt: true } }} />);
+    await click('复制提示词');
+    expect(writeText).toHaveBeenCalledWith(content.example.input);
+    expect(container.querySelector('[role="status"]').textContent).toBe('已复制');
+  } finally {
+    if (old) Object.defineProperty(navigator, 'clipboard', old);
+    else delete navigator.clipboard;
+  }
 });
 
 it('rejects malformed presentation fields without crashing the legacy detail', () => {
@@ -158,10 +174,41 @@ it('never falls back from public image to private preview, and revokes object UR
   expect(marketplaceImage.mock.calls[1][1].preview).toBe(false);
 });
 
-function CatalogueHarness({ query = '', loadAll = false }) {
-  const market = useMarketplaceCatalogue(query, { loadAll });
+function CatalogueHarness({ query = '', loadAll = false, recommended = false }) {
+  const market = useMarketplaceCatalogue(query, { loadAll, recommended });
   return <><MarketplaceFilters market={market} /><pre>{JSON.stringify(market.state?.skills)}</pre><button onClick={market.more}>more</button></>;
 }
+
+it('defaults to the curated list, preserves its order, and keeps legacy entries in All', async () => {
+  vi.useFakeTimers();
+  const curated = [{ skillId: 'owner/zulu', displayName: 'Zulu' }, { skillId: 'owner/alpha', displayName: 'Alpha' }];
+  const all = [...curated, { skillId: 'owner/beta', displayName: 'Beta' }];
+  marketplaceApi.catalogue.mockImplementation(async ({ scope }) => (scope === 'recommended'
+    ? { skills: curated, total: curated.length, scope } : { skills: all, total: all.length }));
+  const show = (activeSection) => render(<MarketplaceProvider><SkillHubContent activeSection={activeSection}
+    agentOptions={[]} definition={{ skills: [] }} librarySkills={all} installedByID={new Map()} onChangeSection={() => {}} /></MarketplaceProvider>);
+  await show('catalogue');
+  expect(container.querySelector('.cc-skillhub-category-filter button').textContent).toBe('推荐');
+  expect(button('推荐').getAttribute('aria-pressed')).toBe('true');
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  const names = () => [...container.querySelectorAll('article h3')].map(node => node.textContent);
+  expect(names()).toEqual(['Zulu', 'Alpha']);
+  await click('全部');
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect([...names()].sort()).toEqual(['Alpha', 'Beta', 'Zulu']);
+  await click('推荐');
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect(names()).toEqual(['Zulu', 'Alpha']);
+});
+
+it('does not show the full catalogue as recommended if an older upstream ignores scope', async () => {
+  vi.useFakeTimers();
+  marketplaceApi.catalogue.mockResolvedValue({ skills: [{ skillId: 'not-selected' }], total: 1 });
+  await render(<MarketplaceProvider><CatalogueHarness recommended /></MarketplaceProvider>);
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect(container.textContent).not.toContain('not-selected');
+  expect(container.textContent).toContain('暂时无法读取推荐');
+});
 it('loads every page for name/oldest sorting and caches the complete result', async () => {
   vi.useFakeTimers();
   const browseStateRef = { current: {} };

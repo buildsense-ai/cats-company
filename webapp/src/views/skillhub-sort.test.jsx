@@ -62,6 +62,9 @@ describe('sorting controls', () => {
   let container; let root;
   let section; let query;
   const names = () => [...container.querySelectorAll('article h3')].map(node => node.textContent);
+  const selectAll = async () => act(async () => {
+    [...container.querySelectorAll('.cc-skillhub-category-filter button')].find(button => button.textContent === '全部').click();
+  });
   const render = async (owner = '7') => {
     await act(async () => root.render(<SkillHubContent
       activeSection={section} categoryOwnerUID={owner} selectedBotUID='42'
@@ -100,6 +103,7 @@ describe('sorting controls', () => {
     expect(container.querySelector('.cc-skillhub-sort-trigger').getAttribute('aria-label')).toBe('排序：名称 Z → A');
     query = 'Alpha'; await render(); expect(names()).toEqual(['Alpha']);
     query = ''; section = 'catalogue'; await render();
+    await selectAll();
     expect(names()).toEqual(['Alpha', 'Beta', 'Charlie', 'Zulu']);
     await choose('最早发布');
     expect(names()).toEqual(['Beta', 'Alpha', 'Charlie', 'Zulu']);
@@ -122,6 +126,7 @@ describe('sorting controls', () => {
       activeSection={section} categoryOwnerUID='7' selectedBotUID='42'
       agentOptions={[]} definition={{ skills: [] }} installedByID={new Map()} librarySkills={translations}
     />));
+    await selectAll();
     await choose('名称 A → Z'); expect(names()).toEqual(['Alpha', 'Zulu']);
     await act(async () => [...container.querySelectorAll('.cc-skillhub-language button')].find(node => node.textContent === '中文').click());
     expect(names()).toEqual(['阿尔法', '北京']);
@@ -161,6 +166,7 @@ describe('sorting controls', () => {
     };
     for (const activeSection of ['added', 'catalogue']) {
       await present(activeSection);
+      if (activeSection === 'catalogue') await selectAll();
       expect(names()).toEqual(['Beta', 'Zulu', 'Alpha']);
       expect(container.querySelectorAll('.cc-skillhub-card.is-updatable')).toHaveLength(2);
       expect(container.querySelector('.cc-skillhub-updates-filter')).toBeNull();

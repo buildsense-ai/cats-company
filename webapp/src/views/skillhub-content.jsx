@@ -40,6 +40,7 @@ export default function SkillHubContent(props) {
   const { navigate } = useMarketplace();
   const categoryOwner = props.categoryOwnerUID || 'guest';
   const [category, setCategory] = useState(props.browseStateRef?.current?.category || '');
+  const [catalogueCategory, setCatalogueCategory] = useState('recommended');
   const pageRef = useRef(null);
   const restoreScrollRef = useRef(props.browseStateRef?.current?.scrollTop || 0);
   useEffect(() => {
@@ -87,7 +88,11 @@ export default function SkillHubContent(props) {
     ...props,
     onSelectAgent: (value) => navigate ? navigate(() => props.onSelectAgent(value)) : props.onSelectAgent(value),
     onChangeSection: (value) => {
-      const change = () => { if (value === 'added') setCategory(''); props.onChangeSection(value); };
+      const change = () => {
+        if (value === 'added') setCategory('');
+        if (value === 'catalogue' && props.activeSection !== 'catalogue') setCatalogueCategory('recommended');
+        props.onChangeSection(value);
+      };
       if (navigate) navigate(change); else change();
     },
   };
@@ -101,6 +106,8 @@ export default function SkillHubContent(props) {
   const visibleSection = activeSection === 'custom' && !isLocalEnabled
     ? 'added'
     : activeSection;
+  const inCatalogue = visibleSection === 'catalogue';
+  const visibleCategory = inCatalogue ? catalogueCategory : category;
   return (
     <main ref={pageRef} className='cc-skillhub-page' onScroll={rememberScroll}
       onWheel={cancelScrollRestore} onTouchStart={cancelScrollRestore} onKeyDown={cancelScrollRestore}>
@@ -117,6 +124,7 @@ export default function SkillHubContent(props) {
         <SkillNavigation
           {...guardedProps}
           activeSection={visibleSection}
+          curatedOrder={inCatalogue && catalogueCategory === 'recommended'}
           addedCount={definition.skills.length}
           sortOrder={sortOrders[visibleSection]}
           onSortChange={value => changeSort(visibleSection, value)}
@@ -124,7 +132,8 @@ export default function SkillHubContent(props) {
         {visibleSection === 'custom' ? <CustomSkills {...categorizedProps} /> : (
           <>
             <div className='cc-skillhub-category-toolbar'>
-              <SkillCategoryFilters value={category} onChange={setCategory} showOther={category === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other')} />
+              <SkillCategoryFilters value={visibleCategory} onChange={inCatalogue ? setCatalogueCategory : setCategory}
+                showRecommended={inCatalogue} showOther={visibleCategory === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other')} />
               <SlidingSegments value={language} className='cc-skillhub-language' role='group' aria-label='能力介绍语言'>
                 <button type='button' aria-pressed={language === 'source'} onClick={() => changeLanguage('source')}>原文</button>
                 <button type='button' aria-pressed={language === 'zh-CN'} onClick={() => changeLanguage('zh-CN')}>中文</button>
@@ -136,7 +145,7 @@ export default function SkillHubContent(props) {
                 {skillAction?.type === 'remove' ? '正在移除能力…' : skillAction?.update ? '正在更新能力…' : '正在添加能力…'}
               </div>
             )}
-            {visibleSection === 'added' ? <AddedSkills key={props.selectedBotUID} {...categorizedProps} onChangeSection={guardedProps.onChangeSection} /> : <Catalogue key={props.selectedBotUID} {...categorizedProps} />}
+            {visibleSection === 'added' ? <AddedSkills key={props.selectedBotUID} {...categorizedProps} onChangeSection={guardedProps.onChangeSection} /> : <Catalogue key={props.selectedBotUID} {...categorizedProps} selectedCategory={catalogueCategory} />}
           </>
         )}
       </div>
@@ -243,7 +252,7 @@ function SkillNavigation(props) {
         {activeSection === 'added' && <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
           <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={16} aria-hidden='true' />
         </button>}
-        <CustomSelect
+        {!props.curatedOrder && <CustomSelect
           ariaLabel={`排序：${skillSortOptions(activeSection).find(([value]) => value === props.sortOrder)?.[1]}`}
           className='cc-skillhub-sort'
           triggerClassName='cc-skillhub-sort-trigger'
@@ -253,7 +262,7 @@ function SkillNavigation(props) {
           onValueChange={props.onSortChange}
         >
           {skillSortOptions(activeSection).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </CustomSelect>
+        </CustomSelect>}
       </div>}
     </nav>
   );
@@ -825,37 +834,42 @@ function Catalogue(props) {
     skill, props.addedSkillPresentationByID?.get(skill.skillId)?.details,
   ));
   const completeSort = props.sortOrders.catalogue !== 'time-desc' || hasUpdates;
-  const market = useMarketplaceCatalogue(skillSourceQuery(props.query || ''), { loadAll: completeSort });
+  const recommended = props.selectedCategory === 'recommended';
+  const market = useMarketplaceCatalogue(skillSourceQuery(props.query || ''), { loadAll: !recommended && completeSort, recommended });
   const hasMarketPage = (market.enabled || market.cached) && Boolean(market.state?.skills);
   // Render the legacy catalogue immediately while the optional marketplace
   // request is warming up. The cloud response replaces it in place once it
   // arrives, so opening this tab never waits on a secondary capability check.
-  const availableSkills = hasMarketPage
+  const availableSkills = recommended ? market.state?.skills || [] : hasMarketPage
     ? mergeMarketplaceLibrary(legacySkills, market.state.skills, market.category)
     : legacySkills;
   const search = normalizeSkillSearchValue(props.query);
-  const librarySkills = sortSkills(availableSkills
+  const librarySkills = recommended ? availableSkills : sortSkills(availableSkills
     .filter(skill => !props.selectedCategory || props.categoryOf(skill) === props.selectedCategory)
     .filter(skill => !search || [skill.displayName, skill.skillId, localizedSkillText(skill, 'zh-CN').name].some(value => normalizeSkillSearchValue(value).includes(search))), {
     order: props.sortOrders.catalogue, language: props.language, timeOf: skillUploadedTimestamp,
     isPriority: skill => !props.isReadOnly && isSkillHubUpdateAvailable(props.installedByID.get(skill.skillId), skill),
   });
-  const loading = (market.enabled ? Boolean(market.state?.loading) : loadingCatalogue) || loadingLibraryLocalSkills;
+  const loading = recommended ? market.checkingCapabilities || (market.enabled && (!market.state || market.state.loading))
+    : (market.enabled ? Boolean(market.state?.loading) : loadingCatalogue) || loadingLibraryLocalSkills;
+  const empty = recommended && !market.enabled ? <EmptyState icon={<Sparkles size={21} />} title='推荐暂不可用' copy='可切换到「全部」浏览能力。' />
+    : recommended && !search ? <EmptyState icon={<Sparkles size={21} />} title='暂无推荐能力' copy='可切换到「全部」浏览能力。' />
+      : <EmptyState icon={<Search size={21} />} title='没有找到匹配的能力' copy='换一个更宽泛的关键词再试试。' />;
   return (
     <section id='skillhub-catalogue-panel' data-loading-region='' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
       {market.state?.error && <div className='cc-skillhub-alert error' role='status'>{market.state.error}<button type='button' className='icon-button' disabled={market.state.loading} onClick={market.refresh} aria-label='重新加载能力分类' title='重试'><RefreshCw size={15} /></button></div>}
-      {!hasMarketPage && catalogueError && <div className='cc-skillhub-alert error' role='alert'>{catalogueError}
+      {!recommended && !hasMarketPage && catalogueError && <div className='cc-skillhub-alert error' role='alert'>{catalogueError}
         {legacySkills.length > 0 && <span> · 已保留上次加载的能力。</span>}
         <button type='button' className='icon-button' disabled={loadingCatalogue} onClick={() => props.onSearch(props.query)} aria-label='重新加载能力库' title='重试'><RefreshCw size={15} /></button>
       </div>}
-      {libraryLocalError && <div className='cc-skillhub-alert error cc-skillhub-library-alert' role='alert'>{libraryLocalError}</div>}
+      {!recommended && libraryLocalError && <div className='cc-skillhub-alert error cc-skillhub-library-alert' role='alert'>{libraryLocalError}</div>}
       {loading && librarySkills.length === 0 ? (
         <LoadingState kind='skills' label='正在读取能力库' />
       ) : librarySkills.length === 0 ? (
-        <EmptyState icon={<Search size={21} />} title='没有找到匹配的能力' copy='换一个更宽泛的关键词再试试。' />
+        (!recommended || !market.state?.error) && empty
       ) : (
         <>
-          {loading && <div className='cc-skillhub-library-status' role='status'><RefreshCw className='is-spinning' size={13} aria-hidden='true' /> {completeSort ? '正在加载完整能力库以排序…' : '正在更新能力…'}</div>}
+          {loading && <div className='cc-skillhub-library-status' role='status'><RefreshCw className='is-spinning' size={13} aria-hidden='true' /> {!recommended && completeSort ? '正在加载完整能力库以排序…' : '正在更新能力…'}</div>}
           <div className='cc-skillhub-grid'>
             {librarySkills.map((skill) => <CatalogueCard key={skill.skillId} skill={skill} {...props} definitionReady={props.definitionReady && !market.cached} />)}
           </div>
