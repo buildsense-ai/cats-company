@@ -13,6 +13,7 @@ import {
   setToken as setSessionToken,
 } from './auth-session';
 import { fetchWithRequestError } from './utils/request-error';
+import { redeemRelayInvite } from './utils/plan-invite';
 import { normalizeArtifactOpenBinding } from './gateway-annotations';
 
 // Each browser tab owns its opens. Capture the original auth token solely for
@@ -485,6 +486,16 @@ async function uploadRawFile(path, file, { authToken = '' } = {}) {
 export const api = {
   ...authApi,
   getMe: () => request('GET', '/api/me'),
+  getWikiMemoryAvailability: ({ signal } = {}) => request('GET', '/api/memories/availability', undefined, { signal }),
+  getWikiMemoryCatalog: (agentUid, { topicId, cursor, signal } = {}) => {
+    const query = new URLSearchParams({ limit: '100' });
+    if (topicId) query.set('topic_id', topicId);
+    if (cursor) query.set('cursor', cursor);
+    return request('GET', `/api/agents/${encodeURIComponent(agentUid)}/memories?${query}`, undefined, { signal });
+  },
+  getWikiMemoryDocument: (agentUid, id, { signal } = {}) => request(
+    'GET', `/api/agents/${encodeURIComponent(agentUid)}/memories/${encodeURIComponent(id)}`, undefined, { signal },
+  ),
   createSTTSession: () => request('POST', '/api/stt/sessions'),
   getRelayAdminAccess: () => request('GET', '/api/admin/relay/access'),
   relayAdminProxyURL: (path) => `/api/admin/relay${path}`,
@@ -699,7 +710,7 @@ export const api = {
   getRelayConfig: (options = {}) => request('GET', '/api/relay/config', undefined, options),
   getRelayCommercial: (options = {}) => request('GET', '/api/relay/commercial', undefined, options),
   getModelCreditAccount: (options = {}) => request('GET', '/api/relay/credits', undefined, options),
-  redeemRelayInvite: (code) => request('POST', '/api/relay/invite/redeem', { code }),
+  redeemRelayInvite,
   getCommercialCatalog: (options = {}) => request('GET', '/api/relay/commercial/catalog', undefined, options),
   getCommercialOrders: (orderNo = '', options = {}) => request('GET', `/api/relay/commercial/orders${orderNo ? `?order_no=${encodeURIComponent(orderNo)}` : ''}`, undefined, options),
   createCommercialOrder: (planId, channel, clientRequestId, options = {}) => request('POST', '/api/relay/commercial/orders', {
@@ -711,6 +722,7 @@ export const api = {
     kind: 'credit_topup', amount_fen: amountFen, channel: 'alipay_page', client_request_id: clientRequestId,
   }, options),
   getCloudWorkerUpgradeQuote: (name, plan, options = {}) => request('GET', `/api/cloud-workers/upgrade?${new URLSearchParams({ name, plan })}`, undefined, options),
+  getCloudWorkerUpgradeConfiguration: (name, options = {}) => request('GET', `/api/cloud-workers/upgrade?${new URLSearchParams({ name, view: 'configuration' })}`, undefined, options),
   getCloudWorkerUpgradeOperation: (operationId, options = {}) => request('GET', `/api/cloud-workers/upgrade?${new URLSearchParams({ operation_id: operationId })}`, undefined, options),
   upgradeCloudWorker: (name, plan, quoteId, clientRequestId, options = {}) => request('POST', '/api/cloud-workers/upgrade', {
     name, plan, quote_id: quoteId, client_request_id: clientRequestId,

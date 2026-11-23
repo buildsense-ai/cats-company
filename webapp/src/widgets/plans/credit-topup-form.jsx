@@ -28,7 +28,7 @@ export default function CreditTopupForm({ config, disabled = false, onSelect }) 
       });
     }}>
       <div className="credit-topup-heading"><strong>点数充值</strong><span>支付宝支付</span></div>
-      <p>点数可用于模型消耗和机器升配。充值不附带机器，不改变套餐周期；套餐另含机器权益和周期点数。</p>
+      <p>充值点数可用于模型消耗和机器升配。充值不附带机器，也不改变套餐周期。</p>
       <div className="credit-topup-presets" role="group" aria-label="快捷充值金额">
         {(config.presets_fen || []).filter(value => value >= minimum && value <= maximum).map(value => (
           <button key={value} type="button" className={fen === value ? 'active' : ''}
@@ -46,7 +46,7 @@ export default function CreditTopupForm({ config, disabled = false, onSelect }) 
       <div className="credit-topup-footer"><div className="credit-topup-total"><span>到账点数</span><strong aria-live="polite">{credits} 点</strong></div>
         <button type="submit" disabled={disabled || !valid}>支付宝充值</button>
       </div>
-      <small>充值进入付费余额；如有欠款会先抵扣欠款。月额度仍按原周期刷新。</small>
+      <small>充值进入付费余额，如有欠款会先抵扣欠款。已有月额度仍按原周期刷新。</small>
     </form>
   );
 }

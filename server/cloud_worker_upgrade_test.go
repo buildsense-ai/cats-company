@@ -311,6 +311,109 @@ func TestMachineUpgradeCostIsProratedByRemainingTerm(t *testing.T) {
 	}
 }
 
+func TestMachineUpgradeConfigurationIsOwnerScopedAndReadOnly(t *testing.T) {
+	h, db := machineUpgradeTestHandler(t, "")
+	db.terms["bot-worker"] = &types.MachinePlanTerm{
+		OwnerUID: 77, Plan: types.MachinePlanStandard, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	path := "/api/cloud-workers/upgrade?name=bot-worker&view=configuration"
+	other := httptest.NewRecorder()
+	h.HandleMachineUpgrade(other, machineUpgradeRequest(http.MethodGet, path, "", 78))
+	if other.Code != http.StatusNotFound {
+		t.Fatalf("another owner could read configuration: %d %s", other.Code, other.Body.String())
+	}
+	rec := httptest.NewRecorder()
+	h.HandleMachineUpgrade(rec, machineUpgradeRequest(http.MethodGet, path, "", 77))
+	var view struct {
+		CurrentPlan string `json:"current_plan"`
+		ExpiresAt   string `json:"upgrade_expires_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); rec.Code != http.StatusOK || err != nil ||
+		view.CurrentPlan != types.MachinePlanStandard || view.ExpiresAt != db.terms["bot-worker"].ExpiresAt.UTC().Format(time.RFC3339) {
+		t.Fatalf("unexpected configuration: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(db.quotes) != 0 || len(db.operations) != 0 {
+		t.Fatal("configuration read created a quote or operation")
+	}
+}
+
+func TestMachineUpgradeRejectsTargetAlreadyRunning(t *testing.T) {
+	h, db := machineUpgradeTestHandler(t, "change-plan-stub")
+	quoted := machineUpgradeQuoteForTest(t, h, 77)
+	h.statusLoaded = true
+	h.statusUpdatedAt = time.Now()
+	h.statusSnapshot = parseCloudWorkerStatusTSV("worker-bot-worker\trunning\t-\t-\t1.6.9\t-\t\tpacked\tpro\n")
+	rec := httptest.NewRecorder()
+	h.HandleMachineUpgrade(rec, machineUpgradeRequest(http.MethodGet, "/api/cloud-workers/upgrade?name=bot-worker&plan=pro", "", 77))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) || len(db.quotes) != 1 {
+		t.Fatalf("same tier quote must be disabled: %d %s", rec.Code, rec.Body.String())
+	}
+	before := db.balance
+	rec = httptest.NewRecorder()
+	h.HandleMachineUpgrade(rec, machineUpgradeRequest(http.MethodPost, "/api/cloud-workers/upgrade", `{"name":"bot-worker","plan":"pro","quote_id":"`+quoted.QuoteID+`","client_request_id":"already-running-1"}`, 77))
+	if rec.Code != http.StatusConflict || db.balance != before {
+		t.Fatalf("same running tier must not charge: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMachineUpgradeAfterEarlyRenewalProratesEachTier(t *testing.T) {
+	t.Setenv("CATSCO_MACHINE_PLAN_PRICES_FEN", "")
+	start := time.Now().UTC().Truncate(time.Second)
+	const half = 15 * 24 * time.Hour
+	pricing := machinePlanPricing{base: types.MachinePlanLight, term: &types.MachinePlanTerm{
+		Plan: types.MachinePlanStandard, ExpiresAt: start.Add(half),
+	}}
+	const want = 12000 * commercialTopupUnitsPerFen // 5000 for standard → pro, 7000 for light → pro.
+	if got, ok := pricing.cost(types.MachinePlanPro, start, start.Add(2*half)); !ok || got != want {
+		t.Fatalf("combined cost = %d, %v, want %d", got, ok, want)
+	}
+	_, segments, ok := pricing.price(types.MachinePlanPro, start, start.Add(2*half))
+	const halfSeconds = int64(half / time.Second)
+	if !ok || len(segments) != 2 ||
+		segments[0] != (machineUpgradePriceSegment{FromPlan: types.MachinePlanStandard, Remaining: halfSeconds, DifferenceFen: 10000}) ||
+		segments[1] != (machineUpgradePriceSegment{FromPlan: types.MachinePlanLight, Remaining: halfSeconds, DifferenceFen: 14000}) {
+		t.Fatalf("incorrect split price breakdown: %+v", segments)
+	}
+	if got := pricing.planAt(start.Add(half)); got != types.MachinePlanLight {
+		t.Fatalf("expired upgrade credited as %q", got)
+	}
+
+	h, db := machineUpgradeTestHandler(t, "change-plan-stub")
+	h.credits.(*platformLifecycleStub).lifecycles[0].PackageExpiresAt = start.Add(2 * half)
+	pricing.term.OwnerUID = 77
+	db.terms["bot-worker"] = pricing.term
+	quote := machineUpgradeQuoteForTest(t, h, 77)
+	quotedAt := db.quotes[quote.QuoteID].ExpiresAt.Add(-machineUpgradeQuoteTTL)
+	expected, _ := pricing.cost(types.MachinePlanPro, quotedAt, start.Add(2*half))
+	if quote.FromPlan != types.MachinePlanStandard || quote.CostUnits != expected {
+		t.Fatalf("unexpected split quote: %+v", quote)
+	}
+	// The covered portion changes while the current tier stays the same.
+	pricing.term.ExpiresAt = start.Add(half / 2)
+	before := db.balance
+	rec := httptest.NewRecorder()
+	h.HandleMachineUpgrade(rec, machineUpgradeRequest(http.MethodPost, "/api/cloud-workers/upgrade", `{"name":"bot-worker","plan":"pro","quote_id":"`+quote.QuoteID+`","client_request_id":"split-price-stale"}`, 77))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "price changed") || db.balance != before {
+		t.Fatalf("changed split quote must not charge: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMachineUpgradeHeavyQuoteShowsLegacyProration(t *testing.T) {
+	t.Setenv("CATSCO_MACHINE_PLAN_PRICES_FEN", "")
+	start := time.Unix(0, 0).UTC()
+	const remaining = 1973782
+	end := start.Add(remaining * time.Second)
+	cost, segments, ok := (machinePlanPricing{base: types.MachinePlanLight}).price(types.MachinePlanHeavy, start, end)
+	if !ok || cost != 41120458334 || len(segments) != 1 ||
+		segments[0] != (machineUpgradePriceSegment{FromPlan: types.MachinePlanLight, Remaining: remaining, DifferenceFen: 54000}) {
+		t.Fatalf("legacy quote: %d, %+v, %v", cost, segments, ok)
+	}
+	full, ok := machineUpgradeCostUnits(types.MachinePlanLight, types.MachinePlanHeavy, 30*24*time.Hour)
+	if !ok || full != 54000*commercialTopupUnitsPerFen {
+		t.Fatalf("full price: %d, %v", full, ok)
+	}
+}
+
 func TestMachineUpgradeQuoteRequiresPackedOwnedActiveWorker(t *testing.T) {
 	const uid = int64(77)
 	t.Setenv("CATSCO_MACHINE_PLAN_PRICES_FEN", "")
@@ -318,24 +421,28 @@ func TestMachineUpgradeQuoteRequiresPackedOwnedActiveWorker(t *testing.T) {
 
 	// 正常报价：绑定 owner、机器、当前档、到期时间、目标档与费用。
 	recorder := httptest.NewRecorder()
+	requestStarted := time.Now()
 	h.HandleMachineUpgrade(recorder, machineUpgradeRequest(http.MethodGet, "/api/cloud-workers/upgrade?name=bot-worker&plan=pro", "", uid))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("quote: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var quote struct {
-		Enabled        bool              `json:"enabled"`
-		QuoteID        string            `json:"quote_id"`
-		FromPlan       string            `json:"from_plan"`
-		ToPlan         string            `json:"to_plan"`
-		CostUnits      int64             `json:"cost_units"`
-		BalanceUnits   int64             `json:"balance_units"`
-		NeedsMigration bool              `json:"needs_migration"`
-		Prices         map[string]int64  `json:"prices_fen"`
-		UnitsPerCredit int64             `json:"units_per_credit"`
-		WorkerExpires  string            `json:"worker_expires_at"`
-		ExpiresAt      string            `json:"expires_at"`
-		Reason         string            `json:"reason"`
-		Extra          map[string]string `json:"-"`
+		Enabled        bool                         `json:"enabled"`
+		QuoteID        string                       `json:"quote_id"`
+		FromPlan       string                       `json:"from_plan"`
+		ToPlan         string                       `json:"to_plan"`
+		CostUnits      int64                        `json:"cost_units"`
+		BalanceUnits   int64                        `json:"balance_units"`
+		NeedsMigration bool                         `json:"needs_migration"`
+		Prices         map[string]int64             `json:"prices_fen"`
+		UnitsPerCredit int64                        `json:"units_per_credit"`
+		WorkerExpires  string                       `json:"worker_expires_at"`
+		ExpiresAt      string                       `json:"expires_at"`
+		ExpiresInMS    *int64                       `json:"expires_in_ms"`
+		PricingTerm    int64                        `json:"pricing_term_seconds"`
+		Segments       []machineUpgradePriceSegment `json:"pricing_segments"`
+		Reason         string                       `json:"reason"`
+		Extra          map[string]string            `json:"-"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &quote); err != nil {
 		t.Fatalf("decode quote: %v %s", err, recorder.Body.String())
@@ -349,12 +456,22 @@ func TestMachineUpgradeQuoteRequiresPackedOwnedActiveWorker(t *testing.T) {
 	if quote.UnitsPerCredit != commercialTopupUnitsPerFen || quote.Prices[types.MachinePlanPro] != 19900 {
 		t.Fatalf("quote must carry the price basis: %s", recorder.Body.String())
 	}
+	if quote.PricingTerm != machineUpgradeTermSeconds || len(quote.Segments) != 1 || quote.Segments[0].DifferenceFen != 14000 {
+		t.Fatalf("quote must explain the remaining-term discount: %s", recorder.Body.String())
+	}
 	if quote.CostUnits <= 0 || quote.BalanceUnits != 20000*commercialTopupUnitsPerFen {
 		t.Fatalf("quote must carry cost and balance: %s", recorder.Body.String())
 	}
 	expires, err := time.Parse(time.RFC3339, quote.ExpiresAt)
-	if err != nil || expires.Sub(time.Now().UTC()) > 5*time.Minute+time.Second {
-		t.Fatalf("quote TTL must be 5 minutes: %s", quote.ExpiresAt)
+	if err != nil || quote.ExpiresInMS == nil || *quote.ExpiresInMS < 0 || *quote.ExpiresInMS > machineUpgradeQuoteTTL.Milliseconds() {
+		t.Fatalf("quote must carry a valid remaining duration: %s", recorder.Body.String())
+	}
+	if expires.After(time.Now().Add(machineUpgradeQuoteTTL)) {
+		t.Fatalf("quote TTL must be at most 5 minutes: %s", quote.ExpiresAt)
+	}
+	reported := time.Duration(*quote.ExpiresInMS) * time.Millisecond
+	if difference := reported - max(0, time.Until(expires)); difference < -time.Millisecond || difference > time.Since(requestStarted) {
+		t.Fatalf("remaining duration %v does not match quote expiry %s", reported, expires)
 	}
 	if len(db.quotes) != 1 {
 		t.Fatalf("quote was not persisted: %#v", db.quotes)
@@ -461,7 +578,7 @@ func TestMachineUpgradeExecuteRejectsStaleQuote(t *testing.T) {
 	}
 	// 操作行会被留下来并标记失败：既没有扣费，也不占着这台机器的「进行中」名额。
 	for _, op := range db.operations {
-		if op.Status != types.MachineUpgradeStatusFailed || op.Held {
+		if op.Status != types.MachineUpgradeStatusFailed || op.Held || op.Settled || op.Attempts != 0 {
 			t.Fatalf("a refused quote must leave a failed, unheld operation: %#v", op)
 		}
 	}

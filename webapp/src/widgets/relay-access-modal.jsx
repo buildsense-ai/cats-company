@@ -1784,6 +1784,17 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', initia
                       升级套餐
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="oc-btn oc-btn-default"
+                    aria-haspopup="dialog"
+                    onClick={() => {
+                      onClose();
+                      window.dispatchEvent(new CustomEvent('cc:open-cloud-worker-manager', { detail: { showAll: true } }));
+                    }}
+                  >
+                    机器配置升配
+                  </button>
                 </div>
               </div>
               <div

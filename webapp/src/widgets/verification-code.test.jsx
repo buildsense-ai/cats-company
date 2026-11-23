@@ -59,4 +59,22 @@ describe.each([
     expect(button.textContent).toBe('60秒');
     expect(container.textContent).not.toContain('请求暂时失败');
   });
+
+  it('waits the server retry window instead of the default countdown after a 429', async () => {
+    const limited = new Error('操作太频繁，请稍后再试');
+    limited.status = 429;
+    limited.data = { error: '操作太频繁，请稍后再试', retry_after_seconds: 200 };
+    authApi[apiName].mockRejectedValueOnce(limited);
+    await act(async () => root.render(renderForm()));
+    const email = container.querySelector('input[type="email"]');
+    await act(async () => Simulate.change(email, { target: { value: 'review@example.com' } }));
+    const button = [...container.querySelectorAll('button')].find((node) => node.textContent === '发送验证码');
+    await act(async () => {
+      Simulate.click(button);
+    });
+    await act(async () => {});
+    expect(container.textContent).toContain('操作太频繁');
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe('200秒');
+  });
 });

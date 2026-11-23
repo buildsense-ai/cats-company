@@ -456,19 +456,23 @@ export default function CloudWorkerPanel({
                         : '暂未确认'}</b></span>
                     <span>应用版本 <b>{worker.app_version || '暂未读取'}</b></span>
                     <span>基础镜像 <b>{worker.cloud_version || '暂未读取'}</b></span>
-                    {worker.package_expires_at && (() => {
+                    {(worker.package_expires_at || worker.expiry_mode === 'permanent' || worker.expiry_mode === 'follow_plan') && (() => {
                       const span = remainingUntil(worker.package_expires_at, nowMs);
                       const urgent = isUrgentExpiry(span);
                       const stateLabel = lifecycleStateLabel(worker.lifecycle_state);
                       const modeLabel = expiryModeLabel(worker.expiry_mode);
+                      const renewalLabel = worker.expiry_mode === 'follow_plan'
+                        ? (worker.cats_auto_renew === true ? 'Cats 自动续费已开启'
+                          : worker.cats_auto_renew === false ? 'Cats 自动续费未开启' : '续费状态待确认')
+                        : '';
                       return (
                         <span>
                           机器到期时间{' '}
                           <b style={urgent ? { color: 'var(--v3-danger, #d33)' } : undefined}>
-                            {formatDate(worker.package_expires_at)}
+                            {formatDate(worker.package_expires_at) || (worker.expiry_mode === 'permanent' ? '长期有效' : '待同步')}
                             {span.known ? `（${remainingLabel(span)}）` : ''}
                           </b>
-                          {[stateLabel, modeLabel].filter(Boolean).map(label => ` · ${label}`).join('')}
+                          {[stateLabel, worker.expiry_mode === 'permanent' && !span.known ? '' : modeLabel, renewalLabel].filter(Boolean).map(label => ` · ${label}`).join('')}
                         </span>
                       );
                     })()}
@@ -486,9 +490,6 @@ export default function CloudWorkerPanel({
                     ) : worker.retention_days > 0 ? (
                       <span>数据保留 <b>普通机器停服后通常 {worker.retention_days} 天，以逐台截止为准</b></span>
                     ) : null}
-                    {isSharedWorker(worker) && (
-                      <span>连接方式 <b>通过平台连接（共享集群无 SSH / 无公网 IP）</b></span>
-                    )}
                     {!worker.app_version && !worker.cloud_version && !worker.cloud_image_id && (
                       <span>
                         {['provisioning', 'creating'].includes(String(shownStatus || '').toLowerCase())

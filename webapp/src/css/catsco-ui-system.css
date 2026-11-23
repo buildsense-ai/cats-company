@@ -75,6 +75,8 @@
   --cc-radius-sm: 6px;
   --cc-radius-md: 8px;
   --cc-radius-lg: 12px;
+  --cc-header-action-size: 30.4px;
+  --cc-header-action-icon-size: 19px;
   /* Shared menu-item rhythm. Containers keep their own width and placement. */
   --cc-menu-item-height: 40px;
   --cc-menu-item-gap: 10px;
@@ -1205,13 +1207,13 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-sidebar-collapse-btn {
-  width: 30.4px;
-  height: 30.4px;
+  width: var(--cc-header-action-size);
+  height: var(--cc-header-action-size);
 }
 
 .v3-sidebar-collapse-btn > svg {
-  width: 19px;
-  height: 19px;
+  width: var(--cc-header-action-icon-size);
+  height: var(--cc-header-action-icon-size);
 }
 
 .v3-sidebar-collapse-btn:hover,

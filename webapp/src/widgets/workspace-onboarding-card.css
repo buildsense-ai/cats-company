@@ -54,7 +54,6 @@
 .cc-workspace-onboarding-invite-form input::placeholder { color: var(--cc-muted); }
 .cc-workspace-onboarding-invite-form input:hover { border-color: var(--cc-muted); }
 .cc-workspace-onboarding-invite-form input:focus { outline: none; border-color: var(--cc-text-secondary); }
-.cc-workspace-onboarding-invite-dialog .cc-workspace-onboarding-invite-note { margin-top: 12px; font-size: 12px; color: var(--cc-muted); line-height: 1.65; }
 .cc-workspace-onboarding-invite-error { color: var(--cc-danger, #b42318) !important; }
 .cc-workspace-onboarding-invite-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
 .cc-workspace-onboarding-invite-footer button { min-width: 88px; height: 36px; min-height: 36px; padding: 0 16px; font-size: 13px; }
@@ -74,10 +73,6 @@
 .cc-workspace-onboarding-help-steps li::marker { color: var(--cc-accent-text); font-weight: var(--cc-font-weight-medium); }
 .cc-workspace-onboarding-help-body h3 { margin: 0; font-size: 14px; line-height: 1.75; font-weight: var(--cc-font-weight-semibold); }
 .cc-workspace-onboarding-help-body p { margin: 6px 0 0; }
-.cc-workspace-onboarding-help-section { margin-top: 24px; }
-.cc-workspace-onboarding-help-section ul { margin: 10px 0 0; padding-left: 20px; font-size: 14px; line-height: 1.75; color: var(--cc-text-secondary); }
-.cc-workspace-onboarding-help-section li + li { margin-top: 8px; }
-.cc-workspace-onboarding-help-section strong { color: var(--cc-text); font-weight: var(--cc-font-weight-medium); }
 .cc-workspace-onboarding-help-footer { display: flex; justify-content: flex-end; flex-shrink: 0; }
 .cc-workspace-onboarding-help-footer button { min-height: 36px; padding: 0 16px; font-size: 13px; }
 @keyframes cc-onboarding-appear { from { opacity: 0; } to { opacity: 1; } }

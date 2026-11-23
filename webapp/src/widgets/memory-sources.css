@@ -9,15 +9,8 @@
   border-block-start: 1px solid var(--v3-border);
 }
 
-.cc-memory-summary {
-  margin: 0 0 4px;
-  padding-inline: 6px;
-  color: var(--cc-text);
-  font: 500 13px/1.5 var(--cc-font-sans);
-}
-
 .cc-memory-note {
-  margin: 6px 0 0;
+  margin: 0 0 4px;
   padding-inline: 6px;
   color: var(--cc-text-secondary);
   font: 400 12px/1.6 var(--cc-font-sans);
@@ -25,13 +18,25 @@
 
 .cc-memory-list { display: grid; }
 
-.cc-memory-group {
-  margin: 12px 0 2px;
-  padding-inline: 6px;
-  color: var(--cc-text-secondary);
-  font: 500 12px/1.5 var(--cc-font-sans);
+/* Two origins, never merged: what the agent read itself through tool calls,
+ * and what the background recall found. Each heading names who fetched the
+ * rows, then what they are and their state. */
+.cc-memory-origin + .cc-memory-origin {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--cc-border);
 }
-.cc-memory-list > .cc-memory-group:first-child { margin-top: 4px; }
+.cc-memory-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  margin: 0 0 4px;
+  padding-inline: 6px;
+  color: var(--cc-text);
+  font: 500 13px/1.5 var(--cc-font-sans);
+}
+.cc-memory-group-meta { color: var(--cc-text-secondary); font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
 
 .cc-memory-source {
   display: flex;

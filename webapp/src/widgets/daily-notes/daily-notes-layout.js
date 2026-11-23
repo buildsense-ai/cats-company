@@ -185,9 +185,9 @@ export function regionAt(layout, x, y) {
   return -1;
 }
 
-export function createDailyNotesLayout(model) {
+export function createDailyNotesLayout(model, { minRegionSize = MIN_REGION } = {}) {
   const layout = { settled: false };
-  const run = build(model, layout);
+  const run = build(model, layout, minRegionSize);
   // Runs until the deadline (a performance.now() time), at least one slice
   // per call. Returns true once the layout is complete.
   layout.advance = (deadline) => {
@@ -200,7 +200,7 @@ export function createDailyNotesLayout(model) {
   return layout;
 }
 
-function* build(model, layout) {
+function* build(model, layout, minRegionSize) {
   let work = 0;
   const pause = (units = 1) => (work += units) >= PAUSE_WORK;
   // A note's region is its largest source, so a note that cites a busy group
@@ -223,7 +223,7 @@ function* build(model, layout) {
   }
   let regions = [];
   for (const [key, entries] of groups) {
-    if (entries.length < MIN_REGION) { other.push(...entries); continue; }
+    if (entries.length < minRegionSize) { other.push(...entries); continue; }
     regions.push({ key, label: model.sources.get(key).label, entries });
   }
   regions.sort((a, b) => b.entries.length - a.entries.length || a.key.localeCompare(b.key));

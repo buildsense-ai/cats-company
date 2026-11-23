@@ -291,7 +291,7 @@ type ModelCreditReservation struct {
 
 func (r ModelCreditReservation) Validate() error {
 	if r.UID <= 0 || !validModelCreditToken(r.RequestID, ModelCreditRequestIDMaxLen) ||
-		r.ReservedUnits <= 0 || r.Split.Total()+r.UnfundedUnits != r.ReservedUnits ||
+		r.ReservedUnits < 0 || (r.ReservedUnits == 0 && r.RootTaskID == "") || r.Split.Total()+r.UnfundedUnits != r.ReservedUnits ||
 		r.Split.Monthly < 0 || r.Split.Gift < 0 || r.Split.Paid < 0 || r.UnfundedUnits < 0 ||
 		r.LeaseExpiresAt.IsZero() || !r.LeaseExpiresAt.After(r.CreatedAt) {
 		return ErrModelCreditInvalid
@@ -337,8 +337,8 @@ func (in ModelCreditGrantInput) Validate() error {
 	return nil
 }
 
-// ReserveModelCreditInput holds Units for one request. The request id is the
-// idempotency key of the hold itself.
+// ReserveModelCreditInput records an admitted request. Postpaid requests hold
+// zero units and settle through the same request ID once actual usage is known.
 //
 // RootTaskID 是必填项：每一笔模型调用都必须挂在已经 start 且当时 allowed 的原始
 // 任务上（P0-3.9），缺了它就是硬错误而不是绕过门禁。旧探针调用同样要补上它。
@@ -347,10 +347,11 @@ type ModelCreditReserveInput struct {
 	RequestID  string
 	RootTaskID string
 	Units      int64
+	Postpaid   bool
 }
 
 func (in ModelCreditReserveInput) Validate() error {
-	if in.UID <= 0 || in.Units <= 0 || !validModelCreditToken(in.RequestID, ModelCreditRequestIDMaxLen) {
+	if in.UID <= 0 || in.Units < 0 || (in.Units == 0) != in.Postpaid || !validModelCreditToken(in.RequestID, ModelCreditRequestIDMaxLen) {
 		return ErrModelCreditInvalid
 	}
 	if in.RootTaskID == "" {

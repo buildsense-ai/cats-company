@@ -1048,10 +1048,12 @@ describe('AgentStoreModal', () => {
     });
     api.getCloudWorkers.mockResolvedValue({
       quota: { enabled: true, total: 3, used: 2, remaining: 1 },
-      workers: [{ uid: 101, tenant_name: 'tenant-worker-a', cloud_status: 'running' }, {
+      workers: [{ uid: 101, tenant_name: 'tenant-worker-a', cloud_status: 'running', deployment_profile: 'dedicated_ecs' }, {
         uid: 202,
         tenant_name: 'tenant-worker-b',
         cloud_status: 'running',
+        deployment_profile: 'packed_shared',
+        backend: 'packed',
       }],
     });
 
@@ -1074,6 +1076,12 @@ describe('AgentStoreModal', () => {
     expect(focusedWorker).toBeTruthy();
     expect(focusedWorker.textContent).toContain('Worker B');
     expect(focusedWorker.textContent).not.toContain('Worker A');
+    expect(focusedWorker.textContent).toContain('共享机');
+    expect(focusedWorker.querySelector('.cloud-upgrade-card')).not.toBeNull();
+    const dedicatedWorker = [...container.querySelectorAll('.cc-cloud-worker')]
+      .find((card) => card.textContent.includes('Worker A'));
+    expect(dedicatedWorker.textContent).toContain('独享 ECS');
+    expect(dedicatedWorker.querySelector('.cloud-upgrade-card')).toBeNull();
   });
 
   test('keeps roster counts and assistant actions without the overview panel', async () => {

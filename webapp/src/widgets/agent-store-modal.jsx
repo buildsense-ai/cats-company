@@ -454,6 +454,8 @@ const mergeCloudWorkerFacts = (bots, workers) => {
       ...bot,
       cloud_status: cloudStatus,
       runtime_status: cloud.runtime_status || 'unknown',
+      deployment_profile: cloud.deployment_profile ?? bot.deployment_profile,
+      backend: cloud.backend ?? (cloud.deployment_profile ? '' : bot.backend),
       trial_notice: cloud.trial_notice || '',
       // The cloud-worker API owns runtime version truth. An explicit empty
       // value means unknown and must not fall back to the assistant definition.
@@ -462,6 +464,14 @@ const mergeCloudWorkerFacts = (bots, workers) => {
         : bot.app_version,
       cloud_version: cloud.cloud_version || cloud.version,
       cloud_image_id: cloud.cloud_image_id || cloud.image_id,
+      runtime_plan: cloud.runtime_plan,
+      package_expires_at: cloud.package_expires_at,
+      lifecycle_state: cloud.lifecycle_state,
+      expiry_mode: cloud.expiry_mode,
+      cats_auto_renew: cloud.cats_auto_renew,
+      delete_after: cloud.delete_after,
+      retention_days: cloud.retention_days,
+      retain_data: cloud.retain_data,
       cloud_operation_id: cloud.operation_id || '',
       cloud_operation_action: cloud.operation_action || '',
       cloud_operation_status: cloud.operation_status || '',
@@ -1840,7 +1850,7 @@ export default function AgentStoreModal({
                     <ArrowLeft size={15} /> 返回助手列表
                   </button>
                   <h3><Cloud size={16} /> 云托管管理</h3>
-                  <span>创建权益 · 创建 · 更新/回滚/重置/删除</span>
+                  <span>创建权益 · 机器配置升配 · 应用版本管理</span>
                 </div>
                 <CloudWorkerPanel
                   quota={cloudQuota}

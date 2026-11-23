@@ -4,8 +4,8 @@ import { Simulate } from 'react-dom/test-utils';
 
 vi.mock('../api', () => ({
   api: {
-    getAgents: vi.fn(),
     redeemBotInviteCode: vi.fn(),
+    redeemRelayInvite: vi.fn(),
   },
 }));
 
@@ -30,8 +30,7 @@ describe('WorkspaceOnboardingCard', () => {
   let close;
 
   beforeEach(() => {
-    api.getAgents.mockReset().mockResolvedValue({ agents: [] });
-    api.redeemBotInviteCode.mockReset().mockResolvedValue({});
+    api.redeemRelayInvite.mockReset().mockResolvedValue({ ok: true });
     localStorage.clear();
     showModal = HTMLDialogElement.prototype.showModal;
     close = HTMLDialogElement.prototype.close;
@@ -81,30 +80,31 @@ describe('WorkspaceOnboardingCard', () => {
     expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
   });
 
-  it('redeems a real invite and refreshes the workspace agent list', async () => {
+  it('redeems the package invite and refreshes workspace data', async () => {
     const onDataChanged = vi.fn();
     window.addEventListener('cc:data-changed', onDataChanged);
     await mount();
 
     await act(async () => {
-      Simulate.click(buttonWithText('使用邀请码'));
+      Simulate.click(buttonWithText('兑换套餐邀请码'));
     });
     const input = document.querySelector('#workspace-onboarding-invite');
     await act(async () => {
-      Simulate.change(input, { target: { value: 'join-123' } });
+      Simulate.change(input, { target: { value: '  plan-123  ' } });
     });
     await act(async () => {
       Simulate.submit(input.closest('form'));
       await flushPromises();
     });
 
-    expect(api.redeemBotInviteCode).toHaveBeenCalledWith('JOIN-123');
+    expect(api.redeemRelayInvite).toHaveBeenCalledExactlyOnceWith('plan-123');
+    expect(api.redeemBotInviteCode).not.toHaveBeenCalled();
     expect(onDataChanged).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(workspaceOnboardingStorageKey(42))).toBe('dismissed');
-    expect(document.querySelector('#workspace-invite-title').textContent).toBe('云端助手已添加');
+    expect(document.querySelector('#workspace-invite-title').textContent).toBe('兑换成功');
 
     await act(async () => {
-      Simulate.click(buttonWithText('开始创建任务'));
+      Simulate.click(buttonWithText('完成'));
     });
 
     expect(localStorage.getItem(workspaceOnboardingStorageKey(42))).toBe('dismissed');
@@ -153,11 +153,11 @@ describe('WorkspaceOnboardingCard', () => {
   });
 
   it('surfaces an invalid invite error without dismissing the onboarding', async () => {
-    api.redeemBotInviteCode.mockRejectedValueOnce(new Error('bot invite code is invalid or expired'));
+    api.redeemRelayInvite.mockRejectedValueOnce(new Error('invite code could not be redeemed'));
     await mount();
 
     await act(async () => {
-      Simulate.click(buttonWithText('使用邀请码'));
+      Simulate.click(buttonWithText('兑换套餐邀请码'));
     });
     const input = document.querySelector('#workspace-onboarding-invite');
     await act(async () => {
@@ -168,7 +168,9 @@ describe('WorkspaceOnboardingCard', () => {
       await flushPromises();
     });
 
-    expect(document.querySelector('[role="alert"]').textContent).toBe('邀请码无效或已失效');
+    expect(document.querySelector('[role="alert"]').textContent).toBe('无法兑换这个套餐邀请码，请核对后重试。');
+    expect(input.value).toBe('bad-code');
+    expect(localStorage.getItem(workspaceOnboardingStorageKey(42))).toBeNull();
     expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull();
   });
 });

@@ -1274,13 +1274,15 @@ func (a *Adapter) ClaimCommercialTrial(uid int64, planSlug string) (*types.Comme
 		return nil, fmt.Errorf("trial plan is unavailable")
 	}
 	var exists int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM commercial_entitlements WHERE uid = $1 AND source = 'trial'`, uid).Scan(&exists); err != nil {
+	var startsAt time.Time
+	// Read the same clock used by entitlement queries so the committed trial is immediately active.
+	if err := tx.QueryRow(`SELECT COUNT(*), CURRENT_TIMESTAMP FROM commercial_entitlements WHERE uid = $1 AND source = 'trial'`, uid).Scan(&exists, &startsAt); err != nil {
 		return nil, fmt.Errorf("check commercial trial: %w", err)
 	}
 	if exists > 0 {
 		return nil, fmt.Errorf("trial package already claimed")
 	}
-	startsAt := time.Now().UTC()
+	startsAt = startsAt.UTC()
 	expiresAt := startsAt.AddDate(0, 0, plan.DurationDays)
 	result, err := tx.Exec(`
 		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)

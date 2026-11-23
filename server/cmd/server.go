@@ -868,16 +868,16 @@ func main() {
 	// usageHandler := server.NewUsageHandler(db)
 
 	authSendCodeIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
-		Name: "auth_send_code_ip", Limit: 20, Window: time.Minute, Burst: 5,
+		Name: "auth_send_code_ip", Limit: 30, Window: time.Minute, Burst: 10,
 	})
 	authSendCodeEmailLimit := httpLimiter.LimitJSONField(server.HTTPRateLimitConfig{
-		Name: "auth_send_code_email", Limit: 3, Window: 10 * time.Minute, Burst: 3,
+		Name: "auth_send_code_email", Limit: 6, Window: 10 * time.Minute, Burst: 4,
 	}, "email")
 	authResetCodeIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
-		Name: "auth_reset_code_ip", Limit: 10, Window: time.Minute, Burst: 3,
+		Name: "auth_reset_code_ip", Limit: 20, Window: time.Minute, Burst: 6,
 	})
 	authResetCodeEmailLimit := httpLimiter.LimitJSONField(server.HTTPRateLimitConfig{
-		Name: "auth_reset_code_email", Limit: 3, Window: 10 * time.Minute, Burst: 3,
+		Name: "auth_reset_code_email", Limit: 6, Window: 10 * time.Minute, Burst: 4,
 	}, "email")
 	authResetPasswordIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "auth_reset_password_ip", Limit: 20, Window: time.Minute, Burst: 5,
@@ -1266,6 +1266,13 @@ func main() {
 	dailyNotesHandler := server.NewDailyNotesHandler(db, os.Getenv("CATSCO_DAILY_NOTES_BASE_URL"))
 	mux.HandleFunc("POST /api/agents/{uid}/daily-notes", jwtAuthWithDB(dailyNotesHandler.HandleQuery))
 	mux.HandleFunc("POST /api/agents/{uid}/memory-sources", jwtAuthWithDB(dailyNotesHandler.HandleMemoryRead))
+	wikiMemoryHandler := server.NewWikiMemoryHandler(db, hub, os.Getenv("CATSCO_WIKI_MEMORY_BASE_URL"), os.Getenv("CATSCO_WIKI_MEMORY_TOKEN"))
+	wikiCatalogCtx, stopWikiCatalogSync := context.WithCancel(context.Background())
+	defer stopWikiCatalogSync()
+	go wikiMemoryHandler.RunCatalogSync(wikiCatalogCtx)
+	mux.HandleFunc("GET /api/memories/availability", jwtAuthWithDB(wikiMemoryHandler.HandleAvailability))
+	mux.HandleFunc("GET /api/agents/{uid}/memories", jwtAuthWithDB(wikiMemoryHandler.HandleCatalog))
+	mux.HandleFunc("GET /api/agents/{uid}/memories/{id}", jwtAuthWithDB(wikiMemoryHandler.HandleDocument))
 	mux.HandleFunc("/api/agents/", jwtAuthWithDB(cloudArtifactHandler.HandleAgentArtifacts))
 	mux.HandleFunc("/api/topics/", jwtAuthWithDB(cloudArtifactHandler.HandleTopicFiles))
 	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
@@ -1534,6 +1541,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("shutting down gracefully...")
+	stopWikiCatalogSync()
 	stopPublicationDelivery()
 	stopCommitDispatch()
 

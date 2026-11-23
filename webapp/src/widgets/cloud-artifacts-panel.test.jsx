@@ -32,6 +32,8 @@ import CloudArtifactsPanel from './cloud-artifacts-panel';
 import { promoGatewayApp, promoRegistryArtifact } from '../test-fixtures/promo-gateway';
 
 function toolbarAction(container, label) {
+  const directAction = container.querySelector(`.cloud-artifacts-header-actions > button[title="${label}"]`);
+  if (directAction) return directAction;
   const menu = container.querySelector('.cloud-artifacts-overflow');
   if (!menu.open) menu.querySelector('summary').click();
   expect(menu.open).toBe(true);

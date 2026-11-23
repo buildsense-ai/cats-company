@@ -24,6 +24,7 @@ var _ store.ModelCreditTaskStore = (*Adapter)(nil)
 //
 //   - 买过/被发过带 model credit 的套餐（包括已经过期、退订的订阅）；
 //   - 或者账本里已经有事件（发放、预留、结算、欠款……）；
+//   - 或者已经有任何 credit root（包括暂停且尚未预留的任务）；
 //   - 或者账本账户上有真实余额/欠款。
 //
 // 只有身份不靠「有没有 model_credit_accounts 行」单独判断：余额页 / 资格查询这类
@@ -37,6 +38,7 @@ func (a *Adapter) modelCreditTaskEnabled(ctx context.Context, uid int64) (bool, 
 		               JOIN commercial_plans p ON p.id = e.plan_id`+modelCreditEntitlementOrderJoinSQL+`
 		               WHERE e.uid = $1 AND `+modelCreditEntitlementUnitsSQL+` > 0)
 		    OR EXISTS (SELECT 1 FROM model_credit_ledger_events ev WHERE ev.uid = $1)
+		    OR EXISTS (SELECT 1 FROM model_credit_tasks t WHERE t.uid = $1)
 		    OR EXISTS (SELECT 1 FROM model_credit_accounts ac WHERE ac.uid = $1
 		               AND (ac.monthly_units > 0 OR ac.gift_units > 0
 		                    OR ac.paid_units > 0 OR ac.debt_units > 0))`, uid).Scan(&enabled); err != nil {
@@ -191,13 +193,6 @@ func updateModelCreditTaskState(ctx context.Context, tx *sql.Tx, uid int64, task
 	return nil
 }
 
-// syncModelCreditTaskRetention 实现「额度耗尽只保留一个任务」（P0-3.1/P0-3.2）：
-//
-//   - 还有可花额度时不动任何任务，只在保留任务已经结束/被暂停时清掉透支名额；
-//   - 额度耗尽（含全被 hold 占用）时，挑 started_seq 最大的 running 原始任务当唯一
-//     保留任务，其余 running 全部暂停并记录原因；
-//   - 绝不反向操作：保留任务结束不会把任何 paused 任务变成 running。
-
 // lockModelCreditTaskPlanTier 给「从没合法启动过」的任务补一次档位快照。SQL 里加了
 // plan_tier = 0 的守卫：即使并发/重复调用，已经有快照的行也不会被改写 —— 旧任务的
 // 费率一旦锁定就永远不变。
@@ -213,22 +208,35 @@ func lockModelCreditTaskPlanTier(ctx context.Context, tx *sql.Tx, uid int64, tas
 	}
 	return nil
 }
-//
-// 调用方必须持有账户行锁，且已经更新好余额。
+
+// A zero hold is only issued by postpaid admission, including before this
+// change. Use the existing (uid, root_task_id) index. Settlement and no-usage
+// reclamation keep the original amount and row, so any receipt state counts.
+// The caller still has to verify that the root is running with a trusted tier.
+const modelCreditTaskPostpaidReceiptSQL = `SELECT 1 FROM model_credit_reservations r
+	WHERE r.uid = t.uid AND r.root_task_id = t.root_task_id AND r.reserved_units = 0`
+
+func modelCreditTaskHasPostpaidReceipt(ctx context.Context, tx *sql.Tx, uid int64, taskID string) (bool, error) {
+	var admitted bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (`+modelCreditTaskPostpaidReceiptSQL+`)
+		FROM model_credit_tasks t WHERE t.uid = $1 AND t.root_task_id = $2`, uid, taskID).Scan(&admitted); err != nil {
+		return false, fmt.Errorf("check postpaid model credit admission: %w", err)
+	}
+	return admitted, nil
+}
+
+// syncModelCreditTaskRetention keeps the most recently started legacy running
+// root eligible for overdraft holds when credit runs out. Postpaid turns that
+// have a receipt continue independently. Paused roots still require resume.
+// The caller must hold the account lock and have updated the balance.
 func syncModelCreditTaskRetention(ctx context.Context, tx *sql.Tx, account *store.ModelCreditAccount, now time.Time) (bool, error) {
 	if account == nil || account.UID <= 0 {
 		return false, nil
 	}
 	if account.SpendableUnits() > 0 {
-		if account.RetainedTaskID == "" {
-			return false, nil
-		}
-		var running bool
-		if err := tx.QueryRowContext(ctx, `
-			SELECT EXISTS (SELECT 1 FROM model_credit_tasks
-			               WHERE uid = $1 AND root_task_id = $2 AND state = 'running')`,
-			account.UID, account.RetainedTaskID).Scan(&running); err != nil {
-			return false, fmt.Errorf("check retained model credit task: %w", err)
+		running, err := retainedTaskStillRunning(ctx, tx, account.UID, account.RetainedTaskID)
+		if err != nil {
+			return false, err
 		}
 		if running {
 			return false, nil
@@ -241,9 +249,9 @@ func syncModelCreditTaskRetention(ctx context.Context, tx *sql.Tx, account *stor
 	}
 	var latest string
 	err := tx.QueryRowContext(ctx, `
-		SELECT root_task_id FROM model_credit_tasks
-		WHERE uid = $1 AND state = 'running'
-		ORDER BY started_seq DESC LIMIT 1`, account.UID).Scan(&latest)
+		SELECT t.root_task_id FROM model_credit_tasks t
+		WHERE t.uid = $1 AND t.state = 'running' AND NOT EXISTS (`+modelCreditTaskPostpaidReceiptSQL+`)
+		ORDER BY t.started_seq DESC LIMIT 1`, account.UID).Scan(&latest)
 	if errors.Is(err, sql.ErrNoRows) {
 		if account.RetainedTaskID == "" {
 			return false, nil
@@ -266,8 +274,9 @@ func syncModelCreditTaskRetention(ctx context.Context, tx *sql.Tx, account *stor
 		changed = true
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE model_credit_tasks SET state = 'paused', reason = $3, updated_at = $4
-		WHERE uid = $1 AND state = 'running' AND root_task_id <> $2`,
+		UPDATE model_credit_tasks t SET state = 'paused', reason = $3, updated_at = $4
+		WHERE t.uid = $1 AND t.state = 'running' AND t.root_task_id <> $2
+		  AND NOT EXISTS (`+modelCreditTaskPostpaidReceiptSQL+`)`,
 		account.UID, latest, store.ModelCreditTaskReasonQuotaExhausted, now.UTC()); err != nil {
 		return false, fmt.Errorf("pause non-retained model credit tasks: %w", err)
 	}
@@ -297,8 +306,9 @@ func retainedTaskStillRunning(ctx context.Context, tx *sql.Tx, uid int64, retain
 	}
 	var running bool
 	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS (SELECT 1 FROM model_credit_tasks
-		               WHERE uid = $1 AND root_task_id = $2 AND state = 'running')`,
+		SELECT EXISTS (SELECT 1 FROM model_credit_tasks t
+		               WHERE t.uid = $1 AND t.root_task_id = $2 AND t.state = 'running'
+		                 AND NOT EXISTS (`+modelCreditTaskPostpaidReceiptSQL+`))`,
 		uid, retainedTaskID).Scan(&running); err != nil {
 		return false, fmt.Errorf("check retained model credit task: %w", err)
 	}
@@ -306,7 +316,7 @@ func retainedTaskStillRunning(ctx context.Context, tx *sql.Tx, uid int64, retain
 }
 
 // modelCreditTaskDecision 组装判定。planTier 是这个 root 的档位快照（0 = 没有可信
-// 快照），四个 action 都回同一份，Relay 直接拿它计价。
+// 快照），所有 action（含 dispatch）都回同一份，Relay 直接拿它计价。
 func modelCreditTaskDecision(account *store.ModelCreditAccount, taskID string, planTier int,
 	enabled, allowed bool, state, reason string) *store.ModelCreditTaskDecision {
 	decision := &store.ModelCreditTaskDecision{
@@ -336,6 +346,11 @@ func modelCreditTaskStoredPlanTier(task *store.ModelCreditTask) int {
 // （started_at / started_seq 不重写，paused 也不会被提升成 running）。resume 是用户
 // 手动恢复的唯一入口，必须满足「无欠款 + 有额度 + 有有效权限 + 透支名额没被别的
 // 运行中任务占着」。finish 幂等，并且不会顺手唤醒任何 paused 任务。
+//
+// dispatch 是 Relay opt-in 派发（X-CatsCo-Billing-Dispatch）用的计费入口，只改计费
+// 状态、绝不重放应用请求：root 缺失时等同 start，running/completed 等同 status，
+// paused 等同 resume。所以 started_at / started_seq / 档位快照 / 结算回执都由既有
+// 函数维护，dispatch 自己不写任何新语义。
 func (a *Adapter) ApplyModelCreditTask(ctx context.Context, in store.ModelCreditTaskInput) (*store.ModelCreditTaskDecision, error) {
 	if err := in.Validate(); err != nil {
 		return nil, err
@@ -357,22 +372,26 @@ func (a *Adapter) ApplyModelCreditTask(ctx context.Context, in store.ModelCredit
 		return nil, fmt.Errorf("begin model credit task %s: %w", in.Action, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// enabled 的用户已经在 credit 模型里：账本账户行必须先存在（model_credit_tasks 的
-	// uid 外键指向它），然后对账顺便拿走行锁 —— 本月月额度先归位，后面看到的
-	// spendable/debt 才是当期真实值。legacy 用户在上面已经直接返回，不会走到这里，
-	// 所以这次 upsert 不会把老用户迁进 credit 账本。
+	// 既有 credit 用户先拿到账户行锁，串行判断 root 是否已经由 credit 门禁处理过。
+	// 纯 legacy 老用户在上面已经返回，不会被建出账本账户。
 	if _, err := lockModelCreditAccount(ctx, tx, in.UID); err != nil {
 		return nil, err
 	}
+	task, err := modelCreditTaskByID(ctx, tx, in.UID, in.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	if in.PreferLegacy && task == nil {
+		// Inference still checks legacy admission. Roll back this lock-only path.
+		return modelCreditTaskDecision(nil, in.TaskID, store.ModelCreditTaskPlanTierNone, false, true,
+			store.ModelCreditTaskRunning, store.ModelCreditTaskReasonLegacy), nil
+	}
+	// Credit decisions use the current month's balance and permission.
 	account, _, err := reconcileModelCreditMonthlyPeriod(ctx, tx, in.UID, now)
 	if err != nil {
 		return nil, err
 	}
 	permitted, err := modelCreditTaskPermitted(ctx, tx, in.UID, now)
-	if err != nil {
-		return nil, err
-	}
-	task, err := modelCreditTaskByID(ctx, tx, in.UID, in.TaskID)
 	if err != nil {
 		return nil, err
 	}
@@ -396,6 +415,8 @@ func (a *Adapter) ApplyModelCreditTask(ctx context.Context, in store.ModelCredit
 			return nil, store.ErrModelCreditTaskNotFound
 		}
 		decision, err = applyModelCreditTaskFinish(ctx, tx, account, task, now)
+	case store.ModelCreditTaskActionDispatch:
+		decision, err = applyModelCreditTaskDispatch(ctx, tx, account, permitted, task, in, now)
 	}
 	if err != nil {
 		return nil, err
@@ -582,6 +603,29 @@ func applyModelCreditTaskFinish(ctx context.Context, tx *sql.Tx, account *store.
 	}
 	return modelCreditTaskDecision(account, task.TaskID, storedTier, true, false,
 		store.ModelCreditTaskCompleted, store.ModelCreditTaskReasonTaskCompleted), nil
+}
+
+// applyModelCreditTaskDispatch 是 Relay opt-in 派发（X-CatsCo-Billing-Dispatch）的入口。
+// 它只是把请求路由到既有的三个函数，自己不改任何计费规则：
+//
+//   - root 缺失：等同 start（同一套权限/额度/欠款/档位快照判定，同样按当前政策决定
+//     running 还是 paused；纯 legacy 账户在上面早就返回了，不会被拉进 credit）；
+//   - running / completed：等同 status，纯读，不重写 started_at / 档位 / 回执；
+//   - paused：等同 resume，是唯一会写状态的分支（只能由这次显式派发拉起）。
+//
+// 注意 paused 走 resume 而不是 status：额度为 0 或有欠款时，判定必须仍然是
+// quota_exhausted / debt_outstanding —— 即使透支名额还被另一个已经在跑的 root 占着
+// （那笔已派发的调用还在结算）。status 会把原因改写成 retained_task_other，dispatch
+// 不能那样报，否则 Relay 会把「余额耗尽」误当成「等别的任务结束」。
+func applyModelCreditTaskDispatch(ctx context.Context, tx *sql.Tx, account *store.ModelCreditAccount,
+	permitted bool, task *store.ModelCreditTask, in store.ModelCreditTaskInput, now time.Time) (*store.ModelCreditTaskDecision, error) {
+	if task == nil {
+		return applyModelCreditTaskStart(ctx, tx, account, permitted, nil, in, now)
+	}
+	if task.State == store.ModelCreditTaskPaused {
+		return applyModelCreditTaskResume(ctx, tx, account, permitted, task, now)
+	}
+	return modelCreditTaskStatusDecision(ctx, tx, account, permitted, task)
 }
 
 // GetModelCreditTask 读一个 root 任务的状态（不含判定，供排障/测试使用）。

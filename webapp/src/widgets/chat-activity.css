@@ -42,7 +42,11 @@
 }
 
 .cc-chat-activity :is(.v3-working-toggle, .cc-memory-toggle) { cursor: pointer; }
-.cc-chat-activity :is(.v3-working-toggle, .cc-memory-toggle):is(:hover, [aria-expanded='true']) {
+.cc-chat-activity .v3-working-toggle:is(:hover, :active, [aria-expanded='true']) {
+  background: transparent;
+  color: var(--cc-text);
+}
+.cc-chat-activity .cc-memory-toggle:is(:hover, [aria-expanded='true']) {
   background: var(--cc-hover);
   color: var(--cc-text);
 }
@@ -74,27 +78,37 @@
   font: 500 13px/1.45 var(--cc-font-sans);
 }
 
+.v3-working-process .v3-wpi-tool-header > svg {
+  flex: none;
+}
+
 /* Collapsed: what the step was for. Expanded: the exact call and return. */
 .v3-working-process .v3-wpi-tool-header .v3-wpi-tool-desc {
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
   color: var(--cc-text);
   font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .v3-working-process .v3-wpi-tool-header .v3-wpi-tool-name {
   flex: 0 0 auto;
+  max-inline-size: 40%;
   color: var(--cc-text-secondary);
   font-weight: 400;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .v3-working-process .v3-wpi-tool-header .v3-wpi-tool-name.is-primary {
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
+  max-inline-size: none;
   color: var(--cc-text);
+}
+
+.v3-working-process .v3-wpi-tool-header:not([aria-expanded="true"]) :is(.v3-wpi-tool-name, .v3-wpi-tool-desc) {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -114,14 +128,17 @@
  * where this step ends and the next begins. */
 .v3-working-process .v3-wpi-tool:has(> .v3-wpi-tool-details) { row-gap: 0; }
 .v3-working-process .v3-wpi-tool-header.is-toggle[aria-expanded='true'] {
+  align-items: flex-start;
   border-radius: var(--cc-radius-sm) var(--cc-radius-sm) 0 0;
   background: var(--cc-open-tint);
 }
+.v3-working-process .v3-wpi-tool-header[aria-expanded='true'] > svg { margin-block-start: 2px; }
 .v3-working-process,
 .cc-memory-panel { --cc-open-tint: color-mix(in srgb, var(--cc-hover) 65%, transparent); }
 
 .v3-working-process .v3-wpi-tool-details {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   margin: 0 0 8px;
   padding: 6px 12px 12px 34px;
@@ -132,6 +149,7 @@
 
 .v3-working-process .v3-wpi-section-title {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
   margin: 0 0 6px;
@@ -141,8 +159,10 @@
 .v3-working-process .v3-wpi-return.is-error .v3-wpi-section-title > span:first-child { color: var(--cc-danger-text); }
 .v3-working-process .v3-wpi-section-meta { color: var(--cc-text-secondary); font: 400 12px/1.5 var(--cc-font-sans); font-variant-numeric: tabular-nums; }
 .v3-working-process .v3-wpi-raw-tool {
+  min-width: 0;
   color: var(--cc-text-secondary);
   font: 400 12px/1.5 var(--cc-font-mono);
+  overflow-wrap: anywhere;
 }
 
 /* Keys share one column per object, as wide as the longest key (capped), so
@@ -159,11 +179,9 @@
 .v3-working-process .v3-wpi-field-key {
   min-width: 0;
   max-width: 20ch;
-  overflow: hidden;
   color: var(--cc-text-secondary);
   font: 400 12px/1.6 var(--cc-font-mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .v3-working-process .v3-wpi-field-value {
   min-width: 0;
@@ -191,7 +209,7 @@
 .v3-working-process .v3-wpi-field-rest,
 .v3-working-process .v3-wpi-pending { margin: 2px 0 0; color: var(--cc-text-secondary); }
 
-.v3-working-process :is(.v3-wpi-raw-toggle, .v3-wpi-more) {
+.v3-working-process .v3-wpi-raw-toggle {
   margin-inline-start: auto;
   padding: 0 6px;
   border: 0;
@@ -201,9 +219,8 @@
   font: 500 12px/1.6 var(--cc-font-sans);
   cursor: pointer;
 }
-.v3-working-process .v3-wpi-more { margin-inline-start: 4px; }
-.v3-working-process :is(.v3-wpi-raw-toggle, .v3-wpi-more):hover { background: var(--cc-hover); color: var(--cc-text); }
-.v3-working-process :is(.v3-wpi-raw-toggle, .v3-wpi-more):focus-visible {
+.v3-working-process .v3-wpi-raw-toggle:hover { background: var(--cc-hover); color: var(--cc-text); }
+.v3-working-process .v3-wpi-raw-toggle:focus-visible {
   outline: 2px solid var(--cc-focus-ring);
   outline-offset: 1px;
 }
@@ -216,8 +233,16 @@
   border-radius: var(--cc-radius-sm);
   background: var(--cc-code);
   font: 400 12.5px/1.6 var(--cc-font-mono);
+}
+
+.v3-working-process :is(.v3-wpi-plain, .v3-wpi-code-block pre) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.v3-working-process :is(.v3-wpi-plain, .v3-wpi-code-block pre) > code {
+  white-space: inherit;
+  overflow-wrap: inherit;
 }
 
 @media (max-width: 600px) {

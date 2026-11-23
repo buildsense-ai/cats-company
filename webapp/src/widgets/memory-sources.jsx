@@ -79,27 +79,33 @@ function branchLabel(unit) {
 function emptyStatus({ diaryPending, events, active, finished }) {
   const statuses = new Set(events.map(event => event.status));
   if (diaryPending) return finished ? '日记查阅未完成' : '正在查阅日记…';
-  if (events.some(event => event.observation_id && event.consumed_turn_id)) return '回答参考了记忆摘要 · 没有可打开的来源';
-  if (statuses.has('running')) return active || !finished ? '正在回忆…' : '记忆查找未完成';
-  if (statuses.has('deferred') || statuses.has('ready')) return '记忆未赶上本次回答';
-  if (statuses.has('empty')) return '未找到相关记忆';
-  if (['failed', 'cancelled', 'expired'].some(status => statuses.has(status))) return '记忆查找未完成';
-  if (statuses.has('unavailable')) return '记忆暂不可用';
+  if (events.some(event => event.observation_id && event.consumed_turn_id)) return '后台回忆的摘要已用于回答 · 没有可打开的来源';
+  if (statuses.has('running')) return active || !finished ? '正在后台回忆…' : '后台回忆未完成';
+  if (statuses.has('deferred') || statuses.has('ready')) return '后台回忆未赶上本次回答';
+  if (statuses.has('empty')) return '后台回忆未找到相关记忆';
+  if (['failed', 'cancelled', 'expired'].some(status => statuses.has(status))) return '后台回忆未完成';
+  if (statuses.has('unavailable')) return '后台回忆暂不可用';
   return null;
 }
 
-function summaryLine({ diary, units, events, active }) {
+// Each origin states only its own counts: the agent's Diary reads went into
+// its context through its own tool calls; Branch sources only count once the
+// background recall injected them.
+function diaryLine(diary) {
   const read = diary.sources.filter(source => source.disclosure === 'text').length;
-  const used = read + units.filter(unit => unit.injected).length;
-  const unused = units.filter(unit => !unit.injected).length;
-  if (used > 0) return `回答参考了 ${used} 条记忆${unused ? `，另有 ${unused} 条未采用` : ''}`;
-  if (!units.length) return '';
+  const searched = diary.sources.length - read;
+  return [read && `读取 ${read} 条`, searched && `搜索到 ${searched} 条未读取`].filter(Boolean).join('，');
+}
+
+function branchLine({ units, events, active }) {
+  const used = units.filter(unit => unit.injected).length, unused = units.length - used;
+  if (used > 0) return `${used} 条用于回答${unused ? `，另有 ${unused} 条未采用` : ''}`;
   const statuses = new Set(events.map(event => event.status));
   if (active && statuses.has('running')) return `正在回忆，已找到 ${units.length} 条`;
   if (statuses.has('ready') && !statuses.has('deferred')) return `已找到 ${units.length} 条，尚未送达回答`;
-  if (statuses.has('deferred')) return `回答先完成，后台回忆的 ${units.length} 条未用于本次回答`;
-  if (['failed', 'cancelled', 'expired'].some(status => statuses.has(status))) return `回忆中断，已找到的 ${units.length} 条未用于本次回答`;
-  return `后台回忆找到 ${units.length} 条，未用于本次回答`;
+  if (statuses.has('deferred')) return `回答先完成，${units.length} 条未用于本次回答`;
+  if (['failed', 'cancelled', 'expired'].some(status => statuses.has(status))) return `回忆中断，${units.length} 条未用于本次回答`;
+  return `${units.length} 条未用于本次回答`;
 }
 
 function MemoryRow({ row, open, detailId, onToggle }) {
@@ -114,7 +120,7 @@ function MemoryRow({ row, open, detailId, onToggle }) {
   );
 }
 
-export default function MemorySources({ diaryViews = [], events = [], active = false, finished = false, agentUid }) {
+export default function MemorySources({ diaryViews = [], events = [], active = false, finished = false, agentUid, agentName }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const buttonRef = useRef(null);
@@ -143,32 +149,26 @@ export default function MemorySources({ diaryViews = [], events = [], active = f
         <span className="cc-activity-count">{total}</span>
         <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />
       </button>
-      {open && <MemoryPanel id={panelId} diary={diary} units={units} events={events} active={active} agentUid={agentUid}
+      {open && <MemoryPanel id={panelId} diary={diary} units={units} events={events} active={active} agentUid={agentUid} agentName={agentName}
         incomplete={diaryViews.some(view => view.incomplete)} />}
     </div>
   );
 }
 
-function MemoryPanel({ id, diary, units, events, active, agentUid, incomplete }) {
+function MemoryPanel({ id, diary, units, events, active, agentUid, agentName, incomplete }) {
   const [selected, setSelected] = useState(null);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState({});
   const panelRef = useRef(null);
   const detailId = `${id}-detail`;
   const anyInjected = units.some(unit => unit.injected);
-  const rows = [
-    ...diary.sources.map(source => ({
+  const diaryRows = diary.sources.map(source => ({
       type: 'diary', key: source.ref, source, title: source.title || '未命名笔记',
       meta: [source.day, DIARY_STATUS[source.status], source.status === 'draft' ? '尚未核验' : '', source.disclosure === 'metadata' ? '搜索结果' : ''].filter(Boolean).join(' · '),
-    })),
-    ...units.map(unit => ({
-      type: 'branch', key: unit.key, unit, title: unit.title, meta: unit.meta, cited: unit.cited,
-      badge: unit.cited ? '回答引用' : !unit.injected && anyInjected ? '未采用' : '',
-    })),
-  ];
-  const openIndex = selected ? rows.findIndex(row => row.key === selected) : -1;
-  const visible = expanded || openIndex >= VISIBLE_ROWS ? rows : rows.slice(0, VISIBLE_ROWS);
-  const grouped = diary.sources.length > 0 && units.length > 0;
-  const summary = summaryLine({ diary, units, events, active });
+    }));
+  const branchRows = units.map(unit => ({
+    type: 'branch', key: unit.key, unit, title: unit.title, meta: unit.meta, cited: unit.cited,
+    badge: unit.cited ? '回答引用' : !unit.injected && anyInjected ? '未采用' : '',
+  }));
   const carried = events.some(event => event.consumed_turn_id && event.consumed_turn_id !== event.origin_turn_id);
   const close = useCallback(() => {
     const button = panelRef.current?.querySelector('.cc-memory-source[aria-expanded="true"]');
@@ -190,23 +190,35 @@ function MemoryPanel({ id, diary, units, events, active, agentUid, incomplete })
   }, [selected, close]);
   const toggle = row => setSelected(current => current === row.key ? null : row.key);
   const selectDiary = source => setSelected(source.ref);
+  // The agent's own Diary reads and the background Branch recall are two
+  // origins: each gets its own heading, state and row limit.
+  const origin = (type, who, what, line, rows, note) => {
+    const openIndex = rows.findIndex(row => row.key === selected);
+    const visible = expanded[type] || openIndex >= VISIBLE_ROWS ? rows : rows.slice(0, VISIBLE_ROWS);
+    return (
+      <section className={`cc-memory-origin is-${type}`} aria-label={who}>
+        <h4 className="cc-memory-group"><span>{who}</span><span className="cc-memory-group-meta" role="status">{what}{line && ` · ${line}`}</span></h4>
+        {note}
+        <div className="cc-memory-list">
+          {visible.map(row => (
+            <React.Fragment key={row.key}>
+              <MemoryRow row={row} open={selected === row.key} detailId={detailId} onToggle={toggle} />
+              {selected === row.key && (row.type === 'diary'
+                ? <DiaryDetail id={detailId} agentUid={agentUid} source={row.source} view={diary} onSelect={selectDiary} />
+                : <MemoryDetail id={detailId} agentUid={agentUid} unit={row.unit} />)}
+            </React.Fragment>
+          ))}
+        </div>
+        {rows.length > visible.length && <button type="button" className="cc-memory-more" onClick={() => setExpanded(current => ({ ...current, [type]: true }))}>再显示 {rows.length - visible.length} 条</button>}
+      </section>
+    );
+  };
   return (
     <section ref={panelRef} id={id} className="cc-memory-panel" aria-label="记忆来源" onClick={event => event.stopPropagation()}>
-      {summary && <p className="cc-memory-summary" role="status">{summary}</p>}
-      {carried && <p className="cc-memory-note">这些记忆来自上一轮提问，在本轮才送达。</p>}
-      <div className="cc-memory-list">
-        {visible.map((row, index) => (
-          <React.Fragment key={row.key}>
-            {grouped && (index === 0 || visible[index - 1].type !== row.type) && <h4 className="cc-memory-group">{row.type === 'diary' ? '日记' : '历史会话'}</h4>}
-            <MemoryRow row={row} open={selected === row.key} detailId={detailId} onToggle={toggle} />
-            {selected === row.key && (row.type === 'diary'
-              ? <DiaryDetail id={detailId} agentUid={agentUid} source={row.source} view={diary} onSelect={selectDiary} />
-              : <MemoryDetail id={detailId} agentUid={agentUid} unit={row.unit} />)}
-          </React.Fragment>
-        ))}
-      </div>
-      {rows.length > visible.length && <button type="button" className="cc-memory-more" onClick={() => setExpanded(true)}>再显示 {rows.length - visible.length} 条</button>}
-      {incomplete && <p className="cc-memory-note">日记还有更多结果，未在此列出。</p>}
+      {diaryRows.length > 0 && origin('diary', `${agentName || '助手'}主动查阅`, '日记', diaryLine(diary), diaryRows,
+        incomplete && <p className="cc-memory-note">日记还有更多结果，未在此列出。</p>)}
+      {branchRows.length > 0 && origin('branch', '后台自动回忆', '历史会话', branchLine({ units, events, active }), branchRows,
+        carried && <p className="cc-memory-note">这些记忆来自上一轮提问，在本轮才送达。</p>)}
     </section>
   );
 }

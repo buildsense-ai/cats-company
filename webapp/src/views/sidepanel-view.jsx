@@ -453,7 +453,8 @@ export default function ChatListView({
     const openCloudManager = (event) => {
       const workerUid = Number(event?.detail?.workerUid || 0);
       const tenantName = String(event?.detail?.tenantName || '').trim();
-      if (!workerUid && !tenantName) return;
+      if (!workerUid && !tenantName && event?.detail?.showAll !== true) return;
+      setShowAddFriend(false);
       setAgentStoreInitialAgentId(null);
       setAgentStoreInitialCloudWorker({ workerUid, tenantName });
       setShowAgentStore(true);

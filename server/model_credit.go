@@ -209,6 +209,7 @@ type modelCreditMutationRequest struct {
 	// RootTaskID 是这笔调用所属的原始任务。reserve 必填（缺了就是硬错误，不能绕过
 	// 任务门禁）；settle/release/confirm-no-usage 不用带。
 	RootTaskID string `json:"root_task_id"`
+	Postpaid   bool   `json:"postpaid"`
 }
 
 type modelCreditMutationResponse struct {
@@ -242,13 +243,17 @@ func (h *ModelCreditHandler) HandleInternalMutation(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
+	if input.Postpaid && r.URL.Path != "/internal/relay/credits/reserve" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
 	var reservation *store.ModelCreditReservation
 	var account *store.ModelCreditAccount
 	var err error
 	switch strings.Trim(strings.TrimSpace(r.URL.Path), "/") {
 	case "internal/relay/credits/reserve":
 		reservation, account, err = h.ledger.ReserveModelCredits(r.Context(), store.ModelCreditReserveInput{
-			UID: input.UID, RequestID: input.RequestID, RootTaskID: input.RootTaskID, Units: input.Units,
+			UID: input.UID, RequestID: input.RequestID, RootTaskID: input.RootTaskID, Units: input.Units, Postpaid: input.Postpaid,
 		})
 	case "internal/relay/credits/settle":
 		reservation, account, err = h.ledger.SettleModelCredits(r.Context(), store.ModelCreditSettleInput{UID: input.UID, RequestID: input.RequestID, ActualUnits: input.Units})
@@ -273,7 +278,11 @@ func (h *ModelCreditHandler) HandleInternalMutation(w http.ResponseWriter, r *ht
 		case errors.Is(err, store.ErrModelCreditInvalid):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		case errors.Is(err, store.ErrModelCreditInsufficient):
-			writeJSON(w, http.StatusPaymentRequired, map[string]string{"error": "insufficient credit"})
+			body := map[string]string{"error": "insufficient credit"}
+			if input.Postpaid {
+				body["code"] = "insufficient_balance"
+			}
+			writeJSON(w, http.StatusPaymentRequired, body)
 		case errors.Is(err, store.ErrModelCreditConflict):
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "request conflict"})
 		case errors.Is(err, store.ErrModelCreditNotFound):

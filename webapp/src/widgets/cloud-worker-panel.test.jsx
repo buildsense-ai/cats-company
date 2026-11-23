@@ -141,8 +141,23 @@ describe('CloudWorkerPanel', () => {
     // retention_days is a rule of thumb, not this machine's real deadline.
     expect(text).toContain('停服后通常 7 天');
     expect(text).not.toContain('数据保留截止');
-    expect(text).toContain('通过平台连接');
+    expect(text).not.toContain('连接方式');
   });
+  test.each([[true, 'Cats 自动续费已开启'], [false, 'Cats 自动续费未开启'], [undefined, '续费状态待确认']])('shows the machine deadline and renewal state (%s)', async (enabled, label) => {
+    await renderPanel({ workers: [worker({ expiry_mode: 'follow_plan', cats_auto_renew: enabled,
+      package_expires_at: new Date(Date.now() + 5 * 86400000).toISOString() })] });
+    const image = [...container.querySelectorAll('.cc-cloud-worker-meta > span')]
+      .find(row => row.textContent.startsWith('基础镜像'));
+    expect(image.nextElementSibling.textContent).toMatch(/机器到期时间.*还剩.*随套餐期限/);
+    expect(image.nextElementSibling.textContent).toContain(label);
+  });
+
+  test('shows permanent machine access without a countdown', async () => {
+    await renderPanel({ workers: [worker({ expiry_mode: 'permanent', cats_auto_renew: true })] });
+    expect(container.textContent).toContain('机器到期时间 长期有效');
+    expect(container.textContent).not.toContain('Cats 自动续费');
+  });
+
   test('marks an expiry within 7 days as urgent', async () => {
     const inThreeDays = new Date(Date.now() + 3 * 86400000).toISOString();
     await renderPanel({
@@ -328,7 +343,7 @@ describe('CloudWorkerPanel', () => {
   test('uses registered shared identity while provider status is unavailable', async () => {
     await renderPanel({ workers: [worker({ backend: '', deployment_profile: 'packed_shared', cloud_status: 'unavailable' })] });
     expect(container.querySelector('.cc-cloud-worker-backend').textContent).toBe('共享机');
-    expect(container.textContent).toContain('通过平台连接');
+    expect(container.textContent).not.toContain('通过平台连接');
   });
 
   test.each([false, true])('uses actual retention facts for retained=%s shared workers', async (retain_data) => {

@@ -84,7 +84,7 @@ it('archive read is owner-scoped on click and only the matching pin renders', as
 it('shows the consumed summary from grp_7445 during replay without inventing a readable source', async () => {
   const consumed = { ...base, sequence: 3, status: 'unavailable', consumed_turn_id: base.origin_turn_id, observation_id: 'obs' };
   await render([base, consumed], true);
-  expect(container.textContent).toContain('回答参考了记忆摘要');
+  expect(container.textContent).toContain('后台回忆的摘要已用于回答');
   expect(container.querySelector('.cc-memory-toggle, canvas')).toBeNull();
   expect(container.querySelector('.cc-memory-source')).toBeNull();
   expect(requests).toHaveLength(0);
@@ -97,8 +97,10 @@ it('B1/B2/B3/B7: live replay deduplicates by run/sequence and distinguishes read
   expect(container.textContent).not.toContain('回答参考了');
   await render([graph, base, graph]);
   expect(container.querySelectorAll('[aria-label="记忆来源"]')).toHaveLength(1);
-  expect(container.textContent).toContain('回答参考了 1 条记忆');
-  expect(container.textContent).toContain('上一轮');
+  expect(container.querySelector('.cc-memory-origin.is-branch .cc-memory-group').textContent).toBe('后台自动回忆历史会话 · 1 条用于回答');
+  expect(container.querySelector('.cc-memory-origin.is-branch').textContent).toContain('上一轮');
+  // O1: Branch rows name their origin even when they are the only kind.
+  expect(container.querySelector('.cc-memory-origin.is-diary')).toBeNull();
   expect(container.textContent).not.toContain('回答引用');
   expect(requests).toHaveLength(0);
   evidence.push({ journey: 'live ordering/carryover', injected: 1, eagerReads: 0 });
@@ -225,10 +227,10 @@ it('B9: unknown version and invalid graph endpoints never render rich source nav
 
 // Each status the production fleet actually ended on without sources.
 it.each([
-  ['deferred', '记忆未赶上本次回答'],
-  ['empty', '未找到相关记忆'],
-  ['cancelled', '记忆查找未完成'],
-  ['failed', '记忆查找未完成'],
+  ['deferred', '后台回忆未赶上本次回答'],
+  ['empty', '后台回忆未找到相关记忆'],
+  ['cancelled', '后台回忆未完成'],
+  ['failed', '后台回忆未完成'],
 ])('B10: a %s run without sources still says so, without a fake disclosure', async (status, copy) => {
   await render([base, { ...base, sequence: 2, status }]);
   const line = container.querySelector('.cc-memory-status');
@@ -265,7 +267,7 @@ it('B12: one row per readable unit; only rows that differ from the summary carry
   expect(rows[0].textContent).toContain('2 个要点');
   expect(rows[0].textContent).toContain('回答引用');
   expect(rows[1].textContent).toContain('未采用');
-  expect(container.textContent).toContain('回答参考了 1 条记忆');
+  expect(container.querySelector('.cc-memory-group').textContent).toBe('后台自动回忆历史会话 · 1 条用于回答，另有 1 条未采用');
   expect(container.querySelector('canvas, [role="group"][aria-label*="视图"]')).toBeNull();
   evidence.push({ journey: 'grouped rows', rows: 2, cited: 1, unused: 1 });
 });

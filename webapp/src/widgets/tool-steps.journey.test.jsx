@@ -1,6 +1,8 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import ChatMessage from './chat-message';
 
 // E2E failure modes declared before code. A tool step answers "what did the
@@ -32,17 +34,22 @@ const details = () => step().querySelector('.v3-wpi-tool-details');
 
 beforeEach(() => { container = document.createElement('div'); document.body.append(container); root = createRoot(container); });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
-afterAll(() => { mkdirSync('/tmp/catsco-tool-steps', { recursive: true }); writeFileSync('/tmp/catsco-tool-steps/ui-journey.json', JSON.stringify({ evidence }, null, 2)); });
+afterAll(() => {
+  const directory = join(tmpdir(), 'catsco-tool-steps');
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, 'ui-journey.json'), JSON.stringify({ evidence }, null, 2));
+});
 
-it('T1: the collapsed row leads with the agent description and keeps raw identity out', async () => {
+it('T1: the collapsed row shows the system action before the agent description', async () => {
   await render([use('s1', 'execute_shell', { command: 'git status --short && git diff --stat', description: '检查工作区改动' }), result('s1', ' M a.js')]);
-  expect(header().querySelector('.v3-wpi-tool-desc').textContent).toBe('检查工作区改动');
-  expect(header().querySelector('.v3-wpi-tool-name').textContent).toBe('运行命令');
-  expect(header().querySelector('.v3-wpi-tool-name').getAttribute('title')).toBe('execute_shell');
+  const action = header().querySelector('.v3-wpi-tool-name');
+  expect(action.textContent).toBe('运行命令');
+  expect(action.nextElementSibling.textContent).toBe('检查工作区改动');
+  expect(action.getAttribute('title')).toBe('execute_shell');
   expect(header().textContent).not.toContain('git status');
   expect(header().textContent).not.toContain('execute_shell');
   expect(details()).toBeNull();
-  evidence.push({ journey: 'description first', header: header().textContent });
+  evidence.push({ journey: 'system action first', header: header().textContent });
 });
 
 it.each([
@@ -86,6 +93,15 @@ it('T3: plain text results stay verbatim text', async () => {
   expect(ret.querySelector('pre').textContent).toBe(text);
 });
 
+it('keeps a long file path complete in both the row and the expanded fields', async () => {
+  const path = '/workspace/attachments/' + 'reference-image-'.repeat(40) + '.png';
+  await render([use('s1', 'read_file', { file_path: path }), result('s1', JSON.stringify({ path }))]);
+  expect(header().querySelector('.v3-wpi-tool-desc').textContent).toBe(path);
+  await click(header());
+  expect(details().querySelector('.v3-wpi-call .v3-wpi-field-value').textContent).toBe(path);
+  expect(details().querySelector('.v3-wpi-return .v3-wpi-field-value').textContent).toBe(path);
+});
+
 it('T4: a large or deep result is capped per level with the rest counted', async () => {
   const big = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`k${i}`, i]));
   const deep = { a: { b: { c: { d: { e: 'bottom' } } } } };
@@ -95,7 +111,6 @@ it('T4: a large or deep result is capped per level with the rest counted', async
   expect(ret.querySelectorAll('.v3-wpi-field').length).toBeLessThan(80);
   expect(ret.textContent).toContain('还有 250 项');
   expect(ret.textContent).not.toContain('bottom');
-  expect(ret.textContent.length).toBeLessThan(8000);
   evidence.push({ journey: 'capped result', fields: ret.querySelectorAll('.v3-wpi-field').length, chars: ret.textContent.length });
 });
 

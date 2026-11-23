@@ -173,7 +173,7 @@ function toolPresentation(name, input) {
 
 // Expanded steps show values as fields. Each level is capped and deep values
 // are summarized, so a large result cannot stall the message.
-const FIELD_LIMIT = 50, FIELD_DEPTH = 3, TEXT_LIMIT = 600;
+const FIELD_LIMIT = 50, FIELD_DEPTH = 3;
 
 function parseToolResult(value) {
   if (value == null || typeof value === 'object') return value;
@@ -182,22 +182,9 @@ function parseToolResult(value) {
   try { const parsed = JSON.parse(text); return parsed && typeof parsed === 'object' ? parsed : undefined; } catch { return undefined; }
 }
 
-function FieldText({ text }) {
-  const [full, setFull] = useState(false);
-  // Digests and ids are one long token; keep both ends, the rest on hover.
-  if (text.length > 40 && !/\s/.test(text)) return <span className="v3-wpi-field-scalar" title={text}>{text.slice(0, 16)}…{text.slice(-8)}</span>;
-  if (text.length <= TEXT_LIMIT || full) return <span className="v3-wpi-field-text">{text}</span>;
-  return (
-    <span className="v3-wpi-field-text">
-      {text.slice(0, TEXT_LIMIT)}…
-      <button type="button" className="v3-wpi-more" onClick={() => setFull(true)}>展开全部 {text.length} 字符</button>
-    </span>
-  );
-}
-
 function FieldValue({ value, depth }) {
   if (value === null) return <span className="v3-wpi-field-scalar">null</span>;
-  if (typeof value === 'string') return <FieldText text={value} />;
+  if (typeof value === 'string') return <span className="v3-wpi-field-text">{value}</span>;
   if (typeof value !== 'object') return <span className="v3-wpi-field-scalar">{String(value)}</span>;
   const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item]) : Object.entries(value);
   if (!entries.length) return <span className="v3-wpi-field-scalar">{Array.isArray(value) ? '[]' : '{}'}</span>;
@@ -931,8 +918,8 @@ function WorkingToolStep({ item, orphan = false, showNarratives = true }) {
   const heading = (
     <>
       <Icon size={14} className="v3-wpi-icon" aria-hidden="true" />
-      {detail && <span className="v3-wpi-tool-desc">{detail}</span>}
       <span className={`v3-wpi-tool-name${detail ? '' : ' is-primary'}`} title={orphan ? undefined : name}>{label}</span>
+      {detail && <span className="v3-wpi-tool-desc">{detail}</span>}
       {item.isError && <span className="v3-wpi-tool-status is-error">失败</span>}
     </>
   );
@@ -1082,7 +1069,7 @@ function WorkingPlanCard({ item }) {
   );
 }
 
-function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, memoryBranchActive, showDetails = true }) {
+function WorkingProcess({ blocks, agentUid, agentName, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, memoryBranchActive, showDetails = true }) {
   const liquidConversation = useLiquidConversation();
   const [revealingNarratives, setRevealingNarratives] = useState({});
   const [open, setOpen] = useState(false);
@@ -1193,7 +1180,7 @@ function WorkingProcess({ blocks, agentUid, complete: completeOverride = false, 
             {statusContent}
           </div>
         ))}
-        {(memoryEvents.length > 0 || diaryViews.length > 0) && <MemorySources diaryViews={diaryViews} events={memoryEvents} active={branchActive} finished={finished} agentUid={agentUid} />}
+        {(memoryEvents.length > 0 || diaryViews.length > 0) && <MemorySources diaryViews={diaryViews} events={memoryEvents} active={branchActive} finished={finished} agentUid={agentUid} agentName={agentName} />}
       </div>
       {!open && planContent}
       {open && hasDetails && (
@@ -1611,7 +1598,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
           )}
 
           {!isSelf && (showThinking || executionState || latestMemoryBranches(workingBlocks).length > 0 || workingBlocks.some((item) => item.type === 'tool_pair' && diaryToolView(item))) && (
-            <WorkingProcess blocks={workingBlocks} agentUid={diaryAgentUID(message.from_uid)} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} memoryBranchActive={memoryBranchActive} showDetails={showThinking} />
+            <WorkingProcess blocks={workingBlocks} agentUid={diaryAgentUID(message.from_uid)} agentName={senderIsBot ? displayName : undefined} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} memoryBranchActive={memoryBranchActive} showDetails={showThinking} />
           )}
 
           {workingAnnotationDoc && <GatewayAnnotationCard doc={workingAnnotationDoc} />}
