@@ -13,7 +13,8 @@ import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { isConversationProcessMessage } from '../utils/liquid-conversation';
-import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, TextCursorInput, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, LoaderCircle, Folder, FolderOpen, FolderPlus, ListChecks } from 'lucide-react';
+import { Users, UserRound, UserPlus, Zap, Trash2, Smartphone, Settings2, Check, Pencil, TextCursorInput, ChevronRight, UserX, Ban, Bell, BellOff, LoaderCircle, FolderOpen, FolderPlus, ListChecks } from 'lucide-react';
+import { AssistantBadge, Folder, History, MoreHorizontal, Pin, Plus, Search, X } from '../widgets/desktop-icons';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
@@ -3153,7 +3154,7 @@ export default function ChatListView({
             handleSelectAgent(agent);
           }}
         >
-          <Bot
+          <AssistantBadge
             size={16}
             className={`prefix cc-chat-row-icon cc-agent-contact-icon ${isOnline ? 'online' : 'offline'}`}
             title={isOnline ? '在线' : '离线'}
@@ -3513,7 +3514,7 @@ export default function ChatListView({
                   setShowAgentStore(true);
                 }}
               >
-                <Bot size={14} />
+                <AssistantBadge size={14} />
                 <span>Agent 助手</span>
               </button>
             </div>
@@ -3864,7 +3865,7 @@ export default function ChatListView({
               <div className="cc-new-task-agent-list">
                 {agents.map((agent) => (
                   <button type="button" className="cc-new-task-agent" key={agent.uid || agent.id} onClick={() => handleNewChatWithAgent(agent)}>
-                    <Bot size={18} />
+                    <AssistantBadge size={18} />
                     <span>{agent.display_name || agent.username}</span>
                   </button>
                 ))}

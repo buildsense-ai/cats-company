@@ -3,13 +3,14 @@ import SlidingSegments from '../widgets/sliding-segments';
 import ToolbarSearch from '../widgets/toolbar-search';
 import { createPortal } from 'react-dom';
 import {
-  Bot, Check, Clipboard, FolderOpen, Globe, Info, Plus, Trash2,
+  Check, Clipboard, FolderOpen, Globe, Info, Trash2,
   Activity, AppWindow, AudioLines, BookOpenCheck, BriefcaseBusiness, ChartNoAxesCombined,
   ClipboardCheck, Code2, FileText, FlaskConical, Globe2, GraduationCap, Image as ImageIcon,
-  Landmark, Lock, Package, PackageMinus, PanelsTopLeft, Palette, PenLine, Save, ShieldCheck, Sparkles,
-  RefreshCw, Search, Share2, Users,
-  Wrench, X,
+  Landmark, Lock, PackageMinus, PanelsTopLeft, Palette, PenLine, Save, ShieldCheck, Sparkles,
+  Share2, Users,
+  Wrench,
 } from 'lucide-react';
+import { AssistantBadge, Package, Plus, RefreshCw, Search, X } from '../widgets/desktop-icons';
 import CustomSelect from '../widgets/custom-select';
 import LoadingState from '../widgets/loading-state';
 import useDialogBehavior from '../utils/use-dialog-behavior';
@@ -158,7 +159,7 @@ function AgentContext({
     <div className='cc-skillhub-agent-context'>
       <label className='cc-skillhub-bot-picker'>
         <span className='cc-skillhub-agent-label'>
-          <Bot size={15} aria-hidden='true' /> 当前 Agent
+          <AssistantBadge size={15} aria-hidden='true' /> 当前 Agent
           {totalUpdates > 0 && <span className='cc-skillhub-agent-update-badge' aria-label={`共 ${totalUpdates} 个 Skill 可更新`}>{totalUpdates}</span>}
         </span>
         <AgentSelect
@@ -319,7 +320,7 @@ function AddedSkills(props) {
         <span className='cc-visually-hidden cc-skillhub-added-search-count' role='status'>{visibleSkillCount} / {totalSkillCount}</span>
       )}
       {!selectedBotUID ? (
-        <EmptyState icon={<Bot size={21} />} title='请先选择 Agent' copy='选择后即可查看它已经具备的能力。' />
+        <EmptyState icon={<AssistantBadge size={21} />} title='请先选择 Agent' copy='选择后即可查看它已经具备的能力。' />
       ) : loadingDefinition ? (
         <LoadingState kind='skills' label='正在读取 Agent 能力' />
       ) : definition.skills.length === 0 ? (

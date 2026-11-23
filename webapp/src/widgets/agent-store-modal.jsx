@@ -5,32 +5,25 @@ import { api, getWebSocketURL } from '../api';
 import t from '../i18n';
 import {
   ArrowLeft,
-  Bot,
   BookOpen,
   Check,
   CheckCircle,
   ChevronDown,
   ChevronRight,
-  Cloud,
   Code2,
-  Copy,
   LoaderCircle,
   MessageSquare,
-  MoreHorizontal,
   FileCheck2,
   FolderOpen,
-  Plus,
   Puzzle,
   QrCode,
-  RefreshCw,
-  Search,
   Settings2,
   Trash2,
   UsersRound,
-  X,
   XCircle,
   Zap,
 } from 'lucide-react';
+import { AssistantBadge, Cloud, Copy, MoreHorizontal, Plus, RefreshCw, Search, X } from './desktop-icons';
 import Avatar from './avatar';
 import LoadingState from './loading-state';
 import { restoreDialogFocus } from '../utils/use-dialog-behavior';
@@ -1820,7 +1813,7 @@ export default function AgentStoreModal({
           <div className="cc-agent-manager-nav">
             {(tab === 'manage' || tab === 'create') && <button type="button" className="cc-agent-manager-header-action" aria-label="返回助手列表" disabled={manageSaving || isSubmitting} onClick={() => requestLeave('hub')}><ArrowLeft size={16} aria-hidden="true" /></button>}
             <h3 id="cc-agent-manager-title" tabIndex={-1} className="cc-agent-manager-title cc-dialog-reading-focus">
-              {tab !== 'create' && <Bot size={22} strokeWidth={1.8} />}
+              {tab !== 'create' && <AssistantBadge size={22} strokeWidth={1.8} />}
               <span>{tab === 'manage' && editingBot ? <><span className="cc-agent-title-context">管理助手</span><span className="cc-agent-title-separator"> · </span><span className="cc-agent-title-name" title={editingBot.newDisplayName || editingBot.display_name}>{editingBot.newDisplayName || editingBot.display_name}</span></> : tab === 'create' ? '创建 AI 助手' : 'AI 助手管理'}</span>
             </h3>
           </div>

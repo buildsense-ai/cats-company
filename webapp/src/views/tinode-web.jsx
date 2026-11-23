@@ -118,7 +118,8 @@ import {
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
-import { AppWindow, BookOpen, Cloud, Frown, KeyRound, Laptop, MoreHorizontal, Package, Plus, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { BookOpen, Frown, KeyRound, Settings2, LogOut } from 'lucide-react';
+import { AppsGrid, Laptop, MoreHorizontal, Package, Plus, Search, Settings, SidebarClose, SidebarOpen } from '../widgets/desktop-icons';
 import './workspace-styles';
 import CloudArtifactsPreview from '../dev/cloud-artifacts-preview';
 
@@ -1842,15 +1843,12 @@ function TinodeWebApp({ location }) {
               className="v3-sidebar-collapse-btn v3-sidebar-desktop-collapse-btn"
               type="button"
               onClick={toggleAppSidebar}
+              aria-controls="catsco-function-sidebar"
+              aria-expanded={!appSidebarCollapsed}
               aria-label={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
               title={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
             >
-              {appSidebarCollapsed ? (
-                <>
-                  <span className="catsco-brand-mark v3-collapsed-brand-icon" aria-hidden="true" />
-                  <PanelLeftClose size={18} className="v3-collapsed-expand-icon" aria-hidden="true" />
-                </>
-              ) : <PanelLeftClose size={18} />}
+              {appSidebarCollapsed ? <SidebarOpen size={18} /> : <SidebarClose size={18} />}
             </button>
           </div>
         </div>
@@ -1977,11 +1975,12 @@ function TinodeWebApp({ location }) {
             setMobileSidebarOpen((open) => !open);
           }}
           aria-label={mobileSidebarOpen ? '关闭左侧栏' : '打开左侧栏'}
+          aria-controls="catsco-function-sidebar"
           aria-expanded={mobileSidebarOpen}
         >
           {mobileSidebarOpen
-            ? <PanelLeftClose size={18} aria-hidden="true" />
-            : <PanelLeftOpen size={18} aria-hidden="true" />}
+            ? <SidebarClose size={18} aria-hidden="true" />
+            : <SidebarOpen size={18} aria-hidden="true" />}
         </button>
         <div className="v3-main-body">
           {/* A view owns its loading handoff; navigation must retire that region. */}
@@ -2520,7 +2519,7 @@ function AppsSidebarButton({ active, onClick }) {
       aria-current={active ? 'page' : undefined}
       title="应用"
     >
-      <AppWindow size={17} aria-hidden="true" />
+      <AppsGrid size={17} aria-hidden="true" />
       <span>应用</span>
     </button>
   );

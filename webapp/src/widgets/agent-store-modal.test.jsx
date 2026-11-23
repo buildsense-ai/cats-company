@@ -350,7 +350,7 @@ describe('AgentStoreModal', () => {
     const createTab = Array.from(container.querySelectorAll('button'))
       .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手'));
 
-    expect(container.querySelector('.cc-agent-manager-title .lucide-bot')).not.toBeNull();
+    expect(container.querySelector('.cc-agent-manager-title .lucide-assistant-badge')).not.toBeNull();
     expect(container.querySelector('.cc-agent-manager-title .lucide-zap')).toBeNull();
 
     await act(async () => {

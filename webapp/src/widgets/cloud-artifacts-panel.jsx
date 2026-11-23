@@ -7,25 +7,16 @@ import {
   Maximize2,
   Minimize2,
   Check,
-  Cloud,
-  Copy,
   Pencil,
-  Download,
-  ExternalLink,
-  FileText,
-  History,
   Image as ImageIcon,
   ListFilter,
-  MoreHorizontal,
-  Plus,
   Share2,
-  RefreshCw,
   RotateCcw,
   Tag,
   Upload,
   Trash2,
-  X,
 } from 'lucide-react';
+import { Cloud, Copy, Download, ExternalLink, FileText, History, MoreHorizontal, Plus, RefreshCw, X } from './desktop-icons';
 import { api, resolveMediaURL } from '../api';
 import { getAuthRevision, getToken } from '../auth-session';
 import { normalizeArtifactOpenBinding, artifactOpenBindingUsable } from '../gateway-annotations';

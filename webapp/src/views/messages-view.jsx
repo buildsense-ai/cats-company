@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Bookmark, BookOpen, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, MessageSquare, Minus, RefreshCw, Smartphone, Users, X } from 'lucide-react';
+import { ArrowLeft, Bookmark, BookOpen, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Image, ImageDown, LoaderCircle, MessageSquare, Minus, Smartphone, Users } from 'lucide-react';
+import { Download, FileText, RefreshCw, X } from '../widgets/desktop-icons';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq, isWSConnected } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel, hasWorkingSources } from '../widgets/chat-message';

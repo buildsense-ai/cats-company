@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowUpCircle,
-  Bot,
   CheckCircle2,
   Cloud,
   PlusCircle,
@@ -12,6 +11,7 @@ import {
   ShieldAlert,
   Zap,
 } from 'lucide-react';
+import { AssistantBadge } from './desktop-icons';
 import CloudWorkerUpgrade from './cloud-worker-upgrade';
 import { isCloudWorkerPending } from '../cloud-worker-pending';
 import {
@@ -384,7 +384,7 @@ export default function CloudWorkerPanel({
 
         {workers.length === 0 ? (
           <div className="cc-cloud-empty">
-            <Bot size={36} strokeWidth={1.5} />
+            <AssistantBadge size={36} strokeWidth={1.5} />
             <strong>还没有云托管员工</strong>
             <p>在上方输入名称并创建，云端实例供给完成后会出现在这里。</p>
           </div>

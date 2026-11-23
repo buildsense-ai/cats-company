@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Search, X } from 'lucide-react';
+import { Search, X } from './desktop-icons';
 
 export default function ToolbarSearch({
   id, label, clearLabel, className, value = '', onChange, onSubmit,

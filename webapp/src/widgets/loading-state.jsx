@@ -1,11 +1,12 @@
 import React from 'react';
-import { Bot, Globe, Laptop } from 'lucide-react';
+import { Globe } from 'lucide-react';
+import { AssistantBadge, Laptop } from './desktop-icons';
 import '../css/loading-state.css';
 import useLoadingHandoff from '../utils/use-loading-handoff';
 import LayeredLoadingMotion from './layered-loading-motion';
 
 function LoadingMotion({ kind }) {
-  if (kind === 'agents') return <div className="cc-load-agents"><span className="cc-load-agent-mark"><Bot size={21} strokeWidth={1.6} /></span><span className="cc-load-agent-dots"><i /><i /><i /></span></div>;
+  if (kind === 'agents') return <div className="cc-load-agents"><span className="cc-load-agent-mark"><AssistantBadge size={21} strokeWidth={1.6} /></span><span className="cc-load-agent-dots"><i /><i /><i /></span></div>;
   if (kind === 'skills') return <div className="cc-load-modules">{[0, 1, 2, 3].map(index => <span className={`cc-load-module piece-${index}`} key={index}><i /><i /></span>)}</div>;
   if (kind === 'apps') return <LayeredLoadingMotion kind="apps" />;
   if (kind === 'image') return <div className="cc-load-picture">{[0, 1, 2, 3, 4, 5].map(index => <span key={index} />)}</div>;

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import SlidingSegments from '../widgets/sliding-segments';
-import { FileText, LoaderCircle, MessageSquareText, Search, X } from 'lucide-react';
+import { FileText, LoaderCircle, MessageSquareText } from 'lucide-react';
+import { Search, X } from '../widgets/desktop-icons';
 import { api } from '../api';
 
 const SEARCH_DEBOUNCE_MS = 300;

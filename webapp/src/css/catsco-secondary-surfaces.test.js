@@ -174,9 +174,11 @@ describe('secondary surface design contract', () => {
 
   it('keeps mobile sidebar controls distinct from desktop collapsing', () => {
     expect(tinodeWebSource).toContain('v3-sidebar-collapse-btn v3-sidebar-desktop-collapse-btn');
+    expect(tinodeWebSource).toContain('aria-expanded={!appSidebarCollapsed}');
+    expect(tinodeWebSource).toContain('appSidebarCollapsed ? <SidebarOpen size={18} /> : <SidebarClose size={18} />');
     expect(tinodeWebSource).toContain("aria-label={mobileSidebarOpen ? '关闭左侧栏' : '打开左侧栏'}");
     expect(tinodeWebSource).toContain('setMobileSidebarOpen((open) => !open);');
-    expect(tinodeWebSource).toContain('? <PanelLeftClose size={18} aria-hidden="true" />');
-    expect(tinodeWebSource).toContain(': <PanelLeftOpen size={18} aria-hidden="true" />}');
+    expect(tinodeWebSource).toContain('? <SidebarClose size={18} aria-hidden="true" />');
+    expect(tinodeWebSource).toContain(': <SidebarOpen size={18} aria-hidden="true" />}');
   });
 });

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Bot, ChevronDown, FileText, LoaderCircle, Mic, Plus, Square, X } from 'lucide-react';
+import { ChevronDown, LoaderCircle } from 'lucide-react';
+import { ArrowUp, AssistantBadge, FileText, Mic, Plus, Stop, X } from './desktop-icons';
 
 import { createStreamingSTTSession, isStreamingSTTSupported } from '../stt-client';
 
@@ -868,7 +869,7 @@ export default function ChatComposer({
                 void startVoiceInput();
               }}
             >
-              {voiceActive ? <Square size={14} fill="currentColor" /> : <Mic size={18} />}
+              {voiceActive ? <Stop size={14} fill="currentColor" /> : <Mic size={18} />}
             </button>
           )}
 
@@ -882,7 +883,7 @@ export default function ChatComposer({
                 aria-label={`选择 Agent，当前为${agentName}`}
                 disabled={agentDisabled}
               >
-                <Bot className="v3-agent-picker-icon" size={16} aria-hidden="true" />
+                <AssistantBadge className="v3-agent-picker-icon" size={16} aria-hidden="true" />
                 <span>{agentName}</span><ChevronDown className="v3-agent-picker-chevron" size={14} />
               </button>
               {agentMenu}
@@ -899,7 +900,7 @@ export default function ChatComposer({
               aria-busy={stopPending || undefined}
             >
               {stopPending ? <LoaderCircle size={16} className="cc-stop-spinner" aria-hidden="true" />
-                : <Square size={13} fill="currentColor" aria-hidden="true" />}
+                : <Stop size={13} fill="currentColor" aria-hidden="true" />}
             </button>
           )}
           <button
@@ -912,7 +913,7 @@ export default function ChatComposer({
             type="button"
           >
             {stop ? (stopPending ? <LoaderCircle size={18} className="cc-stop-spinner" aria-hidden="true" />
-              : <Square size={13} fill="currentColor" />) : <ArrowUp size={18} />}
+              : <Stop size={13} fill="currentColor" />) : <ArrowUp size={18} />}
           </button>
         </div>
       </div>

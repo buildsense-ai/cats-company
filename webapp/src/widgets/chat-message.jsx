@@ -1,6 +1,7 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Terminal, Brain, BookOpen, FilePen, FolderSearch, Globe, Search, Send, Sparkles, GitFork, MessageSquareText, FileText, FileCode2, Download, ExternalLink, Maximize2, Minimize2, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
+import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Terminal, Brain, BookOpen, FilePen, FolderSearch, Globe, Send, Sparkles, GitFork, MessageSquareText, FileCode2, Maximize2, Minimize2, Pencil, Eye, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, Image as ImageIcon, Share2 } from 'lucide-react';
+import { Copy, CornerUpLeft, Download, ExternalLink, FileText, MoreHorizontal, Search, X } from './desktop-icons';
 import t from '../i18n';
 import { EXECUTION_LABELS, useLiquidConversation } from '../utils/liquid-conversation';
 import { FadingMarkdown, FadingText, LiquidReplySurface, useReplyReveal } from './liquid-reply-motion';

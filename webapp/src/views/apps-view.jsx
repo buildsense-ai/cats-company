@@ -2,17 +2,12 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import SlidingSegments from '../widgets/sliding-segments';
 import ToolbarSearch from '../widgets/toolbar-search';
 import {
-  AppWindow,
   ArrowLeft,
-  Bot,
   Check,
-  ExternalLink,
-  MoreHorizontal,
   Pencil,
-  RefreshCw,
   Share2,
-  Star,
 } from 'lucide-react';
+import { AppsGrid, AssistantBadge, ExternalLink, MoreHorizontal, RefreshCw, Star } from '../widgets/desktop-icons';
 import { api } from '../api';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import CustomSelect from '../widgets/custom-select';
@@ -135,7 +130,7 @@ function AppCard({ app, agent, openingID, showOpeningStatus, onOpen, onOpenWindo
       <button type="button" className="cc-app-card-button" onClick={() => onOpen(app)} disabled={openingID === String(app?.id || '')} aria-label={`打开应用 ${title}`}>
         <div className="cc-app-card-heading">
           <span className="cc-app-card-avatar" aria-hidden="true">
-            {iconURL ? <img src={iconURL} alt="" /> : <AppWindow size={22} strokeWidth={1.8} />}
+            {iconURL ? <img src={iconURL} alt="" /> : <AppsGrid size={22} strokeWidth={1.8} />}
           </span>
           <span className="cc-app-card-heading-copy">
             <strong>{title}</strong>
@@ -491,7 +486,7 @@ function AppsViewSession({ user = null, viewStateRef }) {
         </div>
         <div className="cc-skillhub-agent-context cc-apps-agent-filter">
           <label className="cc-skillhub-bot-picker">
-            <span className="cc-skillhub-agent-label"><Bot size={15} aria-hidden="true" /> 来源 Agent</span>
+            <span className="cc-skillhub-agent-label"><AssistantBadge size={15} aria-hidden="true" /> 来源 Agent</span>
             <span className="cc-skillhub-select-wrap">
               <CustomSelect
                 ariaLabel="选择 Agent"
@@ -532,7 +527,7 @@ function AppsViewSession({ user = null, viewStateRef }) {
       {loading && loadingSummary && <div className="cc-apps-loading-progress" aria-hidden="true">{loadingSummary}</div>}
       {loading && !hasLoaded && resolvedAgentCount === 0 && <div className="cc-apps-initial-loading">{showLoadingMotion && <LoadingState kind="apps" label="正在读取应用" announce={false} />}</div>}
       {!loading && listError && <div className="cc-apps-state is-error" role="alert"><span>{listError}</span><button type="button" className="cc-recovery-button" onClick={loadApps}>重试</button></div>}
-      {!loading && !listError && visibleApps.length === 0 && <div className="cc-apps-state is-empty"><AppWindow size={24} aria-hidden="true" /><strong>{emptyTitle}</strong><span>{emptyCopy}</span></div>}
+      {!loading && !listError && visibleApps.length === 0 && <div className="cc-apps-state is-empty"><AppsGrid size={24} aria-hidden="true" /><strong>{emptyTitle}</strong><span>{emptyCopy}</span></div>}
       {launchNotice}
       {visibleApps.length > 0 && (
         <div className="cc-apps-grid cc-apps-results">
