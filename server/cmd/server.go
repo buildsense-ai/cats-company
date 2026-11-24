@@ -1148,6 +1148,7 @@ func main() {
 	// orchestration (both PG and MySQL adapters do).
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
+		serviceAgentsMCPHandler.SetComputeSnapshotPath(os.Getenv("CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE"))
 		// 会话与 server 实例的回收：SessionTimeout 关掉空闲会话，reaper 再把没有
 		// 会话的 server 摘出注册表（否则要等下一次清单变更才释放）。
 		serviceAgentsMCPHandler.StartLiveServerReaper(context.Background(), 0)

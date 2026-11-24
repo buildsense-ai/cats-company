@@ -15,6 +15,7 @@
 | --- | --- |
 | `catsco_<slug>` | 每个上架应用对应一个工具（如 `catsco_hello`） |
 | `catsco_run_status` | 查询 run 状态/结果（`{run_id}`） |
+| `catsco_compute_preview` | 比较当前 Agent 设备和 Slurm，按部署配置启用 |
 
 `catsco_<slug>` 参数：
 
@@ -24,6 +25,16 @@
 | `session_id` | 可选；续聊会话 id（不传 = 新会话） |
 | `client_token` | 幂等键（作用域：同会话内；重发返回同一 run） |
 | `bot_uid` | 可选；以 bot 身份调用时带 bot 的 uid（校验 bot 归属：owner 必须是调用者；若该 bot 定义里显式设了 `serviceAgents`，被调 agent 必须在其中 → 否则 `agent_not_enabled_for_bot`）。不影响 `tools/list`（工具清单跟账号） |
+
+## 算力预览
+
+Agent 遇到资源密集型任务时，先调用 XiaoBa 的 `local_compute_resources`，再调用 `catsco_compute_preview`。参数 `task` 里，`topology` 为 `independent_shards` 或 `distributed`，分别填写正整数 `shards` 或 `nodes`。`logical_cpus`、`memory_mib`、可选 `gpu_count` 和 `memory_mib_per_gpu` 是每分片或每节点需求。可选的 `agent_runtime` 直接传入 XiaoBa 采样对象。
+
+结果 `structuredContent` 使用 `catsco.compute-preview.v1`，包含各候选 `fit`、`capacity`、`reason_code`、来源、采样时间和可用的采样字段。独立分片按可顺序执行判断最低资源。分布式任务按所需节点数判断总容量。超过两分钟的采样会降级为未知。当前 Agent 设备标为 `agent_reported`。
+
+文本结果第一段为聊天 Markdown 表格，第二段为结构化结果的 JSON。Agent 可以直接发第一段，请用户回复偏好的位置。无估时样本时 `eta_s` 为 `null`。云端的 `quote.state` 为 `unpriced`，待核定计价和费用上限后才进入用户确认。此工具只读。
+
+部署方通过 `CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE` 指定一个绝对路径，启用预览。由平台采集器原子更新该路径的本地普通 JSON 文件。采样对应一组节点规格一致的 Slurm 队列，包含 UTC RFC 3339 `sampled_at`、已配置且可调度的 `nodes`、其中完全空闲的 `idle_nodes`、`logical_cpus_per_node`、`memory_mib_per_node`、可选 `gpus_per_node` 和 `memory_mib_per_gpu`。未知的 GPU 字段留空，已确认没有 GPU 时 `gpus_per_node` 为 0。文件缺失、过期或格式异常时云集群状态为未知。
 
 ## 调用失败怎么说清楚（`worker_offline` / `not_picked_up`）
 
