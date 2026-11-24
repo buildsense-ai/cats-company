@@ -31,7 +31,7 @@ describe('ConversationDevicePicker', () => {
     api.setGroupDeviceShare.mockResolvedValue({ notice: { message_id: 100 } });
     api.getDevices.mockResolvedValue({ devices: directory.devices.map(device => ({ ...device, ownerUserId: 'usr7' })) });
     api.getGroupDeviceShares.mockResolvedValue({
-      actor_uid: 7, shares: [], devices: [],
+      actor_uid: 7, shares: [], devices: [], share_operations: { a: ['read_file', 'execute_shell'] },
       members: [
         { user_id: 7, display_name: 'Alice' }, { user_id: 8, display_name: 'Bob' },
         { user_id: 42, display_name: 'Cloud Bot', is_bot: true },
@@ -233,7 +233,7 @@ describe('ConversationDevicePicker', () => {
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
     expect(document.querySelector('[role=dialog]').textContent).toContain('2 项待确认');
     await click(button('确认'));
-    expect(api.setGroupDeviceShare).toHaveBeenCalledExactlyOnceWith({ action: 'share', topic_id: 'grp_1', grantee_uid: 8, device_id: 'a', expected_revision: 0 });
+    expect(api.setGroupDeviceShare).toHaveBeenCalledExactlyOnceWith({ action: 'share', topic_id: 'grp_1', grantee_uid: 8, device_id: 'a', expected_revision: 0, expected_operations: ['read_file', 'execute_shell'] });
     expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('grp_1', 'usr42', 'a', 'r1', 7);
   });
 

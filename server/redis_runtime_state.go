@@ -250,7 +250,7 @@ func (s *RedisRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceR
 	return s.client.Publish(s.ctx, s.nodeInboxChannel(route.NodeID), payload).Err() == nil
 }
 
-func (s *RedisRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool {
+func (s *RedisRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time, relay *thinToolRPCRelay) bool {
 	if s == nil || s.client == nil || msg == nil || route.NodeID == "" || route.ConnectionID == "" {
 		return false
 	}
@@ -258,11 +258,12 @@ func (s *RedisRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *MsgThinT
 		return false
 	}
 	if hub := s.localHub(route.NodeID); hub != nil {
-		return hub.sendThinToolRPCToLocalRoute(route, msg)
+		return hub.receiveThinToolRPCFromRuntime(route, msg, relay)
 	}
 	payload, err := json.Marshal(redisThinToolRPCEnvelope{
 		Route: redisRouteFromRuntime(route),
 		Msg:   msg,
+		Relay: relay,
 	})
 	if err != nil {
 		return false
@@ -1520,7 +1521,7 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 				if envelope.DeviceRPC != nil || envelope.Msg != nil {
 					hub.sendDeviceRPCToLocalRoute(route, firstDeviceRPCMessage(envelope.DeviceRPC, envelope.Msg))
 				} else if envelope.ThinToolRPC != nil {
-					hub.sendThinToolRPCToLocalRoute(route, envelope.ThinToolRPC)
+					hub.receiveThinToolRPCFromRuntime(route, envelope.ThinToolRPC, envelope.ThinToolRPCRelay)
 				} else if envelope.ArtifactResult != nil {
 					hub.sendArtifactResultToLocalRoute(route, envelope.ArtifactResult)
 				}
@@ -1869,6 +1870,7 @@ type redisDeviceRPCEnvelope struct {
 }
 
 type redisThinToolRPCEnvelope struct {
+	Relay *thinToolRPCRelay `json:"thin_tool_rpc_relay,omitempty"`
 	Route redisRuntimeRoute `json:"route"`
 	Msg   *MsgThinToolRPC   `json:"thin_tool_rpc"`
 }
@@ -1893,6 +1895,7 @@ type redisMessagingAttentionProbeReply struct {
 }
 
 type redisRuntimeEnvelope struct {
+	ThinToolRPCRelay             *thinToolRPCRelay                  `json:"thin_tool_rpc_relay,omitempty"`
 	Route                        redisRuntimeRoute                  `json:"route"`
 	Msg                          *MsgDeviceRPC                      `json:"msg,omitempty"`
 	DeviceRPC                    *MsgDeviceRPC                      `json:"device_rpc,omitempty"`

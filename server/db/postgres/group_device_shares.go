@@ -317,7 +317,7 @@ func (a *Adapter) InvalidateDeviceShares(ctx context.Context, owner int64, devic
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE group_device_share_requests SET status='invalidated',revision=revision+1 WHERE owner_uid=$1 AND (status='pending' OR (status='approved' AND device_id=$2))`, owner, device)
+	_, err = tx.ExecContext(ctx, `UPDATE group_device_share_requests SET status='invalidated',revision=revision+1,updated_at_ms=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint WHERE owner_uid=$1 AND device_id=$2 AND status IN ('pending','approved')`, owner, device)
 	if err != nil {
 		return err
 	}

@@ -442,7 +442,7 @@ func (h *Hub) handleThinToolRPCResult(client *Client, msg *MsgThinToolRPC) {
 		result = "error"
 	}
 	h.auditSharedThinToolRPC(pending, "rpc_result", result)
-	if !h.sendThinToolRPCToRoute(pending.requesterRoute, &forward) {
+	if !h.sendThinToolRPCToRoute(pending.requesterRoute, &forward, pending.targetRoute) {
 		log.Printf("[thin_tool_rpc] result forward failed: request_id=%s requester_route=%s requester_registered=%t", requestID, describeRuntimeRoute(pending.requesterRoute), h.isClientRegistered(pending.requester))
 		if h.isClientRegistered(pending.requester) {
 			h.SendToClient(pending.requester, &ServerMessage{ThinToolRPC: &forward})
@@ -623,8 +623,8 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		return err
 	}
 	if grant.IdentitySource == groupDeviceShareSource {
-		_, target := h.findDeviceRPCTarget(ownerUID, UserDevice{DeviceID: deviceID})
-		if target == nil || !client.hasRuntimeCapability(groupDeviceShareCapability) {
+		route, _ := h.findDeviceRPCTarget(ownerUID, UserDevice{DeviceID: deviceID})
+		if !h.routeConnected(route) || !client.hasRuntimeCapability(groupDeviceShareCapability) {
 			return &thinToolRPCAuthorizationError{code: "group_device_share_upgrade_required", message: "设备共享需要支持共享目标的 Bot 和在线设备"}
 		}
 		if !h.groupDeviceGrantCurrent(grant) {
@@ -813,7 +813,7 @@ func (h *Hub) notifyThinToolRPCTimeout(pending thinToolRPCPending) {
 		CreatedAt: unixMillis(pending.createdAt),
 		ExpiresAt: unixMillis(pending.expiresAt),
 	}
-	_ = h.sendThinToolRPCToRoute(pending.requesterRoute, msg)
+	_ = h.sendThinToolRPCToRoute(pending.requesterRoute, msg, pending.targetRoute)
 }
 
 func (h *Hub) cancelThinToolRPCRequestsByRequesterRoute(route runtimeRoute) int {
@@ -900,7 +900,7 @@ func (h *Hub) sendThinToolRPCToLocalRoute(route runtimeRoute, msg *MsgThinToolRP
 	return true
 }
 
-func (h *Hub) sendThinToolRPCToRoute(route runtimeRoute, msg *MsgThinToolRPC) bool {
+func (h *Hub) sendThinToolRPCToRoute(route runtimeRoute, msg *MsgThinToolRPC, resultSource ...runtimeRoute) bool {
 	if h == nil || !route.validAt(nowForRoute(h)) || msg == nil {
 		log.Printf("[thin_tool_rpc] route invalid: request_id=%s type=%s route=%s", thinToolRPCRequestID(msg), thinToolRPCMessageType(msg), describeRuntimeRoute(route))
 		return false
@@ -910,7 +910,15 @@ func (h *Hub) sendThinToolRPCToRoute(route runtimeRoute, msg *MsgThinToolRPC) bo
 	}
 	if h.sharedRuntime != nil {
 		log.Printf("[thin_tool_rpc] shared forward: request_id=%s type=%s route=%s", thinToolRPCRequestID(msg), thinToolRPCMessageType(msg), describeRuntimeRoute(route))
-		return h.sharedRuntime.deliverThinToolRPC(route, msg, nowForRoute(h))
+		var relay *thinToolRPCRelay
+		if msg.Type == thinToolRPCTypeRequest {
+			if pending, ok := h.thinToolRPC.get(msg.RequestID); ok && pending.publication == nil {
+				relay = &thinToolRPCRelay{RequesterRoute: pending.requesterRoute, TargetOwnerUID: pending.targetOwnerUID, TargetDeviceID: pending.targetDeviceID, ToolName: pending.toolName, CreatedAt: pending.createdAt, ExpiresAt: pending.expiresAt}
+			}
+		} else if len(resultSource) > 0 {
+			relay = &thinToolRPCRelay{ResultSource: resultSource[0]}
+		}
+		return h.sharedRuntime.deliverThinToolRPC(route, msg, nowForRoute(h), relay)
 	}
 	log.Printf("[thin_tool_rpc] route is remote but shared runtime missing: request_id=%s type=%s route=%s hub_node=%s", thinToolRPCRequestID(msg), thinToolRPCMessageType(msg), describeRuntimeRoute(route), h.nodeID)
 	return false

@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, getAuthRevision, getToken, isCurrentAuthSession } from '../api';
 import '../css/group-device-sharing.css';
+import { describeShareScope, knownShareScope } from './group-device-share-scope';
 
 const labels = { pending: '等待设备所有者处理', approved: '已授权', rejected: '已拒绝', invalidated: '申请已失效' };
 
 export default function GroupDeviceShareCard({ reference, sourceTopicId, sourceMessageId }) {
   const [snapshot, setSnapshot] = useState(null);
   const [deviceId, setDeviceId] = useState('');
+  const [operations, setOperations] = useState(undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [noticePending, setNoticePending] = useState(false);
@@ -31,21 +33,23 @@ export default function GroupDeviceShareCard({ reference, sourceTopicId, sourceM
     };
     if (reference.topic_id === sourceTopicId && sourceMessageId > 0) void refresh();
     const timer = setInterval(() => { if (reference.topic_id === sourceTopicId && sourceMessageId > 0) void refresh(); }, 3000);
-    const reset = () => { ++sequence.current; setSnapshot(null); setDeviceId(''); setBusy(false); setNoticePending(false); setAuthVersion(version => version + 1); };
+    const reset = () => { ++sequence.current; setSnapshot(null); setDeviceId(''); setOperations(undefined); setBusy(false); setNoticePending(false); setAuthVersion(version => version + 1); };
     window.addEventListener('cc:auth-changed', reset);
     return () => { stopped = true; clearInterval(timer); window.removeEventListener('cc:auth-changed', reset); };
   }, [reference.topic_id, reference.request_id, authVersion, sourceTopicId, sourceMessageId]);
 
+  useEffect(() => { setDeviceId(''); setOperations(undefined); }, [reference.topic_id, reference.request_id]);
+
   const originalCard = snapshot?.request.topic_id === sourceTopicId && snapshot?.request.message_id === sourceMessageId;
   const resolve = async (action) => {
-    if (!originalCard) return;
+    if (!originalCard || (action === 'approve' && (!deviceId || !knownShareScope(operations)))) return;
     const token = getToken(), revision = getAuthRevision();
     ++sequence.current;
     setBusy(true);
     try {
       const result = await api.resolveGroupDeviceShareRequest({
         action, topic_id: reference.topic_id, request_id: reference.request_id,
-        expected_revision: snapshot.request.revision, ...(action === 'approve' ? { device_id: deviceId } : {}),
+        expected_revision: snapshot.request.revision, ...(action === 'approve' ? { device_id: deviceId, expected_operations: operations } : {}),
       });
       if (!isCurrentAuthSession(token, revision)) return;
       setNoticePending(result?.notice?.pending === true);
@@ -55,7 +59,14 @@ export default function GroupDeviceShareCard({ reference, sourceTopicId, sourceM
       setError('');
       window.dispatchEvent(new CustomEvent('cc:devices-changed'));
     } catch {
-      if (isCurrentAuthSession(token, revision)) setError('申请已变化或操作未确认，请刷新核对后重试。');
+      if (isCurrentAuthSession(token, revision)) {
+        setDeviceId(''); setOperations(undefined);
+        setError('申请已变化或操作未确认，请刷新核对后重试。');
+        try {
+          const next = await api.getGroupDeviceShareRequest(reference.topic_id, reference.request_id);
+          if (isCurrentAuthSession(token, revision)) setSnapshot(next);
+        } catch { /* The existing timer will retry the read. */ }
+      }
     } finally {
       if (isCurrentAuthSession(token, revision)) setBusy(false);
     }
@@ -77,15 +88,16 @@ export default function GroupDeviceShareCard({ reference, sourceTopicId, sourceM
       <p role="status">{snapshot.share_status === 'revoked' ? '授权已撤销' : labels[snapshot.request.status] || '申请状态未知'}</p>
       {!originalCard && <p>请使用原始授权卡片处理申请。</p>}
       {originalCard && snapshot.can_resolve && snapshot.request.status === 'pending' && <>
-        <label>选择要授权的电脑
-          <select aria-label="选择要授权的电脑" value={deviceId} disabled={busy} onChange={event => setDeviceId(event.target.value)}>
-            <option value="">请选择自己的电脑</option>
+        <label>选择要授权的设备
+          <select aria-label="选择要授权的设备" value={deviceId} disabled={busy} onChange={event => { const id = event.target.value; setDeviceId(id); const current = snapshot.share_operations?.[id]; setOperations(Array.isArray(current) ? [...current] : undefined); }}>
+            <option value="">请选择自己的设备</option>
             {(snapshot.devices || []).map(device => <option key={device.deviceId} value={device.deviceId}>
               {device.displayName || device.deviceId} · {device.deviceId}
             </option>)}
           </select>
         </label>
-        <button type="button" disabled={busy || !deviceId} onClick={() => void resolve('approve')}>授权所选设备</button>
+        {deviceId && <p aria-label="授权范围">授权范围：{describeShareScope(operations)}</p>}
+        <button type="button" disabled={busy || !deviceId || !knownShareScope(operations)} onClick={() => void resolve('approve')}>授权所选设备</button>
         <button type="button" disabled={busy} onClick={() => void resolve('reject')}>拒绝</button>
         <p>许可适用于本群中的 Bot，持续至撤销。执行结果可能发送到本群。</p>
       </>}

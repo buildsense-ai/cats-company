@@ -184,7 +184,7 @@ describe('ChatMessage rich file rendering', () => {
     }} isSelf={false} isGroup senderName="userA" />));
     expect(container.querySelector('.cc-share-card')).not.toBeNull();
     expect(container.textContent).toContain('借用 pcB');
-    expect(container.querySelector('select[aria-label="选择要授权的电脑"]')).not.toBeNull();
+    expect(container.querySelector('select[aria-label="选择要授权的设备"]')).not.toBeNull();
     expect(api.getGroupDeviceShareRequest).toHaveBeenCalledWith('grp_2', 'request-b');
   });
 

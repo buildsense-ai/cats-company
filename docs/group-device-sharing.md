@@ -14,7 +14,7 @@
 
 ## 数据及接口
 
-新增迁移 `server/db/migrations/postgres/000081_group_device_sharing.up.sql`，与启动时 CreateSchema 的新增 DDL 保持一致：
+新增迁移 `server/db/migrations/postgres/000082_group_device_sharing.up.sql`，与启动时 CreateSchema 的新增 DDL 保持一致：
 
 - `group_device_shares`：owner、grantee、group、device 的唯一关系，允许操作、状态、版本及时间。
 - `group_device_share_requests`：申请人、所有者、说明、幂等键、状态、版本、所选设备、关联许可和卡片消息。
@@ -47,7 +47,7 @@ JSON 不接受额外 actor/requester 字段。创建申请不能把模型给出�
 
 ## 发布与回滚
 
-先准备包含本功能的 XiaoBa 稳定 Worker 包，再发布 CatsCompany 后端与 Web，最后灰度安装 Worker 包。生产 `remote-deploy.sh` 在替换 API 前运行候选镜像的 `--prepare-postgres-schema`，由 `CreateSchema()` 在目标租户 schema 创建共享表并补充 owner 列；显式 081 SQL 与启动 DDL 对齐，正常部署不自动执行完整版本迁移链。发布前备份并确认各租户 search_path，失败可能保留部分已执行 DDL。运行时沿用既有 XiaoBa 编译与 Worker 分发流程，无需增加服务。旧 Connector 可用于本人及后端已批准的共享调用，无需因本次转换额外升级。
+先准备包含本功能的 XiaoBa 稳定 Worker 包，再发布 CatsCompany 后端与 Web，最后灰度安装 Worker 包。生产 `remote-deploy.sh` 在替换 API 前运行候选镜像的 `--prepare-postgres-schema`，由 `CreateSchema()` 在目标租户 schema 创建共享表并补充 owner 列；显式 082 SQL 与启动 DDL 对齐，正常部署不自动执行完整版本迁移链。发布前备份并确认各租户 search_path，失败可能保留部分已执行 DDL。运行时沿用既有 XiaoBa 编译与 Worker 分发流程，无需增加服务。旧 Connector 可用于本人及后端已批准的共享调用，无需因本次转换额外升级。
 
 回滚旧后端前，先撤销共享并显式把所有非本人默认选择改回本人的设备，避免旧二进制忽略 owner 字段。保留许可/申请表作为记录；down 迁移在有记录或跨用户选择时主动拒绝删除，不能强制清空业务证据。
 
@@ -131,3 +131,27 @@ XiaoBa 保留「未提供更新」与「明确为空」的区别：undefined 不
 这是收到服务端新上下文时的数据更新，不是数据库对象与 Bot 内存自动绑定；本轮没有新增数据库变更推送或轮询服务。新上下文到达前，后续 RPC 仍由服务器实时复核和拒绝已撤销权限。通用 permission_denied、网络超时和存储故障不能被客户端直接解释成「所有者已经撤销」，因此本轮不据此篡改本地授权状态。
 
 本轮需要更新 server 和 Bot 运行时代码；Connector 不使用此 pending React loop，不需要因此重装。Bot 侧 group-device-share.v1 兼容门控仍保留，删除它未包含在本次列表同步改动中。
+
+## 跨节点与授权范围确认
+
+共享调用按有效设备路由判断在线状态，不要求 Connector 与 Bot 连到同一个后端进程。Device RPC 沿用共享 pending；Thin Tool RPC 在设备节点建立仅含路由的接收记录，经服务端 Redis envelope 将结果送回原节点，按原 pending 校验来源与接收者连接并恢复实际 actor。该 envelope 不传给 Connector，不新增客户端设备协议。原节点与设备节点都会清理完成的 pending；重复、过期和错误连接的结果不能消费原请求。
+
+解绑只使指向该 owner+device 的许可及申请失效，尚未选设备或指向其它设备的 pending 申请保留。后续审批仍按当前绑定 epoch 校验，保留申请不恢复旧设备权限。
+
+所有者审批卡及直接共享的待确认区域展示服务端 `share_operations`。界面把用户看到的操作列表作为 `expected_operations` 提交；列表与待保存权限不一致时返回 409，要求刷新确认。此字段为兼容旧所有者客户端而可省略；新界面始终携带已显示的列表，未知范围不允许确认。范围提示只在授权操作时出现，不新增设备表。
+
+多节点升级应先完成全部 server 节点更新，再开放新版本共享功能。新旧后端混跑期间，旧节点不理解新的服务端 Thin RPC relay，跨节点调用可能失败；Connector 不需要因此升级。
+
+## 验证覆盖与剩余边界
+
+| 场景 | 当前证据 | 尚未证明的范围 |
+| --- | --- | --- |
+| 共享 RPC 跨节点 | `TestGroupSharedRPCAcrossProcesses` 启动两个独立 OS 测试进程，Bot/设备连接记录分别只在各自进程；CI 使用真实 Redis，验证两条 RPC 请求/结果、真实 actor、pending 清理、续授权与撤销。 | 客户端收件箱和权限库为 fixture，没有声称是完整浏览器/原生 Connector E2E。 |
+| 路由与结果来源 | `TestThinToolRPCRelay*` 验证错误来源、错误接收者、重复结果、过期请求和设备不匹配。 | 进程崩溃、网络分区、滚动升级的全部排列尚未验收；Pub/Sub 与内存 pending 不保证结果必达或恰好一次执行。 |
+| SQL 与迁移 | 独立 PostgreSQL 17.10 验证 082、旧 owner 空值、CAS、审批/撤销/删群并发，以及解绑不影响无关申请；CI 的 `group_device_sharing` 任务明确选中这些测试。 | 使用最小历史 schema 与一次性测试 schema，不等于完整生产历史快照升级或 HTTP 多租户隔离验收。 |
+| 授权范围 | API 与 Web 回归验证实际操作预览、确认范围不匹配拒绝和未知范围阻止确认。 | 原生桌面系统操作、所有平台安装与更新没有在 Linux 容器中得到证明。 |
+| 完整业务链 | 本地已有两人、两 Cloud、两独立 PC 及真实安装包分发环境；此前完成过真实模型与旧 Connector 的授权读取验收。 | 尚无自动化覆盖全部浏览器→server→SQL/Redis→真实 Bot→真实 Connector→文件效果的组合矩阵。独立组件通过不能替代这项联合验收。 |
+
+普通聊天入口/群广播对远端 Bot 的投递也需要单独的多后端 E2E 验证；本次设备 RPC 的跨节点测试不能证明任意负载均衡下的聊天投递正确。
+
+撤销只阻止后续派发，已启动命令不被强制终止。网络中断后不能盲目重放写文件或命令请求；本功能不提供设备互斥或操作级恰好一次保证。跨多项设置的确认仍逐项提交，回执与设置不是同一个事务。

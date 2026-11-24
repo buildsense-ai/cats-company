@@ -16,6 +16,7 @@ const pending = {
   can_resolve: true,
   request: { topic_id: 'grp_2', message_id: 100, status: 'pending', revision: 4, description: '申请使用 pcB' },
   devices: [{ deviceId: 'pcb', displayName: 'pcB' }],
+  share_operations: { pcb: ['read_file', 'write_file', 'execute_shell'] },
 };
 
 beforeEach(() => {
@@ -46,12 +47,13 @@ it('requires an owner-selected device and submits the server revision', async ()
   expect(approve.disabled).toBe(true);
   await act(async () => Simulate.change(container.querySelector('select'), { target: { value: 'pcb' } }));
   expect(approve.disabled).toBe(false);
+  expect(container.querySelector('[aria-label="授权范围"]').textContent).toContain('读取文件、写入文件、执行命令');
   api.getGroupDeviceShareRequest.mockResolvedValue({
     request: { ...pending.request, status: 'approved', revision: 5 }, can_resolve: true,
   });
   await act(async () => Simulate.click(approve));
   expect(api.resolveGroupDeviceShareRequest).toHaveBeenCalledWith({
-    action: 'approve', topic_id: 'grp_2', request_id: 'request-b', expected_revision: 4, device_id: 'pcb',
+    action: 'approve', topic_id: 'grp_2', request_id: 'request-b', expected_revision: 4, device_id: 'pcb', expected_operations: ['read_file', 'write_file', 'execute_shell'],
   });
   expect(container.textContent).toContain('已授权');
 });
@@ -92,4 +94,24 @@ it('does not render arbitrary objects from untrusted attribution fields', async 
   expect(container.textContent).toContain('Bot 代 群成员 申请');
   expect(container.textContent).not.toContain('原消息 #');
   expect(container.querySelector('button')).toBeNull();
+});
+
+it('requires a known operation scope before approval', async () => {
+  api.getGroupDeviceShareRequest.mockResolvedValue({ ...pending, share_operations: {} });
+  await render();
+  await act(async () => Simulate.change(container.querySelector('select'), { target: { value: 'pcb' } }));
+  expect([...container.querySelectorAll('button')].find(button => button.textContent === '授权所选设备').disabled).toBe(true);
+  expect(api.resolveGroupDeviceShareRequest).not.toHaveBeenCalled();
+});
+
+it('clears a stale scope after a failed confirmation and reads the current request', async () => {
+  api.getGroupDeviceShareRequest.mockResolvedValue(pending);
+  api.resolveGroupDeviceShareRequest.mockRejectedValue(new Error('409 scope changed'));
+  await render();
+  await act(async () => Simulate.change(container.querySelector('select'), { target: { value: 'pcb' } }));
+  await act(async () => Simulate.click([...container.querySelectorAll('button')].find(button => button.textContent === '授权所选设备')));
+  expect(container.querySelector('select').value).toBe('');
+  expect([...container.querySelectorAll('button')].find(button => button.textContent === '授权所选设备').disabled).toBe(true);
+  expect(api.resolveGroupDeviceShareRequest).toHaveBeenCalledTimes(1);
+  expect(api.getGroupDeviceShareRequest).toHaveBeenCalledTimes(2);
 });

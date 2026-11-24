@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Laptop, X } from 'lucide-react';
 import { api, getAuthRevision, getToken, isCurrentAuthSession } from '../api';
 import '../css/group-device-sharing.css';
+import { describeShareScope, knownShareScope } from './group-device-share-scope';
 
 const deviceKey = device => `${device.ownerUserId}/${device.deviceId}`;
 const ownerUid = device => Number(device.ownerUserId.replace(/^usr/, ''));
@@ -102,7 +103,7 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
     setShareDrafts(previous => {
       const next = { ...previous };
       if (checked === (share?.status === 'active')) delete next[key];
-      else next[key] = { checked, deviceId: device.deviceId, grantee: person.user_id, expectedRevision: previous[key]?.expectedRevision ?? share?.revision ?? 0 };
+      else next[key] = { checked, deviceId: device.deviceId, grantee: person.user_id, operations: Array.isArray(data.share_operations?.[device.deviceId]) ? [...data.share_operations[device.deviceId]] : undefined, expectedRevision: previous[key]?.expectedRevision ?? share?.revision ?? 0 };
       return next;
     });
   };
@@ -128,6 +129,7 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
         const result = await api.setGroupDeviceShare({
           action: draft.checked ? 'share' : 'revoke', topic_id: topicId, grantee_uid: draft.grantee,
           device_id: draft.deviceId, expected_revision: draft.expectedRevision,
+          ...(draft.checked ? { expected_operations: draft.operations } : {}),
         });
         if (!current()) return;
         noticePending ||= result?.notice?.pending === true;
@@ -167,6 +169,8 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
   };
   const pendingCount = Object.keys(shareDrafts).length + Object.keys(defaultDrafts).length;
   const devices = [...(data?.ownDevices || []), ...(data?.devices || [])];
+  const newShares = Object.values(shareDrafts).filter(draft => draft.checked);
+  const invalidShareScope = newShares.some(draft => !knownShareScope(draft.operations));
   const table = () => <div className="cc-device-table-scroll" role="region" aria-label="设备与授权表格" tabIndex={0}><table>
     <thead>
       <tr><th rowSpan={2} scope="col" aria-label="设备" />{people.length > 0 && <th colSpan={people.length}>共享使用权</th>}{data.bots.length > 0 && <th colSpan={data.bots.length}>默认设备</th>}</tr>
@@ -218,7 +222,7 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
     <div className="cc-device-confirm-actions">
       <button type="button" disabled={busy} onClick={() => void refresh()}>刷新</button>
       <button type="button" disabled={busy || !pendingCount} onClick={clearDrafts}>取消更改</button>
-      <button type="button" disabled={busy || needsRefresh || !pendingCount} onClick={() => void confirm()}>确认</button>
+      <button type="button" disabled={busy || needsRefresh || !pendingCount || invalidShareScope} onClick={() => void confirm()}>确认</button>
     </div>
     {error && <p role="alert">{error}</p>}
     {!data && !error && <p role="status">正在读取设备…</p>}
@@ -227,6 +231,10 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
       {devices.length || data.bots.length ? table() : <p>暂无设备</p>}
       {data.snapshots.some(snapshot => snapshot.status === 'unavailable') && <p role="status">已选设备不可用</p>}
     </>}
+    {newShares.map(draft => <p key={`${draft.deviceId}/${draft.grantee}`} aria-label="共享授权范围">
+      {devices.find(device => device.deviceId === draft.deviceId && ownerUid(device) === data.actor_uid)?.displayName || draft.deviceId}
+      {' → '}{data.members.find(member => member.user_id === draft.grantee)?.display_name || data.members.find(member => member.user_id === draft.grantee)?.username || `usr${draft.grantee}`}：{describeShareScope(draft.operations)}
+    </p>)}
     {pendingCount > 0 && <p role="status">{pendingCount} 项待确认</p>}
   </>;
   if (embedded) return <section className="cc-group-devices">{content}</section>;

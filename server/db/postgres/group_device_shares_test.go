@@ -57,7 +57,7 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 	if _, err = db.db.Exec("INSERT INTO conversation_device_selections VALUES($1,'before-upgrade','old-device','old-revision','legacy',1)", legacyActor); err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile("../migrations/postgres/000081_group_device_sharing.up.sql")
+	migration, err := os.ReadFile("../migrations/postgres/000082_group_device_sharing.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,8 +223,41 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 	if err != nil || afterRejoin.Status != "revoked" {
 		t.Fatal("rejoin revived sharing", afterRejoin, err)
 	}
+	unlinkRequests := []struct {
+		id, device, want string
+		owner            int64
+	}{
+		{"unselected-request", "", "pending", actors[1]},
+		{"other-device-request", "other-device", "pending", actors[1]},
+		{"unlinked-device-request", "same-device-id", "invalidated", actors[1]},
+		{"other-owner-request", "same-device-id", "pending", actors[2]},
+	}
+	for _, tc := range unlinkRequests {
+		_, err = db.CreateGroupDeviceShareRequest(ctx, store.GroupDeviceShareRequest{
+			ID: tc.id, ClientRequestID: tc.id, RequesterUID: actors[0], OwnerUID: tc.owner,
+			TopicID: topic, DeviceID: tc.device, CreatedAt: time.Now().UnixMilli(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err = db.InvalidateDeviceShares(ctx, actors[1], "same-device-id"); err != nil {
 		t.Fatal(err)
+	}
+	for _, tc := range unlinkRequests {
+		after, err := db.GetGroupDeviceShareRequest(ctx, tc.id)
+		if err != nil || after == nil || after.Status != tc.want {
+			t.Fatalf("unlink request %s: %+v, %v; want %s", tc.id, after, err, tc.want)
+		}
+	}
+	if err = db.RegisterDeviceShareBinding(ctx, actors[1], "other-device", "other-install", time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	otherPermission := share
+	otherPermission.ID, otherPermission.DeviceID = "other-device-share", "other-device"
+	otherPermission.DeviceEpoch, otherPermission.Status = 1, "active"
+	if approved, err := db.ResolveGroupDeviceShareRequest(ctx, "unselected-request", 1, "approved", &otherPermission); err != nil || approved.DeviceID != "other-device" {
+		t.Fatal("unselected request could not approve a different device after unlink", approved, err)
 	}
 	binding, err := db.GetDeviceShareBinding(ctx, actors[1], "same-device-id")
 	if err != nil || binding.Active {

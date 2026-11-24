@@ -182,17 +182,18 @@ func (h *Hub) groupDeviceTurnContext(actor int64, topic string, agent *Client, o
 }
 
 type groupDeviceShareWrite struct {
-	Owner            string `json:"owner"`
-	Action           string `json:"action"`
-	TopicID          string `json:"topic_id"`
-	GranteeUID       int64  `json:"grantee_uid"`
-	OwnerUID         int64  `json:"owner_uid"`
-	DeviceID         string `json:"device_id"`
-	ExpectedRevision *int64 `json:"expected_revision"`
-	RequestID        string `json:"request_id"`
-	ClientRequestID  string `json:"client_request_id"`
-	Description      string `json:"description"`
-	MessageID        int64  `json:"message_id"`
+	ExpectedOperations []string `json:"expected_operations"`
+	Owner              string   `json:"owner"`
+	Action             string   `json:"action"`
+	TopicID            string   `json:"topic_id"`
+	GranteeUID         int64    `json:"grantee_uid"`
+	OwnerUID           int64    `json:"owner_uid"`
+	DeviceID           string   `json:"device_id"`
+	ExpectedRevision   *int64   `json:"expected_revision"`
+	RequestID          string   `json:"request_id"`
+	ClientRequestID    string   `json:"client_request_id"`
+	Description        string   `json:"description"`
+	MessageID          int64    `json:"message_id"`
 }
 
 func (h *GroupDeviceShareHandler) access(w http.ResponseWriter, r *http.Request, topic string) (store.GroupDeviceShareStore, int64, bool) {
@@ -254,7 +255,7 @@ func (h *GroupDeviceShareHandler) HandleShares(w http.ResponseWriter, r *http.Re
 			shareError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"shares": shares, "devices": deviceSelectionCandidates(devices), "members": members, "actor_uid": uid})
+		writeJSON(w, 200, map[string]any{"shares": shares, "devices": deviceSelectionCandidates(devices), "members": members, "actor_uid": uid, "share_operations": groupShareOperationSnapshot(humanToolTargetDevices(h.hub.userDevices.list(uid)))})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -303,6 +304,10 @@ func (h *GroupDeviceShareHandler) HandleShares(w http.ResponseWriter, r *http.Re
 	}
 	if err != nil {
 		writeJSON(w, 403, map[string]string{"error": err.Error()})
+		return
+	}
+	if req.Action == "share" && !sameShareOperations(req.ExpectedOperations, s.Operations) {
+		writeJSON(w, 409, map[string]string{"error": "device operations changed; refresh and confirm the current scope"})
 		return
 	}
 	saved, err := db.SaveGroupDeviceShare(r.Context(), *s, *req.ExpectedRevision)
@@ -380,7 +385,9 @@ func (h *GroupDeviceShareHandler) HandleRequests(w http.ResponseWriter, r *http.
 			}
 		}
 		if uid == req.OwnerUID {
-			response["devices"] = humanToolTargetDevices(h.hub.userDevices.list(uid))
+			devices := humanToolTargetDevices(h.hub.userDevices.list(uid))
+			response["devices"] = devices
+			response["share_operations"] = groupShareOperationSnapshot(devices)
 		}
 		writeJSON(w, 200, response)
 		return
@@ -511,6 +518,10 @@ func (h *GroupDeviceShareHandler) HandleRequests(w http.ResponseWriter, r *http.
 			writeJSON(w, 403, map[string]string{"error": err.Error()})
 			return
 		}
+		if !sameShareOperations(input.ExpectedOperations, s.Operations) {
+			writeJSON(w, 409, map[string]string{"error": "device operations changed; refresh and confirm the current scope"})
+			return
+		}
 		status = "approved"
 	case "reject":
 	default:
@@ -581,4 +592,37 @@ func (h *Hub) revokeGroupShareGrants(id string) {
 			delete(h.userDevices.grants, grantID)
 		}
 	}
+}
+
+// The preview and the persisted permission use the same server-side filter.
+func groupShareOperationSnapshot(devices []UserDevice) map[string][]string {
+	result := make(map[string][]string, len(devices))
+	for _, device := range devices {
+		operations := []string{}
+		for _, op := range deviceGrantOperations(device.Capabilities) {
+			operations = append(operations, string(op))
+		}
+		result[device.DeviceID] = operations
+	}
+	return result
+}
+
+func sameShareOperations(expected, actual []string) bool {
+	if expected == nil {
+		return true
+	} // Existing owner clients remain compatible.
+	if len(expected) != len(actual) {
+		return false
+	}
+	remaining := make(map[string]bool, len(actual))
+	for _, op := range actual {
+		remaining[op] = true
+	}
+	for _, op := range expected {
+		if !remaining[op] {
+			return false
+		}
+		delete(remaining, op)
+	}
+	return len(remaining) == 0
 }

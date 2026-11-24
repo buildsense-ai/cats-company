@@ -88,8 +88,7 @@ func (h *Hub) renewDeviceGrant(client *Client, msg *MsgDeviceGrantRenewal) (Scop
 		return deny()
 	}
 	if old.IdentitySource == groupDeviceShareSource {
-		_, target := h.findDeviceRPCTarget(owner, device)
-		if !client.hasRuntimeCapability(groupDeviceShareCapability) || target == nil || !h.groupDeviceGrantCurrent(old) {
+		if !client.hasRuntimeCapability(groupDeviceShareCapability) || !h.groupDeviceGrantCurrent(old) {
 			return deny()
 		}
 	}

@@ -392,7 +392,7 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		return
 	}
 	targetRoute, target := h.findDeviceRPCTarget(ownerUID, device)
-	if grant.IdentitySource == groupDeviceShareSource && (target == nil || !client.hasRuntimeCapability(groupDeviceShareCapability) || !h.groupDeviceGrantCurrent(grant)) {
+	if grant.IdentitySource == groupDeviceShareSource && (!h.routeConnected(targetRoute) || !client.hasRuntimeCapability(groupDeviceShareCapability) || !h.groupDeviceGrantCurrent(grant)) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "group_device_share_upgrade_required or revoked permission", nil)
 		return
 	}
