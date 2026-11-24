@@ -2136,6 +2136,37 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.cc-wiki-injection-summary')?.textContent).toBe('Summary event-1');
   });
 
+  it('places a delayed injection in the receiving turn and labels carryover in the next turn', async () => {
+    sourceJourney.enabled = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    api.getFriends.mockResolvedValueOnce({ friends: [{ id: 2, display_name: 'Saturday', is_bot: true }] });
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 73, from_uid: 1, type: 'text', content: 'First question', created_at: '2026-07-01T00:00:00Z' },
+      { id: 74, from_uid: 2, type: 'text', content: 'First answer', created_at: '2026-07-01T00:00:02Z' },
+      { id: 75, from_uid: 1, type: 'text', content: 'Next question', created_at: '2026-07-01T00:00:03Z' },
+    ] });
+    await mountTopic(root, 'p2p_1_2', { topicName: 'Saturday', wikiMemoryEnabled: true });
+    await act(async () => { await flushPromises(); });
+
+    await act(async () => {
+      for (const [seq, reply_to, kind, second] of [[76, 73, 'initial', '01'], [77, 75, 'previous', '04']]) {
+        wsHandler({ data: {
+          topic: 'p2p_1_2', from: 'usr2', seq, reply_to, type: 'wiki_injection', ts: '2026-07-01T00:00:05Z',
+          content: { type: 'wiki_injection', kind, event_id: 'event-' + seq, timestamp: '2026-07-01T00:00:' + second + 'Z' },
+        } });
+      }
+      await flushPromises();
+    });
+
+    const anchors = [...container.querySelectorAll('[data-search-message-id]')].map(node => node.dataset.searchMessageId);
+    expect(anchors.filter(id => ['73', '74', '75', '76', '77'].includes(id))).toEqual(['73', '76', '74', '75', '77']);
+    const detailToggles = [...container.querySelectorAll('button[aria-label^="执行详情"]')];
+    expect(detailToggles).toHaveLength(2);
+    await act(async () => detailToggles.forEach(button => button.click()));
+    const labels = [...container.querySelectorAll('.cc-wiki-injection-step')].map(button => button.textContent);
+    expect(labels).toEqual([expect.stringContaining('本轮检索'), expect.stringContaining('上轮补充')]);
+  });
+
   // Failure modes: the timeline keeps the source-bearing group with reasoning
   // hidden, but neither the process nor the memory list opens automatically.
   it.each([true, false])('opens Diary sources from the memory list with showThinking=%s', async (showThinking) => {

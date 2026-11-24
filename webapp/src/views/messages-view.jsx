@@ -3576,10 +3576,12 @@ export default function MessagesView({
           created_at: msg.data.created_at || msg.data.ts || new Date().toISOString(),
           ...(liquidConversation && !sameUID(fromUid, user.uid) ? { _replyArrival: {} } : {}),
         });
-        if (isWorkingMessage(serverMsg)) markLiveWorking(serverMsg);
-        if (!sameUID(fromUid, user.uid)) {
-          markConversationActivity(fromUid, assistantReplyTurnKey(serverMsg));
-          setConversationConnection('connected');
+        if (serverMsg.type !== 'wiki_injection') {
+          if (isWorkingMessage(serverMsg)) markLiveWorking(serverMsg);
+          if (!sameUID(fromUid, user.uid)) {
+            markConversationActivity(fromUid, assistantReplyTurnKey(serverMsg));
+            setConversationConnection('connected');
+          }
         }
 
         setMessages((prev) => {
@@ -4094,6 +4096,7 @@ export default function MessagesView({
 
     messages.forEach((message, index) => {
       if (sameUID(message.from_uid, user.uid)) return;
+      if (message.type === 'wiki_injection') return;
       if (isWorkingMessage(message)) {
         lastWorkingIndex = index;
         return;
@@ -6352,7 +6355,8 @@ export default function MessagesView({
       return true;
     };
 
-    messages.forEach((msg, index) => {
+    const timelineMessages = placeWikiInjections(messages, message => !isAssistantAuthoredMessage(message, getSender(message).isBot));
+    timelineMessages.forEach((msg, index) => {
       const msgTime = new Date(msg.created_at || Date.now()).getTime();
       const senderUid = parseUid(msg.from_uid) || String(msg.from_uid || '');
       const isConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
@@ -8940,6 +8944,48 @@ function messageTurnIdentity(message, index) {
     ?? message?.created_at
     ?? index;
   return String(value);
+}
+
+function placeWikiInjections(messages, isHumanMessage) {
+  const byPrompt = new Map();
+  const loadedIDs = new Set();
+  const anchoredInjections = new Set();
+  for (const message of messages) loadedIDs.add(historyMessageID(message));
+  for (const message of messages) {
+    if (message.type !== 'wiki_injection' || !(message.reply_to > 0)) continue;
+    const promptId = Number(message.reply_to);
+    if (!loadedIDs.has(promptId)) continue;
+    anchoredInjections.add(message);
+    const bySender = byPrompt.get(promptId) ?? new Map();
+    const sender = messageSenderIdentity(message);
+    const injections = bySender.get(sender) ?? [];
+    injections.push(message);
+    bySender.set(sender, injections);
+    byPrompt.set(promptId, bySender);
+  }
+  if (byPrompt.size === 0) return messages;
+
+  const ordered = [];
+  let pending;
+  for (const message of messages) {
+    if (anchoredInjections.has(message)) continue;
+    const anchored = byPrompt.get(historyMessageID(message));
+    if (anchored || (pending?.size && !isWorkingMessage(message) && isHumanMessage(message))) {
+      // Attach an injection even when the target turn has only a text reply.
+      for (const items of pending?.values() ?? []) ordered.push(...items);
+      pending = anchored;
+    } else if (pending?.size) {
+      const sender = messageSenderIdentity(message);
+      const items = pending.get(sender);
+      if (items) {
+        ordered.push(...items);
+        pending.delete(sender);
+      }
+    }
+    ordered.push(message);
+  }
+  for (const items of pending?.values() ?? []) ordered.push(...items);
+  return ordered;
 }
 
 function assistantWorkTurn(message, senderIsBot, latestHumanPromptKey) {
