@@ -1095,6 +1095,7 @@ function WorkingProcess({ blocks, agentUid, agentName, complete: completeOverrid
   const [revealingNarratives, setRevealingNarratives] = useState({});
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
+  const detailsRef = useRef(null);
   const stepsID = `working-steps-${useId().replace(/:/g, '')}`;
   const safeBlocks = blocks || [];
   const planItem = latestWorkingPlanItem(safeBlocks);
@@ -1153,6 +1154,28 @@ function WorkingProcess({ blocks, agentUid, agentName, complete: completeOverrid
     event.stopPropagation();
     setOpen((current) => !current);
   };
+
+  useEffect(() => {
+    const details = detailsRef.current;
+    const timeline = details?.closest('.v3-timeline');
+    if (!timeline) return undefined;
+
+    const handleBoundaryWheel = (event) => {
+      if (!event.cancelable || event.defaultPrevented || event.ctrlKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      const maxScroll = details.scrollHeight - details.clientHeight;
+      if (maxScroll <= 1) return;
+      const remaining = event.deltaY > 0 ? maxScroll - details.scrollTop : details.scrollTop;
+      if (remaining > 1) return;
+
+      // Fractional scroll bounds can prevent native wheel chaining.
+      const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? timeline.clientHeight : 1;
+      event.preventDefault();
+      timeline.scrollBy({ top: event.deltaY * scale, behavior: 'instant' });
+    };
+
+    details.addEventListener('wheel', handleBoundaryWheel, { passive: false });
+    return () => details.removeEventListener('wheel', handleBoundaryWheel);
+  }, [hasDetails, open]);
 
   useEffect(() => {
     if (!open || !hasDetails) return undefined;
@@ -1216,10 +1239,12 @@ function WorkingProcess({ blocks, agentUid, agentName, complete: completeOverrid
       {!open && planContent}
       {open && hasDetails && (
         <div
+          ref={detailsRef}
           id={stepsID}
           className="v3-working-details-inline"
           role="region"
           aria-label="过程详情"
+          tabIndex={0}
         >
           <div className="v3-working-steps">
             {detailBlocks.map((item, i) => {

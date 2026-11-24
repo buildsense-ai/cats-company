@@ -87,10 +87,34 @@ it('T2+T3: expanding shows the exact call and a structured JSON result', async (
 it('T3: plain text results stay verbatim text', async () => {
   const text = 'line one\n  {not json}\nline three';
   await render([use('s1', 'execute_shell', { command: 'cat x' }), result('s1', text)]);
+  const region = container.querySelector('[role="region"][aria-label="过程详情"]');
+  expect(region.tabIndex).toBe(0);
   await click(header());
   const ret = details().querySelector('.v3-wpi-return');
   expect(ret.querySelector('.v3-wpi-fields')).toBeNull();
   expect(ret.querySelector('pre').textContent).toBe(text);
+});
+
+it('hands wheel scrolling to the conversation at the edge of long details', async () => {
+  container.classList.add('v3-timeline');
+  container.scrollBy = vi.fn();
+  await render([use('s1', 'glob', { pattern: '**/*' }), result('s1', 'Found results')]);
+  const region = container.querySelector('.v3-working-details-inline');
+  Object.defineProperties(region, {
+    scrollHeight: { value: 1200 },
+    clientHeight: { value: 500 },
+  });
+  const wheel = (deltaY, extra = {}) => region.dispatchEvent(new WheelEvent('wheel', {
+    bubbles: true, cancelable: true, deltaY, ...extra,
+  }));
+
+  region.scrollTop = 400;
+  expect(wheel(80)).toBe(true);
+  region.scrollTop = 699.5;
+  expect(wheel(80, { ctrlKey: true })).toBe(true);
+  expect(container.scrollBy).not.toHaveBeenCalled();
+  expect(wheel(80)).toBe(false);
+  expect(container.scrollBy).toHaveBeenCalledWith({ top: 80, behavior: 'instant' });
 });
 
 it('keeps a long file path complete in both the row and the expanded fields', async () => {

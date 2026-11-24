@@ -7,12 +7,6 @@ import {
   getPushRegistrationID,
 } from '../api';
 import {
-  getPwaUpdateServiceWorker,
-  hasPwaRefreshPresenter,
-  registerPwaServiceWorker,
-  subscribeToPwaRefresh,
-} from '../pwa-registration';
-import {
   canUsePush,
   pushDismissedStorageKey,
   pushEnabledStorageKey,
@@ -52,22 +46,6 @@ export default function PwaController({
   const [busy, setBusy] = useState(false);
   const [pushError, setPushError] = useState('');
   const [reconcileVersion, setReconcileVersion] = useState(0);
-  const updateServiceWorkerRef = useRef(null);
-
-  useEffect(() => {
-    const unsubscribe = subscribeToPwaRefresh(() => {
-      // Activate transport fixes immediately unless the workspace failure
-      // screen is mounted and can present its explicit recovery action.
-      Promise.resolve().then(() => {
-        if (hasPwaRefreshPresenter()) return;
-        const updateServiceWorker = updateServiceWorkerRef.current || getPwaUpdateServiceWorker();
-        if (updateServiceWorker) updateServiceWorker(true);
-      });
-    });
-    updateServiceWorkerRef.current = registerPwaServiceWorker();
-    return unsubscribe;
-  }, []);
-
   useEffect(() => {
     const handleOnline = () => setOnline(true);
     const handleOffline = () => setOnline(false);

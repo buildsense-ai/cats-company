@@ -51,7 +51,7 @@
   color: var(--cc-text);
 }
 
-.v3-working-process :is(.v3-working-toggle, .cc-memory-toggle, .v3-wpi-tool-header):focus-visible {
+.v3-working-process :is(.v3-working-toggle, .cc-memory-toggle, .v3-wpi-tool-header, .v3-working-details-inline):focus-visible {
   outline: 2px solid var(--cc-focus-ring);
   outline-offset: 2px;
 }
@@ -59,10 +59,18 @@
 .cc-chat-activity svg { flex-shrink: 0; }
 
 .v3-working-toggle .v3-working-label[hidden] { display: none; }
-.v3-working-process .v3-working-details-inline { margin: 3px 0 8px; }
+.v3-working-process .v3-working-details-inline {
+  --cc-scrollbar-size: var(--cc-scrollbar-inline-size);
+  --cc-scrollbar-inset: 1.5px;
+  max-block-size: min(560px, 58dvh);
+  margin: 3px 0 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+}
 .v3-working-process .v3-working-details-inline .v3-working-steps {
   gap: 4px;
-  padding: 4px 2px;
+  padding: 4px;
   border-inline-start: 0;
   border-block-start: 1px solid var(--v3-border);
   width: 100%;
@@ -119,10 +127,6 @@
   color: var(--cc-danger-text);
   font-weight: 500;
 }
-
-/* An opened step grows the log instead of scrolling inside it; every long
- * part of the step is capped on its own. */
-.v3-working-process .v3-working-steps:has(.v3-wpi-tool-details) { max-height: none; }
 
 /* The opened header and its body share one tinted block, so it is clear
  * where this step ends and the next begins. */
@@ -226,15 +230,14 @@
 }
 
 .v3-working-process .v3-wpi-plain {
-  max-height: 260px;
   margin: 0;
   padding: 8px 10px;
-  overflow: auto;
   border-radius: var(--cc-radius-sm);
   background: var(--cc-code);
   font: 400 12.5px/1.6 var(--cc-font-mono);
 }
 
+/* Keep one scroll region for the entire disclosure, even for long returns. */
 .v3-working-process :is(.v3-wpi-plain, .v3-wpi-code-block pre) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -249,7 +252,7 @@
   .v3-working-process .v3-wpi-tool-details { padding-inline: 10px; }
   .v3-working-process .v3-wpi-fields { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
   .v3-working-process .v3-wpi-field-key { max-width: none; }
-  .v3-working-process .v3-wpi-field-value + .v3-wpi-field-key { margin-top: 6px; }
+  .v3-working-process .v3-wpi-field + .v3-wpi-field > .v3-wpi-field-key { margin-block-start: 6px; }
 }
 
 @media (pointer: coarse) {

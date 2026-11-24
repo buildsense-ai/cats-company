@@ -123,10 +123,7 @@ export function WorkspaceLoadFailure({ onRetry = () => window.location.reload() 
     const handleOffline = () => setOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    const unsubscribe = subscribeToPwaRefresh(
-      () => setUpdateAvailable(true),
-      { presentsRefresh: true },
-    );
+    const unsubscribe = subscribeToPwaRefresh(() => setUpdateAvailable(true));
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);

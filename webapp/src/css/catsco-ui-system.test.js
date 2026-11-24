@@ -5,6 +5,8 @@ const css = readFileSync(resolve(process.cwd(), 'src/css/catsco-ui-system.css'),
   .replace(/\r\n?/g, '\n');
 const openchatCss = readFileSync(resolve(process.cwd(), 'src/css/openchat-theme.css'), 'utf8')
   .replace(/\r\n?/g, '\n');
+const chatActivityCss = readFileSync(resolve(process.cwd(), 'src/widgets/chat-activity.css'), 'utf8')
+  .replace(/\r\n?/g, '\n');
 const searchOverlayCss = readFileSync(resolve(process.cwd(), 'src/css/search-overlay.css'), 'utf8')
   .replace(/\r\n?/g, '\n');
 const focusPolicyCss = readFileSync(resolve(process.cwd(), 'src/css/catsco-focus-policy.css'), 'utf8')
@@ -389,32 +391,37 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
   });
 
-  it('hands vertical wheel scrolling from expanded tool output back to the chat timeline', () => {
-    const scrollChainRules = [
+  it('gives long execution details one scroll region without nesting a result scrollbar', () => {
+    const area = ruleIn(chatActivityCss, '.v3-working-process .v3-working-details-inline');
+    expect(area).toContain('max-block-size: min(560px, 58dvh);');
+    expect(area).toContain('overflow-y: auto;');
+    expect(area).toContain('overscroll-behavior-y: auto;');
+
+    const detailRules = [
       ruleFor('.v3-working-steps'),
+      ruleFor('.v3-working-details-inline .v3-working-steps'),
       ruleFor('.v3-wpi-code-block.result pre'),
       ruleIn(openchatCss, '.v3-working-details-inline .v3-working-steps'),
+      ruleIn(openchatCss, '.v3-wpi-code-block'),
       ruleIn(openchatCss, '.v3-wpi-code-block pre'),
+      ruleIn(chatActivityCss, '.v3-working-process .v3-working-details-inline .v3-working-steps'),
+      ruleIn(chatActivityCss, '.v3-working-process .v3-wpi-plain'),
     ];
 
-    scrollChainRules.forEach((rule) => {
-      expect(rule).toContain('overscroll-behavior-x: contain;');
-      expect(rule).toContain('overscroll-behavior-y: auto;');
-      expect(rule).not.toContain('overscroll-behavior: contain;');
+    detailRules.forEach((rule) => {
+      expect(rule).not.toMatch(/\b(?:max-height|max-block-size|overflow(?:-[xy])?)\s*:/);
     });
   });
 
-  it('keeps no-op wrapping declarations out of the tool pre container', () => {
-    const preRule = ruleIn(openchatCss, '.v3-wpi-code-block pre');
-    const codeRule = ruleIn(openchatCss, '.v3-wpi-code-block pre code');
+  it('wraps tool text while preserving newlines and inherited wrapping in code', () => {
+    const selector = '.v3-working-process :is(.v3-wpi-plain, .v3-wpi-code-block pre)';
+    const preRule = ruleIn(chatActivityCss, selector);
+    const codeRule = ruleIn(chatActivityCss, selector + ' > code');
 
-    expect(preRule).toContain('overflow-x: auto;');
-    expect(preRule).not.toContain('white-space:');
-    expect(preRule).not.toContain('overflow-wrap:');
-    expect(preRule).not.toContain('word-break:');
-    expect(codeRule).toContain('white-space: pre;');
-    expect(codeRule).toContain('overflow-wrap: normal;');
-    expect(codeRule).toContain('word-break: normal;');
+    expect(preRule).toContain('white-space: pre-wrap;');
+    expect(preRule).toContain('overflow-wrap: anywhere;');
+    expect(codeRule).toContain('white-space: inherit;');
+    expect(codeRule).toContain('overflow-wrap: inherit;');
   });
 
   it('uses tokenized reduced-motion-safe feedback for inline video controls', () => {
@@ -606,7 +613,6 @@ describe('CatsCo shell styling', () => {
     const rootRule = ruleFor(':root');
     const documentRule = ruleFor('html,\nhtml *');
     const timelineRule = ruleFor('.v3-timeline');
-    const inlineRule = ruleFor('.v3-working-steps,\n.v3-wpi-code-block pre');
     const listRule = ruleFor('.v3-chat-list');
     const interactiveListRule = ruleFor('.v3-chat-list:hover,\n.v3-chat-list:focus-within');
     const scrollbarRule = ruleFor('.v3-chat-list::-webkit-scrollbar');
@@ -658,8 +664,6 @@ describe('CatsCo shell styling', () => {
     expect(timelineRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-page-size);');
     expect(timelineRule).toContain('--cc-scrollbar-inset: 1.5px;');
     expect(timelineRule).toContain('overscroll-behavior-y: contain;');
-    expect(inlineRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-inline-size);');
-    expect(inlineRule).toContain('--cc-scrollbar-inset: 1.5px;');
     expect(listRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-sidebar-size);');
     expect(listRule).toContain('--cc-scrollbar-inset: 0.5px;');
     expect(listRule).toContain('--cc-scrollbar-track: transparent;');
