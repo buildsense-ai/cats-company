@@ -487,6 +487,14 @@ export const api = {
   ...authApi,
   getMe: () => request('GET', '/api/me'),
   getWikiMemoryAvailability: ({ signal } = {}) => request('GET', '/api/memories/availability', undefined, { signal }),
+  getWikiInjection: (agentUid, eventId, signal) => request(
+    'GET', `/api/agents/${encodeURIComponent(agentUid)}/wiki-injections/${encodeURIComponent(eventId)}`,
+    undefined, { signal },
+  ),
+  voteOnWikiInjection: (agentUid, eventId, wikiId, vote) => request(
+    'PUT', `/api/agents/${encodeURIComponent(agentUid)}/wiki-injections/${encodeURIComponent(eventId)}`,
+    { wiki_id: wikiId, vote },
+  ),
   getWikiMemoryCatalog: (agentUid, { topicId, cursor, signal } = {}) => {
     const query = new URLSearchParams({ limit: '100' });
     if (topicId) query.set('topic_id', topicId);

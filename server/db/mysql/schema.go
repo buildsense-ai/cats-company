@@ -4,6 +4,8 @@ package mysql
 import (
 	"fmt"
 	"strings"
+
+	"github.com/openchat/openchat/server/db/wikiinjection"
 )
 
 // CreateSchema creates all required database tables and runs migrations.
@@ -43,6 +45,8 @@ createFileUploadsTable,
 		createGroupsTable,
 		createGroupMembersTable,
 		createWikiCatalog,
+		"CREATE TABLE IF NOT EXISTS wiki_injections (" + wikiinjection.InjectionColumns + ")",
+		"CREATE TABLE IF NOT EXISTS wiki_injection_votes (" + wikiinjection.VoteColumns + ")",
 		createGroupInviteRequestsTable,
 		createFeedbackReportsTable,
 		createAuthServicesTable,

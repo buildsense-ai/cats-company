@@ -1,0 +1,79 @@
+.cc-wiki-injection-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 20px 24px;
+}
+.cc-wiki-injection-scroll[hidden] { display: none; }
+.cc-wiki-injection-heading { position: relative; }
+.cc-wiki-injection-meta { margin: 0; font-size: 12px; color: var(--wiki-muted); }
+.cc-wiki-injection-meta time, .cc-wiki-injection-menu time, .cc-wiki-injection-step time { font-variant-numeric: tabular-nums; }
+.cc-wiki-injection-heading h3 { margin: 4px 0 10px; font-size: 19px; line-height: 1.45; }
+.cc-wiki-injection-heading button, .cc-wiki-injection-ref > button, .cc-wiki-injection-step {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+}
+.cc-wiki-injection-heading h3 > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 5px;
+  margin: -2px -5px;
+  border-radius: 5px;
+}
+.cc-wiki-injection-heading h3 > button svg { color: var(--wiki-muted); }
+.cc-wiki-injection-heading button:hover, .cc-wiki-injection-heading button[aria-expanded="true"], .cc-wiki-injection-vote-buttons button[aria-pressed="true"] { background: var(--wiki-hover); }
+.cc-wiki-injection-menu {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 4px);
+  inset-inline-start: 0;
+  width: min(250px, 100%);
+  padding: 4px;
+  border: 1px solid var(--wiki-stroke);
+  border-radius: 8px;
+  background: var(--cc-panel, #fff);
+  box-shadow: 0 6px 18px #0002;
+}
+.cc-wiki-injection-menu button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.cc-wiki-injection-menu time { color: var(--wiki-muted); font-size: 12px; }
+.cc-wiki-injection-menu button[aria-current="true"], .cc-wiki-injection-vote-buttons button[aria-pressed="true"] { color: var(--wiki-accent); }
+.cc-wiki-injection-summary { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cc-wiki-injection-scroll h4 { margin: 18px 0 5px; color: var(--wiki-muted); font-size: 13px; font-weight: 500; }
+.cc-wiki-injection-votes, .cc-wiki-injection-ref, .cc-wiki-injection-vote-buttons { display: flex; align-items: center; gap: 5px; }
+.cc-wiki-injection-votes { flex-wrap: wrap; color: var(--wiki-muted); font-size: 12px; }
+.cc-wiki-injection-vote-buttons { flex: none; }
+.cc-wiki-injection-ref { justify-content: space-between; }
+.cc-wiki-injection-ref > button { color: var(--wiki-accent); font-weight: 600; padding: 3px 0; overflow-wrap: anywhere; }
+.cc-wiki-injection-ref > button:hover { text-decoration: underline; }
+.cc-wiki-injection-refs { list-style: none; padding: 0; margin: 0; }
+.cc-wiki-injection-refs li { border-top: 1px solid var(--wiki-stroke); padding: 8px 0 11px; }
+.cc-wiki-injection-step {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.cc-wiki-injection-step svg, .cc-wiki-injection-step time { flex: none; }
+.cc-wiki-injection-step time { font-size: 11px; color: var(--v3-text-secondary); }
+.cc-wiki-injection-step:hover, .cc-wiki-injection-step[aria-current="true"], .cc-wiki-injection-toggle[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--cc-accent, #158371) 9%, transparent);
+}
+@media (pointer: coarse) {
+  .cc-wiki-injection-menu button, .cc-wiki-injection-heading h3 > button { min-height: 44px; }
+}

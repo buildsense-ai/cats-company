@@ -49,6 +49,7 @@ import { normalizeGatewayAnnotations } from '../gateway-annotations';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import MemorySources from './memory-sources';
 import { latestMemoryBranches } from './memory-branch';
+import { wikiInjectionBatches } from './wiki-injection-panel';
 import './chat-activity.css';
 import { diaryAgentUID, diaryToolView } from './diary-sources';
 
@@ -537,8 +538,8 @@ function groupContentBlocks(blocks) {
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
-    if (block.type === 'memory_branch') {
-      items.push({ type: 'memory_branch', payload: block.payload });
+    if (block.type === 'memory_branch' || block.type === 'wiki_injection') {
+      items.push({ type: block.type, payload: block.payload });
       continue;
     }
     if (block.type === 'thinking') {
@@ -815,7 +816,7 @@ function contentBlocksFromMessage(msg) {
     }));
   }
 
-  if (msg?.type === 'memory_branch') return [{ type: 'memory_branch', payload: msg.content }];
+  if (msg?.type === 'memory_branch' || msg?.type === 'wiki_injection') return [{ type: msg.type, payload: msg.content }];
   if (msg?.type === 'thinking') {
     return [{ type: 'thinking', thinking: messageContentText(msg.content), metadata: msg.metadata || null }];
   }
@@ -859,10 +860,28 @@ function contentBlocksFromMessage(msg) {
 
 function groupWorkingMessages(messages) {
   const blocks = [];
+  const injections = [];
   for (const msg of messages || []) {
-    blocks.push(...contentBlocksFromMessage(msg));
+    const messageBlocks = contentBlocksFromMessage(msg);
+    if (messageBlocks[0]?.type === 'wiki_injection' && Number.isFinite(Date.parse(messageBlocks[0].payload?.timestamp))) {
+      injections.push(...messageBlocks);
+    } else {
+      const timestamp = Date.parse(msg.created_at);
+      for (const block of messageBlocks) blocks.push({ block, timestamp });
+    }
   }
-  return groupContentBlocks(blocks);
+  const ordered = blocks;
+  for (const block of injections.sort((a, b) => Date.parse(a.payload?.timestamp) - Date.parse(b.payload?.timestamp))) {
+    const timestamp = Date.parse(block.payload?.timestamp);
+    const next = ordered.findIndex(item => item.timestamp > timestamp);
+    if (next < 0) ordered.push({ block, timestamp });
+    else ordered.splice(next, 0, { block, timestamp });
+  }
+  return groupContentBlocks(ordered.map(item => item.block));
+}
+
+export function workingWikiInjections(messages) {
+  return wikiInjectionBatches((messages || []).flatMap(contentBlocksFromMessage));
 }
 
 // Keep the timeline visibility decision aligned with the source renderer,
@@ -870,6 +889,7 @@ function groupWorkingMessages(messages) {
 export function hasWorkingSources(messages) {
   const blocks = groupWorkingMessages(messages);
   return latestMemoryBranches(blocks).length > 0
+    || blocks.some((item) => item.type === 'wiki_injection')
     || blocks.some((item) => item.type === 'tool_pair' && diaryToolView(item));
 }
 
@@ -1070,7 +1090,7 @@ function WorkingPlanCard({ item }) {
   );
 }
 
-function WorkingProcess({ blocks, agentUid, agentName, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, memoryBranchActive, showDetails = true }) {
+function WorkingProcess({ blocks, agentUid, agentName, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, memoryBranchActive, showDetails = true, onWikiInjection, activeInjection }) {
   const liquidConversation = useLiquidConversation();
   const [revealingNarratives, setRevealingNarratives] = useState({});
   const [open, setOpen] = useState(false);
@@ -1085,10 +1105,15 @@ function WorkingProcess({ blocks, agentUid, agentName, complete: completeOverrid
     return view ? [{ item, view }] : [];
   }), [safeBlocks]);
   const memoryEvents = useMemo(() => latestMemoryBranches(safeBlocks), [safeBlocks]);
+  const injections = useMemo(() => wikiInjectionBatches(safeBlocks), [safeBlocks]);
+  const injectionsById = new Map(injections.map(batch => [batch.event_id, batch]));
+  const injectionOpen = injectionsById.has(activeInjection);
   const diaryViews = useMemo(() => diaryItems.map((diary) => diary.view), [diaryItems]);
   // Memory sources live in their own disclosure, so hidden process details
   // hide every step, including the Diary calls behind those sources.
-  const detailBlocks = showDetails ? safeBlocks.filter((item) => item.type !== 'memory_branch' && item !== planItem) : [];
+  const detailBlocks = safeBlocks.filter(item => item.type === 'wiki_injection'
+    ? Boolean(onWikiInjection)
+    : showDetails && item.type !== 'memory_branch' && item !== planItem);
   // Only explicit user-facing progress messages become conversation bubbles.
   // Keep reasoning blocks, raw tool outputs and subagent logs in the details.
   const progressMessages = safeBlocks.filter((item) => item !== planItem).flatMap((item) => (
@@ -1182,6 +1207,11 @@ function WorkingProcess({ blocks, agentUid, agentName, complete: completeOverrid
           </div>
         ))}
         {(memoryEvents.length > 0 || diaryViews.length > 0) && <MemorySources diaryViews={diaryViews} events={memoryEvents} active={branchActive} finished={finished} agentUid={agentUid} agentName={agentName} />}
+        {onWikiInjection && injections.length > 0 && <button type="button" className="v3-working-toggle cc-wiki-injection-toggle"
+          aria-expanded={injectionOpen} onClick={event => onWikiInjection(null, event.currentTarget)}>
+          <BookOpen size={14} aria-hidden="true" />记忆注入
+          {injections.length > 1 && <span className="v3-working-summary">{injections.length} 次</span>}
+        </button>}
       </div>
       {!open && planContent}
       {open && hasDetails && (
@@ -1193,6 +1223,15 @@ function WorkingProcess({ blocks, agentUid, agentName, complete: completeOverrid
         >
           <div className="v3-working-steps">
             {detailBlocks.map((item, i) => {
+              if (item.type === 'wiki_injection') {
+                const batch = injectionsById.get(item.payload?.event_id);
+                if (!batch || !onWikiInjection) return null;
+                return <button key={batch.event_id} type="button" className="cc-wiki-injection-step"
+                  aria-current={activeInjection === batch.event_id ? 'true' : undefined}
+                  onClick={event => onWikiInjection(batch.event_id, event.currentTarget)}>
+                  <time dateTime={batch.timestamp}>{batch.time}</time><BookOpen size={14} aria-hidden="true" />{batch.title}
+                </button>;
+              }
               if (item.type === 'thinking') {
                 return <WorkingNarrative key={i} item={item} />;
               }
@@ -1275,7 +1314,7 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, memoryBranchActive, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, memoryBranchActive, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp, onWikiInjection, activeInjection }) {
   const liquidConversation = useLiquidConversation();
   const [replyRevealing, setReplyRevealing] = useState(false);
   const softStream = liquidConversation && !isSelf && Boolean(message._streaming) && !message._stopped
@@ -1598,8 +1637,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
             </div>
           )}
 
-          {!isSelf && (showThinking || executionState || latestMemoryBranches(workingBlocks).length > 0 || workingBlocks.some((item) => item.type === 'tool_pair' && diaryToolView(item))) && (
-            <WorkingProcess blocks={workingBlocks} agentUid={diaryAgentUID(message.from_uid)} agentName={senderIsBot ? displayName : undefined} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} memoryBranchActive={memoryBranchActive} showDetails={showThinking} />
+          {!isSelf && (showThinking || executionState || latestMemoryBranches(workingBlocks).length > 0 || workingBlocks.some((item) => item.type === 'wiki_injection' || (item.type === 'tool_pair' && diaryToolView(item)))) && (
+            <WorkingProcess blocks={workingBlocks} agentUid={diaryAgentUID(message.from_uid)} agentName={senderIsBot ? displayName : undefined} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} memoryBranchActive={memoryBranchActive} showDetails={showThinking} onWikiInjection={onWikiInjection} activeInjection={activeInjection} />
           )}
 
           {workingAnnotationDoc && <GatewayAnnotationCard doc={workingAnnotationDoc} />}
@@ -1821,6 +1860,8 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.replyPending === nextProps.replyPending &&
     prevProps.replyStreaming === nextProps.replyStreaming &&
     prevProps.memoryBranchActive === nextProps.memoryBranchActive &&
+    prevProps.onWikiInjection === nextProps.onWikiInjection &&
+    prevProps.activeInjection === nextProps.activeInjection &&
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&
     prevProps.annotationTopicId === nextProps.annotationTopicId &&
