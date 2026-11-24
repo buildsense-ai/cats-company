@@ -199,7 +199,7 @@ function CatalogueHarness({ query = '', loadAll = false, recommended = false }) 
 
 it('defaults to the curated list, preserves its order, and keeps legacy entries in All', async () => {
   vi.useFakeTimers();
-  const curated = [{ skillId: 'owner/zulu', displayName: 'Zulu' }, { skillId: 'owner/alpha', displayName: 'Alpha' }];
+  const curated = [{ skillId: 'david/caveman', displayName: 'Zulu' }, { skillId: 'owner/alpha', displayName: 'Alpha' }];
   const all = [...curated, { skillId: 'owner/beta', displayName: 'Beta' }];
   marketplaceApi.catalogue.mockImplementation(async ({ scope }) => (scope === 'recommended'
     ? { skills: curated, total: curated.length, scope } : { skills: all, total: all.length }));
@@ -211,9 +211,15 @@ it('defaults to the curated list, preserves its order, and keeps legacy entries 
   await act(async () => vi.advanceTimersByTimeAsync(50));
   const names = () => [...container.querySelectorAll('article h3')].map(node => node.textContent);
   expect(names()).toEqual(['Zulu', 'Alpha']);
+  const artwork = container.querySelectorAll('.cc-skillhub-card-illustration img');
+  expect(artwork).toHaveLength(1);
+  expect(artwork[0].getAttribute('src')).toMatch(/\/skillhub\/recommended\/caveman\.webp$/);
+  await act(async () => Simulate.error(artwork[0]));
+  expect(container.querySelectorAll('.cc-skillhub-card-illustration svg')).toHaveLength(2);
   await click('全部');
   await act(async () => vi.advanceTimersByTimeAsync(50));
   expect([...names()].sort()).toEqual(['Alpha', 'Beta', 'Zulu']);
+  expect(container.querySelectorAll('.cc-skillhub-card-illustration img')).toHaveLength(0);
   await click('推荐');
   await act(async () => vi.advanceTimersByTimeAsync(50));
   expect(names()).toEqual(['Zulu', 'Alpha']);

@@ -1302,6 +1302,9 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
 .cc-skillhub-card-main { display: grid; grid-template-columns: 52px minmax(0, 1fr) 36px; align-items: center; gap: 16px; flex: 1; min-width: 0; }
 .cc-skillhub-card-copy { min-width: 0; }
 .cc-skillhub-card-illustration { --cc-skill-icon-color: var(--cc-text-secondary); display: flex; align-items: center; justify-content: center; width: 52px; height: 52px; border-radius: 8px; background: color-mix(in srgb, var(--cc-skill-icon-color) 9%, transparent); color: var(--cc-skill-icon-color); }
+.cc-skillhub-card-main.has-recommendation-artwork { --cc-skill-artwork-size: 64px; grid-template-columns: var(--cc-skill-artwork-size) minmax(0, 1fr) 36px; }
+.has-recommendation-artwork .cc-skillhub-card-illustration { width: var(--cc-skill-artwork-size); height: var(--cc-skill-artwork-size); border-radius: 12px; overflow: hidden; }
+.has-recommendation-artwork .cc-skillhub-card-illustration img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .cc-skillhub-card-illustration:is([data-icon-key='browser'], [data-icon-key='app'], [data-icon-key='development'], [data-icon-key='workspace'], [data-icon-key='collaboration'], [data-icon-key='monitoring']) { --cc-skill-icon-color: #60789a; }
 .cc-skillhub-card-illustration:is([data-icon-key='image'], [data-icon-key='design'], [data-icon-key='education'], [data-icon-key='research']) { --cc-skill-icon-color: #766b98; }
 .cc-skillhub-card-illustration:is([data-icon-key='search'], [data-icon-key='data'], [data-icon-key='finance'], [data-icon-key='business']) { --cc-skill-icon-color: #5f7f70; }
@@ -1642,6 +1645,7 @@ html[data-theme='dark'] .cc-skillhub-card-illustration[data-icon-key='test'] { -
   .cc-skillhub-added-groups { padding: 0; }
   .cc-skillhub-card { display: flex; min-height: 190px; border-radius: 8px; padding: 16px; }
   .cc-skillhub-card-main { grid-template-columns: 40px minmax(0, 1fr) 32px; gap: 10px; }
+  .cc-skillhub-card-main.has-recommendation-artwork { --cc-skill-artwork-size: 48px; grid-template-columns: var(--cc-skill-artwork-size) minmax(0, 1fr) 32px; }
   .cc-skillhub-card-illustration { width: 40px; height: 40px; }
   .cc-skillhub-card-illustration svg { width: 26px; height: 26px; }
   .cc-skillhub-page .cc-skillhub-card-actions button { width: 32px; min-width: 32px; height: 44px; min-height: 44px; }

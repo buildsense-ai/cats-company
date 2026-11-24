@@ -29,6 +29,14 @@ import {
   isSkillHubUpdateAvailable,
 } from '../utils/skillhub-entry';
 
+const recommendationArtwork = new Map([
+  ['1287096531/xiaohongshu-longpost-01', 'xiaohongshu-longpost-01'],
+  ['yii/artifact-publish', 'artifact-publish'],
+  ['david/caveman', 'caveman'],
+  ['yii/image-generation', 'image-generation'],
+  ['yii/deepseek-web-search', 'deepseek-web-search'],
+]);
+
 function normalizeSkillSearchValue(value) {
   return String(value || '')
     .trim()
@@ -887,7 +895,7 @@ function Catalogue(props) {
         <>
           {loading && <div className='cc-skillhub-library-status' role='status'><RefreshCw className='is-spinning' size={13} aria-hidden='true' /> {!recommended && completeSort ? '正在加载完整能力库以排序…' : '正在更新能力…'}</div>}
           <div className='cc-skillhub-grid'>
-            {librarySkills.map((skill) => <CatalogueCard key={skill.skillId} skill={skill} {...props} definitionReady={props.definitionReady && !market.cached} />)}
+            {librarySkills.map((skill) => <CatalogueCard key={skill.skillId} skill={skill} {...props} artwork={recommended ? recommendationArtwork.get(skill.skillId) : undefined} definitionReady={props.definitionReady && !market.cached} />)}
           </div>
         </>
       )}
@@ -896,7 +904,8 @@ function Catalogue(props) {
   );
 }
 
-function SkillIllustration({ skill, category }) {
+function SkillIllustration({ skill, category, artwork }) {
+  const [failedArtwork, setFailedArtwork] = useState(null);
   const iconKey = skillIconKey(skill, category);
   const icons = {
     browser: Globe2,
@@ -923,10 +932,19 @@ function SkillIllustration({ skill, category }) {
     other: Package,
   };
   const Icon = icons[iconKey] || Package;
-  return <span className='cc-skillhub-card-illustration' data-icon-key={iconKey} aria-hidden='true'><Icon size={30} strokeWidth={1.5} /></span>;
+  return <span className='cc-skillhub-card-illustration' data-icon-key={iconKey} aria-hidden='true'>
+    {artwork && failedArtwork !== artwork ? <img
+      src={`${import.meta.env.BASE_URL}skillhub/recommended/${artwork}.webp`}
+      alt=''
+      width={192}
+      height={192}
+      decoding='async'
+      onError={() => setFailedArtwork(artwork)}
+    /> : <Icon size={30} strokeWidth={1.5} />}
+  </span>;
 }
 
-function CatalogueCard({ categoryOf, onSkillCategoryChange, definitionReady, installedByID, isReadOnly, language, onInstallSkill, saving, sharingSkill, skill, skillAction }) {
+function CatalogueCard({ artwork, categoryOf, onSkillCategoryChange, definitionReady, installedByID, isReadOnly, language, onInstallSkill, saving, sharingSkill, skill, skillAction }) {
   const { enabled: marketEnabled } = useMarketplace();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
@@ -963,8 +981,8 @@ function CatalogueCard({ categoryOf, onSkillCategoryChange, definitionReady, ins
   return (
     <article className={`cc-skillhub-card${installed ? ' is-added' : ''}${updatable ? ' is-updatable' : ''}`}>
       <button ref={detailsTriggerRef} type='button' className='cc-skillhub-card-open' aria-label={`查看 ${label} 详情`} aria-haspopup='dialog' onClick={() => setDetailsOpen(true)}><span className='cc-visually-hidden'>查看 {label} 详情</span></button>
-      <div className='cc-skillhub-card-main'>
-        <SkillIllustration skill={skill} category={categoryOf(skill)} />
+      <div className={`cc-skillhub-card-main${artwork ? ' has-recommendation-artwork' : ''}`}>
+        <SkillIllustration skill={skill} category={categoryOf(skill)} artwork={artwork} />
         <div className='cc-skillhub-card-copy'>
           <div className='cc-skillhub-card-title'>
             <h3 title={label}>{label}</h3>
