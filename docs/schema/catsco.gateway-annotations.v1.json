@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://app.catsco.cc/schema/catsco.gateway-annotations.v1.json",
+  "title": "CatsCo Gateway Annotations v1",
+  "description": "Canonical shape of the metadata.gateway_annotations value attached to a message. Produced by the CatsCo annotation bridge and validated by the server-side normalizer (server/gateway_annotations.go) which remains the authority. Additional contract bounds not expressible in JSON Schema: the canonical compact encoding of the whole value must stay under 16 KiB UTF-8; free-text fields (label/body/text/prefix/suffix/nearby_text) may carry \\n \\r \\t but no other control characters; identifier fields (id/element_id/selector/path/revision/app_id) reject all control characters; annotation ids must be unique within the array. Rect additionally requires x+width <= 1 and y+height <= 1 (1e-6 float epsilon), which per-field maximums alone cannot express.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "agent_uid",
+    "app_id",
+    "page",
+    "annotations"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "catsco.gateway-annotations.v1"
+    },
+    "agent_uid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740992
+    },
+    "app_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,47}$"
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/[^?#]{0,1023}$"
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "annotations": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/annotation"
+      }
+    }
+  },
+  "$defs": {
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "description": "Viewport-normalized rect: x,y >= 0, width/height > 0, x+width <= 1 and y+height <= 1 (1e-6 float epsilon).",
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "viewport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height"
+      ],
+      "properties": {
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1048576
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1048576
+        },
+        "scroll_x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "scroll_y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1048576
+        }
+      }
+    },
+    "annotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "body",
+        "target"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "kind": {
+          "enum": [
+            "element",
+            "text",
+            "region"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "element_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "selector": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "prefix": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "suffix": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "nearby_text": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "rect": {
+              "$ref": "#/$defs/rect"
+            },
+            "coordinate_space": {
+              "const": "viewport"
+            },
+            "viewport": {
+              "$ref": "#/$defs/viewport"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "element"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "target": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "element_id"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "selector"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "text"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "target": {
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "region"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "target": {
+                "required": [
+                  "rect",
+                  "coordinate_space",
+                  "viewport"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

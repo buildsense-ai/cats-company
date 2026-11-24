@@ -600,6 +600,107 @@ describe('multi-instance history dispatcher (P2-1)', () => {
   });
 });
 
+describe('agent point-back replies (reply.v1)', () => {
+  function sendReply(payload, sessionId = 'catsco_session_1') {
+    window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://host.catsco.example',
+      source: currentFakeParent,
+      data: {
+        type: TYPES.reply,
+        contract_version: BRIDGE,
+        session_id: sessionId,
+        request_id: payload.request_id ?? 'reply-1',
+        target: payload.target,
+        note: payload.note,
+      },
+    }));
+  }
+
+  function replyAcks(posted) {
+    return posted.map((p) => p.message).filter((m) => m.type === TYPES.replyAck);
+  }
+
+  it('resolves an element_id and draws a passive highlight plus note', () => {
+    const { posted } = createSdk();
+    connect();
+    const button = document.createElement('button');
+    // A unique id is required: earlier tests leave their fixtures in the
+    // shared jsdom body and getElementById would resolve a stale node.
+    button.id = 'reply-target-btn';
+    document.body.appendChild(button);
+    vi.spyOn(button, 'getBoundingClientRect').mockReturnValue({ left: 40, top: 60, width: 120, height: 30 });
+
+    sendReply({ target: { element_id: 'reply-target-btn' }, note: '改这里' });
+
+    const box = document.querySelector('.catsco-annotation-reply');
+    expect(box).not.toBeNull();
+    expect(box.style.left).toBe('40px');
+    expect(box.style.width).toBe('120px');
+    const note = document.querySelector('.catsco-annotation-reply-note');
+    expect(note?.textContent).toBe('改这里');
+    const ack = replyAcks(posted).pop();
+    expect(ack).toMatchObject({ resolved: true, request_id: 'reply-1' });
+  });
+
+  it('falls back to a viewport region when element anchors miss, and acks unresolved honestly', () => {
+    const { posted } = createSdk();
+    connect();
+
+    sendReply({
+      target: { selector: '#missing', rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.1 }, coordinate_space: 'viewport' },
+    });
+    const box = document.querySelector('.catsco-annotation-reply');
+    expect(box).not.toBeNull();
+    expect(box.style.left).toBe('100px'); // 0.1 × innerWidth 1000
+    expect(replyAcks(posted).pop()).toMatchObject({ resolved: true });
+
+    sendReply({ request_id: 'reply-miss', target: { selector: '#never-there' } });
+    expect(replyAcks(posted).pop()).toMatchObject({ resolved: false, reason: 'target-unresolved' });
+    expect(document.querySelectorAll('.catsco-annotation-reply')).toHaveLength(1);
+  });
+
+  it('repositions a live reply overlay on scroll instead of going stale', () => {
+    const { posted } = createSdk();
+    connect();
+    const el = document.createElement('div');
+    el.id = 'reply-scroll-target';
+    document.body.appendChild(el);
+    const rect = { left: 5, top: 5, width: 50, height: 20 };
+    const spy = vi.spyOn(el, 'getBoundingClientRect').mockImplementation(() => rect);
+
+    sendReply({ target: { element_id: 'reply-scroll-target' } });
+    expect(document.querySelector('.catsco-annotation-reply').style.top).toBe('5px');
+
+    rect.top = 105;
+    document.dispatchEvent(new Event('scroll', { bubbles: false }));
+    expect(document.querySelector('.catsco-annotation-reply').style.top).toBe('105px');
+
+    // Once the target stops resolving, the overlay drops instead of
+    // hovering over the wrong spot.
+    spy.mockReturnValue({ left: 0, top: 0, width: 0, height: 0 });
+    document.dispatchEvent(new Event('scroll', { bubbles: false }));
+    expect(document.querySelector('.catsco-annotation-reply')).toBeNull();
+  });
+
+  it('ignores replies for other sessions and clears overlays on navigation', () => {
+    const { posted } = createSdk();
+    connect();
+    const el = document.createElement('div');
+    el.id = 'reply-nav-target';
+    document.body.appendChild(el);
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({ left: 5, top: 5, width: 50, height: 20 });
+
+    sendReply({ target: { element_id: 'reply-nav-target' } }, 'catsco_wrong_session');
+    expect(document.querySelector('.catsco-annotation-reply')).toBeNull();
+    expect(replyAcks(posted)).toHaveLength(0);
+
+    sendReply({ target: { element_id: 'reply-nav-target' } });
+    expect(document.querySelector('.catsco-annotation-reply')).not.toBeNull();
+    history.pushState({}, '', '/moved');
+    expect(document.querySelector('.catsco-annotation-reply')).toBeNull();
+  });
+});
+
 describe('selector anchor correctness', () => {
   function elementTargetOf(posted) {
     const targets = targetMessages(posted);
@@ -653,6 +754,100 @@ describe('selector anchor correctness', () => {
       expect(document.querySelector(target.selector)).toBe(host1);
     }
     expect(target.element_id).toBe('x"y');
+  });
+
+  it('labels describe the element readably and carry nearby-text evidence', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<p>选择导出的数据范围</p><button id="export-btn">导出报表</button><a href="/help">帮助</a>';
+    document.body.appendChild(wrap);
+    const button = wrap.querySelector('button');
+
+    const { posted } = clickInElementMode(button);
+    const selection = targetMessages(posted).pop().selection;
+    expect(selection.label).toBe('button "导出报表"');
+    expect(selection.target.nearby_text).toContain('"导出报表"');
+    expect(selection.target.nearby_text).toContain('[before: "选择导出的数据范围"]');
+    expect(selection.target.nearby_text).toContain('[after: "帮助"]');
+  });
+
+  it('labels fall back through aria-label, placeholder, alt and ids', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = [
+      '<button aria-label="关闭对话框"></button>',
+      '<input id="q" placeholder="搜索报表">',
+      '<img src="x.png" alt="季度图表">',
+      '<h2>本月概览</h2>',
+      '<div id="panel-a"></div>',
+    ].join('');
+    document.body.appendChild(wrap);
+
+    // One SDK instance collects every click: createSdk() is per-instance and
+    // leaked instances would keep posting into later tests' message bus.
+    const { posted } = createSdk();
+    connect();
+    sendMode('element');
+    const click = (el) => {
+      vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 10, width: 100, height: 30 });
+      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    };
+    for (const el of wrap.children) click(el);
+
+    const labels = targetMessages(posted).map((entry) => entry.selection.label);
+    expect(labels).toEqual([
+      'button [关闭对话框]',
+      'input "搜索报表"',
+      'image "季度图表"',
+      'h2 "本月概览"',
+      'div#panel-a',
+    ]);
+  });
+
+  it('nearby_text and labels prune sensitive descendants nested inside collected nodes', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = [
+      '<p>报表 <span data-catsco-annotation-sensitive>secret-token-1</span> 已生成</p>',
+      '<button id="deep">导出 <span data-catsco-annotation-sensitive>hidden-part</span> 报表</button>',
+      '<p>后续 <input type="password" value="s3cret"> 说明</p>',
+    ].join('');
+    document.body.appendChild(wrap);
+
+    const { posted } = clickInElementMode(wrap.querySelector('#deep'));
+    const selection = targetMessages(posted).pop().selection;
+    // The label keeps only the non-sensitive text nodes.
+    expect(selection.label).toBe('button "导出 报表"');
+    // Sibling text is collected but each sensitive descendant is pruned.
+    expect(selection.target.nearby_text).toContain('导出 报表');
+    expect(selection.target.nearby_text).not.toContain('hidden-part');
+    expect(selection.target.nearby_text).not.toContain('secret-token-1');
+    expect(selection.target.nearby_text).not.toContain('s3cret');
+  });
+
+  it('link labels drop the query string and fragment that may carry tokens', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<a id="tok-link" href="https://app.example.com/reset?token=abc123&sig=zzz#frag"></a>';
+    document.body.appendChild(wrap);
+    const { posted } = clickInElementMode(wrap.querySelector('#tok-link'));
+    const selection = targetMessages(posted).pop().selection;
+    expect(selection.label).toBe('link to https://app.example.com/reset');
+    expect(selection.label).not.toContain('abc123');
+    expect(selection.label).not.toContain('frag');
+  });
+
+  it('nearby_text skips sensitive siblings instead of quoting them', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = [
+      '<input type="password" name="pwd" value="s3cret">',
+      '<button id="mid">继续</button>',
+      '<div data-catsco-annotation-sensitive>内部工号 88</div>',
+    ].join('');
+    document.body.appendChild(wrap);
+
+    const { posted } = clickInElementMode(wrap.querySelector('#mid'));
+    const target = targetMessages(posted).pop().selection.target;
+    expect(target.nearby_text).toBe('"继续"');
+    expect(target.nearby_text).not.toContain('s3cret');
+    expect(target.nearby_text).not.toContain('内部工号');
   });
 
   it('a selector that cannot match the real element is dropped, not asserted', () => {

@@ -391,6 +391,64 @@ export type RichContent =
 
 export type MessageContent = string | RichContent;
 
+// --- Gateway annotation point-back (reply) ---
+
+/**
+ * A point-back an agent can attach to an ordinary reply message. The CatsCo
+ * webapp forwards it into the live gateway app frame as a passive highlight
+ * over the element/region it refers to. Mirrors
+ * `catsco.gateway-annotation-reply.v1` in the webapp bridge contract.
+ */
+export interface GatewayAnnotationReplyTarget {
+  /** Stable app-declared element id (preferred anchor). */
+  element_id?: string;
+  /** CSS selector captured with the annotation (fallback anchor). */
+  selector?: string;
+  /** Viewport-normalized region fallback: x,y >= 0, 0 < w,h, x+w <= 1, y+h <= 1. */
+  rect?: { x: number; y: number; width: number; height: number };
+}
+
+export interface GatewayAnnotationReply {
+  /** The gateway application the point-back refers to (from the annotation context). */
+  app_id: string;
+  target: GatewayAnnotationReplyTarget;
+  /** Short note rendered next to the highlight (<= 256 chars). */
+  note?: string;
+}
+
+export const GATEWAY_ANNOTATION_REPLY_CONTRACT = 'catsco.gateway-annotation-reply.v1';
+export const GATEWAY_ANNOTATION_REPLY_METADATA_KEY = 'gateway_annotation_reply';
+
+/**
+ * Fanout-only context the server attaches to an agent's copy of a message
+ * that carries user gateway annotations (schema
+ * catsco.gateway_annotations_context.v1). Only the fields an agent needs to
+ * point back are typed; the rest of the annotation document stays opaque.
+ */
+export interface GatewayAnnotationAgentContext {
+  schema?: string;
+  app_id?: string;
+  agent_uid?: string;
+  page?: { path?: string; revision?: string };
+  annotations?: Array<{
+    id?: string;
+    index?: number;
+    kind?: 'element' | 'text' | 'region';
+    label?: string;
+    body?: string;
+    target?: {
+      element_id?: string;
+      selector?: string;
+      text?: string;
+      rect?: { x: number; y: number; width: number; height: number };
+      coordinate_space?: string;
+      viewport?: { width: number; height: number; scroll_x?: number; scroll_y?: number };
+      nearby_text?: string;
+    };
+  }>;
+  summary?: string;
+}
+
 // --- Upload response ---
 
 export interface UploadResult {

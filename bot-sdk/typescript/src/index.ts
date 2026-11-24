@@ -22,6 +22,11 @@ export {
   UploadError,
 } from './errors';
 
+export {
+  GATEWAY_ANNOTATION_REPLY_CONTRACT,
+  GATEWAY_ANNOTATION_REPLY_METADATA_KEY,
+} from './types';
+
 export type {
   // Client messages
   MsgClientHi,
@@ -67,6 +72,10 @@ export type {
   RichContentCard,
   RichContent,
   MessageContent,
+  // Gateway annotation point-back
+  GatewayAnnotationReply,
+  GatewayAnnotationReplyTarget,
+  GatewayAnnotationAgentContext,
   // Upload
   UploadResult,
   // Config & events

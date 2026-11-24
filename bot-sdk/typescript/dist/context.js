@@ -57,9 +57,27 @@ class MessageContext {
     get deviceSelection() {
         return this.catscoIdentity?.device_selection;
     }
+    /**
+     * Fanout-only gateway-annotation context (app id, page, the user's
+     * annotations with their targets). Present only on the annotated agent's
+     * copy of the message; use it to point back via sendAnnotationReply().
+     */
+    get gatewayAnnotations() {
+        const ctx = this.metadata?.catsco_gateway_annotation_context;
+        if (!ctx || typeof ctx !== 'object' || Array.isArray(ctx))
+            return undefined;
+        return ctx;
+    }
     /** Reply with content to the same topic. */
     async reply(content) {
         return this.bot.sendMessage(this.topic, content);
+    }
+    /**
+     * Reply and point back at a target inside a bound gateway app. `reply` is
+     * validated against the bridge contract bounds before sending.
+     */
+    async replyWithAnnotation(content, pointBack) {
+        return this.bot.sendAnnotationReply(this.topic, content, pointBack);
     }
     /** Send typing indicator, wait, then reply. */
     async replyWithTyping(content, delay = 500) {

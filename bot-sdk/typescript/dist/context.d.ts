@@ -1,5 +1,5 @@
 import type { CatsBot } from './bot';
-import type { CatsCoIdentityMetadata, DeviceSelection, MsgServerData, MessageContent, ScopedDeviceGrant } from './types';
+import type { CatsCoIdentityMetadata, DeviceSelection, GatewayAnnotationAgentContext, GatewayAnnotationReply, MsgServerData, MessageContent, ScopedDeviceGrant } from './types';
 import { type TopicInfo } from './topic';
 export interface TypingHeartbeatOptions {
     /** Interval between typing pings. Default: 2500ms */
@@ -30,8 +30,19 @@ export declare class MessageContext {
     get deviceGrants(): ScopedDeviceGrant[];
     /** Server-selected device context for this turn, if available. */
     get deviceSelection(): DeviceSelection | undefined;
+    /**
+     * Fanout-only gateway-annotation context (app id, page, the user's
+     * annotations with their targets). Present only on the annotated agent's
+     * copy of the message; use it to point back via sendAnnotationReply().
+     */
+    get gatewayAnnotations(): GatewayAnnotationAgentContext | undefined;
     /** Reply with content to the same topic. */
     reply(content: MessageContent): Promise<number>;
+    /**
+     * Reply and point back at a target inside a bound gateway app. `reply` is
+     * validated against the bridge contract bounds before sending.
+     */
+    replyWithAnnotation(content: MessageContent, pointBack: GatewayAnnotationReply): Promise<number>;
     /** Send typing indicator, wait, then reply. */
     replyWithTyping(content: MessageContent, delay?: number): Promise<number>;
     /**

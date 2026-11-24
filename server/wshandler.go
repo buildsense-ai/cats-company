@@ -1666,6 +1666,7 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 	}
 	sawGatewayAnnotationsIngress := hasGatewayAnnotationsMetadata(payload.Metadata)
 	payload.Metadata = h.validateAppOpenMetadata(uid, topic, payload.Metadata)
+	payload.Metadata = h.validateGatewayAnnotationReplyMetadata(uid, topic, payload.Metadata)
 	payload.Metadata, err = h.validateGatewayAnnotationsMetadata(uid, topic, payload.Metadata)
 	if err != nil {
 		// A rejected annotated message must never strand a task delivery

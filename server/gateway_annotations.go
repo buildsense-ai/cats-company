@@ -102,11 +102,15 @@ type gatewayAnnotationViewport struct {
 // gatewayAnnotationTarget is the bounded, kind-dependent target of one
 // annotation.
 type gatewayAnnotationTarget struct {
-	ElementID       string                     `json:"element_id,omitempty"`
-	Selector        string                     `json:"selector,omitempty"`
-	Text            string                     `json:"text,omitempty"`
-	Prefix          string                     `json:"prefix,omitempty"`
-	Suffix          string                     `json:"suffix,omitempty"`
+	ElementID string `json:"element_id,omitempty"`
+	Selector  string `json:"selector,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Prefix    string `json:"prefix,omitempty"`
+	Suffix    string `json:"suffix,omitempty"`
+	// NearbyText is capture-side readable context around an element target
+	// (its own text plus short sibling quotes). It is evidence only, never
+	// an anchor, and is bounded like the text affixes.
+	NearbyText      string                     `json:"nearby_text,omitempty"`
 	Rect            *gatewayAnnotationRect     `json:"rect,omitempty"`
 	CoordinateSpace string                     `json:"coordinate_space,omitempty"`
 	Viewport        *gatewayAnnotationViewport `json:"viewport,omitempty"`
@@ -329,6 +333,13 @@ func normalizeGatewayAnnotationTarget(kind string, value interface{}) (*gatewayA
 			return nil, errors.New("target.suffix must be at most 256 characters")
 		}
 		target.Suffix = value
+	}
+	if raw, present := record["nearby_text"]; present && raw != nil {
+		value, isString := raw.(string)
+		if !isString || !validGatewayAnnotationRunes(value, gatewayAnnotationsMaxAffixRunes, true) {
+			return nil, errors.New("target.nearby_text must be a string of at most 256 characters")
+		}
+		target.NearbyText = value
 	}
 	if rawRect, present := record["rect"]; present && rawRect != nil {
 		rect, err := normalizeGatewayAnnotationRect(rawRect)
@@ -604,6 +615,218 @@ func metadataWithoutGatewayAnnotationContext(metadata map[string]interface{}) ma
 		return nil
 	}
 	return next
+}
+
+// gatewayAnnotationReplyMetadataKey carries an agent's point-back at an
+// element inside one of its gateway applications. It is validated at
+// ingestion exactly like app_open: the claim must come from the topic's own
+// Agent and may only name an application that Agent owns.
+const gatewayAnnotationReplyMetadataKey = "gateway_annotation_reply"
+
+// GatewayAnnotationReplyContractV1 is the exact contract_version every
+// gateway_annotation_reply value must declare.
+const GatewayAnnotationReplyContractV1 = "catsco.gateway-annotation-reply.v1"
+
+// metadataWithoutGatewayAnnotationReply drops the reply key, leaving the
+// rest of the metadata intact.
+func metadataWithoutGatewayAnnotationReply(metadata map[string]interface{}) map[string]interface{} {
+	if metadata == nil {
+		return nil
+	}
+	if _, present := metadata[gatewayAnnotationReplyMetadataKey]; !present {
+		return metadata
+	}
+	next := make(map[string]interface{}, len(metadata))
+	for key, value := range metadata {
+		if key == gatewayAnnotationReplyMetadataKey {
+			continue
+		}
+		next[key] = value
+	}
+	if len(next) == 0 {
+		return nil
+	}
+	return next
+}
+
+// normalizeGatewayAnnotationReply mirrors the client-side reply gate: strict
+// keys, bounded strings and unit-bounded rect evidence. Unlike message
+// annotations it must name an application the sender owns, which is enforced
+// by the caller, not by this shape check.
+func normalizeGatewayAnnotationReply(value interface{}) (map[string]interface{}, error) {
+	canonical, err := canonicalGatewayAnnotationsJSON(value)
+	if err != nil {
+		return nil, err
+	}
+	record, ok := canonical.(map[string]interface{})
+	if !ok {
+		return nil, errors.New("gateway_annotation_reply must be an object")
+	}
+	for key := range record {
+		switch key {
+		case "contract_version", "app_id", "target", "note":
+		default:
+			return nil, fmt.Errorf("gateway_annotation_reply has unexpected key %q", key)
+		}
+	}
+	version, _ := record["contract_version"].(string)
+	if version != GatewayAnnotationReplyContractV1 {
+		return nil, errors.New("gateway_annotation_reply.contract_version is not supported")
+	}
+	appID, _ := record["app_id"].(string)
+	if !validGatewayAnnotationAppID(appID) {
+		return nil, errors.New("gateway_annotation_reply.app_id is not a registered gateway application id")
+	}
+	target := map[string]interface{}{}
+	rawTarget, present := record["target"]
+	if !present || rawTarget == nil {
+		return nil, errors.New("gateway_annotation_reply.target must name an anchor")
+	}
+	targetRecord, ok := rawTarget.(map[string]interface{})
+	if !ok {
+		return nil, errors.New("gateway_annotation_reply.target must be an object")
+	}
+	for key := range targetRecord {
+		switch key {
+		case "element_id", "selector", "rect", "coordinate_space":
+		default:
+			return nil, fmt.Errorf("gateway_annotation_reply.target has unexpected key %q", key)
+		}
+	}
+	if elementID, ok := targetRecord["element_id"].(string); ok && elementID != "" {
+		if !validGatewayAnnotationID(elementID) {
+			return nil, errors.New("gateway_annotation_reply.target.element_id must be a plain string of up to 128 characters")
+		}
+		target["element_id"] = elementID
+	} else if _, present := targetRecord["element_id"]; present {
+		return nil, errors.New("gateway_annotation_reply.target.element_id must be a plain string of up to 128 characters")
+	}
+	if selector, ok := targetRecord["selector"].(string); ok && selector != "" {
+		if !validGatewayAnnotationSelector(selector) {
+			return nil, errors.New("gateway_annotation_reply.target.selector must be a plain string of up to 512 characters")
+		}
+		target["selector"] = selector
+	} else if _, present := targetRecord["selector"]; present {
+		return nil, errors.New("gateway_annotation_reply.target.selector must be a plain string of up to 512 characters")
+	}
+	if rawRect, present := targetRecord["rect"]; present && rawRect != nil {
+		rect, err := normalizeGatewayAnnotationRect(rawRect)
+		if err != nil {
+			return nil, err
+		}
+		target["rect"] = map[string]interface{}{
+			"x": rect.X, "y": rect.Y, "width": rect.Width, "height": rect.Height,
+		}
+		space, _ := targetRecord["coordinate_space"].(string)
+		if space != "viewport" {
+			return nil, errors.New("gateway_annotation_reply.target.rect requires coordinate_space=viewport")
+		}
+		target["coordinate_space"] = "viewport"
+	} else if _, present := targetRecord["coordinate_space"]; present {
+		return nil, errors.New("gateway_annotation_reply.target.coordinate_space is only valid with a rect")
+	}
+	if len(target) == 0 {
+		return nil, errors.New("gateway_annotation_reply.target must name an anchor")
+	}
+	reply := map[string]interface{}{
+		"contract_version": GatewayAnnotationReplyContractV1,
+		"app_id":           appID,
+		"target":           target,
+	}
+	if note, present := record["note"]; present && note != nil {
+		text, ok := note.(string)
+		if !ok || !validGatewayAnnotationRunes(text, gatewayAnnotationsMaxAffixRunes, true) {
+			return nil, errors.New("gateway_annotation_reply.note must be a string of at most 256 characters")
+		}
+		if text != "" {
+			reply["note"] = text
+		}
+	}
+	return reply, nil
+}
+
+// gatewayAnnotationReplySenderIsTopicAgent answers whether senderUID is the
+// bot that this conversation routes to — the same notion of "the topic's
+// Agent" artifactAgentForTopic resolves for a human viewer, answered here
+// from the sender's side. A bot that merely shares a group with the owning
+// agent must not be able to paint on its app.
+func (h *Hub) gatewayAnnotationReplySenderIsTopicAgent(senderUID int64, topicID string) bool {
+	if h == nil || h.db == nil || senderUID <= 0 || strings.TrimSpace(topicID) == "" {
+		return false
+	}
+	if !h.isBotUser(senderUID) {
+		return false
+	}
+	if !isGroupTopic(topicID) {
+		return extractPeerUID(topicID, senderUID) > 0
+	}
+	groupID := extractGroupID(topicID)
+	if groupID <= 0 {
+		return false
+	}
+	member, err := h.db.IsGroupMember(groupID, senderUID)
+	if err != nil || !member {
+		return false
+	}
+	group, err := h.db.GetGroup(groupID)
+	if err == nil && group != nil && len(group.AgentIDs) > 0 {
+		return len(group.AgentIDs) == 1 && group.AgentIDs[0] == senderUID
+	}
+	members, err := h.db.GetGroupMembers(groupID)
+	if err != nil {
+		return false
+	}
+	var agentUID int64
+	for _, other := range members {
+		if other == nil || other.UserID <= 0 {
+			continue
+		}
+		if !(other.IsBot || h.isBotUser(other.UserID)) {
+			continue
+		}
+		if agentUID != 0 {
+			// More than one bot: "the topic's agent" is ambiguous, so nobody
+			// gets to speak for it.
+			return false
+		}
+		agentUID = other.UserID
+	}
+	return agentUID == senderUID
+}
+
+// validateGatewayAnnotationReplyMetadata is the shared ingestion point for
+// the agent point-back key. Only the topic's own Agent may attach it, and
+// only for an application the gateway registry says it owns; anything else
+// is stripped while the surrounding message still goes through, so a forged
+// reply can never reach a viewer.
+func (h *Hub) validateGatewayAnnotationReplyMetadata(senderUID int64, topicID string, metadata map[string]interface{}) map[string]interface{} {
+	if metadata == nil {
+		return nil
+	}
+	_, hasReply := metadata[gatewayAnnotationReplyMetadataKey]
+	if !hasReply {
+		return metadata
+	}
+	stripped := metadataWithoutGatewayAnnotationReply(metadata)
+	if h == nil || h.db == nil {
+		return stripped
+	}
+	if !h.gatewayAnnotationReplySenderIsTopicAgent(senderUID, topicID) {
+		return stripped
+	}
+	document, err := normalizeGatewayAnnotationReply(metadata[gatewayAnnotationReplyMetadataKey])
+	if err != nil || document == nil {
+		return stripped
+	}
+	appID, _ := document["app_id"].(string)
+	if err := h.gatewayAnnotationsAppAuthorized(senderUID, appID); err != nil {
+		return stripped
+	}
+	if stripped == nil {
+		stripped = make(map[string]interface{}, 1)
+	}
+	stripped[gatewayAnnotationReplyMetadataKey] = document
+	return stripped
 }
 
 // hasGatewayAnnotationsMetadata reports whether the message carries the
@@ -1160,6 +1383,9 @@ func (t gatewayAnnotationTarget) modelDescription() string {
 	}
 	if t.Suffix != "" {
 		parts = append(parts, "后缀：「"+t.Suffix+"」")
+	}
+	if t.NearbyText != "" {
+		parts = append(parts, "附近文本：「"+t.NearbyText+"」")
 	}
 	if t.Rect != nil {
 		parts = append(parts, fmt.Sprintf("区域(x=%v,y=%v,w=%v,h=%v)", t.Rect.X, t.Rect.Y, t.Rect.Width, t.Rect.Height))

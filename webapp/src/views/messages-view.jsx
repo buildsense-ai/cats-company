@@ -2571,6 +2571,12 @@ export default function MessagesView({
         if (typeof inject !== 'function') return { ok: false, reason: 'send_failed' };
         return inject(text, binding);
       },
+      // Agent point-backs that fail to resolve in the app DOM are expected
+      // whenever the page changed since the annotation was captured; keep a
+      // debug trace so silent drops stay diagnosable.
+      onReplyAck: ({ resolved, reason }) => {
+        if (!resolved) console.debug('[CatsCo] gateway annotation reply unresolved:', reason);
+      },
     });
     gatewayAnnotationHostRef.current = host;
     window.addEventListener('message', host.handleWindowMessage);
@@ -3597,6 +3603,18 @@ export default function MessagesView({
           setAwaitingAgentReply(false);
         }
         updateTopicSeq(topic, serverMsg.id);
+
+        // An Agent pointing back at an element inside one of its gateway
+        // applications arrives as ordinary message metadata
+        // (catsco.gateway-annotation-reply.v1). It is forwarded to the live
+        // annotation bridge only while that exact app is still bound and its
+        // handshake is ready; a reply arriving before the frame is up is a
+        // stale visual hint and is dropped rather than replayed later.
+        if (!sameUID(fromUid, user.uid) && serverMsg.metadata?.gateway_annotation_reply) {
+          // The bridge only honours point-backs authored by the agent the
+          // bound app belongs to; any other sender's key is ignored here.
+          gatewayAnnotationHostRef.current?.reply?.(serverMsg.metadata.gateway_annotation_reply, fromUid);
+        }
 
         // An Agent asking the viewer to open one of its applications arrives as
         // one ordinary message. It is only parked here: whether the request is

@@ -35,11 +35,17 @@
   var TYPE_SCREENSHOT_CANCEL = 'catsco.gateway.annotation.screenshot.cancel.v1';
   var TYPE_COMPOSE = 'catsco.artifact.compose.v1';
   var TYPE_COMPOSE_ACK = 'catsco.artifact.compose.ack.v1';
+  var TYPE_REPLY = 'catsco.gateway.annotation.reply.v1';
+  var TYPE_REPLY_ACK = 'catsco.gateway.annotation.reply-ack.v1';
   var COMPOSE_CONTRACT = BRIDGE_CONTRACT;  // envelope must satisfy the host's session check
+
+  var MAX_REPLIES = 4;
+  var REPLY_TTL_MS = 30000;
 
   var CAPABILITIES = ['element', 'text', 'region'];
   var MAX_ID_CHARS = 128;
   var MAX_LABEL_CHARS = 256;
+  var MAX_NEARBY_CHARS = 256;
   var MAX_TEXT_CHARS = 2000;
   var MAX_AFFIX_CHARS = 256;
   var MAX_SELECTOR_CHARS = 512;
@@ -521,12 +527,149 @@
     return selectorMatchesElement(selector, element) ? selector : null;
   }
 
+  // clippedSnippet produces one bounded, control-character-free text
+  // fragment for labels and nearby-text evidence. Whitespace collapses to
+  // single spaces so the rendered label never carries raw line breaks.
+  function clippedSnippet(text, max) {
+    var clean = String(text || '').replace(CONTROL_FORBIDDEN, ' ').replace(/\s+/g, ' ').trim();
+    if (!clean) return '';
+    if (clean.length > max) clean = clean.slice(0, Math.max(0, max - 1)) + '\u2026';
+    return clean;
+  }
+
+  // elementTextSnippet collects the element's visible text while pruning
+  // every sensitive subtree along the way. textContent alone would include
+  // descendants like a hidden <span data-catsco-annotation-sensitive>, so
+  // the walk skips each sensitive subtree entirely (its text and anything
+  // nested inside it). deep=false keeps only direct text nodes: nested
+  // element text belongs to its own descriptor. The node budget fails
+  // closed the same way the text-selection coverage check does.
+  var TEXT_WALK_BUDGET = 500;
+  function elementTextSnippet(element, max, deep) {
+    if (!element || !element.childNodes) return '';
+    var text = '';
+    var budget = TEXT_WALK_BUDGET;
+    function walk(node) {
+      for (var child = node.firstChild; child && budget > 0 && text.length <= max; child = child.nextSibling) {
+        budget -= 1;
+        if (child.nodeType === 3) {
+          text += (text ? ' ' : '') + (child.textContent || '');
+          continue;
+        }
+        if (child.nodeType !== 1) continue;
+        if (isSensitiveSubtreeRoot(child)) continue; // prune the whole subtree
+        if (deep) walk(child);
+      }
+    }
+    walk(element);
+    return clippedSnippet(text, max);
+  }
+
+  // semanticClass picks one meaningful class token, dropping CSS-module
+  // hashes (e.g. "styles_x1y2z" -> "styles") and opaque abbreviations.
+  function semanticClass(element) {
+    var className = typeof element.className === 'string' ? element.className : '';
+    if (!className) return '';
+    var words = className.split(/[\s_-]+/)
+      .map(function (token) { return token.replace(/[A-Z0-9]{5,}.*$/, ''); })
+      .filter(function (token) { return token.length > 2 && !/^[a-z]{1,2}$/.test(token); });
+    return words.slice(0, 2).join(' ');
+  }
+
+  // linkHref keeps only origin + pathname: query and fragment regularly
+  // carry signed URLs, reset tokens and tracking params that must not ride
+  // a label sent to the agent or the server.
+  function linkHref(element) {
+    var raw = element.getAttribute && element.getAttribute('href');
+    if (!raw || typeof raw !== 'string') return '';
+    var url;
+    try {
+      url = new URL(raw, document.baseURI);
+    } catch (error) {
+      return '';
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+    return clippedSnippet(url.origin + url.pathname, 64);
+  }
+
+  // elementLabel describes the element the way a reviewer would speak of it
+  // ("button \"Submit\"", 'link "Docs"'), so agents that cannot reach the
+  // app's DOM still know what was pointed at. The tag/id selector evidence
+  // remains in the target; this label is the human-facing description.
   function elementLabel(element) {
     if (!element || element.nodeType !== 1) return '';
     var tag = element.tagName.toLowerCase();
-    var descriptor = element.id ? tag + '#' + cssEscapeFragment(element.id) : tag;
-    if (descriptor.length > MAX_LABEL_CHARS) descriptor = descriptor.slice(0, MAX_LABEL_CHARS);
-    return descriptor;
+    var label = '';
+    var aria = clippedSnippet(element.getAttribute && element.getAttribute('aria-label'), 64);
+    var text;
+
+    if (tag === 'button') {
+      label = aria ? 'button [' + aria + ']'
+        : (text = elementTextSnippet(element, 60, true)) ? 'button "' + text + '"'
+        : element.id ? 'button#' + cssEscapeFragment(element.id) : 'button';
+    } else if (tag === 'a') {
+      text = elementTextSnippet(element, 60, true);
+      var href = linkHref(element);
+      label = text ? 'link "' + text + '"' : href ? 'link to ' + href
+        : element.id ? 'link#' + cssEscapeFragment(element.id) : 'link';
+    } else if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+      // Never read .value: the SDK does not exfiltrate field contents.
+      var placeholder = clippedSnippet(element.getAttribute && element.getAttribute('placeholder'), 60);
+      var name = clippedSnippet(element.getAttribute && element.getAttribute('name'), 48);
+      label = placeholder ? tag + ' "' + placeholder + '"'
+        : name ? tag + ' [' + name + ']'
+        : element.id ? tag + '#' + cssEscapeFragment(element.id)
+        : tag;
+    } else if (/^h[1-6]$/.test(tag)) {
+      text = elementTextSnippet(element, 64, true);
+      label = text ? tag + ' "' + text + '"' : tag;
+    } else if (tag === 'img') {
+      var alt = clippedSnippet(element.getAttribute && element.getAttribute('alt'), 60);
+      label = alt ? 'image "' + alt + '"' : 'image';
+    } else if (tag === 'video' || tag === 'audio' || tag === 'canvas' || tag === 'iframe' || tag === 'svg') {
+      label = tag;
+    } else if (aria) {
+      label = tag + ' [' + aria + ']';
+    } else if (element.getAttribute && element.getAttribute('role')) {
+      label = clippedSnippet(element.getAttribute('role'), 48) || tag;
+    } else {
+      text = elementTextSnippet(element, 60, false);
+      if (text) {
+        label = tag + ' "' + text + '"';
+      } else {
+        var classes = semanticClass(element);
+        label = classes ? tag + '.' + classes.split(' ')[0]
+          : element.id ? tag + '#' + cssEscapeFragment(element.id)
+          : tag;
+      }
+    }
+    if (label.length > MAX_LABEL_CHARS) label = label.slice(0, MAX_LABEL_CHARS);
+    return label;
+  }
+
+  // nearbyTextSnippet gives the agent the readable context around the
+  // pointed element: its own text plus short quotes of the siblings before
+  // and after. Siblings inside sensitive subtrees are skipped per node, so
+  // a neighbouring password field never leaks into the evidence.
+  function nearbyTextSnippet(element) {
+    var parts = [];
+    // Deep-walked text prunes sensitive descendants, so a sensitive node
+    // nested inside the pointed element or its siblings cannot leak into
+    // the evidence.
+    var own = elementTextSnippet(element, 100, true);
+    if (own) parts.push('"' + own + '"');
+    var prev = element.previousElementSibling;
+    if (prev && prev.nodeType === 1 && !isSensitiveSubtreeRoot(prev)) {
+      var prevText = elementTextSnippet(prev, 40, true);
+      if (prevText) parts.unshift('[before: "' + prevText + '"]');
+    }
+    var next = element.nextElementSibling;
+    if (next && next.nodeType === 1 && !isSensitiveSubtreeRoot(next)) {
+      var nextText = elementTextSnippet(next, 40, true);
+      if (nextText) parts.push('[after: "' + nextText + '"]');
+    }
+    var joined = parts.join(' ');
+    return joined.length > MAX_NEARBY_CHARS ? joined.slice(0, MAX_NEARBY_CHARS) : joined;
   }
 
   function textLabel(text) {
@@ -654,6 +797,12 @@
       '.catsco-annotation-badge{position:fixed;top:8px;left:50%;transform:translateX(-50%);',
       'padding:4px 12px;border-radius:999px;background:#312e81;color:#fff;font:12px/1.6 sans-serif;',
       'z-index:2147483647;pointer-events:none;}',
+      '.catsco-annotation-reply{position:fixed;pointer-events:none;border:2px solid #0ea5e9;',
+      'background:rgba(14,165,233,0.12);border-radius:3px;z-index:2147483646;',
+      'box-shadow:0 0 0 1px rgba(14,165,233,0.35);}',
+      '.catsco-annotation-reply-note{position:fixed;pointer-events:none;max-width:280px;',
+      'padding:4px 10px;border-radius:6px;background:#0c4a6e;color:#fff;',
+      'font:12px/1.5 sans-serif;z-index:2147483646;white-space:pre-wrap;}',
     ].join('');
     (document.head || document.documentElement).appendChild(style);
     return style;
@@ -731,6 +880,7 @@
       rendering: false,
       documentEpoch: 0,
       composeRequests: new Map(),
+      replyOverlays: new Map(), // request_id -> {box, note, timer}
     };
 
     function post(message) {
@@ -866,6 +1016,7 @@
       // Same path/revision still invalidates viewport geometry, including
       // an already completed screenshot. Host page handler revokes target.
       sendPageChanged();
+      repositionReplies();
     }
 
     function onScreenshotRequest(payload) {
@@ -958,6 +1109,8 @@
       if (elementId) target.element_id = elementId;
       var selector = selectorFor(element);
       if (selector) target.selector = selector;
+      var nearby = nearbyTextSnippet(element);
+      if (nearby) target.nearby_text = nearby;
       var rect = element.getBoundingClientRect();
       if (rect && rect.width > 0 && rect.height > 0) {
         var visibleRect = normalizedViewportRect(rect);
@@ -1326,8 +1479,136 @@
       // page. A stale selection must not be submitted with a newer revision.
       teardownOverlay();
       clearSelection();
+      // Point-backs were anchored against the previous document; they are
+      // meaningless on a new page.
+      clearReplies();
       if (state.mode !== 'off') activeOverlay().setBadge(modeHints[state.mode] || '');
       sendPageChanged();
+    }
+
+    // ---- Agent point-back (reply.v1) ----
+    // The agent names a target captured earlier (element_id / selector) or
+    // a viewport region; the SDK resolves it inside the app DOM and draws a
+    // passive highlight the user can see. Reply overlays never intercept
+    // input and expire on their own.
+    function dropReply(requestId) {
+      var entry = state.replyOverlays.get(requestId);
+      if (!entry) return;
+      state.replyOverlays.delete(requestId);
+      if (entry.timer) clearTimeout(entry.timer);
+      if (entry.box) entry.box.remove();
+      if (entry.note) entry.note.remove();
+    }
+
+    function clearReplies() {
+      Array.from(state.replyOverlays.keys()).forEach(dropReply);
+    }
+
+    // Locate the element for element_id / selector. element_id is resolved
+    // by exact attribute or DOM id match (querySelectorAll would need CSS
+    // escaping for arbitrary id bytes; an exact-compare scan cannot be
+    // tricked into matching another element).
+    function resolveReplyElement(target) {
+      if (target.element_id) {
+        var byId = document.getElementById(target.element_id);
+        if (byId) return byId;
+        var marked = document.querySelectorAll('[data-catsco-annotation-id]');
+        for (var i = 0; i < marked.length; i++) {
+          if (marked[i].getAttribute('data-catsco-annotation-id') === target.element_id) return marked[i];
+        }
+      }
+      if (target.selector) {
+        try {
+          var found = document.querySelector(target.selector);
+          if (found) return found;
+        } catch (error) {
+          return null;
+        }
+      }
+      return null;
+    }
+
+    function replyTargetRect(target) {
+      var element = resolveReplyElement(target);
+      if (element && typeof element.getBoundingClientRect === 'function') {
+        var rect = element.getBoundingClientRect();
+        if (rect && rect.width > 0 && rect.height > 0) {
+          return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+        }
+      }
+      // Fall back to the viewport-normalized region the agent supplied.
+      if (target.rect && target.coordinate_space === 'viewport') {
+        return {
+          left: target.rect.x * window.innerWidth,
+          top: target.rect.y * window.innerHeight,
+          width: target.rect.width * window.innerWidth,
+          height: target.rect.height * window.innerHeight,
+        };
+      }
+      return null;
+    }
+
+    function paintReplyOverlay(entry, rect) {
+      entry.box.style.left = rect.left + 'px';
+      entry.box.style.top = rect.top + 'px';
+      entry.box.style.width = rect.width + 'px';
+      entry.box.style.height = rect.height + 'px';
+      if (entry.note) {
+        var noteTop = rect.top - 34;
+        if (noteTop < 4) noteTop = rect.top + rect.height + 6;
+        entry.note.style.left = Math.max(4, rect.left) + 'px';
+        entry.note.style.top = noteTop + 'px';
+      }
+    }
+
+    // position:fixed rects go stale the moment the frame scrolls or
+    // resizes. Re-resolve each live reply target so the highlight tracks
+    // the element; targets that stopped resolving are dropped.
+    function repositionReplies() {
+      Array.from(state.replyOverlays.entries()).forEach(function (pair) {
+        var rect = replyTargetRect(pair[1].target);
+        if (!rect) {
+          dropReply(pair[0]);
+          return;
+        }
+        paintReplyOverlay(pair[1], rect);
+      });
+    }
+
+    function onReply(payload) {
+      var requestId = typeof payload.request_id === 'string' ? payload.request_id : '';
+      var target = isPlainObject(payload.target) ? payload.target : null;
+      var rect = target ? replyTargetRect(target) : null;
+      post({
+        type: TYPE_REPLY_ACK,
+        contract_version: BRIDGE_CONTRACT,
+        session_id: state.session,
+        request_id: requestId,
+        resolved: Boolean(rect),
+        reason: rect ? '' : 'target-unresolved',
+      });
+      if (!rect || !requestId) return;
+
+      dropReply(requestId);
+      if (state.replyOverlays.size >= MAX_REPLIES) {
+        dropReply(state.replyOverlays.keys().next().value);
+      }
+      ensureStyleContainer();
+      var box = document.createElement('div');
+      box.className = 'catsco-annotation-reply';
+      var note = null;
+      var noteText = clippedSnippet(payload.note, MAX_LABEL_CHARS);
+      if (noteText) {
+        note = document.createElement('div');
+        note.className = 'catsco-annotation-reply-note';
+        note.textContent = noteText;
+      }
+      var entry = { box: box, note: note, target: target, timer: null };
+      paintReplyOverlay(entry, rect);
+      document.body.appendChild(box);
+      if (note) document.body.appendChild(note);
+      entry.timer = setTimeout(function () { dropReply(requestId); }, REPLY_TTL_MS);
+      state.replyOverlays.set(requestId, entry);
     }
 
     function onMessage(event) {
@@ -1355,6 +1636,7 @@
           // send mode from its ready callback, which must not be overwritten.
           handleMode('off');
           clearSelection();
+          clearReplies();
         }
         state.session = payload.session_id;
         state.connectRequestId = payload.request_id;
@@ -1372,12 +1654,14 @@
           handleMode(payload.mode);
         }
       }
+      if (payload.type === TYPE_REPLY) { onReply(payload); return; }
     }
 
     function onPageHide() {
       invalidateScreenshot();
       handleMode('off');
       clearSelection();
+      clearReplies();
       state.session = null;
       state.connectRequestId = null;
     }
@@ -1447,6 +1731,7 @@
         document.documentElement.classList.remove('catsco-annotation-select-surface');
         teardownOverlay();
         clearSelection();
+        clearReplies();
         document.removeEventListener('pointerdown', onPointerControl, true);
         document.removeEventListener('pointermove', onPointerControl, true);
         document.removeEventListener('pointerup', onPointerControl, true);
@@ -1537,6 +1822,8 @@
       screenshotCancel: TYPE_SCREENSHOT_CANCEL,
       compose: TYPE_COMPOSE,
       composeAck: TYPE_COMPOSE_ACK,
+      reply: TYPE_REPLY,
+      replyAck: TYPE_REPLY_ACK,
     },
   };
   bootstrapAttribute(originsAttribute);

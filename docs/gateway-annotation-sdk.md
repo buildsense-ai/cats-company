@@ -19,6 +19,9 @@ createGatewayAnnotationHost(...)              <script src="/catsco-annotations.j
                           ◀── target.v1 ───   用户完成一次选择（id/kind/label/target）
                           ◀── page.v1 ─────   SPA 导航 / revision 变化
   composer 添加评论 body → normalizeGatewayAnnotations → 消息 metadata.gateway_annotations
+
+  host.reply(reply)         ── reply.v1 ─────▶   SDK 高亮 agent 指向的目标（element_id/selector/region）
+                          ◀── reply-ack.v1 ──  目标是否解析成功（resolved/target-unresolved）
 ```
 
 两个互不混淆的 contract：
@@ -45,13 +48,15 @@ import {
 ### normalizeGatewayAnnotationSelection(value)
 
 单条标注/选择的 schema 门（SDK→host 的 `selection` 即此形状）。规则与
-`server/gateway_annotations.go` 对齐：
+`server/gateway_annotations.go` 对齐；第三方集成可用的机器校验版本见
+[schema/catsco.gateway-annotations.v1.json](schema/catsco.gateway-annotations.v1.json)
+（JSON Schema 2020-12，近似表达——16KiB 总量与控制字符规则仍以 normalizer 为准）：
 
 - 严格键集合；未知键/`__proto__` 类污染键 → `null`。
 - `id` 必填，≤128 字符，无控制字符；`kind` ∈ `element|text|region`；`label` ≤256 字符（可空）。
-- target 按 kind：element 需 `element_id` 或 `selector`；text 需非空白 `text`；region 需 `rect` + `coordinate_space:'viewport'` + `viewport`。
+- target 按 kind：element 需 `element_id` 或 `selector`，可带 `nearby_text`（≤256，freetext 规则）；text 需非空白 `text`；region 需 `rect` + `coordinate_space:'viewport'` + `viewport`。
 - `rect` 视口归一化 0..1（允许 1e-6 浮点容差），零面积/越界拒绝；`viewport` 的 width/height >0、scroll ≥0、上限 2^20。
-- 自由文本（`text/prefix/suffix/body`）≤2000/256/256/2000，允许换行与制表符（`\n`/`\r`/`\t`），其余控制字符拒绝——与 server freetext 规则一致；`element_id/selector` 等标识类拒绝一切控制字符。
+- 自由文本（`text/prefix/suffix/nearby_text/body`）≤2000/256/256/256/2000，允许换行与制表符（`\n`/`\r`/`\t`），其余控制字符拒绝——与 server freetext 规则一致；`element_id/selector` 等标识类拒绝一切控制字符。
 
 ### normalizeGatewayAnnotations(value)
 
@@ -100,7 +105,7 @@ import {
 - 自动响应宿主 `connect.v1`（校验 `event.origin === parentOrigin` 且 `event.source === window.parent`），回 `ready.v1`；每次新 connect 重绑到最新 session。
 - `mode.v1` 切换显式选择态；`off` 完全恢复普通页面交互（overlay 移除、拦截监听不消费事件）。
 - 选择捕获：
-  - **element**：hover 高亮（真实 getBoundingClientRect），点击上报 `element_id`（优先 `getElementId` 回调 → `data-catsco-annotation-id` → DOM `id`）+ CSS selector（id 锚定、验证过的属性锚定，或 ≤6 层**同 tag** nth-of-type 链，≤512，含 rect/viewport 证据）。每段锚点与最终 selector 都以 `document.querySelector(selector) === 元素` 验证——转义/截断导致指向其他元素时丢弃该锚点或整条 selector（`element_id` 仍是锚），**绝不发布无法 match 的 selector**。
+  - **element**：hover 高亮（真实 getBoundingClientRect），点击上报 `element_id`（优先 `getElementId` 回调 → `data-catsco-annotation-id` → DOM `id`）+ CSS selector（id 锚定、验证过的属性锚定，或 ≤6 层**同 tag** nth-of-type 链，≤512，含 rect/viewport 证据）。每段锚点与最终 selector 都以 `document.querySelector(selector) === 元素` 验证——转义/截断导致指向其他元素时丢弃该锚点或整条 selector（`element_id` 仍是锚），**绝不发布无法 match 的 selector**。`label` 是元素的可读描述（如 `button "导出报表"`、`link "Docs"`、`image "季度图表"`），按 aria-label/可见文本/placeholder/alt/role/id 回退生成，跨域 agent 无法访问应用 DOM 时仍知道指向了什么。target 另携带 `nearby_text` 证据：元素自身文本 + 前后相邻兄弟的短引文（各≤40），总长 ≤256，是上下文证据而非锚点。文本收集走深遍历，敏感子树整体剪枝（`isSensitiveSubtreeRoot` 命中的节点连同其后代都不读文本），因此嵌套在目标或兄弟内部的 `data-catsco-annotation-sensitive`/密码框内容不会泄漏；`label`/`link` 标签同样规则，且 `link` 的 href 只保留 origin+pathname（query/fragment 可能携带 token）。
   - **text**：mouseup 时读取 `window.getSelection()`，上报 `text`（≤2000）+ `prefix/suffix`（≤256）+ rect 证据；发送后清除选区。**整段 Range 覆盖检查**：start/end 容器、共同祖先及 Range 实际触及的每个元素（`Range.intersectsNode`）只要任一落入敏感 subtree 即整段拒绝（fail-closed；遍历超 500 节点预算同样拒绝）。
   - **region**：拖拽框选，释放点以 mouseup 事件自身坐标为准（不依赖最后一次 mousemove），两端坐标先 clamp 进 viewport 再做 <6px 误触判定与归一化；上报归一化 `rect` + `coordinate_space:'viewport'` + `viewport` 证据。
 - **rect 视口交集**：element/text 的辅助 rect 一律先取 DOMRect 与 iframe viewport 的交集再归一化（部分可见大元素/文本选择产生 `x+w≤1` 的合法 rect）；交集为空（完全不可见）时省略 rect/coordinate_space/viewport，仅保留 element/text anchor；region 选择发生在 viewport 内，始终为有效正面积。
@@ -142,6 +147,25 @@ host.proposeCompose('直接传字符串也可以');
 - 失败原因（`agent_forbidden` / `not_logged_in` / `open_failed` / `send_failed`）原样回给应用，宿主同时给出用户可见提示。
 - 消息带来源标记 `metadata: { app_id, agent_uid }`，供后续回溯「这条是哪个应用注入的」。
 - 宿主 handle 上也暴露 `host.compose(text)` 供程序化调用。
+
+## 4.2 agent 反向批注（reply.v1）
+
+标注是「用户在应用里指出 → agent 处理」；reply 是反方向：「agent 在应用页面上指出 → 用户看到」。
+agent 在回复消息里附加 `metadata.gateway_annotation_reply`（contract `catsco.gateway-annotation-reply.v1`）：
+
+```json
+{
+  "contract_version": "catsco.gateway-annotation-reply.v1",
+  "app_id": "board",
+  "target": { "element_id": "submit-btn" },
+  "note": "改这里"
+}
+```
+
+- `target`：`element_id`（优先 `document.getElementById` 精确匹配 → `data-catsco-annotation-id` 精确比对）或 `selector`，两者都解析失败时回退 `rect` + `coordinate_space:'viewport'` 区域；`note` ≤256。
+- 客户端 `normalizeGatewayAnnotationReply` 与 schema 门同源（strict keys、控制字符、几何边界）。webapp 在消息接收路径转发给 `host.reply(reply, fromUid)`；**发送者必须是当前绑定的 Agent**（`fromUid === binding.agentUid`），`app_id` 必须与当前绑定一致，且要求握手 ready——任何其他成员（人或另一 bot）的同名 metadata 与帧还没起来时的过期提示一律丢弃不重放。
+- 服务端入口同样把关：`gateway_annotation_reply` 只有话题自身 Agent 且 `app_id` 属于该 Agent 时才保留，伪造/越权/歧义（多 bot 群）一律静默剥离——消息本身不受影响。
+- SDK 渲染被动高亮（`.catsco-annotation-reply`，天蓝色区别于用户标注的靛蓝 + 可选 note 气泡），`pointer-events:none`、30s 自灭、最多并存 4 个；导航/revision/重连/dispose 一律清空。SDK 回 `reply-ack.v1`（`resolved` + `reason`），宿主透传给 `onReplyAck` 供调用方观察。
 
 ## 5. 测试
 

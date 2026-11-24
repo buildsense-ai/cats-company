@@ -4,6 +4,8 @@ import type { CatsBot } from './bot';
 import type {
   CatsCoIdentityMetadata,
   DeviceSelection,
+  GatewayAnnotationAgentContext,
+  GatewayAnnotationReply,
   MsgServerData,
   MessageContent,
   ScopedDeviceGrant,
@@ -76,9 +78,31 @@ export class MessageContext {
     return this.catscoIdentity?.device_selection;
   }
 
+  /**
+   * Fanout-only gateway-annotation context (app id, page, the user's
+   * annotations with their targets). Present only on the annotated agent's
+   * copy of the message; use it to point back via sendAnnotationReply().
+   */
+  get gatewayAnnotations(): GatewayAnnotationAgentContext | undefined {
+    const ctx = this.metadata?.catsco_gateway_annotation_context;
+    if (!ctx || typeof ctx !== 'object' || Array.isArray(ctx)) return undefined;
+    return ctx as GatewayAnnotationAgentContext;
+  }
+
   /** Reply with content to the same topic. */
   async reply(content: MessageContent): Promise<number> {
     return this.bot.sendMessage(this.topic, content);
+  }
+
+  /**
+   * Reply and point back at a target inside a bound gateway app. `reply` is
+   * validated against the bridge contract bounds before sending.
+   */
+  async replyWithAnnotation(
+    content: MessageContent,
+    pointBack: GatewayAnnotationReply,
+  ): Promise<number> {
+    return this.bot.sendAnnotationReply(this.topic, content, pointBack);
   }
 
   /** Send typing indicator, wait, then reply. */

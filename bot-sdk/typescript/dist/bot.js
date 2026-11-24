@@ -7,9 +7,65 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.CatsBot = void 0;
 const ws_1 = __importDefault(require("ws"));
 const events_1 = require("events");
+const types_1 = require("./types");
 const errors_1 = require("./errors");
 const context_1 = require("./context");
 const uploader_1 = require("./uploader");
+// Bridge-contract bounds for the point-back: mirror the webapp
+// normalizeGatewayAnnotationReply gate so a malformed reply fails before it
+// can ride an otherwise valid message.
+const GATEWAY_APP_ID_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
+const REPLY_CONTROL_FORBIDDEN = /[\u0000-\u001f\u007f]/;
+// Free-text fields (note) may carry \n \r \t like the webapp freetext rule;
+// identifiers (app_id, element_id, selector) reject every control character.
+const REPLY_FREETEXT_FORBIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+function boundedReplyString(value, max) {
+    return typeof value === 'string' && value.length > 0 && value.length <= max
+        && !REPLY_CONTROL_FORBIDDEN.test(value) ? value : undefined;
+}
+function boundedReplyNote(value, max) {
+    return typeof value === 'string' && value.length > 0 && value.length <= max
+        && !REPLY_FREETEXT_FORBIDDEN.test(value) ? value : undefined;
+}
+function gatewayAnnotationReplyMetadata(reply) {
+    if (!reply || typeof reply !== 'object')
+        return null;
+    const appId = boundedReplyString(reply.app_id, 48);
+    if (!appId || !GATEWAY_APP_ID_PATTERN.test(appId))
+        return null;
+    const target = reply.target;
+    if (!target || typeof target !== 'object')
+        return null;
+    const out = {};
+    const elementId = boundedReplyString(target.element_id, 128);
+    if (elementId)
+        out.element_id = elementId;
+    const selector = boundedReplyString(target.selector, 512);
+    if (selector)
+        out.selector = selector;
+    const rect = target.rect;
+    if (rect && typeof rect === 'object') {
+        const { x, y, width, height } = rect;
+        const valid = [x, y, width, height].every((n) => typeof n === 'number' && Number.isFinite(n))
+            && x >= 0 && y >= 0 && width > 0 && height > 0
+            && x + width <= 1 + 1e-6 && y + height <= 1 + 1e-6;
+        if (!valid)
+            return null;
+        out.rect = { x, y, width, height };
+        out.coordinate_space = 'viewport';
+    }
+    if (!out.element_id && !out.selector && !out.rect)
+        return null;
+    const metadata = {
+        contract_version: types_1.GATEWAY_ANNOTATION_REPLY_CONTRACT,
+        app_id: appId,
+        target: out,
+    };
+    const note = boundedReplyNote(reply.note, 256);
+    if (note)
+        metadata.note = note;
+    return { [types_1.GATEWAY_ANNOTATION_REPLY_METADATA_KEY]: metadata };
+}
 class CatsBot {
     uid = '';
     name = '';
@@ -110,13 +166,33 @@ class CatsBot {
     // --- Sending messages ---
     /**
      * Publish a message to a topic. Returns the server-assigned seq number.
+     * `opts.metadata` rides the pub envelope untouched; server validation for
+     * contract-keyed metadata (gateway annotations, gateway_annotation_reply,
+     * app_open) still applies — unrecognized keys pass through verbatim.
      */
-    sendMessage(topic, content, replyTo) {
+    sendMessage(topic, content, replyToOrOpts) {
         const id = this.nextId();
+        const opts = typeof replyToOrOpts === 'number' ? { replyTo: replyToOrOpts } : replyToOrOpts;
         const pub = {
-            pub: { id, topic, content, reply_to: replyTo },
+            pub: { id, topic, content, reply_to: opts?.replyTo, metadata: opts?.metadata },
         };
         return this.sendWithAck(id, pub);
+    }
+    /**
+     * Reply with a message plus a gateway-annotation point-back. The point-back
+     * is attached as `metadata.gateway_annotation_reply`
+     * (catsco.gateway-annotation-reply.v1); the webapp renders it as a passive
+     * highlight inside the bound gateway app. A reply that fails the bridge
+     * contract bounds (bad app_id, no usable anchor, invalid rect, oversized
+     * or control-bearing strings) rejects locally rather than riding an
+     * otherwise valid message.
+     */
+    sendAnnotationReply(topic, content, reply) {
+        const metadata = gatewayAnnotationReplyMetadata(reply);
+        if (!metadata) {
+            return Promise.reject(new errors_1.ProtocolError(400, 'invalid gateway annotation reply'));
+        }
+        return this.sendMessage(topic, content, { metadata });
     }
     /**
      * Publish a backend-trusted task status update for a topic.

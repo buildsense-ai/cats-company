@@ -54,6 +54,64 @@ export const ARTIFACT_COMPOSE_TYPE = 'catsco.artifact.compose.v1';
 export const ARTIFACT_COMPOSE_ACK_TYPE = 'catsco.artifact.compose.ack.v1';
 export const ARTIFACT_COMPOSE_CONTRACT = GATEWAY_ANNOTATION_BRIDGE_CONTRACT;
 
+// Agent -> application point-back channel: the owning agent names a target
+// on the app's page and the SDK highlights it so the user can see what the
+// agent is referring to. The reply rides the ordinary message metadata; the
+// frame only ever renders it.
+export const GATEWAY_ANNOTATION_REPLY_CONTRACT = 'catsco.gateway-annotation-reply.v1';
+export const GATEWAY_HOST_REPLY_TYPE = 'catsco.gateway.annotation.reply.v1';
+export const GATEWAY_SDK_REPLY_ACK_TYPE = 'catsco.gateway.annotation.reply-ack.v1';
+
+// Shape gate for an agent point-back attached to message metadata. Only the
+// exact contract shape survives; anything else is treated as no reply.
+// target.element_id / target.selector locate an element (at least one
+// required unless a region rect is given); target.rect is viewport-normalized
+// evidence used when the element anchors do not resolve.
+export function normalizeGatewayAnnotationReply(value) {
+  if (!plainObject(value)) return null;
+  const strictKeys = new Set(['contract_version', 'app_id', 'target', 'note']);
+  for (const key of Object.keys(value)) {
+    if (!strictKeys.has(key) || key === '__proto__' || key === 'constructor' || key === 'prototype') return null;
+  }
+  if (value.contract_version !== GATEWAY_ANNOTATION_REPLY_CONTRACT) return null;
+  const appId = boundedString(value.app_id, 48);
+  if (appId === null || !/^[a-z][a-z0-9_-]{0,47}$/.test(appId) || CONTROL_FORBIDDEN.test(appId)) return null;
+
+  const rawTarget = value.target;
+  if (!plainObject(rawTarget)) return null;
+  const targetKeys = new Set(['element_id', 'selector', 'rect', 'coordinate_space']);
+  for (const key of Object.keys(rawTarget)) {
+    if (!targetKeys.has(key) || key === '__proto__' || key === 'constructor' || key === 'prototype') return null;
+  }
+  const target = {};
+  if (rawTarget.element_id !== undefined && rawTarget.element_id !== null) {
+    target.element_id = boundedString(rawTarget.element_id, MAX_ID_CHARS);
+    if (target.element_id === null || CONTROL_FORBIDDEN.test(target.element_id)) return null;
+  }
+  if (rawTarget.selector !== undefined && rawTarget.selector !== null) {
+    target.selector = boundedString(rawTarget.selector, MAX_SELECTOR_CHARS);
+    if (target.selector === null || CONTROL_FORBIDDEN.test(target.selector)) return null;
+  }
+  if (rawTarget.rect !== undefined && rawTarget.rect !== null) {
+    target.rect = normalizedRect(rawTarget.rect);
+    if (target.rect === null) return null;
+    // A region rect is only meaningful in the iframe viewport space.
+    if (rawTarget.coordinate_space !== 'viewport') return null;
+    target.coordinate_space = 'viewport';
+  } else if (rawTarget.coordinate_space !== undefined && rawTarget.coordinate_space !== null) {
+    return null;
+  }
+  if (typeof target.element_id !== 'string' && typeof target.selector !== 'string' && !target.rect) return null;
+
+  const reply = { contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: appId, target };
+  if (value.note !== undefined && value.note !== null) {
+    const note = boundedString(value.note, MAX_LABEL_CHARS);
+    if (note === null || FREE_TEXT_FORBIDDEN.test(note)) return null;
+    if (note) reply.note = note;
+  }
+  return reply;
+}
+
 const SCREENSHOT_WARNINGS = ['cross-origin-image', 'unloaded-image', 'video', 'embedded-content', 'webgl-canvas', 'unreadable-canvas', 'cross-origin-background', 'sensitive-content-masked'];
 
 function jpegDimensions(raw) {
@@ -187,7 +245,7 @@ function normalizedViewport(value) {
 function normalizedTarget(kind, value) {
   if (!plainObject(value)) return null;
   const target = {};
-  const strictKeys = new Set(['element_id', 'selector', 'text', 'prefix', 'suffix', 'rect', 'coordinate_space', 'viewport']);
+  const strictKeys = new Set(['element_id', 'selector', 'text', 'prefix', 'suffix', 'nearby_text', 'rect', 'coordinate_space', 'viewport']);
   for (const key of Object.keys(value)) {
     if (!strictKeys.has(key) || key === '__proto__' || key === 'constructor' || key === 'prototype') return null;
   }
@@ -211,6 +269,12 @@ function normalizedTarget(kind, value) {
   if (value.suffix !== undefined && value.suffix !== null) {
     target.suffix = boundedString(value.suffix, MAX_AFFIX_CHARS, true);
     if (target.suffix === null || FREE_TEXT_FORBIDDEN.test(target.suffix)) return null;
+  }
+  // nearby_text is capture-side readable context around an element target
+  // (own text plus sibling quotes), bounded like the text affixes.
+  if (value.nearby_text !== undefined && value.nearby_text !== null) {
+    target.nearby_text = boundedString(value.nearby_text, MAX_AFFIX_CHARS, true);
+    if (target.nearby_text === null || FREE_TEXT_FORBIDDEN.test(target.nearby_text)) return null;
   }
   if (value.rect !== undefined && value.rect !== null) {
     target.rect = normalizedRect(value.rect);
@@ -391,6 +455,7 @@ export function createGatewayAnnotationHost({
   onPageChange,
   onUnavailable,
   onModeChange,
+  onReplyAck,
   onCompose,
 } = {}) {
   if (typeof getBinding !== 'function') {
@@ -711,6 +776,38 @@ export function createGatewayAnnotationHost({
     });
   }
 
+  // Forward an agent point-back into the live frame. The reply is display
+  // only: it never reaches app JS as input, it just drives the SDK overlay.
+  // `fromUid` is the message author's uid — a point-back is only honoured
+  // when it comes from the agent this binding belongs to; anyone else in
+  // the conversation is ignored. `onReplyAck` reports whether the frame
+  // could resolve the target.
+  function reply(value, fromUid) {
+    if (state.disposed || !revalidateBinding() || !state.session || !state.ready) return false;
+    const sender = Number(fromUid);
+    if (!Number.isSafeInteger(sender) || sender <= 0 || sender !== state.session.agentUid) return false;
+    const normalized = normalizeGatewayAnnotationReply(value);
+    if (!normalized) return false;
+    if (normalized.app_id !== state.session.appId) return false;
+    const requestId = createSessionToken();
+    return postToFrame(state.session.binding, {
+      type: GATEWAY_HOST_REPLY_TYPE,
+      contract_version: GATEWAY_ANNOTATION_BRIDGE_CONTRACT,
+      session_id: state.session.token,
+      request_id: requestId,
+      target: normalized.target,
+      note: normalized.note,
+    });
+  }
+
+  function handleReplyAck(payload) {
+    if (!state.ready) return;
+    const requestId = typeof payload.request_id === 'string' ? payload.request_id : '';
+    const resolved = payload.resolved === true;
+    const reason = typeof payload.reason === 'string' ? payload.reason.slice(0, 64) : '';
+    notify(onReplyAck, { request_id: requestId, resolved, reason });
+  }
+
   // The ack deliberately carries no conversation id: the application cannot act
   // on one (it has no platform API access from a cross-origin frame), so
   // success/failure is the whole contract.
@@ -756,6 +853,9 @@ export function createGatewayAnnotationHost({
           return;
         case ARTIFACT_COMPOSE_TYPE:
           handleCompose(payload);
+          return;
+        case GATEWAY_SDK_REPLY_ACK_TYPE:
+          handleReplyAck(payload);
           return;
         default:
           return;
@@ -847,6 +947,7 @@ export function createGatewayAnnotationHost({
     connect,
     retransmit,
     setMode,
+    reply,
     handleWindowMessage,
     captureScreenshot,
     cancelScreenshot,
