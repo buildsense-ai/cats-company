@@ -146,7 +146,7 @@ XiaoBa 保留「未提供更新」与「明确为空」的区别：undefined 不
 
 | 场景 | 当前证据 | 尚未证明的范围 |
 | --- | --- | --- |
-| 共享 RPC 跨节点 | `TestGroupSharedRPCAcrossProcesses` 启动两个独立 OS 测试进程，Bot/设备连接记录分别只在各自进程；CI 使用真实 Redis，验证两条 RPC 请求/结果、真实 actor、pending 清理、续授权与撤销。 | 客户端收件箱和权限库为 fixture，没有声称是完整浏览器/原生 Connector E2E。 |
+| 共享 RPC 跨节点 | `TestGroupSharedRPCAcrossProcesses` 启动两个独立 OS 测试进程，Bot/设备连接记录分别只在各自进程；CI 使用真实 Redis，验证默认已选和默认留空两种情况的两条 RPC 请求/结果、真实 actor、pending 清理、续授权与撤销。 | 客户端收件箱和权限库为 fixture，没有声称是完整浏览器/原生 Connector E2E。 |
 | 路由与结果来源 | `TestThinToolRPCRelay*` 验证错误来源、错误接收者、重复结果、过期请求和设备不匹配。 | 进程崩溃、网络分区、滚动升级的全部排列尚未验收；Pub/Sub 与内存 pending 不保证结果必达或恰好一次执行。 |
 | SQL 与迁移 | 独立 PostgreSQL 17.10 验证 082、旧 owner 空值、CAS、审批/撤销/删群并发，以及解绑不影响无关申请；CI 的 `group_device_sharing` 任务明确选中这些测试。 | 使用最小历史 schema 与一次性测试 schema，不等于完整生产历史快照升级或 HTTP 多租户隔离验收。 |
 | 授权范围 | API 与 Web 回归验证实际操作预览、确认范围不匹配拒绝和未知范围阻止确认。 | 原生桌面系统操作、所有平台安装与更新没有在 Linux 容器中得到证明。 |

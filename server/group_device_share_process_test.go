@@ -27,12 +27,13 @@ type shareProcessCommand struct {
 }
 
 type shareProcessReply struct {
-	Grant   *ScopedDeviceGrant
-	Wire    *ServerMessage
-	Error   string
-	Remote  bool
-	PID     int
-	Pending bool
+	Grant        *ScopedDeviceGrant
+	Wire         *ServerMessage
+	Error        string
+	Remote       bool
+	PID          int
+	Pending      bool
+	DefaultEmpty bool
 }
 
 // Separate OS processes prevent a local *Client or Go map from hiding a
@@ -142,60 +143,65 @@ func TestGroupSharedRPCAcrossProcesses(t *testing.T) {
 		}
 		return reply
 	}
-	grantReply := call(agentNode, shareProcessCommand{Action: "grant"})
-	if grantReply.Error != "" || grantReply.Grant == nil || !grantReply.Remote {
-		t.Fatal("grant did not target a remote-only client", grantReply.Error)
-	}
-	if grantReply.PID == call(deviceNode, shareProcessCommand{Action: "pid"}).PID {
-		t.Fatal("nodes share an OS process")
-	}
-	grant := grantReply.Grant
-	for _, transport := range []string{"device", "thin"} {
-		t.Run(transport, func(t *testing.T) {
-			id := "shared-process-" + transport
-			dispatched := call(agentNode, shareProcessCommand{Action: "dispatch", Transport: transport, RequestID: id})
-			if dispatched.Error != "" {
-				t.Fatal(dispatched.Error)
-			}
-			forwarded := call(deviceNode, shareProcessCommand{Action: "receive", RequestID: id})
-			if forwarded.Wire == nil {
-				t.Fatal("shared request never reached remote Connector", forwarded.Error)
-			}
-			wire := forwarded.Wire
-			if transport == "device" {
-				if wire.DeviceRPC == nil || wire.DeviceRPC.ActorUserID != "usr8" || wire.DeviceRPC.OwnerUserID != "usr8" || wire.DeviceRPC.ShareID != "" {
-					t.Fatal("remote request did not use owner protocol")
+	for _, mode := range []string{"default", "explicit"} {
+		grantReply := call(agentNode, shareProcessCommand{Action: "grant", Transport: mode})
+		if grantReply.Error != "" || grantReply.Grant == nil || !grantReply.Remote {
+			t.Fatal("grant did not target a remote-only client", grantReply.Error)
+		}
+		if grantReply.PID == call(deviceNode, shareProcessCommand{Action: "pid"}).PID {
+			t.Fatal("nodes share an OS process")
+		}
+		if mode == "explicit" && (!grantReply.DefaultEmpty || grantReply.Grant.TargetScope != "explicit_device") {
+			t.Fatal("explicit grant silently selected a default device")
+		}
+		grant := grantReply.Grant
+		for _, transport := range []string{"device", "thin"} {
+			t.Run(mode+"/"+transport, func(t *testing.T) {
+				id := "shared-process-" + mode + "-" + transport
+				dispatched := call(agentNode, shareProcessCommand{Action: "dispatch", Transport: transport, RequestID: id})
+				if dispatched.Error != "" {
+					t.Fatal(dispatched.Error)
 				}
-			} else if wire.ThinToolRPC == nil || wire.ThinToolRPC.ActorUserID != "usr8" || wire.ThinToolRPC.TargetOwnerUserID != "usr8" || wire.ThinToolRPC.ShareID != "" {
-				t.Fatal("remote thin request did not use owner protocol")
-			}
-			if reply := call(deviceNode, shareProcessCommand{Action: "reply", Wire: *wire}); reply.Error != "" {
-				t.Fatal(reply.Error)
-			}
-			returned := call(agentNode, shareProcessCommand{Action: "receive", RequestID: id})
-			if returned.Wire == nil {
-				t.Fatal("result did not return across nodes", returned.Error)
-			}
-			if transport == "device" {
-				result := returned.Wire.DeviceRPC
-				if result == nil || result.ActorUserID != "usr7" || result.OwnerUserID != "usr8" || result.SessionKey != grant.SessionKey {
-					t.Fatal("result lost actual actor")
+				forwarded := call(deviceNode, shareProcessCommand{Action: "receive", RequestID: id})
+				if forwarded.Wire == nil {
+					t.Fatal("shared request never reached remote Connector", forwarded.Error)
 				}
-			} else {
-				result := returned.Wire.ThinToolRPC
-				if result == nil || result.ActorUserID != "usr7" || result.TargetOwnerUserID != "usr8" || result.SessionKey != grant.SessionKey {
-					t.Fatal("thin result lost actual actor")
+				wire := forwarded.Wire
+				if transport == "device" {
+					if wire.DeviceRPC == nil || wire.DeviceRPC.ActorUserID != "usr8" || wire.DeviceRPC.OwnerUserID != "usr8" || wire.DeviceRPC.ShareID != "" {
+						t.Fatal("remote request did not use owner protocol")
+					}
+				} else if wire.ThinToolRPC == nil || wire.ThinToolRPC.ActorUserID != "usr8" || wire.ThinToolRPC.TargetOwnerUserID != "usr8" || wire.ThinToolRPC.ShareID != "" {
+					t.Fatal("remote thin request did not use owner protocol")
 				}
-			}
-			for _, node := range []string{agentNode, deviceNode} {
-				if reply := call(node, shareProcessCommand{Action: "pending", RequestID: id}); reply.Pending {
-					t.Fatal("completed cross-node request retained pending state")
+				if reply := call(deviceNode, shareProcessCommand{Action: "reply", Wire: *wire}); reply.Error != "" {
+					t.Fatal(reply.Error)
 				}
-			}
-		})
-	}
-	if reply := call(agentNode, shareProcessCommand{Action: "renew"}); reply.Error != "" {
-		t.Fatal("remote grant renewal failed", reply.Error)
+				returned := call(agentNode, shareProcessCommand{Action: "receive", RequestID: id})
+				if returned.Wire == nil {
+					t.Fatal("result did not return across nodes", returned.Error)
+				}
+				if transport == "device" {
+					result := returned.Wire.DeviceRPC
+					if result == nil || result.ActorUserID != "usr7" || result.OwnerUserID != "usr8" || result.SessionKey != grant.SessionKey {
+						t.Fatal("result lost actual actor")
+					}
+				} else {
+					result := returned.Wire.ThinToolRPC
+					if result == nil || result.ActorUserID != "usr7" || result.TargetOwnerUserID != "usr8" || result.SessionKey != grant.SessionKey {
+						t.Fatal("thin result lost actual actor")
+					}
+				}
+				for _, node := range []string{agentNode, deviceNode} {
+					if reply := call(node, shareProcessCommand{Action: "pending", RequestID: id}); reply.Pending {
+						t.Fatal("completed cross-node request retained pending state")
+					}
+				}
+			})
+		}
+		if reply := call(agentNode, shareProcessCommand{Action: "renew"}); reply.Error != "" {
+			t.Fatal("remote grant renewal failed", reply.Error)
+		}
 	}
 	call(agentNode, shareProcessCommand{Action: "revoke"})
 	for _, transport := range []string{"device", "thin"} {
@@ -265,24 +271,38 @@ func TestGroupSharedRPCNodeProcess(t *testing.T) {
 		switch command.Action {
 		case "grant":
 			session := buildCatsCoSessionKey("grp_1", "group", "usr42", 7)
-			if _, err := hub.userDevices.confirmDeviceSelection(7, session, "shared-pc", "test", "", 8); err != nil {
+			preference, err := hub.userDevices.selectionRecord(7, session)
+			if err != nil {
+				reply.Error = err.Error()
+				break
+			}
+			deviceID, source, owner := "shared-pc", "test", int64(8)
+			if command.Transport == "explicit" {
+				deviceID, source, owner = "", deviceSelectionUnspecifiedSource, 7
+			}
+			if _, err := hub.userDevices.confirmDeviceSelection(7, session, deviceID, source, preference.Revision, owner); err != nil {
 				reply.Error = err.Error()
 				break
 			}
 			turn := hub.groupDeviceTurnContext(7, "grp_1", peer, nil, nil, true)
-			if len(turn.Grants) != 1 {
+			grants := turn.Grants
+			if command.Transport == "explicit" {
+				grants = turn.ExplicitGrants
+			}
+			if len(grants) != 1 {
 				reply.Error = "missing shared grant"
 				break
 			}
-			grant = turn.Grants[0]
+			grant = grants[0]
+			reply.DefaultEmpty = turn.Selection != nil && turn.Selection.SelectedDevice == nil && turn.Selection.Status == DeviceSelectionNeedsSelection
 			reply.Grant = &grant
 			route, local := hub.findDeviceRPCTarget(8, UserDevice{DeviceID: "shared-pc"})
 			reply.Remote = local == nil && route.NodeID != "" && route.NodeID != hub.nodeID && hub.routeConnected(route)
 		case "dispatch":
 			if command.Transport == "device" {
-				hub.handleMessage(peer, &ClientMessage{DeviceRPC: &MsgDeviceRPC{Type: "request", RequestID: command.RequestID, GrantID: grant.GrantID, SessionKey: grant.SessionKey, ActorUserID: grant.ActorUserID, DeviceID: grant.DeviceID, Operation: "read_file", ToolName: "read_file"}})
+				hub.handleMessage(peer, &ClientMessage{DeviceRPC: &MsgDeviceRPC{Type: "request", RequestID: command.RequestID, GrantID: grant.GrantID, TargetScope: grant.TargetScope, SessionKey: grant.SessionKey, ActorUserID: grant.ActorUserID, DeviceID: grant.DeviceID, Operation: "read_file", ToolName: "read_file"}})
 			} else {
-				hub.handleMessage(peer, &ClientMessage{ThinToolRPC: &MsgThinToolRPC{Type: "request", RequestID: command.RequestID, GrantID: grant.GrantID, SessionKey: grant.SessionKey, ActorUserID: grant.ActorUserID, TargetOwnerUserID: grant.OwnerUserID, TargetDeviceID: grant.DeviceID, ToolName: "read_file"}})
+				hub.handleMessage(peer, &ClientMessage{ThinToolRPC: &MsgThinToolRPC{Type: "request", RequestID: command.RequestID, GrantID: grant.GrantID, TargetScope: grant.TargetScope, SessionKey: grant.SessionKey, ActorUserID: grant.ActorUserID, TargetOwnerUserID: grant.OwnerUserID, TargetDeviceID: grant.DeviceID, ToolName: "read_file"}})
 			}
 		case "receive":
 			timer := time.NewTimer(time.Second)
