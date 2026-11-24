@@ -38,6 +38,21 @@ Agent 遇到资源密集型任务时，先调用 XiaoBa 的 `local_compute_resou
 
 部署方通过 `CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE` 指定一个绝对路径，启用预览。由平台采集器原子更新该路径的本地普通 JSON 文件。采样对应一组节点规格一致的 Slurm 队列，包含 UTC RFC 3339 `sampled_at`、已配置且可调度的 `nodes`、其中完全空闲的 `idle_nodes`、`logical_cpus_per_node`、`memory_mib_per_node`、可选 `gpus_per_node` 和 `memory_mib_per_gpu`。未知的 GPU 字段留空，已确认没有 GPU 时 `gpus_per_node` 为 0。文件缺失、过期或格式异常时云集群状态为未知。
 
+仓库的 `deploy/collect-slurm-snapshot.py` 可在已配置 Slurm 客户端的 Linux 主机上用 Python 3.8 或更新版本运行。为采集器准备平台配置文件，指定一个分区及预期的同规格节点资源。以下示例对应一组 2 CPU、3663 MiB、无 GPU 的节点。
+
+```json
+{"partition":"batch","logical_cpus_per_node":2,"memory_mib_per_node":3663,"gpus_per_node":0}
+```
+
+```bash
+python3 deploy/collect-slurm-snapshot.py --config /etc/catsco/slurm-preview.json \
+  --output /var/lib/catsco-compute/slurm.json
+```
+
+可用现有定时器每 30 秒运行一次。采集器执行只读 `sinfo`，核对分区和节点规格。启用的分区中，`idle`、`allocated`、`mixed`、`completing` 计入可调度节点，纯 `idle` 计入空闲节点。带状态标志的节点保守排除。已存在的空分区报告零节点。采集失败或遇到混合规格时保留旧文件，旧采样超过两分钟后自然失效。
+
+采集器原子替换快照，文件模式为 `0640`。让采集器可写父目录，并为 Cats 进程配置快照读取权限。两者使用不同用户时，可让父目录以共同可读组设置 setgid，使新文件继承组。容器部署应挂载快照父目录，并将 `CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE` 指向容器内文件路径。省略 `--output` 时输出一份 JSON 到标准输出，供隔离网络中的部署方通过已有受控通道传递。
+
 采集文件可附带同一规格的 `pricing` 对象，字段为 `cny_micros_per_node_period`（一个节点在一个计价周期内的人民币金额，单位为百万分之一元）、`rate_period_s`、`billing_increment_s` 和 RFC 3339 `valid_until`。它是平台发布给用户的费率，应由已核实的成本口径和运营定价生成。费率未发布、过期、无有效周期或格式异常时云端仍显示待报价。节点采样异常时不会试算。Agent 不提供或覆盖费率。
 
 换算沿用云机器账本，1 元 = 100 积分，1 积分 = 1,000,000 账本单位。每分片或每节点的预计计费时长先向上取整到 `billing_increment_s`，再用 `ceil(节点周期价格的账本单位 × 取整后秒数 × 分片数或节点数 ÷ rate_period_s)` 计算。这里计的是按任务分配的节点时间。供应商账单仍按资源实际生命周期核对。冷启动、盘、传输、闲置与固定费用只有纳入发布费率或相应计费时长才会进入这次试算。
