@@ -25,6 +25,7 @@ const (
 	thinToolRPCBotBindingUnknownCode  = "BOT_RUNTIME_BINDING_UNAVAILABLE"
 	thinToolRPCTargetIsServerCode     = "TARGET_IS_SERVER_RUNTIME"
 	thinToolRPCTargetUnavailableCode  = "target_device_unavailable"
+	thinToolRPCBusyCode               = "thin_tool_rpc_busy"
 )
 
 type thinToolRPCAuthorizationError struct {
@@ -79,14 +80,14 @@ func newThinToolRPCRouter(ttl time.Duration) *thinToolRPCRouter {
 	}
 }
 
-func (r *thinToolRPCRouter) add(pending thinToolRPCPending) bool {
+func (r *thinToolRPCRouter) add(pending thinToolRPCPending) *MsgDeviceRPCError {
 	if r == nil || pending.requestID == "" || pending.expiresAt.IsZero() {
-		return false
+		return &MsgDeviceRPCError{Code: "invalid_request", Message: "invalid thin_tool_rpc pending request"}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.pending[pending.requestID]; exists {
-		return false
+		return &MsgDeviceRPCError{Code: "request_id_duplicate", Message: "thin_tool_rpc request_id is already pending"}
 	}
 	now := r.now()
 	requesterCount := 0
@@ -95,7 +96,7 @@ func (r *thinToolRPCRouter) add(pending thinToolRPCPending) bool {
 		if !now.Before(item.expiresAt) {
 			continue
 		}
-		if item.requester == pending.requester {
+		if item.requesterRoute.matches(pending.requesterRoute) {
 			requesterCount++
 		}
 		if item.targetOwnerUID == pending.targetOwnerUID && item.targetDeviceID == pending.targetDeviceID {
@@ -103,13 +104,13 @@ func (r *thinToolRPCRouter) add(pending thinToolRPCPending) bool {
 		}
 	}
 	if requesterCount >= maxThinToolRPCPendingPerRequester {
-		return false
+		return &MsgDeviceRPCError{Code: thinToolRPCBusyCode, Message: "requester has too many pending thin_tool_rpc requests"}
 	}
 	if deviceCount >= maxThinToolRPCPendingPerDevice {
-		return false
+		return &MsgDeviceRPCError{Code: thinToolRPCBusyCode, Message: "target device has too many pending thin_tool_rpc requests"}
 	}
 	r.pending[pending.requestID] = pending
-	return true
+	return nil
 }
 
 // finishMatching claims a pending request only when it is the same logical
@@ -286,9 +287,8 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 		scope.Payload, scope.Result, scope.Error = nil, nil, nil
 		pending.sharingScope = &scope
 	}
-	if !h.thinToolRPC.add(pending) {
-		log.Printf("[thin_tool_rpc] request duplicate: request_id=%s target_owner=%s target_device=%s tool=%s", requestID, formatUID(ownerUID), deviceID, toolName)
-		h.sendThinToolRPCResultToRequester(client, requestID, msg, "request_id_duplicate", "thin_tool_rpc request_id is already pending")
+	if rejection := h.thinToolRPC.add(pending); rejection != nil {
+		h.sendThinToolRPCResultToRequester(client, requestID, msg, rejection.Code, rejection.Message)
 		h.sendThinToolRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{"request_id": requestID})
 		return
 	}

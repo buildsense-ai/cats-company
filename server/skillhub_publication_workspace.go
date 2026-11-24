@@ -226,7 +226,7 @@ func (h *Hub) handlePublicationWorkspaceRequest(client *Client, msg *MsgThinTool
 		targetOwnerUID: client.uid, targetDeviceID: source.DeviceID, toolName: string(DeviceCapabilitySkillHubPublicationProbe),
 		createdAt: now, expiresAt: expires, publication: &publicationWorkspaceProbe{input: input, role: role},
 	}
-	if !h.thinToolRPC.add(pending) {
+	if h.thinToolRPC.add(pending) != nil {
 		fail("publication.busy")
 		return
 	}

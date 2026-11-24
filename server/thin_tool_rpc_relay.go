@@ -27,8 +27,15 @@ func (h *Hub) receiveThinToolRPCFromRuntime(route runtimeRoute, msg *MsgThinTool
 			return false
 		}
 		pending := thinToolRPCPending{requestID: msg.RequestID, requesterRoute: relay.RequesterRoute, targetRoute: route, targetOwnerUID: relay.TargetOwnerUID, targetDeviceID: relay.TargetDeviceID, toolName: relay.ToolName, createdAt: relay.CreatedAt, expiresAt: relay.ExpiresAt}
-		if !h.thinToolRPC.add(pending) {
-			return false
+		if rejection := h.thinToolRPC.add(pending); rejection != nil {
+			if rejection.Code != thinToolRPCBusyCode || h.sharedRuntime == nil {
+				return false
+			}
+			// Redis Publish only confirms the envelope reached Redis. Return a
+			// busy result so the origin can immediately finish this request.
+			result := &MsgThinToolRPC{Type: thinToolRPCTypeResult, RequestID: msg.RequestID, Error: rejection}
+			proof := &thinToolRPCRelay{ResultSource: route, CreatedAt: pending.createdAt, ExpiresAt: pending.expiresAt}
+			return h.sharedRuntime.deliverThinToolRPC(pending.requesterRoute, result, nowForRoute(h), proof)
 		}
 		if !h.sendThinToolRPCToLocalRoute(route, msg) {
 			h.thinToolRPC.finishMatching(pending)
@@ -43,6 +50,11 @@ func (h *Hub) receiveThinToolRPCFromRuntime(route runtimeRoute, msg *MsgThinTool
 	// The device node authenticated the Connector and its exact connection.
 	// Independently bind that proof to the original pending request here.
 	if !ok || !pending.requesterRoute.matches(route) || !pending.targetRoute.matches(relay.ResultSource) {
+		return false
+	}
+	// Admission failures carry the original request's timing so a delayed
+	// rejection cannot consume a reused request ID on the same connections.
+	if !relay.CreatedAt.IsZero() && (!pending.createdAt.Equal(relay.CreatedAt) || !pending.expiresAt.Equal(relay.ExpiresAt)) {
 		return false
 	}
 	pending, ok = h.thinToolRPC.finishMatching(pending)

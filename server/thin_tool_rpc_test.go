@@ -51,7 +51,7 @@ func TestThinToolRPCRejectsWrongDeviceResultWithoutConsumingPending(t *testing.T
 	hub.addClient(wrong)
 
 	expiresAt := time.Now().Add(time.Minute)
-	if !hub.thinToolRPC.add(thinToolRPCPending{
+	if hub.thinToolRPC.add(thinToolRPCPending{
 		requestID:      "thin-1",
 		requester:      agent,
 		requesterRoute: hub.clientRoute(agent),
@@ -61,7 +61,7 @@ func TestThinToolRPCRejectsWrongDeviceResultWithoutConsumingPending(t *testing.T
 		toolName:       "glob",
 		createdAt:      time.Now(),
 		expiresAt:      expiresAt,
-	}) {
+	}) != nil {
 		t.Fatal("failed to add thin tool rpc pending request")
 	}
 
@@ -125,7 +125,7 @@ func TestThinToolRPCFinishMatchingDoesNotClaimReusedRequestID(t *testing.T) {
 		createdAt:      now,
 		expiresAt:      now.Add(30 * time.Second),
 	}
-	if !router.add(oldPending) {
+	if router.add(oldPending) != nil {
 		t.Fatal("failed to add old pending request")
 	}
 	if cancelled := router.cancelByRequesterRoute(oldPending.requesterRoute); len(cancelled) != 1 {
@@ -135,7 +135,7 @@ func TestThinToolRPCFinishMatchingDoesNotClaimReusedRequestID(t *testing.T) {
 	newPending.requester = newRequester
 	newPending.requesterRoute = runtimeRoute{NodeID: "node-a", ConnectionID: newRequester.connectionID, ExpiresAt: now.Add(time.Minute)}
 	newPending.createdAt = now.Add(time.Nanosecond)
-	if !router.add(newPending) {
+	if router.add(newPending) != nil {
 		t.Fatal("failed to reuse request ID after cancellation")
 	}
 	if _, ok := router.finishMatching(oldPending); ok {
@@ -211,7 +211,7 @@ func TestThinToolRPCRequesterDisconnectReleasesPendingCapacity(t *testing.T) {
 	requesterRoute := hub.clientRoute(requester)
 	targetRoute := hub.clientRoute(target)
 	for i := 0; i < maxThinToolRPCPendingPerDevice; i++ {
-		if !hub.thinToolRPC.add(thinToolRPCPending{
+		if hub.thinToolRPC.add(thinToolRPCPending{
 			requestID:      fmt.Sprintf("device-pending-%d", i),
 			requester:      requester,
 			requesterRoute: requesterRoute,
@@ -220,7 +220,7 @@ func TestThinToolRPCRequesterDisconnectReleasesPendingCapacity(t *testing.T) {
 			targetDeviceID: "alice-laptop",
 			createdAt:      now,
 			expiresAt:      now.Add(time.Minute),
-		}) {
+		}) != nil {
 			t.Fatalf("failed to add pending request %d", i)
 		}
 	}
@@ -233,7 +233,7 @@ func TestThinToolRPCRequesterDisconnectReleasesPendingCapacity(t *testing.T) {
 		targetDeviceID: "alice-laptop",
 		createdAt:      now,
 		expiresAt:      now.Add(time.Minute),
-	}) {
+	}) == nil {
 		t.Fatal("request over device limit was accepted")
 	}
 
@@ -248,7 +248,7 @@ func TestThinToolRPCRequesterDisconnectReleasesPendingCapacity(t *testing.T) {
 		return true
 	}, "requester unregister should clear all same-device pending requests")
 
-	if !hub.thinToolRPC.add(thinToolRPCPending{
+	if hub.thinToolRPC.add(thinToolRPCPending{
 		requestID:      "after-requester-disconnect",
 		requester:      otherRequester,
 		requesterRoute: hub.clientRoute(otherRequester),
@@ -257,7 +257,7 @@ func TestThinToolRPCRequesterDisconnectReleasesPendingCapacity(t *testing.T) {
 		targetDeviceID: "alice-laptop",
 		createdAt:      now,
 		expiresAt:      now.Add(time.Minute),
-	}) {
+	}) != nil {
 		t.Fatal("requester unregister did not release same-device pending capacity")
 	}
 }
@@ -300,7 +300,7 @@ func TestThinToolRPCTargetReplacementCancelsOnlyOldRouteAndNotifiesRequester(t *
 			expiresAt:      now.Add(time.Minute),
 		},
 	} {
-		if !hub.thinToolRPC.add(pending) {
+		if hub.thinToolRPC.add(pending) != nil {
 			t.Fatalf("failed to add pending request %q", pending.requestID)
 		}
 	}

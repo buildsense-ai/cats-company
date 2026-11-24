@@ -203,6 +203,32 @@ func TestGroupSharedRPCAcrossProcesses(t *testing.T) {
 			t.Fatal("remote grant renewal failed", reply.Error)
 		}
 	}
+	t.Run("thin_device_busy", func(t *testing.T) {
+		t.Cleanup(func() {
+			call(deviceNode, shareProcessCommand{Action: "clear_thin_device_quota"})
+		})
+		if reply := call(deviceNode, shareProcessCommand{Action: "fill_thin_device_quota"}); reply.Error != "" {
+			t.Fatal(reply.Error)
+		}
+		const id = "shared-process-thin-device-busy"
+		call(agentNode, shareProcessCommand{Action: "dispatch", Transport: "thin", RequestID: id})
+		returned := call(agentNode, shareProcessCommand{Action: "receive", RequestID: id})
+		if returned.Wire == nil || returned.Wire.ThinToolRPC == nil {
+			t.Fatal("no overload result returned to the Bot", returned.Error)
+		}
+		result := returned.Wire.ThinToolRPC
+		if result.Error == nil || result.Error.Code != thinToolRPCBusyCode || result.ActorUserID != "usr7" {
+			t.Fatalf("unexpected overload result: %+v", result)
+		}
+		if reply := call(deviceNode, shareProcessCommand{Action: "receive", RequestID: id}); reply.Wire != nil {
+			t.Fatal("rejected overload request reached the Connector")
+		}
+		for _, node := range []string{agentNode, deviceNode} {
+			if reply := call(node, shareProcessCommand{Action: "pending", RequestID: id}); reply.Pending {
+				t.Fatal("rejected overload request retained pending state")
+			}
+		}
+	})
 	call(agentNode, shareProcessCommand{Action: "revoke"})
 	for _, transport := range []string{"device", "thin"} {
 		id := "revoked-process-" + transport
@@ -260,6 +286,7 @@ func TestGroupSharedRPCNodeProcess(t *testing.T) {
 		return err == nil && counts[state.nodeInboxChannel(hub.nodeID)] > 0
 	}, "node Redis inbox subscribed")
 	var grant ScopedDeviceGrant
+	quotaFixtureRoute := runtimeRoute{NodeID: "other-origin", ConnectionID: "quota-fixture"}
 	stop := make(chan struct{})
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var command shareProcessCommand
@@ -344,6 +371,23 @@ func TestGroupSharedRPCNodeProcess(t *testing.T) {
 		case "revoke":
 			db.share.Status = "revoked"
 			db.share.Revision++
+		case "fill_thin_device_quota":
+			now := time.Now()
+			for i := 0; i < maxThinToolRPCPendingPerDevice; i++ {
+				// Model work already admitted from another Bot connection.
+				id := fmt.Sprintf("device-already-pending-%d", i)
+				pending := thinToolRPCPending{
+					requestID: id, requesterRoute: quotaFixtureRoute,
+					targetRoute: hub.clientRoute(peer), targetOwnerUID: 8, targetDeviceID: "shared-pc",
+					toolName: "read_file", createdAt: now, expiresAt: now.Add(time.Minute),
+				}
+				if rejection := hub.thinToolRPC.add(pending); rejection != nil {
+					reply.Error = rejection.Message
+					break
+				}
+			}
+		case "clear_thin_device_quota":
+			hub.thinToolRPC.cancelByRequesterRoute(quotaFixtureRoute)
 		case "pending":
 			_, devicePending := hub.deviceRPC.get(command.RequestID)
 			_, thinPending := hub.thinToolRPC.get(command.RequestID)
