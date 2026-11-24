@@ -19,6 +19,9 @@ createGatewayAnnotationHost(...)              <script src="/catsco-annotations.j
                           ◀── target.v1 ───   用户完成一次选择（id/kind/label/target）
                           ◀── page.v1 ─────   SPA 导航 / revision 变化
   composer 添加评论 body → normalizeGatewayAnnotations → 消息 metadata.gateway_annotations
+
+  host.reply(reply)         ── reply.v1 ─────▶   SDK 高亮 agent 指向的目标（element_id/selector/region）
+                          ◀── reply-ack.v1 ──  目标是否解析成功（resolved/target-unresolved）
 ```
 
 两个互不混淆的 contract：
@@ -45,7 +48,9 @@ import {
 ### normalizeGatewayAnnotationSelection(value)
 
 单条标注/选择的 schema 门（SDK→host 的 `selection` 即此形状）。规则与
-`server/gateway_annotations.go` 对齐：
+`server/gateway_annotations.go` 对齐；第三方集成可用的机器校验版本见
+[schema/catsco.gateway-annotations.v1.json](schema/catsco.gateway-annotations.v1.json)
+（JSON Schema 2020-12，近似表达——16KiB 总量与控制字符规则仍以 normalizer 为准）：
 
 - 严格键集合；未知键/`__proto__` 类污染键 → `null`。
 - `id` 必填，≤128 字符，无控制字符；`kind` ∈ `element|text|region`；`label` ≤256 字符（可空）。
@@ -142,6 +147,24 @@ host.proposeCompose('直接传字符串也可以');
 - 失败原因（`agent_forbidden` / `not_logged_in` / `open_failed` / `send_failed`）原样回给应用，宿主同时给出用户可见提示。
 - 消息带来源标记 `metadata: { app_id, agent_uid }`，供后续回溯「这条是哪个应用注入的」。
 - 宿主 handle 上也暴露 `host.compose(text)` 供程序化调用。
+
+## 4.2 agent 反向批注（reply.v1）
+
+标注是「用户在应用里指出 → agent 处理」；reply 是反方向：「agent 在应用页面上指出 → 用户看到」。
+agent 在回复消息里附加 `metadata.gateway_annotation_reply`（contract `catsco.gateway-annotation-reply.v1`）：
+
+```json
+{
+  "contract_version": "catsco.gateway-annotation-reply.v1",
+  "app_id": "board",
+  "target": { "element_id": "submit-btn" },
+  "note": "改这里"
+}
+```
+
+- `target`：`element_id`（优先 `document.getElementById` 精确匹配 → `data-catsco-annotation-id` 精确比对）或 `selector`，两者都解析失败时回退 `rect` + `coordinate_space:'viewport'` 区域；`note` ≤256。
+- 客户端 `normalizeGatewayAnnotationReply` 与 schema 门同源（strict keys、控制字符、几何边界）。webapp 在消息接收路径转发给 `host.reply()`；`app_id` 必须与当前绑定一致，且要求握手 ready——帧还没起来时收到的是过期视觉提示，直接丢弃不重放。
+- SDK 渲染被动高亮（`.catsco-annotation-reply`，天蓝色区别于用户标注的靛蓝 + 可选 note 气泡），`pointer-events:none`、30s 自灭、最多并存 4 个；导航/revision/重连/dispose 一律清空。SDK 回 `reply-ack.v1`（`resolved` + `reason`），宿主透传给 `onReplyAck` 供调用方观察。
 
 ## 5. 测试
 

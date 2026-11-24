@@ -3,13 +3,17 @@ import {
   ARTIFACT_COMPOSE_ACK_TYPE,
   ARTIFACT_COMPOSE_TYPE,
   GATEWAY_ANNOTATION_BRIDGE_CONTRACT,
+  GATEWAY_ANNOTATION_REPLY_CONTRACT,
   GATEWAY_ANNOTATIONS_CONTRACT,
   GATEWAY_HOST_CONNECT_TYPE,
+  GATEWAY_HOST_REPLY_TYPE,
   GATEWAY_SDK_PAGE_TYPE,
   GATEWAY_SDK_READY_TYPE,
+  GATEWAY_SDK_REPLY_ACK_TYPE,
   GATEWAY_SDK_TARGET_TYPE,
   createGatewayAnnotationHost,
   normalizeArtifactCompose,
+  normalizeGatewayAnnotationReply,
   normalizeGatewayAnnotationSelection,
   normalizeGatewayAnnotations,
   normalizeGatewayScreenshotResult,
@@ -378,6 +382,121 @@ describe('host screenshot request guards', () => {
     await expect(f.host.captureScreenshot({ selectionId: 'other', page: { path: '/board', revision: 'r1' } })).rejects.toThrow('stale-selection');
     await expect(f.host.captureScreenshot({ selectionId: 'sel-1', page: { path: '/board', revision: 'r9' } })).rejects.toThrow('stale-selection');
     f.host.dispose();
+  });
+});
+
+describe('agent point-back channel (reply.v1)', () => {
+  function readyReplyHost(callbacks = {}) {
+    const bus = setup({ callbacks });
+    bus.host.connect();
+    const connect = bus.h.connectMessage();
+    bus.h.handleWindowMessage({
+      data: {
+        type: GATEWAY_SDK_READY_TYPE, contract_version: BRIDGE,
+        session_id: connect.session_id, request_id: connect.request_id,
+        capabilities: ['element', 'text', 'region'], page: { path: '/board' },
+      },
+      origin: bus.h.origin, source: bus.h.contentWindow,
+    });
+    return { bus, connect };
+  }
+
+  it('posts a normalized reply to the bound frame with a fresh request id', () => {
+    const { bus, connect } = readyReplyHost();
+    const sent = bus.host.reply({
+      contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT,
+      app_id: 'board',
+      target: { element_id: 'submit-btn' },
+      note: '改这里',
+    });
+    expect(sent).toBe(true);
+    const reply = bus.h.posted.find((p) => p.message.type === GATEWAY_HOST_REPLY_TYPE);
+    expect(reply).toBeTruthy();
+    expect(reply.message.session_id).toBe(connect.session_id);
+    expect(reply.message.request_id).toBeTruthy();
+    expect(reply.message.target).toEqual({ element_id: 'submit-btn' });
+    expect(reply.message.note).toBe('改这里');
+    expect(bus.h.allPostedToExactOrigin()).toBe(true);
+  });
+
+  it('refuses malformed replies, replies for another app, and replies before ready', () => {
+    const { bus } = readyReplyHost();
+    expect(bus.host.reply({ contract_version: 'v9', app_id: 'board', target: { element_id: 'x' } })).toBe(false);
+    expect(bus.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'other-app', target: { element_id: 'x' } })).toBe(false);
+    expect(bus.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'board', target: {} })).toBe(false);
+    expect(bus.host.reply(null)).toBe(false);
+    expect(bus.h.posted.every((p) => p.message.type !== GATEWAY_HOST_REPLY_TYPE)).toBe(true);
+
+    const disconnected = setup();
+    expect(disconnected.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'board', target: { element_id: 'x' } })).toBe(false);
+  });
+
+  it('routes the SDK reply ack to onReplyAck', () => {
+    const onReplyAck = vi.fn();
+    const { bus } = readyReplyHost({ onReplyAck });
+    bus.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'board', target: { element_id: 'x' } });
+    const reply = bus.h.posted.find((p) => p.message.type === GATEWAY_HOST_REPLY_TYPE);
+    bus.h.handleWindowMessage({
+      data: {
+        type: GATEWAY_SDK_REPLY_ACK_TYPE, contract_version: BRIDGE,
+        session_id: bus.h.connectMessage().session_id, request_id: reply.message.request_id,
+        resolved: false, reason: 'target-unresolved',
+      },
+      origin: bus.h.origin, source: bus.h.contentWindow,
+    });
+    expect(onReplyAck).toHaveBeenCalledWith({
+      request_id: reply.message.request_id, resolved: false, reason: 'target-unresolved',
+    });
+  });
+
+  it('drops reply acks from a stale session', () => {
+    const onReplyAck = vi.fn();
+    const { bus } = readyReplyHost({ onReplyAck });
+    bus.h.handleWindowMessage({
+      data: {
+        type: GATEWAY_SDK_REPLY_ACK_TYPE, contract_version: BRIDGE,
+        session_id: 'catsco_stale', request_id: 'r', resolved: true,
+      },
+      origin: bus.h.origin, source: bus.h.contentWindow,
+    });
+    expect(onReplyAck).not.toHaveBeenCalled();
+  });
+});
+
+describe('normalizeGatewayAnnotationReply', () => {
+  const reply = (overrides = {}) => ({
+    contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT,
+    app_id: 'board',
+    target: { element_id: 'submit-btn' },
+    ...overrides,
+  });
+
+  it('accepts element_id / selector / region targets and optional notes', () => {
+    expect(normalizeGatewayAnnotationReply(reply())).toEqual(reply());
+    expect(normalizeGatewayAnnotationReply(reply({ target: { selector: '#a > button' } })))
+      .toEqual(reply({ target: { selector: '#a > button' } }));
+    const region = reply({
+      target: { rect: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 }, coordinate_space: 'viewport' },
+      note: '这里',
+    });
+    expect(normalizeGatewayAnnotationReply(region)).toEqual(region);
+  });
+
+  it('rejects bad contracts, bad app ids, anchor-less targets and unknown keys', () => {
+    expect(normalizeGatewayAnnotationReply(null)).toBeNull();
+    expect(normalizeGatewayAnnotationReply(reply({ contract_version: 'v9' }))).toBeNull();
+    expect(normalizeGatewayAnnotationReply(reply({ app_id: 'BAD' }))).toBeNull();
+    expect(normalizeGatewayAnnotationReply(reply({ target: {} }))).toBeNull();
+    expect(normalizeGatewayAnnotationReply(reply({ extra: 1 }))).toBeNull();
+    expect(normalizeGatewayAnnotationReply(reply({ target: { element_id: 'x', css: 'x' } }))).toBeNull();
+    expect(normalizeGatewayAnnotationReply(reply({
+      target: { rect: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 } },
+    }))).toBeNull(); // rect without coordinate_space
+    expect(normalizeGatewayAnnotationReply(reply({
+      target: { rect: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 }, coordinate_space: 'page' },
+    }))).toBeNull();
+    expect(normalizeGatewayAnnotationReply(reply({ note: 'n'.repeat(257) }))).toBeNull();
+    expect(normalizeGatewayAnnotationReply(reply({ target: { selector: 'a\nb' } }))).toBeNull();
   });
 });
 

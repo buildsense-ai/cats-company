@@ -600,6 +600,84 @@ describe('multi-instance history dispatcher (P2-1)', () => {
   });
 });
 
+describe('agent point-back replies (reply.v1)', () => {
+  function sendReply(payload, sessionId = 'catsco_session_1') {
+    window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://host.catsco.example',
+      source: currentFakeParent,
+      data: {
+        type: TYPES.reply,
+        contract_version: BRIDGE,
+        session_id: sessionId,
+        request_id: payload.request_id ?? 'reply-1',
+        target: payload.target,
+        note: payload.note,
+      },
+    }));
+  }
+
+  function replyAcks(posted) {
+    return posted.map((p) => p.message).filter((m) => m.type === TYPES.replyAck);
+  }
+
+  it('resolves an element_id and draws a passive highlight plus note', () => {
+    const { posted } = createSdk();
+    connect();
+    const button = document.createElement('button');
+    // A unique id is required: earlier tests leave their fixtures in the
+    // shared jsdom body and getElementById would resolve a stale node.
+    button.id = 'reply-target-btn';
+    document.body.appendChild(button);
+    vi.spyOn(button, 'getBoundingClientRect').mockReturnValue({ left: 40, top: 60, width: 120, height: 30 });
+
+    sendReply({ target: { element_id: 'reply-target-btn' }, note: '改这里' });
+
+    const box = document.querySelector('.catsco-annotation-reply');
+    expect(box).not.toBeNull();
+    expect(box.style.left).toBe('40px');
+    expect(box.style.width).toBe('120px');
+    const note = document.querySelector('.catsco-annotation-reply-note');
+    expect(note?.textContent).toBe('改这里');
+    const ack = replyAcks(posted).pop();
+    expect(ack).toMatchObject({ resolved: true, request_id: 'reply-1' });
+  });
+
+  it('falls back to a viewport region when element anchors miss, and acks unresolved honestly', () => {
+    const { posted } = createSdk();
+    connect();
+
+    sendReply({
+      target: { selector: '#missing', rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.1 }, coordinate_space: 'viewport' },
+    });
+    const box = document.querySelector('.catsco-annotation-reply');
+    expect(box).not.toBeNull();
+    expect(box.style.left).toBe('100px'); // 0.1 × innerWidth 1000
+    expect(replyAcks(posted).pop()).toMatchObject({ resolved: true });
+
+    sendReply({ request_id: 'reply-miss', target: { selector: '#never-there' } });
+    expect(replyAcks(posted).pop()).toMatchObject({ resolved: false, reason: 'target-unresolved' });
+    expect(document.querySelectorAll('.catsco-annotation-reply')).toHaveLength(1);
+  });
+
+  it('ignores replies for other sessions and clears overlays on navigation', () => {
+    const { posted } = createSdk();
+    connect();
+    const el = document.createElement('div');
+    el.id = 'reply-nav-target';
+    document.body.appendChild(el);
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({ left: 5, top: 5, width: 50, height: 20 });
+
+    sendReply({ target: { element_id: 'reply-nav-target' } }, 'catsco_wrong_session');
+    expect(document.querySelector('.catsco-annotation-reply')).toBeNull();
+    expect(replyAcks(posted)).toHaveLength(0);
+
+    sendReply({ target: { element_id: 'reply-nav-target' } });
+    expect(document.querySelector('.catsco-annotation-reply')).not.toBeNull();
+    history.pushState({}, '', '/moved');
+    expect(document.querySelector('.catsco-annotation-reply')).toBeNull();
+  });
+});
+
 describe('selector anchor correctness', () => {
   function elementTargetOf(posted) {
     const targets = targetMessages(posted);

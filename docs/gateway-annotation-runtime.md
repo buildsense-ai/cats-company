@@ -85,6 +85,10 @@ host.setMode('select');
 - scroll、resize、page/revision/session 变化、off、Escape 或 dispose 作废选区及在途截图；即使已捕获，滚动和尺寸变化也通知宿主撤销旧目标。
 - 图片结果经父页面上传并用 `image` content blocks 发送；不进入 annotation metadata、草稿 storage 或 SDK 的聊天请求。
 
+## agent 反向高亮（reply.v1）
+
+`reply.v1` 是宿主→帧的单向消息（同 bridge contract + session），SDK 解析 `element_id`（`getElementById` 精确 → `data-catsco-annotation-id` 属性逐值比对）或 `selector`，都失败时回退 viewport 归一化 `rect`，绘制 `.catsco-annotation-reply` 被动高亮与可选 note 气泡。`pointer-events:none`、不读应用输入、30s 自灭、最多并存 4 个、同一 `request_id` 覆盖。SDK 回 `reply-ack.v1`（`resolved`/`reason`），导航、实际 revision 变化、新 connect、`pagehide`、dispose 一律清空。详见 [gateway-annotation-sdk.md](gateway-annotation-sdk.md) 4.2。
+
 ## 文档 / session 防御
 
 保留 element/text/region 捕获、敏感 subtree fail-closed、exact source/origin、revision/page 上报、session mode 控制等既有功能。

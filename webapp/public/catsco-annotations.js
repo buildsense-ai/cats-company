@@ -35,7 +35,12 @@
   var TYPE_SCREENSHOT_CANCEL = 'catsco.gateway.annotation.screenshot.cancel.v1';
   var TYPE_COMPOSE = 'catsco.artifact.compose.v1';
   var TYPE_COMPOSE_ACK = 'catsco.artifact.compose.ack.v1';
+  var TYPE_REPLY = 'catsco.gateway.annotation.reply.v1';
+  var TYPE_REPLY_ACK = 'catsco.gateway.annotation.reply-ack.v1';
   var COMPOSE_CONTRACT = BRIDGE_CONTRACT;  // envelope must satisfy the host's session check
+
+  var MAX_REPLIES = 4;
+  var REPLY_TTL_MS = 30000;
 
   var CAPABILITIES = ['element', 'text', 'region'];
   var MAX_ID_CHARS = 128;
@@ -763,6 +768,12 @@
       '.catsco-annotation-badge{position:fixed;top:8px;left:50%;transform:translateX(-50%);',
       'padding:4px 12px;border-radius:999px;background:#312e81;color:#fff;font:12px/1.6 sans-serif;',
       'z-index:2147483647;pointer-events:none;}',
+      '.catsco-annotation-reply{position:fixed;pointer-events:none;border:2px solid #0ea5e9;',
+      'background:rgba(14,165,233,0.12);border-radius:3px;z-index:2147483646;',
+      'box-shadow:0 0 0 1px rgba(14,165,233,0.35);}',
+      '.catsco-annotation-reply-note{position:fixed;pointer-events:none;max-width:280px;',
+      'padding:4px 10px;border-radius:6px;background:#0c4a6e;color:#fff;',
+      'font:12px/1.5 sans-serif;z-index:2147483646;white-space:pre-wrap;}',
     ].join('');
     (document.head || document.documentElement).appendChild(style);
     return style;
@@ -840,6 +851,7 @@
       rendering: false,
       documentEpoch: 0,
       composeRequests: new Map(),
+      replyOverlays: new Map(), // request_id -> {box, note, timer}
     };
 
     function post(message) {
@@ -1437,8 +1449,115 @@
       // page. A stale selection must not be submitted with a newer revision.
       teardownOverlay();
       clearSelection();
+      // Point-backs were anchored against the previous document; they are
+      // meaningless on a new page.
+      clearReplies();
       if (state.mode !== 'off') activeOverlay().setBadge(modeHints[state.mode] || '');
       sendPageChanged();
+    }
+
+    // ---- Agent point-back (reply.v1) ----
+    // The agent names a target captured earlier (element_id / selector) or
+    // a viewport region; the SDK resolves it inside the app DOM and draws a
+    // passive highlight the user can see. Reply overlays never intercept
+    // input and expire on their own.
+    function dropReply(requestId) {
+      var entry = state.replyOverlays.get(requestId);
+      if (!entry) return;
+      state.replyOverlays.delete(requestId);
+      if (entry.timer) clearTimeout(entry.timer);
+      if (entry.box) entry.box.remove();
+      if (entry.note) entry.note.remove();
+    }
+
+    function clearReplies() {
+      Array.from(state.replyOverlays.keys()).forEach(dropReply);
+    }
+
+    // Locate the element for element_id / selector. element_id is resolved
+    // by exact attribute or DOM id match (querySelectorAll would need CSS
+    // escaping for arbitrary id bytes; an exact-compare scan cannot be
+    // tricked into matching another element).
+    function resolveReplyElement(target) {
+      if (target.element_id) {
+        var byId = document.getElementById(target.element_id);
+        if (byId) return byId;
+        var marked = document.querySelectorAll('[data-catsco-annotation-id]');
+        for (var i = 0; i < marked.length; i++) {
+          if (marked[i].getAttribute('data-catsco-annotation-id') === target.element_id) return marked[i];
+        }
+      }
+      if (target.selector) {
+        try {
+          var found = document.querySelector(target.selector);
+          if (found) return found;
+        } catch (error) {
+          return null;
+        }
+      }
+      return null;
+    }
+
+    function replyTargetRect(target) {
+      var element = resolveReplyElement(target);
+      if (element && typeof element.getBoundingClientRect === 'function') {
+        var rect = element.getBoundingClientRect();
+        if (rect && rect.width > 0 && rect.height > 0) {
+          return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+        }
+      }
+      // Fall back to the viewport-normalized region the agent supplied.
+      if (target.rect && target.coordinate_space === 'viewport') {
+        return {
+          left: target.rect.x * window.innerWidth,
+          top: target.rect.y * window.innerHeight,
+          width: target.rect.width * window.innerWidth,
+          height: target.rect.height * window.innerHeight,
+        };
+      }
+      return null;
+    }
+
+    function onReply(payload) {
+      var requestId = typeof payload.request_id === 'string' ? payload.request_id : '';
+      var target = isPlainObject(payload.target) ? payload.target : null;
+      var rect = target ? replyTargetRect(target) : null;
+      post({
+        type: TYPE_REPLY_ACK,
+        contract_version: BRIDGE_CONTRACT,
+        session_id: state.session,
+        request_id: requestId,
+        resolved: Boolean(rect),
+        reason: rect ? '' : 'target-unresolved',
+      });
+      if (!rect || !requestId) return;
+
+      dropReply(requestId);
+      if (state.replyOverlays.size >= MAX_REPLIES) {
+        dropReply(state.replyOverlays.keys().next().value);
+      }
+      ensureStyleContainer();
+      var box = document.createElement('div');
+      box.className = 'catsco-annotation-reply';
+      box.style.left = rect.left + 'px';
+      box.style.top = rect.top + 'px';
+      box.style.width = rect.width + 'px';
+      box.style.height = rect.height + 'px';
+      var note = null;
+      var noteText = clippedSnippet(payload.note, MAX_LABEL_CHARS);
+      if (noteText) {
+        note = document.createElement('div');
+        note.className = 'catsco-annotation-reply-note';
+        note.textContent = noteText;
+        var noteTop = rect.top - 34;
+        if (noteTop < 4) noteTop = rect.top + rect.height + 6;
+        note.style.left = Math.max(4, rect.left) + 'px';
+        note.style.top = noteTop + 'px';
+      }
+      document.body.appendChild(box);
+      if (note) document.body.appendChild(note);
+      var timer = setTimeout(function () { dropReply(requestId); }, REPLY_TTL_MS);
+      state.replyOverlays.set(requestId, { box: box, note: note, timer: timer });
     }
 
     function onMessage(event) {
@@ -1466,6 +1585,7 @@
           // send mode from its ready callback, which must not be overwritten.
           handleMode('off');
           clearSelection();
+          clearReplies();
         }
         state.session = payload.session_id;
         state.connectRequestId = payload.request_id;
@@ -1483,12 +1603,14 @@
           handleMode(payload.mode);
         }
       }
+      if (payload.type === TYPE_REPLY) { onReply(payload); return; }
     }
 
     function onPageHide() {
       invalidateScreenshot();
       handleMode('off');
       clearSelection();
+      clearReplies();
       state.session = null;
       state.connectRequestId = null;
     }
@@ -1558,6 +1680,7 @@
         document.documentElement.classList.remove('catsco-annotation-select-surface');
         teardownOverlay();
         clearSelection();
+        clearReplies();
         document.removeEventListener('pointerdown', onPointerControl, true);
         document.removeEventListener('pointermove', onPointerControl, true);
         document.removeEventListener('pointerup', onPointerControl, true);
@@ -1648,6 +1771,8 @@
       screenshotCancel: TYPE_SCREENSHOT_CANCEL,
       compose: TYPE_COMPOSE,
       composeAck: TYPE_COMPOSE_ACK,
+      reply: TYPE_REPLY,
+      replyAck: TYPE_REPLY_ACK,
     },
   };
   bootstrapAttribute(originsAttribute);
