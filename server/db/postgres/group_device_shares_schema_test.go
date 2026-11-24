@@ -9,7 +9,7 @@ import (
 )
 
 func TestGroupDeviceSharingMigrationMatchesRuntimeSchema(t *testing.T) {
-	migration, err := os.ReadFile("../migrations/postgres/000082_group_device_sharing.up.sql")
+	migration, err := os.ReadFile("../migrations/postgres/000083_group_device_sharing.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
