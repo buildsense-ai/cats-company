@@ -13,6 +13,8 @@ export function validIntro(c) {
     && strings(c.tags, 5, 40) && strings(c.steps, 6, 400) && strings(c.requirements, 8, 300) && strings(c.limitations, 8, 300)
     && (c.details === undefined || plain(c.details, 8000))
     && (c.scenarios === undefined || (Array.isArray(c.scenarios) && c.scenarios.length <= 3 && c.scenarios.every((s) => s && plain(s.title, 80) && plain(s.description, 400))))
+    && (c.usagePrompts === undefined || (Array.isArray(c.usagePrompts) && c.usagePrompts.length <= 6
+      && c.usagePrompts.every((item) => item && plain(item.label, 48) && item.label.trim() && plain(item.prompt, 500) && item.prompt.trim())))
     && (!c.example || (['document', 'image', 'generic'].includes(c.example.kind) && plain(c.example.input, 2000) && plain(c.example.output, 2000)
       && (c.example.copyAsPrompt === undefined || typeof c.example.copyAsPrompt === 'boolean')))
     && (c.images === undefined || (Array.isArray(c.images) && c.images.length <= 6 && c.images.every((i) => i && /^pa_[a-f0-9]{32}$/.test(i.assetId) && plain(i.alt, 240) && i.alt.trim() && (i.caption === undefined || plain(i.caption, 500))))));
@@ -43,10 +45,24 @@ export function IntroImage({ image, preview = false }) {
   </figure>;
 }
 
-export function RichIntroduction({ content, preview = false }) {
+function CopyPrompt({ prompt, label }) {
   const [copyStatus, setCopyStatus] = useState('');
+  return <>
+    <button type='button' className='cc-market-copy-prompt' aria-label={label ? `复制${label}提示词` : undefined} onClick={async () => {
+      setCopyStatus('');
+      try {
+        await navigator.clipboard.writeText(prompt);
+        setCopyStatus('已复制');
+      } catch {
+        setCopyStatus('复制失败，可手动选中上方文字复制。');
+      }
+    }}>复制提示词</button><small role='status'>{copyStatus}</small>
+  </>;
+}
+
+export function RichIntroduction({ content, preview = false }) {
   if (!validIntro(content)) return null;
-  const { example, images = [], scenarios = [], steps = [], requirements = [], limitations = [] } = content;
+  const { example, images = [], scenarios = [], steps = [], requirements = [], limitations = [], usagePrompts = [] } = content;
   const ResultIcon = example?.kind === 'image' ? ImageIcon : FileText;
   return <div className='cc-market-intro'>
     <div className='cc-market-intro-heading'>
@@ -54,19 +70,17 @@ export function RichIntroduction({ content, preview = false }) {
       <h3>{content.summary}</h3>
       {!!content.tags?.length && <div className='cc-market-tags'>{content.tags.map((tag, i) => <span key={i}>{tag}</span>)}</div>}
     </div>
+    {!!usagePrompts.length && <section className='cc-market-prompts' aria-label='可复制的对话提示词'>
+      <h3>可复制的对话提示词</h3>
+      <ul>{usagePrompts.map(({ label, prompt }, index) => <li key={index}>
+        <strong>{label}</strong><p>{prompt}</p><CopyPrompt prompt={prompt} label={label} />
+      </li>)}</ul>
+    </section>}
     {(example || images.length > 0) && <section className='cc-market-example' aria-label='输入与结果示例'>
       <div className='cc-market-section-title'><h3>看懂一个例子</h3><span>示意 / 非实测</span></div>
       {example && <div className={`cc-market-io is-${example.kind}`}>
         <div><MessageSquare size={21} aria-hidden='true' /><small>你提供 / 你对 Bot 说</small><p>{example.input}</p>
-          {example.copyAsPrompt && <><button type='button' className='cc-market-copy-prompt' onClick={async () => {
-            setCopyStatus('');
-            try {
-              await navigator.clipboard.writeText(example.input);
-              setCopyStatus('已复制');
-            } catch {
-              setCopyStatus('复制失败，可手动选中上方文字复制。');
-            }
-          }}>复制提示词</button><small role='status'>{copyStatus}</small></>}
+          {example.copyAsPrompt && <CopyPrompt prompt={example.input} />}
         </div>
         <ArrowRight className='cc-market-arrow' size={22} aria-hidden='true' />
         <div><ResultIcon size={23} aria-hidden='true' /><small>期望得到的结果</small><p>{example.output}</p>

@@ -47,6 +47,10 @@
 .cc-market-edit-entry { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 18px; }
 .cc-market-more { margin-top: 20px; }
 .cc-market-copy-prompt { margin-top: 8px; }
+.cc-market-prompts ul { list-style: none; padding: 0; display: grid; gap: 10px; }
+.cc-market-prompts li { border: 1px solid var(--cc-border); border-radius: 8px; padding: 10px 14px; }
+.cc-market-prompts p { margin: 4px 0; }
+.cc-market-prompts [role=status] { margin-inline-start: 8px; }
 .cc-market-editor { margin: 20px 0; font-size: 13px; overflow-wrap: anywhere; }
 .cc-market-editor > p { line-height: 1.8; }
 .cc-market-editor fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
