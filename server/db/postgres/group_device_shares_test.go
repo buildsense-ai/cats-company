@@ -57,7 +57,7 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 	if _, err = db.db.Exec("INSERT INTO conversation_device_selections VALUES($1,'before-upgrade','old-device','old-revision','legacy',1)", legacyActor); err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile("../migrations/postgres/000082_group_device_sharing.up.sql")
+	migration, err := os.ReadFile("../migrations/postgres/000083_group_device_sharing.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
