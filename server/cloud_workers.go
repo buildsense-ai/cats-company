@@ -38,6 +38,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/openchat/openchat/server/store"
@@ -3232,6 +3233,13 @@ func (h *CloudWorkerHandler) runDeploymentScript(timeout time.Duration, deployme
 	}
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
+	if script == h.renewScript {
+		out, err = retryCloudWorkerRenewSpawn(ctx, out, err, func() ([]byte, error) {
+			retry := exec.CommandContext(ctx, script, args...)
+			retry.Env = env
+			return retry.CombinedOutput()
+		})
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return string(out), fmt.Errorf("script timed out after %s: %w", timeout, ctx.Err())
@@ -3239,6 +3247,23 @@ func (h *CloudWorkerHandler) runDeploymentScript(timeout time.Duration, deployme
 		return string(out), scriptFailureError(string(out), err)
 	}
 	return string(out), nil
+}
+
+// A fork/exec EAGAIN means the script never started. Once it starts, a
+// failure or timeout may follow a successful provider charge.
+func retryCloudWorkerRenewSpawn(ctx context.Context, out []byte, err error, retry func() ([]byte, error)) ([]byte, error) {
+	var startErr *os.PathError
+	if !errors.As(err, &startErr) || startErr.Op != "fork/exec" || !errors.Is(startErr, syscall.EAGAIN) {
+		return out, err
+	}
+	timer := time.NewTimer(250 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return out, err
+	case <-timer.C:
+		return retry()
+	}
 }
 
 // scriptFailureError turns a bare "exit status 1" into something an operator can
