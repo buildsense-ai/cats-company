@@ -1,4 +1,4 @@
-import type { CatsBotConfig, BotEventMap, MsgServerData, MsgDeviceRPC, ConversationTaskStatus, ConversationTaskStatusInput, DeviceRPCAckParams, DeviceRPCRequestAck, DeviceRPCRequestInput, DeviceRPCResultInput, MessageContent, RichContentLinkPreview, RichContentCard, UploadResult } from './types';
+import type { CatsBotConfig, BotEventMap, MsgServerData, MsgDeviceRPC, ConversationTaskStatus, ConversationTaskStatusInput, DeviceRPCAckParams, DeviceRPCRequestAck, DeviceRPCRequestInput, DeviceRPCResultInput, MessageContent, RichContentLinkPreview, RichContentCard, UploadResult, GatewayAnnotationReply } from './types';
 export declare class CatsBot {
     uid: string;
     name: string;
@@ -35,8 +35,22 @@ export declare class CatsBot {
     disconnect(): void;
     /**
      * Publish a message to a topic. Returns the server-assigned seq number.
+     * `opts.metadata` rides the pub envelope untouched; server validation for
+     * contract-keyed metadata (e.g. gateway annotations) still applies.
      */
-    sendMessage(topic: string, content: MessageContent, replyTo?: number): Promise<number>;
+    sendMessage(topic: string, content: MessageContent, replyToOrOpts?: number | {
+        replyTo?: number;
+        metadata?: Record<string, unknown>;
+    }): Promise<number>;
+    /**
+     * Reply with a message plus a gateway-annotation point-back. The point-back
+     * is attached as `metadata.gateway_annotation_reply`
+     * (catsco.gateway-annotation-reply.v1); the webapp renders it as a passive
+     * highlight inside the bound gateway app. Fields that fail the bridge
+     * contract bounds are dropped before sending rather than trusting the
+     * caller, and an app_id/target mismatch fails locally.
+     */
+    sendAnnotationReply(topic: string, content: MessageContent, reply: GatewayAnnotationReply): Promise<number>;
     /**
      * Publish a backend-trusted task status update for a topic.
      * Task status updates are not stored as chat messages.

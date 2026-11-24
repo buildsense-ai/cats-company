@@ -67,6 +67,12 @@ export type {
   RichContentCard,
   RichContent,
   MessageContent,
+  // Gateway annotation point-back
+  GatewayAnnotationReply,
+  GatewayAnnotationReplyTarget,
+  GatewayAnnotationAgentContext,
+  GATEWAY_ANNOTATION_REPLY_CONTRACT,
+  GATEWAY_ANNOTATION_REPLY_METADATA_KEY,
   // Upload
   UploadResult,
   // Config & events

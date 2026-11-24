@@ -25,7 +25,17 @@ const LLM_API_KEY = process.env.LLM_API_KEY ?? '';
 const LLM_MODEL = process.env.LLM_MODEL ?? 'gpt-3.5-turbo';
 const MAX_HISTORY = parseInt(process.env.MAX_HISTORY ?? '20', 10);
 const SYSTEM_PROMPT = `你是 Cats Company 的 AI 助手「小八」。你友好、有帮助、简洁。
-用中文回复，除非用户使用其他语言。保持回复简短自然，像朋友聊天一样。`;
+用中文回复，除非用户使用其他语言。保持回复简短自然，像朋友聊天一样。
+
+当用户消息里带有应用标注上下文（「Gateway 标注」），且你的回复明确指向其中某一处标注时，
+在回复末尾追加一行 [[ANNOTATION_REPLY]]标记，格式：
+[[ANNOTATION_REPLY]]{"annotation_index": <标注序号>, "note": "<一句话，≤30字>"}
+标注序号就是上下文里 [1] [2] 的编号。不指向具体标注时不要输出该标记。`;
+// The agent point-back marker. The LLM names one annotation it is
+// referring to; the target anchor comes from the server-validated
+// annotation context, never from model output, so the model cannot
+// point at an element the user never annotated.
+const ANNOTATION_REPLY_MARKER = /\[\[ANNOTATION_REPLY\]\]\s*(\{[^\n]*\})?/;
 const conversations = new Map();
 const topicTasks = new Map();
 const topicStatusTasks = new Map();
@@ -72,7 +82,10 @@ async function callLLM(topic, userMessage) {
         }
         const data = await res.json();
         const reply = data.choices[0].message.content.trim();
-        addMessage(topic, 'assistant', reply);
+        // History keeps the human-facing text only; the point-back marker is
+        // re-derived by annotationPointBack and must not teach the model to
+        // emit markers on every turn.
+        addMessage(topic, 'assistant', reply.replace(ANNOTATION_REPLY_MARKER, '').trim());
         return reply;
     }
     catch (err) {
@@ -146,6 +159,53 @@ function enqueueTopicTask(topic, task) {
     }).catch(() => undefined);
     return next;
 }
+function annotationPointBack(context, raw) {
+    const match = ANNOTATION_REPLY_MARKER.exec(raw);
+    if (!match)
+        return { text: raw, pointBack: null };
+    // The marker is control syntax, never user-facing text: strip it even
+    // when no annotation context is present to point at.
+    const text = raw.replace(ANNOTATION_REPLY_MARKER, '').trimEnd() || raw;
+    const ctx = context.gatewayAnnotations;
+    if (!ctx?.app_id || !Array.isArray(ctx.annotations)) {
+        return { text, pointBack: null };
+    }
+    if (!match[1])
+        return { text, pointBack: null };
+    let index = null;
+    let note;
+    try {
+        const parsed = JSON.parse(match[1]);
+        if (Number.isInteger(parsed.annotation_index))
+            index = parsed.annotation_index;
+        if (typeof parsed.note === 'string' && parsed.note.trim()) {
+            note = parsed.note.trim().slice(0, 120);
+        }
+    }
+    catch {
+        return { text, pointBack: null };
+    }
+    const annotation = index !== null
+        ? (ctx.annotations.find((entry) => entry.index === index) ?? ctx.annotations[index - 1])
+        : null;
+    const source = annotation?.target;
+    if (!source || typeof source !== 'object')
+        return { text, pointBack: null };
+    const target = {};
+    if (typeof source.element_id === 'string')
+        target.element_id = source.element_id;
+    if (typeof source.selector === 'string')
+        target.selector = source.selector;
+    if (!target.element_id && !target.selector && source.rect && source.coordinate_space === 'viewport') {
+        target.rect = source.rect;
+    }
+    if (!target.element_id && !target.selector && !target.rect)
+        return { text, pointBack: null };
+    return {
+        text,
+        pointBack: { app_id: ctx.app_id, target, ...(note ? { note } : {}) },
+    };
+}
 async function handleMessage(context) {
     console.log(`[msg] from=${context.from} topic=${context.topic} text="${context.text}"`);
     const runID = taskRunID();
@@ -175,8 +235,14 @@ async function handleMessage(context) {
         return;
     }
     try {
-        console.log(`[reply] → ${context.topic}: ${reply.slice(0, 80)}${reply.length > 80 ? '...' : ''}`);
-        await context.reply(reply);
+        const { text, pointBack } = annotationPointBack(context, reply);
+        console.log(`[reply] → ${context.topic}: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}${pointBack ? ' [point-back]' : ''}`);
+        if (pointBack) {
+            await context.replyWithAnnotation(text, pointBack);
+        }
+        else {
+            await context.reply(text);
+        }
     }
     catch (error) {
         console.error(`[error] reply acknowledgement failed: ${errorMessage(error)}`);
