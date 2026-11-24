@@ -32,9 +32,17 @@ Agent 遇到资源密集型任务时，先调用 XiaoBa 的 `local_compute_resou
 
 结果 `structuredContent` 使用 `catsco.compute-preview.v1`，包含各候选 `fit`、`capacity`、`reason_code`、来源、采样时间和可用的采样字段。独立分片按可顺序执行判断最低资源。分布式任务按所需节点数判断总容量。超过两分钟的采样会降级为未知。当前 Agent 设备标为 `agent_reported`。
 
-文本结果第一段为聊天 Markdown 表格，第二段为结构化结果的 JSON。Agent 可以直接发第一段，请用户回复偏好的位置。无估时样本时 `eta_s` 为 `null`。云端的 `quote.state` 为 `unpriced`，待核定计价和费用上限后才进入用户确认。此工具只读。
+文本结果第一段为聊天 Markdown 表格，第二段为结构化结果的 JSON。Agent 可以直接发第一段，请用户回复偏好。给 `task` 传可选的 `estimated_billable_s` 以试算积分，独立任务填每个分片的云端计费秒数，分布式任务填每个节点的云端计费秒数。时长应来自实测或用户给定的假设。该值不会写入预计完工 `eta_s`，后者当前为 `null`。
+
+云端 `quote.state` 取 `unpriced`、`rate_only` 或 `estimated`。`rate_only` 返回可用费率，缺少时长或金额超出范围时可读 `reason_code`。`estimated` 额外返回 `estimate_units` 和 `billed_s_per_work_unit`。金额除以 `units_per_credit` 即为积分。云端 `max_units` 此阶段为 `null`，正式费用上限及付费确认由执行流程处理。当前设备的 0 积分仅指新增 Cats 算力费。
 
 部署方通过 `CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE` 指定一个绝对路径，启用预览。由平台采集器原子更新该路径的本地普通 JSON 文件。采样对应一组节点规格一致的 Slurm 队列，包含 UTC RFC 3339 `sampled_at`、已配置且可调度的 `nodes`、其中完全空闲的 `idle_nodes`、`logical_cpus_per_node`、`memory_mib_per_node`、可选 `gpus_per_node` 和 `memory_mib_per_gpu`。未知的 GPU 字段留空，已确认没有 GPU 时 `gpus_per_node` 为 0。文件缺失、过期或格式异常时云集群状态为未知。
+
+采集文件可附带同一规格的 `pricing` 对象，字段为 `cny_micros_per_node_period`（一个节点在一个计价周期内的人民币金额，单位为百万分之一元）、`rate_period_s`、`billing_increment_s` 和 RFC 3339 `valid_until`。它是平台发布给用户的费率，应由已核实的成本口径和运营定价生成。费率未发布、过期、无有效周期或格式异常时云端仍显示待报价。节点采样异常时不会试算。Agent 不提供或覆盖费率。
+
+换算沿用云机器账本，1 元 = 100 积分，1 积分 = 1,000,000 账本单位。每分片或每节点的预计计费时长先向上取整到 `billing_increment_s`，再用 `ceil(节点周期价格的账本单位 × 取整后秒数 × 分片数或节点数 ÷ rate_period_s)` 计算。这里计的是按任务分配的节点时间。供应商账单仍按资源实际生命周期核对。冷启动、盘、传输、闲置与固定费用只有纳入发布费率或相应计费时长才会进入这次试算。
+
+例如，试算费率为 300000 微元／节点／3600 秒，粒度为 60 秒时，两个节点各计费 1800 秒，预计 30 积分。该数值仅用于演示换算。
 
 ## 调用失败怎么说清楚（`worker_offline` / `not_picked_up`）
 

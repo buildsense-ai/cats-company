@@ -28,20 +28,21 @@ func (h *ServiceAgentsMCPHandler) SetComputeSnapshotPath(path string) {
 }
 
 type computePreviewTask struct {
-	Topology        string `json:"topology" jsonschema:"independent_shards 或 distributed"`
-	Shards          int    `json:"shards,omitempty" jsonschema:"独立分片数，至少 1"`
-	Nodes           int    `json:"nodes,omitempty" jsonschema:"分布式任务要求的独立节点数，至少 1"`
-	LogicalCPUs     int    `json:"logical_cpus" jsonschema:"单分片或单节点最低逻辑 CPU 数"`
-	MemoryMiB       int    `json:"memory_mib" jsonschema:"单分片或单节点最低内存 MiB"`
-	GPUCount        int    `json:"gpu_count,omitempty" jsonschema:"单分片或单节点最低 GPU 数，无 GPU 需求填 0"`
-	MemoryMiBPerGPU int    `json:"memory_mib_per_gpu,omitempty" jsonschema:"每块 GPU 所需的最低显存 MiB"`
+	Topology           string `json:"topology" jsonschema:"independent_shards 或 distributed"`
+	Shards             int    `json:"shards,omitempty" jsonschema:"独立分片数，至少 1"`
+	Nodes              int    `json:"nodes,omitempty" jsonschema:"分布式任务要求的独立节点数，至少 1"`
+	LogicalCPUs        int    `json:"logical_cpus" jsonschema:"单分片或单节点最低逻辑 CPU 数"`
+	MemoryMiB          int    `json:"memory_mib" jsonschema:"单分片或单节点最低内存 MiB"`
+	GPUCount           int    `json:"gpu_count,omitempty" jsonschema:"单分片或单节点最低 GPU 数，无 GPU 需求填 0"`
+	MemoryMiBPerGPU    int    `json:"memory_mib_per_gpu,omitempty" jsonschema:"每块 GPU 所需的最低显存 MiB"`
+	EstimatedBillableS int64  `json:"estimated_billable_s,omitempty" jsonschema:"预计云端计费秒数。独立任务填每分片，分布式任务填每节点。根据实测或用户提供的时长填写，无依据则省略"`
 }
 
 func (task computePreviewTask) valid() bool {
 	validTopology := task.Topology == "independent_shards" && task.Shards > 0 && task.Nodes == 0 ||
 		task.Topology == "distributed" && task.Nodes > 0 && task.Shards == 0
 	return validTopology && task.LogicalCPUs > 0 && task.MemoryMiB > 0 && task.GPUCount >= 0 &&
-		task.MemoryMiBPerGPU >= 0 && (task.MemoryMiBPerGPU == 0 || task.GPUCount > 0)
+		task.MemoryMiBPerGPU >= 0 && (task.MemoryMiBPerGPU == 0 || task.GPUCount > 0) && task.EstimatedBillableS >= 0
 }
 
 type computeRuntimeGPU struct {
@@ -69,6 +70,7 @@ type computeSlurmSample struct {
 	MemoryMiB       int       `json:"memory_mib_per_node"`
 	GPUsPerNode     *int      `json:"gpus_per_node"`
 	MemoryMiBPerGPU *int      `json:"memory_mib_per_gpu"`
+	rate            *computeSlurmRate
 }
 
 type computePreviewArgs struct {
@@ -77,10 +79,13 @@ type computePreviewArgs struct {
 }
 
 type computePreviewQuote struct {
-	State          string `json:"state"`
-	Estimate       *int   `json:"estimate_units"`
-	Max            *int   `json:"max_units"`
-	UnitsPerCredit *int   `json:"units_per_credit"`
+	State          string              `json:"state"`
+	Estimate       *int64              `json:"estimate_units"`
+	Max            *int64              `json:"max_units"`
+	UnitsPerCredit *int64              `json:"units_per_credit"`
+	Rate           *computePreviewRate `json:"rate,omitempty"`
+	BilledS        int64               `json:"billed_s_per_work_unit,omitempty"`
+	Reason         string              `json:"reason_code,omitempty"`
 }
 
 type computePreviewOption struct {
@@ -107,8 +112,8 @@ func freshComputeSample(sample, now time.Time, maxAge time.Duration) bool {
 }
 
 func previewAgentRuntime(task computePreviewTask, sample *computeRuntimeSample, now time.Time) computePreviewOption {
-	zero, one := 0, 1
-	option := computePreviewOption{ID: "agent_runtime", Source: "agent_reported", Fit: "unknown", Capacity: "unknown", Reason: "runtime_sample_missing", Quote: computePreviewQuote{State: "free", Estimate: &zero, Max: &zero, UnitsPerCredit: &one}}
+	zero, unitsPerCredit := int64(0), commercialTopupUnitsPerFen
+	option := computePreviewOption{ID: "agent_runtime", Source: "agent_reported", Fit: "unknown", Capacity: "unknown", Reason: "runtime_sample_missing", Quote: computePreviewQuote{State: "free", Estimate: &zero, Max: &zero, UnitsPerCredit: &unitsPerCredit}}
 	if task.Nodes > 1 {
 		option.Fit, option.Reason = "does_not_fit", "single_runtime_only"
 		return option
@@ -176,14 +181,25 @@ func readComputeSlurmSample(path string) *computeSlurmSample {
 	if err != nil || len(data) > maxComputeSnapshotSize {
 		return nil
 	}
-	var sample computeSlurmSample
-	if json.Unmarshal(data, &sample) != nil || sample.Nodes == nil || sample.IdleNodes == nil ||
+	var snapshot struct {
+		computeSlurmSample
+		Pricing json.RawMessage `json:"pricing"`
+	}
+	if json.Unmarshal(data, &snapshot) != nil {
+		return nil
+	}
+	sample := &snapshot.computeSlurmSample
+	if sample.Nodes == nil || sample.IdleNodes == nil ||
 		*sample.Nodes < 0 || *sample.IdleNodes < 0 || *sample.IdleNodes > *sample.Nodes ||
 		sample.CPUsPerNode <= 0 || sample.MemoryMiB <= 0 || sample.GPUsPerNode != nil && *sample.GPUsPerNode < 0 ||
 		sample.MemoryMiBPerGPU != nil && *sample.MemoryMiBPerGPU <= 0 {
 		return nil
 	}
-	return &sample
+	var rate computeSlurmRate
+	if json.Unmarshal(snapshot.Pricing, &rate) == nil {
+		sample.rate = &rate
+	}
+	return sample
 }
 
 func previewSlurm(task computePreviewTask, sample *computeSlurmSample, now time.Time) computePreviewOption {
@@ -209,6 +225,7 @@ func previewSlurm(task computePreviewTask, sample *computeSlurmSample, now time.
 	}
 	needed := max(1, task.Nodes)
 	option.Fit = "fits"
+	option.Quote = estimateSlurmCredits(task, sample.rate, now)
 	switch {
 	case *sample.IdleNodes >= needed:
 		option.Capacity, option.Reason = "available", "slurm_idle_nodes_available"
@@ -233,8 +250,30 @@ func computePreviewMarkdown(result computePreviewResult) string {
 	var text strings.Builder
 	text.WriteString("| 运行位置 | 资源与容量 | 预计完工 | 预计积分 | 费用上限 |\n| --- | --- | --- | --- | --- |\n")
 	fmt.Fprintf(&text, "| 当前 Agent 设备 | %s | 待估算 | 0 算力积分 | 0 算力积分 |\n", labels[result.Options[0].Reason])
-	fmt.Fprintf(&text, "| 云集群 | %s | 待估算 | 待报价 | 待报价 |\n", labels[result.Options[1].Reason])
+	cloud := result.Options[1]
+	estimate, limit := "待报价", "待报价"
+	if cloud.Quote.Rate != nil {
+		estimate, limit = "待估算", "待正式报价"
+	}
+	if cloud.Quote.Estimate != nil {
+		estimate = "约 " + computeCreditText(*cloud.Quote.Estimate) + " 积分"
+	}
+	fmt.Fprintf(&text, "| 云集群 | %s | 待估算 | %s | %s |\n", labels[cloud.Reason], estimate, limit)
 	text.WriteString("\n当前设备的 0 积分仅指新增的 Cats 算力费。云端待正式报价和用户确认。")
+	if rate := cloud.Quote.Rate; rate != nil {
+		period := fmt.Sprintf("每 %d 秒", rate.PeriodS)
+		if rate.PeriodS == 3600 {
+			period = "每小时"
+		}
+		fmt.Fprintf(&text, " 云端试算费率为每节点%s %s 积分。", period, computeCreditText(rate.UnitsPerNodePeriod))
+		if cloud.Quote.BilledS > 0 {
+			workUnit := "节点"
+			if result.Task.Topology == "independent_shards" {
+				workUnit = "分片"
+			}
+			fmt.Fprintf(&text, " 本次按每%s计费 %d 秒试算。", workUnit, cloud.Quote.BilledS)
+		}
+	}
 	if result.Options[0].Capacity == "available" {
 		text.WriteString("\n\n要用当前 Agent 设备运行，还是等云端报价再决定？")
 	}
@@ -244,7 +283,7 @@ func computePreviewMarkdown(result computePreviewResult) string {
 func (h *ServiceAgentsMCPHandler) addComputePreviewTool(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        computePreviewToolName,
-		Description: "在资源密集型任务开始前，查询当前 Agent 设备与云集群的匹配和容量。先用 local_compute_resources 采样当前运行设备，再把采样和任务要求传入。当前 Agent 设备可能在云端。用返回的 Markdown 表格向用户说明选项并询问偏好，保留待估算和待报价状态。此工具只读。",
+		Description: "在资源密集型任务开始前，查询当前 Agent 设备与云集群的匹配、容量和预计积分。先用 local_compute_resources 采样当前运行设备，该设备可能在云端。若有实测或用户提供的时长，填 estimated_billable_s。用返回的 Markdown 表格向用户说明选项并询问偏好。预计积分由服务端试算，云端费用上限和付费确认另行处理。此工具只读。",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args computePreviewArgs) (*mcp.CallToolResult, any, error) {
 		if !args.Task.valid() {
