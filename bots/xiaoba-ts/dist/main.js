@@ -29,7 +29,7 @@ const SYSTEM_PROMPT = `你是 Cats Company 的 AI 助手「小八」。你友好
 
 当用户消息里带有应用标注上下文（「Gateway 标注」），且你的回复明确指向其中某一处标注时，
 在回复末尾追加一行 [[ANNOTATION_REPLY]]标记，格式：
-[[ANNOTATION_REPLY]]{"annotation_index": <标注序号>, "note": "<一句话，≤30字>"}
+[[ANNOTATION_REPLY]]{"annotation_index": <标注序号>, "note": "<一句话>"}
 标注序号就是上下文里 [1] [2] 的编号。不指向具体标注时不要输出该标记。`;
 // The agent point-back marker. The LLM names one annotation it is
 // referring to; the target anchor comes from the server-validated
@@ -164,8 +164,12 @@ function annotationPointBack(context, raw) {
     if (!match)
         return { text: raw, pointBack: null };
     // The marker is control syntax, never user-facing text: strip it even
-    // when no annotation context is present to point at.
-    const text = raw.replace(ANNOTATION_REPLY_MARKER, '').trimEnd() || raw;
+    // when no annotation context is present to point at. If stripping leaves
+    // nothing, a marker-only reply becomes a neutral acknowledgement rather
+    // than raw protocol bytes shown to the user.
+    let text = raw.replace(ANNOTATION_REPLY_MARKER, '').trimEnd();
+    if (!text)
+        text = '好的。';
     const ctx = context.gatewayAnnotations;
     if (!ctx?.app_id || !Array.isArray(ctx.annotations)) {
         return { text, pointBack: null };
@@ -179,14 +183,17 @@ function annotationPointBack(context, raw) {
         if (Number.isInteger(parsed.annotation_index))
             index = parsed.annotation_index;
         if (typeof parsed.note === 'string' && parsed.note.trim()) {
-            note = parsed.note.trim().slice(0, 120);
+            note = parsed.note.trim().slice(0, 256); // contract bound, no extra cap
         }
     }
     catch {
         return { text, pointBack: null };
     }
+    // The server stamps 1-based `index` on every annotation; a model-claimed
+    // index that matches none of them is a hallucination, not a hint worth
+    // guessing at. Never fall back to positional indexing.
     const annotation = index !== null
-        ? (ctx.annotations.find((entry) => entry.index === index) ?? ctx.annotations[index - 1])
+        ? ctx.annotations.find((entry) => entry.index === index)
         : null;
     const source = annotation?.target;
     if (!source || typeof source !== 'object')

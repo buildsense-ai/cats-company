@@ -403,12 +403,14 @@ describe('agent point-back channel (reply.v1)', () => {
 
   it('posts a normalized reply to the bound frame with a fresh request id', () => {
     const { bus, connect } = readyReplyHost();
+    // bindingFor() stamps agentUid 101; the reply is only forwarded when
+    // the claimed sender IS that agent.
     const sent = bus.host.reply({
       contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT,
       app_id: 'board',
       target: { element_id: 'submit-btn' },
       note: '改这里',
-    });
+    }, 101);
     expect(sent).toBe(true);
     const reply = bus.h.posted.find((p) => p.message.type === GATEWAY_HOST_REPLY_TYPE);
     expect(reply).toBeTruthy();
@@ -421,20 +423,38 @@ describe('agent point-back channel (reply.v1)', () => {
 
   it('refuses malformed replies, replies for another app, and replies before ready', () => {
     const { bus } = readyReplyHost();
-    expect(bus.host.reply({ contract_version: 'v9', app_id: 'board', target: { element_id: 'x' } })).toBe(false);
-    expect(bus.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'other-app', target: { element_id: 'x' } })).toBe(false);
-    expect(bus.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'board', target: {} })).toBe(false);
-    expect(bus.host.reply(null)).toBe(false);
+    expect(bus.host.reply({ contract_version: 'v9', app_id: 'board', target: { element_id: 'x' } }, 101)).toBe(false);
+    expect(bus.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'other-app', target: { element_id: 'x' } }, 101)).toBe(false);
+    expect(bus.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'board', target: {} }, 101)).toBe(false);
+    expect(bus.host.reply(null, 101)).toBe(false);
     expect(bus.h.posted.every((p) => p.message.type !== GATEWAY_HOST_REPLY_TYPE)).toBe(true);
 
     const disconnected = setup();
-    expect(disconnected.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'board', target: { element_id: 'x' } })).toBe(false);
+    expect(disconnected.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'board', target: { element_id: 'x' } }, 101)).toBe(false);
+  });
+
+  it('ignores replies from any sender other than the bound agent', () => {
+    const { bus } = readyReplyHost();
+    const reply = {
+      contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT,
+      app_id: 'board',
+      target: { element_id: 'x' },
+    };
+    // A human in the same conversation, a different bot, and a malformed
+    // sender claim are all refused before the frame sees anything.
+    expect(bus.host.reply(reply, 7)).toBe(false);
+    expect(bus.host.reply(reply, 999)).toBe(false);
+    expect(bus.host.reply(reply, 'not-a-uid')).toBe(false);
+    expect(bus.host.reply(reply, 0)).toBe(false);
+    expect(bus.host.reply(reply)).toBe(false);
+    expect(bus.host.reply(reply, 101)).toBe(true);
+    expect(bus.h.posted.filter((p) => p.message.type === GATEWAY_HOST_REPLY_TYPE)).toHaveLength(1);
   });
 
   it('routes the SDK reply ack to onReplyAck', () => {
     const onReplyAck = vi.fn();
     const { bus } = readyReplyHost({ onReplyAck });
-    bus.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'board', target: { element_id: 'x' } });
+    bus.host.reply({ contract_version: GATEWAY_ANNOTATION_REPLY_CONTRACT, app_id: 'board', target: { element_id: 'x' } }, 101);
     const reply = bus.h.posted.find((p) => p.message.type === GATEWAY_HOST_REPLY_TYPE);
     bus.h.handleWindowMessage({
       data: {

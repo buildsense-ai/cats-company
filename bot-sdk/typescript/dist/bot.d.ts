@@ -36,7 +36,8 @@ export declare class CatsBot {
     /**
      * Publish a message to a topic. Returns the server-assigned seq number.
      * `opts.metadata` rides the pub envelope untouched; server validation for
-     * contract-keyed metadata (e.g. gateway annotations) still applies.
+     * contract-keyed metadata (gateway annotations, gateway_annotation_reply,
+     * app_open) still applies — unrecognized keys pass through verbatim.
      */
     sendMessage(topic: string, content: MessageContent, replyToOrOpts?: number | {
         replyTo?: number;
@@ -46,9 +47,10 @@ export declare class CatsBot {
      * Reply with a message plus a gateway-annotation point-back. The point-back
      * is attached as `metadata.gateway_annotation_reply`
      * (catsco.gateway-annotation-reply.v1); the webapp renders it as a passive
-     * highlight inside the bound gateway app. Fields that fail the bridge
-     * contract bounds are dropped before sending rather than trusting the
-     * caller, and an app_id/target mismatch fails locally.
+     * highlight inside the bound gateway app. A reply that fails the bridge
+     * contract bounds (bad app_id, no usable anchor, invalid rect, oversized
+     * or control-bearing strings) rejects locally rather than riding an
+     * otherwise valid message.
      */
     sendAnnotationReply(topic: string, content: MessageContent, reply: GatewayAnnotationReply): Promise<number>;
     /**

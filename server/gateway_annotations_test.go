@@ -650,6 +650,138 @@ func TestValidateGatewayAnnotationsMetadataBoundsScenarios(t *testing.T) {
 	}
 }
 
+func gatewayAnnotationReplyRequest(appID string, build func(value map[string]interface{})) map[string]interface{} {
+	value := map[string]interface{}{
+		"contract_version": GatewayAnnotationReplyContractV1,
+		"app_id":           appID,
+		"target":           map[string]interface{}{"element_id": "submit-btn", "selector": "button#submit"},
+		"note":             "看这里",
+	}
+	if build != nil {
+		build(value)
+	}
+	return value
+}
+
+func TestValidateGatewayAnnotationReplyMetadata(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users: map[int64]*types.User{
+			7:  gatewayAnnotationHuman(7),
+			9:  gatewayAnnotationBot(9),
+			10: gatewayAnnotationBot(10),
+		},
+		botOwners: map[int64]int64{9: 7, 10: 7},
+		groupMembers: map[string]bool{
+			groupMemberKeyForAnnotations(5, 7): true, groupMemberKeyForAnnotations(5, 9): true,
+		},
+		groups: map[int64]*types.Group{5: {ID: 5, AgentIDs: []int64{9}}},
+		members: map[int64][]*types.GroupMember{5: {
+			{UserID: 7}, {UserID: 9, IsBot: true},
+		}},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	reply := map[string]interface{}{gatewayAnnotationReplyMetadataKey: gatewayAnnotationReplyRequest("board", nil)}
+
+	// The owning agent's point-back survives, restamped to the canonical shape.
+	validated := hub.validateGatewayAnnotationReplyMetadata(9, "p2p_7_9", map[string]interface{}{
+		gatewayAnnotationReplyMetadataKey: gatewayAnnotationReplyRequest("board", nil),
+	})
+	kept, ok := validated[gatewayAnnotationReplyMetadataKey].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected the owning agent's reply to persist, got %+v", validated)
+	}
+	if kept["contract_version"] != GatewayAnnotationReplyContractV1 || kept["app_id"] != "board" {
+		t.Fatalf("validated reply: %+v", kept)
+	}
+
+	// Every other sender loses the key silently: the human viewer, a
+	// different bot, and a sender nobody can resolve.
+	for _, sender := range []int64{7, 10, 99} {
+		stripped := hub.validateGatewayAnnotationReplyMetadata(sender, "p2p_7_9", map[string]interface{}{
+			gatewayAnnotationReplyMetadataKey: gatewayAnnotationReplyRequest("board", nil),
+			"other":                           true,
+		})
+		if _, present := stripped[gatewayAnnotationReplyMetadataKey]; present {
+			t.Fatalf("sender %d reply survived", sender)
+		}
+		if stripped["other"] != true {
+			t.Fatalf("sender %d unrelated metadata lost", sender)
+		}
+	}
+
+	// The same bot may reply inside its group when it is the unique agent.
+	validated = hub.validateGatewayAnnotationReplyMetadata(9, "grp_5", reply)
+	if _, ok := validated[gatewayAnnotationReplyMetadataKey]; !ok {
+		t.Fatal("expected the group agent's reply to persist")
+	}
+
+	// A reply naming an app another agent owns is stripped.
+	hub.SetGatewayAnnotationsAppResolver(&staticAppResolver{apps: map[string]string{"board": "10"}})
+	stripped := hub.validateGatewayAnnotationReplyMetadata(9, "p2p_7_9", reply)
+	if _, present := stripped[gatewayAnnotationReplyMetadataKey]; present {
+		t.Fatal("expected foreign-app reply to be stripped")
+	}
+}
+
+func TestValidateGatewayAnnotationReplyMetadataGroupAmbiguity(t *testing.T) {
+	// Two bots in one group: "the topic's agent" is ambiguous, so nobody
+	// may paint on an app through a point-back.
+	storeData := &gatewayAnnotationFakeStore{
+		users: map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9), 10: gatewayAnnotationBot(10)},
+		groupMembers: map[string]bool{
+			groupMemberKeyForAnnotations(5, 7): true, groupMemberKeyForAnnotations(5, 9): true, groupMemberKeyForAnnotations(5, 10): true,
+		},
+		members: map[int64][]*types.GroupMember{5: {
+			{UserID: 7}, {UserID: 9, IsBot: true}, {UserID: 10, IsBot: true},
+		}},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	reply := map[string]interface{}{gatewayAnnotationReplyMetadataKey: gatewayAnnotationReplyRequest("board", nil)}
+	for _, sender := range []int64{9, 10} {
+		stripped := hub.validateGatewayAnnotationReplyMetadata(sender, "grp_5", reply)
+		if _, present := stripped[gatewayAnnotationReplyMetadataKey]; present {
+			t.Fatalf("sender %d reply survived an ambiguous group", sender)
+		}
+	}
+}
+
+func TestValidateGatewayAnnotationReplyMetadataShapeGate(t *testing.T) {
+	storeData := &gatewayAnnotationFakeStore{
+		users:     map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9)},
+		botOwners: map[int64]int64{9: 7},
+	}
+	hub := newAnnotationHub(t, storeData, &staticAppResolver{apps: map[string]string{"board": "9"}})
+	mutate := func(build func(map[string]interface{})) map[string]interface{} {
+		return map[string]interface{}{gatewayAnnotationReplyMetadataKey: gatewayAnnotationReplyRequest("board", build)}
+	}
+	bad := []map[string]interface{}{
+		mutate(func(v map[string]interface{}) { v["contract_version"] = "v9" }),
+		mutate(func(v map[string]interface{}) { v["app_id"] = "BAD" }),
+		mutate(func(v map[string]interface{}) { v["target"] = map[string]interface{}{} }),
+		mutate(func(v map[string]interface{}) { v["target"] = map[string]interface{}{"unknown": 1} }),
+		mutate(func(v map[string]interface{}) { v["target"] = map[string]interface{}{"selector": "a\nb"} }),
+		mutate(func(v map[string]interface{}) {
+			v["target"] = map[string]interface{}{"rect": map[string]interface{}{"x": 0.9, "y": 0.1, "width": 0.5, "height": 0.2}, "coordinate_space": "viewport"}
+		}),
+		mutate(func(v map[string]interface{}) {
+			v["target"] = map[string]interface{}{"rect": map[string]interface{}{"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2}}
+		}),
+		mutate(func(v map[string]interface{}) { v["note"] = strings.Repeat("字", gatewayAnnotationsMaxAffixRunes+1) }),
+		mutate(func(v map[string]interface{}) { v["extra"] = 1 }),
+	}
+	for index, value := range bad {
+		stripped := hub.validateGatewayAnnotationReplyMetadata(9, "p2p_7_9", value)
+		if _, present := stripped[gatewayAnnotationReplyMetadataKey]; present {
+			t.Fatalf("bad reply %d survived", index)
+		}
+	}
+	// No reply key: metadata is untouched.
+	plain := map[string]interface{}{"other": true}
+	if got := hub.validateGatewayAnnotationReplyMetadata(9, "p2p_7_9", plain); got["other"] != true {
+		t.Fatalf("plain metadata changed: %+v", got)
+	}
+}
+
 func TestValidateGatewayAnnotationsMetadataMultiBotGroupFailsClosed(t *testing.T) {
 	storeData := &gatewayAnnotationFakeStore{
 		users: map[int64]*types.User{7: gatewayAnnotationHuman(7), 9: gatewayAnnotationBot(9), 10: gatewayAnnotationBot(10)},

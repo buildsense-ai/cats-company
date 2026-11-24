@@ -1,7 +1,7 @@
 "use strict";
 // @catscompany/bot-sdk — barrel export
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.UploadError = exports.RateLimitError = exports.ProtocolError = exports.HandshakeError = exports.ConnectionError = exports.CatsBotError = exports.numberToUid = exports.uidToNumber = exports.buildP2PTopic = exports.parseTopic = exports.FileUploader = exports.MessageContext = exports.CatsBot = void 0;
+exports.GATEWAY_ANNOTATION_REPLY_METADATA_KEY = exports.GATEWAY_ANNOTATION_REPLY_CONTRACT = exports.UploadError = exports.RateLimitError = exports.ProtocolError = exports.HandshakeError = exports.ConnectionError = exports.CatsBotError = exports.numberToUid = exports.uidToNumber = exports.buildP2PTopic = exports.parseTopic = exports.FileUploader = exports.MessageContext = exports.CatsBot = void 0;
 var bot_1 = require("./bot");
 Object.defineProperty(exports, "CatsBot", { enumerable: true, get: function () { return bot_1.CatsBot; } });
 var context_1 = require("./context");
@@ -20,4 +20,7 @@ Object.defineProperty(exports, "HandshakeError", { enumerable: true, get: functi
 Object.defineProperty(exports, "ProtocolError", { enumerable: true, get: function () { return errors_1.ProtocolError; } });
 Object.defineProperty(exports, "RateLimitError", { enumerable: true, get: function () { return errors_1.RateLimitError; } });
 Object.defineProperty(exports, "UploadError", { enumerable: true, get: function () { return errors_1.UploadError; } });
+var types_1 = require("./types");
+Object.defineProperty(exports, "GATEWAY_ANNOTATION_REPLY_CONTRACT", { enumerable: true, get: function () { return types_1.GATEWAY_ANNOTATION_REPLY_CONTRACT; } });
+Object.defineProperty(exports, "GATEWAY_ANNOTATION_REPLY_METADATA_KEY", { enumerable: true, get: function () { return types_1.GATEWAY_ANNOTATION_REPLY_METADATA_KEY; } });
 //# sourceMappingURL=index.js.map

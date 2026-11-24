@@ -117,6 +117,7 @@ func (h *MessageHandler) sendMessage(w http.ResponseWriter, r *http.Request, req
 		}
 		sawGatewayAnnotationsIngress := hasGatewayAnnotationsMetadata(payload.Metadata)
 		payload.Metadata = h.hub.validateAppOpenMetadata(uid, req.TopicID, payload.Metadata)
+		payload.Metadata = h.hub.validateGatewayAnnotationReplyMetadata(uid, req.TopicID, payload.Metadata)
 		payload.Metadata, err = h.hub.validateGatewayAnnotationsMetadata(uid, req.TopicID, payload.Metadata)
 		if err != nil {
 			// A rejected annotated message must never strand a task delivery

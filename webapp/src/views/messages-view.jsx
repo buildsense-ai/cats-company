@@ -3611,7 +3611,9 @@ export default function MessagesView({
         // handshake is ready; a reply arriving before the frame is up is a
         // stale visual hint and is dropped rather than replayed later.
         if (!sameUID(fromUid, user.uid) && serverMsg.metadata?.gateway_annotation_reply) {
-          gatewayAnnotationHostRef.current?.reply?.(serverMsg.metadata.gateway_annotation_reply);
+          // The bridge only honours point-backs authored by the agent the
+          // bound app belongs to; any other sender's key is ignored here.
+          gatewayAnnotationHostRef.current?.reply?.(serverMsg.metadata.gateway_annotation_reply, fromUid);
         }
 
         // An Agent asking the viewer to open one of its applications arrives as

@@ -37,10 +37,18 @@ import { FileUploader } from './uploader';
 // can ride an otherwise valid message.
 const GATEWAY_APP_ID_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
 const REPLY_CONTROL_FORBIDDEN = /[\u0000-\u001f\u007f]/;
+// Free-text fields (note) may carry \n \r \t like the webapp freetext rule;
+// identifiers (app_id, element_id, selector) reject every control character.
+const REPLY_FREETEXT_FORBIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
 function boundedReplyString(value: unknown, max: number): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= max
     && !REPLY_CONTROL_FORBIDDEN.test(value) ? value : undefined;
+}
+
+function boundedReplyNote(value: unknown, max: number): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= max
+    && !REPLY_FREETEXT_FORBIDDEN.test(value) ? value : undefined;
 }
 
 function gatewayAnnotationReplyMetadata(reply: GatewayAnnotationReply): Record<string, unknown> | null {
@@ -70,7 +78,7 @@ function gatewayAnnotationReplyMetadata(reply: GatewayAnnotationReply): Record<s
     app_id: appId,
     target: out,
   };
-  const note = boundedReplyString(reply.note, 256);
+  const note = boundedReplyNote(reply.note, 256);
   if (note) metadata.note = note;
   return { [GATEWAY_ANNOTATION_REPLY_METADATA_KEY]: metadata };
 }
@@ -203,7 +211,8 @@ export class CatsBot {
   /**
    * Publish a message to a topic. Returns the server-assigned seq number.
    * `opts.metadata` rides the pub envelope untouched; server validation for
-   * contract-keyed metadata (e.g. gateway annotations) still applies.
+   * contract-keyed metadata (gateway annotations, gateway_annotation_reply,
+   * app_open) still applies — unrecognized keys pass through verbatim.
    */
   sendMessage(
     topic: string,
@@ -222,9 +231,10 @@ export class CatsBot {
    * Reply with a message plus a gateway-annotation point-back. The point-back
    * is attached as `metadata.gateway_annotation_reply`
    * (catsco.gateway-annotation-reply.v1); the webapp renders it as a passive
-   * highlight inside the bound gateway app. Fields that fail the bridge
-   * contract bounds are dropped before sending rather than trusting the
-   * caller, and an app_id/target mismatch fails locally.
+   * highlight inside the bound gateway app. A reply that fails the bridge
+   * contract bounds (bad app_id, no usable anchor, invalid rect, oversized
+   * or control-bearing strings) rejects locally rather than riding an
+   * otherwise valid message.
    */
   sendAnnotationReply(
     topic: string,

@@ -778,9 +778,14 @@ export function createGatewayAnnotationHost({
 
   // Forward an agent point-back into the live frame. The reply is display
   // only: it never reaches app JS as input, it just drives the SDK overlay.
-  // `onReplyAck` reports whether the frame could resolve the target.
-  function reply(value) {
+  // `fromUid` is the message author's uid — a point-back is only honoured
+  // when it comes from the agent this binding belongs to; anyone else in
+  // the conversation is ignored. `onReplyAck` reports whether the frame
+  // could resolve the target.
+  function reply(value, fromUid) {
     if (state.disposed || !revalidateBinding() || !state.session || !state.ready) return false;
+    const sender = Number(fromUid);
+    if (!Number.isSafeInteger(sender) || sender <= 0 || sender !== state.session.agentUid) return false;
     const normalized = normalizeGatewayAnnotationReply(value);
     if (!normalized) return false;
     if (normalized.app_id !== state.session.appId) return false;

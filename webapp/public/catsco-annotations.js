@@ -537,21 +537,31 @@
     return clean;
   }
 
-  // directTextSnippet concatenates only the element's own text nodes,
-  // stopping before sensitive descendants. Nested element text belongs to
-  // its own descriptor, so it is not folded into the parent's label.
-  function directTextSnippet(element, max) {
+  // elementTextSnippet collects the element's visible text while pruning
+  // every sensitive subtree along the way. textContent alone would include
+  // descendants like a hidden <span data-catsco-annotation-sensitive>, so
+  // the walk skips each sensitive subtree entirely (its text and anything
+  // nested inside it). deep=false keeps only direct text nodes: nested
+  // element text belongs to its own descriptor. The node budget fails
+  // closed the same way the text-selection coverage check does.
+  var TEXT_WALK_BUDGET = 500;
+  function elementTextSnippet(element, max, deep) {
     if (!element || !element.childNodes) return '';
     var text = '';
-    for (var i = 0; i < element.childNodes.length; i++) {
-      var child = element.childNodes[i];
-      if (child.nodeType === 3) {
-        text += (text ? ' ' : '') + (child.textContent || '');
-      } else if (child.nodeType === 1 && isSensitiveSubtreeRoot(child)) {
-        break;
+    var budget = TEXT_WALK_BUDGET;
+    function walk(node) {
+      for (var child = node.firstChild; child && budget > 0 && text.length <= max; child = child.nextSibling) {
+        budget -= 1;
+        if (child.nodeType === 3) {
+          text += (text ? ' ' : '') + (child.textContent || '');
+          continue;
+        }
+        if (child.nodeType !== 1) continue;
+        if (isSensitiveSubtreeRoot(child)) continue; // prune the whole subtree
+        if (deep) walk(child);
       }
-      if (text.length > max) break;
     }
+    walk(element);
     return clippedSnippet(text, max);
   }
 
@@ -564,6 +574,22 @@
       .map(function (token) { return token.replace(/[A-Z0-9]{5,}.*$/, ''); })
       .filter(function (token) { return token.length > 2 && !/^[a-z]{1,2}$/.test(token); });
     return words.slice(0, 2).join(' ');
+  }
+
+  // linkHref keeps only origin + pathname: query and fragment regularly
+  // carry signed URLs, reset tokens and tracking params that must not ride
+  // a label sent to the agent or the server.
+  function linkHref(element) {
+    var raw = element.getAttribute && element.getAttribute('href');
+    if (!raw || typeof raw !== 'string') return '';
+    var url;
+    try {
+      url = new URL(raw, document.baseURI);
+    } catch (error) {
+      return '';
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+    return clippedSnippet(url.origin + url.pathname, 64);
   }
 
   // elementLabel describes the element the way a reviewer would speak of it
@@ -579,11 +605,11 @@
 
     if (tag === 'button') {
       label = aria ? 'button [' + aria + ']'
-        : (text = clippedSnippet(element.textContent, 60)) ? 'button "' + text + '"'
+        : (text = elementTextSnippet(element, 60, true)) ? 'button "' + text + '"'
         : element.id ? 'button#' + cssEscapeFragment(element.id) : 'button';
     } else if (tag === 'a') {
-      text = clippedSnippet(element.textContent, 60);
-      var href = clippedSnippet(element.getAttribute && element.getAttribute('href'), 64);
+      text = elementTextSnippet(element, 60, true);
+      var href = linkHref(element);
       label = text ? 'link "' + text + '"' : href ? 'link to ' + href
         : element.id ? 'link#' + cssEscapeFragment(element.id) : 'link';
     } else if (tag === 'input' || tag === 'textarea' || tag === 'select') {
@@ -595,7 +621,7 @@
         : element.id ? tag + '#' + cssEscapeFragment(element.id)
         : tag;
     } else if (/^h[1-6]$/.test(tag)) {
-      text = clippedSnippet(element.textContent, 64);
+      text = elementTextSnippet(element, 64, true);
       label = text ? tag + ' "' + text + '"' : tag;
     } else if (tag === 'img') {
       var alt = clippedSnippet(element.getAttribute && element.getAttribute('alt'), 60);
@@ -607,7 +633,7 @@
     } else if (element.getAttribute && element.getAttribute('role')) {
       label = clippedSnippet(element.getAttribute('role'), 48) || tag;
     } else {
-      text = directTextSnippet(element, 60);
+      text = elementTextSnippet(element, 60, false);
       if (text) {
         label = tag + ' "' + text + '"';
       } else {
@@ -627,16 +653,19 @@
   // a neighbouring password field never leaks into the evidence.
   function nearbyTextSnippet(element) {
     var parts = [];
-    var own = clippedSnippet(element.textContent, 100);
+    // Deep-walked text prunes sensitive descendants, so a sensitive node
+    // nested inside the pointed element or its siblings cannot leak into
+    // the evidence.
+    var own = elementTextSnippet(element, 100, true);
     if (own) parts.push('"' + own + '"');
     var prev = element.previousElementSibling;
     if (prev && prev.nodeType === 1 && !isSensitiveSubtreeRoot(prev)) {
-      var prevText = clippedSnippet(prev.textContent, 40);
+      var prevText = elementTextSnippet(prev, 40, true);
       if (prevText) parts.unshift('[before: "' + prevText + '"]');
     }
     var next = element.nextElementSibling;
     if (next && next.nodeType === 1 && !isSensitiveSubtreeRoot(next)) {
-      var nextText = clippedSnippet(next.textContent, 40);
+      var nextText = elementTextSnippet(next, 40, true);
       if (nextText) parts.push('[after: "' + nextText + '"]');
     }
     var joined = parts.join(' ');
@@ -987,6 +1016,7 @@
       // Same path/revision still invalidates viewport geometry, including
       // an already completed screenshot. Host page handler revokes target.
       sendPageChanged();
+      repositionReplies();
     }
 
     function onScreenshotRequest(payload) {
@@ -1518,6 +1548,33 @@
       return null;
     }
 
+    function paintReplyOverlay(entry, rect) {
+      entry.box.style.left = rect.left + 'px';
+      entry.box.style.top = rect.top + 'px';
+      entry.box.style.width = rect.width + 'px';
+      entry.box.style.height = rect.height + 'px';
+      if (entry.note) {
+        var noteTop = rect.top - 34;
+        if (noteTop < 4) noteTop = rect.top + rect.height + 6;
+        entry.note.style.left = Math.max(4, rect.left) + 'px';
+        entry.note.style.top = noteTop + 'px';
+      }
+    }
+
+    // position:fixed rects go stale the moment the frame scrolls or
+    // resizes. Re-resolve each live reply target so the highlight tracks
+    // the element; targets that stopped resolving are dropped.
+    function repositionReplies() {
+      Array.from(state.replyOverlays.entries()).forEach(function (pair) {
+        var rect = replyTargetRect(pair[1].target);
+        if (!rect) {
+          dropReply(pair[0]);
+          return;
+        }
+        paintReplyOverlay(pair[1], rect);
+      });
+    }
+
     function onReply(payload) {
       var requestId = typeof payload.request_id === 'string' ? payload.request_id : '';
       var target = isPlainObject(payload.target) ? payload.target : null;
@@ -1539,25 +1596,19 @@
       ensureStyleContainer();
       var box = document.createElement('div');
       box.className = 'catsco-annotation-reply';
-      box.style.left = rect.left + 'px';
-      box.style.top = rect.top + 'px';
-      box.style.width = rect.width + 'px';
-      box.style.height = rect.height + 'px';
       var note = null;
       var noteText = clippedSnippet(payload.note, MAX_LABEL_CHARS);
       if (noteText) {
         note = document.createElement('div');
         note.className = 'catsco-annotation-reply-note';
         note.textContent = noteText;
-        var noteTop = rect.top - 34;
-        if (noteTop < 4) noteTop = rect.top + rect.height + 6;
-        note.style.left = Math.max(4, rect.left) + 'px';
-        note.style.top = noteTop + 'px';
       }
+      var entry = { box: box, note: note, target: target, timer: null };
+      paintReplyOverlay(entry, rect);
       document.body.appendChild(box);
       if (note) document.body.appendChild(note);
-      var timer = setTimeout(function () { dropReply(requestId); }, REPLY_TTL_MS);
-      state.replyOverlays.set(requestId, { box: box, note: note, timer: timer });
+      entry.timer = setTimeout(function () { dropReply(requestId); }, REPLY_TTL_MS);
+      state.replyOverlays.set(requestId, entry);
     }
 
     function onMessage(event) {

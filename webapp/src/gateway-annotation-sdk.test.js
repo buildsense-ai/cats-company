@@ -659,6 +659,29 @@ describe('agent point-back replies (reply.v1)', () => {
     expect(document.querySelectorAll('.catsco-annotation-reply')).toHaveLength(1);
   });
 
+  it('repositions a live reply overlay on scroll instead of going stale', () => {
+    const { posted } = createSdk();
+    connect();
+    const el = document.createElement('div');
+    el.id = 'reply-scroll-target';
+    document.body.appendChild(el);
+    const rect = { left: 5, top: 5, width: 50, height: 20 };
+    const spy = vi.spyOn(el, 'getBoundingClientRect').mockImplementation(() => rect);
+
+    sendReply({ target: { element_id: 'reply-scroll-target' } });
+    expect(document.querySelector('.catsco-annotation-reply').style.top).toBe('5px');
+
+    rect.top = 105;
+    document.dispatchEvent(new Event('scroll', { bubbles: false }));
+    expect(document.querySelector('.catsco-annotation-reply').style.top).toBe('105px');
+
+    // Once the target stops resolving, the overlay drops instead of
+    // hovering over the wrong spot.
+    spy.mockReturnValue({ left: 0, top: 0, width: 0, height: 0 });
+    document.dispatchEvent(new Event('scroll', { bubbles: false }));
+    expect(document.querySelector('.catsco-annotation-reply')).toBeNull();
+  });
+
   it('ignores replies for other sessions and clears overlays on navigation', () => {
     const { posted } = createSdk();
     connect();
@@ -778,6 +801,37 @@ describe('selector anchor correctness', () => {
       'h2 "本月概览"',
       'div#panel-a',
     ]);
+  });
+
+  it('nearby_text and labels prune sensitive descendants nested inside collected nodes', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = [
+      '<p>报表 <span data-catsco-annotation-sensitive>secret-token-1</span> 已生成</p>',
+      '<button id="deep">导出 <span data-catsco-annotation-sensitive>hidden-part</span> 报表</button>',
+      '<p>后续 <input type="password" value="s3cret"> 说明</p>',
+    ].join('');
+    document.body.appendChild(wrap);
+
+    const { posted } = clickInElementMode(wrap.querySelector('#deep'));
+    const selection = targetMessages(posted).pop().selection;
+    // The label keeps only the non-sensitive text nodes.
+    expect(selection.label).toBe('button "导出 报表"');
+    // Sibling text is collected but each sensitive descendant is pruned.
+    expect(selection.target.nearby_text).toContain('导出 报表');
+    expect(selection.target.nearby_text).not.toContain('hidden-part');
+    expect(selection.target.nearby_text).not.toContain('secret-token-1');
+    expect(selection.target.nearby_text).not.toContain('s3cret');
+  });
+
+  it('link labels drop the query string and fragment that may carry tokens', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<a id="tok-link" href="https://app.example.com/reset?token=abc123&sig=zzz#frag"></a>';
+    document.body.appendChild(wrap);
+    const { posted } = clickInElementMode(wrap.querySelector('#tok-link'));
+    const selection = targetMessages(posted).pop().selection;
+    expect(selection.label).toBe('link to https://app.example.com/reset');
+    expect(selection.label).not.toContain('abc123');
+    expect(selection.label).not.toContain('frag');
   });
 
   it('nearby_text skips sensitive siblings instead of quoting them', () => {
