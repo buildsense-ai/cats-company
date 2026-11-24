@@ -399,6 +399,28 @@ describe('normalizeGatewayAnnotationSelection', () => {
     expect(selection.target.viewport).toEqual(viewport);
   });
 
+  it('accepts bounded nearby_text on element targets and rejects invalid values', () => {
+    const selection = normalizeGatewayAnnotationSelection({
+      id: 'a3', kind: 'element', label: 'button "提交"',
+      target: { element_id: 'btn', nearby_text: '"提交" [after: "导出全部"]' },
+    });
+    expect(selection.target.nearby_text).toBe('"提交" [after: "导出全部"]');
+    // Oversized and control-character-bearing free text are rejected; tabs
+    // and newlines stay legal like the other affixes.
+    expect(normalizeGatewayAnnotationSelection({
+      id: 'a', kind: 'element', label: '', target: { element_id: 'b', nearby_text: 'n'.repeat(257) },
+    })).toBeNull();
+    expect(normalizeGatewayAnnotationSelection({
+      id: 'a', kind: 'element', label: '', target: { element_id: 'b', nearby_text: 'bad\u0007text' },
+    })).toBeNull();
+    expect(normalizeGatewayAnnotationSelection({
+      id: 'a', kind: 'element', label: '', target: { element_id: 'b', nearby_text: '列\t上下文' },
+    })).not.toBeNull();
+    expect(normalizeGatewayAnnotationSelection({
+      id: 'a', kind: 'element', label: '', target: { element_id: 'b', nearby_text: 42 },
+    })).toBeNull();
+  });
+
   it('rejects missing/extra/prototype-polluted keys', () => {
     expect(normalizeGatewayAnnotationSelection(null)).toBeNull();
     expect(normalizeGatewayAnnotationSelection(['array'])).toBeNull();

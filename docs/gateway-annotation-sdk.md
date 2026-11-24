@@ -49,9 +49,9 @@ import {
 
 - 严格键集合；未知键/`__proto__` 类污染键 → `null`。
 - `id` 必填，≤128 字符，无控制字符；`kind` ∈ `element|text|region`；`label` ≤256 字符（可空）。
-- target 按 kind：element 需 `element_id` 或 `selector`；text 需非空白 `text`；region 需 `rect` + `coordinate_space:'viewport'` + `viewport`。
+- target 按 kind：element 需 `element_id` 或 `selector`，可带 `nearby_text`（≤256，freetext 规则）；text 需非空白 `text`；region 需 `rect` + `coordinate_space:'viewport'` + `viewport`。
 - `rect` 视口归一化 0..1（允许 1e-6 浮点容差），零面积/越界拒绝；`viewport` 的 width/height >0、scroll ≥0、上限 2^20。
-- 自由文本（`text/prefix/suffix/body`）≤2000/256/256/2000，允许换行与制表符（`\n`/`\r`/`\t`），其余控制字符拒绝——与 server freetext 规则一致；`element_id/selector` 等标识类拒绝一切控制字符。
+- 自由文本（`text/prefix/suffix/nearby_text/body`）≤2000/256/256/256/2000，允许换行与制表符（`\n`/`\r`/`\t`），其余控制字符拒绝——与 server freetext 规则一致；`element_id/selector` 等标识类拒绝一切控制字符。
 
 ### normalizeGatewayAnnotations(value)
 
@@ -100,7 +100,7 @@ import {
 - 自动响应宿主 `connect.v1`（校验 `event.origin === parentOrigin` 且 `event.source === window.parent`），回 `ready.v1`；每次新 connect 重绑到最新 session。
 - `mode.v1` 切换显式选择态；`off` 完全恢复普通页面交互（overlay 移除、拦截监听不消费事件）。
 - 选择捕获：
-  - **element**：hover 高亮（真实 getBoundingClientRect），点击上报 `element_id`（优先 `getElementId` 回调 → `data-catsco-annotation-id` → DOM `id`）+ CSS selector（id 锚定、验证过的属性锚定，或 ≤6 层**同 tag** nth-of-type 链，≤512，含 rect/viewport 证据）。每段锚点与最终 selector 都以 `document.querySelector(selector) === 元素` 验证——转义/截断导致指向其他元素时丢弃该锚点或整条 selector（`element_id` 仍是锚），**绝不发布无法 match 的 selector**。
+  - **element**：hover 高亮（真实 getBoundingClientRect），点击上报 `element_id`（优先 `getElementId` 回调 → `data-catsco-annotation-id` → DOM `id`）+ CSS selector（id 锚定、验证过的属性锚定，或 ≤6 层**同 tag** nth-of-type 链，≤512，含 rect/viewport 证据）。每段锚点与最终 selector 都以 `document.querySelector(selector) === 元素` 验证——转义/截断导致指向其他元素时丢弃该锚点或整条 selector（`element_id` 仍是锚），**绝不发布无法 match 的 selector**。`label` 是元素的可读描述（如 `button "导出报表"`、`link "Docs"`、`image "季度图表"`），按 aria-label/可见文本/placeholder/alt/role/id 回退生成，跨域 agent 无法访问应用 DOM 时仍知道指向了什么。target 另携带 `nearby_text` 证据：元素自身文本 + 前后相邻兄弟的短引文（各≤40），逐节点过敏感子树检查——相邻密码框/敏感子树绝不引用——总长 ≤256，是上下文证据而非锚点。
   - **text**：mouseup 时读取 `window.getSelection()`，上报 `text`（≤2000）+ `prefix/suffix`（≤256）+ rect 证据；发送后清除选区。**整段 Range 覆盖检查**：start/end 容器、共同祖先及 Range 实际触及的每个元素（`Range.intersectsNode`）只要任一落入敏感 subtree 即整段拒绝（fail-closed；遍历超 500 节点预算同样拒绝）。
   - **region**：拖拽框选，释放点以 mouseup 事件自身坐标为准（不依赖最后一次 mousemove），两端坐标先 clamp 进 viewport 再做 <6px 误触判定与归一化；上报归一化 `rect` + `coordinate_space:'viewport'` + `viewport` 证据。
 - **rect 视口交集**：element/text 的辅助 rect 一律先取 DOMRect 与 iframe viewport 的交集再归一化（部分可见大元素/文本选择产生 `x+w≤1` 的合法 rect）；交集为空（完全不可见）时省略 rect/coordinate_space/viewport，仅保留 element/text anchor；region 选择发生在 viewport 内，始终为有效正面积。

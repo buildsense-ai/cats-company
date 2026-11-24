@@ -85,6 +85,13 @@ func TestNormalizeGatewayAnnotationsAcceptsEveryKind(t *testing.T) {
 			}),
 		},
 		{
+			name: "element with nearby_text evidence",
+			value: gatewayAnnotationRequest("board", 9, func(value map[string]interface{}) {
+				annotation := value["annotations"].([]interface{})[0].(map[string]interface{})
+				annotation["target"].(map[string]interface{})["nearby_text"] = "\"提交\" [after: \"导出全部\"]"
+			}),
+		},
+		{
 			name: "text",
 			value: gatewayAnnotationRequest("board", 9, func(value map[string]interface{}) {
 				annotation := value["annotations"].([]interface{})[0].(map[string]interface{})
@@ -335,6 +342,25 @@ func TestNormalizeGatewayAnnotationsRejectsInvalidValues(t *testing.T) {
 			value: gatewayAnnotationRequest("board", 9, func(value map[string]interface{}) {
 				value["annotations"].([]interface{})[0].(map[string]interface{})["target"].(map[string]interface{})["prefix"] =
 					strings.Repeat("字", gatewayAnnotationsMaxAffixRunes+1)
+			}),
+		},
+		{
+			name: "nearby_text too long",
+			value: gatewayAnnotationRequest("board", 9, func(value map[string]interface{}) {
+				value["annotations"].([]interface{})[0].(map[string]interface{})["target"].(map[string]interface{})["nearby_text"] =
+					strings.Repeat("字", gatewayAnnotationsMaxAffixRunes+1)
+			}),
+		},
+		{
+			name: "nearby_text carries a control character",
+			value: gatewayAnnotationRequest("board", 9, func(value map[string]interface{}) {
+				value["annotations"].([]interface{})[0].(map[string]interface{})["target"].(map[string]interface{})["nearby_text"] = "上下文\u0007"
+			}),
+		},
+		{
+			name: "nearby_text wrong type",
+			value: gatewayAnnotationRequest("board", 9, func(value map[string]interface{}) {
+				value["annotations"].([]interface{})[0].(map[string]interface{})["target"].(map[string]interface{})["nearby_text"] = 42.0
 			}),
 		},
 		{
@@ -1422,7 +1448,7 @@ func annotationDocForModelText() *gatewayAnnotationsDocument {
 	return &gatewayAnnotationsDocument{
 		AgentUID: 9, AppID: "board",
 		Page:        gatewayAnnotationsPage{Path: "/board", Revision: "r7"},
-		Annotations: []gatewayAnnotation{{ID: "a1", Kind: "element", Label: "发布按钮", Body: "改成蓝色", Target: gatewayAnnotationTarget{ElementID: "submit-btn", Selector: "button#submit"}}},
+		Annotations: []gatewayAnnotation{{ID: "a1", Kind: "element", Label: "发布按钮", Body: "改成蓝色", Target: gatewayAnnotationTarget{ElementID: "submit-btn", Selector: "button#submit", NearbyText: "\"提交\" [after: \"导出全部\"]"}}},
 	}
 }
 
@@ -1893,7 +1919,7 @@ func TestAgentHistoryCopyCarriesAnnotationContextForCloudRestore(t *testing.T) {
 
 	agentRead := hub.historyMessageDataForRecipient(9, message)
 	restoredText := cloudRestoreEquivalentText(agentRead)
-	for _, fragment := range []string{"original-user-body", "[Gateway 标注", "board", "/board", "revision r7", "改成蓝色", "element_id=submit-btn", "selector=button#submit"} {
+	for _, fragment := range []string{"original-user-body", "[Gateway 标注", "board", "/board", "revision r7", "改成蓝色", "element_id=submit-btn", "selector=button#submit", "附近文本：「\"提交\""} {
 		if !strings.Contains(restoredText, fragment) {
 			t.Fatalf("actual cloud history content omits annotation body/target: %q", fragment)
 		}

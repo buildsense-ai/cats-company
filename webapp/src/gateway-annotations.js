@@ -187,7 +187,7 @@ function normalizedViewport(value) {
 function normalizedTarget(kind, value) {
   if (!plainObject(value)) return null;
   const target = {};
-  const strictKeys = new Set(['element_id', 'selector', 'text', 'prefix', 'suffix', 'rect', 'coordinate_space', 'viewport']);
+  const strictKeys = new Set(['element_id', 'selector', 'text', 'prefix', 'suffix', 'nearby_text', 'rect', 'coordinate_space', 'viewport']);
   for (const key of Object.keys(value)) {
     if (!strictKeys.has(key) || key === '__proto__' || key === 'constructor' || key === 'prototype') return null;
   }
@@ -211,6 +211,12 @@ function normalizedTarget(kind, value) {
   if (value.suffix !== undefined && value.suffix !== null) {
     target.suffix = boundedString(value.suffix, MAX_AFFIX_CHARS, true);
     if (target.suffix === null || FREE_TEXT_FORBIDDEN.test(target.suffix)) return null;
+  }
+  // nearby_text is capture-side readable context around an element target
+  // (own text plus sibling quotes), bounded like the text affixes.
+  if (value.nearby_text !== undefined && value.nearby_text !== null) {
+    target.nearby_text = boundedString(value.nearby_text, MAX_AFFIX_CHARS, true);
+    if (target.nearby_text === null || FREE_TEXT_FORBIDDEN.test(target.nearby_text)) return null;
   }
   if (value.rect !== undefined && value.rect !== null) {
     target.rect = normalizedRect(value.rect);

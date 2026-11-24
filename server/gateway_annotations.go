@@ -102,11 +102,15 @@ type gatewayAnnotationViewport struct {
 // gatewayAnnotationTarget is the bounded, kind-dependent target of one
 // annotation.
 type gatewayAnnotationTarget struct {
-	ElementID       string                     `json:"element_id,omitempty"`
-	Selector        string                     `json:"selector,omitempty"`
-	Text            string                     `json:"text,omitempty"`
-	Prefix          string                     `json:"prefix,omitempty"`
-	Suffix          string                     `json:"suffix,omitempty"`
+	ElementID string `json:"element_id,omitempty"`
+	Selector  string `json:"selector,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Prefix    string `json:"prefix,omitempty"`
+	Suffix    string `json:"suffix,omitempty"`
+	// NearbyText is capture-side readable context around an element target
+	// (its own text plus short sibling quotes). It is evidence only, never
+	// an anchor, and is bounded like the text affixes.
+	NearbyText      string                     `json:"nearby_text,omitempty"`
 	Rect            *gatewayAnnotationRect     `json:"rect,omitempty"`
 	CoordinateSpace string                     `json:"coordinate_space,omitempty"`
 	Viewport        *gatewayAnnotationViewport `json:"viewport,omitempty"`
@@ -329,6 +333,13 @@ func normalizeGatewayAnnotationTarget(kind string, value interface{}) (*gatewayA
 			return nil, errors.New("target.suffix must be at most 256 characters")
 		}
 		target.Suffix = value
+	}
+	if raw, present := record["nearby_text"]; present && raw != nil {
+		value, isString := raw.(string)
+		if !isString || !validGatewayAnnotationRunes(value, gatewayAnnotationsMaxAffixRunes, true) {
+			return nil, errors.New("target.nearby_text must be a string of at most 256 characters")
+		}
+		target.NearbyText = value
 	}
 	if rawRect, present := record["rect"]; present && rawRect != nil {
 		rect, err := normalizeGatewayAnnotationRect(rawRect)
@@ -1160,6 +1171,9 @@ func (t gatewayAnnotationTarget) modelDescription() string {
 	}
 	if t.Suffix != "" {
 		parts = append(parts, "后缀：「"+t.Suffix+"」")
+	}
+	if t.NearbyText != "" {
+		parts = append(parts, "附近文本：「"+t.NearbyText+"」")
 	}
 	if t.Rect != nil {
 		parts = append(parts, fmt.Sprintf("区域(x=%v,y=%v,w=%v,h=%v)", t.Rect.X, t.Rect.Y, t.Rect.Width, t.Rect.Height))

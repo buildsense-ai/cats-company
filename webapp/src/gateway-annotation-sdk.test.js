@@ -655,6 +655,69 @@ describe('selector anchor correctness', () => {
     expect(target.element_id).toBe('x"y');
   });
 
+  it('labels describe the element readably and carry nearby-text evidence', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<p>选择导出的数据范围</p><button id="export-btn">导出报表</button><a href="/help">帮助</a>';
+    document.body.appendChild(wrap);
+    const button = wrap.querySelector('button');
+
+    const { posted } = clickInElementMode(button);
+    const selection = targetMessages(posted).pop().selection;
+    expect(selection.label).toBe('button "导出报表"');
+    expect(selection.target.nearby_text).toContain('"导出报表"');
+    expect(selection.target.nearby_text).toContain('[before: "选择导出的数据范围"]');
+    expect(selection.target.nearby_text).toContain('[after: "帮助"]');
+  });
+
+  it('labels fall back through aria-label, placeholder, alt and ids', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = [
+      '<button aria-label="关闭对话框"></button>',
+      '<input id="q" placeholder="搜索报表">',
+      '<img src="x.png" alt="季度图表">',
+      '<h2>本月概览</h2>',
+      '<div id="panel-a"></div>',
+    ].join('');
+    document.body.appendChild(wrap);
+
+    // One SDK instance collects every click: createSdk() is per-instance and
+    // leaked instances would keep posting into later tests' message bus.
+    const { posted } = createSdk();
+    connect();
+    sendMode('element');
+    const click = (el) => {
+      vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 10, width: 100, height: 30 });
+      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    };
+    for (const el of wrap.children) click(el);
+
+    const labels = targetMessages(posted).map((entry) => entry.selection.label);
+    expect(labels).toEqual([
+      'button [关闭对话框]',
+      'input "搜索报表"',
+      'image "季度图表"',
+      'h2 "本月概览"',
+      'div#panel-a',
+    ]);
+  });
+
+  it('nearby_text skips sensitive siblings instead of quoting them', () => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = [
+      '<input type="password" name="pwd" value="s3cret">',
+      '<button id="mid">继续</button>',
+      '<div data-catsco-annotation-sensitive>内部工号 88</div>',
+    ].join('');
+    document.body.appendChild(wrap);
+
+    const { posted } = clickInElementMode(wrap.querySelector('#mid'));
+    const target = targetMessages(posted).pop().selection.target;
+    expect(target.nearby_text).toBe('"继续"');
+    expect(target.nearby_text).not.toContain('s3cret');
+    expect(target.nearby_text).not.toContain('内部工号');
+  });
+
   it('a selector that cannot match the real element is dropped, not asserted', () => {
     // Deep chain beyond the 6-level cap inside a long hierarchy: the built
     // selector would exceed the cap/boundary and must not claim to match.

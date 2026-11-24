@@ -40,6 +40,7 @@
   var CAPABILITIES = ['element', 'text', 'region'];
   var MAX_ID_CHARS = 128;
   var MAX_LABEL_CHARS = 256;
+  var MAX_NEARBY_CHARS = 256;
   var MAX_TEXT_CHARS = 2000;
   var MAX_AFFIX_CHARS = 256;
   var MAX_SELECTOR_CHARS = 512;
@@ -521,12 +522,120 @@
     return selectorMatchesElement(selector, element) ? selector : null;
   }
 
+  // clippedSnippet produces one bounded, control-character-free text
+  // fragment for labels and nearby-text evidence. Whitespace collapses to
+  // single spaces so the rendered label never carries raw line breaks.
+  function clippedSnippet(text, max) {
+    var clean = String(text || '').replace(CONTROL_FORBIDDEN, ' ').replace(/\s+/g, ' ').trim();
+    if (!clean) return '';
+    if (clean.length > max) clean = clean.slice(0, Math.max(0, max - 1)) + '\u2026';
+    return clean;
+  }
+
+  // directTextSnippet concatenates only the element's own text nodes,
+  // stopping before sensitive descendants. Nested element text belongs to
+  // its own descriptor, so it is not folded into the parent's label.
+  function directTextSnippet(element, max) {
+    if (!element || !element.childNodes) return '';
+    var text = '';
+    for (var i = 0; i < element.childNodes.length; i++) {
+      var child = element.childNodes[i];
+      if (child.nodeType === 3) {
+        text += (text ? ' ' : '') + (child.textContent || '');
+      } else if (child.nodeType === 1 && isSensitiveSubtreeRoot(child)) {
+        break;
+      }
+      if (text.length > max) break;
+    }
+    return clippedSnippet(text, max);
+  }
+
+  // semanticClass picks one meaningful class token, dropping CSS-module
+  // hashes (e.g. "styles_x1y2z" -> "styles") and opaque abbreviations.
+  function semanticClass(element) {
+    var className = typeof element.className === 'string' ? element.className : '';
+    if (!className) return '';
+    var words = className.split(/[\s_-]+/)
+      .map(function (token) { return token.replace(/[A-Z0-9]{5,}.*$/, ''); })
+      .filter(function (token) { return token.length > 2 && !/^[a-z]{1,2}$/.test(token); });
+    return words.slice(0, 2).join(' ');
+  }
+
+  // elementLabel describes the element the way a reviewer would speak of it
+  // ("button \"Submit\"", 'link "Docs"'), so agents that cannot reach the
+  // app's DOM still know what was pointed at. The tag/id selector evidence
+  // remains in the target; this label is the human-facing description.
   function elementLabel(element) {
     if (!element || element.nodeType !== 1) return '';
     var tag = element.tagName.toLowerCase();
-    var descriptor = element.id ? tag + '#' + cssEscapeFragment(element.id) : tag;
-    if (descriptor.length > MAX_LABEL_CHARS) descriptor = descriptor.slice(0, MAX_LABEL_CHARS);
-    return descriptor;
+    var label = '';
+    var aria = clippedSnippet(element.getAttribute && element.getAttribute('aria-label'), 64);
+    var text;
+
+    if (tag === 'button') {
+      label = aria ? 'button [' + aria + ']'
+        : (text = clippedSnippet(element.textContent, 60)) ? 'button "' + text + '"'
+        : element.id ? 'button#' + cssEscapeFragment(element.id) : 'button';
+    } else if (tag === 'a') {
+      text = clippedSnippet(element.textContent, 60);
+      var href = clippedSnippet(element.getAttribute && element.getAttribute('href'), 64);
+      label = text ? 'link "' + text + '"' : href ? 'link to ' + href
+        : element.id ? 'link#' + cssEscapeFragment(element.id) : 'link';
+    } else if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+      // Never read .value: the SDK does not exfiltrate field contents.
+      var placeholder = clippedSnippet(element.getAttribute && element.getAttribute('placeholder'), 60);
+      var name = clippedSnippet(element.getAttribute && element.getAttribute('name'), 48);
+      label = placeholder ? tag + ' "' + placeholder + '"'
+        : name ? tag + ' [' + name + ']'
+        : element.id ? tag + '#' + cssEscapeFragment(element.id)
+        : tag;
+    } else if (/^h[1-6]$/.test(tag)) {
+      text = clippedSnippet(element.textContent, 64);
+      label = text ? tag + ' "' + text + '"' : tag;
+    } else if (tag === 'img') {
+      var alt = clippedSnippet(element.getAttribute && element.getAttribute('alt'), 60);
+      label = alt ? 'image "' + alt + '"' : 'image';
+    } else if (tag === 'video' || tag === 'audio' || tag === 'canvas' || tag === 'iframe' || tag === 'svg') {
+      label = tag;
+    } else if (aria) {
+      label = tag + ' [' + aria + ']';
+    } else if (element.getAttribute && element.getAttribute('role')) {
+      label = clippedSnippet(element.getAttribute('role'), 48) || tag;
+    } else {
+      text = directTextSnippet(element, 60);
+      if (text) {
+        label = tag + ' "' + text + '"';
+      } else {
+        var classes = semanticClass(element);
+        label = classes ? tag + '.' + classes.split(' ')[0]
+          : element.id ? tag + '#' + cssEscapeFragment(element.id)
+          : tag;
+      }
+    }
+    if (label.length > MAX_LABEL_CHARS) label = label.slice(0, MAX_LABEL_CHARS);
+    return label;
+  }
+
+  // nearbyTextSnippet gives the agent the readable context around the
+  // pointed element: its own text plus short quotes of the siblings before
+  // and after. Siblings inside sensitive subtrees are skipped per node, so
+  // a neighbouring password field never leaks into the evidence.
+  function nearbyTextSnippet(element) {
+    var parts = [];
+    var own = clippedSnippet(element.textContent, 100);
+    if (own) parts.push('"' + own + '"');
+    var prev = element.previousElementSibling;
+    if (prev && prev.nodeType === 1 && !isSensitiveSubtreeRoot(prev)) {
+      var prevText = clippedSnippet(prev.textContent, 40);
+      if (prevText) parts.unshift('[before: "' + prevText + '"]');
+    }
+    var next = element.nextElementSibling;
+    if (next && next.nodeType === 1 && !isSensitiveSubtreeRoot(next)) {
+      var nextText = clippedSnippet(next.textContent, 40);
+      if (nextText) parts.push('[after: "' + nextText + '"]');
+    }
+    var joined = parts.join(' ');
+    return joined.length > MAX_NEARBY_CHARS ? joined.slice(0, MAX_NEARBY_CHARS) : joined;
   }
 
   function textLabel(text) {
@@ -958,6 +1067,8 @@
       if (elementId) target.element_id = elementId;
       var selector = selectorFor(element);
       if (selector) target.selector = selector;
+      var nearby = nearbyTextSnippet(element);
+      if (nearby) target.nearby_text = nearby;
       var rect = element.getBoundingClientRect();
       if (rect && rect.width > 0 && rect.height > 0) {
         var visibleRect = normalizedViewportRect(rect);
