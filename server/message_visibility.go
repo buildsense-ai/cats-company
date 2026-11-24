@@ -68,7 +68,7 @@ func isJudgeableActivationMessage(msg *ServerMessage) bool {
 // can see, so that is a separate change rather than a local tweak.
 func isInternalAgentWorkingMessage(displayType string, content interface{}, blocks []types.ContentBlock) bool {
 	switch strings.ToLower(strings.TrimSpace(displayType)) {
-	case "memory_branch", "runtime_plan", "thinking", "tool_use", "tool_result", "debug",
+	case "memory_branch", wikiInjectionType, "runtime_plan", "thinking", "tool_use", "tool_result", "debug",
 		"stream_delta", "stream_cancel", taskStatusType:
 		return true
 	}
@@ -95,7 +95,7 @@ func isInternalAgentWorkingMessage(displayType string, content interface{}, bloc
 
 func isInternalAgentContentBlock(blockType string) bool {
 	switch strings.ToLower(strings.TrimSpace(blockType)) {
-	case "memory_branch", "runtime_plan", "thinking", "tool_use", "tool_result", "debug":
+	case "memory_branch", wikiInjectionType, "runtime_plan", "thinking", "tool_use", "tool_result", "debug":
 		return true
 	default:
 		return false

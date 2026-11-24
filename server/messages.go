@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,6 +42,7 @@ type SendMessageRequest struct {
 	ReplyTo                int                    `json:"reply_to,omitempty"`
 	Mentions               []string               `json:"mentions,omitempty"`
 	fileAnnotationsTrusted bool
+	wikiInjectionTrusted   bool
 }
 
 type normalizedMessagePayload struct {
@@ -1878,6 +1880,12 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 		storedContent = normalizeContentText(clean)
 	}
 	blocks := sanitizeContentBlocks(req.ContentBlocks)
+	if !req.wikiInjectionTrusted && (strings.EqualFold(displayType, wikiInjectionType) ||
+		strings.EqualFold(inferDisplayTypeFromContent(displayContent), wikiInjectionType) || slices.ContainsFunc(blocks, func(block types.ContentBlock) bool {
+		return strings.EqualFold(strings.TrimSpace(block.Type), wikiInjectionType)
+	})) {
+		return nil, errors.New("invalid Wiki injection message")
+	}
 	if displayType == "memory_branch" {
 		blocks = nil
 	}
@@ -2048,7 +2056,7 @@ func isTransientRuntimePayload(payload *normalizedMessagePayload) bool {
 
 func isStructuredDisplayType(displayType string) bool {
 	switch displayType {
-	case "thinking", "tool_use", "tool_result", "memory_branch":
+	case "thinking", "tool_use", "tool_result", "memory_branch", wikiInjectionType:
 		return true
 	default:
 		return false
@@ -2058,12 +2066,12 @@ func isStructuredDisplayType(displayType string) bool {
 func buildStructuredContentBlocks(displayType string, content interface{}, metadata map[string]interface{}) []types.ContentBlock {
 	text := normalizeContentText(content)
 	switch displayType {
-	case "memory_branch":
+	case "memory_branch", wikiInjectionType:
 		payload, ok := content.(map[string]interface{})
 		if !ok {
 			return nil
 		}
-		return []types.ContentBlock{{Type: "memory_branch", Payload: payload}}
+		return []types.ContentBlock{{Type: displayType, Payload: payload}}
 	case "thinking":
 		return []types.ContentBlock{{Type: "thinking", Thinking: text}}
 	case "tool_use":

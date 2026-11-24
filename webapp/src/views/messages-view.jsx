@@ -4,7 +4,8 @@ import { ArrowLeft, Bookmark, BookOpen, Check, CheckCircle2, CheckSquare, Chevro
 import { Download, FileText, RefreshCw, X } from '../widgets/desktop-icons';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq, isWSConnected } from '../api';
 import t from '../i18n';
-import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel, hasWorkingSources } from '../widgets/chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel, hasWorkingSources, workingWikiInjections } from '../widgets/chat-message';
+import WikiInjectionPanel from '../widgets/wiki-injection-panel';
 import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import WikiMemoryPanel from '../widgets/wiki-memory-panel';
@@ -131,7 +132,7 @@ const TYPING_TIMEOUT_MS = 10000;
 // that mentions two applications settles on one instead of flicking between them.
 const MENTION_OPEN_SETTLE_MS = 260;
 const PREVIEW_COMPOSER_TEXT_DRAG_HOLD_MS = 140;
-const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result', 'memory_branch']);
+const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result', 'memory_branch', 'wiki_injection']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const MAX_DROPPED_FILES = 200;
 const LONG_PASTE_CHAR_THRESHOLD = 4000;
@@ -1141,18 +1142,30 @@ export default function MessagesView({
   }, [messages, olderGalleryItems]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const [wikiMemoryTopic, setWikiMemoryTopic] = useState('');
-  const wikiMemoryOpen = wikiMemoryEnabled && wikiMemoryTopic === topic && Boolean(topic);
+  const [wikiInjection, setWikiInjection] = useState(null);
+  const injectionTrigger = useRef(null);
+  const injectionOpen = wikiMemoryEnabled && wikiInjection?.open && wikiInjection.topic === topic && wikiInjection.viewer === user.uid;
+  const wikiMemoryOpen = wikiMemoryEnabled && Boolean(topic) && (wikiMemoryTopic === topic || injectionOpen);
   useEffect(() => {
     setWikiMemoryTopic('');
+    setWikiInjection(null);
   }, [topic, user.uid]);
   useEffect(() => {
-    const clearWiki = () => setWikiMemoryTopic('');
+    const clearWiki = () => {
+      setWikiMemoryTopic('');
+      setWikiInjection(null);
+    };
     window.addEventListener('cc:auth-changed', clearWiki);
     return () => window.removeEventListener('cc:auth-changed', clearWiki);
   }, []);
   useEffect(() => {
     setWikiMemoryTopic('');
+    setWikiInjection(null);
   }, [previewFile, cloudArtifactsListOpen]);
+  const closeInjection = () => {
+    setWikiInjection(current => current && { ...current, open: false });
+    injectionTrigger.current?.focus({ preventScroll: true });
+  };
   // What this conversation's panel shows comes from that conversation's own
   // record, never from the panel state of whichever conversation was on screen a
   // moment ago.
@@ -7477,7 +7490,8 @@ export default function MessagesView({
             <button type="button" className="v3-action-btn" aria-label="记忆" title="记忆" aria-expanded={wikiMemoryOpen}
               onClick={() => {
                 if (!wikiMemoryOpen && previewExpanded) restorePreviewWorkspace();
-                setWikiMemoryTopic(wikiMemoryOpen ? '' : topic);
+                setWikiMemoryTopic(wikiMemoryOpen && !injectionOpen ? '' : topic);
+                setWikiInjection(null);
               }}>
               <BookOpen size={17} aria-hidden="true" />
             </button>
@@ -7634,6 +7648,24 @@ export default function MessagesView({
           if (group.type === 'working') {
             if (!showThinking && !liquidConversation && !hasWorkingSources(group.messages)) return null;
             const processState = conversationExecutionState(group);
+            const botUid = parseUid(group.messages[0].from_uid);
+            const openInjection = (eventId, trigger) => {
+              if (!eventId && injectionOpen && wikiInjection.turn === group.renderKey) {
+                closeInjection();
+                return;
+              }
+              const batches = workingWikiInjections(group.messages);
+              const previous = wikiInjection?.turn === group.renderKey ? wikiInjection.selected : null;
+              const selected = eventId ?? previous ?? batches[0]?.event_id;
+              if (!selected) return;
+              injectionTrigger.current = trigger;
+              if (previewExpanded) restorePreviewWorkspace();
+              setWikiMemoryTopic('');
+              setWikiInjection(current => ({
+                topic, viewer: user.uid, turn: group.renderKey, agentUid: botUid, selected, open: true,
+                opening: (current?.opening ?? 0) + 1,
+              }));
+            };
             return (
               <div
                 key={group.renderKey}
@@ -7661,6 +7693,8 @@ export default function MessagesView({
                   workingComplete={group.workingComplete}
                   replyStreaming={liquidConversation && group.conversationStreaming}
                   memoryBranchActive={processState === 'running' && !group.conversationStreaming}
+                  onWikiInjection={wikiMemoryEnabled && botUid > 0 ? openInjection : undefined}
+                  activeInjection={injectionOpen ? wikiInjection.selected : undefined}
                   executionState={liquidConversation ? processState : undefined}
                   executionNote={liquidConversation && conversationTaskForGroup(group)?.state === 'failed'
                     ? String(conversationTaskForGroup(group).error || conversationTaskForGroup(group).summary || '') : undefined}
@@ -8221,7 +8255,7 @@ export default function MessagesView({
             </div>
           );
         })}
-        {wikiMemoryOpen && wikiMemoryAgents.length > 0 && (
+        {wikiMemoryOpen && (injectionOpen || wikiMemoryAgents.length > 0) && (
           <div className="v3-file-preview-shell cc-wiki-shell">
             <div
               className="v3-preview-resize-handle"
@@ -8234,7 +8268,14 @@ export default function MessagesView({
               onKeyDown={handlePreviewResizeKeyDown}
               title="拖动调整记忆侧栏宽度"
             />
-            <WikiMemoryPanel viewerUid={user.uid} topicId={topic} agents={wikiMemoryAgents} onClose={() => setWikiMemoryTopic('')} />
+            {injectionOpen ? <WikiInjectionPanel
+              key={wikiInjection.opening}
+              agentUid={wikiInjection.agentUid}
+              batches={workingWikiInjections(groupedMessages.find(group => group.renderKey === wikiInjection.turn)?.messages)}
+              selected={wikiInjection.selected}
+              onSelect={selected => setWikiInjection({ ...wikiInjection, selected })}
+              onClose={closeInjection}
+            /> : <WikiMemoryPanel viewerUid={user.uid} topicId={topic} agents={wikiMemoryAgents} onClose={() => setWikiMemoryTopic('')} />}
           </div>
         )}
         {sidePanelOpen && !cloudArtifactsListOpen && (
@@ -8910,7 +8951,9 @@ function assistantWorkTurn(message, senderIsBot, latestHumanPromptKey) {
   const explicitTurn = assistantReplyTurnKey(message);
   return {
     explicitTurnKey: explicitTurn ? `${senderKey}:turn:${explicitTurn}` : '',
-    fallbackTurnKey: latestHumanPromptKey ? `${senderKey}:prompt:${latestHumanPromptKey}` : '',
+    fallbackTurnKey: (message?.type === 'wiki_injection' && message.reply_to > 0)
+      ? `${senderKey}:prompt:${message.reply_to}`
+      : latestHumanPromptKey ? `${senderKey}:prompt:${latestHumanPromptKey}` : '',
   };
 }
 

@@ -50,6 +50,7 @@ vi.mock('../widgets/chat-message', async (importOriginal) => {
   return {
   __esModule: true,
   hasWorkingSources: actual.hasWorkingSources,
+  workingWikiInjections: actual.workingWikiInjections,
   downloadableMediaURL: (url) => `${url}${url.includes('?') ? '&' : '?'}download=1`,
   default: function MockChatMessage(props) {
     if (sourceJourney.enabled) return <actual.default {...props} />;
@@ -285,6 +286,8 @@ vi.mock('../utils/conversation-share-image', () => ({
 vi.mock('../api', () => ({
   api: {
     getMessages: vi.fn(),
+    getWikiInjection: vi.fn(),
+    voteOnWikiInjection: vi.fn(),
     getConversations: vi.fn(async () => ({ conversations: [] })),
     getConversationFork: vi.fn(async () => { throw Object.assign(new Error('session_fork_not_found'), { status: 404 }); }),
     forkConversation: vi.fn(),
@@ -2094,6 +2097,43 @@ describe('MessagesView composer draft isolation', () => {
     const message = container.querySelector('.mock-chat-message[data-message-id="72"]');
     expect(message?.dataset.senderName).toBe('Design Agent');
     expect(message?.dataset.senderAvatar).toBe('/uploads/design-agent.png');
+  });
+
+  it('opens a saved Wiki injection from the timeline and keeps the last selected batch on reopening', async () => {
+    sourceJourney.enabled = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    const bot = { id: 2, display_name: 'Saturday', is_bot: true };
+    const messages = ['previous', 'initial', 'refresh'].map((kind, index) => {
+      const payload = { kind, timestamp: '2026-07-01T00:00:0' + index + 'Z', event_id: 'event-' + index };
+      return { id: 74 + index, from_uid: 2, type: 'wiki_injection', content: payload, created_at: payload.timestamp };
+    });
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 73, from_uid: 1, type: 'text', content: 'Try it', created_at: '2026-06-30T23:59:59Z' },
+      ...messages,
+      { id: 77, from_uid: 2, type: 'text', content: 'Final reply', created_at: '2026-07-01T00:00:03Z' },
+    ] });
+    api.getFriends.mockResolvedValueOnce({ friends: [bot] });
+    api.getWikiInjection.mockImplementation(async (botUid, eventId) => ({
+      summary: 'Summary ' + eventId, references: [{ wiki_id: 'mem_one', title: 'A Wiki', evidence_level: 'wiki_body' }], votes: {},
+    }));
+    api.voteOnWikiInjection.mockResolvedValue({});
+    await mountTopic(root, 'p2p_1_2', { topicName: bot.display_name, wikiMemoryEnabled: true });
+    await act(async () => { await flushPromises(); });
+    const click = element => act(async () => { element.click(); await flushPromises(); });
+    const toggle = container.querySelector('.cc-wiki-injection-toggle');
+    await click(toggle);
+    expect(container.querySelector('.cc-wiki-injection-summary')?.textContent).toBe('Summary event-0');
+    await click(container.querySelector('.cc-wiki-injection-heading h3 button'));
+    await click(container.querySelector('.cc-wiki-injection-menu button:last-child'));
+    expect(container.querySelector('.cc-wiki-injection-summary')?.textContent).toBe('Summary event-2');
+    await click(container.querySelector('[aria-label="A Wiki有帮助"]'));
+    expect(api.voteOnWikiInjection).toHaveBeenCalledWith(2, 'event-2', 'mem_one', 1);
+    await click(container.querySelector('[aria-label="关闭记忆注入"]'));
+    await click(toggle);
+    expect(container.querySelector('.cc-wiki-injection-summary')?.textContent).toBe('Summary event-2');
+    await click(container.querySelector('button[aria-label^="执行详情"]'));
+    await click(container.querySelectorAll('.cc-wiki-injection-step')[1]);
+    expect(container.querySelector('.cc-wiki-injection-summary')?.textContent).toBe('Summary event-1');
   });
 
   // Failure modes: the timeline keeps the source-bearing group with reasoning

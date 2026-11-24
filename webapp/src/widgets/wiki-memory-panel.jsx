@@ -229,7 +229,7 @@ function WikiCatalog({ hidden, paused, agentUid, topicId, visit, visitKey, onOpe
           <div className="cc-wiki-row-text">
             <span>{item.title}</span>
             <div className="cc-wiki-row-meta">
-              <time dateTime={item.created_at}>{formatDate(item.created_at)}</time>
+              {item.created_at && <time dateTime={item.created_at}>{formatDate(item.created_at)}</time>}
               {isNew(item) && <small className="cc-wiki-new">新增</small>}
             </div>
           </div>
@@ -277,17 +277,18 @@ function WikiListGroup({ title, count, children }) {
   </details>;
 }
 
-function WikiReader({ item, agentUid, conversationTitle, onBack }) {
+export function WikiReader({ item, agentUid, conversationTitle, onBack, backLabel = '返回目录' }) {
   const backButton = useRef(null);
   useEffect(() => backButton.current?.focus({ preventScroll: true }), []);
   return (
     <section className="cc-wiki-reader" aria-label="Wiki 正文" onKeyDown={event => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
+      event.stopPropagation();
       onBack();
     }}>
       <div className="cc-wiki-reader-toolbar">
-        <button ref={backButton} type="button" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" /> 返回目录</button>
+        <button ref={backButton} type="button" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" /> {backLabel}</button>
       </div>
       <div className="cc-wiki-reader-scroll">
         <div className="cc-wiki-reader-page">
