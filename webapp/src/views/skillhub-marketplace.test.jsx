@@ -63,7 +63,25 @@ it('copies only an explicitly enabled example prompt', async () => {
 });
 
 it('rejects malformed presentation fields without crashing the legacy detail', () => {
+  expect(validIntro({ ...content, usagePrompts: [{ label: '开启', prompt: '' }] })).toBe(false);
   for (const patch of [{ summary: {} }, { requirements: {} }, { scenarios: [null] }, { example: { kind: 'html' } }, { images: [{ assetId: 'https://bad', alt: 'x' }] }, { schemaVersion: 2 }]) expect(validIntro({ ...content, ...patch })).toBe(false);
+});
+
+it('copies each published chat prompt exactly as displayed', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+  try {
+    await render(<RichIntroduction content={{ ...content, usagePrompts: [
+      { label: '启动', prompt: 'caveman mode' }, { label: '退出', prompt: 'stop mode' }
+    ] }} />);
+    for (const label of ['启动', '退出']) {
+      const control = container.querySelector(`button[aria-label="复制${label}提示词"]`);
+      await act(async () => control.click());
+    }
+    expect(writeText.mock.calls).toEqual([['caveman mode'], ['stop mode']]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it('does not request introductions or drafts when feature disabled', async () => {
