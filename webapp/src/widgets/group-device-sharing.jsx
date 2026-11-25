@@ -178,12 +178,15 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
     </thead>
     <tbody>
       <tr>
-        <th scope="row">未指定</th>
+        <th scope="row">{data.bots.length === 1
+          ? <label htmlFor={`cloud-${topicId}-${data.bots[0].user_id}`}>云端</label>
+          : '云端'}</th>
         {people.length > 0 && <td colSpan={people.length} />}
         {data.bots.map((bot, index) => {
           const snapshot = data.snapshots[index], draft = defaultDrafts[bot.user_id];
           return <td key={bot.user_id}><input type="radio" name={`device-${topicId}-${bot.user_id}`}
-            aria-label={`为 ${bot.display_name || bot.username} 清除默认设备`}
+            id={`cloud-${topicId}-${bot.user_id}`}
+            aria-label={`为 ${bot.display_name || bot.username} 切换到云端`}
             checked={draft ? draft.device === null : !snapshot.selected_device_id}
             disabled={busy || needsRefresh || snapshot.status === 'bot_unavailable'}
             onChange={() => stageDefault(null, bot, snapshot)} /></td>;

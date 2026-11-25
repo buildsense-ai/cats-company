@@ -118,12 +118,12 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
   };
 
   const selected = snapshot?.devices?.find((device) => device.deviceId === snapshot.selected_device_id);
+  const cloudDefaultLabel = '云端';
   const label = !snapshot ? (busy ? '读取中' : '状态待确认')
     : snapshot.status === 'choose_agent' ? '按 Bot 选择'
-    : snapshot.status === 'unspecified' ? '未指定'
+    : ['unspecified', 'needs_selection'].includes(snapshot.status) ? cloudDefaultLabel
     : snapshot.status === 'unavailable' ? `${selected?.displayName || snapshot.selected_device_id} · 离线`
-      : snapshot.status === 'needs_selection' ? '未指定'
-        : selected?.displayName || selected?.deviceId || '请选择';
+      : selected?.displayName || selected?.deviceId || '请选择';
   const description = `默认设备${agentId ? `（${snapshot?.agent_name || agentName}）` : ''}：${label}`;
   const changed = !!snapshot && (draft !== (snapshot.selected_device_id || '') || (draft !== '' && snapshot.status === 'automatic'));
   const content = <>
@@ -144,9 +144,9 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
           {error && <p role="alert" className="cc-device-error">{error}</p>}
           <div className="cc-device-list" role="group" aria-label="我的设备">
             {snapshot && snapshot.status !== 'choose_agent' && <label className="cc-device-option">
-              <input type="radio" name={titleId} value="" aria-label="清除默认设备" checked={draft === ''}
+              <input type="radio" name={titleId} value="" checked={draft === ''}
                 disabled={busy} onChange={() => setDraft('')} />
-              <span><strong>未指定</strong></span>
+              <span><strong>{cloudDefaultLabel}</strong></span>
             </label>}
             {(snapshot?.devices || []).map((device) => {
               const name = device.displayName || device.deviceId;

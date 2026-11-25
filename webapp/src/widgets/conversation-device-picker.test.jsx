@@ -62,14 +62,17 @@ describe('ConversationDevicePicker', () => {
     expect(container.querySelector('.cc-device-trigger').title).toContain('同名电脑');
   });
 
-  it('single-device default needs no confirmation to use', async () => {
-    api.getConversationDevice.mockResolvedValue({ ...directory, status: 'automatic', selected_device_id: 'a', devices: directory.devices.slice(0, 1) });
-    await render();
+  it('shows the cloud default with one online device and no confirmed choice', async () => {
+    api.getConversationDevice.mockResolvedValue({ ...directory, status: 'unspecified', devices: directory.devices.slice(0, 1) });
+    await render(); await open();
     const trigger = container.querySelector('.cc-device-trigger');
-    expect(trigger.textContent).toBe('');
-    expect(trigger.querySelectorAll('svg')).toHaveLength(1);
-    expect(trigger.title).toContain('同名电脑');
+    expect(trigger.title).toContain('：云端');
     expect(trigger.getAttribute('aria-label')).toBe(trigger.title);
+    const cloud = document.querySelector('input[value=""]');
+    expect(cloud.closest('label').textContent.trim()).toBe('云端');
+    expect(cloud.checked).toBe(true);
+    expect(document.querySelector('input[value=a]').checked).toBe(false);
+    expect(button('确认').disabled).toBe(true);
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
   });
 
@@ -261,18 +264,20 @@ describe('ConversationDevicePicker', () => {
     api.getConversationDevice.mockResolvedValue({ ...directory, status: 'selected', selected_device_id: 'a' });
     api.confirmConversationDevice.mockResolvedValue({ ...directory, status: 'unspecified', selected_device_id: '', revision: 'r2' });
     await render(); await open();
-    await act(async () => Simulate.change(document.querySelector('input[aria-label="清除默认设备"]')));
+    await act(async () => Simulate.change(document.querySelector('input[value=""]')));
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
     expect(button('确认').disabled).toBe(false);
     await click(button('确认'));
     expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('p2p_7_42', 42, '', 'r1');
-    expect(container.querySelector('.cc-device-trigger').title).toContain('未指定');
+    expect(container.querySelector('.cc-device-trigger').title).toContain('：云端');
   });
 
   it('clears one group Bot default without changing device sharing', async () => {
     api.getConversationDevice.mockResolvedValue({ ...directory, status: 'selected', selected_device_id: 'a', selected_owner_uid: 7 });
     await render('grp_1'); await open();
-    await act(async () => Simulate.change(document.querySelector('input[aria-label="为 Cloud Bot 清除默认设备"]')));
+    const cloud = document.querySelector('input[aria-label="为 Cloud Bot 切换到云端"]');
+    expect(cloud.closest('tr').querySelector('th').textContent.trim()).toBe('云端');
+    await act(async () => Simulate.change(cloud));
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
     await click(button('确认'));
     expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('grp_1', 'usr42', '', 'r1', undefined);
@@ -282,7 +287,7 @@ describe('ConversationDevicePicker', () => {
   it('allows clearing the only offline selected device', async () => {
     api.getConversationDevice.mockResolvedValue({ ...directory, status: 'unavailable', selected_device_id: 'offline', devices: directory.devices.slice(2) });
     await render(); await open();
-    await act(async () => Simulate.change(document.querySelector('input[aria-label="清除默认设备"]')));
+    await act(async () => Simulate.change(document.querySelector('input[value=""]')));
     expect(button('确认').disabled).toBe(false);
     await click(button('确认'));
     expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('p2p_7_42', 42, '', 'r1');

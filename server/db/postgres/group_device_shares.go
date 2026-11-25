@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS group_device_share_requests (
 var _ store.GroupDeviceShareStore = (*Adapter)(nil)
 
 const shareColumns = "id, owner_uid, grantee_uid, topic_id, device_id, operations, status, revision, created_at_ms, updated_at_ms, device_epoch"
-const shareRequestColumns = "id, requester_uid, owner_uid, topic_id, device_id, description, client_request_id, status, revision, share_id, message_id, created_at_ms, updated_at_ms"
 
 type shareRow interface{ Scan(...any) error }
 type shareQuery interface {
@@ -79,18 +78,6 @@ func scanDeviceShare(row shareRow) (*store.GroupDeviceShare, error) {
 		return nil, err
 	}
 	return &s, nil
-}
-
-func scanDeviceShareRequest(row shareRow) (*store.GroupDeviceShareRequest, error) {
-	var r store.GroupDeviceShareRequest
-	err := row.Scan(&r.ID, &r.RequesterUID, &r.OwnerUID, &r.TopicID, &r.DeviceID, &r.Description, &r.ClientRequestID, &r.Status, &r.Revision, &r.ShareID, &r.MessageID, &r.CreatedAt, &r.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &r, nil
 }
 
 func (a *Adapter) ListGroupDeviceShares(ctx context.Context, topic string, uid int64) ([]store.GroupDeviceShare, error) {
@@ -172,109 +159,6 @@ func (a *Adapter) SaveGroupDeviceShare(ctx context.Context, s store.GroupDeviceS
 		return nil, err
 	}
 	return saved, nil
-}
-
-func (a *Adapter) CreateGroupDeviceShareRequest(ctx context.Context, r store.GroupDeviceShareRequest) (*store.GroupDeviceShareRequest, error) {
-	tx, err := a.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	if err = lockDeviceShareMembers(ctx, tx, r.TopicID, r.OwnerUID, r.RequesterUID); err != nil {
-		return nil, err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO group_device_share_requests (`+shareRequestColumns+`)
- VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',1,'',0,$8,$8)
- ON CONFLICT (requester_uid,topic_id,client_request_id) DO NOTHING`, r.ID, r.RequesterUID, r.OwnerUID, r.TopicID, r.DeviceID, r.Description, r.ClientRequestID, r.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	saved, err := scanDeviceShareRequest(tx.QueryRowContext(ctx, "SELECT "+shareRequestColumns+" FROM group_device_share_requests WHERE requester_uid=$1 AND topic_id=$2 AND client_request_id=$3", r.RequesterUID, r.TopicID, r.ClientRequestID))
-	if err != nil {
-		return nil, err
-	}
-	if saved == nil || saved.OwnerUID != r.OwnerUID || saved.DeviceID != r.DeviceID {
-		return nil, store.ErrDeviceShareConflict
-	}
-	if err = tx.Commit(); err != nil {
-		return nil, err
-	}
-	return saved, nil
-}
-
-func (a *Adapter) GetGroupDeviceShareRequest(ctx context.Context, id string) (*store.GroupDeviceShareRequest, error) {
-	return scanDeviceShareRequest(a.db.QueryRowContext(ctx, "SELECT "+shareRequestColumns+" FROM group_device_share_requests WHERE id=$1", id))
-}
-
-func (a *Adapter) ResolveGroupDeviceShareRequest(ctx context.Context, id string, expected int64, status string, s *store.GroupDeviceShare) (*store.GroupDeviceShareRequest, error) {
-	tx, err := a.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	r, err := scanDeviceShareRequest(tx.QueryRowContext(ctx, "SELECT "+shareRequestColumns+" FROM group_device_share_requests WHERE id=$1", id))
-	if err != nil {
-		return nil, err
-	}
-	if r == nil {
-		return nil, store.ErrDeviceShareConflict
-	}
-	if r.Status == status && r.Revision == expected+1 {
-		if status == "approved" && (s == nil || r.DeviceID != s.DeviceID) {
-			return nil, store.ErrDeviceShareConflict
-		}
-		return r, nil
-	}
-	if r.Status != "pending" || r.Revision != expected {
-		return nil, store.ErrDeviceShareConflict
-	}
-	if status == "approved" {
-		if s == nil || s.OwnerUID != r.OwnerUID || s.GranteeUID != r.RequesterUID || s.TopicID != r.TopicID {
-			return nil, store.ErrDeviceShareConflict
-		}
-		current, err := scanDeviceShare(tx.QueryRowContext(ctx, "SELECT "+shareColumns+" FROM group_device_shares WHERE owner_uid=$1 AND grantee_uid=$2 AND topic_id=$3 AND device_id=$4", s.OwnerUID, s.GranteeUID, s.TopicID, s.DeviceID))
-		if err != nil {
-			return nil, err
-		}
-		revision := int64(0)
-		if current != nil {
-			revision = current.Revision
-		}
-		saved, err := saveDeviceShare(ctx, tx, *s, revision)
-		if err != nil {
-			return nil, err
-		}
-		r.ShareID = saved.ID
-		r.DeviceID = saved.DeviceID
-	}
-	// Acquire permission/binding locks before updating the request, matching
-	// revocation and unlink. CAS prevents a concurrent rejection or invalidation
-	// from being overwritten and rolls back any permission created above.
-	resolved, err := scanDeviceShareRequest(tx.QueryRowContext(ctx, "UPDATE group_device_share_requests SET status=$1,revision=revision+1,share_id=$2,device_id=$3,updated_at_ms=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint WHERE id=$4 AND status='pending' AND revision=$5 RETURNING "+shareRequestColumns, status, r.ShareID, r.DeviceID, r.ID, expected))
-	if err != nil {
-		return nil, err
-	}
-	if resolved == nil {
-		_ = tx.Rollback()
-		latest, readErr := a.GetGroupDeviceShareRequest(ctx, id)
-		if readErr != nil {
-			return nil, readErr
-		}
-		if latest != nil && latest.Status == status && latest.Revision == expected+1 && (status != "approved" || (s != nil && latest.DeviceID == s.DeviceID)) {
-			return latest, nil
-		}
-		return nil, store.ErrDeviceShareConflict
-	}
-	r = resolved
-	if err = tx.Commit(); err != nil {
-		return nil, err
-	}
-	return r, nil
-}
-
-func (a *Adapter) SetGroupDeviceShareRequestMessage(ctx context.Context, id string, messageID int64) error {
-	_, err := a.db.ExecContext(ctx, "UPDATE group_device_share_requests SET message_id=$1 WHERE id=$2 AND message_id=0", messageID, id)
-	return err
 }
 
 func (a *Adapter) GetDeviceShareBinding(ctx context.Context, owner int64, device string) (*store.GroupDeviceShareBinding, error) {

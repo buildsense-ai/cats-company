@@ -10,12 +10,9 @@
 .cc-group-devices input[type="checkbox"] { border-radius: 2px; }
 .cc-group-devices th[colspan] { border-bottom: 2px solid var(--cc-border, #8886); }
 .cc-group-devices td span { font-size: 12px; }
-.cc-share-card { padding: 12px; color: var(--cc-text, inherit); background: var(--cc-panel-raised, transparent); }
-.cc-share-card select { display: block; max-width: 100%; padding: 7px; margin: 8px 0; color: inherit; background: var(--cc-panel-raised, inherit); }
-.cc-share-card button { margin: 4px 8px 4px 0; }
 
-.cc-group-devices p, .cc-share-card p { font-size: 13px; line-height: 1.6; margin: 12px 0; }
-.cc-group-devices button, .cc-share-card button {
+.cc-group-devices p { font-size: 13px; line-height: 1.6; margin: 12px 0; }
+.cc-group-devices button {
   border: 1px solid var(--cc-border, #8884);
   border-radius: 6px;
   padding: 8px 12px;
@@ -25,10 +22,7 @@
   color: inherit;
   cursor: pointer;
 }
-.cc-group-devices button:disabled, .cc-share-card button:disabled { opacity: .5; cursor: default; }
-.cc-group-devices :is(button, input, [tabindex]):focus-visible,
-.cc-share-card :is(button, select):focus-visible { outline: 2px solid var(--cc-focus-border, currentColor); outline-offset: 2px; }
-.cc-share-card { border: 1px solid var(--cc-border, #8884); border-radius: 8px; }
-.cc-share-card select { font: inherit; font-size: 13px; border: 1px solid var(--cc-border, #8884); border-radius: 6px; }
+.cc-group-devices button:disabled { opacity: .5; cursor: default; }
+.cc-group-devices :is(button, input, [tabindex]):focus-visible { outline: 2px solid var(--cc-focus-border, currentColor); outline-offset: 2px; }
 
 .cc-device-confirm-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 12px; }

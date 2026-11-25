@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -183,17 +182,11 @@ func (h *Hub) groupDeviceTurnContext(actor int64, topic string, agent *Client, o
 
 type groupDeviceShareWrite struct {
 	ExpectedOperations []string `json:"expected_operations"`
-	Owner              string   `json:"owner"`
 	Action             string   `json:"action"`
 	TopicID            string   `json:"topic_id"`
 	GranteeUID         int64    `json:"grantee_uid"`
-	OwnerUID           int64    `json:"owner_uid"`
 	DeviceID           string   `json:"device_id"`
 	ExpectedRevision   *int64   `json:"expected_revision"`
-	RequestID          string   `json:"request_id"`
-	ClientRequestID    string   `json:"client_request_id"`
-	Description        string   `json:"description"`
-	MessageID          int64    `json:"message_id"`
 }
 
 func (h *GroupDeviceShareHandler) access(w http.ResponseWriter, r *http.Request, topic string) (store.GroupDeviceShareStore, int64, bool) {
@@ -355,196 +348,6 @@ func (h *GroupDeviceShareHandler) newShare(topic string, owner, actor int64, dev
 		s.Operations = append(s.Operations, string(op))
 	}
 	return s, nil
-}
-
-func (h *GroupDeviceShareHandler) HandleRequests(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	if r.Method == http.MethodGet {
-		db, uid, ok := h.access(w, r, r.URL.Query().Get("topic_id"))
-		if !ok {
-			return
-		}
-		req, err := db.GetGroupDeviceShareRequest(r.Context(), r.URL.Query().Get("request_id"))
-		if err != nil {
-			shareError(w, err)
-			return
-		}
-		if req == nil || req.TopicID != r.URL.Query().Get("topic_id") {
-			writeJSON(w, 404, map[string]string{"error": "request not found"})
-			return
-		}
-		response := map[string]any{"request": req, "can_resolve": uid == req.OwnerUID}
-		if req.ShareID != "" {
-			share, err := db.GetGroupDeviceShare(r.Context(), req.ShareID)
-			if err != nil {
-				shareError(w, err)
-				return
-			}
-			if share != nil {
-				response["share_status"] = share.Status
-			}
-		}
-		if uid == req.OwnerUID {
-			devices := humanToolTargetDevices(h.hub.userDevices.list(uid))
-			response["devices"] = devices
-			response["share_operations"] = groupShareOperationSnapshot(devices)
-		}
-		writeJSON(w, 200, response)
-		return
-	}
-	if r.Method != http.MethodPost {
-		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
-		return
-	}
-	input, ok := decodeGroupShare(w, r)
-	if !ok {
-		return
-	}
-	db, uid, ok := h.access(w, r, input.TopicID)
-	if !ok {
-		return
-	}
-	user, err := h.hub.db.GetUser(uid)
-	if err != nil || user == nil {
-		writeJSON(w, 403, map[string]string{"error": "user unavailable"})
-		return
-	}
-	if input.Action == "create" {
-		actor := uid
-		if user.AccountType == types.AccountBot {
-			messages, err := h.hub.db.GetMessagesSince(input.TopicID, input.MessageID-1, 1)
-			if err != nil || len(messages) != 1 || messages[0].ID != input.MessageID {
-				writeJSON(w, 403, map[string]string{"error": "originating user message required"})
-				return
-			}
-			source := messages[0]
-			actor = source.FromUID
-			if source.TopicID != input.TopicID || actor == uid || !containsString(structuredMentionsFromMessage(map[string]any{"metadata": source.Metadata, "content_blocks": source.ContentBlocks}), formatUID(uid)) {
-				writeJSON(w, 403, map[string]string{"error": "message did not address this bot"})
-				return
-			}
-		}
-		if input.OwnerUID == 0 {
-			members, err := h.hub.db.GetGroupMembers(extractGroupID(input.TopicID))
-			if err != nil {
-				shareError(w, err)
-				return
-			}
-			matches := []int64{}
-			for _, member := range members {
-				if !member.IsBot && (member.Username == input.Owner || member.DisplayName == input.Owner || formatUID(member.UserID) == input.Owner) {
-					matches = append(matches, member.UserID)
-				}
-			}
-			if len(matches) != 1 {
-				writeJSON(w, 400, map[string]string{"error": "owner must identify exactly one human group member"})
-				return
-			}
-			input.OwnerUID = matches[0]
-		}
-		if user.AccountType == types.AccountBot {
-			input.ClientRequestID = fmt.Sprintf("bot-%d-message-%d-owner-%d", uid, input.MessageID, input.OwnerUID)
-		}
-		permission := &store.GroupDeviceShare{OwnerUID: input.OwnerUID, GranteeUID: actor, TopicID: input.TopicID, Status: "active"}
-		if !h.hub.validGroupShare(r.Context(), permission, uid) || len(input.ClientRequestID) == 0 || len(input.ClientRequestID) > 128 || len(input.Description) > 2000 {
-			writeJSON(w, 403, map[string]string{"error": "invalid group sharing participants or request"})
-			return
-		}
-		// An arbitrary name or ID supplied by a requester is only a suggestion.
-		// The owner selects the actual target through the private approval UI.
-		id, err := randomHex(24)
-		if err != nil {
-			shareError(w, err)
-			return
-		}
-		req, err := db.CreateGroupDeviceShareRequest(r.Context(), store.GroupDeviceShareRequest{ID: id, RequesterUID: actor, OwnerUID: input.OwnerUID, TopicID: input.TopicID, Description: input.Description, ClientRequestID: input.ClientRequestID, CreatedAt: unixMillis(time.Now())})
-		if err != nil {
-			shareError(w, err)
-			return
-		}
-		if req.MessageID == 0 {
-			reference := map[string]any{"request_id": req.ID, "topic_id": req.TopicID}
-			role := "user"
-			if user.AccountType == types.AccountBot {
-				role = "assistant"
-				reference["requested_by_bot"] = formatUID(uid)
-				reference["requested_by_name"] = h.hub.deviceNoticeName(uid)
-				reference["requester_name"] = h.hub.deviceNoticeName(actor)
-				reference["origin_message_id"] = input.MessageID
-			}
-			card := map[string]any{"title": "设备使用授权申请", "text": req.Description, "group_device_share": reference}
-			body, _ := json.Marshal(card)
-			blocks := []types.ContentBlock{{Type: "card", Payload: card}}
-			// The requester remains the human whose message addressed this Bot,
-			// but generated text must be attributed to its authenticated author.
-			messageID, _, err := h.hub.db.SaveMessageIdempotent(req.TopicID, uid, string(body), blocks, "normal", role, "text", 0, "device-share-request-"+req.ID)
-			if err != nil {
-				shareError(w, err)
-				return
-			}
-			if err = db.SetGroupDeviceShareRequestMessage(r.Context(), req.ID, messageID); err != nil {
-				shareError(w, err)
-				return
-			}
-			req.MessageID = messageID
-			h.hub.fanoutNormalizedMessage(uid, req.TopicID, 0, &normalizedMessagePayload{StoredContent: string(body), DisplayContent: card, StoredType: "text", DisplayType: "card", ContentBlocks: blocks, Role: role}, messageID, nil)
-		}
-		writeJSON(w, 200, req)
-		return
-	}
-	req, err := db.GetGroupDeviceShareRequest(r.Context(), input.RequestID)
-	if err != nil {
-		shareError(w, err)
-		return
-	}
-	if req == nil || req.TopicID != input.TopicID {
-		writeJSON(w, 404, map[string]string{"error": "request not found"})
-		return
-	}
-	if user.AccountType != types.AccountHuman || uid != req.OwnerUID {
-		writeJSON(w, 403, map[string]string{"error": "only the device owner may approve or reject"})
-		return
-	}
-	if input.ExpectedRevision == nil || *input.ExpectedRevision <= 0 {
-		writeJSON(w, 400, map[string]string{"error": "expected_revision required"})
-		return
-	}
-	var s *store.GroupDeviceShare
-	status := "rejected"
-	switch input.Action {
-	case "approve":
-		s, err = h.newShare(req.TopicID, req.OwnerUID, req.RequesterUID, input.DeviceID)
-		if err != nil {
-			writeJSON(w, 403, map[string]string{"error": err.Error()})
-			return
-		}
-		if !sameShareOperations(input.ExpectedOperations, s.Operations) {
-			writeJSON(w, 409, map[string]string{"error": "device operations changed; refresh and confirm the current scope"})
-			return
-		}
-		status = "approved"
-	case "reject":
-	default:
-		writeJSON(w, 400, map[string]string{"error": "unknown approval action"})
-		return
-	}
-	resolved, err := db.ResolveGroupDeviceShareRequest(r.Context(), req.ID, *input.ExpectedRevision, status, s)
-	if err != nil {
-		shareError(w, err)
-		return
-	}
-	var notice *deviceChangeNotice
-	if status == "approved" {
-		notice = &deviceChangeNotice{Pending: true}
-		if share, err := db.GetGroupDeviceShare(r.Context(), resolved.ShareID); err == nil && share != nil && share.Status == "active" {
-			receipt := h.hub.publishGroupShareNotice(share)
-			notice = &receipt
-		}
-	}
-	writeJSON(w, 200, struct {
-		*store.GroupDeviceShareRequest
-		Notice *deviceChangeNotice `json:"notice,omitempty"`
-	}{resolved, notice})
 }
 
 // Cleanup is best-effort; every dispatch still reads the authoritative SQL

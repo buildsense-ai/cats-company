@@ -900,25 +900,10 @@ func (r *userDeviceRegistry) selectDeviceForOwnerTurn(
 		base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, deviceSelectionUnspecifiedSource
 		return &base, nil
 	}
-	if len(devices) == 0 {
-		base.Status = DeviceSelectionUnavailable
-		base.SelectionSource = "no_routable_devices"
-		if preferred, ok := r.deviceSelectionPreference(actorUID, sessionKey); ok {
-			base.SelectedDevice = &DeviceSelectionDevice{DeviceID: preferred, UnavailableReason: "route_unavailable"}
-			if device, found := findDeviceByOwner(known, preferred, targetOwner); found {
-				base.SelectedDevice = deviceSelectionDevice(device)
-			}
-		}
-		return &base, nil
-	}
-
-	preferredDeviceID, hasPreference := preference.DeviceID, preference.active(createdAt)
-	// Conversation selection is a default, independent of task text. Naming
-	// another device (including in a quotation or negation) must never rewrite
-	// or invalidate it. Explicit tool targets use separate per-device grants.
-
-	if hasPreference {
-		if selected, ok := findDeviceByOwner(devices, preferredDeviceID, targetOwner); ok {
+	// An explicit conversation default is independent of task text.
+	// Explicit tool targets use separate per-device grants.
+	if preference.active(createdAt) {
+		if selected, ok := findDeviceByOwner(devices, preference.DeviceID, targetOwner); ok {
 			base.Status = DeviceSelectionSelected
 			base.SelectionSource = "conversation_preference"
 			base.SelectedDevice = deviceSelectionDevice(selected)
@@ -926,24 +911,22 @@ func (r *userDeviceRegistry) selectDeviceForOwnerTurn(
 			return &base, &selected
 		}
 		base.Status, base.SelectionSource = DeviceSelectionUnavailable, "selected_device_unavailable"
-		base.SelectedDevice = &DeviceSelectionDevice{DeviceID: preferredDeviceID, UnavailableReason: "route_unavailable"}
-		if device, found := findDeviceByOwner(known, preferredDeviceID, targetOwner); found {
+		base.SelectedDevice = &DeviceSelectionDevice{DeviceID: preference.DeviceID, UnavailableReason: "route_unavailable"}
+		if device, found := findDeviceByOwner(known, preference.DeviceID, targetOwner); found {
 			base.SelectedDevice = deviceSelectionDevice(device)
 		}
 		return &base, nil
 	}
 
-	if len(known) > 1 {
-		base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, "multiple_devices"
+	base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, "no_default_device"
+	// Trusted identity delegation is separate from the speaker's own device
+	// default. Keep its existing single-device fallback.
+	if delegatedOwner <= 0 || delegatedOwner == actorUID || len(known) != 1 || len(devices) != 1 || devices[0].OwnerUID != delegatedOwner {
 		return &base, nil
 	}
 	selected := devices[0]
-	if selected.OwnerUID != actorUID && selected.OwnerUID != delegatedOwner {
-		base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, "shared_device_requires_confirmation"
-		return &base, nil
-	}
 	base.Status = DeviceSelectionSelected
-	base.SelectionSource = "single_active_device"
+	base.SelectionSource = deviceSelectionAutomaticSource
 	base.SelectedDevice = deviceSelectionDevice(selected)
 	r.rememberDeviceSelection(actorUID, sessionKey, selected.DeviceID, base.SelectionSource, selected.OwnerUID)
 	current, err := r.selectionRecord(actorUID, sessionKey)
@@ -954,17 +937,6 @@ func (r *userDeviceRegistry) selectDeviceForOwnerTurn(
 	}
 	base.Revision = current.Revision
 	return &base, &selected
-}
-
-func (r *userDeviceRegistry) deviceSelectionPreference(actorUID int64, sessionKey string) (string, bool) {
-	if r == nil || actorUID <= 0 || sessionKey == "" {
-		return "", false
-	}
-	preference, err := r.selectionRecord(actorUID, sessionKey)
-	if err != nil || !preference.active(unixMillis(r.now())) {
-		return "", false
-	}
-	return preference.DeviceID, true
 }
 
 func (r *userDeviceRegistry) rememberDeviceSelection(actorUID int64, sessionKey string, deviceID string, source string, ownerUID ...int64) {

@@ -99,13 +99,14 @@ func TestGroupDeviceContextHonorsExplicitTargetDecision(t *testing.T) {
 	}
 }
 
-func TestAutomaticOwnDeviceUnaffectedBySharingStoreFailure(t *testing.T) {
+func TestUnassignedOwnDeviceRemainsExplicitDuringSharingStoreFailure(t *testing.T) {
 	h, bot, db := groupShareCompatibilityFixture(t)
 	db.failure = errors.New("sharing query unavailable")
 	devices, unavailable := h.classifyUserDevices(7, h.userDevices.list(7))
 	ctx := h.groupDeviceTurnContext(7, "grp_1", bot, devices, unavailable, xiaobaRuntimeV2EnabledForClient(bot))
-	if len(ctx.Grants) != 1 || ctx.Grants[0].OwnerUserID != "usr7" {
-		t.Fatal("automatic own device lost its grant during a sharing-store outage")
+	if ctx.Selection.Status != DeviceSelectionNeedsSelection || ctx.Selection.SelectedDevice != nil ||
+		len(ctx.Grants) != 0 || len(ctx.ExplicitGrants) != 1 || ctx.ExplicitGrants[0].OwnerUserID != "usr7" {
+		t.Fatal("sharing-store outage changed the empty default or prevented a direct own-device request")
 	}
 }
 
@@ -187,7 +188,7 @@ func TestOnlySharedDeviceNeedsExplicitDefaultConfirmation(t *testing.T) {
 	// Hide the owner's own device so the public picker has just one shared candidate.
 	h.userDevices.unregister(7, "own-pc")
 	snapshot := selectionSnapshot(t, NewDeviceHandler(h.db, h), 7, "grp_1", "usr42")
-	if snapshot["status"] != "needs_selection" || snapshot["selected_device_id"] != "" {
+	if snapshot["status"] != "unspecified" || snapshot["selected_device_id"] != "" {
 		t.Fatalf("picker suggested an implicit shared default: %+v", snapshot)
 	}
 	ctx := h.groupDeviceTurnContext(7, "grp_1", bot, nil, nil, xiaobaRuntimeV2EnabledForClient(bot))

@@ -1,5 +1,4 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import GroupDeviceShareCard from './group-device-share-card';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Terminal, Brain, BookOpen, FilePen, FolderSearch, Globe, Send, Sparkles, GitFork, MessageSquareText, FileCode2, Maximize2, Minimize2, Pencil, Eye, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, Image as ImageIcon, Share2 } from 'lucide-react';
 import { Copy, CornerUpLeft, Download, ExternalLink, FileText, MoreHorizontal, Search, X } from './desktop-icons';
@@ -1423,7 +1422,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     displayTextBlocks,
   ]);
   const renderedMessageText = hasText && (parsed ? (
-    <RichContent sourceTopicId={message.topic_id || annotationTopicId} sourceMessageId={Number(message.seq_id || message.id)}
+    <RichContent
       content={parsed}
       onPreviewFile={onPreviewFile}
       activePreviewFile={activePreviewFile}
@@ -1612,7 +1611,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                 <>
                   <div className="v3-message-deliverables" data-message-part="artifacts">
                     {richBlocks.map((block, index) => (
-                      <RichContent sourceTopicId={message.topic_id || annotationTopicId} sourceMessageId={Number(message.seq_id || message.id)}
+                      <RichContent
                         key={`${block.type}-${index}`}
                         content={block}
                         onPreviewFile={onPreviewFile}
@@ -1631,7 +1630,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
               ) : (
                 <>
                   {artifactsFirst && richBlocks.map((block, index) => (
-                    <RichContent sourceTopicId={message.topic_id || annotationTopicId} sourceMessageId={Number(message.seq_id || message.id)}
+                    <RichContent
                       key={`${block.type}-${index}`}
                       content={block}
                       onPreviewFile={onPreviewFile}
@@ -1657,7 +1656,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                     </>
                   )}
                   {!artifactsFirst && richBlocks.map((block, index) => (
-                    <RichContent sourceTopicId={message.topic_id || annotationTopicId} sourceMessageId={Number(message.seq_id || message.id)}
+                    <RichContent
                       key={`${block.type}-${index}`}
                       content={block}
                       onPreviewFile={onPreviewFile}
@@ -2199,7 +2198,7 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile, onOpe
   );
 }
 
-function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery = null, onOpenImage, imageId = '', sourceTopicId, sourceMessageId }) {
+function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery = null, onOpenImage, imageId = '' }) {
   switch (content.type) {
     case 'image':
       return (
@@ -2220,7 +2219,7 @@ function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery =
     case 'link_preview':
       return <LinkPreviewContent payload={content.payload} />;
     case 'card':
-      return <CardContent payload={content.payload} sourceTopicId={sourceTopicId} sourceMessageId={sourceMessageId} />;
+      return <CardContent payload={content.payload} />;
     default:
       return <TextContent content={content.payload?.text || JSON.stringify(content)} />;
   }
@@ -3903,10 +3902,21 @@ function LinkPreviewContent({ payload }) {
   );
 }
 
-function CardContent({ payload, sourceTopicId, sourceMessageId }) {
+function CardContent({ payload }) {
   if (!payload) return null;
-  if (typeof payload.group_device_share?.request_id === 'string' && typeof payload.group_device_share?.topic_id === 'string') {
-    return <GroupDeviceShareCard reference={payload.group_device_share} sourceTopicId={sourceTopicId} sourceMessageId={sourceMessageId} />;
+  const history = payload.group_device_share;
+  if (typeof history?.request_id === 'string' && typeof history.topic_id === 'string') {
+    return (
+      <div className="oc-rich-card" role="group" aria-label="历史设备授权申请">
+        <div style={{ padding: 8 }}>
+          <strong>历史设备授权申请</strong>
+          {typeof history.requested_by_name === 'string' && typeof history.requester_name === 'string' && (
+            <div>{history.requested_by_name} 代 {history.requester_name} 申请</div>
+          )}
+          {typeof payload.text === 'string' && <div>{payload.text}</div>}
+        </div>
+      </div>
+    );
   }
   return (
     <div className="oc-rich-card">

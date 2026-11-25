@@ -12,7 +12,20 @@ import (
 
 var errDeviceSelectionConflict = errors.New("device selection changed; refresh and confirm again")
 
-const deviceSelectionUnspecifiedSource = "user_unspecified"
+const (
+	deviceSelectionUnspecifiedSource = "user_unspecified"
+	deviceSelectionAutomaticSource   = "single_active_device"
+)
+
+// Old automatic picks of the speaker's own device are no longer defaults.
+// Keep their revision for CAS and explicit-device grants. Delegated identities
+// still use the existing automatic selection path.
+func (p deviceSelectionPreference) withoutAutomaticOwnDevice(actor int64) deviceSelectionPreference {
+	if p.Source == deviceSelectionAutomaticSource && (p.OwnerUID == 0 || p.OwnerUID == actor) {
+		p.DeviceID, p.OwnerUID = "", 0
+	}
+	return p
+}
 
 func (p deviceSelectionPreference) unspecified() bool {
 	return p.DeviceID == "" && p.Source == deviceSelectionUnspecifiedSource
@@ -43,12 +56,13 @@ func (r *userDeviceRegistry) selectionRecord(actor int64, session string) (devic
 			return deviceSelectionPreference{}, err
 		} // Never fall back on DB failure.
 		if record != nil {
-			return durablePreference(record), nil
+			return durablePreference(record).withoutAutomaticOwnDevice(actor), nil
 		}
 		legacy, err := r.runtimeSelectionRecord(actor, session)
 		if err != nil {
 			return deviceSelectionPreference{}, err
 		}
+		legacy = legacy.withoutAutomaticOwnDevice(actor)
 		if legacy.DeviceID == "" && legacy.Revision == "" {
 			return deviceSelectionPreference{}, nil
 		}
@@ -60,6 +74,9 @@ func (r *userDeviceRegistry) selectionRecord(actor int64, session string) (devic
 		}
 		next := store.ConversationDeviceSelection{DeviceID: legacy.DeviceID, Revision: revision,
 			Source: "legacy_selection", UpdatedAt: unixMillis(r.now())}
+		if legacy.Source == deviceSelectionAutomaticSource {
+			next.Source, next.OwnerUID = legacy.Source, legacy.OwnerUID
+		}
 		won, err := r.selectionStore.CompareConversationDeviceSelection(ctx, actor, session, "", next)
 		if err != nil {
 			return deviceSelectionPreference{}, err
@@ -74,9 +91,10 @@ func (r *userDeviceRegistry) selectionRecord(actor int64, session string) (devic
 		if record == nil {
 			return deviceSelectionPreference{}, errDeviceSelectionConflict
 		}
-		return durablePreference(record), nil
+		return durablePreference(record).withoutAutomaticOwnDevice(actor), nil
 	}
-	return r.runtimeSelectionRecord(actor, session)
+	current, err := r.runtimeSelectionRecord(actor, session)
+	return current.withoutAutomaticOwnDevice(actor), err
 }
 
 func (r *userDeviceRegistry) runtimeSelectionRecord(actor int64, session string) (deviceSelectionPreference, error) {

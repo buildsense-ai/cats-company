@@ -122,7 +122,7 @@ func (h *DeviceHandler) HandleConversationSelection(w http.ResponseWriter, r *ht
 		}
 		var device UserDevice
 		source := deviceSelectionUnspecifiedSource
-		text := fmt.Sprintf("已清除当前对话中 %s 的默认设备，由 Bot 自行判断。", displayNameOrUsername(agent.DisplayName, agent.Username))
+		text := fmt.Sprintf("已清除当前对话中 %s 的默认设备（未指定，默认云端）。", displayNameOrUsername(agent.DisplayName, agent.Username))
 		if *req.DeviceID != "" {
 			var found bool
 			device, found = findDeviceByOwner(known, *req.DeviceID, owner)
@@ -165,20 +165,12 @@ func (h *DeviceHandler) HandleConversationSelection(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "selection store unavailable"})
 		return
 	}
-	selectedID, state := preference.DeviceID, "needs_selection"
-	selectedOwner := selectionOwner(preference, actor)
-	if preference.unspecified() {
-		state, selectedOwner = "unspecified", 0
-	} else if preference.active(unixMillis(h.registry().now())) {
-		state = "unavailable"
-		if device, found := findDeviceByOwner(known, selectedID, selectionOwner(preference, actor)); found && device.Routable {
+	selectedID, selectedOwner, state := "", int64(0), "unspecified"
+	if preference.active(unixMillis(h.registry().now())) {
+		selectedID, selectedOwner, state = preference.DeviceID, selectionOwner(preference, actor), "unavailable"
+		if device, found := findDeviceByOwner(known, selectedID, selectedOwner); found && device.Routable {
 			state = "selected"
 		}
-	} else if preference.DeviceID == "" && len(known) == 1 && known[0].Routable && known[0].OwnerUID == actor {
-		// Display the single-device default. GET initializes a revision only;
-		// it never chooses a device or issues an execution grant.
-		selectedID, state = known[0].DeviceID, "automatic"
-		selectedOwner = known[0].OwnerUID
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"topic_id": topic, "agent_id": formatUID(bot), "agent_name": displayNameOrUsername(agent.DisplayName, agent.Username), "revision": preference.Revision,

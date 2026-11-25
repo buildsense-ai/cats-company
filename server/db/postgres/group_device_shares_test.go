@@ -123,7 +123,7 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 	}
 	share.Status = "active"
 	if _, err = db.SaveGroupDeviceShare(ctx, share, 0); !errors.Is(err, store.ErrDeviceShareConflict) {
-		t.Fatal("stale approval revived revoked share", err)
+		t.Fatal("stale authorization revived revoked share", err)
 	}
 	selection := store.ConversationDeviceSelection{DeviceID: "same-device-id", Revision: "v1", Source: "test", UpdatedAt: time.Now().UnixMilli()}
 	if won, err := db.CompareConversationDeviceSelection(ctx, actors[0], "legacy-session", "", selection); err != nil || !won {
@@ -142,70 +142,39 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 	if err != nil || selected.OwnerUID != actors[1] {
 		t.Fatal("shared owner lost", selected, err)
 	}
-	request := store.GroupDeviceShareRequest{ID: "request-a", RequesterUID: actors[0], OwnerUID: actors[1], TopicID: topic, ClientRequestID: "request-1", Description: "read the selected PC", CreatedAt: time.Now().UnixMilli()}
-	pending, err := db.CreateGroupDeviceShareRequest(ctx, request)
-	if err != nil || pending.Status != "pending" {
-		t.Fatal(pending, err)
-	}
-	share.ID = "ignored-on-upsert"
-	resolved, err := db.ResolveGroupDeviceShareRequest(ctx, pending.ID, 1, "approved", &share)
-	if err != nil || resolved.Status != "approved" {
-		t.Fatal(resolved, err)
-	}
-	repeated, err := db.ResolveGroupDeviceShareRequest(ctx, pending.ID, 1, "approved", &share)
-	if err != nil || repeated.Revision != resolved.Revision {
-		t.Fatal("approval retry", repeated, err)
-	}
-	if _, err = db.ResolveGroupDeviceShareRequest(ctx, pending.ID, 1, "rejected", nil); !errors.Is(err, store.ErrDeviceShareConflict) {
-		t.Fatal("stale rejection", err)
-	}
-	t.Run("concurrent approval and revocation", func(t *testing.T) {
+	t.Run("concurrent authorization and revocation use the same revision", func(t *testing.T) {
 		for i := 0; i < 8; i++ {
 			current, err := db.GetGroupDeviceShare(ctx, saved.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			active := share
-			active.Status = "active"
-			current, err = db.SaveGroupDeviceShare(ctx, active, current.Revision)
+			current, err = db.SaveGroupDeviceShare(ctx, share, current.Revision)
 			if err != nil {
 				t.Fatal(err)
 			}
-			request.ID = fmt.Sprintf("race-request-%d", i)
-			request.ClientRequestID = request.ID
-			r, err := db.CreateGroupDeviceShareRequest(ctx, request)
-			if err != nil {
-				t.Fatal(err)
-			}
+			updated, revoked := *current, *current
+			updated.Operations = []string{"read_file", "write_file"}
+			revoked.Status = "revoked"
 			raceCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			ready := make(chan struct{})
 			done := make(chan error, 2)
-			go func() {
-				<-ready
-				_, e := db.ResolveGroupDeviceShareRequest(raceCtx, r.ID, r.Revision, "approved", &active)
-				done <- e
-			}()
-			revocation := *current
-			revocation.Status = "revoked"
-			go func() { <-ready; _, e := db.SaveGroupDeviceShare(raceCtx, revocation, current.Revision); done <- e }()
+			for _, change := range []store.GroupDeviceShare{updated, revoked} {
+				go func() {
+					<-ready
+					_, err := db.SaveGroupDeviceShare(raceCtx, change, current.Revision)
+					done <- err
+				}()
+			}
 			close(ready)
-			for n := 0; n < 2; n++ {
-				if e := <-done; e != nil && !errors.Is(e, store.ErrDeviceShareConflict) {
-					cancel()
-					t.Fatal("concurrent transition failed", e)
-				}
-			}
+			first, second := <-done, <-done
 			cancel()
-			after, e := db.GetGroupDeviceShareRequest(ctx, r.ID)
-			if e != nil {
-				t.Fatal(e)
+			if !(first == nil && errors.Is(second, store.ErrDeviceShareConflict) ||
+				second == nil && errors.Is(first, store.ErrDeviceShareConflict)) {
+				t.Fatalf("expected exactly one permission update, got %v, %v", first, second)
 			}
-			permission, e := db.GetGroupDeviceShare(ctx, saved.ID)
-			if e != nil {
-				t.Fatal(e)
-			}
-			if permission.Status == "revoked" && after.Status == "approved" {
-				t.Fatal("revoked share retained actionable approval")
+			after, err := db.GetGroupDeviceShare(ctx, saved.ID)
+			if err != nil || after == nil || after.Revision != current.Revision+1 {
+				t.Fatal("concurrent updates did not advance revision once", after, err)
 			}
 		}
 	})
@@ -223,20 +192,21 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 	if err != nil || afterRejoin.Status != "revoked" {
 		t.Fatal("rejoin revived sharing", afterRejoin, err)
 	}
-	unlinkRequests := []struct {
-		id, device, want string
-		owner            int64
+	historicalRequests := []struct {
+		id, device, status, want string
+		owner                    int64
 	}{
-		{"unselected-request", "", "pending", actors[1]},
-		{"other-device-request", "other-device", "pending", actors[1]},
-		{"unlinked-device-request", "same-device-id", "invalidated", actors[1]},
-		{"other-owner-request", "same-device-id", "pending", actors[2]},
+		{"unselected-request", "", "pending", "pending", actors[1]},
+		{"other-device-request", "other-device", "pending", "pending", actors[1]},
+		{"unlinked-device-request", "same-device-id", "pending", "invalidated", actors[1]},
+		{"other-owner-request", "same-device-id", "pending", "pending", actors[2]},
+		{"previously-approved-request", "same-device-id", "approved", "invalidated", actors[1]},
 	}
-	for _, tc := range unlinkRequests {
-		_, err = db.CreateGroupDeviceShareRequest(ctx, store.GroupDeviceShareRequest{
-			ID: tc.id, ClientRequestID: tc.id, RequesterUID: actors[0], OwnerUID: tc.owner,
-			TopicID: topic, DeviceID: tc.device, CreatedAt: time.Now().UnixMilli(),
-		})
+	for _, tc := range historicalRequests {
+		// Seed records written by older builds so unlink still exercises their cleanup.
+		_, err = db.db.ExecContext(ctx, `INSERT INTO group_device_share_requests
+			(id, requester_uid, owner_uid, topic_id, device_id, client_request_id, status, revision, created_at_ms, updated_at_ms)
+			VALUES ($1,$2,$3,$4,$5,$1,$6,1,$7,$7)`, tc.id, actors[0], tc.owner, topic, tc.device, tc.status, time.Now().UnixMilli())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -244,20 +214,12 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 	if err = db.InvalidateDeviceShares(ctx, actors[1], "same-device-id"); err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range unlinkRequests {
-		after, err := db.GetGroupDeviceShareRequest(ctx, tc.id)
-		if err != nil || after == nil || after.Status != tc.want {
-			t.Fatalf("unlink request %s: %+v, %v; want %s", tc.id, after, err, tc.want)
+	for _, tc := range historicalRequests {
+		var status string
+		err := db.db.QueryRowContext(ctx, "SELECT status FROM group_device_share_requests WHERE id=$1", tc.id).Scan(&status)
+		if err != nil || status != tc.want {
+			t.Fatalf("historical request %s after unlink: %q, %v; want %q", tc.id, status, err, tc.want)
 		}
-	}
-	if err = db.RegisterDeviceShareBinding(ctx, actors[1], "other-device", "other-install", time.Now().UnixMilli()); err != nil {
-		t.Fatal(err)
-	}
-	otherPermission := share
-	otherPermission.ID, otherPermission.DeviceID = "other-device-share", "other-device"
-	otherPermission.DeviceEpoch, otherPermission.Status = 1, "active"
-	if approved, err := db.ResolveGroupDeviceShareRequest(ctx, "unselected-request", 1, "approved", &otherPermission); err != nil || approved.DeviceID != "other-device" {
-		t.Fatal("unselected request could not approve a different device after unlink", approved, err)
 	}
 	binding, err := db.GetDeviceShareBinding(ctx, actors[1], "same-device-id")
 	if err != nil || binding.Active {
@@ -280,14 +242,9 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 	share.Status = "active"
 	share.DeviceEpoch = 1
 	if _, err = db.SaveGroupDeviceShare(ctx, share, current.Revision); !errors.Is(err, store.ErrDeviceShareConflict) {
-		t.Fatal("in-flight old-binding approval was accepted", err)
+		t.Fatal("in-flight old-binding authorization was accepted", err)
 	}
-	oldRequest, err := db.GetGroupDeviceShareRequest(ctx, pending.ID)
-	if err != nil || oldRequest.Status != "invalidated" {
-		t.Fatal("old approval card remained actionable", oldRequest, err)
-	}
-
-	t.Run("approval completes before concurrent group deletion", func(t *testing.T) {
+	t.Run("authorization completes before concurrent group deletion", func(t *testing.T) {
 		if _, err := db.db.Exec(createMessagesTable); err != nil {
 			t.Fatal(err)
 		}
@@ -361,7 +318,7 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 		writeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 		defer cancel()
 		if _, err := saveDeviceShare(writeCtx, approval, permission, 1); err != nil {
-			t.Fatalf("group deletion locked a permission before its members, blocking approval: %v", err)
+			t.Fatalf("group deletion locked a permission before its members, blocking authorization: %v", err)
 		}
 		if err := approval.Commit(); err != nil {
 			t.Fatal(err)
@@ -373,7 +330,7 @@ func TestGroupDeviceSharingPostgres(t *testing.T) {
 				t.Fatal(err)
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatal("group deletion stalled after approval committed")
+			t.Fatal("group deletion stalled after authorization committed")
 		}
 		after, err := db.GetGroupDeviceShare(ctx, permission.ID)
 		if err != nil || after == nil || after.Status != "revoked" {

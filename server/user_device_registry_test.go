@@ -327,6 +327,12 @@ func TestUserDeviceRegistryGroupSessionKeyScopesActor(t *testing.T) {
 		t.Fatalf("register bob device: %v", err)
 	}
 
+	if _, err := registry.confirmDeviceSelection(7, buildCatsCoSessionKey("grp_80", "group", "usr42", 7), "alice-laptop", "user_confirmation", "", 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.confirmDeviceSelection(8, buildCatsCoSessionKey("grp_80", "group", "usr42", 8), "bob-laptop", "user_confirmation", "", 8); err != nil {
+		t.Fatal(err)
+	}
 	alice := registry.turnContext(7, "grp_80", "group", 42, "body-agent")
 	bob := registry.turnContext(8, "grp_80", "group", 42, "body-agent")
 	if len(alice.Grants) != 1 || len(bob.Grants) != 1 {
@@ -503,6 +509,10 @@ func TestBotRecipientIdentityIncludesCurrentActorDeviceGrants(t *testing.T) {
 	}
 	hub.addClient(targetClient)
 	hub.bindDeviceClient(7, device, targetClient)
+	session := buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7)
+	if _, err := hub.userDevices.confirmDeviceSelection(7, session, device.DeviceID, "user_confirmation", "", 7); err != nil {
+		t.Fatal(err)
+	}
 	botClient := &Client{
 		uid:         42,
 		accountType: types.AccountBot,
@@ -536,7 +546,7 @@ func TestBotRecipientIdentityIncludesCurrentActorDeviceGrants(t *testing.T) {
 		t.Fatalf("unexpected grant device: %#v", grant)
 	}
 	selection := deviceSelectionMap(t, identity)
-	if selection["status"] != "selected" || selection["selectionSource"] != "single_active_device" {
+	if selection["status"] != "selected" || selection["selectionSource"] != "conversation_preference" {
 		t.Fatalf("unexpected device selection: %#v", selection)
 	}
 	selectedDevice, ok := selection["selectedDevice"].(map[string]interface{})
@@ -628,6 +638,9 @@ func TestBotRecipientIdentityExcludesServerRuntimeFromHumanDeviceRouting(t *test
 	hub.addClient(recipient)
 	hub.bindDeviceClient(7, desktop, desktopClient)
 	hub.bindDeviceClient(7, serverRuntime, serverClient)
+	if _, err := hub.userDevices.confirmDeviceSelection(7, buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7), desktop.DeviceID, "user_confirmation", "", 7); err != nil {
+		t.Fatal(err)
+	}
 
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID: "p2p_7_42",
@@ -990,6 +1003,9 @@ func TestBotRecipientIdentityUsesCanonicalUserDeviceNotAgentOwnerDevice(t *testi
 	if err != nil {
 		t.Fatalf("normalize canonical request: %v", err)
 	}
+	if _, err := hub.userDevices.confirmDeviceSelection(9, buildCatsCoSessionKey("p2p_9_42", "p2p", "usr42", 9), bobDevice.DeviceID, "user_confirmation", "", 9); err != nil {
+		t.Fatal(err)
+	}
 	hub.fanoutNormalizedMessage(9, "p2p_9_42", 0, canonicalPayload, 202, nil)
 
 	var canonicalMsg ServerMessage
@@ -1064,6 +1080,9 @@ func TestBotRecipientIdentityKeepsActorDeviceForDirectFriendChatWithExistingChan
 	})
 	if err != nil {
 		t.Fatalf("normalize request: %v", err)
+	}
+	if _, err := hub.userDevices.confirmDeviceSelection(9, buildCatsCoSessionKey("p2p_9_42", "p2p", "usr42", 9), bobDevice.DeviceID, "user_confirmation", "", 9); err != nil {
+		t.Fatal(err)
 	}
 	hub.fanoutNormalizedMessage(9, "p2p_9_42", 0, payload, 203, nil)
 
@@ -1225,7 +1244,7 @@ func TestBotRecipientIdentityDoesNotGrantActiveButUnroutableDevice(t *testing.T)
 		t.Fatalf("unroutable device should not receive grants: %#v", identity["device_grants"])
 	}
 	selection := deviceSelectionMap(t, identity)
-	if selection["status"] != string(DeviceSelectionUnavailable) || selection["selectionSource"] != "no_routable_devices" {
+	if selection["status"] != string(DeviceSelectionNeedsSelection) || selection["selectedDevice"] != nil {
 		t.Fatalf("unexpected selection for unroutable device: %#v", selection)
 	}
 	candidates, ok := selection["candidates"].([]interface{})

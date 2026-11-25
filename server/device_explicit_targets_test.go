@@ -348,7 +348,7 @@ func TestExplicitTargetAfterPickerSnapshotWithoutDefault(t *testing.T) {
 	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	hub, handler := deviceSelectionFixture(t)
 	snapshot := selectionSnapshot(t, handler, 7, "p2p_7_42", "42")
-	if snapshot["status"] != "needs_selection" {
+	if snapshot["status"] != "unspecified" {
 		t.Fatal("fixture unexpectedly has a default")
 	}
 	devices, unavailable := hub.userDeviceRouteCandidates(7)
