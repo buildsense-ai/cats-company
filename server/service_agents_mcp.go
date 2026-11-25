@@ -33,6 +33,7 @@ type ServiceAgentsMCPHandler struct {
 	botRunner *ServiceBotRunner          // bot-as-tool（runner.type=bot；可选）
 	balance   *ServiceBalanceChecker     // 计费预检（可选；未设置=跳过，调用面单测不受影响）
 	friends   serviceAgentFriendReader   // 好友判定源（friends 级可见性；可选）
+	computeSnapshotPath string
 	loops     *serviceAgentCallLoopGuard // 两跳回环（A→B→A）判定；进程内
 	syncWait  time.Duration              // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
 	http      *mcp.StreamableHTTPHandler
@@ -202,6 +203,10 @@ func (h *ServiceAgentsMCPHandler) buildServer(callerUID int64) *mcp.Server {
 	}
 	h.addRunStatusTool(srv, callerUID)
 	registered["catsco_run_status"] = struct{}{}
+	if h.computeSnapshotPath != "" {
+		h.addComputePreviewTool(srv)
+		registered[computePreviewToolName] = struct{}{}
+	}
 	// 自分享：只有「调用者本身就是 bot、且它的 owner 在内测白名单里」才挂。
 	// 人的工具面里不该出现这个工具（面板上有），否则模型会拿着它去做本该人点的事。
 	if h.canSelfShare(callerUID) {
@@ -225,7 +230,7 @@ func (h *ServiceAgentsMCPHandler) canSelfShare(callerUID int64) bool {
 // 当成「已下架」摘掉，而 SDK 只在客户端重新 list 时才回来。
 func isServiceSystemTool(name string) bool {
 	switch name {
-	case "catsco_run_status", serviceShareSelfToolName:
+	case "catsco_run_status", serviceShareSelfToolName, computePreviewToolName:
 		return true
 	}
 	return false

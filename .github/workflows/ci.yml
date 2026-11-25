@@ -61,7 +61,7 @@ jobs:
 
       - name: Test backend
         if: matrix.part == 'unit'
-        run: go test ./server/... ./cmd/tos-fetch
+        run: go test ./server/... ./cmd/tos-fetch ./cmd/service-run-worker ./cmd/slurm-file-pilot
 
       - name: Scan Go vulnerabilities
         if: matrix.part == 'unit'

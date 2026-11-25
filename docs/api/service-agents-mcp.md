@@ -15,6 +15,7 @@
 | --- | --- |
 | `catsco_<slug>` | 每个上架应用对应一个工具（如 `catsco_hello`） |
 | `catsco_run_status` | 查询 run 状态/结果（`{run_id}`） |
+| `catsco_compute_preview` | 预览 Cats 托管 Slurm 和可选的 Agent 运行设备，按部署配置启用 |
 
 `catsco_<slug>` 参数：
 
@@ -24,6 +25,64 @@
 | `session_id` | 可选；续聊会话 id（不传 = 新会话） |
 | `client_token` | 幂等键（作用域：同会话内；重发返回同一 run） |
 | `bot_uid` | 可选；以 bot 身份调用时带 bot 的 uid（校验 bot 归属：owner 必须是调用者；若该 bot 定义里显式设了 `serviceAgents`，被调 agent 必须在其中 → 否则 `agent_not_enabled_for_bot`）。不影响 `tools/list`（工具清单跟账号） |
+
+## 算力预览
+
+Agent 根据任务需求、数据位置、已有上下文和授权选择采样与执行工具。需要补充信息时，可以询问用户是否有自己的服务器、在线设备、集群或其他可用算力。用现有授权核实这些资源，标明用户自报或采样来源，以及尚待确认的容量、费用和预计完工时间。使用资源前确认对应的执行权限。
+
+`catsco_compute_preview` 提供 Cats 托管 Slurm 的候选结果。也可以用 XiaoBa 的 `local_compute_resources` 采样当前 Agent 运行设备，将结果传入可选的 `agent_runtime`。这个运行设备可能是电脑或云服务器。参数 `task` 的 `topology` 为 `independent_shards` 或 `distributed`，分别填写正整数 `shards` 或 `nodes`。`logical_cpus`、`memory_mib`、可选 `gpu_count` 和 `memory_mib_per_gpu` 是每分片或每节点的需求。
+
+结果 `structuredContent` 使用 `catsco.compute-preview.v1`，包含各候选 `fit`、`capacity`、`reason_code`、来源、采样时间和可用的采样字段。独立分片按可顺序执行判断最低资源。分布式任务按所需节点数判断总容量。超过两分钟的采样会降级为未知。当前 Agent 设备标为 `agent_reported`。
+
+文本结果第一段为聊天 Markdown 表格，第二段为结构化结果的 JSON。Agent 可以用表格中的数据和已知的用户资源，在聊天中一并比较运行位置、资源与容量、预计完工、预计积分和费用上限，请用户回复位置偏好。付费执行需另行确认具体报价、费用上限及有效期。给 `task` 传可选的 `estimated_billable_s` 以试算 Slurm 积分，独立任务填每分片的云端计费秒数，分布式任务填每节点的云端计费秒数。时长应来自实测或用户给定的假设。预计完工 `eta_s` 当前为 `null`。
+
+云端 `quote.state` 取 `unpriced`、`rate_only` 或 `estimated`。`rate_only` 返回可用费率，缺少时长或金额超出范围时可读 `reason_code`。`estimated` 额外返回 `estimate_units` 和 `billed_s_per_work_unit`。金额除以 `units_per_credit` 即为积分。云端 `max_units` 此阶段为 `null`，正式费用上限及付费确认由执行流程处理。当前设备的 0 积分仅指新增 Cats 算力费。
+
+部署方通过 `CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE` 指定一个绝对路径，启用预览。由平台采集器原子更新该路径的本地普通 JSON 文件。采样对应一组节点规格一致的 Slurm 队列，包含 UTC RFC 3339 `sampled_at`、已配置且可调度的 `nodes`、其中完全空闲的 `idle_nodes`、`logical_cpus_per_node`、`memory_mib_per_node`、可选 `gpus_per_node` 和 `memory_mib_per_gpu`。未知的 GPU 字段留空，已确认没有 GPU 时 `gpus_per_node` 为 0。文件缺失、过期或格式异常时云集群状态为未知。
+
+仓库的 `deploy/collect-slurm-snapshot.py` 可在已配置 Slurm 客户端的 Linux 主机上用 Python 3.8 或更新版本运行。为采集器准备平台配置文件，指定一个分区及预期的同规格节点资源。以下示例对应一组 2 CPU、3663 MiB、无 GPU 的节点。
+
+```json
+{"partition":"batch","logical_cpus_per_node":2,"memory_mib_per_node":3663,"gpus_per_node":0}
+```
+
+```bash
+python3 deploy/collect-slurm-snapshot.py --config /etc/catsco/slurm-preview.json \
+  --output /var/lib/catsco-compute/slurm.json
+```
+
+可用现有定时器每 30 秒运行一次。采集器执行只读 `sinfo`，核对分区和节点规格。启用的分区中，`idle`、`allocated`、`mixed`、`completing` 计入可调度节点，纯 `idle` 计入空闲节点。带状态标志的节点保守排除。已存在的空分区报告零节点。采集失败或遇到混合规格时保留旧文件，旧采样超过两分钟后自然失效。
+
+采集器原子替换快照，文件模式为 `0640`。让采集器可写父目录，并为 Cats 进程配置快照读取权限。两者使用不同用户时，可让父目录以共同可读组设置 setgid，使新文件继承组。容器部署应挂载快照父目录，并将 `CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE` 指向容器内文件路径。省略 `--output` 时输出一份 JSON 到标准输出，供隔离网络中的部署方通过已有受控通道传递。
+
+采集文件可附带同一规格的 `pricing` 对象，字段为 `cny_micros_per_node_period`（一个节点在一个计价周期内的人民币金额，单位为百万分之一元）、`rate_period_s`、`billing_increment_s` 和 RFC 3339 `valid_until`。它是平台发布给用户的费率，应由已核实的成本口径和运营定价生成。费率未发布、过期、无有效周期或格式异常时云端仍显示待报价。节点采样异常时不会试算。Agent 不提供或覆盖费率。
+
+换算沿用云机器账本，1 元 = 100 积分，1 积分 = 1,000,000 账本单位。每分片或每节点的预计计费时长先向上取整到 `billing_increment_s`，再用 `ceil(节点周期价格的账本单位 × 取整后秒数 × 分片数或节点数 ÷ rate_period_s)` 计算。这里计的是按任务分配的节点时间。供应商账单仍按资源实际生命周期核对。冷启动、盘、传输、闲置与固定费用只有纳入发布费率或相应计费时长才会进入这次试算。
+
+例如，试算费率为 300000 微元／节点／3600 秒，粒度为 60 秒时，两个节点各计费 1800 秒，预计 30 积分。该数值仅用于演示换算。
+
+## Slurm 文件直传试点
+
+这是 Cats 托管 Slurm 的一种可选执行方法。实际任务可根据执行环境、数据所在位置、网络可达性和授权采用已有文件引用、存储直传、集群接收入口或其他工具。
+
+此试点复用私有 `runner.type=worker` 应用和 `catsco_run_status`。集群里的 `service-run-worker` 主动调用 `/api/service-worker` 认领请求。Cats 只收到任务参数、文件引用和状态。文件所在设备直接向对象存储上传，集群 worker 从对象存储取输入并上传产物，下载设备直接向对象存储取产物。
+
+| `input.action` | 其他参数 | `output` |
+|---|---|---|
+| `prepare` | `size_bytes`，`sha256`（小写十六进制） | `input_ref` 和包含 `method`、`url`、`fields`、`expires_at` 的 `upload` |
+| `submit` | `input_ref` | `slurm_job_id`、`input_sha256`、`artifact_ref` |
+| `download` | `artifact_ref` | `download_url`、产物的 `sha256` 和 `size_bytes` |
+
+调用 `catsco_slurm-file-pilot` 时把上述参数放在 `input`。收到异步句柄时，用 `catsco_run_status` 获取最终 `output`。文件所在设备先算大小和 SHA-256，再用 `prepare` 返回的 URL 发 `multipart/form-data` POST。将所有 `upload.fields` 原样作为文本表单字段，最后添加名为 `file` 的二进制字段。收到 2xx 后再提交。不要把文件正文放入 MCP，也不要把临时签名地址或表单字段贴进聊天。`download` 可在产物引用的有效期内获得新地址。
+
+本轮验收模板固定为单节点、单 CPU 的 SHA-256 校验，单文件 1 字节至 256 MiB。上传凭证 30 分钟，仅授权一个指定大小的对象。输入引用与产物引用绑定 Cats 调用者 UID，worker 暂存时再次核对大小和哈希。产物引用 24 小时，下载地址最多 5 分钟。同一 Cats `run_id` 的完成回执会复用，已有领取记录而终态不明时应先对账。重试 MCP 提交时沿用原 `session_id` 和 `client_token`。当前交付范围为私有试点，分片续传、用户取消、算力付费与扩容后续接入。
+
+### 试点部署
+
+1. 用运营方的专用账号发布仅该账号可调用的 `slurm-file-pilot`，`visibility=private`，`definition.runner.type=worker`，不设远端 `runner.command`。描述说明三个 `action`、参数及直传方式。此账号只用于此应用，因为公网 worker 凭证按应用所有者划分认领范围。
+2. 在可访问 Slurm 的 Linux 主机上分别构建 `./cmd/service-run-worker` 和 `./cmd/slurm-file-pilot`。由有权使用指定分区和账户的专用 Slurm 身份运行，准备同一绝对路径、提交主机和计算节点都可访问且仅该身份可写的 `CATSCO_SLURM_SHARED_DIR`。
+3. 配置 `CATSCO_SLURM_PARTITION`、`CATSCO_SLURM_ACCOUNT`、`CATSCO_SLURM_S3_ENDPOINT`（设备可达的 HTTPS origin，且支持 S3 签名 POST policy）、`CATSCO_SLURM_S3_REGION`、`CATSCO_SLURM_BUCKET`。注入仅限试点桶下 `slurm-file-pilot/` 前缀的 `CATSCO_SLURM_S3_ACCESS_KEY`、`CATSCO_SLURM_S3_SECRET_KEY`、可选 `CATSCO_SLURM_S3_SESSION_TOKEN`，并设置至少 32 字节随机值作为 `CATSCO_SLURM_REF_SECRET`。为对象前缀设生命周期，保留期覆盖 24 小时产物引用期。共享目录只保留用于幂等的领取记录和回执，在 Cats run 已终态且确认无重试后清理。
+4. 注入同一专用账号的 `CATS_WORKER_TOKEN`，启动 `service-run-worker -agents slurm-file-pilot -timeout 4m -cmd /绝对路径/slurm-file-pilot`。部署 Cats 后端及 worker 时使用包含 `caller_uid` 认领字段的版本。集群 worker 只需出站访问 Cats 与对象存储。
 
 ## 调用失败怎么说清楚（`worker_offline` / `not_picked_up`）
 
