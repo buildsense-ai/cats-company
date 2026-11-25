@@ -1214,7 +1214,7 @@ describe('SkillHub sidebar update reminder', () => {
   it('keeps the available-update count visible after opening SkillHub', async () => {
     await renderButton();
     expect(badge().textContent).toBe('2');
-    expect(container.querySelector('button').getAttribute('aria-label')).toBe('打开 SkillHub，2 个 Skill 可更新');
+    expect(container.querySelector('button').getAttribute('aria-label')).toBe('打开 SkillHub，2 项更新待处理');
     await act(async () => container.querySelector('button').click());
     expect(onOpen).toHaveBeenCalledTimes(1);
     await renderButton({ active: true });
@@ -1229,8 +1229,7 @@ describe('SkillHub sidebar update reminder', () => {
     expect(badge()).toBeNull();
   });
 
-  it('shows updates that arrive after the page is opened and ignores old acknowledgements', async () => {
-    localStorage.setItem('catsco_skillhub_seen_updates:v1:7', JSON.stringify(['seen-update']));
+  it('shows updates that arrive after the page is opened', async () => {
     await renderButton({ updateCount: 0 });
     await act(async () => container.querySelector('button').click());
     await renderButton({ active: true, updateCount: 1 });

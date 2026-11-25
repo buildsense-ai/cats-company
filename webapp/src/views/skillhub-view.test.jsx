@@ -2675,10 +2675,11 @@ describe('SkillHubView', () => {
     expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
   });
 
-  it('confirms before removing an ability from the current Agent', async () => {
+  it('confirms before removing an ability and refreshes pending updates after saving', async () => {
+    const refreshUpdateSummary = vi.fn();
     api.updateBotDefinitionSkills.mockResolvedValueOnce({ botId: '42', revision: 4, skills: [] });
     await act(async () => {
-      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} /></FeedbackProvider>);
+      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} onRefreshSkillHubUpdateSummary={refreshUpdateSummary} /></FeedbackProvider>);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -2694,6 +2695,7 @@ describe('SkillHubView', () => {
     expect(confirmation.textContent).toContain('从“Owner Bot”移除“tools/review”');
     expect(confirmation.textContent).toContain('技能本身不会从 SkillHub 删除');
     expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+    expect(refreshUpdateSummary).not.toHaveBeenCalled();
 
     await act(async () => {
       Simulate.click([...confirmation.querySelectorAll('button')].find((button) => button.textContent === '从 Agent 移除'));
@@ -2702,6 +2704,7 @@ describe('SkillHubView', () => {
     });
 
     expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, []);
+    expect(refreshUpdateSummary).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('已从 Agent“Owner Bot”移除 tools/review');
   });
 

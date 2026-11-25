@@ -1337,7 +1337,7 @@ html[data-theme='dark'] .cc-skillhub-card-illustration[data-icon-key='test'] { -
   background: color-mix(in srgb, var(--cc-success-text) 19%, transparent);
   color: var(--cc-success-text);
 }
-.cc-skillhub-update-action svg { width: 14px; height: 14px; }
+.cc-skillhub-card-actions button.cc-skillhub-update-action svg { width: 14px; height: 14px; }
 .cc-skillhub-update-version { color: var(--cc-success-text); font-weight: var(--cc-font-weight-semibold); }
 .cc-skillhub-translation-note { color: var(--cc-muted); font-size: 11px; }
 .cc-skillhub-language { display: flex; flex: 0 0 auto; gap: 2px; }

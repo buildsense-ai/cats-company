@@ -2458,7 +2458,7 @@ function SidebarContent({
 }
 
 export function SkillHubSidebarButton({ active, onClick, updateCount = 0 }) {
-  const updateLabel = updateCount > 0 ? `${updateCount} 个 Skill 可更新` : '';
+  const updateLabel = updateCount > 0 ? `${updateCount} 项更新待处理` : '';
   return (
     <button
       type="button"

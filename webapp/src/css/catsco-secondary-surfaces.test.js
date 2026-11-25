@@ -13,6 +13,10 @@ const desktopConnectSource = readFileSync(resolve(process.cwd(), 'src/widgets/de
   .replace(/\r\n?/g, '\n');
 
 describe('secondary surface design contract', () => {
+  it('sizes the SkillHub update icon independently of the other card actions', () => {
+    expect(skillHubCss).toContain('.cc-skillhub-card-actions button.cc-skillhub-update-action svg { width: 14px; height: 14px; }');
+  });
+
   it('loads the scoped layer after the shared settings controls', () => {
     const settingsIndex = workspaceStylesSource.indexOf("import '../css/catsco-settings-controls.css';");
     const secondaryIndex = workspaceStylesSource.indexOf("import '../css/catsco-secondary-surfaces.css';");
