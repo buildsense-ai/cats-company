@@ -178,6 +178,23 @@ describe('ComputeConfirmView', () => {
     expect(container.textContent).toContain('报价已过期，无法再确认');
   });
 
+  it('shows reconciliation after confirmation without asking for another quote', async () => {
+    request.mockResolvedValue(quoteRun({
+      state: 'active',
+      confirmed_at: new Date(Date.now() - 120_000).toISOString(),
+      expires_at: new Date(Date.now() - 60_000).toISOString(),
+      progress: { phase: 'reconcile', problem: 'expand_intent: jobUUID unconfirmed' },
+    }));
+    await render();
+
+    expect(container.textContent).toContain('需核对云端结果，任务暂缓');
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('自动刷新');
+    expect(container.textContent).toContain('账本结算待确认');
+    expect(container.textContent).not.toContain('作业运行中');
+    expect(container.textContent).not.toContain('重新获取报价');
+    expect(findButton(container, '我确认，提交并预占积分上限')).toBeFalsy();
+  });
+
   it('shows the account-scoped expiry error returned by the API', async () => {
     request.mockRejectedValue(Object.assign(new Error('compute quote expired'), {
       status: 409,

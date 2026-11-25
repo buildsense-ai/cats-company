@@ -14,6 +14,7 @@ from urllib.parse import quote, urlsplit
 
 
 IO_TIMEOUT = 8
+CTYUN_MUTATION_TIMEOUT = 30  # The acknowledged intent holds a 45-second lease.
 MAX_RESPONSE = 1024 * 1024
 
 
@@ -29,7 +30,7 @@ def http_child():
     request = json.load(sys.stdin)
     url = urlsplit(request["url"])
     target = url.path + ("?" + url.query if url.query else "")
-    connection = http.client.HTTPSConnection(url.hostname, url.port, timeout=IO_TIMEOUT)
+    connection = http.client.HTTPSConnection(url.hostname, url.port, timeout=request["timeout"])
     try:
         connection.request(request["method"], target, request["body"], request["headers"])
         with connection.getresponse() as response:
@@ -44,13 +45,13 @@ def http_child():
     return 0
 
 
-def http_request(method, url, headers, body=None):
+def http_request(method, url, headers, body=None, *, timeout=IO_TIMEOUT):
     # Bound the entire HTTP exchange, including DNS, TLS and slow response bodies.
-    request = json.dumps(dict(method=method, url=url, headers=headers, body=body))
+    request = json.dumps(dict(method=method, url=url, headers=headers, body=body, timeout=timeout))
     try:
         result = subprocess.run(
             [sys.executable, "-I", "-B", __file__, "--http"], input=request,
-            capture_output=True, text=True, encoding="utf-8", timeout=IO_TIMEOUT, check=True,
+            capture_output=True, text=True, encoding="utf-8", timeout=timeout, check=True,
             env={},
         )
         return json.loads(result.stdout)
@@ -134,7 +135,7 @@ API_FIELDS = {
 
 
 class Cloud:
-    def __init__(self, config, ak, sk, transport=http_request):
+    def __init__(self, config, ak, sk, transport=None):
         self.transport = transport
         self.ak, self.sk = ak, sk
         self.hosts = {service: https_base(config["hosts"][service]) for service in ("hpc", "ecs", "evs")}
@@ -213,7 +214,11 @@ class Cloud:
         url = self.hosts[service] + operation["path"] + ("?" + query if query else "")
         date = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         headers = signed_headers(self.ak, self.sk, query, body, request_id or str(uuid.uuid4()), date)
-        status, raw = self.transport(method, url, headers, body or None)
+        if self.transport is None:
+            timeout = CTYUN_MUTATION_TIMEOUT if request_id is not None else IO_TIMEOUT
+            status, raw = http_request(method, url, headers, body or None, timeout=timeout)
+        else:
+            status, raw = self.transport(method, url, headers, body or None)
         if status != 200:
             raise WorkerError(f"{name} returned HTTP {status}")
         try:

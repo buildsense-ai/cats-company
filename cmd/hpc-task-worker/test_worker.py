@@ -1,5 +1,6 @@
 import copy
 import json
+import subprocess
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
@@ -381,6 +382,39 @@ class WorkerTest(unittest.TestCase):
         f.advance_to("expand_intent")
         self.assertEqual(f.run["progress"]["expand_operation"], "expand")
         self.assertNotIn("master_order_id", f.run["progress"])
+
+    def test_slow_cloud_mutation_receipt_does_not_extend_reads_or_cats(self):
+        cloud = Cloud(config(), "fixture-ak", "fixture-sk")
+        scope = dict(queueUUID="queue-1", count=2, imageUUID="image-1", specificationUUID="spec-cpu")
+
+        def exchange(args, **kwargs):
+            request = json.loads(kwargs["input"])
+            timeout = kwargs["timeout"]
+            self.assertEqual(request["timeout"], timeout)
+            if request["url"].endswith("expand-cluster"):
+                if timeout < 12:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                self.assertEqual(timeout, 30)
+                reply = dict(statusCode=800, returnObj=dict(jobUUID="slow-expansion"))
+                return subprocess.CompletedProcess(args, 0, json.dumps([200, json.dumps(reply)]))
+            self.assertEqual(timeout, 8)
+            if request["url"].endswith("/api/compute/worker"):
+                return subprocess.CompletedProcess(args, 0, json.dumps([204, ""]))
+            reply = dict(statusCode=800, returnObj=dict(status="success"))
+            return subprocess.CompletedProcess(args, 0, json.dumps([200, json.dumps(reply)]))
+
+        with patch("cloud.subprocess.run", side_effect=exchange) as transport:
+            call = lambda fn, *args: fn(*args)
+            result = cloud.outcome("expand", call, "request-1", **scope)
+            self.assertEqual(result["jobUUID"], "slow-expansion")
+            self.assertEqual(cloud.status(result["jobUUID"], call), "success")
+            self.assertIsNone(Cats("https://cats.invalid", "fixture-token").claim())
+            self.assertEqual(transport.call_count, 3)
+
+        with patch("cloud.subprocess.run", side_effect=subprocess.TimeoutExpired("expand", 30)) as transport:
+            with self.assertRaisesRegex(WorkerError, "HTTP exchange failed or timed out"):
+                cloud.outcome("expand", call, "request-2", **scope)
+            transport.assert_called_once()
 
     def test_preflight_denial_never_claims(self):
         args = ["worker.py", "--config", "fixture.json", "--once"]
