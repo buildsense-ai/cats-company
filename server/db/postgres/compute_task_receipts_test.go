@@ -12,13 +12,13 @@ import (
 )
 
 // Cats 算力任务终态回执的契约：
-//   - 000084 与启动常量是同一份脚本（新建库与已迁移库结构一致）；
+//   - 000085 与启动常量是同一份脚本（新建库与已迁移库结构一致）；
 //   - 回执在 FinishComputeTask 同一事务入箱，payload 字段完整；
 //   - finish 重放不重复扣费、不重复回执；终态 + 已有回执的重放不报错。
 
 func computeTaskReceiptMigrationSQL(t *testing.T, direction string) string {
 	t.Helper()
-	b, err := os.ReadFile("../migrations/postgres/000084_compute_task_receipts." + direction + ".sql")
+	b, err := os.ReadFile("../migrations/postgres/000085_compute_task_receipts." + direction + ".sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestComputeTaskReceiptMigrationMatchesStartupSchema(t *testing.T) {
 	up := stripSQLComments(computeTaskReceiptMigrationSQL(t, "up"))
 	want := stripSQLComments(createComputeTaskReceiptsTable)
 	if up != want {
-		t.Fatalf("000084_compute_task_receipts.up.sql differs from createComputeTaskReceiptsTable:\n got: %s\nwant: %s", up, want)
+		t.Fatalf("000085_compute_task_receipts.up.sql differs from createComputeTaskReceiptsTable:\n got: %s\nwant: %s", up, want)
 	}
 	for _, fragment := range []string{
 		"receipt_id VARCHAR(80) PRIMARY KEY",
@@ -41,7 +41,7 @@ func TestComputeTaskReceiptMigrationMatchesStartupSchema(t *testing.T) {
 		"idx_compute_task_receipts_pending",
 	} {
 		if !strings.Contains(up, fragment) {
-			t.Fatalf("000084 up migration is missing %q", fragment)
+			t.Fatalf("000085 up migration is missing %q", fragment)
 		}
 	}
 	down := computeTaskReceiptMigrationSQL(t, "down")

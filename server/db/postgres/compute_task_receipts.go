@@ -10,7 +10,7 @@ import (
 	"github.com/openchat/openchat/server/store"
 )
 
-// Cats 算力任务的终态回执收件箱（迁移 000084）。
+// Cats 算力任务的终态回执收件箱（迁移 000085）。
 //
 // 回执在 FinishComputeTask 的事务内写入：和结算、终态同一个提交，所以不存在
 // 「扣了钱却没有回执」的中间态。receipt_id 由 quote_id 确定性派生，quote_id 上还有

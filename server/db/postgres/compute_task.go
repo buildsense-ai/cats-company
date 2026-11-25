@@ -475,7 +475,7 @@ func (a *Adapter) FinishComputeTask(ctx context.Context, id, lease string, progr
 	if state == store.ComputeTaskCompleted || state == store.ComputeTaskFailed {
 		if state == terminal && sameProgress && charged.Valid && charged.Int64 == actualUnits {
 			// 逐字相同的终态重放：任务已经是这个结果、这笔钱已经结算过。回执本应与
-			// 那笔结算同事务存在；000084 之前结算的老任务在这里补一份，
+			// 那笔结算同事务存在；000085 之前结算的老任务在这里补一份，
 			// ON CONFLICT DO NOTHING 保证重放永远只有一份回执、不会二次扣费。
 			if err := insertComputeTaskReceiptTx(ctx, tx, id, uid, state, charged.Int64, progress, now); err != nil {
 				return err

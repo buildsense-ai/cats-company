@@ -1,6 +1,6 @@
 package postgres
 
-// createComputeTaskReceiptsTable is migration 000084 applied to a database created
+// createComputeTaskReceiptsTable is migration 000085 applied to a database created
 // from scratch: CreateSchema builds the final shape, so the statements here are the
 // same idempotent CREATE the migration file carries (a parity test keeps the two
 // byte-identical after comment stripping).
