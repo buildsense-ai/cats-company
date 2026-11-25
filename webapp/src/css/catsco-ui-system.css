@@ -647,17 +647,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
   background: var(--cc-bg);
   border-right-color: var(--cc-border);
   font-family: var(--cc-font-sans);
-  transition: width 160ms ease, flex-basis 160ms ease;
 }
 
 .v3-app.sidebar-resizing,
 .v3-app.sidebar-resizing * {
   cursor: col-resize !important;
   user-select: none !important;
-}
-
-.v3-app.sidebar-resizing .v3-sidebar {
-  transition: none;
 }
 
 .v3-sidebar-resize-handle {

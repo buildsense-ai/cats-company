@@ -1217,7 +1217,6 @@ body {
   border-right: 1px solid var(--v3-border);
   display: flex;
   flex-direction: column;
-  transition: width 0.18s ease, flex-basis 0.18s ease;
   overflow: hidden;
 }
 
