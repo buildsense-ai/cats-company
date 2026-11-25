@@ -132,6 +132,10 @@ const TYPING_TIMEOUT_MS = 10000;
 // that mentions two applications settles on one instead of flicking between them.
 const MENTION_OPEN_SETTLE_MS = 260;
 const PREVIEW_COMPOSER_TEXT_DRAG_HOLD_MS = 140;
+const PREVIEW_DOCK_COLUMNS = ['left', 'center', 'right'];
+const PREVIEW_DOCK_MARGIN = 20;
+const PREVIEW_DOCK_SNAP_DISTANCE = 18;
+const DEFAULT_PREVIEW_DOCK_PLACEMENT = { x: 'right', y: 'bottom' };
 const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result', 'memory_branch', 'wiki_injection']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const MAX_DROPPED_FILES = 200;
@@ -159,6 +163,13 @@ const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 const ARTIFACT_REGISTRY_POLL_MS = 5000;
 const ARTIFACT_SNAPSHOT_TIMEOUT_MS = 2200;
 const DELIVERY_ARTIFACT_TYPES = new Set(['file', 'image', 'audio', 'voice']);
+
+function snapPreviewDockAxis(position, start, end, startEdge, endEdge) {
+  if (position <= (start + end) / 2) {
+    return position <= start + PREVIEW_DOCK_SNAP_DISTANCE ? startEdge : position;
+  }
+  return position >= end - PREVIEW_DOCK_SNAP_DISTANCE ? endEdge : position;
+}
 
 // A cloud-worker list can briefly be served without release metadata while
 // the provider snapshot refreshes. Preserve a known update in that case;
@@ -893,7 +904,9 @@ export default function MessagesView({
   const [previewComposerActive, setPreviewComposerActive] = useState(false);
   const [previewContextPlacement, setPreviewContextPlacement] = useState('above');
   const [previewDockPoint, setPreviewDockPoint] = useState(null);
-  const [previewDockAnchor, setPreviewDockAnchor] = useState('bottom-right');
+  const [previewDockPlacement, setPreviewDockPlacement] = useState(DEFAULT_PREVIEW_DOCK_PLACEMENT);
+  const dockX = typeof previewDockPlacement.x === 'number' ? 'free' : previewDockPlacement.x;
+  const dockY = typeof previewDockPlacement.y === 'number' ? 'free' : previewDockPlacement.y;
   const [previewDockDragging, setPreviewDockDragging] = useState(false);
   const previewContextId = useId();
   const previewContextCloseRef = useRef(null);
@@ -7178,7 +7191,7 @@ export default function MessagesView({
     setPreviewComposerMinimized(false);
     setPreviewComposerActive(false);
     setPreviewDockPoint(null);
-    setPreviewDockAnchor('bottom-right');
+    setPreviewDockPlacement(DEFAULT_PREVIEW_DOCK_PLACEMENT);
     previewScrollBeforeExpandRef.current = null;
   }, [topic]);
   useEffect(() => {
@@ -7237,13 +7250,17 @@ export default function MessagesView({
       const bounds = workspace.getBoundingClientRect();
       const size = dock.getBoundingClientRect();
       const surface = workspace.querySelector('.cloud-artifacts-gateway-frame, .v3-file-preview-body');
-      const surfaceTop = surface ? surface.getBoundingClientRect().top - bounds.top + 20 : 20;
-      const topAnchor = Math.max(20, Math.min(surfaceTop, bounds.height - size.height - 20));
+      const surfaceTop = surface ? surface.getBoundingClientRect().top - bounds.top + PREVIEW_DOCK_MARGIN : PREVIEW_DOCK_MARGIN;
+      const bottomAnchor = Math.max(PREVIEW_DOCK_MARGIN, bounds.height - size.height - PREVIEW_DOCK_MARGIN);
+      const topAnchor = Math.max(PREVIEW_DOCK_MARGIN, Math.min(surfaceTop, bottomAnchor));
+      const rightAnchor = Math.max(PREVIEW_DOCK_MARGIN, bounds.width - size.width - PREVIEW_DOCK_MARGIN);
       workspace.style.setProperty('--cc-app-dock-top', `${topAnchor}px`);
+      workspace.style.setProperty('--cc-app-dock-bottom-top', `${bottomAnchor}px`);
+      workspace.style.setProperty('--cc-app-dock-right-left', `${rightAnchor}px`);
       setPreviewDockPoint(point => {
         if (!point) return point;
-        const left = Math.max(8, Math.min(bounds.width - size.width - 8, point.left));
-        const top = Math.max(8, Math.min(bounds.height - size.height - 8, point.top));
+        const left = Math.max(PREVIEW_DOCK_MARGIN, Math.min(rightAnchor, point.left));
+        const top = Math.max(topAnchor, Math.min(bottomAnchor, point.top));
         return left === point.left && top === point.top ? point : { left, top };
       });
       updatePreviewContextPlacement();
@@ -7254,7 +7271,7 @@ export default function MessagesView({
     observer?.observe(dock);
     window.addEventListener('resize', updateGeometry);
     return () => { observer?.disconnect(); window.removeEventListener('resize', updateGeometry); };
-  }, [previewExpanded, previewDockPoint, previewDockAnchor, previewComposerMinimized, previewContextOpen, updatePreviewContextPlacement]);
+  }, [previewExpanded, previewDockPoint, previewDockPlacement, previewComposerMinimized, previewContextOpen, updatePreviewContextPlacement]);
   useLayoutEffect(() => {
     if (!previewExpanded || previewDockDragging || previewDockPoint) return;
     const from = previewDockSnapRef.current;
@@ -7271,12 +7288,12 @@ export default function MessagesView({
     previewDockAnimationRef.current = dock.animate([
       { translate: `${dx}px ${dy}px` }, { translate: '0px 0px' },
     ], { duration: 180, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
-  }, [previewExpanded, previewDockDragging, previewDockPoint, previewDockAnchor]);
+  }, [previewExpanded, previewDockDragging, previewDockPoint, previewDockPlacement]);
   useEffect(() => () => previewDockAnimationRef.current?.cancel(), []);
   const startPreviewDockDrag = useCallback(event => {
     previewDockSuppressClickRef.current = 0;
-    if (!previewExpanded || event.button !== 0) return;
-    if (event.pointerType && event.pointerType !== 'mouse') return;
+    if (!previewExpanded || event.button !== 0 || event.isPrimary === false) return;
+    if (event.pointerType && event.pointerType !== 'mouse' && !event.target.closest('.cc-app-composer-toolbar')) return;
     if (event.target.closest('[role="listbox"], .v3-attachment-menu, .v3-agent-picker-menu, [role="dialog"]')) return;
     const workspace = chatColumnRef.current?.parentElement;
     const dock = chatColumnRef.current;
@@ -7297,10 +7314,9 @@ export default function MessagesView({
       startY: event.clientY,
       left: initial.left,
       top: initial.top,
-      width: dockRect.width,
-      height: dockRect.height,
-      workspaceWidth: workspaceRect.width,
-      workspaceHeight: workspaceRect.height,
+      right: workspaceRect.width - dockRect.width - PREVIEW_DOCK_MARGIN,
+      bottom: workspaceRect.height - dockRect.height - PREVIEW_DOCK_MARGIN,
+      upper: parseFloat(workspace.style.getPropertyValue('--cc-app-dock-top')) || PREVIEW_DOCK_MARGIN,
       moved: false,
       startedAt: performance.now(),
       // Only populated text fields need a short selection grace period.
@@ -7337,8 +7353,8 @@ export default function MessagesView({
     if (event.cancelable) event.preventDefault();
     drag.moved = true;
     drag.point = {
-      left: Math.max(8, Math.min(drag.workspaceWidth - drag.width - 8, drag.left + event.clientX - drag.startX)),
-      top: Math.max(8, Math.min(drag.workspaceHeight - drag.height - 8, drag.top + event.clientY - drag.startY)),
+      left: Math.max(PREVIEW_DOCK_MARGIN, Math.min(drag.right, drag.left + event.clientX - drag.startX)),
+      top: Math.max(drag.upper, Math.min(drag.bottom, drag.top + event.clientY - drag.startY)),
     };
     // Follow the pointer with a transform; avoid re-rendering the conversation
     // and re-measuring its layout on every mouse move.
@@ -7356,26 +7372,18 @@ export default function MessagesView({
         previewDockSuppressClickRef.current = performance.now() + 300;
         const dock = chatColumnRef.current;
         const bounds = dock?.parentElement?.getBoundingClientRect();
-        if (bounds) {
+        if (bounds && event.type !== 'pointercancel') {
           const rect = dock.getBoundingClientRect();
-          previewDockSnapRef.current = event.type === 'pointercancel' ? null : { left: rect.left, top: rect.top };
+          previewDockSnapRef.current = { left: rect.left, top: rect.top };
           const left = drag.point?.left ?? rect.left - bounds.left;
           const top = drag.point?.top ?? rect.top - bounds.top;
-          const bottom = Math.max(20, bounds.height - rect.height - 20);
-          const right = Math.max(20, bounds.width - rect.width - 20);
-          const upper = parseFloat(dock.parentElement.style.getPropertyValue('--cc-app-dock-top')) || 20;
-          const anchors = [
-            { name: 'top-left', left: 20, top: upper },
-            { name: 'top-right', left: right, top: upper },
-            { name: 'bottom-left', left: 20, top: bottom },
-            { name: 'bottom-center', left: (bounds.width - rect.width) / 2, top: bottom },
-            { name: 'bottom-right', left: right, top: bottom },
-          ];
-          const nearest = anchors.reduce((best, candidate) => (
-            Math.hypot(candidate.left - left, candidate.top - top) < Math.hypot(best.left - left, best.top - top)
-              ? candidate : best
-          ));
-          setPreviewDockAnchor(nearest.name);
+          const bottom = Math.max(PREVIEW_DOCK_MARGIN, bounds.height - rect.height - PREVIEW_DOCK_MARGIN);
+          const right = Math.max(PREVIEW_DOCK_MARGIN, bounds.width - rect.width - PREVIEW_DOCK_MARGIN);
+          const upper = parseFloat(dock.parentElement.style.getPropertyValue('--cc-app-dock-top')) || PREVIEW_DOCK_MARGIN;
+          setPreviewDockPlacement({
+            x: snapPreviewDockAxis(left, PREVIEW_DOCK_MARGIN, right, 'left', 'right'),
+            y: snapPreviewDockAxis(top, upper, bottom, 'top', 'bottom'),
+          });
         }
         setPreviewDockPoint(null);
       }
@@ -7393,13 +7401,16 @@ export default function MessagesView({
     };
   }, [previewExpanded, movePreviewDock, finishPreviewDockDrag]);
   const movePreviewDockWithKeyboard = useCallback(event => {
-    if (event.target.closest('button') || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    const { key } = event;
+    if (event.target.closest('button') || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) return;
     event.preventDefault();
-    const anchors = ['top-left', 'top-right', 'bottom-left', 'bottom-center', 'bottom-right'];
-    const delta = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
-    setPreviewDockAnchor(current => {
-      const index = anchors.indexOf(current);
-      return anchors[(index + delta + anchors.length) % anchors.length];
+    setPreviewDockPlacement(current => {
+      if (key === 'ArrowUp') return { ...current, y: 'top' };
+      if (key === 'ArrowDown') return { ...current, y: 'bottom' };
+      if (typeof current.x === 'number') return { ...current, x: key === 'ArrowLeft' ? 'left' : 'right' };
+      const delta = key === 'ArrowLeft' ? -1 : 1;
+      const nextColumn = PREVIEW_DOCK_COLUMNS[PREVIEW_DOCK_COLUMNS.indexOf(current.x) + delta];
+      return nextColumn ? { ...current, x: nextColumn } : current;
     });
     setPreviewDockPoint(null);
     setPreviewContextOpen(false);
@@ -7486,9 +7497,12 @@ export default function MessagesView({
         className={`v3-message-workspace${sidePanelOpen || wikiMemoryOpen ? ' has-preview' : ''}${previewExpanded ? ' cc-app-focus' : ''}${previewExpanded && previewContextOpen ? ' cc-app-context-open' : ''}${previewContextPlacement === 'below' ? ' cc-app-context-below' : ''}${previewComposerMinimized ? ' cc-app-composer-minimized' : ''}${previewComposerActive ? ' cc-app-composer-active' : ''}${previewDockDragging ? ' cc-app-dock-dragging' : ''}`}
         style={sidePanelOpen || wikiMemoryOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
       >
-        <div ref={chatColumnRef} className="v3-chat-column" data-composer-position={previewDockAnchor} style={previewExpanded && previewDockPoint ? {
-          left: `${previewDockPoint.left}px`, right: 'auto', top: `${previewDockPoint.top}px`, bottom: 'auto',
-          transform: 'none',
+        <div ref={chatColumnRef} className="v3-chat-column" data-composer-position={`${dockY}-${dockX}`} style={previewExpanded ? {
+          '--cc-app-dock-free-left': dockX === 'free' ? `${previewDockPlacement.x}px` : undefined,
+          '--cc-app-dock-free-top': dockY === 'free' ? `${previewDockPlacement.y}px` : undefined,
+          ...(previewDockPoint && {
+            left: `${previewDockPoint.left}px`, right: 'auto', top: `${previewDockPoint.top}px`, bottom: 'auto', transform: 'none',
+          }),
         } : undefined}>
           {renderTopBar ? renderTopBar(wikiMemoryEnabled && wikiMemoryAgents.length > 0 && (
             <button type="button" className="v3-action-btn" aria-label="记忆" title="记忆" aria-expanded={wikiMemoryOpen}

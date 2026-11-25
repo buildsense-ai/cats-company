@@ -22,18 +22,23 @@
     height: auto;
     background: transparent;
   }
-  .cc-app-focus > .v3-chat-column[data-composer-position="top-left"] {
+  .cc-app-focus > .v3-chat-column[data-composer-position$="-left"] {
     left: 20px;
     right: auto;
+  }
+  .cc-app-focus > .v3-chat-column[data-composer-position^="top-"] {
     top: var(--cc-app-dock-top, 20px);
     bottom: auto;
   }
-  .cc-app-focus > .v3-chat-column[data-composer-position="top-right"] {
-    top: var(--cc-app-dock-top, 20px);
+  .cc-app-focus > .v3-chat-column[data-composer-position^="free-"] {
+    top: clamp(var(--cc-app-dock-top), var(--cc-app-dock-free-top), var(--cc-app-dock-bottom-top));
     bottom: auto;
   }
-  .cc-app-focus > .v3-chat-column[data-composer-position="bottom-left"] { left: 20px; right: auto; }
-  .cc-app-focus > .v3-chat-column[data-composer-position="bottom-center"] {
+  .cc-app-focus > .v3-chat-column[data-composer-position$="-free"] {
+    left: clamp(20px, var(--cc-app-dock-free-left), var(--cc-app-dock-right-left));
+    right: auto;
+  }
+  .cc-app-focus > .v3-chat-column[data-composer-position$="-center"] {
     left: 50%;
     right: auto;
     transform: translateX(-50%);
@@ -67,14 +72,14 @@
     border-bottom: 1px solid var(--cc-border);
     border-radius: 20px 20px 0 0;
     z-index: 2;
-    cursor: default;
+    cursor: grab;
     touch-action: none;
     user-select: none;
   }
   .cc-app-focus.cc-app-composer-active .cc-app-composer-toolbar,
   .cc-app-focus.cc-app-composer-minimized .cc-app-composer-toolbar { display: flex; }
   .cc-app-focus .cc-app-composer-toolbar:focus-visible { outline: 1px solid var(--cc-focus-border); outline-offset: 2px; }
-  .cc-app-focus.cc-app-dock-dragging .v3-composer * { cursor: default; user-select: none; }
+  .cc-app-focus.cc-app-dock-dragging .v3-composer * { cursor: grabbing; user-select: none; }
   .cc-app-focus.cc-app-dock-dragging > .v3-chat-column {
     transform: translate3d(var(--cc-app-dock-offset-x, 0px), var(--cc-app-dock-offset-y, 0px), 0) !important;
     will-change: transform;

@@ -5282,6 +5282,71 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.mock-file-preview')).toBe(preview);
   });
 
+  it.each(['mouse', 'touch', 'pen'])('places the app composer freely with %s and snaps near edges', async (pointerType) => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 2800 });
+    api.getMessages.mockResolvedValueOnce({ messages: [{
+      id: 30, from_uid: 2, content: 'report.html',
+      content_blocks: [{ type: 'file', payload: { name: 'report.html', url: '/uploads/files/report.html', mime_type: 'text/html' } }],
+      created_at: '2026-06-12T00:00:00Z',
+    }] });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => Simulate.click(container.querySelector('.mock-open-preview')));
+    await act(async () => Simulate.click(container.querySelector('[aria-label="全屏查看应用"]')));
+    const workspace = container.querySelector('.v3-message-workspace');
+    const dock = workspace.querySelector('.v3-chat-column');
+    const toolbar = workspace.querySelector('.cc-app-composer-toolbar');
+    const workspaceWidth = 2600;
+    const workspaceHeight = 500;
+    const dockWidth = 520;
+    const dockHeight = 90;
+    const middle = (workspaceWidth - dockWidth) / 2;
+    vi.spyOn(workspace, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, right: workspaceWidth, bottom: workspaceHeight,
+      width: workspaceWidth, height: workspaceHeight,
+    });
+    const dockRect = vi.spyOn(dock, 'getBoundingClientRect');
+    await act(async () => Simulate.keyDown(toolbar, { key: 'ArrowLeft' }));
+    expect(dock.dataset.composerPosition).toBe('bottom-center');
+
+    const dispatchPointer = (target, type, y, x) => target.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: 1, pointerType, isPrimary: true, button: 0,
+      clientX: x, clientY: y,
+    }));
+    const right = workspaceWidth - dockWidth - 20;
+    const dragDock = async (left, top, nextLeft, nextTop, end = 'pointerup') => {
+      dockRect.mockReturnValue({
+        left, top, right: left + dockWidth, bottom: top + dockHeight,
+        width: dockWidth, height: dockHeight,
+      });
+      await act(async () => {
+        dispatchPointer(toolbar, 'pointerdown', top + 15, left + 120);
+        dispatchPointer(document, 'pointermove', nextTop + 15, nextLeft + 120);
+        dispatchPointer(document, end, nextTop + 15, nextLeft + 120);
+      });
+    };
+    for (const [left, top, nextLeft, nextTop, anchor, freeLeft, freeTop] of [
+      [middle, 390, middle, 32, 'top-free', middle, null],
+      [middle, 20, 660, 173, 'free-free', 660, 173],
+      [660, 173, right - 19, 281, 'free-free', right - 19, 281],
+      [right - 19, 281, right - 12, 281, 'free-right', null, 281],
+      [right, 281, 32, 281, 'free-left', null, 281],
+      [20, 281, 20, 114, 'free-left', null, 114],
+      [20, 114, 900, 378, 'bottom-free', 900, null],
+    ]) {
+      await dragDock(left, top, nextLeft, nextTop);
+      expect(dock.dataset.composerPosition).toBe(anchor);
+      expect(dock.style.getPropertyValue('--cc-app-dock-free-left')).toBe(freeLeft === null ? '' : `${freeLeft}px`);
+      expect(dock.style.getPropertyValue('--cc-app-dock-free-top')).toBe(freeTop === null ? '' : `${freeTop}px`);
+    }
+    await dragDock(900, 390, 20, 225, 'pointercancel');
+    expect(dock.dataset.composerPosition).toBe('bottom-free');
+    await act(async () => Simulate.keyDown(toolbar, { key: 'ArrowUp' }));
+    expect(dock.dataset.composerPosition).toBe('top-free');
+    expect(dock.style.getPropertyValue('--cc-app-dock-free-left')).toBe('900px');
+    await act(async () => Simulate.keyDown(toolbar, { key: 'ArrowRight' }));
+    expect(dock.dataset.composerPosition).toBe('top-right');
+  });
+
   it('clears workspace expansion when the preview closes or the topic changes', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 });
     api.getMessages.mockResolvedValue({ messages: [{

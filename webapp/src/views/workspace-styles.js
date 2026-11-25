@@ -14,4 +14,5 @@ import '../css/catsco-account-dialogs.css';
 import '../css/search-overlay.css';
 import '../css/catsco-input-states.css';
 import '../css/catsco-app-focus.css';
+import '../css/library-workspace.css';
 import '../css/catsco-liquid-messages.css';

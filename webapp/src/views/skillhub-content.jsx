@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import SlidingSegments from '../widgets/sliding-segments';
 import ToolbarSearch from '../widgets/toolbar-search';
+import LibraryFilter, { LibraryFilterSelect } from '../widgets/library-filter';
 import { createPortal } from 'react-dom';
 import {
   Check, Clipboard, FolderOpen, Globe, Info, Trash2,
@@ -19,7 +20,7 @@ import { useFeedback } from '../components/feedback-system';
 import { mergeMarketplaceLibrary, useMarketplace, useMarketplaceCatalogue } from './skillhub-marketplace-state';
 import { MarketplaceIntroduction } from './skillhub-marketplace-intro';
 import { marketplaceApi } from '../skillhub-marketplace-api';
-import { categoryKey, readCategoryDrafts, inferSkillCategory, localizedSkillText, skillUploadedTimestamp, SkillCategoryField, SkillCategoryFilters } from './skillhub-categories';
+import { SKILL_CATEGORIES, categoryKey, readCategoryDrafts, inferSkillCategory, localizedSkillText, skillUploadedTimestamp, SkillCategoryField, SkillCategoryFilters } from './skillhub-categories';
 import { skillSourceQuery } from './skillhub-presentation';
 import { skillIconKey } from './skillhub-icons';
 import { readSkillSort, writeSkillSort, skillSortOptions, skillAddedTimestamp, sortSkills } from './skillhub-sort';
@@ -47,9 +48,11 @@ function normalizeSkillSearchValue(value) {
 
 export default function SkillHubContent(props) {
   const { navigate, enabled: marketplaceEnabled } = useMarketplace();
+  const { embedded, agentPickerContainer, onRegisterNavigation } = props;
+  useEffect(() => onRegisterNavigation?.(navigate), [navigate, onRegisterNavigation]);
   const categoryOwner = props.categoryOwnerUID || 'guest';
   const [category, setCategory] = useState(props.browseStateRef?.current?.category || '');
-  const [catalogueCategory, setCatalogueCategory] = useState('recommended');
+  const [catalogueCategory, setCatalogueCategory] = useState(() => embedded ? props.browseStateRef?.current?.catalogueCategory ?? 'recommended' : 'recommended');
   const [recommendationsUnavailable, setRecommendationsUnavailable] = useState(false);
   const selectCatalogueCategory = (value) => {
     setRecommendationsUnavailable(false);
@@ -60,10 +63,13 @@ export default function SkillHubContent(props) {
     setCatalogueCategory('');
   }, []);
   const pageRef = useRef(null);
+  const filterTriggerRef = useRef(null);
   const restoreScrollRef = useRef(props.browseStateRef?.current?.scrollTop || 0);
   useEffect(() => {
-    if (props.browseStateRef?.current) props.browseStateRef.current.category = category;
-  }, [category, props.browseStateRef]);
+    if (!props.browseStateRef?.current) return;
+    props.browseStateRef.current.category = category;
+    if (embedded) props.browseStateRef.current.catalogueCategory = catalogueCategory;
+  }, [category, catalogueCategory, embedded, props.browseStateRef]);
   useLayoutEffect(() => {
     const page = pageRef.current;
     const target = restoreScrollRef.current;
@@ -82,11 +88,12 @@ export default function SkillHubContent(props) {
   const [sortPreferences, setSortPreferences] = useState(() => ({
     owner: categoryOwner, added: readSkillSort(categoryOwner, 'added'), catalogue: readSkillSort(categoryOwner, 'catalogue'),
   }));
-  const sortOrders = sortPreferences.owner === categoryOwner ? sortPreferences : {
+  const savedSortOrders = sortPreferences.owner === categoryOwner ? sortPreferences : {
     added: readSkillSort(categoryOwner, 'added'), catalogue: readSkillSort(categoryOwner, 'catalogue'),
   };
+  const sortOrders = embedded ? { ...savedSortOrders, added: 'time-desc' } : savedSortOrders;
   const changeSort = (section, value) => {
-    setSortPreferences({ ...sortOrders, owner: categoryOwner, [section]: value });
+    setSortPreferences({ ...savedSortOrders, owner: categoryOwner, [section]: value });
     writeSkillSort(categoryOwner, section, value);
   };
   const changeLanguage = value => {
@@ -107,16 +114,16 @@ export default function SkillHubContent(props) {
     onSelectAgent: (value) => navigate ? navigate(() => props.onSelectAgent(value)) : props.onSelectAgent(value),
     onChangeSection: (value) => {
       const change = () => {
-        if (value === 'added') setCategory('');
-        if (value === 'catalogue' && props.activeSection !== 'catalogue') selectCatalogueCategory('recommended');
+        if (!embedded && value === 'added') setCategory('');
+        if (!embedded && value === 'catalogue' && props.activeSection !== 'catalogue') selectCatalogueCategory('recommended');
         props.onChangeSection(value);
       };
       if (navigate) navigate(change); else change();
     },
   };
   const {
-    actionNotice, activeSection, definition, definitionError, isLocalEnabled,
-    loadingDefinition, saving, skillAction,
+    actionNotice, activeSection, definition, definitionError, definitionReady, isLocalEnabled,
+    loadingDefinition, saving, selectedBotUID, sharingSkill, skillAction,
   } = props;
   // A friend Bot is metadata-only. Keep this guard in the rendering boundary
   // as well as in the Agent-switch handler so stale UI state can never expose
@@ -127,37 +134,80 @@ export default function SkillHubContent(props) {
   const inCatalogue = visibleSection === 'catalogue';
   const catalogueFilter = !marketplaceEnabled && catalogueCategory === 'recommended' ? '' : catalogueCategory;
   const visibleCategory = inCatalogue ? catalogueFilter : category;
+  const selectCategory = inCatalogue ? selectCatalogueCategory : setCategory;
+  const showRecommended = inCatalogue && marketplaceEnabled;
+  const curatedOrder = inCatalogue && catalogueFilter === 'recommended';
+  const showOther = visibleCategory === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other');
+  const canFilterList = inCatalogue || (visibleSection === 'added' && Boolean(selectedBotUID) && definition.skills.length > 0);
+  const categoryLabel = SKILL_CATEGORIES.find(([id]) => id === visibleCategory)?.[1];
+  const listFilters = embedded && canFilterList ? (
+    <LibraryFilter key={visibleSection} label="能力筛选" triggerRef={filterTriggerRef}>
+      <LibraryFilterSelect label="分类" value={visibleCategory} onValueChange={selectCategory}>
+        {showRecommended && <option value="recommended">推荐</option>}
+        <option value="">全部分类</option>
+        {SKILL_CATEGORIES.filter(([id]) => id !== 'other' || showOther).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+      </LibraryFilterSelect>
+      <LibraryFilterSelect label="介绍语言" value={language} onValueChange={changeLanguage}>
+        <option value="source">原文</option>
+        <option value="zh-CN">中文</option>
+      </LibraryFilterSelect>
+      {inCatalogue && !curatedOrder && (
+        <LibraryFilterSelect label="排序" value={sortOrders.catalogue} onValueChange={value => changeSort('catalogue', value)}>
+          {skillSortOptions('catalogue').map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </LibraryFilterSelect>
+      )}
+    </LibraryFilter>
+  ) : null;
+  const canRetryDefinition = embedded && definitionError && !definitionReady && selectedBotUID && props.onRefreshDefinition;
   return (
-    <main ref={pageRef} className='cc-skillhub-page' onScroll={rememberScroll}
+    <main ref={pageRef} className='cc-skillhub-page' aria-label={embedded ? 'SkillHub' : undefined} onScroll={rememberScroll}
       onWheel={cancelScrollRestore} onTouchStart={cancelScrollRestore} onKeyDown={cancelScrollRestore}>
       <div className='cc-skillhub-shell'>
-        <header className='cc-skillhub-header'>
-          <div className='cc-skillhub-title-block'>
-            <h1>Agent 能力</h1>
-            <p>为 Agent 添加和管理可用能力。</p>
+        {embedded && agentPickerContainer && createPortal(<AgentContext {...guardedProps} />, agentPickerContainer)}
+        {!embedded && (
+          <header className='cc-skillhub-header'>
+            <div className='cc-skillhub-title-block'>
+              <h1>Agent 能力</h1>
+              <p>为 Agent 添加和管理可用能力。</p>
+            </div>
+            <AgentContext {...guardedProps} />
+          </header>
+        )}
+        {definitionError && (
+          <div className={`cc-skillhub-alert error${canRetryDefinition ? ' cc-library-definition-error' : ''}`} role='alert'>
+            <span>{definitionError}</span>
+            {canRetryDefinition && <button type="button" className="cc-recovery-button" onClick={props.onRefreshDefinition}
+              disabled={loadingDefinition || saving || Boolean(sharingSkill)}>重试</button>}
           </div>
-          <AgentContext {...guardedProps} />
-        </header>
-        {definitionError && <div className='cc-skillhub-alert error' role='alert'>{definitionError}</div>}
+        )}
         {actionNotice && <div className='cc-skillhub-alert success' role='status'>{actionNotice}</div>}
         <SkillNavigation
           {...guardedProps}
           activeSection={visibleSection}
-          curatedOrder={inCatalogue && catalogueFilter === 'recommended'}
+          curatedOrder={curatedOrder}
           addedCount={definition.skills.length}
+          listFilters={listFilters}
           sortOrder={sortOrders[visibleSection]}
           onSortChange={value => changeSort(visibleSection, value)}
         />
         {visibleSection === 'custom' ? <CustomSkills {...categorizedProps} /> : (
           <>
-            <div className='cc-skillhub-category-toolbar'>
-              <SkillCategoryFilters value={visibleCategory} onChange={inCatalogue ? selectCatalogueCategory : setCategory}
-                showRecommended={inCatalogue && marketplaceEnabled} showOther={visibleCategory === 'other' || [...(props.librarySkills || []), ...definition.skills].some(skill => categoryOf(skill) === 'other')} />
+            {!embedded && <div className='cc-skillhub-category-toolbar'>
+              <SkillCategoryFilters value={visibleCategory} onChange={selectCategory}
+                showRecommended={showRecommended} showOther={showOther} />
               <SlidingSegments value={language} className='cc-skillhub-language' role='group' aria-label='能力介绍语言'>
                 <button type='button' aria-pressed={language === 'source'} onClick={() => changeLanguage('source')}>原文</button>
                 <button type='button' aria-pressed={language === 'zh-CN'} onClick={() => changeLanguage('zh-CN')}>中文</button>
               </SlidingSegments>
-            </div>
+            </div>}
+            {embedded && canFilterList && categoryLabel && (
+              <div className="cc-library-filter-chips" role="group" aria-label="已选能力筛选">
+                <button type="button" aria-label={`清除分类筛选 ${categoryLabel}`}
+                  onClick={() => { selectCategory(''); filterTriggerRef.current?.focus(); }}>
+                  <span>{categoryLabel}</span><X size={14} aria-hidden="true" />
+                </button>
+              </div>
+            )}
             {saving && !loadingDefinition && (
               <div className='cc-skillhub-progress' role='status'>
                 <RefreshCw className='is-spinning' size={14} aria-hidden='true' />
@@ -247,13 +297,13 @@ function AgentSelect({ agents, disabled, onChange, value }) {
 }
 
 function SkillNavigation(props) {
-  const { activeSection, addedCount, isLocalEnabled, onChangeSection, onRefreshDefinition, selectedBotUID, loadingDefinition, saving, sharingSkill } = props;
+  const { activeSection, addedCount, embedded, isLocalEnabled, listFilters, onChangeSection, onRefreshDefinition, selectedBotUID, loadingDefinition, saving, sharingSkill } = props;
   return (
     <nav className='cc-skillhub-navigation' aria-label='Agent 能力视图'>
       <div className='cc-skillhub-tabs-actions'>
-        <SlidingSegments value={activeSection} className='cc-skillhub-tabs' keyboardTabs role='tablist' aria-label='能力管理'>
+        <SlidingSegments value={activeSection} className={`cc-skillhub-tabs${embedded ? ' cc-library-skill-sections' : ''}`} keyboardTabs role='tablist' aria-label='能力管理'>
           <button type='button' id='skillhub-added-tab' role='tab' aria-selected={activeSection === 'added'} aria-controls='skillhub-added-panel' className={activeSection === 'added' ? 'active' : ''} onClick={() => onChangeSection('added')}>
-            能力总览 <span>{addedCount}</span>
+            {embedded ? '已添加' : '能力总览'}{(!embedded || addedCount > 0) && <> <span>{addedCount}</span></>}
           </button>
           <button type='button' id='skillhub-catalogue-tab' role='tab' aria-selected={activeSection === 'catalogue'} aria-controls='skillhub-catalogue-panel' className={activeSection === 'catalogue' ? 'active' : ''} onClick={() => onChangeSection('catalogue')}>
             能力库
@@ -267,12 +317,13 @@ function SkillNavigation(props) {
           )}
         </SlidingSegments>
       </div>
-      {activeSection !== 'custom' && <div className='cc-skillhub-navigation-tools'>
+      {activeSection !== 'custom' && (!embedded || listFilters) && <div className='cc-skillhub-navigation-tools'>
         <SkillSearch key={activeSection} {...props} />
-        {activeSection === 'added' && <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
+        {listFilters}
+        {!embedded && activeSection === 'added' && <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
           <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={16} aria-hidden='true' />
         </button>}
-        {!props.curatedOrder && <CustomSelect
+        {!embedded && !props.curatedOrder && <CustomSelect
           ariaLabel={`排序：${skillSortOptions(activeSection).find(([value]) => value === props.sortOrder)?.[1]}`}
           className='cc-skillhub-sort'
           triggerClassName='cc-skillhub-sort-trigger'
@@ -288,7 +339,7 @@ function SkillNavigation(props) {
   );
 }
 
-function SkillSearch({ activeSection, addedSkillQuery, onAddedSkillQuery, query, onQueryChange, onSearch, loadingCatalogue }) {
+function SkillSearch({ activeSection, addedSkillQuery, embedded, onAddedSkillQuery, query, onQueryChange, onSearch, loadingCatalogue }) {
   const added = activeSection === 'added';
   return <ToolbarSearch
     id={added ? 'cc-skillhub-added-search-input' : 'cc-skillhub-search-input'}
@@ -297,7 +348,7 @@ function SkillSearch({ activeSection, addedSkillQuery, onAddedSkillQuery, query,
     className={added ? 'cc-skillhub-added-search' : 'cc-skillhub-search'}
     value={added ? addedSkillQuery || '' : query || ''}
     onChange={added ? onAddedSkillQuery : onQueryChange}
-    onSubmit={added ? undefined : onSearch} submitting={loadingCatalogue} submitLabel='搜索能力'
+    onSubmit={added ? undefined : onSearch} submitting={loadingCatalogue} submitLabel='搜索能力' focusOnRestore={!embedded}
   />;
 }
 

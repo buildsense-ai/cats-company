@@ -65,7 +65,7 @@ describe('sorting controls', () => {
   const selectAll = async () => act(async () => {
     [...container.querySelectorAll('.cc-skillhub-category-filter button')].find(button => button.textContent === '全部').click();
   });
-  const render = async (owner = '7') => {
+  const render = async (owner = '7', props = {}) => {
     await act(async () => root.render(<SkillHubContent
       activeSection={section} categoryOwnerUID={owner} selectedBotUID='42'
       agentOptions={[{ value: '42', label: 'David' }]} definition={{ skills }}
@@ -74,6 +74,7 @@ describe('sorting controls', () => {
       addedSkillQuery={query} query={query}
       onChangeSection={value => { section = value; }} onSelectAgent={() => {}}
       onAddedSkillQuery={() => {}} onQueryChange={() => {}} onSearch={() => {}}
+      {...props}
     />));
   };
   const choose = async label => {
@@ -88,6 +89,68 @@ describe('sorting controls', () => {
     root = createRoot(container); section = 'added'; query = '';
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+
+  it('uses recent additions in the combined page even with an older sort preference', async () => {
+    writeSkillSort('7', 'added', 'time-asc');
+    const agentPickerContainer = document.createElement('div');
+    const props = { embedded: true, agentPickerContainer };
+    await render('7', props);
+
+    expect(names()).toEqual(['Beta', 'Alpha', 'Charlie', 'Zulu']);
+    expect(container.querySelector('.cc-skillhub-sort-trigger')).toBeNull();
+    expect(agentPickerContainer.querySelector('.cc-skillhub-agent-select-trigger')).toBeTruthy();
+    expect(container.querySelector('.cc-skillhub-agent-select-trigger')).toBeNull();
+    expect(readSkillSort('7', 'added')).toBe('time-asc');
+    expect(container.querySelector('.cc-skillhub-category-toolbar')).toBeNull();
+
+    const filter = container.querySelector('.cc-library-filter > button');
+    const panel = container.querySelector('[aria-label="能力筛选"]');
+    expect(panel.hidden).toBe(true);
+    await act(async () => filter.click());
+    expect(panel.hidden).toBe(false);
+    expect(panel.querySelectorAll('.cc-library-filter-select-trigger')).toHaveLength(2);
+
+    section = 'catalogue';
+    await render('7', props);
+    const catalogueFilters = container.querySelector('[aria-label="能力筛选"]');
+    expect(catalogueFilters.hidden).toBe(true);
+    await act(async () => container.querySelector('.cc-library-filter > button').click());
+    expect(catalogueFilters.querySelectorAll('.cc-library-filter-select-trigger')).toHaveLength(3);
+    expect(catalogueFilters.querySelector('[aria-label="排序"]')?.dataset.value).toBe('time-desc');
+  });
+
+  it('keeps the chosen category separate from the library and makes it directly clearable', async () => {
+    const props = { embedded: true, browseStateRef: { current: {} } };
+    await render('7', props);
+    await act(async () => container.querySelector('.cc-library-filter > button').click());
+    await act(async () => container.querySelector('.cc-library-filter-panel [aria-label="分类"]').click());
+    const categoryMenu = document.querySelector('[role="listbox"][aria-label="分类"]');
+    await act(async () => [...categoryMenu.querySelectorAll('[role="option"]')].find(option => option.textContent === '其他').click());
+    expect(container.querySelector('[aria-label="清除分类筛选 其他"]')).toBeTruthy();
+    section = 'catalogue';
+    await render('7', props);
+    expect(container.querySelector('[aria-label="清除分类筛选 其他"]')).toBeNull();
+    section = 'added';
+    await render('7', props);
+    await act(async () => container.querySelector('[aria-label="清除分类筛选 其他"]').click());
+    expect(container.querySelector('.cc-library-filter-chips')).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector('.cc-library-filter > button'));
+  });
+
+  it('keeps empty inventory controls out of view and supplies retry for a failed definition load', async () => {
+    const onRefreshDefinition = vi.fn();
+    const props = { embedded: true, definition: { skills: [] }, onRefreshDefinition };
+    await render('7', props);
+    expect(container.querySelector('.cc-skillhub-navigation-tools')).toBeNull();
+    expect(container.querySelector('#skillhub-added-tab span')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-empty-added button')?.textContent).toBe('浏览能力库');
+
+    await render('7', { ...props, definitionReady: false, definitionError: '读取失败' });
+    const retry = container.querySelector('[role="alert"] button');
+    expect(retry?.textContent).toBe('重试');
+    await act(async () => retry.click());
+    expect(onRefreshDefinition).toHaveBeenCalledTimes(1);
+  });
 
   it('retains independent tab choices across searches, rerenders and remounts', async () => {
     await render();
