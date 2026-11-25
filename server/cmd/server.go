@@ -1149,6 +1149,15 @@ func main() {
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
 		serviceAgentsMCPHandler.SetComputeSnapshotPath(os.Getenv("CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE"))
+		computeStore, _ := db.(store.ComputeTaskStore)
+		computeTasks, err := server.NewComputeTaskHandlerFromEnv(computeStore)
+		if err != nil {
+			log.Fatalf("configure compute tasks: %v", err)
+		}
+		if computeTasks != nil {
+			serviceAgentsMCPHandler.SetComputeTasks(computeTasks)
+			computeTasks.RegisterRoutes(mux, jwtAuthWithDB)
+		}
 		// 会话与 server 实例的回收：SessionTimeout 关掉空闲会话，reaper 再把没有
 		// 会话的 server 摘出注册表（否则要等下一次清单变更才释放）。
 		serviceAgentsMCPHandler.StartLiveServerReaper(context.Background(), 0)

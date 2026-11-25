@@ -27,16 +27,17 @@ import (
 // 清单变更时对在线 MCP 会话做增量同步（AddTool/RemoveTools）→ SDK 自动发
 // notifications/tools/list_changed；客户端亦可随时重查 tools/list（刷新兜底）。
 type ServiceAgentsMCPHandler struct {
-	store     store.ServiceAgentStore
-	bots      ServiceAgentBotIdentity    // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
-	external  *ServiceExternalRunner     // 外部执行后端（runner.type=http；可选）
-	botRunner *ServiceBotRunner          // bot-as-tool（runner.type=bot；可选）
-	balance   *ServiceBalanceChecker     // 计费预检（可选；未设置=跳过，调用面单测不受影响）
-	friends   serviceAgentFriendReader   // 好友判定源（friends 级可见性；可选）
+	store               store.ServiceAgentStore
+	bots                ServiceAgentBotIdentity  // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
+	external            *ServiceExternalRunner   // 外部执行后端（runner.type=http；可选）
+	botRunner           *ServiceBotRunner        // bot-as-tool（runner.type=bot；可选）
+	balance             *ServiceBalanceChecker   // 计费预检（可选；未设置=跳过，调用面单测不受影响）
+	friends             serviceAgentFriendReader // 好友判定源（friends 级可见性；可选）
 	computeSnapshotPath string
-	loops     *serviceAgentCallLoopGuard // 两跳回环（A→B→A）判定；进程内
-	syncWait  time.Duration              // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
-	http      *mcp.StreamableHTTPHandler
+	computeTasks        *ComputeTaskHandler
+	loops               *serviceAgentCallLoopGuard // 两跳回环（A→B→A）判定；进程内
+	syncWait            time.Duration              // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
+	http                *mcp.StreamableHTTPHandler
 
 	// liveMu/liveServers 跟踪每账号的在线 MCP 会话 server（getServer 每新会话调用一次，
 	// 每会话一个独立 *mcp.Server 实例）——清单变更时据此下发 list_changed。
@@ -50,7 +51,7 @@ const (
 	// 文本摘要里正文的截断长度（字符）。摘要不是交付通道，完整正文在
 	// structuredContent.output.text —— 这里只保证「模型看 content 也能看到结果」。
 	serviceRunSummaryLimit = 2000
-	maxServiceSyncWait              = 45 * time.Second
+	maxServiceSyncWait     = 45 * time.Second
 	// 同步等待时的轮询退避区间：快任务 20ms 起，慢任务逐步放到 200ms。
 	// 固定 10ms 在 45 秒窗口里是 4500 轮 × 2 条 SQL，对结果毫无增益。
 	minServiceRunPollInterval = 20 * time.Millisecond
@@ -84,6 +85,11 @@ func NewServiceAgentsMCPHandler(st store.ServiceAgentStore) *ServiceAgentsMCPHan
 // SetBalanceChecker 注入调用方额度预检（设计 §5.3；未注入=跳过预检）。
 func (h *ServiceAgentsMCPHandler) SetBalanceChecker(checker *ServiceBalanceChecker) {
 	h.balance = checker
+}
+
+// SetComputeTasks configures the account-scoped pilot before the server starts.
+func (h *ServiceAgentsMCPHandler) SetComputeTasks(tasks *ComputeTaskHandler) {
+	h.computeTasks = tasks
 }
 
 // ServiceAgentBotIdentity 是调用面校验 bot 身份所需的最小存储接口（主库实现）。
@@ -207,6 +213,11 @@ func (h *ServiceAgentsMCPHandler) buildServer(callerUID int64) *mcp.Server {
 		h.addComputePreviewTool(srv)
 		registered[computePreviewToolName] = struct{}{}
 	}
+	if h.computeTasks != nil && h.computeTasks.allowed[callerUID] {
+		h.computeTasks.addTools(srv, callerUID)
+		registered[computeTaskQuoteTool] = struct{}{}
+		registered[computeTaskStatusTool] = struct{}{}
+	}
 	// 自分享：只有「调用者本身就是 bot、且它的 owner 在内测白名单里」才挂。
 	// 人的工具面里不该出现这个工具（面板上有），否则模型会拿着它去做本该人点的事。
 	if h.canSelfShare(callerUID) {
@@ -230,7 +241,7 @@ func (h *ServiceAgentsMCPHandler) canSelfShare(callerUID int64) bool {
 // 当成「已下架」摘掉，而 SDK 只在客户端重新 list 时才回来。
 func isServiceSystemTool(name string) bool {
 	switch name {
-	case "catsco_run_status", serviceShareSelfToolName, computePreviewToolName:
+	case "catsco_run_status", serviceShareSelfToolName, computePreviewToolName, computeTaskQuoteTool, computeTaskStatusTool:
 		return true
 	}
 	return false
