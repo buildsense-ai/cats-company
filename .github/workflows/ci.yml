@@ -261,7 +261,15 @@ jobs:
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET synchronous_commit = off"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET full_page_writes = off"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET autovacuum = off"
-          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "SELECT pg_reload_conf()"
+          # Parallel fixtures run full schema initialization in separate schemas.
+          # The shared lock table is sized when PostgreSQL starts.
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET max_locks_per_transaction = 256"
+          docker restart "$PG_CONTAINER_ID"
+          for attempt in {1..30}; do
+            docker exec "$PG_CONTAINER_ID" pg_isready -h 127.0.0.1 -U catsco -d cats_test -t 1 && break
+            sleep 1
+          done
+          test "$(docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc 'SHOW max_locks_per_transaction')" = 256
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW fsync"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW synchronous_commit"
 
