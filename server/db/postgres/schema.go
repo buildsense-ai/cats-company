@@ -255,6 +255,10 @@ createFileUploadsTable,
 		migrateModelCreditMonthlyRollover,
 		createCommercialInviteMonthlyRepairs,
 		migrateModelCreditPostpaid,
+		// Cats 算力任务（migration 000083）：不可变的 JSONB 报价快照 + 任务生命周期
+		// 行。钱走 model credit 账本（用 quote_id 作幂等键），所以必须排在 068 之后；
+		// 两张表都只引用 users，与云机器升配互不相干。
+		createComputeTaskTables,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,

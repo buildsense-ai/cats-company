@@ -118,6 +118,7 @@ import {
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
+import { COMPUTE_CONFIRM_PATH } from './compute-confirm';
 import { BookOpen, Frown, KeyRound, Settings2, LogOut } from 'lucide-react';
 import { AppsGrid, Laptop, MoreHorizontal, Package, Plus, Search, Settings, SidebarClose, SidebarOpen } from '../widgets/desktop-icons';
 import './workspace-styles';
@@ -128,6 +129,10 @@ import CloudArtifactsPreview from '../dev/cloud-artifacts-preview';
 const RelayAdminPanel = lazy(() => import('./relay-admin-panel'));
 const ServiceAgentsPanel = lazy(() => import('./service-agents-panel'));
 const MobileUploadView = lazy(() => import('./mobile-upload-view'));
+// The compute confirmation page is account-scoped work: it is loaded through the
+// authenticated workspace shell (never as an anonymous standalone route) so the
+// existing login gateway keeps the quote link as its return path.
+const ComputeConfirmView = lazy(() => import('./compute-confirm-view'));
 const SkillHubView = lazy(() => import('./skillhub-view'));
 const AppsView = lazy(() => import('./apps-view'));
 const GroupSettings = lazy(() => import('../widgets/group-settings'));
@@ -347,6 +352,16 @@ export default function TinodeWeb({ location = window.location } = {}) {
   }
   if (isKnowledgeWikiPathname(pathname)) {
     return <KnowledgeWikiView location={location} />;
+  }
+  // /compute/confirm is reached from a chat quote link and always inside the
+  // authenticated shell: an anonymous visitor gets the login gateway first, with
+  // the full quote URL kept as the return path.
+  if (pathname === COMPUTE_CONFIRM_PATH) {
+    return (
+      <Suspense fallback={<SecondaryViewLoading label="算力任务确认" />}>
+        <ComputeConfirmView search={search} />
+      </Suspense>
+    );
   }
   const mobileUploadMatch = pathname.match(/^\/mobile-upload\/([^/]+)$/);
   if (mobileUploadMatch) {

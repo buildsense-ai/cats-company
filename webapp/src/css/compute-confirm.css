@@ -1,0 +1,230 @@
+/* Scoped styles for the account-scoped /compute/confirm page. Everything is
+   namespaced under .compute-confirm-* so the shared workspace stylesheets are
+   reused as-is and nothing here can leak into the chat surface. */
+.compute-confirm-page {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 100%;
+  padding: 32px 20px 56px;
+  background: var(--oc-bg, var(--cc-bg, #050505));
+  color: var(--oc-white, var(--cc-text, #f0f0f5));
+}
+
+.compute-confirm-card {
+  width: 100%;
+  max-width: 780px;
+  padding: 26px 26px 22px;
+  border: 1px solid var(--oc-border, var(--cc-border, #1a1a1a));
+  border-radius: var(--oc-radius-lg, 16px);
+  background: var(--oc-bg-dark, var(--cc-panel, #0a0a0a));
+  box-shadow: 0 10px 30px rgb(0 0 0 / 22%);
+}
+
+.compute-confirm-heading h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: .01em;
+}
+
+.compute-confirm-heading p {
+  margin: 0 0 18px;
+  color: var(--oc-gray, var(--cc-text-secondary, #b8b8c8));
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.compute-confirm-facts {
+  display: grid;
+  gap: 0;
+  margin: 0 0 18px;
+  border: 1px solid var(--oc-border, var(--cc-border, #1a1a1a));
+  border-radius: var(--oc-radius, 12px);
+  overflow: hidden;
+}
+
+.compute-confirm-fact {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--oc-border, var(--cc-border, #1a1a1a));
+}
+
+.compute-confirm-fact:last-child { border-bottom: 0; }
+
+.compute-confirm-fact dt {
+  margin: 0;
+  color: var(--oc-gray-light, var(--cc-muted, #6e6e80));
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.compute-confirm-fact dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.compute-confirm-code {
+  font-family: var(--cc-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  color: var(--oc-gray, var(--cc-text-secondary, #b8b8c8));
+}
+
+.compute-confirm-notices {
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+}
+
+.compute-confirm-notices li {
+  position: relative;
+  padding-left: 14px;
+  margin-bottom: 6px;
+  color: var(--oc-gray-light, var(--cc-muted, #6e6e80));
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.compute-confirm-notices li::before {
+  content: "";
+  position: absolute;
+  top: .7em;
+  left: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--oc-green, var(--cc-accent, #d4a853));
+}
+
+.compute-confirm-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  margin-bottom: 18px;
+  border: 1px solid color-mix(in srgb, var(--oc-green, var(--cc-accent, #d4a853)) 40%, transparent);
+  border-radius: var(--oc-radius, 12px);
+  background: color-mix(in srgb, var(--oc-green, var(--cc-accent, #d4a853)) 8%, transparent);
+}
+
+.compute-confirm-submit {
+  align-self: flex-start;
+  min-height: 40px;
+  padding: 0 20px;
+}
+
+.compute-confirm-submit:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.compute-confirm-hint {
+  margin: 0;
+  color: var(--oc-gray-light, var(--cc-muted, #6e6e80));
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.compute-confirm-alert {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--oc-danger, var(--cc-danger-text, #ef4444)) 55%, transparent);
+  border-radius: var(--oc-radius-sm, 8px);
+  background: color-mix(in srgb, var(--oc-danger, var(--cc-danger-text, #ef4444)) 12%, transparent);
+  color: var(--oc-danger, var(--cc-danger-text, #ef4444));
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.compute-confirm-link {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.compute-confirm-loading {
+  margin: 0 0 16px;
+  color: var(--oc-gray, var(--cc-text-secondary, #b8b8c8));
+  font-size: 13px;
+}
+
+.compute-confirm-progress {
+  margin-bottom: 18px;
+  padding-top: 6px;
+  border-top: 1px solid var(--oc-border, var(--cc-border, #1a1a1a));
+}
+
+.compute-confirm-progress h2 {
+  margin: 14px 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.compute-confirm-progress-state {
+  margin: 0 0 10px;
+  color: var(--oc-green, var(--cc-accent, #d4a853));
+  font-size: 13px;
+}
+
+.compute-confirm-progress-facts { margin-bottom: 12px; }
+
+.compute-confirm-ledger {
+  padding: 10px 12px;
+  border: 1px dashed var(--oc-border, var(--cc-border, #1a1a1a));
+  border-radius: var(--oc-radius-sm, 8px);
+}
+
+.compute-confirm-ledger p { margin: 0 0 4px; font-size: 13px; }
+.compute-confirm-ledger p:last-child { margin-bottom: 0; }
+
+.compute-confirm-ledger.is-settled {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--oc-green, var(--cc-accent, #d4a853)) 45%, transparent);
+}
+
+.compute-confirm-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid var(--oc-border, var(--cc-border, #1a1a1a));
+}
+
+.compute-confirm-refresh {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--oc-border, var(--cc-border, #1a1a1a));
+  border-radius: var(--oc-radius-sm, 8px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.compute-confirm-refresh:hover:not(:disabled) {
+  background: var(--oc-gray-dark, var(--cc-control-surface, #1a1a1a));
+}
+
+.compute-confirm-refresh:disabled { opacity: .55; cursor: default; }
+
+.compute-confirm-refresh:focus-visible,
+.compute-confirm-link:focus-visible,
+.compute-confirm-submit:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, var(--oc-green, #248b6a));
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .compute-confirm-page { padding: 16px 12px 40px; }
+  .compute-confirm-card { padding: 18px 14px 16px; }
+  .compute-confirm-fact {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .compute-confirm-submit { align-self: stretch; }
+}
