@@ -26,7 +26,6 @@ describe('collectSkillHubUpdateSummary', () => {
       getSkill,
     })).resolves.toMatchObject({
       userUid: '7',
-      updateKeys: [JSON.stringify(['1', 'arrowhaken/image-generation', '1.0.6', 'b'.repeat(64)])],
       total: 1,
       byBot: {
         1: { count: 1, status: 'ready' },

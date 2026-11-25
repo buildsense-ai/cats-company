@@ -401,6 +401,8 @@ function AddedSkillItem({ addedSkillPresentationByID, categoryOf, definitionRead
   const localVersionMismatch = !skill.localOnly && Boolean(skill.local) && !localDetails;
   const versionLabel = formatAddedSkillVersion(skill, privateReference);
   const updatable = !isReadOnly && !skill.localOnly && isSkillHubUpdateAvailable(skill, details);
+  const latestVersionLabel = updatable ? formatSkillHubVersion(details.latestVersion) : '';
+  const versionTransition = latestVersionLabel && latestVersionLabel !== versionLabel;
   const authorLabel = privateReference ? `最近变更：${skill.lastChangedBy || '修改者未记录'}` : formatSkillHubPublisher(details || skill);
   const uploadedAt = skillUploadedTimestamp(metadata);
   const removeLabel = skill.localOnly ? '删除本地能力'
@@ -425,11 +427,11 @@ function AddedSkillItem({ addedSkillPresentationByID, categoryOf, definitionRead
         </div>
         <div className='cc-skillhub-card-actions cc-skillhub-added-actions'>
           {updatable && <button type='button' className='cc-skillhub-update-action'
-            aria-label={`更新 ${label} 到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}
-            title={`更新到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}
+            aria-label={updating ? `${label} 更新中` : `更新 ${label} 到 ${latestVersionLabel || '最新版本'}`}
+            title={updating ? '更新中…' : `更新到 ${latestVersionLabel || '最新版本'}`}
             disabled={actionsDisabled} onClick={() => onUpdateSkill?.(skill.skillId)}>
-            <RefreshCw className={updating ? 'is-spinning' : ''} size={18} aria-hidden='true' />
-            <span className='cc-visually-hidden'>{updating ? '更新中…' : `更新到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}</span>
+            <RefreshCw className={updating ? 'is-spinning' : ''} size={14} aria-hidden='true' />
+            <span>{updating ? '更新中…' : '更新'}</span>
           </button>}
           {!isReadOnly && <button type='button' className='cc-skillhub-delete-action' aria-label={`删除 ${label}`}
             title={removeLabel} disabled={actionsDisabled} onClick={() => onRemoveSkill(skill.skillId)}>
@@ -443,7 +445,9 @@ function AddedSkillItem({ addedSkillPresentationByID, categoryOf, definitionRead
           <span className='cc-skillhub-card-publisher'>{skill.localOnly ? '尚未发布 · 当前运行工作区'
             : privateReference ? `${authorLabel} · Bot 私有 · 仅当前 Agent 可用` : `发布人：${authorLabel}`}</span>
           <time dateTime={uploadedAt ? new Date(uploadedAt).toISOString() : undefined}>{uploadedAt ? formatCataloguePublishedTime(uploadedAt) : '上传时间待确认'}</time>
-          <span className='cc-skillhub-card-version'>版本：{versionLabel}</span>
+          <span className='cc-skillhub-card-version' title={versionTransition ? `当前版本 ${versionLabel}，可更新到 ${latestVersionLabel}` : undefined}>
+            版本：{versionLabel}{versionTransition && <> <span aria-hidden='true'>→</span><span className='cc-visually-hidden'>，可更新到 </span> <strong className='cc-skillhub-update-version'>{latestVersionLabel}</strong></>}
+          </span>
         </div>
       </div>
       {detailsOpen && createPortal(

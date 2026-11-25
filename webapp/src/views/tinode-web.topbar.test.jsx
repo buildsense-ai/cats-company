@@ -1192,9 +1192,8 @@ describe('SkillHub sidebar update reminder', () => {
   let container;
   let root;
   let onOpen;
-  const keys = [JSON.stringify(['42', 'review', '1.0.1', 'a']), JSON.stringify(['43', 'review', '1.0.1', 'a'])];
   const renderButton = async (props = {}) => act(async () => {
-    root.render(<SkillHubSidebarButton userUid={7} updatesLoaded updateKeys={keys} onClick={onOpen} {...props} />);
+    root.render(<SkillHubSidebarButton updateCount={2} onClick={onOpen} {...props} />);
   });
   const badge = () => container.querySelector('.cc-skillhub-sidebar-update-badge');
   beforeEach(() => {
@@ -1212,70 +1211,28 @@ describe('SkillHub sidebar update reminder', () => {
     vi.restoreAllMocks();
   });
 
-  it('acknowledges current updates on click and remembers them after reopening', async () => {
+  it('keeps the available-update count visible after opening SkillHub', async () => {
     await renderButton();
     expect(badge().textContent).toBe('2');
+    expect(container.querySelector('button').getAttribute('aria-label')).toBe('打开 SkillHub，2 项更新待处理');
     await act(async () => container.querySelector('button').click());
     expect(onOpen).toHaveBeenCalledTimes(1);
-    expect(badge()).toBeNull();
-    await renderButton();
-    expect(badge()).toBeNull();
-    await act(async () => root.render(null));
-    await renderButton();
-    expect(badge()).toBeNull();
-  });
-
-  it('shows a new version or new content even when the available-update count is unchanged', async () => {
-    await renderButton({ updateKeys: [keys[0]] });
-    await act(async () => container.querySelector('button').click());
-    const nextVersion = JSON.stringify(['42', 'review', '1.0.2', 'a']);
-    await renderButton({ updateKeys: [nextVersion] });
-    expect(badge().textContent).toBe('1');
-    await act(async () => container.querySelector('button').click());
-    const nextContent = JSON.stringify(['42', 'review', '1.0.2', 'b']);
-    await renderButton({ updateKeys: [nextContent] });
-    expect(badge().textContent).toBe('1');
-  });
-
-  it('acknowledges the first pending check when clicked before updates finish loading', async () => {
-    await renderButton({ updateKeys: [], updatesLoaded: false });
-    await act(async () => container.querySelector('button').click());
-    await renderButton();
-    expect(badge()).toBeNull();
-    await renderButton({ updateKeys: [...keys, 'new-update'] });
-    expect(badge().textContent).toBe('1');
-  });
-
-  it('shows the next update after a completed empty check has been opened', async () => {
-    await renderButton({ updateKeys: [] });
-    await act(async () => container.querySelector('button').click());
-    await renderButton({ updateKeys: [keys[0]] });
-    expect(badge().textContent).toBe('1');
-  });
-
-  it('keeps acknowledgements separate for each account', async () => {
-    await renderButton();
-    await act(async () => container.querySelector('button').click());
-    await renderButton({ userUid: 8 });
+    await renderButton({ active: true });
     expect(badge().textContent).toBe('2');
-    await renderButton({ userUid: 7 });
+  });
+
+  it('follows the updated count until the last available update is applied', async () => {
+    await renderButton();
+    await renderButton({ updateCount: 1 });
+    expect(badge().textContent).toBe('1');
+    await renderButton({ updateCount: 0 });
     expect(badge()).toBeNull();
   });
 
-  it('receives an acknowledgement from another tab', async () => {
-    await renderButton();
-    await act(async () => {
-      localStorage.setItem('catsco_skillhub_seen_updates:v1:7', JSON.stringify(keys));
-      window.dispatchEvent(new StorageEvent('storage', { key: 'catsco_skillhub_seen_updates:v1:7' }));
-    });
-    expect(badge()).toBeNull();
-  });
-
-  it('hides the current reminder even when persistent storage is unavailable', async () => {
-    await renderButton();
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage blocked'); });
+  it('shows updates that arrive after the page is opened', async () => {
+    await renderButton({ updateCount: 0 });
     await act(async () => container.querySelector('button').click());
-    expect(badge()).toBeNull();
-    expect(onOpen).toHaveBeenCalledTimes(1);
+    await renderButton({ active: true, updateCount: 1 });
+    expect(badge().textContent).toBe('1');
   });
 });

@@ -2048,6 +2048,8 @@ export default function SkillHubView({
       });
       definitionBotUIDRef.current = requestedBotUID;
       setDefinitionBotUID(requestedBotUID);
+      const refresh = onRefreshSkillHubUpdateSummary?.();
+      refresh?.catch?.(() => {});
       return { ok: true, definition: next };
     } catch (error) {
       if (
@@ -2185,8 +2187,6 @@ export default function SkillHubView({
         revision: initiatingRevision,
       });
       if (saved?.ok && initiatingBotUID === selectedBotUIDRef.current) {
-        const refresh = onRefreshSkillHubUpdateSummary?.();
-        refresh?.catch?.(() => {});
         const installedName = resolved.displayName || resolved.skillId;
         const runtimeApply = await applyDefinitionToRuntime(initiatingBotUID);
         if (initiatingBotUID !== selectedBotUIDRef.current) return;

@@ -2675,10 +2675,11 @@ describe('SkillHubView', () => {
     expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
   });
 
-  it('confirms before removing an ability from the current Agent', async () => {
+  it('confirms before removing an ability and refreshes pending updates after saving', async () => {
+    const refreshUpdateSummary = vi.fn();
     api.updateBotDefinitionSkills.mockResolvedValueOnce({ botId: '42', revision: 4, skills: [] });
     await act(async () => {
-      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} /></FeedbackProvider>);
+      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} onRefreshSkillHubUpdateSummary={refreshUpdateSummary} /></FeedbackProvider>);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -2694,6 +2695,7 @@ describe('SkillHubView', () => {
     expect(confirmation.textContent).toContain('从“Owner Bot”移除“tools/review”');
     expect(confirmation.textContent).toContain('技能本身不会从 SkillHub 删除');
     expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+    expect(refreshUpdateSummary).not.toHaveBeenCalled();
 
     await act(async () => {
       Simulate.click([...confirmation.querySelectorAll('button')].find((button) => button.textContent === '从 Agent 移除'));
@@ -2702,6 +2704,7 @@ describe('SkillHubView', () => {
     });
 
     expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, []);
+    expect(refreshUpdateSummary).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('已从 Agent“Owner Bot”移除 tools/review');
   });
 
@@ -5632,8 +5635,12 @@ describe('SkillHubView', () => {
     const itemFor = (name) => items.find((candidate) => candidate.textContent.includes(name));
     const updateButton = itemFor('Summarize').querySelector('.cc-skillhub-update-action');
     expect(updateButton).not.toBeNull();
-    expect(updateButton.textContent).toContain('更新到 v2.0.0');
+    expect(updateButton.textContent).toBe('更新');
     expect(updateButton.title).toBe('更新到 v2.0.0');
+    const transition = itemFor('Summarize').querySelector('.cc-skillhub-card-version');
+    expect(transition.title).toBe('当前版本 v1.0.0，可更新到 v2.0.0');
+    expect(transition.querySelector('.cc-skillhub-update-version')?.textContent).toBe('v2.0.0');
+    expect(itemFor('Review').querySelector('.cc-skillhub-card-version').textContent).toBe('版本：v1.0.0');
     expect(itemFor('Review').querySelector('.cc-skillhub-availability.is-update')).toBeNull();
 
     await act(async () => {
@@ -5647,6 +5654,7 @@ describe('SkillHubView', () => {
   });
 
   it('resolves complete SkillHub metadata before applying a direct Agent update', async () => {
+    const refreshUpdateSummary = vi.fn();
     api.getBotDefinitionSkills.mockResolvedValue({
       botId: '42',
       revision: 3,
@@ -5670,14 +5678,14 @@ describe('SkillHubView', () => {
     });
 
     await act(async () => {
-      root.render(<SkillHubView user={{ uid: 7 }} />);
+      root.render(<SkillHubView user={{ uid: 7 }} onRefreshSkillHubUpdateSummary={refreshUpdateSummary} />);
       await Promise.resolve();
       await Promise.resolve();
     });
     await openAdded();
 
     const updateButton = container.querySelector('.cc-skillhub-update-action');
-    expect(updateButton?.textContent).toContain('更新到 v2.0.0');
+    expect(updateButton?.getAttribute('aria-label')).toBe('更新 Summarize 到 v2.0.0');
     await act(async () => {
       Simulate.click(updateButton);
       await Promise.resolve();
@@ -5691,6 +5699,9 @@ describe('SkillHubView', () => {
       version: '2.0.0',
       contentHash: 'c'.repeat(64),
     }]);
+    expect(refreshUpdateSummary).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.cc-skillhub-update-action')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-card-version').textContent).toBe('版本：v2.0.0');
   });
 
   it('stops a direct update when the SkillHub detail belongs to another skill', async () => {
@@ -5749,6 +5760,8 @@ describe('SkillHubView', () => {
     });
     expect(api.getSkillHubSkill).toHaveBeenCalledTimes(1);
     expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+    expect(updateButton.textContent).toBe('更新中…');
+    expect(updateButton.disabled).toBe(true);
 
     await act(async () => {
       detail.resolve({
