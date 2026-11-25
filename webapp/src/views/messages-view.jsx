@@ -7210,19 +7210,11 @@ export default function MessagesView({
     }
     previewWasExpandedRef.current = previewExpanded;
   }, [previewExpanded, previewContextOpen]);
-  const updatePreviewContextPlacement = useCallback(() => {
-    const workspace = chatColumnRef.current?.parentElement;
-    const dock = chatColumnRef.current;
-    if (workspace && dock) {
-      const workspaceRect = workspace.getBoundingClientRect();
-      const dockRect = dock.getBoundingClientRect();
-      const roomAbove = dockRect.top - workspaceRect.top;
-      const roomBelow = workspaceRect.bottom - dockRect.bottom;
-      const showBelow = roomAbove < 360 && roomBelow > roomAbove;
-      setPreviewContextPlacement(showBelow ? 'below' : 'above');
-      const available = Math.max(0, Math.min(340, Math.floor((showBelow ? roomBelow : roomAbove) - 20)));
-      workspace.style.setProperty('--cc-app-context-max-height', `${available}px`);
-    }
+  const updatePreviewContextPlacement = useCallback((workspace, roomAbove, roomBelow) => {
+    const showBelow = roomAbove < 360 && roomBelow > roomAbove;
+    setPreviewContextPlacement(showBelow ? 'below' : 'above');
+    const available = Math.max(0, Math.min(340, Math.floor((showBelow ? roomBelow : roomAbove) - 20)));
+    workspace.style.setProperty('--cc-app-context-max-height', `${available}px`);
   }, []);
   useEffect(() => {
     if (!previewExpanded) {
@@ -7236,7 +7228,13 @@ export default function MessagesView({
     }
   }, [previewExpanded]);
   const openPreviewContext = useCallback(() => {
-    updatePreviewContextPlacement();
+    const dock = chatColumnRef.current;
+    const workspace = dock?.parentElement;
+    if (workspace) {
+      const bounds = workspace.getBoundingClientRect();
+      const rect = dock.getBoundingClientRect();
+      updatePreviewContextPlacement(workspace, rect.top - bounds.top, bounds.bottom - rect.bottom);
+    }
     setPreviewContextOpen(true);
   }, [updatePreviewContextPlacement]);
   // Re-clamp after restoring, resizing, or adding attachments/lines. Observe the
@@ -7254,23 +7252,41 @@ export default function MessagesView({
       const bottomAnchor = Math.max(PREVIEW_DOCK_MARGIN, bounds.height - size.height - PREVIEW_DOCK_MARGIN);
       const topAnchor = Math.max(PREVIEW_DOCK_MARGIN, Math.min(surfaceTop, bottomAnchor));
       const rightAnchor = Math.max(PREVIEW_DOCK_MARGIN, bounds.width - size.width - PREVIEW_DOCK_MARGIN);
+      const verticalPlacement = previewDockPoint?.top ?? previewDockPlacement.y;
+      const dockTop = typeof verticalPlacement === 'number'
+        ? Math.max(topAnchor, Math.min(bottomAnchor, verticalPlacement))
+        : verticalPlacement === 'top' ? topAnchor : bottomAnchor;
+
+      // Use the calculated position to avoid a forced layout after setting the CSS anchors.
       workspace.style.setProperty('--cc-app-dock-top', `${topAnchor}px`);
       workspace.style.setProperty('--cc-app-dock-bottom-top', `${bottomAnchor}px`);
       workspace.style.setProperty('--cc-app-dock-right-left', `${rightAnchor}px`);
-      setPreviewDockPoint(point => {
-        if (!point) return point;
-        const left = Math.max(PREVIEW_DOCK_MARGIN, Math.min(rightAnchor, point.left));
-        const top = Math.max(topAnchor, Math.min(bottomAnchor, point.top));
-        return left === point.left && top === point.top ? point : { left, top };
+      if (previewDockPoint) {
+        const left = Math.max(PREVIEW_DOCK_MARGIN, Math.min(rightAnchor, previewDockPoint.left));
+        if (left !== previewDockPoint.left || dockTop !== previewDockPoint.top) {
+          setPreviewDockPoint({ left, top: dockTop });
+        }
+      }
+      updatePreviewContextPlacement(workspace, dockTop, bounds.height - dockTop - size.height);
+    };
+    let geometryFrame = null;
+    const scheduleGeometry = () => {
+      if (geometryFrame !== null) return;
+      geometryFrame = requestAnimationFrame(() => {
+        geometryFrame = null;
+        updateGeometry();
       });
-      updatePreviewContextPlacement();
     };
     updateGeometry();
-    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(updateGeometry) : null;
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleGeometry) : null;
     observer?.observe(workspace);
     observer?.observe(dock);
-    window.addEventListener('resize', updateGeometry);
-    return () => { observer?.disconnect(); window.removeEventListener('resize', updateGeometry); };
+    window.addEventListener('resize', scheduleGeometry);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', scheduleGeometry);
+      if (geometryFrame !== null) cancelAnimationFrame(geometryFrame);
+    };
   }, [previewExpanded, previewDockPoint, previewDockPlacement, previewComposerMinimized, previewContextOpen, updatePreviewContextPlacement]);
   useLayoutEffect(() => {
     if (!previewExpanded || previewDockDragging || previewDockPoint) return;
