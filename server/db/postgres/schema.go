@@ -42,7 +42,7 @@ func (a *Adapter) createSchema(ctx context.Context, conn *sql.Conn) error {
 		createConversationNotificationMutesTable,
 		createConversationDeviceSelectionsTable,
 		createMessagesTable,
-createFileUploadsTable,
+		createFileUploadsTable,
 		createFileMessageBindingsTable,
 		createFileMediaSessionsTable,
 		createFileVersionBindingsTable,
@@ -255,6 +255,11 @@ createFileUploadsTable,
 		migrateModelCreditMonthlyRollover,
 		createCommercialInviteMonthlyRepairs,
 		migrateModelCreditPostpaid,
+		// 控制台 MCP server 配置 + OAuth 2.1 凭据托管（migration 000083）：
+		// client_secret 与 token 全部密文落库（AES-256-GCM），state 一次性消费。
+		createMCPServerConfigsTable,
+		createMCPOAuthStatesTable,
+		createMCPOAuthCredentialsTable,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,
@@ -2182,3 +2187,50 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_weixin_clawbot_tokens_updated_at BEFORE UPDATE ON weixin_clawbot_tokens
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 `
+
+// ---- 控制台 MCP server 配置 + OAuth 2.1 凭据托管（000083 编号迁移镜像）----
+// client_secret / access / refresh token 全部是 AES-256-GCM 密文；state 一次性消费。
+const createMCPServerConfigsTable = `
+CREATE TABLE IF NOT EXISTS mcp_server_configs (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    owner_uid BIGINT NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    endpoint TEXT NOT NULL,
+    transport VARCHAR(24) NOT NULL DEFAULT 'streamable_http',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    auth_type VARCHAR(16) NOT NULL DEFAULT 'none',
+    client_id VARCHAR(256) NOT NULL DEFAULT '',
+    authorize_url TEXT NOT NULL DEFAULT '',
+    token_url TEXT NOT NULL DEFAULT '',
+    scopes TEXT NOT NULL DEFAULT '',
+    client_secret_enc TEXT NOT NULL DEFAULT '',
+    config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_server_configs_owner ON mcp_server_configs (owner_uid, enabled);`
+
+const createMCPOAuthStatesTable = `
+CREATE TABLE IF NOT EXISTS mcp_oauth_states (
+    state VARCHAR(128) PRIMARY KEY,
+    server_id BIGINT NOT NULL REFERENCES mcp_server_configs(id) ON DELETE CASCADE,
+    owner_uid BIGINT NOT NULL,
+    code_verifier VARCHAR(128) NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_states_expires ON mcp_oauth_states (expires_at);`
+
+const createMCPOAuthCredentialsTable = `
+CREATE TABLE IF NOT EXISTS mcp_oauth_credentials (
+    server_id BIGINT NOT NULL REFERENCES mcp_server_configs(id) ON DELETE CASCADE,
+    owner_uid BIGINT NOT NULL,
+    access_token_enc TEXT NOT NULL DEFAULT '',
+    refresh_token_enc TEXT NOT NULL DEFAULT '',
+    token_type VARCHAR(32) NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    expires_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (server_id, owner_uid)
+);`

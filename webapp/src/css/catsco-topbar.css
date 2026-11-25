@@ -2101,3 +2101,111 @@
 .v3-service-agent-meta-item.is-input {
   color: #2563eb;
 }
+
+/* 控制台 MCP Server 配置（CRUD + OAuth 2.1 托管） */
+.v3-service-agents-mcp-servers {
+  margin-top: 16px;
+  border-top: 1px solid var(--color-border, rgba(0, 0, 0, 0.08));
+  padding-top: 12px;
+}
+.v3-service-agents-mcp-servers-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 4px 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+.v3-service-agents-mcp-servers-body {
+  margin-top: 8px;
+}
+.v3-service-agents-mcp-servers-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.v3-service-agents-mcp-server {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+}
+.v3-service-agents-mcp-server-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.v3-service-agents-mcp-server-main code {
+  font-size: 12px;
+  opacity: 0.7;
+  overflow-wrap: anywhere;
+}
+.v3-service-agents-mcp-server-meta {
+  font-size: 12px;
+  opacity: 0.65;
+}
+.v3-service-agents-mcp-server-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.v3-service-agents-mcp-servers-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+.v3-service-agents-mcp-server-form {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--color-border, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.v3-service-agents-mcp-server-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.v3-service-agents-mcp-server-form input[type='text'],
+.v3-service-agents-mcp-server-form input[type='url'],
+.v3-service-agents-mcp-server-form input[type='password'],
+.v3-service-agents-mcp-server-form input:not([type]),
+.v3-service-agents-mcp-server-form select {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border, rgba(0, 0, 0, 0.16));
+  border-radius: 6px;
+  background: var(--color-input-bg, transparent);
+  color: inherit;
+}
+.v3-service-agents-mcp-server-inline {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px !important;
+}
+.v3-service-agents-mcp-server-form-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.v3-service-agents-mcp-server-form-actions {
+  display: flex;
+  gap: 8px;
+}

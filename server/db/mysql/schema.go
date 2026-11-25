@@ -70,6 +70,9 @@ createFileUploadsTable,
 		createServiceWorkerTokensTable,
 		createServiceRunReceiptsTable,
 		createServiceAgentSubscriptionsTable,
+		createMCPServerConfigsTable,
+		createMCPOAuthStatesTable,
+		createMCPOAuthCredentialsTable,
 	}
 	for _, q := range tables {
 		if _, err := a.db.Exec(q); err != nil {
@@ -1539,4 +1542,58 @@ ALTER TABLE conversation_task_status_sources
 const migrateConversationTaskStatusSourcesUpdatedAtPrecision = `
 ALTER TABLE conversation_task_status_sources
   MODIFY updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6);
+`
+
+// ---- 控制台 MCP server 配置 + OAuth 2.1 凭据托管（与 postgres 000083 对齐）----
+// MySQL 不在编号迁移体系内（见 migrations README），DDL 只在代码里维护。
+const createMCPServerConfigsTable = `
+CREATE TABLE IF NOT EXISTS mcp_server_configs (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    owner_uid BIGINT NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    endpoint TEXT NOT NULL,
+    transport VARCHAR(24) NOT NULL DEFAULT 'streamable_http',
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    auth_type VARCHAR(16) NOT NULL DEFAULT 'none',
+    client_id VARCHAR(256) NOT NULL DEFAULT '',
+    authorize_url TEXT NOT NULL,
+    token_url TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    client_secret_enc TEXT NOT NULL,
+    config_json JSON NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    KEY idx_mcp_server_configs_owner (owner_uid, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createMCPOAuthStatesTable = `
+CREATE TABLE IF NOT EXISTS mcp_oauth_states (
+    state VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+    server_id BIGINT NOT NULL,
+    owner_uid BIGINT NOT NULL,
+    code_verifier VARCHAR(128) NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    expires_at TIMESTAMP(6) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (state),
+    KEY idx_mcp_oauth_states_expires (expires_at),
+    FOREIGN KEY (server_id) REFERENCES mcp_server_configs(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createMCPOAuthCredentialsTable = `
+CREATE TABLE IF NOT EXISTS mcp_oauth_credentials (
+    server_id BIGINT NOT NULL,
+    owner_uid BIGINT NOT NULL,
+    access_token_enc TEXT NOT NULL,
+    refresh_token_enc TEXT NOT NULL,
+    token_type VARCHAR(32) NOT NULL DEFAULT '',
+    scope TEXT NOT NULL,
+    expires_at TIMESTAMP(6) NULL DEFAULT NULL,
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (server_id, owner_uid),
+    FOREIGN KEY (server_id) REFERENCES mcp_server_configs(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `

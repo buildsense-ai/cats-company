@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, ChevronDown, Pencil, Plus, RefreshCw, Sparkles, Undo2, X } from 'lucide-react';
 import { api } from '../api';
+import MCPServersSection from './mcp-servers-section';
 
 // Agent 工具（CatsCo 定制 agent 的工具集管理；设计 §3.3-9"模式二：默认开放 + 个人清单"）。
 // 添加/删除跟账号、跨设备生效：删除后从你的 Agent 工具集（tools/list）隐去、调用也被拒绝；
@@ -1057,6 +1058,7 @@ export default function ServiceAgentsPanel({ onClose }) {
       ))}
         </>
       )}
+      <MCPServersSection />
     </aside>
   );
 }

@@ -41,6 +41,9 @@ type ServiceAgentsMCPHandler struct {
 	// 每会话一个独立 *mcp.Server 实例）——清单变更时据此下发 list_changed。
 	liveMu      sync.Mutex
 	liveServers map[int64]map[*mcp.Server]map[string]struct{} // uid → server → 已注册工具名集
+
+	// elicitations 是 mcp_elicitation 交互协议的进程内注册表（TTL 15 分钟）。
+	elicitations *mcpElicitationRegistry
 }
 
 const (
@@ -202,6 +205,10 @@ func (h *ServiceAgentsMCPHandler) buildServer(callerUID int64) *mcp.Server {
 	}
 	h.addRunStatusTool(srv, callerUID)
 	registered["catsco_run_status"] = struct{}{}
+	// mcp_elicitation 交互协议：双协议栈（2026-07-28 InputRequests / 旧版 server-initiated）
+	// 由 SDK 中间件统一收敛，handler 只认 InputResponses。
+	h.addElicitationTool(srv, callerUID)
+	registered[mcpElicitationToolName] = struct{}{}
 	// 自分享：只有「调用者本身就是 bot、且它的 owner 在内测白名单里」才挂。
 	// 人的工具面里不该出现这个工具（面板上有），否则模型会拿着它去做本该人点的事。
 	if h.canSelfShare(callerUID) {
@@ -225,7 +232,7 @@ func (h *ServiceAgentsMCPHandler) canSelfShare(callerUID int64) bool {
 // 当成「已下架」摘掉，而 SDK 只在客户端重新 list 时才回来。
 func isServiceSystemTool(name string) bool {
 	switch name {
-	case "catsco_run_status", serviceShareSelfToolName:
+	case "catsco_run_status", serviceShareSelfToolName, mcpElicitationToolName:
 		return true
 	}
 	return false

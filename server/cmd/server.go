@@ -1184,7 +1184,11 @@ func main() {
 			// 不再单独限制 bot 归属：两套授权规则会互生矛盾。
 			serviceAgentsMCPHandler.SetBotRunner(botRunner)
 		}
-		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
+		// MCP 2026-07-28 / 2025-11-25 标准 Tasks 层（SEP-1686 语义）：
+		// go-sdk v1.8.0 尚未内建 tasks，薄中间件接管 tasks/* 与 task 化 tools/call，
+		// 并在 initialize 响应里注入 capabilities.tasks 宣告。其余方法面原样透传。
+		mcpTasksLayer := server.NewMCPTasksLayer(serviceAgentsMCPHandler)
+		mux.HandleFunc("/api/mcp", jwtAuthWithDB(mcpTasksLayer.ServeHTTP))
 		// 应用目录管理 API（设计 §3.3-9 目录与订阅）：网页 cats 的目录/管理界面数据面；
 		// 清单跟账号，变更即时同步在线 MCP 会话（list_changed）。
 		// 内测门（2026-10-16）：仅白名单 uid（CATSCO_SERVICE_CATALOG_UID_WHITELIST）可用。
@@ -1241,6 +1245,17 @@ func main() {
 		// 用户不需要看见/复制任何密钥（券只能接单，换不出账号权限）。
 		workerSessionHandler := server.NewServiceWorkerSessionHandlerFromEnv()
 		mux.HandleFunc("POST /api/service-worker/session", jwtAuthWithDB(workerSessionHandler.HandleCreate))
+		// 控制台 MCP Server 配置 CRUD + OAuth 2.1 回调 + 加密凭据托管：
+		// 登记的外部 MCP server 配置按账号隔离；client_secret 与 token 全部
+		// AES-256-GCM 加密落库（密钥缺失时托管功能自动降级，绝不落明文）。
+		if mcpConfigStore, ok := db.(store.MCPServerConfigStore); ok {
+			mcpConsole := server.NewMCPServerConsoleHandlerFromEnv(mcpConfigStore)
+			mux.HandleFunc("/api/mcp-servers", jwtAuthWithDB(mcpConsole.HandleCollection))
+			mux.HandleFunc("/api/mcp-servers/", jwtAuthWithDB(mcpConsole.HandleItem))
+			// OAuth 回调是浏览器重定向，不带 JWT —— 身份由一次性 state 承载，
+			// 回调处理器内部自行校验（不能套 jwtAuthWithDB，否则授权服务器跳回来就是 401）。
+			mux.HandleFunc("GET /api/mcp/oauth/callback", mcpConsole.HandleOAuthCallback)
+		}
 		go serviceOrchestrator.StartReaper(15 * time.Second)
 		// Lifecycle write-back delivery (design §3.3-2/§4.8-2): receipts persisted
 		// in the same transaction as terminal run transitions are pushed to the

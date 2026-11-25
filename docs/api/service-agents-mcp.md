@@ -66,6 +66,56 @@ not_picked_up: 发布者那边一直没有 worker 认领这个任务（执行环
 `error_text` 里已知短码都会翻译成人话（`not_picked_up` / `no_command` /
 `worker_offline`），未知短码原样透出（不吞信息）。
 
+## MCP 标准 Tasks（`tasks/*` 与 task 化的 `tools/call`）
+
+兼容 MCP 2026-07-28 与 2025-11-25（协商随 initialize 与每请求 `_meta` 走，SDK v1.8.0 内建）。
+go-sdk 尚未内建标准 Tasks，服务端在 `/api/mcp` 前加了一层薄 JSON-RPC 中间件：
+
+| 方法 | 说明 |
+| --- | --- |
+| `tools/call` + `params.task` | task 增强调用：立即返回 `CreateTaskResult`（`{task: {...}}`，`status=working`），后台复用 invoke 管线执行 |
+| `tasks/get` | 查询 Task 对象（`taskId`/`status`/`statusMessage`/`createdAt`/`lastUpdatedAt`/`ttl`/`pollInterval`） |
+| `tasks/result` | 完成后取原始 `CallToolResult` 结构；未完成/失败/撤销按 JSON-RPC error 返回 |
+| `tasks/list` | 列出本账号全部在册任务 |
+| `tasks/cancel` | 撤销 working 任务（终态幂等 no-op） |
+
+- 能力宣告：`initialize` 响应的 `capabilities.tasks = {"list":{},"cancel":{},"requests":{"tools":{"call":{}}}}`。
+- `params.task` 是标准位置；早期草案的 `_meta["io.modelcontextprotocol/task"]` 也识别（兼容兜底）。
+- `task.ttl`（毫秒）在服务端上限（60 分钟）内被尊重；TTL 自创建起算，终态后到期清退。
+- 任务按调用账号隔离：跨账号查/撤/列一律 not found。
+- 底层仍是同一个 service run 管线（校验/计费/幂等/派发全保真）——WS 回执投递不受影响。
+
+## `mcp_elicitation` 交互协议（`catsco.mcp-elicitation.v1`）
+
+工具 `mcp_elicitation_create`：向用户收集结构化输入。双协议栈同一 handler：
+
+- **2026-07-28（SEP-2322）**：首轮回 `input_required` + `InputRequests` + `RequestState`；
+  客户端履行 elicitation 后带 `InputResponses` 重试同一调用。
+- **2025-11-25 及更早**：SDK 服务端中间件把同一 `InputRequests` 翻译成 `elicitation/create`，回包后自动重入。
+
+入参：`message`（必填）、`schema`（form 模式 JSON Schema）、`mode`（form/url）、`url`、
+`elicitation_id` + `response`（out-of-band 完成，给不支持 elicitation 的无头客户端用）。
+产出 envelope（structuredContent）：`elicitation_id`/`status`（answered/declined/cancelled）/`action`/`content`/`mode`/`message`。
+同一 elicitation 只交付一次（consume 即销毁），TTL 15 分钟。
+
+## 控制台 MCP Server 配置 + OAuth 2.1 凭据托管
+
+| 路由 | 说明 |
+| --- | --- |
+| `GET/POST /api/mcp-servers` | 列表 / 创建（JWT） |
+| `GET/PUT/DELETE /api/mcp-servers/{id}` | 读取 / 更新 / 删除（owner 隔离；跨账号一律 404） |
+| `POST /api/mcp-servers/{id}/oauth/start` | 发起 OAuth 2.1 授权（返回 `authorize_url`，含 PKCE S256） |
+| `GET /api/mcp/oauth/callback` | 授权回调（浏览器重定向，无 JWT；身份由一次性 state 承载） |
+
+- `client_secret` / `access_token` / `refresh_token` 全部 AES-256-GCM 加密落库，
+  AAD 绑定 (owner_uid, server_id, field) —— 跨账号/跨字段搬动密文解不开。
+- 密钥：`CATSCO_MCP_CREDENTIAL_ENCRYPTION_KEY`（base64/hex 编码 32 字节）；
+  未配置时凭据托管降级（OAuth 回调 503），绝不落明文。
+- OAuth state 一次性消费（`DELETE ... RETURNING`），10 分钟过期；verifier 只存在服务端。
+- 回显永远只有掩码（`has_client_secret` / `credential` 摘要），token 本体不出库。
+- 表：`mcp_server_configs` / `mcp_oauth_states` / `mcp_oauth_credentials`（migration 000083）。
+
+
 ## 调用语义
 
 1. **新会话**：不传 `session_id` → 新建（会话钉创建时的应用版本；新版经新会话生效）。

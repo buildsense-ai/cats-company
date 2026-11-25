@@ -535,6 +535,13 @@ export const api = {
   listServiceWorkerCredentials: () => request('GET', '/api/service-worker/credentials'),
   createServiceWorkerCredential: (label) => request('POST', '/api/service-worker/credentials', { label }),
   revokeServiceWorkerCredential: (id) => request('DELETE', `/api/service-worker/credentials/${encodeURIComponent(id)}`),
+  // 控制台 MCP Server 配置 CRUD + OAuth 2.1 授权发起。
+  // secret/token 从不回显明文：has_client_secret / credential 只给托管状态摘要。
+  listMCPServers: () => request('GET', '/api/mcp-servers'),
+  createMCPServer: (config) => request('POST', '/api/mcp-servers', config),
+  updateMCPServer: (id, config) => request('PUT', `/api/mcp-servers/${encodeURIComponent(id)}`, config),
+  deleteMCPServer: (id) => request('DELETE', `/api/mcp-servers/${encodeURIComponent(id)}`),
+  startMCPServerOAuth: (id) => request('POST', `/api/mcp-servers/${encodeURIComponent(id)}/oauth/start`),
   getPushConfig: (signal) => request('GET', '/api/push/config', undefined, { signal }),
   subscribePush: (subscription, registrationID, signal) => (
     request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })
