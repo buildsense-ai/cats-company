@@ -47,12 +47,29 @@ type computeTaskSKU struct {
 	Tariff      computeSlurmRate `json:"tariff"`
 }
 
+// computeTaskReceiptKicker 在 worker finish 成功后唤醒一轮回执投递
+// （*ComputeTaskReceiptDeliverer 实现；未注入时靠周期扫描兜底）。
+type computeTaskReceiptKicker interface {
+	Kick()
+}
+
 type ComputeTaskHandler struct {
 	store         store.ComputeTaskStore
 	catalog       []computeTaskSKU
 	workerToken   string
 	allowed       map[int64]bool
 	publicBaseURL string
+	// receiptKicker 可选：装配处注入与投递器同一个实例，finish 成功即时投递。
+	receiptKicker computeTaskReceiptKicker
+}
+
+// SetReceiptKicker 注入回执投递器的 Kick（不注入 = 只靠投递器周期扫描）。
+// 传入 nil 指针也安全（deliverer 的 Kick 对 nil 接收者无操作）。
+func (h *ComputeTaskHandler) SetReceiptKicker(kicker computeTaskReceiptKicker) {
+	if h == nil {
+		return
+	}
+	h.receiptKicker = kicker
 }
 
 func NewComputeTaskHandlerFromEnv(st store.ComputeTaskStore) (*ComputeTaskHandler, error) {
@@ -328,6 +345,11 @@ func (h *ComputeTaskHandler) serveWorker(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		computeTaskHTTPError(w, http.StatusConflict, "compute_task_update_conflict")
 		return
+	}
+	// finish 已经提交（回执与结算同事务入箱）：立刻唤醒投递器，别让调用方等到下一个
+	// 周期扫描；Kick 丢了也有 5 秒兜底，不影响正确性。
+	if in.Action == "finish" && h.receiptKicker != nil {
+		h.receiptKicker.Kick()
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

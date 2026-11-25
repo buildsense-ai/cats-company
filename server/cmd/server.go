@@ -1158,6 +1158,18 @@ func main() {
 			serviceAgentsMCPHandler.SetComputeTasks(computeTasks)
 			computeTasks.RegisterRoutes(mux, jwtAuthWithDB)
 		}
+		// Cats 算力任务的终态回执投递（独立于 service_run_receipts：算力任务不走
+		// service_runs）。回执在 FinishComputeTask 的同一事务里入箱，这里周期扫描
+		// 兜底 + worker finish 成功后由同一个 deliverer 的 Kick 立即投递。
+		if receiptStore, ok := db.(store.ComputeTaskReceiptStore); ok {
+			computeReceiptDeliverer := server.NewComputeTaskReceiptDeliverer(receiptStore, hub)
+			go computeReceiptDeliverer.Start(5 * time.Second)
+			if computeTasks != nil {
+				computeTasks.SetReceiptKicker(computeReceiptDeliverer)
+			}
+		} else if computeTasks != nil {
+			log.Printf("compute task receipt delivery disabled: store does not implement ComputeTaskReceiptStore")
+		}
 		// 会话与 server 实例的回收：SessionTimeout 关掉空闲会话，reaper 再把没有
 		// 会话的 server 摘出注册表（否则要等下一次清单变更才释放）。
 		serviceAgentsMCPHandler.StartLiveServerReaper(context.Background(), 0)

@@ -51,6 +51,10 @@ type ServerMessage struct {
 	// ServiceRunReceipt 是定制应用 run 的生命周期回注回执（完成/失败/待补充输入；
 	// 设计 §3.3-2 回流通道）。跟账号投递：在线即推、离线留存补投。
 	ServiceRunReceipt *MsgServiceRunReceipt `json:"service_run_receipt,omitempty"`
+	// ComputeTaskReceipt 是 Cats 算力任务（/api/compute/tasks/...）的终态回执：
+	// 客户端按 quote_id 唤醒发起任务的 Agent，按 receipt_id 去重。跟账号投递：
+	// 在线即推、离线留存补投。与 ServiceRunReceipt 是两条独立链路。
+	ComputeTaskReceipt *MsgComputeTaskReceipt `json:"compute_task_receipt,omitempty"`
 
 	// suppressPushNotification is server-only provenance. It must never be
 	// serialized to a web client or be set from client-provided metadata.
@@ -288,6 +292,20 @@ type MsgServiceRunReceipt struct {
 	Question        string `json:"question,omitempty"`
 	Error           string `json:"error,omitempty"`
 	CreatedAt       string `json:"created_at,omitempty"`
+}
+
+// MsgComputeTaskReceipt 是 Cats 算力任务的终态回执（= WS 消息体，
+// contract catsco.compute-task-receipt.v1）。字段与 store.ComputeTaskReceiptPayload
+// 同构；receipt_id 即幂等去重键，quote_id 是客户端唤醒原 Agent 的锚点。
+type MsgComputeTaskReceipt struct {
+	ContractVersion string          `json:"contract_version"`
+	ReceiptID       string          `json:"receipt_id"`
+	QuoteID         string          `json:"quote_id"`
+	Status          string          `json:"status"`
+	State           string          `json:"state"`
+	ChargedUnits    int64           `json:"charged_units"`
+	Progress        json.RawMessage `json:"progress,omitempty"`
+	CreatedAt       string          `json:"created_at,omitempty"`
 }
 
 // --- Server messages ---
