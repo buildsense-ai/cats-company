@@ -144,13 +144,58 @@ describe('messages view render budget', () => {
     await act(async () => { ws.handler(delta('第一段')); });
     rowRenders.count = 0;
     const CHUNKS = 10;
+    // One chunk per frame: the case where nothing can be coalesced.
     for (let i = 0; i < CHUNKS; i += 1) {
       await act(async () => { ws.handler(delta(`片段${i}`)); });
+      await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve())); });
     }
     expect(container.querySelector('[data-message-content*="第一段片段0片段1"]')).not.toBeNull();
     // One row (the streaming reply) per chunk; a small allowance covers a row
     // whose adjacency legitimately changes, never the whole history.
     expect(rowRenders.count).toBeLessThanOrEqual(CHUNKS + 2);
+  });
+});
+
+describe('messages view stream bursts', () => {
+  let container;
+  let root;
+
+  beforeEach(async () => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    fixture.messages = history(TURNS);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MessagesView topic="p2p_1_2" topicName="Agent" user={user} isGroup={false} groupId={null} topicAvatarUrl="" onTopicUpdated={vi.fn()} />,
+      );
+      await flush();
+    });
+    await act(async () => { await flush(); });
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it('renders a burst of deltas inside one frame once', async () => {
+    const delta = (content) => ({ data: {
+      topic: 'p2p_1_2', from: 'usr2', type: 'stream_delta', metadata: { stream_id: 'burst', turn_id: 'run-burst' }, content,
+    } });
+    await act(async () => { ws.handler(delta('开始')); });
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve())); });
+    rowRenders.count = 0;
+    await act(async () => {
+      for (let i = 0; i < 50; i += 1) ws.handler(delta(`词${i}`));
+    });
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve())); });
+    expect(container.querySelector('[data-message-content*="词0词1"]')).not.toBeNull();
+    expect(container.querySelector('[data-message-content*="词49"]')).not.toBeNull();
+    // 50 deltas: at most the leading one plus one frame flush.
+    expect(rowRenders.count).toBeLessThanOrEqual(2);
   });
 });
 

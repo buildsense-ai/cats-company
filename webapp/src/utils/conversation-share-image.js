@@ -112,10 +112,14 @@ function contentBlockText(block) {
   return '';
 }
 
+const JSON_VALUE_START = /^[\t\n\r ]*(?:[{["tfn-]|\d)/;
+
 function structuredContentParts(content) {
   let value = content;
   const sourceWasString = typeof value === 'string';
   if (sourceWasString) {
+    // Text that cannot start a JSON value would only throw below.
+    if (!JSON_VALUE_START.test(value)) return [content];
     try {
       value = JSON.parse(value);
     } catch {
