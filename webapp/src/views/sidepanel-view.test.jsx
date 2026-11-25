@@ -846,6 +846,24 @@ describe('ChatListView sidebar sections', () => {
     }));
   });
 
+  it('does not refetch or reorder conversations for streamed fragments', async () => {
+    await mount();
+    const fetches = api.getConversations.mock.calls.length;
+    await act(async () => {
+      for (let i = 0; i < 5; i += 1) {
+        wsHandler({ data: { topic: 'p2p_7_99', from: 'usr99', type: 'stream_delta', content: `片段${i}`, metadata: { stream_id: 's1' } } });
+      }
+      wsHandler({ data: { topic: 'p2p_7_99', from: 'usr99', type: 'text', content: '片段', metadata: { stream_id: 's1', stream_event: 'delta' } } });
+      wsHandler({ data: { topic: 'p2p_7_99', from: 'usr99', type: 'stream_cancel', content: '', metadata: { stream_id: 's1' } } });
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(api.getConversations.mock.calls.length).toBe(fetches);
+    await act(async () => {
+      wsHandler({ data: { topic: 'p2p_7_99', from: 'usr99', type: 'text', content: '完整回复', seq: 12, metadata: { stream_id: 's1' } } });
+    });
+    expect(api.getConversations.mock.calls.length).toBeGreaterThan(fetches);
+  });
+
   it('shows unread friend dots while contacts are collapsed and clears them after opening the friend', async () => {
     api.getFriends.mockResolvedValue({
       friends: [{ id: 8, username: 'alice', display_name: 'Alice', topic_id: 'p2p_7_8' }],

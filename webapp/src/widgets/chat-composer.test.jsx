@@ -130,6 +130,42 @@ describe('ChatComposer', () => {
     expect(measurements).toBe(measurementsAfterResize);
   });
 
+  it('measures the input once per keystroke and grows appended text without collapsing it', async () => {
+    function Controlled() {
+      const [value, setValue] = React.useState('');
+      return <ChatComposer value={value} onChange={(event) => setValue(event.target.value)} onSend={vi.fn()} />;
+    }
+    await act(async () => root.render(<Controlled />));
+    const textarea = container.querySelector('.v3-composer-input');
+    let reads = 0;
+    let contentHeight = 30;
+    let height = textarea.style.height;
+    const heights = [];
+    Object.defineProperty(textarea, 'scrollHeight', { configurable: true, get: () => { reads += 1; return contentHeight; } });
+    Object.defineProperty(textarea, 'clientHeight', { configurable: true, get: () => parseFloat(height) || 0 });
+    Object.defineProperty(textarea.style, 'height', { configurable: true, get: () => height, set: (value) => { heights.push(value); height = value; } });
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    const type = (value) => act(async () => {
+      setValue.call(textarea, value);
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await type('你');
+    expect(reads).toBe(1);
+    expect(heights).toEqual([]);
+
+    contentHeight = 80;
+    await type('你好');
+    expect(reads).toBe(2);
+    expect(heights).toEqual(['80px']);
+
+    // Removing text may shrink the input, so it is measured from scratch.
+    contentHeight = 30;
+    await type('你');
+    expect(reads).toBe(3);
+    expect(heights.slice(1)).toEqual(['auto', '40px']);
+  });
+
   it('resizes on window resize when ResizeObserver is unavailable', async () => {
     vi.stubGlobal('ResizeObserver', undefined);
     await renderComposer({ value: '还有其他几个区的你也要接入的' });

@@ -401,6 +401,20 @@ body {
   flex: none;
 }
 
+/* Transform animations on SVG children cannot run on the compositor: each
+   frame of a running tail or blink restyles, repaints and re-layerizes the
+   whole page, even when nothing else changes. A small avatar is always on
+   screen, so it only moves while the pointer is over it. */
+.oc-avatar .oc-avatar-identity-cat .cc-identity-cat__tail-motion,
+.oc-avatar .oc-avatar-identity-cat .cc-identity-cat__eye-group {
+  animation-play-state: paused;
+}
+
+.oc-avatar:hover .oc-avatar-identity-cat .cc-identity-cat__tail-motion,
+.oc-avatar:hover .oc-avatar-identity-cat .cc-identity-cat__eye-group {
+  animation-play-state: running;
+}
+
 .oc-avatar-text,
 .oc-avatar-icon {
   font-size: 18px;
@@ -9126,6 +9140,33 @@ button.catsco-download-action:disabled {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+/* A long conversation holds thousands of nodes per screen of history. Rows
+ * outside the viewport skip style, layout and paint; a skipped row keeps the
+ * height it last rendered at, so loading older history or switching back
+ * does not move what is on screen.
+ * - The newest rows always render: the timeline opens at its bottom, and an
+ *   estimated height there would leave the latest reply below the fold.
+ * - A row clips what it paints and contains fixed-position descendants, so a
+ *   row with an open menu or an in-row overlay renders normally.
+ * - Without :has() that exception cannot be expressed, so nothing is skipped. */
+@supports selector(:has(*)) {
+  .v3-timeline .cc-message-anchor {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 320px;
+  }
+
+  .v3-timeline .cc-message-anchor:nth-last-child(-n + 12),
+  .v3-timeline .cc-message-anchor:has(
+    .v3-message-action-menu,
+    .cc-wiki-injection-menu:not([hidden]),
+    .oc-modal-overlay,
+    .v3-file-preview-backdrop,
+    .image-viewport.is-expanded
+  ) {
+    content-visibility: visible;
+  }
 }
 
 /* Conversation share image: selection lives in the timeline so people retain

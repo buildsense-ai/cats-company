@@ -546,15 +546,31 @@ export default function ChatComposer({
     else if (textareaRef) textareaRef.current = node;
   }, [textareaRef]);
 
-  const resizeInput = useCallback((textarea = inputRef.current) => {
+  // Reading `scrollHeight` forces a synchronous layout, and collapsing the
+  // input to `auto` first also resizes the composer and the timeline above it.
+  // Measure once per distinct value (onChange and the layout effect both ask),
+  // and while text is only appended, grow without collapsing first.
+  const measuredInputRef = useRef({ textarea: null, value: null });
+  const resizeInput = useCallback((textarea = inputRef.current, { force = false } = {}) => {
     if (!textarea) return;
+    const { value } = textarea;
+    const measured = measuredInputRef.current;
+    const sameInput = !force && measured.textarea === textarea && measured.value !== null;
+    if (sameInput && measured.value === value) return;
+    measuredInputRef.current = { textarea, value };
+    const appended = sameInput && value.startsWith(measured.value) && textarea.style.height;
+    if (appended && textarea.style.overflowY !== 'auto') {
+      const contentHeight = textarea.scrollHeight;
+      if (contentHeight <= textarea.clientHeight) return;
+      textarea.style.height = `${Math.min(contentHeight, COMPOSER_INPUT_MAX_HEIGHT)}px`;
+      textarea.style.overflowY = contentHeight > COMPOSER_INPUT_MAX_HEIGHT ? 'auto' : 'hidden';
+      return;
+    }
+    if (appended) return;
     textarea.style.height = 'auto';
-    const nextHeight = Math.min(
-      Math.max(textarea.scrollHeight, COMPOSER_INPUT_MIN_HEIGHT),
-      COMPOSER_INPUT_MAX_HEIGHT,
-    );
-    textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > COMPOSER_INPUT_MAX_HEIGHT ? 'auto' : 'hidden';
+    const contentHeight = textarea.scrollHeight;
+    textarea.style.height = `${Math.min(Math.max(contentHeight, COMPOSER_INPUT_MIN_HEIGHT), COMPOSER_INPUT_MAX_HEIGHT)}px`;
+    textarea.style.overflowY = contentHeight > COMPOSER_INPUT_MAX_HEIGHT ? 'auto' : 'hidden';
   }, []);
 
   useLayoutEffect(() => {
@@ -568,7 +584,7 @@ export default function ChatComposer({
     if (!textarea) return undefined;
 
     if (typeof ResizeObserver === 'undefined') {
-      const handleWindowResize = () => resizeInput(textarea);
+      const handleWindowResize = () => resizeInput(textarea, { force: true });
       window.addEventListener('resize', handleWindowResize);
       return () => window.removeEventListener('resize', handleWindowResize);
     }
@@ -578,7 +594,7 @@ export default function ChatComposer({
       const width = entry?.contentRect.width;
       if (width === previousWidth) return;
       previousWidth = width;
-      resizeInput(textarea);
+      resizeInput(textarea, { force: true });
     });
     observer.observe(textarea);
     return () => observer.disconnect();
