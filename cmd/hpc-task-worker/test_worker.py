@@ -57,6 +57,7 @@ class Fixture:
         self.volumes = {}
         self.statuses = {"read-probe": "success"}
         self.finished = None
+        self.finish_status = None
         self.slurm_job = False
         self.slurm_state = "COMPLETED"
         self.exit_code = "0:0"
@@ -64,6 +65,7 @@ class Fixture:
         self.lose_ack = None
         self.reject = None
         self.force = None
+        self.fail = None
         self.save_conflict = None
         self.keep_volume = False
         self.node_names = ["wn01"]
@@ -106,6 +108,8 @@ class Fixture:
                 self.run["progress"] = copy.deepcopy(payload["progress"])
             else:
                 assert action == "finish" and payload["progress"] == self.run["progress"]
+                if self.finish_status is not None:
+                    return self.finish_status, ""
                 self.finished = payload["progress"]
             return 204, ""
         assert parsed.hostname in ("hpc.invalid", "ecs.invalid", "evs.invalid")
@@ -117,6 +121,9 @@ class Fixture:
             self.mutations.append(name)
             if self.reject == name:
                 return 200, json.dumps(dict(statusCode=900, errorCode="FixtureNoSideEffect"))
+            if self.fail == name:
+                self.statuses[name] = "failed"
+                return 200, json.dumps(dict(statusCode=800, returnObj=dict(jobUUID=name)))
             if name == "create-queue":
                 assert payload == dict(regionID="region-1", azName="az-1", clusterUUID="cluster-1", queueName=QUEUE)
                 self.queues.append(dict(queueName=QUEUE, queueUUID="queue-task", default=False))
@@ -281,18 +288,140 @@ class WorkerTest(unittest.TestCase):
             with self.subTest(operation=op):
                 f = Fixture()
                 task = f.advance_to(phase)
+                if op == "shrink":
+                    f.run["progress"]["provision_started_at"] = "2026-01-01T00:00:00Z"
+                    task.progress["provision_started_at"] = "2026-01-01T00:00:00Z"
                 f.lose_ack = op
                 self.assertEqual(task.advance(), "reconcile")
                 self.assertNotIn(field, f.run["progress"])
-                trace = f.run["progress"]["problem"].split("EOP request ID ")[1].split(";")[0]
-                self.assertEqual(f.claimed().advance(), "reconcile")
-                self.assertIn("EOP request ID " + trace, f.run["progress"]["problem"])
-                self.assertEqual(f.mutations.count(op), 1)
-                self.assertIsNone(f.finished)
-                f.run["progress"][field] = op
                 self.assertEqual(f.claimed().advance(), "next")
+                self.assertIn(field, f.run["progress"])
                 self.assertEqual(f.run["progress"]["phase"], recovered)
                 self.assertEqual(f.mutations.count(op), 1)
+
+    def test_recovery_handles_create_queue_appearing_or_disappearing(self):
+        f = Fixture()
+        task = f.claimed()
+        f.lose_ack = "create-queue"
+        self.assertEqual(task.advance(), "reconcile")
+        self.assertEqual(f.claimed().advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "queue_created")
+        self.assertEqual(f.run["progress"]["queue_id"], "queue-task")
+
+        f = Fixture()
+        task = f.claimed()
+        f.lose_ack = "create-queue"
+        self.assertEqual(task.advance(), "reconcile")
+        f.queues.clear()
+        recovered = f.claimed()
+        self.assertEqual(recovered.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "rejected")
+        self.assertTrue(f.run["progress"]["released_at"])
+        self.assertEqual(recovered.advance(), "finish")
+
+    def test_recovery_preserves_empty_queue_and_blocks_orphan_nodes(self):
+        f = Fixture()
+        task = f.advance_to("queue_created")
+        f.lose_ack = "expand"
+        self.assertEqual(task.advance(), "reconcile")
+        f.nodes.clear()
+        f.instances.clear()
+        f.volumes.clear()
+        f.run["progress"]["provision_started_at"] = "2026-01-01T00:00:00Z"
+        recovered = f.claimed()
+        self.assertEqual(recovered.advance(), "reconcile")
+        self.assertIn("task queue remained empty", f.run["progress"]["problem"])
+        self.assertTrue(f.queues)
+        self.assertTrue(f.run["progress"].get("provision_started_at"))
+        self.assertEqual(f.mutations, ["create-queue", "expand"])
+
+        f = Fixture()
+        task = f.advance_to("queue_created")
+        f.lose_ack = "expand"
+        self.assertEqual(task.advance(), "reconcile")
+        f.queues.clear()
+        self.assertEqual(f.claimed().advance(), "reconcile")
+        self.assertIn("task nodes remain without a queue", f.run["progress"]["problem"])
+        self.assertEqual(f.mutations, ["create-queue", "expand"])
+
+    def test_recovery_accepts_missing_queue_delete_after_resources_are_gone(self):
+        f = Fixture()
+        task = f.advance_to("nodes_released")
+        f.lose_ack = "delete-queue"
+        self.assertEqual(task.advance(), "reconcile")
+        f.run["progress"]["provision_started_at"] = "2026-01-01T00:00:00Z"
+        recovered = f.claimed()
+        self.assertEqual(recovered.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "delete_intent")
+        self.assertEqual(recovered.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "released")
+        self.assertEqual(recovered.advance(), "finish")
+        self.assertEqual(f.mutations.count("delete-queue"), 1)
+
+    def test_delete_empty_accepts_queue_already_gone(self):
+        f = Fixture()
+        task = f.advance_to("nodes_released")
+        f.queues.clear()
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "delete_intent")
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "released")
+        self.assertEqual(task.advance(), "finish")
+
+    def test_provider_rejection_retries_shrink_and_delete(self):
+        f = Fixture()
+        task = f.advance_to("slurm_done")
+        f.reject = "shrink"
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "slurm_done")
+        f.reject = None
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "shrink_intent")
+
+        f = Fixture()
+        task = f.advance_to("nodes_released")
+        f.reject = "delete-queue"
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "nodes_released")
+        f.reject = None
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "delete_intent")
+
+    def test_failed_shrink_and_delete_retry_after_state_checks(self):
+        f = Fixture()
+        task = f.advance_to("slurm_done")
+        f.fail = "shrink"
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "shrink_intent")
+        f.fail = None
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "shrink_intent")
+        self.assertEqual(f.mutations.count("shrink"), 2)
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "nodes_released")
+
+        f = Fixture()
+        task = f.advance_to("nodes_released")
+        f.fail = "delete-queue"
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "delete_intent")
+        f.fail = None
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "delete_intent")
+        self.assertEqual(f.mutations.count("delete-queue"), 2)
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "released")
+
+    def test_finish_release_rejection_becomes_manual_reconcile(self):
+        f = Fixture()
+        task = f.advance_to("released")
+        f.finish_status = 422
+        self.assertEqual(task.advance(), "reconcile")
+        self.assertIn("manual_finish", f.run["progress"]["problem"])
+        self.assertIsNone(f.finished)
+        f.finish_status = None
+        self.assertEqual(task.advance(), "reconcile")
+        self.assertIsNone(f.finished)
 
     def test_sbatch_lost_ack_recovers_exact_named_job(self):
         f = Fixture()
@@ -373,7 +502,8 @@ class WorkerTest(unittest.TestCase):
         with self.assertRaises(LeaseError):
             f.claimed().advance()
         f.save_conflict = None
-        self.assertEqual(f.claimed().advance(), "reconcile")
+        self.assertEqual(f.claimed().advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "queue_created")
         self.assertEqual(f.mutations, ["create-queue"])
 
     def test_missing_optional_order_keeps_job_receipt(self):
