@@ -16,7 +16,7 @@ import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag
 import ChatComposer from '../widgets/chat-composer';
 import HistoryLoadingState from '../widgets/history-loading-state';
 import { ConversationForkNotice } from '../widgets/conversation-fork';
-import { canForkConversation, forkAnchorIsMidTurn, forkAnchorMessageId, forkComposerNotice } from '../utils/conversation-fork';
+import { canForkConversation, forkAnchorMessageId, forkComposerNotice, forkMidTurnChecker } from '../utils/conversation-fork';
 import PublicationRepairPanel from '../widgets/skillhub-publication-repair-panel';
 import { useConversationFork } from '../utils/use-conversation-fork';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
@@ -519,6 +519,23 @@ function imageGalleryItems(messages) {
   return items;
 }
 
+function sameImageGalleryItems(previous, next) {
+  if (previous === next) return true;
+  if (!Array.isArray(previous) || previous.length !== next.length) return false;
+  return next.every((item, index) => {
+    const before = previous[index];
+    return before.id === item.id && shallowEqualObjects(before.payload, item.payload);
+  });
+}
+
+function shallowEqualObjects(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) => Object.prototype.hasOwnProperty.call(right, key) && left[key] === right[key]);
+}
+
 // Persisted and streaming messages have identities independent of their list position.
 // The object fallback is only for unsaved messages with no transport identity.
 const anonymousTimelineKeys = new WeakMap();
@@ -552,6 +569,57 @@ function retainTimelineGroupKeys(groups, previousGroups, retainStreams = false) 
     const renderKey = retained || pending?.renderKey || keys.find((key) => !used.has(key));
     used.add(renderKey);
     return { ...group, renderKey };
+  });
+}
+
+// Grouping rebuilds every group (and derived display messages such as merged
+// replies) whenever `messages` changes, e.g. on each streamed chunk. Rows are
+// memoized by identity, so hand back the previous objects wherever the rebuilt
+// value is equivalent; only the groups that actually changed re-render.
+const TIMELINE_REUSE_MAX_DEPTH = 4;
+
+function equivalentTimelineValue(left, right, depth = 0) {
+  if (Object.is(left, right)) return true;
+  if (depth > TIMELINE_REUSE_MAX_DEPTH) return false;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  if (Array.isArray(left)) {
+    return left.length === right.length
+      && left.every((value, index) => equivalentTimelineValue(value, right[index], depth + 1));
+  }
+  const leftProto = Object.getPrototypeOf(left);
+  if ((leftProto !== Object.prototype && leftProto !== null) || leftProto !== Object.getPrototypeOf(right)) return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) => Object.prototype.hasOwnProperty.call(right, key)
+    && equivalentTimelineValue(left[key], right[key], depth + 1));
+}
+
+function reuseTimelineValue(previous, next) {
+  if (equivalentTimelineValue(previous, next)) return previous;
+  if (Array.isArray(previous) && Array.isArray(next)) {
+    // A working group that gained a step still keeps its earlier step objects.
+    return next.map((value, index) => (
+      index < previous.length && equivalentTimelineValue(previous[index], value) ? previous[index] : value
+    ));
+  }
+  return next;
+}
+
+export function reuseUnchangedTimelineGroups(groups, previousGroups = []) {
+  if (!previousGroups.length) return groups;
+  const previousByKey = new Map(previousGroups.map((group) => [group.renderKey, group]));
+  return groups.map((group) => {
+    const previous = previousByKey.get(group.renderKey);
+    if (!previous || previous.type !== group.type) return group;
+    if (equivalentTimelineValue(previous, group)) return previous;
+    const reused = {};
+    Object.keys(group).forEach((key) => {
+      reused[key] = Object.prototype.hasOwnProperty.call(previous, key)
+        ? reuseTimelineValue(previous[key], group[key])
+        : group[key];
+    });
+    return reused;
   });
 }
 
@@ -882,6 +950,13 @@ export default function MessagesView({
 
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
+  // Event handlers handed to every timeline row read the committed history
+  // through this ref. Depending on `messages` directly gave them a new identity
+  // on every streamed chunk, which defeated ChatMessage memoization.
+  const latestMessagesRef = useRef(messages);
+  useLayoutEffect(() => {
+    latestMessagesRef.current = messages;
+  }, [messages]);
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
@@ -1149,10 +1224,17 @@ export default function MessagesView({
   const [conversationShareError, setConversationShareError] = useState('');
   const [conversationShareManualSaveAvailable, setConversationShareManualSaveAvailable] = useState(false);
   const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
+  // Every message row receives the gallery, so keep its identity while the
+  // images it lists are unchanged (for example while a text reply streams).
+  const imageGalleryRef = useRef([]);
   const imageGallery = useMemo(() => {
-    return Array.from(new Map([...olderGalleryItems, ...imageGalleryItems(messages)]
+    const next = Array.from(new Map([...olderGalleryItems, ...imageGalleryItems(messages)]
       .map((item) => [item.id, item])).values());
+    return sameImageGalleryItems(imageGalleryRef.current, next) ? imageGalleryRef.current : next;
   }, [messages, olderGalleryItems]);
+  useLayoutEffect(() => {
+    imageGalleryRef.current = imageGallery;
+  }, [imageGallery]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const [wikiMemoryTopic, setWikiMemoryTopic] = useState('');
   const [wikiInjection, setWikiInjection] = useState(null);
@@ -2752,7 +2834,7 @@ export default function MessagesView({
     // The thread can hold several attachments with the same name, and the one the user
     // clicked is often the earliest. Opening those bytes while the real newest version
     // sits further down reads as "my edit was lost", so jump to the last matching one.
-    const newer = latestNamedAttachment(messages, file);
+    const newer = latestNamedAttachment(latestMessagesRef.current, file);
     let opened = file;
     if (newer) {
       const { messageId, ...latest } = newer;
@@ -2770,7 +2852,7 @@ export default function MessagesView({
     const resolved = await resolveLatestOfficeVersion(opened, api.getFileVersionBinding);
     if (previewResolveTokenRef.current !== token) return;
     applyPreviewFileWithFocus(resolved);
-  }, [applyPreviewFileWithFocus, messages]);
+  }, [applyPreviewFileWithFocus]);
 
   const closeSidePanel = useCallback(() => {
     previewResolveTokenRef.current += 1;
@@ -5015,6 +5097,7 @@ export default function MessagesView({
       throw new Error('当前有消息正在发送');
     }
 
+    const messages = latestMessagesRef.current;
     const messageIndex = messages.findIndex((item) => item.id === message?.id);
     const previousTask = (messageIndex < 0 ? messages : messages.slice(0, messageIndex))
       .slice()
@@ -5060,7 +5143,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [conversationFork.blocked, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, messages, removeOptimisticMessage, topic, user.uid]);
+  }, [conversationFork.blocked, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, removeOptimisticMessage, topic, user.uid]);
 
   const selectCommand = (command) => {
     if (!command?.name) return;
@@ -5700,7 +5783,12 @@ export default function MessagesView({
     return left === parseUid(user.uid) ? right : left;
   }, [isGroup, topic, user.uid]);
   const rosterPeer = availableAgents.find((agent) => sameUID(agent.uid || agent.id, peerUID));
-  const resolvedPeerProfile = rosterPeer ? { ...peerProfile, ...rosterPeer } : peerProfile;
+  // A fresh object on every render invalidated `groupedMessages`, so each
+  // keystroke rebuilt every timeline group and re-rendered every message.
+  const resolvedPeerProfile = useMemo(
+    () => (rosterPeer ? { ...peerProfile, ...rosterPeer } : peerProfile),
+    [peerProfile, rosterPeer],
+  );
   const peerIsBot = Boolean(rosterPeer)
     || resolvedPeerProfile?.bot === true
     || resolvedPeerProfile?.is_bot === true
@@ -5822,6 +5910,7 @@ export default function MessagesView({
     void conversationFork.create({ newRequest: true, untilMessageId });
   }, [conversationFork.create]);
   const groupAgentUID = parseUid(groupAgent?.uid || groupAgent?.id);
+  const forkAnchorMidTurn = useMemo(() => forkMidTurnChecker(messages), [messages]);
   const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
     && ((isAgentTask && taskBotUID > 0 && groupAgentUID === taskBotUID)
       || (isTwoPersonGroupWithCurrentUser && groupAgentUID > 0));
@@ -6510,14 +6599,17 @@ export default function MessagesView({
         isConsecutive: sameUID(prevSenderUid, message.from_uid) });
     }
 
-    return retainTimelineGroupKeys(
+    const previousGroups = committedTimelineGroupsRef.current.topic === topic
+      ? committedTimelineGroupsRef.current.groups
+      : [];
+    return reuseUnchangedTimelineGroups(retainTimelineGroupKeys(
       reconcileRenderedGroupConsecutiveness([
         ...reorderAssistantTurnGroups(groups.filter(group => group.type !== 'pending'), liquidConversation),
         ...groups.filter(group => group.type === 'pending'),
       ]),
-      committedTimelineGroupsRef.current.topic === topic ? committedTimelineGroupsRef.current.groups : [],
+      previousGroups,
       liquidConversation,
-    );
+    ), previousGroups);
   }, [
     availableAgentByUID,
     inferredAgentUIDs,
@@ -7171,6 +7263,60 @@ export default function MessagesView({
       chatColumnRef.current?.parentElement?.querySelector('.cc-workspace-fullscreen-action')?.focus({ preventScroll: true });
     });
   }, []);
+
+  // Rows are memoized; a closure created per row on every render made every row
+  // re-render on every keystroke and streamed chunk. Each row instead gets one
+  // stable function per (action, group) that runs the latest implementation.
+  const timelineGroupActionImplRef = useRef({});
+  const timelineGroupActionCacheRef = useRef(new Map());
+  const timelineGroupAction = (kind, renderKey) => {
+    const cacheKey = `${kind}\u0000${renderKey}`;
+    let action = timelineGroupActionCacheRef.current.get(cacheKey);
+    if (!action) {
+      action = (...args) => timelineGroupActionImplRef.current[kind]?.(renderKey, ...args);
+      timelineGroupActionCacheRef.current.set(cacheKey, action);
+    }
+    return action;
+  };
+  useLayoutEffect(() => {
+    const groupByKey = (renderKey) => groupedMessages.find((group) => group.renderKey === renderKey);
+    timelineGroupActionImplRef.current = {
+      share: (renderKey) => {
+        const group = groupByKey(renderKey);
+        const candidate = group ? conversationShareCandidateByMessage.get(group.message) : null;
+        if (candidate) startConversationShareFromMessage(candidate);
+      },
+      wiki: (renderKey, eventId, trigger) => {
+        const group = groupByKey(renderKey);
+        if (!group || group.type !== 'working') return;
+        if (!eventId && injectionOpen && wikiInjection.turn === group.renderKey) {
+          closeInjection();
+          return;
+        }
+        const batches = workingWikiInjections(group.messages);
+        const previous = wikiInjection?.turn === group.renderKey ? wikiInjection.selected : null;
+        const selected = eventId ?? previous ?? batches[0]?.event_id;
+        if (!selected) return;
+        injectionTrigger.current = trigger;
+        if (previewExpanded) restorePreviewWorkspace();
+        setWikiMemoryTopic('');
+        const botUid = parseUid(group.messages[0].from_uid);
+        setWikiInjection(current => ({
+          topic, viewer: user.uid, turn: group.renderKey, agentUid: botUid, selected, open: true,
+          opening: (current?.opening ?? 0) + 1,
+        }));
+      },
+    };
+  });
+  useLayoutEffect(() => {
+    // Drop actions for groups that left the timeline (topic switch, history reset).
+    const liveKeys = new Set(groupedMessages.map((group) => group.renderKey));
+    timelineGroupActionCacheRef.current.forEach((_, cacheKey) => {
+      if (!liveKeys.has(cacheKey.slice(cacheKey.indexOf('\u0000') + 1))) {
+        timelineGroupActionCacheRef.current.delete(cacheKey);
+      }
+    });
+  }, [groupedMessages]);
   const togglePreviewWorkspace = useCallback(() => {
     if (previewExpanded) {
       restorePreviewWorkspace();
@@ -7683,23 +7829,6 @@ export default function MessagesView({
             if (!showThinking && !liquidConversation && !hasWorkingSources(group.messages)) return null;
             const processState = conversationExecutionState(group);
             const botUid = parseUid(group.messages[0].from_uid);
-            const openInjection = (eventId, trigger) => {
-              if (!eventId && injectionOpen && wikiInjection.turn === group.renderKey) {
-                closeInjection();
-                return;
-              }
-              const batches = workingWikiInjections(group.messages);
-              const previous = wikiInjection?.turn === group.renderKey ? wikiInjection.selected : null;
-              const selected = eventId ?? previous ?? batches[0]?.event_id;
-              if (!selected) return;
-              injectionTrigger.current = trigger;
-              if (previewExpanded) restorePreviewWorkspace();
-              setWikiMemoryTopic('');
-              setWikiInjection(current => ({
-                topic, viewer: user.uid, turn: group.renderKey, agentUid: botUid, selected, open: true,
-                opening: (current?.opening ?? 0) + 1,
-              }));
-            };
             return (
               <div
                 key={group.renderKey}
@@ -7727,7 +7856,7 @@ export default function MessagesView({
                   workingComplete={group.workingComplete}
                   replyStreaming={liquidConversation && group.conversationStreaming}
                   memoryBranchActive={processState === 'running' && !group.conversationStreaming}
-                  onWikiInjection={wikiMemoryEnabled && botUid > 0 ? openInjection : undefined}
+                  onWikiInjection={wikiMemoryEnabled && botUid > 0 ? timelineGroupAction('wiki', group.renderKey) : undefined}
                   activeInjection={injectionOpen ? wikiInjection.selected : undefined}
                   executionState={liquidConversation ? processState : undefined}
                   executionNote={liquidConversation && conversationTaskForGroup(group)?.state === 'failed'
@@ -7752,7 +7881,7 @@ export default function MessagesView({
           // still producing, the menu says so up front instead of letting the
           // click reach the server and come back refused.
           const forkAnchorId = forkAnchorMessageId(group);
-          const forkMidTurn = forkAnchorIsMidTurn(messages, forkAnchorId, groupAgentUID);
+          const forkMidTurn = forkAnchorId ? forkAnchorMidTurn(forkAnchorId, groupAgentUID) : false;
           return (
             <div
               key={group.renderKey}
@@ -7797,7 +7926,7 @@ export default function MessagesView({
                   ? handleRegenerateMessage
                   : undefined}
                 onCreateConversationShare={candidate && !conversationShareMode
-                  ? () => startConversationShareFromMessage(candidate)
+                  ? timelineGroupAction('share', group.renderKey)
                   : undefined}
                 onCreateConversationFork={forkEligible && !conversationShareMode ? createConversationFork : undefined}
                 conversationForkDisabled={conversationFork.busy || conversationFork.operation?.state === 'pending'}
