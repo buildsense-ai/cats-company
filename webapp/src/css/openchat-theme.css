@@ -8737,14 +8737,8 @@ button.catsco-download-action:disabled {
 }
 
 .v3-working-details-inline .v3-working-steps {
-  max-height: min(320px, 42dvh);
   margin: 0;
   padding: 4px 8px 4px 12px;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior-x: contain;
-  overscroll-behavior-y: auto;
-  scrollbar-width: thin;
 }
 
 .v3-runtime-plan-card {
@@ -9042,10 +9036,9 @@ button.catsco-download-action:disabled {
 }
 
 .v3-wpi-code-block {
-  background: #1e1e1e;
-  border: 1px solid var(--v3-border);
+  background: var(--cc-code);
+  border: 1px solid var(--cc-border);
   border-radius: 6px;
-  overflow: hidden;
   max-width: 100%;
   min-width: 0;
 }
@@ -9053,25 +9046,10 @@ button.catsco-download-action:disabled {
 .v3-wpi-code-block pre {
   margin: 0;
   padding: 10px 14px;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  overscroll-behavior-y: auto;
   font-size: 12px;
   line-height: 1.4;
-  color: #D4D4D4;
+  color: var(--cc-text-secondary);
   font-family: var(--cc-font-mono);
-  max-height: 250px;
-  overflow-y: auto;
-}
-
-.v3-wpi-code-block pre code {
-  white-space: pre;
-  overflow-wrap: normal;
-  word-break: normal;
-}
-
-.v3-wpi-code-block.result {
-  border-color: color-mix(in srgb, var(--v3-primary) 30%, transparent); /* subtle primary tint */
 }
 
 /* V3 Directory Modal */

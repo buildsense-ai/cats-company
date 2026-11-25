@@ -13,7 +13,6 @@ vi.mock('virtual:pwa-register', () => ({
 }));
 
 let getPwaUpdateServiceWorker;
-let hasPwaRefreshPresenter;
 let isPwaRefreshPending;
 let registerPwaServiceWorker;
 let subscribeToPwaRefresh;
@@ -24,7 +23,6 @@ beforeEach(async () => {
   mocks.updateServiceWorker.mockClear();
   ({
     getPwaUpdateServiceWorker,
-    hasPwaRefreshPresenter,
     isPwaRefreshPending,
     registerPwaServiceWorker,
     subscribeToPwaRefresh,
@@ -63,14 +61,4 @@ test('keeps a waiting worker pending until a controller can present the update',
   const onRefresh = vi.fn();
   subscribeToPwaRefresh(onRefresh);
   expect(onRefresh).toHaveBeenCalledTimes(1);
-});
-
-test('tracks whether a mounted view owns PWA update presentation', () => {
-  expect(hasPwaRefreshPresenter()).toBe(false);
-
-  const unsubscribe = subscribeToPwaRefresh(() => {}, { presentsRefresh: true });
-  expect(hasPwaRefreshPresenter()).toBe(true);
-
-  unsubscribe();
-  expect(hasPwaRefreshPresenter()).toBe(false);
 });
