@@ -370,6 +370,9 @@ func TestServiceOrchestratorClaimLifecycle(t *testing.T) {
 	if entry.AgentSlug != "hello" {
 		t.Fatalf("claim agent_slug = %q, want hello", entry.AgentSlug)
 	}
+	if entry.CallerUID != 441 {
+		t.Fatalf("claim caller_uid = %d, want session caller 441", entry.CallerUID)
+	}
 	if entry.DefinitionRev != 1 || entry.ThresholdSeconds != 60 {
 		t.Fatalf("claim rev/threshold = %+v", entry)
 	}

@@ -283,7 +283,7 @@ func computePreviewMarkdown(result computePreviewResult) string {
 func (h *ServiceAgentsMCPHandler) addComputePreviewTool(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        computePreviewToolName,
-		Description: "在资源密集型任务开始前，查询当前 Agent 设备与云集群的匹配、容量和预计积分。先用 local_compute_resources 采样当前运行设备，该设备可能在云端。若有实测或用户提供的时长，填 estimated_billable_s。用返回的 Markdown 表格向用户说明选项并询问偏好。预计积分由服务端试算，云端费用上限和付费确认另行处理。此工具只读。",
+		Description: "只读预览任务与 Cats 托管 Slurm 的匹配、容量和预计积分，也可传入当前 Agent 运行设备的采样（如 local_compute_resources）。按任务需要询问用户是否有可用的服务器、在线设备、集群或其他算力，并利用现有授权和工具核实。将这些资源与返回的候选一起用 Markdown 表格比较，标明来源并保留未知的容量、完工时间和费用。可用有依据的 estimated_billable_s 试算 Slurm 积分。请用户回复运行位置偏好，付费执行需要另行确认具体报价、费用上限和有效期。",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args computePreviewArgs) (*mcp.CallToolResult, any, error) {
 		if !args.Task.valid() {

@@ -83,6 +83,7 @@ type ServiceClaimRun struct {
 	RunID            string          `json:"run_id"`
 	SessionID        string          `json:"session_id"`
 	AgentSlug        string          `json:"agent_slug"`
+	CallerUID        int64           `json:"caller_uid"`
 	PackageHash      string          `json:"package_hash,omitempty"`
 	DefinitionRev    int64           `json:"definition_rev"`
 	ThresholdSeconds int             `json:"threshold_seconds"`
@@ -390,6 +391,7 @@ func (o *ServiceRunOrchestrator) buildClaimEntry(ctx context.Context, run store.
 		RunID:            run.RunID,
 		SessionID:        run.SessionID,
 		AgentSlug:        slug,
+		CallerUID:        session.CallerUID,
 		PackageHash:      packageHash,
 		DefinitionRev:    session.DefinitionRev,
 		ThresholdSeconds: threshold,

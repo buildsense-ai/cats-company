@@ -66,6 +66,7 @@ type claimRun struct {
 	RunID            string          `json:"run_id"`
 	SessionID        string          `json:"session_id"`
 	AgentSlug        string          `json:"agent_slug"`
+	CallerUID        int64           `json:"caller_uid"`
 	PackageHash      string          `json:"package_hash"`
 	DefinitionRev    int64           `json:"definition_rev"`
 	ThresholdSeconds int             `json:"threshold_seconds"`
@@ -320,6 +321,7 @@ func (w *worker) execCommand(ctx context.Context, run claimRun) (string, string,
 		"CATSCO_RUN_ID="+run.RunID,
 		"CATSCO_SESSION_ID="+run.SessionID,
 		"CATSCO_AGENT="+run.AgentSlug,
+		fmt.Sprintf("CATSCO_CALLER_UID=%d", run.CallerUID),
 		"CATSCO_SERVICE_TOKEN="+run.ServiceToken,
 		"CATSCO_INPUT_FILE="+inputPath,
 		fmt.Sprintf("CATSCO_THRESHOLD_SECONDS=%d", run.ThresholdSeconds),
