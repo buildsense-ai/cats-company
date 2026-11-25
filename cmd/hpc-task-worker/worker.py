@@ -18,10 +18,15 @@ TOKEN = re.compile(r"hpc_([0-9a-f]{32})")
 FAILED_CLOUD = {"failed", "cancel", "console_failed"}
 POLL_SECONDS = 4
 CLAIM_SLICE_SECONDS = 30
+RECOVERY_GRACE_SECONDS = 10 * 60
 LOG = logging.getLogger("hpc-task-worker")
 
 
 class LeaseError(Exception):
+    pass
+
+
+class FinishRejected(WorkerError):
     pass
 
 
@@ -50,6 +55,8 @@ class Cats:
             status, _ = self.post(action, quote_id=run["quote_id"], lease=run["lease"], progress=progress)
         except WorkerError as exc:
             raise LeaseError(f"Cats {action} did not acknowledge the lease") from exc
+        if action == "finish" and status == 422:
+            raise FinishRejected("Cats finish rejected release verification (HTTP 422)")
         if status != 204:
             raise LeaseError(f"Cats {action} returned HTTP {status}")
 
@@ -101,7 +108,6 @@ class Task:
     def check(self, func, *args):
         self.save()
         return func(*args)
-
     def advance(self):
         phase = self.progress.get("phase") or "prepare"
         if phase == "reconcile":
@@ -113,7 +119,20 @@ class Task:
             if self.progress.get("queue_name", self.queue) != self.queue:
                 raise WorkerError("persisted queue name does not match the task")
             self.validate_spec()
+            if phase == "create_intent" and not self.progress.get("queue_create_operation"):
+                return self.recover_create_intent()
+            if phase == "expand_intent" and not self.progress.get("expand_operation"):
+                return self.recover_expand_intent()
+            if phase == "shrink_intent" and not self.progress.get("shrink_operation"):
+                return self.recover_shrink_intent()
+            if phase == "delete_intent" and not self.progress.get("queue_delete_operation"):
+                return self.recover_delete_intent()
             return self.steps[phase]()
+        except FinishRejected as exc:
+            problem = f"manual_finish: {phase}: {exc}"
+            self.move("reconcile", problem=problem)
+            LOG.error("%s %s", self.run["quote_id"], problem)
+            return "reconcile"
         except WorkerError as exc:
             problem = f"{phase}: {exc}"
             if self.progress.get("problem") != problem:
@@ -133,6 +152,79 @@ class Task:
             if type(self.run.get(capacity)) is not int or spec[key] > self.run[capacity]:
                 raise WorkerError("allocation exceeds the quoted SKU capacity")
         timestamp(self.confirmed)
+
+    def recovery_mature(self):
+        value = self.progress.get("provision_started_at") or self.confirmed
+        try:
+            return (datetime.now(timezone.utc) - timestamp(value)).total_seconds() >= RECOVERY_GRACE_SECONDS
+        except WorkerError:
+            return False
+
+    def recovered_operation(self, kind):
+        return f"recovered-{kind}-{self.run['quote_id'][4:]}"
+
+    def clear_capacity_progress(self, keep_queue=False):
+        clear = {
+            "queue_id", "queue_create_operation", "queue_delete_operation", "expand_operation", "shrink_operation",
+            "master_order_id", "provision_started_at", "node_ids", "node_names", "instance_ids", "volume_ids",
+            "slurm_job_id", "slurm_state", "slurm_exit_code", "slurm_elapsed_seconds", "slurm_allocated_cpus",
+            "slurm_requested_memory", "slurm_node_list",
+        }
+        if keep_queue:
+            clear.discard("queue_id")
+        self.progress = {key: value for key, value in self.progress.items() if key not in clear}
+
+
+    def reject_without_capacity(self, problem):
+        self.clear_capacity_progress()
+        self.progress.update(phase="rejected", problem=problem, released_at=now())
+        self.save()
+        return "next"
+
+    def recover_create_intent(self):
+        queue = self.queue_record()
+        if queue is not None:
+            self.queue_record(bound=True)
+            if self.own_queue_nodes():
+                raise WorkerError("queue appeared with nodes while queue creation was unconfirmed")
+            return self.move("queue_created", queue_id=queue["queueUUID"])
+        if self.own_queue_nodes():
+            raise WorkerError("queue creation was unconfirmed but task nodes remain")
+        if not self.recovery_mature():
+            return "wait"
+        return self.reject_without_capacity("queue creation was unconfirmed and no task queue or nodes remain")
+
+    def recover_expand_intent(self):
+        queue = self.queue_record()
+        if queue is None:
+            if self.own_queue_nodes():
+                raise WorkerError("expansion was unconfirmed but task nodes remain without a queue")
+            if not self.recovery_mature():
+                return "wait"
+            if any(self.progress.get(key) for key in ("node_ids", "instance_ids", "volume_ids")):
+                raise WorkerError("expanded resources are unconfirmed and persisted ownership is incomplete")
+            return self.reject_without_capacity("expansion was unconfirmed and no task queue or nodes remain")
+        actual = self.own_queue_nodes()
+        if not actual:
+            if not self.recovery_mature():
+                return "wait"
+            raise WorkerError("expansion was unconfirmed but the task queue remained empty")
+        ownership = self.ownership()
+        return self.move("discover_disks", expand_operation=self.recovered_operation("expand"), **ownership)
+
+    def recover_shrink_intent(self):
+        if not self.recovery_mature():
+            return "wait"
+        if not self.absence(with_resources=True):
+            return "wait"
+        return self.move("nodes_released", shrink_operation=self.recovered_operation("shrink"))
+
+    def recover_delete_intent(self):
+        if not self.recovery_mature():
+            return "wait"
+        if self.queue_record() is not None or not self.absence(with_resources=bool(self.progress.get("shrink_operation"))):
+            return "wait"
+        return self.move("delete_intent", queue_delete_operation=self.recovered_operation("delete-queue"))
 
     def queue_record(self, bound=False):
         queues = self.cloud.pages("list_queues", {}, self.check)
@@ -180,19 +272,23 @@ class Task:
             evidence["master_order_id"] = result["masterOrderID"]
         return self.move(phase, **evidence)
 
-    def confirmed_job(self, receipt):
+    def operation_status(self, receipt):
         job_uuid = self.progress.get(receipt)
         if not job_uuid:
             trace = re.search(r"EOP request ID [0-9a-f-]{36}", self.progress.get("problem", ""))
             suffix = f"; {trace[0]}" if trace else ""
             raise WorkerError(f"jobUUID unconfirmed for {receipt}; provider operation ID required{suffix}")
         status = self.cloud.status(job_uuid, self.check)
+        if status == "success" or status in FAILED_CLOUD or status == "force_completed" or status in self.cloud.pending:
+            return status
+        raise WorkerError("provider returned an unrecognized job result")
+
+    def confirmed_job(self, receipt):
+        status = self.operation_status(receipt)
         if status == "success":
             return True
         if status in FAILED_CLOUD or status == "force_completed":
             raise WorkerError(f"provider operation result is {status}")
-        if status not in self.cloud.pending:
-            raise WorkerError("provider returned an unrecognized job result")
         return False
 
     def prepare(self):
@@ -312,7 +408,7 @@ class Task:
             return "wait"
         return self.request("shrink_intent", "shrink", "shrink_operation", {
             "queueUUID": self.progress["queue_id"], "nodeUUIDList": self.progress["node_ids"],
-        })
+        }, rejected="slurm_done")
 
     def absence(self, with_resources):
         node_ids = set(self.progress.get("node_ids", ()))
@@ -331,30 +427,75 @@ class Task:
                     return False
         return True
 
+    def retry_shrink(self):
+        if self.absence(with_resources=True):
+            return self.move("nodes_released")
+        self.verify_ownership()
+        if self.disks() != self.progress.get("volume_ids"):
+            raise WorkerError("ECS system disks no longer match persisted ownership")
+        if self.slurm.busy(self.queue, self.progress["node_names"], self.check):
+            return "wait"
+        return self.request("shrink_intent", "shrink", "shrink_operation", {
+            "queueUUID": self.progress["queue_id"], "nodeUUIDList": self.progress["node_ids"],
+        }, intent={"shrink_operation": None}, rejected="slurm_done")
+
     def shrunk(self):
-        if not self.confirmed_job("shrink_operation") or not self.absence(with_resources=True):
+        operation = self.progress.get("shrink_operation", "")
+        if operation.startswith("recovered-"):
+            status = "success"
+        else:
+            status = self.operation_status("shrink_operation")
+        if status in self.cloud.pending:
+            return "wait"
+        if status in FAILED_CLOUD or status == "force_completed":
+            return self.retry_shrink()
+        if not self.absence(with_resources=True):
             return "wait"
         return self.move("nodes_released")
 
     def delete_empty(self):
+        queue = self.queue_record()
+        with_resources = bool(self.progress.get("shrink_operation"))
+        if queue is None:
+            if not self.absence(with_resources=with_resources):
+                return "wait"
+            return self.move("delete_intent", queue_delete_operation=self.recovered_operation("delete-queue"))
         self.queue_record(bound=True)
-        if not self.absence(with_resources=bool(self.progress.get("shrink_operation"))):
+        if not self.absence(with_resources=with_resources):
             return "wait"
-        return self.request("delete_intent", "delete_queue", "queue_delete_operation", {"queueUUID": self.progress["queue_id"]})
+        return self.request("delete_intent", "delete_queue", "queue_delete_operation", {"queueUUID": self.progress["queue_id"]},
+                            rejected="nodes_released")
 
     def deleted(self):
-        if not self.confirmed_job("queue_delete_operation"):
+        operation = self.progress.get("queue_delete_operation", "")
+        if operation.startswith("recovered-"):
+            status = "success"
+        else:
+            status = self.operation_status("queue_delete_operation")
+        if status in self.cloud.pending:
             return "wait"
         with_resources = bool(self.progress.get("shrink_operation"))
+        if status in FAILED_CLOUD or status == "force_completed":
+            if self.queue_record() is not None:
+                self.queue_record(bound=True)
+                if not self.absence(with_resources):
+                    return "wait"
+                return self.request("delete_intent", "delete_queue", "queue_delete_operation", {
+                    "queueUUID": self.progress["queue_id"]
+                }, intent={"queue_delete_operation": None}, rejected="nodes_released")
         if self.queue_record() is not None or not self.absence(with_resources):
             return "wait"
         if not with_resources:
             return self.move("rejected", released_at=now(), problem="provider explicitly rejected capacity expansion")
-        state, code = self.progress["slurm_state"], self.progress["slurm_exit_code"]
+        state = self.progress.get("slurm_state")
+        code = self.progress.get("slurm_exit_code")
+        if not isinstance(state, str) or not isinstance(code, str):
+            raise WorkerError("released task is missing Slurm terminal evidence")
         problem = "" if (state, code) == ("COMPLETED", "0:0") else f"Slurm ended in {state} with exit code {code}"
         if not problem and self.progress.get("slurm_elapsed_seconds", 0) > self.spec["wall_seconds"]:
             problem = "Slurm elapsed time exceeded the quoted wall limit"
         return self.move("released", released_at=now(), problem=problem)
+
 
     def finish(self):
         self.cats.update("finish", self.run, self.progress)
