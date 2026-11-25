@@ -958,7 +958,9 @@ export default function ChatListView({
         syncFriendState();
       }
       if (msg?._type === 'ws_open') refreshConversations();
-      if (msg.data) {
+      // Stream fragments are transport-only and may arrive once per token; the
+      // persisted reply that follows updates the preview, time and ordering.
+      if (msg.data && !isTransientStreamEvent(msg.data)) {
         const topicId = msg.data.topic;
         const seq = msg.data.seq_id || msg.data.seq;
         const senderUid = numericUid(msg.data.from_uid ?? msg.data.from);
@@ -4843,6 +4845,11 @@ function friendToConversation(currentUid, friend) {
     isBot: friend.bot,
     seq: 0,
   };
+}
+
+function isTransientStreamEvent(data) {
+  return ['stream_delta', 'stream_cancel'].includes(data?.type)
+    || ['delta', 'cancel'].includes(data?.metadata?.stream_event);
 }
 
 function summarizeMessage(message) {
