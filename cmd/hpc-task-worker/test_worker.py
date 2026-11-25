@@ -191,7 +191,7 @@ class Fixture:
         if name == "squeue":
             if f"--name={JOB}" in argv:
                 return f"123|{JOB}|{QUEUE}|fixed\n" if self.slurm_job else ""
-            return "999\n" if self.busy else ""
+            return "999|RUNNING\n" if self.busy else ""
         if name == "sacct":
             count = self.run["task"]["nodes"]
             nodes = ",".join(self.node_names)
@@ -200,6 +200,32 @@ class Fixture:
             assert argv[1:] == ["show", "hostnames", ",".join(self.node_names)]
             return "\n".join(self.node_names) + "\n"
         raise AssertionError(name)
+
+
+class SlurmTest(unittest.TestCase):
+    def test_terminal_waits_for_missing_job_metadata(self):
+        placeholder = "123|allocation||fixed|PENDING|0:0|1|0|0|wn01\n"
+        completed = f"123|{JOB}|{QUEUE}|fixed|COMPLETED|0:0|1|1|64M|wn01\n"
+        completed_placeholder = "123|allocation||fixed|COMPLETED|0:0|1|1|0|wn01\n"
+        outputs = iter(["", placeholder, completed_placeholder, completed, "wn01\n", placeholder + completed,
+                        placeholder.replace("|fixed|", "|other|"), completed.replace(JOB, "other-job")])
+        slurm = Slurm({"account": "fixed"}, lambda argv: next(outputs))
+        task = dict(nodes=1, logical_cpus=1, memory_mib=64, wall_seconds=60)
+        args = (QUEUE, ["wn01"], JOB, "123", "2026-01-01T00:00:00Z", task, lambda func, *args: func(*args))
+        self.assertIsNone(slurm.terminal(*args))
+        self.assertIsNone(slurm.terminal(*args))
+        self.assertIsNone(slurm.terminal(*args))
+        self.assertEqual(slurm.terminal(*args)["slurm_state"], "COMPLETED")
+        for _ in range(3):
+            with self.assertRaisesRegex(WorkerError, "does not uniquely identify"):
+                slurm.terminal(*args)
+
+    def test_busy_ignores_terminal_history_but_checks_both_scopes(self):
+        for state, expected in [("COMPLETED", False), ("PENDING", True), ("COMPLETING", True), ("UNKNOWN", True)]:
+            with self.subTest(state=state):
+                outputs = iter(["123|COMPLETED\n", f"123|COMPLETED\n124|{state}\n"])
+                slurm = Slurm({"account": "fixed"}, lambda argv: next(outputs))
+                self.assertEqual(slurm.busy(QUEUE, ["wn01"], lambda func, *args: func(*args)), expected)
 
 
 class WorkerTest(unittest.TestCase):

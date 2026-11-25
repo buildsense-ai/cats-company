@@ -126,9 +126,15 @@ class Slurm:
         history = self.accounting(job_name, confirmed_at, call, job_id=job_id)
         if not history:
             return None
-        if len(history) != 1 or history[0][:4] != (job_id, job_name, queue, self.account):
+        if len(history) != 1:
             raise WorkerError("Slurm accounting does not uniquely identify the task job")
-        state, exit_code, elapsed, cpus, memory, hostlist = history[0][4:]
+        record = history[0]
+        state, exit_code, elapsed, cpus, memory, hostlist = record[4:]
+        # slurmdbd can record a step before it receives the parent job metadata.
+        if record[:4] == (job_id, "allocation", "", self.account) and memory == "0":
+            return None
+        if record[:4] != (job_id, job_name, queue, self.account):
+            raise WorkerError("Slurm accounting does not uniquely identify the task job")
         state = state.split(maxsplit=1)[0] if state else ""
         if state in ACTIVE:
             return None
@@ -165,7 +171,7 @@ class Slurm:
 
     def busy(self, queue, names, call):
         for scope in (f"--nodelist={','.join(names)}", f"--partition={queue}"):
-            out = call(self.run, ["squeue", "--all", "--noheader", "--states=all", scope, "--format=%i"])
-            if out.strip():
+            out = call(self.run, ["squeue", "--all", "--noheader", "--states=all", scope, "--format=%i|%T"])
+            if any(state not in TERMINAL for _, state in rows(out, 2)):
                 return True
         return False
