@@ -1429,7 +1429,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     if (typeof content === 'object' && content !== null && content.type) {
       return content;
     }
-    if (typeof content === 'string') {
+    // Only an object can carry `type`; skip the throwing parse for plain text.
+    if (typeof content === 'string' && /^[\t\n\r ]*\{/.test(content)) {
       try {
         const obj = JSON.parse(content);
         if (obj && obj.type) return obj;

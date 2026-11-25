@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const characters = text => segmenter ? Array.from(segmenter.segment(text), part => part.segment) : Array.from(text);
@@ -8,16 +8,60 @@ const TAIL_CHARS = 6;
 // own animation, so it renders at its final opacity instead of replaying.
 const ARRIVE_MS = 170;
 
+// Every text fragment of every message asks this. One shared media query and
+// one native listener serve all of them, instead of a query and a listener per
+// fragment (two per history row). The query is re-created if `matchMedia`
+// itself is replaced.
+const reducedMotion = {
+  matchMedia: undefined,
+  media: null,
+  listeners: new Set(),
+  notify: () => reducedMotion.listeners.forEach((listener) => listener()),
+};
+
+function reducedMotionMedia() {
+  const matchMedia = typeof window === 'undefined' ? undefined : window.matchMedia;
+  if (reducedMotion.matchMedia !== matchMedia) {
+    const listening = reducedMotion.listeners.size > 0;
+    if (listening) reducedMotion.media?.removeEventListener?.('change', reducedMotion.notify);
+    reducedMotion.matchMedia = matchMedia;
+    reducedMotion.media = matchMedia?.call(window, '(prefers-reduced-motion: reduce)') ?? null;
+    if (listening) reducedMotion.media?.addEventListener?.('change', reducedMotion.notify);
+  }
+  return reducedMotion.media;
+}
+
+function subscribeReducedMotion(listener) {
+  const media = reducedMotionMedia();
+  if (reducedMotion.listeners.size === 0) media?.addEventListener?.('change', reducedMotion.notify);
+  reducedMotion.listeners.add(listener);
+  return () => {
+    reducedMotion.listeners.delete(listener);
+    if (reducedMotion.listeners.size === 0) reducedMotion.media?.removeEventListener?.('change', reducedMotion.notify);
+  };
+}
+
+const prefersReducedMotion = () => Boolean(reducedMotionMedia()?.matches);
+
 function useReducedMotion() {
-  const [reduced, setReduced] = useState(() => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches));
-  useLayoutEffect(() => {
-    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
-    const update = () => setReduced(Boolean(media?.matches));
-    media?.addEventListener?.('change', update);
-    update();
-    return () => media?.removeEventListener?.('change', update);
-  }, []);
-  return reduced;
+  return useSyncExternalStore(subscribeReducedMotion, prefersReducedMotion, () => false);
+}
+
+// Splitting a reply into graphemes is only needed while it animates. History
+// replies never do, and holding one string per character for each of them was
+// most of the timeline's retained memory, so the split happens on first use.
+const SETTLED = -1;
+function lazyGraphemes(text) {
+  let parts = null;
+  return {
+    get parts() {
+      if (!parts) parts = characters(text);
+      return parts;
+    },
+    get length() {
+      return this.parts.length;
+    },
+  };
 }
 
 // Arrival tokens belong only to live WebSocket messages, never loaded history.
@@ -27,32 +71,36 @@ const NORMAL_RATE = 24;
 
 export function useReplyReveal(text, streaming, { arrival, immediate = false } = {}) {
   const reduced = useReducedMotion();
-  const parts = useMemo(() => characters(text), [text]);
+  const graphemes = useMemo(() => lazyGraphemes(text), [text]);
+  // `SETTLED` stands for "every character of `current.text` is shown"; it is
+  // resolved to a number only when an animation needs one.
   const [progress, setProgress] = useState(() => {
     const active = !reduced && !immediate && (streaming || (arrival && !seenArrivals.has(arrival)));
-    return { count: active ? 0 : parts.length, active: Boolean(active) };
+    return { count: active ? 0 : SETTLED, active: Boolean(active) };
   });
-  const model = useRef({ text, parts, ...progress, arrival });
+  const model = useRef({ text, graphemes, ...progress, arrival });
   useLayoutEffect(() => {
     const current = model.current;
     const fresh = arrival && arrival !== current.arrival && !seenArrivals.has(arrival);
     if (arrival) seenArrivals.add(arrival);
     if (reduced || immediate) {
-      current.count = parts.length;
+      current.count = SETTLED;
       current.active = false;
     } else if (fresh && !text.startsWith(current.text)) {
       current.count = 0;
       current.active = true;
     } else if (!text.startsWith(current.text)) {
       // A correction is authoritative, not another copy of the reply to replay.
-      current.count = parts.length;
+      current.count = SETTLED;
       current.active = false;
     } else if (streaming || fresh || current.active) {
-      current.active = Boolean(streaming || current.count < parts.length);
-    } else current.count = parts.length;
-    Object.assign(current, { text, parts, arrival });
+      // A settled reply that keeps growing reveals only the new part.
+      if (current.count === SETTLED) current.count = current.graphemes.length;
+      current.active = Boolean(streaming || current.count < graphemes.length);
+    } else current.count = SETTLED;
+    Object.assign(current, { text, graphemes, arrival });
     setProgress({ count: current.count, active: current.active });
-  }, [text, parts, streaming, arrival, immediate, reduced]);
+  }, [text, graphemes, streaming, arrival, immediate, reduced]);
   const animate = !reduced && !immediate && progress.active;
   useLayoutEffect(() => {
     if (!animate) return undefined;
@@ -61,7 +109,8 @@ export function useReplyReveal(text, streaming, { arrival, immediate = false } =
     let credit = 0;
     const step = now => {
       const current = model.current;
-      const backlog = current.parts.length - current.count;
+      if (current.count === SETTLED) current.count = current.graphemes.length;
+      const backlog = current.graphemes.length - current.count;
       const elapsed = Math.min(64, now - last);
       last = now;
       if (backlog > 0) {
@@ -72,8 +121,8 @@ export function useReplyReveal(text, streaming, { arrival, immediate = false } =
         const advance = Math.floor(credit);
         if (advance > 0) {
           credit -= advance;
-          current.count = Math.min(current.parts.length, current.count + advance);
-          current.active = Boolean(streaming || current.count < current.parts.length);
+          current.count = Math.min(current.graphemes.length, current.count + advance);
+          current.active = Boolean(streaming || current.count < current.graphemes.length);
           setProgress({ count: current.count, active: current.active });
         }
       } else credit = 0;
@@ -82,7 +131,14 @@ export function useReplyReveal(text, streaming, { arrival, immediate = false } =
     frame = requestAnimationFrame(step);
     return () => cancelAnimationFrame(frame);
   }, [animate, streaming]);
-  return { parts, count: animate ? Math.min(progress.count, parts.length) : parts.length, animate };
+  // Read lazily: callers that do not animate never touch `parts` or `count`.
+  return {
+    get parts() { return graphemes.parts; },
+    get count() {
+      return animate && progress.count !== SETTLED ? Math.min(progress.count, graphemes.length) : graphemes.length;
+    },
+    animate,
+  };
 }
 
 export function FadingText({ text, enabled, reveal, tail = false }) {
@@ -148,14 +204,17 @@ function progressiveHtml(html, visibleCount) {
 
 export function FadingMarkdown({ html, enabled, receivedVisible = false, visibleCount = null, className }) {
   const text = useMemo(() => htmlText(html), [html]);
-  const { count, animate } = useReplyReveal(text, enabled && !receivedVisible);
+  const reveal = useReplyReveal(text, enabled && !receivedVisible);
+  const { animate } = reveal;
+  const count = animate ? reveal.count : null;
   // `visibleCount` lets the caller own how much is drawn while the HTML itself
   // comes from the complete reply. The render branch then never changes as the
   // reply arrives; only the number of characters inside it grows.
   const decorated = useMemo(() => {
-    const total = characters(text).length;
-    if (visibleCount != null && enabled) return progressiveHtml(html, Math.max(0, Math.min(visibleCount, total)));
-    return receivedVisible && enabled ? progressiveHtml(html, total)
+    if (visibleCount != null && enabled) {
+      return progressiveHtml(html, Math.max(0, Math.min(visibleCount, characters(text).length)));
+    }
+    return receivedVisible && enabled ? progressiveHtml(html, characters(text).length)
       : animate ? progressiveHtml(html, count) : html;
   }, [animate, count, enabled, receivedVisible, text, html, visibleCount]);
   return <div className={className} dangerouslySetInnerHTML={{ __html: decorated }} />;

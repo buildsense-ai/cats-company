@@ -536,6 +536,13 @@ function mockTutorialAgentPeer(peerId = 2) {
   });
 }
 
+// Stream deltas that arrive within one frame are applied together.
+async function nextAnimationFrame() {
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  });
+}
+
 async function flushPromises(count = 8) {
   for (let index = 0; index < count; index += 1) {
     await Promise.resolve();
@@ -4621,6 +4628,30 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('[data-working-only="true"]').dataset.executionState).toBe('idle');
   });
 
+  it('applies deltas that arrive within one frame together, and flushes them before the final message', async () => {
+    api.getAgents.mockResolvedValueOnce({ agents: [{ uid: 2, is_bot: true, topic_id: 'p2p_1_2', display_name: '达芬奇' }] });
+    await mountTopic(root, 'p2p_1_2');
+    const delta = (content) => ({ data: { topic: 'p2p_1_2', from: 'usr2', type: 'stream_delta', metadata: { stream_id: 'burst' }, content } });
+    await act(async () => { wsHandler(delta('一')); });
+    // The first delta after a quiet frame is shown at once.
+    expect(container.querySelector('[data-message-content="一"]')).not.toBeNull();
+    await act(async () => {
+      wsHandler(delta('二'));
+      wsHandler(delta('三'));
+    });
+    expect(container.querySelector('[data-message-content="一"]')).not.toBeNull();
+    await nextAnimationFrame();
+    expect(container.querySelector('[data-message-content="一二三"]')).not.toBeNull();
+    // A buffered delta never lands after the persisted final.
+    await act(async () => {
+      wsHandler(delta('四'));
+      wsHandler({ data: { topic: 'p2p_1_2', from: 'usr2', seq: 760, type: 'text', role: 'assistant', content: '一二三四。', metadata: { stream_id: 'burst' } } });
+    });
+    await nextAnimationFrame();
+    expect(container.querySelector('[data-message-content="一二三四。"]')).not.toBeNull();
+    expect(container.querySelector('[data-message-content="一二三四"]')).toBeNull();
+  });
+
   it('reuses the pending liquid reply component through stream updates and the persisted final', async () => {
     document.documentElement.dataset.theme = 'liquid';
     api.getAgents.mockResolvedValueOnce({ agents: [{ uid: 2, is_bot: true, topic_id: 'p2p_1_2', display_name: '达芬奇' }] });
@@ -4633,6 +4664,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('[data-message-content="我可以"]')).toBe(pending);
     expect(container.querySelector('[data-reply-pending]')).toBeNull();
     await act(async () => { wsHandler({ data: { ...delta, content: '帮你填写。' } }); });
+    await nextAnimationFrame();
     expect(container.querySelector('[data-message-content="我可以帮你填写。"]')).toBe(pending);
     await act(async () => { wsHandler({ data: { ...delta, seq: 750, type: 'text', content: '我可以帮你填写。' } }); });
     expect(container.querySelector('[data-message-content="我可以帮你填写。"]')).toBe(pending);

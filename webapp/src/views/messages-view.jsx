@@ -1203,7 +1203,9 @@ export default function MessagesView({
   const conversationActivityTimers = useRef(new Map());
   const markConversationActivity = useCallback((uid, runId = '') => {
     const key = `${parseUid(uid)}${runId ? `:${runId}` : ''}`;
-    setConversationActivity(current => ({ ...current, [key]: true }));
+    // Called for every streamed delta: keep the state object when the key is
+    // already active so the call does not schedule a render of its own.
+    setConversationActivity(current => (current[key] === true ? current : { ...current, [key]: true }));
     clearTimeout(conversationActivityTimers.current.get(key));
     conversationActivityTimers.current.set(key, setTimeout(() => {
       setConversationActivity(current => ({ ...current, [key]: false }));
@@ -3574,6 +3576,64 @@ export default function MessagesView({
     });
   }, []);
 
+  // Agents may stream one delta per token and the server forwards each one, so
+  // applying every delta re-rendered and regrouped the whole timeline many
+  // times per frame. The first delta after a quiet frame is applied at once;
+  // further deltas wait for the next animation frame and are applied together.
+  // Any other message for the conversation flushes the buffer first, so the
+  // order of updates is unchanged. Deltas are dropped if their topic closed.
+  const streamDeltaBufferRef = useRef({ topic: '', deltas: [], frame: 0, timer: 0 });
+  const cancelStreamDeltaFrame = useCallback(() => {
+    const buffer = streamDeltaBufferRef.current;
+    if (buffer.frame) cancelAnimationFrame(buffer.frame);
+    if (buffer.timer) clearTimeout(buffer.timer);
+    buffer.frame = 0;
+    buffer.timer = 0;
+  }, []);
+  const flushStreamDeltas = useCallback(() => {
+    const buffer = streamDeltaBufferRef.current;
+    cancelStreamDeltaFrame();
+    if (buffer.deltas.length === 0) return false;
+    const deltas = buffer.deltas;
+    buffer.deltas = [];
+    if (buffer.topic !== activeTopicRef.current) return false;
+    setMessages((prev) => deltas.reduce((current, delta) => upsertStreamingMessage(current, delta), prev));
+    return true;
+  }, [cancelStreamDeltaFrame]);
+  const scheduleStreamDeltaFrame = useCallback(() => {
+    const buffer = streamDeltaBufferRef.current;
+    const onFrame = () => {
+      buffer.frame = 0;
+      buffer.timer = 0;
+      // Keep the window open while deltas keep arriving.
+      if (flushStreamDeltas()) scheduleStreamDeltaFrame();
+    };
+    // Hidden tabs do not run animation frames.
+    if (typeof requestAnimationFrame === 'function' && document.visibilityState !== 'hidden') {
+      buffer.frame = requestAnimationFrame(onFrame);
+    } else {
+      buffer.timer = setTimeout(onFrame, 100);
+    }
+  }, [flushStreamDeltas]);
+  const queueStreamDelta = useCallback((delta) => {
+    const buffer = streamDeltaBufferRef.current;
+    if (buffer.topic !== delta.topic) {
+      cancelStreamDeltaFrame();
+      buffer.deltas = [];
+      buffer.topic = delta.topic;
+    }
+    if (buffer.frame || buffer.timer) {
+      buffer.deltas.push(delta);
+      return;
+    }
+    setMessages((prev) => upsertStreamingMessage(prev, delta));
+    scheduleStreamDeltaFrame();
+  }, [cancelStreamDeltaFrame, scheduleStreamDeltaFrame]);
+  useEffect(() => () => {
+    cancelStreamDeltaFrame();
+    streamDeltaBufferRef.current.deltas = [];
+  }, [cancelStreamDeltaFrame]);
+
   // Listen for incoming WebSocket messages
   useEffect(() => {
     const unsub = onWSMessage((msg) => {
@@ -3603,6 +3663,7 @@ export default function MessagesView({
 
       // New message from server
       if (msg.data && msg.data.topic === topic) {
+        if (!isStreamDelta(msg.data)) flushStreamDeltas();
         if (isStreamCancel(msg.data)) {
           // A cancel control (including server fanout) is not a terminal runtime receipt.
           setConversationStops(current => [...current, {
@@ -3641,14 +3702,14 @@ export default function MessagesView({
               markConversationActivity(fromUid, assistantReplyTurnKey(msg.data));
               setConversationConnection('connected');
             }
-            setMessages((prev) => upsertStreamingMessage(prev, {
+            queueStreamDelta({
               streamId,
               topic,
               fromUid,
               content: delta,
               metadata: msg.data.metadata || null,
               ignoreFinalizedStream: liquidConversation,
-            }));
+            });
           }
           return;
         }
@@ -3790,7 +3851,7 @@ export default function MessagesView({
     });
 
     return () => unsub();
-  }, [clearLiveWorking, groupId, handleArtifactResultRequest, isGroup, liquidConversation, markConversationActivity, markLiveWorking, topic, user.uid]);
+  }, [clearLiveWorking, flushStreamDeltas, groupId, handleArtifactResultRequest, isGroup, liquidConversation, markConversationActivity, markLiveWorking, queueStreamDelta, topic, user.uid]);
 
   // Restore an older-history anchor, or follow updates while the reader
   // remains at the latest position.
@@ -8833,9 +8894,20 @@ function parseContentBlocks(value) {
   }
 }
 
+// Most message bodies are plain text or markdown. JSON.parse throws on them,
+// and building that exception for every message on every render (each
+// streamed chunk regroups the whole history) dominated the main thread. Only a
+// body whose first JSON token opens an object can parse into one, so callers
+// that only care about objects skip the parser otherwise; results are unchanged.
+const JSON_OBJECT_START = /^[\t\n\r ]*\{/;
+function mayBeJSONObject(text) {
+  return typeof text === 'string' && JSON_OBJECT_START.test(text);
+}
+
 function parseStructuredMessageContent(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   if (typeof value !== 'string') return null;
+  if (!mayBeJSONObject(value)) return null;
   try {
     const parsed = JSON.parse(value);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
@@ -8859,7 +8931,7 @@ function normalizeIncomingMessage(message) {
   if (!inferredType && message?.content && typeof message.content === 'object' && message.content.type) {
     inferredType = message.content.type;
   }
-  if (!inferredType && typeof message?.content === 'string') {
+  if (!inferredType && mayBeJSONObject(message?.content)) {
     try {
       const parsed = JSON.parse(message.content);
       if (parsed && typeof parsed === 'object' && parsed.type) {
@@ -8903,6 +8975,7 @@ function runtimePlanFromMessage(data) {
 function normalizeRuntimePlan(content) {
   let value = content;
   if (typeof value === 'string') {
+    if (!mayBeJSONObject(value)) return null;
     try {
       value = JSON.parse(value);
     } catch (err) {
@@ -9186,6 +9259,7 @@ function messageHasDeliveryArtifact(message) {
 
   let content = message?.content;
   if (typeof content === 'string') {
+    if (!mayBeJSONObject(content)) return false;
     try {
       content = JSON.parse(content);
     } catch (error) {
@@ -9210,6 +9284,7 @@ function deliveryArtifactBlocks(message) {
 
   let content = message?.content;
   if (typeof content === 'string') {
+    if (!mayBeJSONObject(content)) return [];
     try {
       content = JSON.parse(content);
     } catch (error) {
@@ -9279,7 +9354,7 @@ function assistantOutputText(message) {
   if (textBlocks.length > 0) return textBlocks.join('\n\n');
 
   const content = typeof message?.content === 'string' ? message.content.trim() : '';
-  if (content) {
+  if (mayBeJSONObject(content)) {
     try {
       const parsed = JSON.parse(content);
       if (isDeliveryArtifactType(parsed?.type)) return '';
