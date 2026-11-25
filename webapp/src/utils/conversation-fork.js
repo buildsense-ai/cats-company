@@ -43,14 +43,28 @@ export function forkAnchorMessageId(group) {
 // This is deliberately the adjacency rule and nothing cleverer: the displayed
 // groups merge segments and would hide the very boundary being checked.
 export function forkAnchorIsMidTurn(messages, anchorId, agentUid) {
-  const id = Number(anchorId) || 0;
-  if (!id || !Array.isArray(messages)) return false;
-  const index = messages.findIndex(message => Number(message?.seq_id || message?.id || 0) === id);
-  if (index < 0) return false;
-  const next = messages[index + 1];
-  if (!next) return false;
-  const agent = String(agentUid || '') || String(messages[index]?.from_uid ?? '');
-  return Boolean(agent) && String(next.from_uid ?? '') === agent;
+  return forkMidTurnChecker(messages)(anchorId, agentUid);
+}
+
+// The timeline asks this once per row. Indexing the list once keeps a render
+// linear in the number of messages instead of quadratic.
+export function forkMidTurnChecker(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const indexById = new Map();
+  list.forEach((message, index) => {
+    const id = Number(message?.seq_id || message?.id || 0);
+    if (id && !indexById.has(id)) indexById.set(id, index);
+  });
+  return (anchorId, agentUid) => {
+    const id = Number(anchorId) || 0;
+    if (!id) return false;
+    const index = indexById.get(id);
+    if (index === undefined) return false;
+    const next = list[index + 1];
+    if (!next) return false;
+    const agent = String(agentUid || '') || String(list[index]?.from_uid ?? '');
+    return Boolean(agent) && String(next.from_uid ?? '') === agent;
+  };
 }
 
 // The anchor errors are a verdict about the chosen point, not about whether the

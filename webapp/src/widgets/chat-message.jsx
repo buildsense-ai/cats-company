@@ -1859,7 +1859,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   );
 }
 
-const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
+// Exported so the timeline's render-budget test exercises the real comparator.
+export function chatMessagePropsEqual(prevProps, nextProps) {
   return prevProps.message === nextProps.message &&
     prevProps.workingMessages === nextProps.workingMessages &&
     prevProps.workingOnly === nextProps.workingOnly &&
@@ -1895,7 +1896,9 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.knownArtifacts === nextProps.knownArtifacts &&
     prevProps.imageGallery === nextProps.imageGallery &&
     prevProps.onOpenImage === nextProps.onOpenImage;
-});
+}
+
+const ChatMessage = memo(ChatMessageComponent, chatMessagePropsEqual);
 
 export default ChatMessage;
 
