@@ -1124,14 +1124,28 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 				permissions["device_owner_source"] = deviceOwnerSource
 			}
 			knownDevices, unavailableDevices := h.classifyUserDevices(deviceOwnerUID, humanToolTargetDevices(h.userDevices.list(deviceOwnerUID)))
-			deviceContext := h.userDevices.turnContextForOwnerDevicesWithExplicitTargets(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, routableDevices(knownDevices), unavailableDevices, explicitTargetsEnabled)
-			if len(deviceContext.Grants) > 0 {
-				identity["device_grants"] = deviceContext.Grants
+			var deviceContext DeviceTurnContext
+			if topicType == "group" && deviceOwnerUID == actorUID {
+				deviceContext = h.groupDeviceTurnContext(actorUID, topicID, client, routableDevices(knownDevices), unavailableDevices, explicitTargetsEnabled)
+			} else {
+				deviceContext = h.userDevices.turnContextForOwnerDevicesWithExplicitTargets(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, routableDevices(knownDevices), unavailableDevices, explicitTargetsEnabled)
 			}
-			if len(deviceContext.ExplicitGrants) > 0 {
+			// Live messages carry a complete authorization snapshot. [] clears
+			// stale client grants; absent fields remain reserved for no update
+			// (for example non-executable history replay).
+			grants := deviceContext.Grants
+			if grants == nil {
+				grants = []ScopedDeviceGrant{}
+			}
+			identity["device_grants"] = grants
+			if explicitTargetsEnabled {
+				explicitGrants := deviceContext.ExplicitGrants
+				if explicitGrants == nil {
+					explicitGrants = []ScopedDeviceGrant{}
+				}
 				identity["device_target_authorizations"] = map[string]interface{}{
 					"schema": "catsco.device-targets.v1",
-					"grants": deviceContext.ExplicitGrants,
+					"grants": explicitGrants,
 				}
 			}
 			if deviceContext.Selection != nil {

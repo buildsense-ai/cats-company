@@ -30,8 +30,8 @@ func TestDeviceTargetAuthorizationWireCompatibility(t *testing.T) {
 			session := buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7)
 			// No default: an old consumer must never receive a first-device grant.
 			identity := hub.buildCatscoIdentityMetadata(7, 42, "p2p_7_42", 1, "在 b 上读取")
-			if _, ok := identity["device_grants"]; ok {
-				t.Fatal("no default issued executable legacy grants")
+			if grants, ok := identity["device_grants"].([]ScopedDeviceGrant); !ok || len(grants) != 0 {
+				t.Fatal("no default must send an empty, non-executable list")
 			}
 			_, hasExplicit := identity["device_target_authorizations"]
 			if hasExplicit != (version == "1") {
@@ -348,7 +348,7 @@ func TestExplicitTargetAfterPickerSnapshotWithoutDefault(t *testing.T) {
 	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	hub, handler := deviceSelectionFixture(t)
 	snapshot := selectionSnapshot(t, handler, 7, "p2p_7_42", "42")
-	if snapshot["status"] != "needs_selection" {
+	if snapshot["status"] != "unspecified" {
 		t.Fatal("fixture unexpectedly has a default")
 	}
 	devices, unavailable := hub.userDeviceRouteCandidates(7)

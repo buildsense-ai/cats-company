@@ -261,7 +261,15 @@ jobs:
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET synchronous_commit = off"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET full_page_writes = off"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET autovacuum = off"
-          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "SELECT pg_reload_conf()"
+          # Parallel fixtures run full schema initialization in separate schemas.
+          # The shared lock table is sized when PostgreSQL starts.
+          docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET max_locks_per_transaction = 256"
+          docker restart "$PG_CONTAINER_ID"
+          for attempt in {1..30}; do
+            docker exec "$PG_CONTAINER_ID" pg_isready -h 127.0.0.1 -U catsco -d cats_test -t 1 && break
+            sleep 1
+          done
+          test "$(docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc 'SHOW max_locks_per_transaction')" = 256
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW fsync"
           docker exec "$PG_CONTAINER_ID" psql -U catsco -d cats_test -tAc "SHOW synchronous_commit"
 
@@ -307,6 +315,50 @@ jobs:
   # (message search + conversation task durability, 76s) and store (the rest).
   # The job id stays the same, so the release gate keeps using
   # needs.backend_db.result (aggregated across legs).
+  group_device_sharing:
+    name: Group sharing PostgreSQL 17 and cross-process RPC
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17.10
+        env:
+          POSTGRES_DB: cats_sharing_test
+          POSTGRES_USER: catsco
+          POSTGRES_PASSWORD: catsco_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U catsco -d cats_sharing_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Test production-major sharing migration and SQL contracts
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_sharing_test?sslmode=disable
+        run: |
+          test -n "$CATS_PG_TEST_DSN"
+          go test -race ./server/db/postgres -run '^Test(GroupDeviceSharing(MigrationMatchesRuntimeSchema|Postgres)|PostgresMigrationVersionsUnique)$' -count=1 -v
+      - name: Test shared RPC across independent processes with real Redis
+        env:
+          CATS_GROUP_SHARE_TEST_REDIS_URL: redis://127.0.0.1:6379
+        run: go test -race ./server -run '^Test(GroupSharedRPCAcrossProcesses|ThinToolRPCRelay)' -count=1 -timeout=180s -v
+
   backend_db:
     name: Backend DB contracts (${{ matrix.part }})
     runs-on: ubuntu-latest
@@ -816,6 +868,7 @@ jobs:
     name: test-and-validate-docker
     if: ${{ always() }}
     needs:
+      - group_device_sharing
       - backend
       - backend_db
       - backend_publication
@@ -833,6 +886,7 @@ jobs:
     steps:
       - name: Check parallel job results
         env:
+          GROUP_SHARING: ${{ needs.group_device_sharing.result }}
           BACKEND: ${{ needs.backend.result }}
           REPAIR_SOURCE_PAIRED: ${{ needs.publication_repair_source_paired.result }}
           REPAIR_MATERIAL_PAIRED: ${{ needs.publication_repair_material_paired.result }}
@@ -848,7 +902,8 @@ jobs:
             "$BACKEND" "$NODE_SDK" "$BOT_EXAMPLE" "$SHIMO_WORKER" "$WEBAPP" "$DEPENDENCY_REVIEW" "$VALIDATION" "$DOCKER_IMAGES"
           echo "publication-repair-source-paired=$REPAIR_SOURCE_PAIRED"
           echo "publication-repair-material-paired=$REPAIR_MATERIAL_PAIRED"
-          if [[ "$BACKEND" != success || "$REPAIR_SOURCE_PAIRED" != success || "$REPAIR_MATERIAL_PAIRED" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$SHIMO_WORKER" != success || "$WEBAPP" != success || \
+          echo "group-device-sharing=$GROUP_SHARING"
+          if [[ "$GROUP_SHARING" != success || "$BACKEND" != success || "$REPAIR_SOURCE_PAIRED" != success || "$REPAIR_MATERIAL_PAIRED" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$SHIMO_WORKER" != success || "$WEBAPP" != success || \
                 "$VALIDATION" != success || "$DOCKER_IMAGES" != success || \
                 ("$DEPENDENCY_REVIEW" != success && "$DEPENDENCY_REVIEW" != skipped) ]]; then
             echo 'One or more CI suites did not succeed.' >&2

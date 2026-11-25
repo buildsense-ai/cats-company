@@ -1353,6 +1353,11 @@ func main() {
 	mux.HandleFunc("/api/relay/key/rotate", ownerAuthWithDB(relayKeyHandler.HandleRotate))
 	mux.HandleFunc("/api/relay/key/reveal", ownerAuthWithDB(relayKeyHandler.HandleReveal))
 	mux.HandleFunc("/api/relay/usage", ownerAuthWithDB(relayKeyHandler.HandleUsage))
+	groupDeviceShares := server.NewGroupDeviceShareHandler(hub)
+	mux.HandleFunc("/api/groups/device-shares", ownerAuthWithDB(groupDeviceShares.HandleShares))
+	mux.HandleFunc("/api/groups/device-share-requests", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "device sharing requests are no longer available", http.StatusGone)
+	})
 	mux.HandleFunc("/api/devices", authWithDB(deviceHandler.HandleListDevices))
 	mux.HandleFunc("/api/conversations/device-selection", ownerAuthWithDB(deviceHandler.HandleConversationSelection))
 	mux.HandleFunc("/api/devices/", jwtAuthWithDB(deviceHandler.HandleDeviceByID))

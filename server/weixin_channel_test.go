@@ -1160,6 +1160,10 @@ func TestWeixinInboundCanonicalDeliveryRecordsReplyRoute(t *testing.T) {
 	dispatcher := NewChannelOutboundDispatcher(db, nil, "").WithWeixin(api, "wx_app")
 	hub.SetChannelOutboundDispatcher(dispatcher)
 	topicID := p2pTopicID(8, 43)
+	session := buildCatsCoSessionKey(topicID, "p2p", "usr43", 8)
+	if _, err := hub.userDevices.confirmDeviceSelection(8, session, device.DeviceID, "user_confirmation", "", 8); err != nil {
+		t.Fatalf("confirm canonical user's device: %v", err)
+	}
 
 	if err := deliverInboundChannelTextToAgent(db, hub, 100, 43, "移动端继续", "wx-msg-1", "weixin", map[string]interface{}{
 		"source_channel":            "weixin",

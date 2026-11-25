@@ -12,6 +12,25 @@ import (
 
 var errDeviceSelectionConflict = errors.New("device selection changed; refresh and confirm again")
 
+const (
+	deviceSelectionUnspecifiedSource = "user_unspecified"
+	deviceSelectionAutomaticSource   = "single_active_device"
+)
+
+// Old automatic picks of the speaker's own device are no longer defaults.
+// Keep their revision for CAS and explicit-device grants. Delegated identities
+// still use the existing automatic selection path.
+func (p deviceSelectionPreference) withoutAutomaticOwnDevice(actor int64) deviceSelectionPreference {
+	if p.Source == deviceSelectionAutomaticSource && (p.OwnerUID == 0 || p.OwnerUID == actor) {
+		p.DeviceID, p.OwnerUID = "", 0
+	}
+	return p
+}
+
+func (p deviceSelectionPreference) unspecified() bool {
+	return p.DeviceID == "" && p.Source == deviceSelectionUnspecifiedSource
+}
+
 func (p deviceSelectionPreference) active(now int64) bool {
 	return p.DeviceID != "" && (p.Durable || p.ExpiresAt > now)
 }
@@ -22,7 +41,7 @@ func (r *userDeviceRegistry) withSelectionStore(db store.Store) *userDeviceRegis
 }
 
 func durablePreference(record *store.ConversationDeviceSelection) deviceSelectionPreference {
-	return deviceSelectionPreference{Durable: true, DeviceID: record.DeviceID, Revision: record.Revision,
+	return deviceSelectionPreference{Durable: true, OwnerUID: record.OwnerUID, DeviceID: record.DeviceID, Revision: record.Revision,
 		Source: record.Source, UpdatedAt: record.UpdatedAt}
 }
 
@@ -37,12 +56,13 @@ func (r *userDeviceRegistry) selectionRecord(actor int64, session string) (devic
 			return deviceSelectionPreference{}, err
 		} // Never fall back on DB failure.
 		if record != nil {
-			return durablePreference(record), nil
+			return durablePreference(record).withoutAutomaticOwnDevice(actor), nil
 		}
 		legacy, err := r.runtimeSelectionRecord(actor, session)
 		if err != nil {
 			return deviceSelectionPreference{}, err
 		}
+		legacy = legacy.withoutAutomaticOwnDevice(actor)
 		if legacy.DeviceID == "" && legacy.Revision == "" {
 			return deviceSelectionPreference{}, nil
 		}
@@ -54,6 +74,9 @@ func (r *userDeviceRegistry) selectionRecord(actor int64, session string) (devic
 		}
 		next := store.ConversationDeviceSelection{DeviceID: legacy.DeviceID, Revision: revision,
 			Source: "legacy_selection", UpdatedAt: unixMillis(r.now())}
+		if legacy.Source == deviceSelectionAutomaticSource {
+			next.Source, next.OwnerUID = legacy.Source, legacy.OwnerUID
+		}
 		won, err := r.selectionStore.CompareConversationDeviceSelection(ctx, actor, session, "", next)
 		if err != nil {
 			return deviceSelectionPreference{}, err
@@ -68,9 +91,10 @@ func (r *userDeviceRegistry) selectionRecord(actor int64, session string) (devic
 		if record == nil {
 			return deviceSelectionPreference{}, errDeviceSelectionConflict
 		}
-		return durablePreference(record), nil
+		return durablePreference(record).withoutAutomaticOwnDevice(actor), nil
 	}
-	return r.runtimeSelectionRecord(actor, session)
+	current, err := r.runtimeSelectionRecord(actor, session)
+	return current.withoutAutomaticOwnDevice(actor), err
 }
 
 func (r *userDeviceRegistry) runtimeSelectionRecord(actor int64, session string) (deviceSelectionPreference, error) {
@@ -87,7 +111,7 @@ func (r *userDeviceRegistry) compareSelection(actor int64, session, expected str
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		won, err := r.selectionStore.CompareConversationDeviceSelection(ctx, actor, session, expected,
-			store.ConversationDeviceSelection{DeviceID: next.DeviceID, Revision: next.Revision, Source: next.Source, UpdatedAt: next.UpdatedAt})
+			store.ConversationDeviceSelection{OwnerUID: next.OwnerUID, DeviceID: next.DeviceID, Revision: next.Revision, Source: next.Source, UpdatedAt: next.UpdatedAt})
 		if err != nil {
 			return err
 		}
@@ -147,7 +171,7 @@ func (r *userDeviceRegistry) ensureDeviceSelectionRevision(actor int64, session 
 	return next, nil
 }
 
-func (r *userDeviceRegistry) confirmDeviceSelection(actor int64, session, device, source, expected string) (deviceSelectionPreference, error) {
+func (r *userDeviceRegistry) confirmDeviceSelection(actor int64, session, device, source, expected string, ownerUID ...int64) (deviceSelectionPreference, error) {
 	revision, err := randomHex(24)
 	if err != nil {
 		return deviceSelectionPreference{}, err
@@ -155,6 +179,9 @@ func (r *userDeviceRegistry) confirmDeviceSelection(actor int64, session, device
 	now := r.now()
 	next := deviceSelectionPreference{Durable: r.selectionStore != nil, DeviceID: device, Revision: revision, Source: source,
 		UpdatedAt: unixMillis(now), ExpiresAt: unixMillis(now.Add(r.preferenceTTL))}
+	if len(ownerUID) > 0 {
+		next.OwnerUID = ownerUID[0]
+	}
 	if err := r.compareSelection(actor, session, expected, next); err != nil {
 		return deviceSelectionPreference{}, err
 	}
@@ -173,6 +200,9 @@ func (r *userDeviceRegistry) refreshDeviceSelection(actor int64, session string,
 }
 
 func (r *userDeviceRegistry) grantSelectionCurrent(grant ScopedDeviceGrant) bool {
+	if grant.IdentitySource == groupDeviceShareSource && (r.groupShareCurrent == nil || !r.groupShareCurrent(grant)) {
+		return false
+	}
 	actor := parseFormattedUID(grant.ActorUserID)
 	current, err := r.selectionRecord(actor, grant.SessionKey)
 	if err != nil {
@@ -188,12 +218,12 @@ func (r *userDeviceRegistry) grantSelectionCurrent(grant ScopedDeviceGrant) bool
 		// A default's lease controls aliases, not explicit task targets. The
 		// grant's own short expiry is checked by lookupGrant; a default switch
 		// still invalidates every grant through the revision comparison above.
-		return xiaobaRuntimeV2EnabledForBot(parseFormattedUID(grant.AgentID)) && grant.OwnerUserID == grant.ActorUserID
+		return xiaobaRuntimeV2EnabledForBot(parseFormattedUID(grant.AgentID)) && (grant.OwnerUserID == grant.ActorUserID || (grant.IdentitySource == groupDeviceShareSource && r.groupShareCurrent != nil && r.groupShareCurrent(grant)))
 	}
 	if current.DeviceID == "" {
 		return grant.SelectionRevision == ""
 	}
-	return current.DeviceID == grant.DeviceID && current.active(unixMillis(r.now()))
+	return current.DeviceID == grant.DeviceID && (grant.IdentitySource != groupDeviceShareSource || selectionOwner(current, actor) == parseFormattedUID(grant.OwnerUserID)) && current.active(unixMillis(r.now()))
 }
 
 func (s *sharedMemoryRuntimeState) deviceSelectionRecord(actor int64, session string) (deviceSelectionPreference, error) {
@@ -266,4 +296,11 @@ func (s *RedisRuntimeState) compareDeviceSelection(actor int64, session, expecte
 		}
 	}
 	return errDeviceSelectionConflict
+}
+
+func selectionOwner(preference deviceSelectionPreference, actor int64) int64 {
+	if preference.OwnerUID > 0 {
+		return preference.OwnerUID
+	}
+	return actor
 }

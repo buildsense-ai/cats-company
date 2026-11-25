@@ -55,7 +55,7 @@ func (h *Hub) renewDeviceGrant(client *Client, msg *MsgDeviceGrantRenewal) (Scop
 	}
 	old, ok := h.userDevices.lookupGrant(msg.GrantID)
 	if !ok || h.deviceGrantWasRevoked(old) || old.Source != "catscompany" || old.IdentityTrust != "server_canonical" || old.AgentID != formatUID(client.uid) ||
-		old.AgentBodyID == "" || old.AgentBodyID != client.bodyID || old.OwnerUserID != old.ActorUserID ||
+		old.AgentBodyID == "" || old.AgentBodyID != client.bodyID || (old.OwnerUserID != old.ActorUserID && old.IdentitySource != groupDeviceShareSource) ||
 		(old.TargetScope == "explicit_device" && !xiaobaRuntimeV2EnabledForClient(client)) {
 		return deny()
 	}
@@ -72,16 +72,25 @@ func (h *Hub) renewDeviceGrant(client *Client, msg *MsgDeviceGrantRenewal) (Scop
 	if err := h.validateSkillMutationConversationAccess(old.TopicID, actor, client.uid); err != nil {
 		return deny()
 	}
-	if err := h.authorizeOrdinaryThinToolRPCTarget(actor, old.DeviceID); err != nil {
+	owner := parseFormattedUID(old.OwnerUserID)
+	if owner <= 0 {
 		return deny()
 	}
-	device, ok := h.userDevices.activeDevice(actor, old.DeviceID)
+	if err := h.authorizeOrdinaryThinToolRPCTarget(owner, old.DeviceID); err != nil {
+		return deny()
+	}
+	device, ok := h.userDevices.activeDevice(owner, old.DeviceID)
 	if !ok || device.BodyID != old.DeviceBodyID || device.InstallationID != old.DeviceInstallationID {
 		return deny()
 	}
-	route, _ := h.findDeviceRPCTarget(actor, device)
+	route, _ := h.findDeviceRPCTarget(owner, device)
 	if !h.routeConnected(route) {
 		return deny()
+	}
+	if old.IdentitySource == groupDeviceShareSource {
+		if !client.hasRuntimeCapability(groupDeviceShareCapability) || !h.groupDeviceGrantCurrent(old) {
+			return deny()
+		}
 	}
 	for _, operation := range old.Operations {
 		found := false
@@ -134,6 +143,9 @@ func (h *Hub) renewDeviceGrant(client *Client, msg *MsgDeviceGrantRenewal) (Scop
 // device logout/revocation watermark. A later re-login of the same computer
 // must not resurrect an earlier task's capabilities.
 func (h *Hub) deviceGrantWasRevoked(grant ScopedDeviceGrant) bool {
+	if grant.IdentitySource == groupDeviceShareSource && !h.groupDeviceGrantCurrent(grant) {
+		return true
+	}
 	claims := &DeviceConnectorClaims{UID: parseFormattedUID(grant.OwnerUserID), DeviceID: grant.DeviceID}
 	claims.IssuedAt = &jwt.NumericDate{Time: time.UnixMilli(grant.CreatedAt)}
 	return h.isDeviceConnectorRevoked(claims)

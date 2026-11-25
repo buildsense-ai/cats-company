@@ -61,6 +61,9 @@ const (
 )
 
 type UserDevice struct {
+	OwnerDisplayName  string                 `json:"ownerDisplayName,omitempty"`
+	ShareID           string                 `json:"shareId,omitempty"`
+	ShareRevision     int64                  `json:"shareRevision,omitempty"`
 	Kind              string                 `json:"kind"`
 	Source            string                 `json:"source"`
 	OwnerUID          int64                  `json:"-"`
@@ -91,6 +94,8 @@ type DeviceModelStatus struct {
 }
 
 type ScopedDeviceGrant struct {
+	ShareID       string `json:"shareId,omitempty"`
+	ShareRevision int64  `json:"shareRevision,omitempty"`
 	// Explicit targets use their own grant; selection remains only the default.
 	TargetScope          string                 `json:"targetScope,omitempty"`
 	SelectionRevision    string                 `json:"selectionRevision,omitempty"`
@@ -151,6 +156,8 @@ type DeviceSelection struct {
 }
 
 type DeviceSelectionDevice struct {
+	OwnerUserID       string                 `json:"ownerUserId,omitempty"`
+	ShareID           string                 `json:"shareId,omitempty"`
 	DeviceID          string                 `json:"deviceId"`
 	DisplayName       string                 `json:"displayName,omitempty"`
 	BodyID            string                 `json:"bodyId,omitempty"`
@@ -165,6 +172,9 @@ type DeviceSelectionDevice struct {
 }
 
 type DeviceSelectionCandidate struct {
+	OwnerDisplayName  string                 `json:"ownerDisplayName,omitempty"`
+	OwnerUserID       string                 `json:"ownerUserId,omitempty"`
+	ShareID           string                 `json:"shareId,omitempty"`
 	OS                string                 `json:"os,omitempty"`
 	DeviceID          string                 `json:"deviceId"`
 	DisplayName       string                 `json:"displayName,omitempty"`
@@ -184,6 +194,7 @@ type DeviceTurnContext struct {
 }
 
 type deviceSelectionPreference struct {
+	OwnerUID  int64
 	Durable   bool
 	Revision  string
 	DeviceID  string
@@ -206,17 +217,18 @@ type RegisterUserDeviceRequest struct {
 }
 
 type userDeviceRegistry struct {
-	selectionStore store.ConversationDeviceSelectionStore
-	authorization  deviceGrantStore
-	mu             sync.RWMutex
-	ttl            time.Duration
-	grantTT        time.Duration
-	preferenceTTL  time.Duration
-	now            func() time.Time
-	shared         sharedRuntimeState
-	devices        map[int64]map[string]UserDevice
-	preferences    map[int64]map[string]deviceSelectionPreference
-	grants         map[string]ScopedDeviceGrant
+	groupShareCurrent func(ScopedDeviceGrant) bool
+	selectionStore    store.ConversationDeviceSelectionStore
+	authorization     deviceGrantStore
+	mu                sync.RWMutex
+	ttl               time.Duration
+	grantTT           time.Duration
+	preferenceTTL     time.Duration
+	now               func() time.Time
+	shared            sharedRuntimeState
+	devices           map[int64]map[string]UserDevice
+	preferences       map[int64]map[string]deviceSelectionPreference
+	grants            map[string]ScopedDeviceGrant
 }
 
 func newUserDeviceRegistry(ttl time.Duration) *userDeviceRegistry {
@@ -544,7 +556,7 @@ func (r *userDeviceRegistry) turnContextForOwnerDevicesWithExplicitTargets(actor
 	}
 	devices = devicesForOwner(ownerUID, devices)
 	unavailableCandidates = devicesForOwner(ownerUID, unavailableCandidates)
-	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, unavailableCandidates)
+	selection, selected := r.selectDeviceForOwnerTurn(actorUID, topicID, topicType, agentUID, ownerUID, devices, unavailableCandidates)
 	if ownerUID == actorUID && explicitTargetsEnabled && selection != nil && selection.Revision == "" &&
 		selection.SelectionSource != "selection_store_unavailable" && selection.SelectionSource != "selection_changed" && len(devices) > 0 {
 		if _, err := r.ensureDeviceSelectionRevision(actorUID, selection.SessionKey); err != nil {
@@ -553,7 +565,7 @@ func (r *userDeviceRegistry) turnContextForOwnerDevicesWithExplicitTargets(actor
 		} else {
 			// Re-read the winner so a concurrent user confirmation is reflected in
 			// both the default snapshot and the explicit grants' revision.
-			selection, selected = r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, unavailableCandidates)
+			selection, selected = r.selectDeviceForOwnerTurn(actorUID, topicID, topicType, agentUID, ownerUID, devices, unavailableCandidates)
 		}
 	}
 	if selection != nil {
@@ -621,7 +633,7 @@ func (r *userDeviceRegistry) issueDeviceGrants(actorUID int64, ownerUID int64, t
 		if device.OwnerUID != ownerUID {
 			continue
 		}
-		if !explicit && preference.DeviceID != "" && (preference.DeviceID != device.DeviceID || !preference.active(createdAt)) {
+		if !explicit && preference.DeviceID != "" && (preference.DeviceID != device.DeviceID || (device.ShareID != "" && selectionOwner(preference, actorUID) != ownerUID) || !preference.active(createdAt)) {
 			continue
 		}
 		ops := deviceGrantOperations(device.Capabilities)
@@ -659,6 +671,15 @@ func (r *userDeviceRegistry) issueDeviceGrants(actorUID int64, ownerUID int64, t
 			CreatedAt:            createdAt,
 			ExpiresAt:            permanentDeviceGrantExpiresAt,
 		}
+		if device.ShareID != "" {
+			grant.IdentitySource = groupDeviceShareSource
+			grant.ShareID, grant.ShareRevision = device.ShareID, device.ShareRevision
+			// The live SQL permission controls validity, just as the current
+			// device binding and selection do. Group sharing has no time lease.
+			if r.groupShareCurrent == nil || !r.groupShareCurrent(grant) {
+				continue
+			}
+		}
 		grant.GrantID = persistentDeviceGrantID(grant)
 		grants = append(grants, grant)
 	}
@@ -668,6 +689,8 @@ func (r *userDeviceRegistry) issueDeviceGrants(actorUID int64, ownerUID int64, t
 
 func persistentDeviceGrantID(grant ScopedDeviceGrant) string {
 	scope, _ := json.Marshal(struct {
+		ShareID              string
+		ShareRevision        int64
 		OwnerUserID          string
 		ActorUserID          string
 		SessionKey           string
@@ -682,6 +705,7 @@ func persistentDeviceGrantID(grant ScopedDeviceGrant) string {
 		TargetScope          string
 		SelectionRevision    string
 	}{
+		ShareID: grant.ShareID, ShareRevision: grant.ShareRevision,
 		OwnerUserID: grant.OwnerUserID, ActorUserID: grant.ActorUserID, SessionKey: grant.SessionKey,
 		TopicID: grant.TopicID, TopicType: grant.TopicType, AgentID: grant.AgentID, AgentBodyID: grant.AgentBodyID,
 		DeviceID: grant.DeviceID, DeviceBodyID: grant.DeviceBodyID, DeviceInstallationID: grant.DeviceInstallationID,
@@ -821,11 +845,16 @@ func (r *userDeviceRegistry) cleanupExpiredGrantsLocked(now int64) {
 	}
 }
 
-func (r *userDeviceRegistry) selectDeviceForTurn(
+func (r *userDeviceRegistry) selectDeviceForTurn(actorUID int64, topicID, topicType string, agentUID int64, devices []UserDevice, unavailableSets ...[]UserDevice) (*DeviceSelection, *UserDevice) {
+	return r.selectDeviceForOwnerTurn(actorUID, topicID, topicType, agentUID, 0, devices, unavailableSets...)
+}
+
+func (r *userDeviceRegistry) selectDeviceForOwnerTurn(
 	actorUID int64,
 	topicID string,
 	topicType string,
 	agentUID int64,
+	delegatedOwner int64,
 	devices []UserDevice,
 	unavailableSets ...[]UserDevice,
 ) (*DeviceSelection, *UserDevice) {
@@ -861,26 +890,20 @@ func (r *userDeviceRegistry) selectDeviceForTurn(
 		base.Status, base.SelectionSource = DeviceSelectionUnavailable, "selection_store_unavailable"
 		return &base, nil
 	}
+	targetOwner := selectionOwner(preference, actorUID)
+	if preference.OwnerUID == 0 && delegatedOwner > 0 {
+		targetOwner = delegatedOwner
+	}
+	base.OwnerUserID = formatUID(targetOwner)
 	base.Revision = preference.Revision
-	if len(devices) == 0 {
-		base.Status = DeviceSelectionUnavailable
-		base.SelectionSource = "no_routable_devices"
-		if preferred, ok := r.deviceSelectionPreference(actorUID, sessionKey); ok {
-			base.SelectedDevice = &DeviceSelectionDevice{DeviceID: preferred, UnavailableReason: "route_unavailable"}
-			if device, found := findDeviceByID(known, preferred); found {
-				base.SelectedDevice = deviceSelectionDevice(device)
-			}
-		}
+	if preference.unspecified() {
+		base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, deviceSelectionUnspecifiedSource
 		return &base, nil
 	}
-
-	preferredDeviceID, hasPreference := preference.DeviceID, preference.active(createdAt)
-	// Conversation selection is a default, independent of task text. Naming
-	// another device (including in a quotation or negation) must never rewrite
-	// or invalidate it. Explicit tool targets use separate per-device grants.
-
-	if hasPreference {
-		if selected, ok := findDeviceByID(devices, preferredDeviceID); ok {
+	// An explicit conversation default is independent of task text.
+	// Explicit tool targets use separate per-device grants.
+	if preference.active(createdAt) {
+		if selected, ok := findDeviceByOwner(devices, preference.DeviceID, targetOwner); ok {
 			base.Status = DeviceSelectionSelected
 			base.SelectionSource = "conversation_preference"
 			base.SelectedDevice = deviceSelectionDevice(selected)
@@ -888,22 +911,24 @@ func (r *userDeviceRegistry) selectDeviceForTurn(
 			return &base, &selected
 		}
 		base.Status, base.SelectionSource = DeviceSelectionUnavailable, "selected_device_unavailable"
-		base.SelectedDevice = &DeviceSelectionDevice{DeviceID: preferredDeviceID, UnavailableReason: "route_unavailable"}
-		if device, found := findDeviceByID(known, preferredDeviceID); found {
+		base.SelectedDevice = &DeviceSelectionDevice{DeviceID: preference.DeviceID, UnavailableReason: "route_unavailable"}
+		if device, found := findDeviceByOwner(known, preference.DeviceID, targetOwner); found {
 			base.SelectedDevice = deviceSelectionDevice(device)
 		}
 		return &base, nil
 	}
 
-	if len(known) > 1 {
-		base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, "multiple_devices"
+	base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, "no_default_device"
+	// Trusted identity delegation is separate from the speaker's own device
+	// default. Keep its existing single-device fallback.
+	if delegatedOwner <= 0 || delegatedOwner == actorUID || len(known) != 1 || len(devices) != 1 || devices[0].OwnerUID != delegatedOwner {
 		return &base, nil
 	}
 	selected := devices[0]
 	base.Status = DeviceSelectionSelected
-	base.SelectionSource = "single_active_device"
+	base.SelectionSource = deviceSelectionAutomaticSource
 	base.SelectedDevice = deviceSelectionDevice(selected)
-	r.rememberDeviceSelection(actorUID, sessionKey, selected.DeviceID, base.SelectionSource)
+	r.rememberDeviceSelection(actorUID, sessionKey, selected.DeviceID, base.SelectionSource, selected.OwnerUID)
 	current, err := r.selectionRecord(actorUID, sessionKey)
 	if err != nil || current.DeviceID != selected.DeviceID || !current.active(createdAt) {
 		base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, "selection_changed"
@@ -914,23 +939,15 @@ func (r *userDeviceRegistry) selectDeviceForTurn(
 	return &base, &selected
 }
 
-func (r *userDeviceRegistry) deviceSelectionPreference(actorUID int64, sessionKey string) (string, bool) {
-	if r == nil || actorUID <= 0 || sessionKey == "" {
-		return "", false
-	}
-	preference, err := r.selectionRecord(actorUID, sessionKey)
-	if err != nil || !preference.active(unixMillis(r.now())) {
-		return "", false
-	}
-	return preference.DeviceID, true
-}
-
-func (r *userDeviceRegistry) rememberDeviceSelection(actorUID int64, sessionKey string, deviceID string, source string) {
+func (r *userDeviceRegistry) rememberDeviceSelection(actorUID int64, sessionKey string, deviceID string, source string, ownerUID ...int64) {
 	if r == nil || actorUID <= 0 || sessionKey == "" || deviceID == "" {
 		return
 	}
 	current, err := r.selectionRecord(actorUID, sessionKey)
 	if err != nil {
+		return
+	}
+	if current.unspecified() {
 		return
 	}
 	// Automatic selection and preference renewal must never overwrite a
@@ -942,7 +959,7 @@ func (r *userDeviceRegistry) rememberDeviceSelection(actorUID int64, sessionKey 
 		r.refreshDeviceSelection(actorUID, sessionKey, current)
 		return
 	}
-	_, _ = r.confirmDeviceSelection(actorUID, sessionKey, deviceID, source, current.Revision)
+	_, _ = r.confirmDeviceSelection(actorUID, sessionKey, deviceID, source, current.Revision, ownerUID...)
 }
 
 func findDeviceByID(devices []UserDevice, deviceID string) (UserDevice, bool) {
@@ -956,6 +973,7 @@ func findDeviceByID(devices []UserDevice, deviceID string) (UserDevice, bool) {
 
 func deviceSelectionDevice(device UserDevice) *DeviceSelectionDevice {
 	return &DeviceSelectionDevice{
+		OwnerUserID: device.OwnerUserID, ShareID: device.ShareID,
 		DeviceID:          device.DeviceID,
 		DisplayName:       device.DisplayName,
 		BodyID:            device.BodyID,
@@ -976,8 +994,10 @@ func deviceSelectionCandidates(devices []UserDevice) []DeviceSelectionCandidate 
 	out := make([]DeviceSelectionCandidate, 0, len(devices))
 	for _, device := range devices {
 		out = append(out, DeviceSelectionCandidate{
-			OS:                device.OS,
-			Active:            device.Active,
+			OwnerDisplayName: device.OwnerDisplayName,
+			OS:               device.OS,
+			Active:           device.Active,
+			OwnerUserID:      device.OwnerUserID, ShareID: device.ShareID,
 			DeviceID:          device.DeviceID,
 			DisplayName:       device.DisplayName,
 			Status:            device.Status,
@@ -1309,6 +1329,12 @@ func (h *DeviceHandler) HandleDeviceByID(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	if shares, ok := h.db.(store.GroupDeviceShareStore); ok {
+		if err := shares.InvalidateDeviceShares(r.Context(), uid, deviceID); err != nil {
+			writeJSON(w, 503, map[string]string{"error": "sharing revocation unavailable"})
+			return
+		}
+	}
 	h.registry().unregister(uid, deviceID)
 	if h.hub != nil {
 		h.hub.disconnectDeviceConnector(uid, deviceID, "device connector revoked")
@@ -1386,4 +1412,13 @@ func (h *DeviceHandler) hubRouteState() string {
 		return "unavailable"
 	}
 	return h.hub.RuntimeRouteState()
+}
+
+func findDeviceByOwner(devices []UserDevice, id string, owner int64) (UserDevice, bool) {
+	for _, device := range devices {
+		if device.DeviceID == id && device.OwnerUID == owner {
+			return device, true
+		}
+	}
+	return UserDevice{}, false
 }

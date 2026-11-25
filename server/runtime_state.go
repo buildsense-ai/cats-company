@@ -74,7 +74,7 @@ type sharedRuntimeState interface {
 	clearRuntimeRoute(route runtimeRoute)
 	broadcastUserMessage(uid int64, msg *ServerMessage) bool
 	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool
-	deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool
+	deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time, relay *thinToolRPCRelay) bool
 	deliverArtifactResult(route runtimeRoute, msg *MsgArtifactResult, now time.Time) bool
 	deliverArtifactResultReceipt(nodeID string, msg *MsgArtifactResult, sourceRoute runtimeRoute, now time.Time) bool
 	routeConnected(route runtimeRoute, now time.Time) bool
@@ -266,7 +266,7 @@ func (s *sharedMemoryRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *Msg
 	return hub.sendDeviceRPCToLocalRoute(route, msg)
 }
 
-func (s *sharedMemoryRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool {
+func (s *sharedMemoryRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time, relay *thinToolRPCRelay) bool {
 	if s == nil || !route.validAt(now) {
 		return false
 	}
@@ -276,7 +276,7 @@ func (s *sharedMemoryRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *M
 	if hub == nil {
 		return false
 	}
-	return hub.sendThinToolRPCToLocalRoute(route, msg)
+	return hub.receiveThinToolRPCFromRuntime(route, msg, relay)
 }
 
 func (s *sharedMemoryRuntimeState) deliverArtifactResult(route runtimeRoute, msg *MsgArtifactResult, now time.Time) bool {

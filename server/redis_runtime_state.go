@@ -250,7 +250,7 @@ func (s *RedisRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceR
 	return s.client.Publish(s.ctx, s.nodeInboxChannel(route.NodeID), payload).Err() == nil
 }
 
-func (s *RedisRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool {
+func (s *RedisRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time, relay *thinToolRPCRelay) bool {
 	if s == nil || s.client == nil || msg == nil || route.NodeID == "" || route.ConnectionID == "" {
 		return false
 	}
@@ -258,11 +258,12 @@ func (s *RedisRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *MsgThinT
 		return false
 	}
 	if hub := s.localHub(route.NodeID); hub != nil {
-		return hub.sendThinToolRPCToLocalRoute(route, msg)
+		return hub.receiveThinToolRPCFromRuntime(route, msg, relay)
 	}
 	payload, err := json.Marshal(redisThinToolRPCEnvelope{
 		Route: redisRouteFromRuntime(route),
 		Msg:   msg,
+		Relay: relay,
 	})
 	if err != nil {
 		return false
@@ -758,6 +759,16 @@ else
 end
 redis.call('SADD', selectionIndex, grantID)
 redis.call('SADD', deviceIndex, grantID)
+if ARGV[5] ~= '' then
+  redis.call('SADD', KEYS[4], grantID)
+  if ttl <= 0 then
+    redis.call('SADD', KEYS[4], permanentMarker)
+    redis.call('PERSIST', KEYS[4])
+  elseif redis.call('SISMEMBER', KEYS[4], permanentMarker) == 0 then
+    local shareTTL=redis.call('PTTL',KEYS[4])
+    if shareTTL < 0 or shareTTL < ttl then redis.call('PEXPIRE',KEYS[4],ttl) end
+  end
+end
 if ttl <= 0 then
   redis.call('SADD', selectionIndex, permanentMarker)
   redis.call('SADD', deviceIndex, permanentMarker)
@@ -773,7 +784,7 @@ else
     if currentTTL < 0 or currentTTL < ttl then redis.call('PEXPIRE', deviceIndex, ttl) end
   end
 end
-return 1`, []string{s.deviceGrantKey(grant.GrantID), selectionIndex, deviceIndex}, grant.GrantID, string(payload), ttl.Milliseconds(), permanentDeviceGrantIndexMarker).Result()
+return 1`, []string{s.deviceGrantKey(grant.GrantID), selectionIndex, deviceIndex, s.key("device_grant_share", grant.ShareID)}, grant.GrantID, string(payload), ttl.Milliseconds(), permanentDeviceGrantIndexMarker, grant.ShareID).Result()
 		cancel()
 		if err != nil {
 			s.logDeviceAuthorizationFailure("grant_write", redisAuthorizationErrorClass(err))
@@ -815,6 +826,7 @@ func (s *RedisRuntimeState) revokeDeviceGrant(grant ScopedDeviceGrant) {
 	deviceIndex := s.deviceGrantDeviceKey(parseFormattedUID(grant.OwnerUserID), grant.DeviceID)
 	pipe := s.client.TxPipeline()
 	pipe.Del(ctx, s.deviceGrantKey(grant.GrantID))
+	s.removeDeviceGrantShareIndex(ctx, pipe, grant)
 	pipe.SRem(ctx, selectionIndex, grant.GrantID)
 	pipe.SRem(ctx, deviceIndex, grant.GrantID)
 	pipe.Eval(ctx, cleanupPermanentDeviceGrantIndexScript, []string{selectionIndex}, permanentDeviceGrantIndexMarker)
@@ -822,6 +834,16 @@ func (s *RedisRuntimeState) revokeDeviceGrant(grant ScopedDeviceGrant) {
 	if _, err := pipe.Exec(ctx); err != nil {
 		s.logDeviceAuthorizationFailure("grant_revoke", redisAuthorizationErrorClass(err))
 	}
+}
+
+// Sharing indices must remain discoverable until their last grant is revoked.
+func (s *RedisRuntimeState) removeDeviceGrantShareIndex(ctx context.Context, pipe redis.Pipeliner, grant ScopedDeviceGrant) {
+	if grant.ShareID == "" {
+		return
+	}
+	key := s.key("device_grant_share", grant.ShareID)
+	pipe.SRem(ctx, key, grant.GrantID)
+	pipe.Eval(ctx, cleanupPermanentDeviceGrantIndexScript, []string{key}, permanentDeviceGrantIndexMarker)
 }
 
 func (s *RedisRuntimeState) revokeDeviceGrantsForSelection(actorUID int64, sessionKey string) {
@@ -843,6 +865,9 @@ func (s *RedisRuntimeState) revokeDeviceGrantsForSelection(actorUID int64, sessi
 			continue
 		}
 		pipe.Del(ctx, s.deviceGrantKey(id))
+		if grant, ok := s.deviceGrantForIndex(ctx, id); ok {
+			s.removeDeviceGrantShareIndex(ctx, pipe, grant)
+		}
 		if deviceKey := s.deviceGrantDeviceKeyForGrant(ctx, id); deviceKey != "" {
 			pipe.SRem(ctx, deviceKey, id)
 			otherIndices[deviceKey] = struct{}{}
@@ -881,6 +906,9 @@ func (s *RedisRuntimeState) revokeDeviceGrantsForDevice(ownerUID int64, deviceID
 			continue
 		}
 		pipe.Del(ctx, s.deviceGrantKey(id))
+		if grant, ok := s.deviceGrantForIndex(ctx, id); ok {
+			s.removeDeviceGrantShareIndex(ctx, pipe, grant)
+		}
 		if selectionKey := s.deviceGrantSelectionKeyForGrant(ctx, id); selectionKey != "" {
 			pipe.SRem(ctx, selectionKey, id)
 			otherIndices[selectionKey] = struct{}{}
@@ -1493,7 +1521,7 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 				if envelope.DeviceRPC != nil || envelope.Msg != nil {
 					hub.sendDeviceRPCToLocalRoute(route, firstDeviceRPCMessage(envelope.DeviceRPC, envelope.Msg))
 				} else if envelope.ThinToolRPC != nil {
-					hub.sendThinToolRPCToLocalRoute(route, envelope.ThinToolRPC)
+					hub.receiveThinToolRPCFromRuntime(route, envelope.ThinToolRPC, envelope.ThinToolRPCRelay)
 				} else if envelope.ArtifactResult != nil {
 					hub.sendArtifactResultToLocalRoute(route, envelope.ArtifactResult)
 				}
@@ -1842,6 +1870,7 @@ type redisDeviceRPCEnvelope struct {
 }
 
 type redisThinToolRPCEnvelope struct {
+	Relay *thinToolRPCRelay `json:"thin_tool_rpc_relay,omitempty"`
 	Route redisRuntimeRoute `json:"route"`
 	Msg   *MsgThinToolRPC   `json:"thin_tool_rpc"`
 }
@@ -1866,6 +1895,7 @@ type redisMessagingAttentionProbeReply struct {
 }
 
 type redisRuntimeEnvelope struct {
+	ThinToolRPCRelay             *thinToolRPCRelay                  `json:"thin_tool_rpc_relay,omitempty"`
 	Route                        redisRuntimeRoute                  `json:"route"`
 	Msg                          *MsgDeviceRPC                      `json:"msg,omitempty"`
 	DeviceRPC                    *MsgDeviceRPC                      `json:"device_rpc,omitempty"`

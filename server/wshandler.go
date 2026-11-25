@@ -156,8 +156,9 @@ func (c *Client) setRuntimeCapabilities(values []string) {
 	for _, value := range values {
 		// Capability names are a closed, server-owned vocabulary. Do not retain
 		// arbitrary client strings in this long-lived WebSocket object.
-		if strings.TrimSpace(value) == xiaobaDeviceTargetsCapability {
-			capabilities[xiaobaDeviceTargetsCapability] = struct{}{}
+		switch strings.TrimSpace(value) {
+		case xiaobaDeviceTargetsCapability, groupDeviceShareCapability:
+			capabilities[strings.TrimSpace(value)] = struct{}{}
 		}
 	}
 	c.runtimeCapabilitiesMu.Lock()
@@ -237,6 +238,7 @@ func newHubWithState(db store.Store, rl *RateLimiter, shared sharedRuntimeState,
 		taskStatusDelivery:  make(chan struct{}, 1),
 		botConnectionEpochs: make(map[int64]uint64),
 	}
+	hub.userDevices.groupShareCurrent = hub.groupDeviceGrantCurrent
 	hub.publicationWorkspaceEntries = publicationWorkspaceEntriesEnabled()
 	hub.publicationEntryLimits = NewHTTPRateLimiter()
 	hub.publicationAdmissions = make(chan struct{}, 16)

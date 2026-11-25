@@ -90,6 +90,128 @@ func TestDeviceSelectionVersionedState(t *testing.T) {
 	}
 }
 
+func TestDeviceSelectionCanRemainUnspecified(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
+	for _, backend := range []string{"local", "shared-memory", "redis"} {
+		t.Run(backend, func(t *testing.T) {
+			r := newUserDeviceRegistry(time.Hour)
+			if backend == "shared-memory" {
+				r.withSharedRuntime(newSharedMemoryRuntimeState())
+			}
+			if backend == "redis" {
+				url, cleanup := newRedisRuntimeTestServer(t)
+				defer cleanup()
+				state := newRedisRuntimeStateForTest(t, url, t.Name())
+				defer state.Close()
+				r.withSharedRuntime(state)
+			}
+			session := buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7)
+			pinned, err := r.confirmDeviceSelection(7, session, "a", "user_confirmation", "", 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			device := UserDevice{OwnerUID: 7, OwnerUserID: "usr7", DeviceID: "a", Capabilities: []DeviceGrantOperation{DeviceGrantReadFile}}
+			before := r.turnContextForOwnerDevicesWithExplicitTargets(7, 7, "p2p_7_42", "p2p", 42, "cloud", []UserDevice{device}, nil, true)
+			if len(before.Grants) != 1 || len(before.ExplicitGrants) != 1 {
+				t.Fatal("missing initial grants")
+			}
+			cleared, err := r.confirmDeviceSelection(7, session, "", deviceSelectionUnspecifiedSource, pinned.Revision, 7)
+			if err != nil || !cleared.unspecified() || cleared.Revision == pinned.Revision {
+				t.Fatal("clear did not rotate version", err)
+			}
+			for _, g := range append(before.Grants, before.ExplicitGrants...) {
+				if _, ok := r.lookupGrant(g.GrantID); ok {
+					t.Fatal("old grant survived clear")
+				}
+			}
+			r.rememberDeviceSelection(7, session, "a", "single_active_device", 7)
+			after := r.turnContextForOwnerDevicesWithExplicitTargets(7, 7, "p2p_7_42", "p2p", 42, "cloud", []UserDevice{device}, nil, true)
+			if after.Selection.SelectedDevice != nil || after.Selection.SelectionSource != deviceSelectionUnspecifiedSource || len(after.Grants) != 0 || len(after.ExplicitGrants) != 1 {
+				t.Fatal("clear was replaced by a single-device pin, or lost exact-device authorization")
+			}
+			if _, ok := r.lookupGrant(after.ExplicitGrants[0].GrantID); !ok {
+				t.Fatal("new exact-device grant rejected")
+			}
+			if _, err := r.confirmDeviceSelection(7, session, "a", "user_confirmation", pinned.Revision, 7); !errors.Is(err, errDeviceSelectionConflict) {
+				t.Fatal("pre-clear request restored old pin")
+			}
+		})
+	}
+}
+
+func TestSingleOnlineDeviceDoesNotBecomeDefault(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
+	for _, topic := range []struct{ id, kind string }{{"p2p_7_42", "p2p"}, {"grp_1", "group"}} {
+		t.Run(topic.kind, func(t *testing.T) {
+			r := newUserDeviceRegistry(time.Hour).withSelectionStore(&durableSelectionTestStore{})
+			device := UserDevice{OwnerUID: 7, OwnerUserID: "usr7", DeviceID: "a", Routable: true,
+				Capabilities: []DeviceGrantOperation{DeviceGrantReadFile}}
+			devices := []UserDevice{device}
+			assertUnspecified := func(ctx DeviceTurnContext) {
+				t.Helper()
+				if ctx.Selection == nil || ctx.Selection.Status != DeviceSelectionNeedsSelection || ctx.Selection.SelectedDevice != nil ||
+					len(ctx.Grants) != 0 || len(ctx.ExplicitGrants) != 1 {
+					t.Fatalf("one online device must be available only as an explicit target: %#v", ctx)
+				}
+				if _, ok := r.lookupGrant(ctx.ExplicitGrants[0].GrantID); !ok {
+					t.Fatal("explicit grant rejected without a default")
+				}
+			}
+			turn := func() DeviceTurnContext {
+				return r.turnContextForOwnerDevicesWithExplicitTargets(7, 7, topic.id, topic.kind, 42, "cloud", devices, nil, true)
+			}
+			first := turn()
+			assertUnspecified(first)
+			old, err := r.confirmDeviceSelection(7, first.Selection.SessionKey, "a", deviceSelectionAutomaticSource, first.Selection.Revision, 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.grantSelectionCurrent(ScopedDeviceGrant{
+				ActorUserID: "usr7", SessionKey: first.Selection.SessionKey, DeviceID: "a", SelectionRevision: old.Revision,
+			}) {
+				t.Fatal("old default grant still matched the automatic pick")
+			}
+			afterUpgrade := turn()
+			assertUnspecified(afterUpgrade)
+			if afterUpgrade.Selection.Revision != old.Revision {
+				t.Fatal("ignoring an old automatic pick must preserve the CAS revision")
+			}
+		})
+	}
+}
+
+func TestConversationDeviceSelectionClearAPI(t *testing.T) {
+	_, handler := deviceSelectionFixture(t)
+	snapshot := selectionSnapshot(t, handler, 7, "p2p_7_42", "usr42")
+	pin := fmt.Sprintf(`{"device_id":"a","expected_revision":%q}`, snapshot["revision"])
+	if rec := selectionRequest(t, handler, 7, "p2p_7_42", "usr42", http.MethodPost, pin); rec.Code != 200 {
+		t.Fatal(rec.Body.String())
+	}
+	snapshot = selectionSnapshot(t, handler, 7, "p2p_7_42", "usr42")
+	missing := fmt.Sprintf(`{"expected_revision":%q}`, snapshot["revision"])
+	if rec := selectionRequest(t, handler, 7, "p2p_7_42", "usr42", http.MethodPost, missing); rec.Code != 400 {
+		t.Fatal("missing target must not clear")
+	}
+	clear := fmt.Sprintf(`{"device_id":"","expected_revision":%q}`, snapshot["revision"])
+	if rec := selectionRequest(t, handler, 7, "p2p_7_42", "usr42", http.MethodPost, clear); rec.Code != 200 {
+		t.Fatal(rec.Body.String())
+	}
+	for i := 0; i < 2; i++ {
+		after := selectionSnapshot(t, handler, 7, "p2p_7_42", "usr42")
+		if after["status"] != "unspecified" || after["selected_device_id"] != "" || after["selected_owner_uid"] != float64(0) || after["revision"] == snapshot["revision"] {
+			t.Fatal("clear not retained", after)
+		}
+	}
+	if rec := selectionRequest(t, handler, 7, "p2p_7_42", "usr42", http.MethodPost, clear); rec.Code != 409 {
+		t.Fatal("stale clear accepted")
+	}
+	for _, actor := range []int64{0, 8, 42} {
+		if rec := selectionRequest(t, handler, actor, "p2p_7_42", "usr42", http.MethodPost, clear); rec.Code < 400 {
+			t.Fatal("unauthorized clear accepted")
+		}
+	}
+}
+
 func deviceSelectionFixture(t *testing.T) (*Hub, *DeviceHandler) {
 	t.Helper()
 	db := &identityMessageStore{users: map[int64]*types.User{
@@ -153,7 +275,7 @@ func TestConversationDeviceSelectionAPI(t *testing.T) {
 	requester := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud-body", send: make(chan []byte, 8)}
 	hub.addClient(requester)
 	snapshot := selectionSnapshot(t, handler, 7, "p2p_7_42", "usr42")
-	if snapshot["status"] != "needs_selection" || len(snapshot["devices"].([]interface{})) != 3 {
+	if snapshot["status"] != "unspecified" || len(snapshot["devices"].([]interface{})) != 3 {
 		t.Fatalf("directory: %#v", snapshot)
 	}
 	revision := snapshot["revision"].(string)
@@ -214,8 +336,12 @@ func TestConversationDeviceSelectionAPI(t *testing.T) {
 		t.Fatal("group bot chooser missing")
 	}
 	other := selectionSnapshot(t, handler, 8, "grp_1", "42")
-	if len(other["devices"].([]interface{})) != 1 || other["selected_device_id"] != "private" {
+	otherDevices := other["devices"].([]interface{})
+	if len(otherDevices) != 1 || otherDevices[0].(map[string]interface{})["deviceId"] != "private" {
 		t.Fatal("group actor directory not isolated")
+	}
+	if other["status"] != "unspecified" || other["selected_device_id"] != "" {
+		t.Fatal("the only group device was implicitly selected")
 	}
 	switchPayload := fmt.Sprintf(`{"device_id":"b","expected_revision":%q}`, snapshot["revision"])
 	if rec := selectionRequest(t, handler, 7, "p2p_7_42", "42", http.MethodPost, switchPayload); rec.Code != 200 {

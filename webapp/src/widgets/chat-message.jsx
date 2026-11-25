@@ -1383,7 +1383,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   const richBlocks = useMemo(() => (
     storedBlocks
       .map((block, index) => ({ ...block, __imageBlockIndex: index }))
-      .filter((block) => ['image', 'file', 'audio', 'voice'].includes(block.type))
+      .filter((block) => ['image', 'file', 'audio', 'voice', 'card'].includes(block.type))
   ), [storedBlocks]);
   const storedTextBlocks = useMemo(() => (
     storedBlocks.filter(
@@ -3970,6 +3970,20 @@ function LinkPreviewContent({ payload }) {
 
 function CardContent({ payload }) {
   if (!payload) return null;
+  const history = payload.group_device_share;
+  if (typeof history?.request_id === 'string' && typeof history.topic_id === 'string') {
+    return (
+      <div className="oc-rich-card" role="group" aria-label="历史设备授权申请">
+        <div style={{ padding: 8 }}>
+          <strong>历史设备授权申请</strong>
+          {typeof history.requested_by_name === 'string' && typeof history.requester_name === 'string' && (
+            <div>{history.requested_by_name} 代 {history.requester_name} 申请</div>
+          )}
+          {typeof payload.text === 'string' && <div>{payload.text}</div>}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="oc-rich-card">
       {payload.image && <img src={resolveMediaURL(payload.image)} alt="" style={{ width: '100%', maxHeight: 120, objectFit: 'cover', borderRadius: '4px 4px 0 0' }} />}

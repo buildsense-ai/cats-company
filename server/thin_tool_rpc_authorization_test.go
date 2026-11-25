@@ -113,7 +113,7 @@ func TestThinToolRPCScopedAuthorization(t *testing.T) {
 
 func TestThinToolRPCLegacyCompatibilityChecksTarget(t *testing.T) {
 	t.Setenv("CATSCO_DEVICE_GRANT_ENFORCEMENT", "")
-	hub := NewHub(&agentTestStore{owners: map[int64]int64{42: 8}}, nil)
+	hub := NewHub(&agentTestStore{owners: map[int64]int64{42: 7}}, nil)
 	device, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
 		DeviceID: "legacy-a", RuntimeRole: "desktop", Status: "online", Capabilities: []string{"read_file"},
 	})

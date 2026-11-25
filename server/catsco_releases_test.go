@@ -5,12 +5,39 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func resetCatsCoReleaseCacheForTest() {
 	catsCoReleaseCache.Lock()
 	catsCoReleaseCache.entry = catsCoReleaseCacheEntry{}
 	catsCoReleaseCache.Unlock()
+}
+
+func TestCatsCoDesktopPlatformFilterDoesNotMutateCachedDownloads(t *testing.T) {
+	resetCatsCoReleaseCacheForTest()
+	t.Cleanup(resetCatsCoReleaseCacheForTest)
+	t.Setenv("CATSCO_DESKTOP_RELEASE_BASE_URL", "http://local.test")
+	catsCoReleaseCache.Lock()
+	catsCoReleaseCache.entry = catsCoReleaseCacheEntry{
+		BaseURL: "http://local.test", ExpiresAt: time.Now().Add(time.Minute),
+		Response: CatsCoDesktopReleasesResponse{Downloads: map[string]string{
+			"linux-deb": "http://local.test/test.deb", "windows": "http://local.test/test.exe",
+		}},
+	}
+	catsCoReleaseCache.Unlock()
+	for _, allowed := range []string{"linux-deb, unknown", ""} {
+		t.Setenv("CATSCO_DESKTOP_RELEASE_PLATFORMS", allowed)
+		rec := httptest.NewRecorder()
+		HandleCatsCoDesktopReleases(rec, httptest.NewRequest(http.MethodGet, "/api/catsco/desktop-releases", nil))
+		var resp CatsCoDesktopReleasesResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Downloads["linux-deb"] == "" || (resp.Downloads["windows"] != "") != (allowed == "") {
+			t.Fatalf("platform filter %q: %v", allowed, resp.Downloads)
+		}
+	}
 }
 
 func TestCatsCoDesktopReleasesReadsUpdaterManifests(t *testing.T) {

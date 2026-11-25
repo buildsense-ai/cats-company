@@ -17,11 +17,11 @@
 .cc-device-error { color: #b34236; }
 .cc-device-selection { min-width: 0; color: var(--cc-text); }
 .cc-device-selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--cc-text-secondary); font-size: 13px; }
-.cc-device-selection-heading > span { min-width: 0; overflow-wrap: anywhere; }
+.cc-device-selection-heading > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .cc-device-selection button { border: 0; border-radius: 6px; background: var(--cc-secondary-action-bg, var(--cc-hover)); color: var(--cc-text); padding: 8px 12px; font: inherit; font-size: 13px; cursor: pointer; }
 .cc-device-selection button:hover:not(:disabled) { background: var(--cc-hover); }
 .cc-device-selection button:disabled { opacity: .5; cursor: default; }
-.cc-device-selection-heading button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; background: transparent; }
+.cc-device-selection-heading button { display: grid; place-items: center; flex: none; min-width: 32px; height: 32px; padding: 0 8px; }
 .cc-device-selection p { margin: 12px 0; font-size: 13px; line-height: 1.6; }
 .cc-device-selection footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 .cc-device-selection footer p { flex: 1; margin: 0; }

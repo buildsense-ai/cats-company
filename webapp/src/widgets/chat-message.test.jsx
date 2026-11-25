@@ -37,6 +37,7 @@ vi.mock('marked', () => ({
 }));
 
 vi.mock('../api', () => ({
+  getToken: () => 'test-session', getAuthRevision: () => 1, isCurrentAuthSession: () => true,
   resolveMediaURL: vi.fn((url) => url),
   getApiBaseURL: () => window.location.origin,
 }));
@@ -168,6 +169,27 @@ describe('ChatMessage rich file rendering', () => {
     vi.useRealTimers();
     delete document.documentElement.dataset.theme;
     delete document.documentElement.dataset.liquidVariant;
+  });
+
+  it('renders an old device share request as history without polling or approval controls', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const payload = {
+      title: '设备使用授权申请',
+      text: '借用 pcB',
+      group_device_share: { topic_id: 'grp_2', request_id: 'request-b', requested_by_name: 'botB', requester_name: 'userA' },
+    };
+    await act(async () => root.render(<ChatMessage message={{
+      id: 118, seq_id: 118, topic_id: 'grp_2', from_uid: 1, msg_type: 'text',
+      content: payload, content_blocks: [{ type: 'card', payload }],
+    }} isSelf={false} isGroup senderName="userA" />));
+    const card = container.querySelector('[aria-label="历史设备授权申请"]');
+    expect(card.textContent).toContain('借用 pcB');
+    expect(card.textContent).toContain('botB 代 userA 申请');
+    expect(card.querySelector('button, select')).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(7000));
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('previews uploaded HTML as a sandboxed workflow report artifact', async () => {

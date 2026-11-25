@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -86,28 +87,67 @@ func (h *DeviceHandler) HandleConversationSelection(w http.ResponseWriter, r *ht
 			known = append(known, device)
 		}
 	}
+	var sharingUnavailable bool
+	if isGroupTopic(topic) {
+		shared, err := h.hub.sharedGroupDevices(r.Context(), actor, topic)
+		if err != nil {
+			sharingUnavailable = true
+			shared = nil
+		}
+		for i := range shared {
+			if peer := h.hub.getClient(bot); peer != nil && !peer.hasRuntimeCapability(groupDeviceShareCapability) {
+				shared[i].Routable = false
+				shared[i].UnavailableReason = "group_device_share_upgrade_required"
+			}
+		}
+		known = append(known, shared...)
+	}
 	sort.Slice(known, func(i, j int) bool { return known[i].DeviceID < known[j].DeviceID })
+	var notice *deviceChangeNotice
 	if r.Method == http.MethodPost {
 		var req struct {
-			DeviceID         string  `json:"device_id"`
+			DeviceID         *string `json:"device_id"`
+			OwnerUID         int64   `json:"owner_uid"`
 			ExpectedRevision *string `json:"expected_revision"`
 		}
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&req); err != nil || req.ExpectedRevision == nil || *req.ExpectedRevision == "" || len(*req.ExpectedRevision) > maxDeviceSelectionRevisionLength || decoder.Decode(&struct{}{}) != io.EOF {
+		if err := decoder.Decode(&req); err != nil || req.DeviceID == nil || req.ExpectedRevision == nil || *req.ExpectedRevision == "" || len(*req.ExpectedRevision) > maxDeviceSelectionRevisionLength || decoder.Decode(&struct{}{}) != io.EOF {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "device_id and expected_revision required"})
 			return
 		}
-		device, found := findDeviceByID(known, req.DeviceID)
-		if !found {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "device is not available to this account"})
-			return
+		owner := req.OwnerUID
+		if owner <= 0 {
+			owner = actor
 		}
-		if !device.Routable {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "device is offline; refresh and try again"})
-			return
+		var device UserDevice
+		source := deviceSelectionUnspecifiedSource
+		text := fmt.Sprintf("已清除当前对话中 %s 的默认设备（未指定，默认云端）。", displayNameOrUsername(agent.DisplayName, agent.Username))
+		if *req.DeviceID != "" {
+			var found bool
+			device, found = findDeviceByOwner(known, *req.DeviceID, owner)
+			if !found {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "device is not available to this account"})
+				return
+			}
+			if !device.Routable {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "device is offline; refresh and try again"})
+				return
+			}
+			source = "user_confirmation"
+			name := device.DisplayName
+			if name == "" {
+				name = device.DeviceID
+			}
+			text = fmt.Sprintf("已将当前对话中 %s 的默认设备切换为 %s（所有者：%s）。", displayNameOrUsername(agent.DisplayName, agent.Username), name, h.hub.deviceNoticeName(device.OwnerUID))
 		}
-		if _, err := h.registry().confirmDeviceSelection(actor, session, device.DeviceID, "user_confirmation", *req.ExpectedRevision); err != nil {
+		// An empty target clears only this actor's routing preference. Keep a
+		// versioned record so stale requests/grants cannot restore the old pin.
+		if *req.DeviceID == "" {
+			device.OwnerUID = actor
+		}
+		confirmed, err := h.registry().confirmDeviceSelection(actor, session, device.DeviceID, source, *req.ExpectedRevision, device.OwnerUID)
+		if err != nil {
 			code := http.StatusServiceUnavailable
 			message := "selection store unavailable"
 			if errors.Is(err, errDeviceSelectionConflict) {
@@ -117,25 +157,24 @@ func (h *DeviceHandler) HandleConversationSelection(w http.ResponseWriter, r *ht
 			return
 		}
 		h.hub.addDeviceAudit(actor, DeviceAuditEvent{DeviceID: device.DeviceID, Phase: "device_selection_confirmed", Result: "ok"})
+		receipt := h.hub.publishDeviceChangeNotice(actor, topic, "selection:"+session+":"+confirmed.Revision, text)
+		notice = &receipt
 	}
 	preference, err := h.registry().selectionRecord(actor, session)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "selection store unavailable"})
 		return
 	}
-	selectedID, state := preference.DeviceID, "needs_selection"
+	selectedID, selectedOwner, state := "", int64(0), "unspecified"
 	if preference.active(unixMillis(h.registry().now())) {
-		state = "unavailable"
-		if device, found := findDeviceByID(known, selectedID); found && device.Routable {
+		selectedID, selectedOwner, state = preference.DeviceID, selectionOwner(preference, actor), "unavailable"
+		if device, found := findDeviceByOwner(known, selectedID, selectedOwner); found && device.Routable {
 			state = "selected"
 		}
-	} else if preference.DeviceID == "" && len(known) == 1 && known[0].Routable {
-		// Display the single-device default. GET initializes a revision only;
-		// it never chooses a device or issues an execution grant.
-		selectedID, state = known[0].DeviceID, "automatic"
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"topic_id": topic, "agent_id": formatUID(bot), "agent_name": displayNameOrUsername(agent.DisplayName, agent.Username), "revision": preference.Revision,
+		"selected_owner_uid": selectedOwner, "notice": notice, "sharing_unavailable": sharingUnavailable,
 		"selected_device_id": selectedID, "status": state, "devices": deviceSelectionCandidates(known),
 	})
 }

@@ -7,8 +7,10 @@ import (
 
 // ConversationDeviceSelection is a durable routing preference, not permission
 // to execute tools. Execution still needs a new, short-lived scoped grant.
-// A blank DeviceID is a versioned slot awaiting the user's first selection.
+// A blank DeviceID is a versioned initial slot, or an explicit unpinned choice
+// when Source is user_unspecified. Neither is an execution permission.
 type ConversationDeviceSelection struct {
+	OwnerUID  int64
 	DeviceID  string
 	Revision  string
 	Source    string

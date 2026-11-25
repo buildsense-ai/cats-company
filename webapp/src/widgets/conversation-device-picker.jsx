@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import GroupDeviceSharing from './group-device-sharing';
 import { createPortal } from 'react-dom';
 import { Laptop, RefreshCw, X } from './desktop-icons';
 import { api, getAuthRevision, getToken, isCurrentAuthSession } from '../api';
@@ -8,22 +9,10 @@ import '../css/conversation-device-picker.css';
 export default function ConversationDevicePicker({ topicId, activeAgent, onOpen, embedded = false }) {
   const agentId = activeAgent?.uid || activeAgent?.id;
   if (!topicId) return null;
-  if (!agentId && topicId.startsWith('grp_')) return <GroupDevicePicker key={topicId} topicId={topicId} onOpen={onOpen} embedded={embedded} />;
+  if (topicId.startsWith('grp_')) return <GroupDeviceSharing key={topicId} topicId={topicId} onOpen={onOpen} embedded={embedded} />;
   if (!agentId) return null;
   return <DevicePicker key={`${topicId}:${agentId}`} topicId={topicId} agentId={agentId} onOpen={onOpen} embedded={embedded}
     agentName={activeAgent?.display_name || activeAgent?.name || activeAgent?.username || String(agentId)} />;
-}
-
-function GroupDevicePicker({ topicId, onOpen, embedded }) {
-  const [agent, setAgent] = useState(null);
-  const [visited, setVisited] = useState(false);
-  useEffect(() => {
-    const reset = () => { setAgent(null); setVisited(false); };
-    window.addEventListener('cc:auth-changed', reset);
-    return () => window.removeEventListener('cc:auth-changed', reset);
-  }, []);
-  return <DevicePicker key={agent?.uid || 'choose-agent'} topicId={topicId} agentId={agent?.uid || ''} onOpen={onOpen} embedded={embedded}
-    agentName={agent?.display_name} onAgentPick={(next) => { setAgent(next); setVisited(true); }} initialOpen={visited} />;
 }
 
 function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = false, onOpen, embedded = false }) {
@@ -106,7 +95,7 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
   }, [open, embedded, onOpen]);
 
   const confirm = async () => {
-    if (busy || !snapshot || !snapshot.devices?.some((device) => device.deviceId === draft && device.routable)) return;
+    if (busy || !snapshot || snapshot.status === 'choose_agent' || (draft && !snapshot.devices?.some((device) => device.deviceId === draft && device.routable))) return;
     const seq = ++sequence.current;
     const token = getToken(), authRevision = getAuthRevision();
     const current = () => sequence.current === seq && isCurrentAuthSession(token, authRevision);
@@ -114,7 +103,8 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
     try {
       const next = await api.confirmConversationDevice(topicId, agentId, draft, snapshot.revision);
       if (!current()) return;
-      setSnapshot(next); setDraft(next.selected_device_id || ''); setOpen(false);
+      setSnapshot(next); setDraft(next.selected_device_id || ''); setOpen(next.notice?.pending === true);
+      if (next.notice?.pending) setError('设备已保存，对话提示暂未确认，请刷新对话核对。');
       if (embedded) window.dispatchEvent(new CustomEvent('cc:devices-changed', { detail: { source: deviceChangeSource.current } }));
     } catch {
       if (!current()) return;
@@ -128,29 +118,36 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
   };
 
   const selected = snapshot?.devices?.find((device) => device.deviceId === snapshot.selected_device_id);
+  const cloudDefaultLabel = '云端';
   const label = !snapshot ? (busy ? '读取中' : '状态待确认')
     : snapshot.status === 'choose_agent' ? '按 Bot 选择'
+    : ['unspecified', 'needs_selection'].includes(snapshot.status) ? cloudDefaultLabel
     : snapshot.status === 'unavailable' ? `${selected?.displayName || snapshot.selected_device_id} · 离线`
-      : snapshot.status === 'needs_selection' ? (snapshot.devices?.length ? '请选择' : '未连接')
-        : selected?.displayName || selected?.deviceId || '请选择';
-  const description = `默认操作的电脑${agentId ? `（${snapshot?.agent_name || agentName}）` : ''}：${label}`;
-  const changed = draft && draft !== snapshot?.selected_device_id;
+      : selected?.displayName || selected?.deviceId || '请选择';
+  const description = `默认设备${agentId ? `（${snapshot?.agent_name || agentName}）` : ''}：${label}`;
+  const changed = !!snapshot && (draft !== (snapshot.selected_device_id || '') || (draft !== '' && snapshot.status === 'automatic'));
   const content = <>
     <div className="cc-device-selection-heading">
-      <span>{agentId ? `当前对话 · ${snapshot?.agent_name || agentName}` : '选择 Agent'}</span>
-      <button type="button" disabled={busy} aria-label="刷新电脑列表" title="刷新" onClick={() => void load()}><RefreshCw size={16} aria-hidden="true" /></button>
+      <span>{agentId ? snapshot?.agent_name || agentName : '选择 Agent'}</span>
+      {snapshot?.status !== 'choose_agent' && <button type="button" disabled={busy || !changed || (draft !== '' && !snapshot?.devices?.some((device) => device.deviceId === draft && device.routable))} onClick={() => void confirm()}>确认</button>}
+      <button type="button" disabled={busy} aria-label="刷新设备列表" title="刷新" onClick={() => void load()}><RefreshCw size={16} aria-hidden="true" /></button>
     </div>
     {onAgentPick && agentId && <button type="button" disabled={busy} onClick={() => onAgentPick(null)}>更换 Agent</button>}
     <div className="cc-computer-list-region" data-loading-region="" aria-busy={busy}>
       {busy && !snapshot
-        ? <LoadingState kind="connect" className="cc-computer-list-loading" label="正在读取电脑" compact />
+        ? <LoadingState kind="connect" className="cc-computer-list-loading" label="正在读取设备" compact />
         : <div data-loading-content="">
           {snapshot?.status === 'choose_agent' && <div className="cc-device-list">
             {(snapshot.agents || []).map((agent) => <button type="button" key={agent.uid} disabled={busy} onClick={() => onAgentPick(agent)}>{agent.display_name} · {agent.uid}</button>)}
             {!snapshot.agents?.length && <p>当前对话中没有可选择的 Agent。</p>}
           </div>}
           {error && <p role="alert" className="cc-device-error">{error}</p>}
-          <div className="cc-device-list" role="group" aria-label="我的电脑">
+          <div className="cc-device-list" role="group" aria-label="我的设备">
+            {snapshot && snapshot.status !== 'choose_agent' && <label className="cc-device-option">
+              <input type="radio" name={titleId} value="" checked={draft === ''}
+                disabled={busy} onChange={() => setDraft('')} />
+              <span><strong>{cloudDefaultLabel}</strong></span>
+            </label>}
             {(snapshot?.devices || []).map((device) => {
               const name = device.displayName || device.deviceId;
               const duplicate = snapshot.devices.some(other => other.deviceId !== device.deviceId && (other.displayName || other.deviceId) === name);
@@ -162,16 +159,12 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
               </label>;
             })}
           </div>
-          {snapshot && snapshot.status !== 'choose_agent' && !snapshot.devices?.length && <p>还没有连接电脑。</p>}
-          {snapshot?.status === 'unavailable' && <p className="cc-device-note">已选电脑离线，不会自动切换。</p>}
-          {(changed || !embedded) && <footer>
-            {changed && <p className="cc-device-note">切换后需重新发送指令，已开始的操作不受影响。</p>}
-            <button type="button" disabled={busy || !changed || !snapshot?.devices?.some((device) => device.deviceId === draft && device.routable)} onClick={() => void confirm()}>使用这台电脑</button>
-          </footer>}
+          {snapshot && snapshot.status !== 'choose_agent' && !snapshot.devices?.length && <p>暂无设备</p>}
+          {snapshot?.status === 'unavailable' && <p className="cc-device-note" role="status">已选设备不可用</p>}
         </div>}
     </div>
   </>;
-  if (embedded) return <section className="cc-device-selection" aria-label="当前对话的电脑">{content}</section>;
+  if (embedded) return <section className="cc-device-selection" aria-label="当前对话的设备">{content}</section>;
   return <>
     <button ref={trigger} type="button" className="v3-action-btn cc-device-trigger" aria-haspopup="dialog" aria-expanded={onOpen ? undefined : open}
       title={description} aria-label={description} onClick={() => { if (onOpen) onOpen(); else { setOpen(true); void load(); } }}>
@@ -179,7 +172,7 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
     </button>
     {open && createPortal(<div className="cc-device-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
       <section ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={titleId} className="cc-device-dialog">
-        <header><h2 id={titleId}>电脑</h2><button type="button" aria-label="关闭设备选择" onClick={() => setOpen(false)}><X size={18} /></button></header>
+        <header><h2 id={titleId}>设备</h2><button type="button" aria-label="关闭设备选择" onClick={() => setOpen(false)}><X size={18} /></button></header>
         {content}
       </section>
     </div>, document.body)}
