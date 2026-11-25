@@ -992,6 +992,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-sidebar.collapsed .cc-sidebar-skillhub-entry {
+  position: relative;
   justify-content: center;
   width: 42px;
   height: 42px;
@@ -1005,7 +1006,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
   background: transparent;
 }
 
-.v3-sidebar.collapsed .cc-sidebar-skillhub-entry span {
+.v3-sidebar.collapsed .cc-sidebar-skillhub-entry > span:not(.cc-skillhub-sidebar-update-badge) {
   display: none;
 }
 
@@ -1912,11 +1913,21 @@ html[data-theme="liquid"] .catsco-brand-mark {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: var(--cc-accent);
-  color: #fff;
+  background: var(--cc-success-text);
+  color: var(--cc-panel);
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
+}
+
+.v3-sidebar.collapsed .cc-skillhub-sidebar-update-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
 }
 
 .cc-sidebar-primary:hover,

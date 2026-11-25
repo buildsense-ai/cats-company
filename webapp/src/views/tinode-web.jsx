@@ -106,9 +106,6 @@ import {
 import {
   collectSkillHubUpdateSummary,
   createEmptySkillHubUpdateSummary,
-  readSeenSkillHubUpdates,
-  writeSeenSkillHubUpdates,
-  skillHubSeenUpdatesKey,
   SKILLHUB_UPDATE_REFRESH_INTERVAL_MS,
 } from '../utils/skillhub-update-summary';
 import {
@@ -1881,11 +1878,8 @@ function TinodeWebApp({ location }) {
             additionalSidebarTools={(
               <>
                 <SkillHubSidebarButton
-                  key={user?.uid}
-                  userUid={user?.uid}
                   active={activeView === 'skillhub'}
-                  updatesLoaded={skillHubUpdateSummary.userUid === String(user?.uid)}
-                  updateKeys={skillHubUpdateSummary.userUid === String(user?.uid) ? skillHubUpdateSummary.updateKeys : []}
+                  updateCount={skillHubUpdateSummary.userUid === String(user?.uid) ? skillHubUpdateSummary.total : 0}
                   onClick={() => {
                     setSkillHubInitialAgent(null);
                     setActiveView('skillhub');
@@ -2463,48 +2457,20 @@ function SidebarContent({
   );
 }
 
-export function SkillHubSidebarButton({ active, onClick, userUid, updateKeys = [], updatesLoaded = false }) {
-  const [seenState, setSeenState] = useState(() => ({ userUid, keys: readSeenSkillHubUpdates(userUid) }));
-  const seenKeys = useMemo(() => seenState.userUid === userUid
-    ? seenState.keys : readSeenSkillHubUpdates(userUid), [seenState, userUid]);
-  const pendingReadUserRef = useRef(null);
-  const acknowledge = useCallback((keys) => {
-    const next = [...new Set([...seenKeys, ...keys])];
-    writeSeenSkillHubUpdates(userUid, next);
-    setSeenState({ userUid, keys: next });
-  }, [seenKeys, userUid]);
-  useEffect(() => {
-    if (pendingReadUserRef.current !== userUid || !updatesLoaded) return;
-    pendingReadUserRef.current = null;
-    acknowledge(updateKeys);
-  }, [acknowledge, updateKeys, updatesLoaded, userUid]);
-  useEffect(() => {
-    const handleStorage = (event) => {
-      if (event.key === null || event.key === skillHubSeenUpdatesKey(userUid)) {
-        setSeenState({ userUid, keys: readSeenSkillHubUpdates(userUid) });
-      }
-    };
-    window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
-  }, [userUid]);
-  const seen = new Set(seenKeys);
-  const count = pendingReadUserRef.current === userUid ? 0 : updateKeys.filter((key) => !seen.has(key)).length;
+export function SkillHubSidebarButton({ active, onClick, updateCount = 0 }) {
+  const updateLabel = updateCount > 0 ? `${updateCount} 个 Skill 可更新` : '';
   return (
     <button
       type="button"
       className={`cc-sidebar-primary cc-sidebar-skillhub-entry${active ? ' active' : ''}`}
-      onClick={() => {
-        pendingReadUserRef.current = updatesLoaded ? null : userUid;
-        acknowledge(updateKeys);
-        onClick?.();
-      }}
-      aria-label="打开 SkillHub"
+      onClick={onClick}
+      aria-label={updateLabel ? `打开 SkillHub，${updateLabel}` : '打开 SkillHub'}
       aria-current={active ? 'page' : undefined}
-      title={count > 0 ? `SkillHub：${count} 个新更新` : 'SkillHub'}
+      title={updateLabel ? `SkillHub：${updateLabel}` : 'SkillHub'}
     >
       <Package size={17} />
       <span>SkillHub</span>
-      {count > 0 && <span className="cc-skillhub-sidebar-update-badge" aria-label={`${count} 个新更新`}>{count}</span>}
+      {updateLabel && <span className="cc-skillhub-sidebar-update-badge" aria-hidden="true">{updateCount}</span>}
     </button>
   );
 }
