@@ -86,7 +86,7 @@ class Slurm:
         count, cpus = task["nodes"], task["logical_cpus"]
         minutes = task["wall_seconds"] // 60
         allocation = [f"--nodes={count}", f"--ntasks={count * cpus}", f"--ntasks-per-node={cpus}", "--cpus-per-task=1"]
-        command = [self.srun, "--exact", "--kill-on-bad-exit=1", *allocation, "/usr/bin/awk",
+        command = [self.srun, f"--account={self.account}", "--exact", "--kill-on-bad-exit=1", *allocation, "/usr/bin/awk",
                    "BEGIN { x=1; for (i=0; i<1000000; i++) x=(x*48271)%2147483647; print x }"]
         script = "#!/bin/sh\nset -eu\nexec " + shlex.join(command) + "\n"
         out = call(self.run, [

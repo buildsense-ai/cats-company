@@ -183,7 +183,7 @@ class Fixture:
                                  "--export=NIL", "--no-requeue", f"--nodes={count}", f"--ntasks={count * 2}",
                                  "--mem=512M", "--time=1"}
             assert self.slurm_job is False and self.run["progress"]["volume_ids"] == list(self.volumes)
-            assert script.startswith("#!/bin/sh\nset -eu\nexec /usr/bin/srun ") and "/usr/bin/awk" in script
+            assert script.startswith("#!/bin/sh\nset -eu\nexec /usr/bin/srun ") and "--account=fixed" in script and "/usr/bin/awk" in script
             self.slurm_job = True
             self.mutations.append("sbatch")
             if self.lose_ack == "sbatch":
