@@ -21,7 +21,7 @@ export const COMPUTE_SELF_CONFIRM_NOTICE = '只有你本人点击确认按钮才
 const STATE_LABELS = Object.freeze({
   quoted: '待你确认',
   queued: '已确认，排队等待开通',
-  active: '已开通，作业运行中',
+  active: '任务处理中',
   completed: '已完成',
   failed: '未完成',
 });
@@ -114,7 +114,12 @@ export function formatComputeTime(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-export function computeStateLabel(state) {
+export function computeStateLabel(state, progress) {
+  if (state === 'active') {
+    if (progress?.phase === 'reconcile') return '需核对云端结果，任务暂缓';
+    if (progress?.slurm_state === 'RUNNING') return '已开通，作业运行中';
+    if (progress?.phase === 'slurm_running') return '已提交 Slurm 作业，等待结果';
+  }
   return STATE_LABELS[String(state || '')] || '状态未知';
 }
 

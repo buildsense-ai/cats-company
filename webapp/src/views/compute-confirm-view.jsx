@@ -194,6 +194,7 @@ export default function ComputeConfirmView({ search = '' }) {
     && computeConfirmMaxUnits(run) > 0 && !submitting;
   const progressRows = run ? computeTaskProgressRows(run) : [];
   const ledger = run ? computeLedgerNotice(run) : null;
+  const stateLabel = computeStateLabel(run?.state, run?.progress);
   const loginHref = loginPathForLocation({ pathname: COMPUTE_CONFIRM_PATH, search: String(search || '') });
 
   return (
@@ -232,13 +233,13 @@ export default function ComputeConfirmView({ search = '' }) {
         {run && (
           <>
             <dl className="compute-confirm-facts">
-              <Fact label="任务状态" value={`${computeStateLabel(run.state)}（${run.state || '未知'}）`} />
+              <Fact label="任务状态" value={`${stateLabel}（${run.state || '未知'}）`} />
               <Fact label="报价编号" value={run.quote_id || quoteId} code />
               <Fact label="请求规格" value={taskSpecText(run)} />
               <Fact label="供应商规格" value={skuSpecText(run)} />
               <Fact label="积分上限" value={capFacts(run)} />
               <Fact label="计费费率" value={rateFacts(run)} />
-              <Fact label="报价有效期" value={expiry.label} />
+              <Fact label="报价有效期" value={quoteOpen ? expiry.label : formatComputeTime(run.expires_at)} />
               <Fact
                 label="库存与排队 ETA"
                 value="未知（开通时由平台核实容量，无法提前给出排队时长）"
@@ -278,7 +279,7 @@ export default function ComputeConfirmView({ search = '' }) {
               <section className="compute-confirm-progress" aria-label="开通与回收进度">
                 <h2>开通、作业与回收</h2>
                 <p className="compute-confirm-progress-state" role="status">
-                  {computeStateLabel(run.state)}
+                  {stateLabel}
                   {polling ? `，每 ${Math.round(COMPUTE_POLL_INTERVAL_MS / 1000)} 秒自动刷新` : ''}
                 </p>
                 {progressRows.length > 0 ? (
