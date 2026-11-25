@@ -3,15 +3,16 @@ import { Search, X } from './desktop-icons';
 
 export default function ToolbarSearch({
   id, label, clearLabel, className, value = '', onChange, onSubmit,
-  submitting = false, submitLabel = '搜索',
+  submitting = false, submitLabel = '搜索', focusOnRestore = true,
 }) {
   const [expanded, setExpanded] = useState(Boolean(value));
   const inputRef = useRef(null);
   const triggerRef = useRef(null);
+  const shouldFocus = useRef(focusOnRestore);
   const open = expanded || Boolean(value);
 
   useEffect(() => {
-    if (open) inputRef.current?.focus();
+    if (open && shouldFocus.current) inputRef.current?.focus();
   }, [open]);
 
   const collapse = () => {
@@ -23,7 +24,7 @@ export default function ToolbarSearch({
   if (!open) return (
     <button ref={triggerRef} type='button' className='icon-button cc-skillhub-search-toggle'
       aria-label={label} title={label} aria-expanded={false} aria-controls={id}
-      onClick={() => setExpanded(true)}>
+      onClick={() => { shouldFocus.current = true; setExpanded(true); }}>
       <Search size={16} aria-hidden='true' />
     </button>
   );

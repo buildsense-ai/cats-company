@@ -225,6 +225,17 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
   min-width: 0;
 }
 
+.cc-library-app-actions.cc-skillhub-navigation-tools {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+}
+
+.cc-library-app-actions > .cc-library-search.cc-skillhub-added-search {
+  flex: 0 1 240px;
+}
+
 .cc-library-search {
   box-sizing: border-box;
   display: flex;

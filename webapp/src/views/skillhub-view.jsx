@@ -1195,7 +1195,10 @@ export default function SkillHubView({
   onRegisterSkillHubCatalogue,
   onRefreshSkillHubUpdateSummary,
   onStartPublicationRepair,
+  onRegisterNavigation,
   viewStateRef,
+  embedded = false,
+  agentPickerContainer = null,
 }) {
   const feedback = useFeedback();
   // Keep browsing context in the owning workspace, never Agent authority or a
@@ -2895,6 +2898,9 @@ export default function SkillHubView({
 
   return <MarketplaceProvider key={user?.uid || ''} browseStateRef={browseStateRef}><SkillHubContent
     browseStateRef={browseStateRef}
+    embedded={embedded}
+    agentPickerContainer={agentPickerContainer}
+    onRegisterNavigation={onRegisterNavigation}
     actionNotice={actionNotice}
     activeSection={activeSection}
     addedSkillQuery={addedSkillQuery}
@@ -2931,7 +2937,7 @@ export default function SkillHubView({
     runtimeWorkspaceKnown={runtimeWorkspaceKnown}
     onChangeSection={(section) => {
       setActiveSection(section);
-      if (section === 'added') {
+      if (!embedded && section === 'added') {
         setAddedSkillQuery('');
       }
     }}
@@ -2962,7 +2968,7 @@ export default function SkillHubView({
       setSelectedDeviceID('');
       setRuntimeRouteError('');
       requestedBotSwitchRef.current = nextBotUID;
-      setAddedSkillQuery('');
+      if (!embedded) setAddedSkillQuery('');
       rememberSkillHubBotUID(user?.uid, nextBotUID);
       localRequestRef.current += 1;
       setSelectedBotUID(nextBotUID);

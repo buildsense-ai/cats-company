@@ -211,6 +211,16 @@ function renderWorkspace(location = { pathname: '/', search: '', hash: '' }) {
   root.render(<TinodeWeb location={location} />);
 }
 
+async function openLibraryTab(tab) {
+  if (!container.querySelector('.cc-library-workspace')) {
+    await act(async () => container.querySelector('[aria-label="打开应用与能力"]').click());
+  }
+  const button = container.querySelector(`#cc-library-${tab}-tab`);
+  if (button.getAttribute('aria-selected') !== 'true') {
+    await act(async () => button.click());
+  }
+}
+
 async function selectTestConversation() {
   await act(async () => {
     Simulate.click([...container.querySelectorAll('button')]
@@ -325,7 +335,7 @@ test.each([
   await act(async () => renderWorkspace());
   const store = mocks.emptyProps.composerDraftStore;
   const oldRevision = readComposerDraftRevision(store, key);
-  await act(async () => container.querySelector('[aria-label="打开 SkillHub"]').click());
+  await openLibraryTab('skills');
   const openNewTask = () => [...container.querySelectorAll('button')]
     .find(button => button.textContent === entry).click();
   await act(async () => openNewTask());
@@ -383,8 +393,8 @@ test('only marks the displayed conversation active and retains each tool browse 
   await selectTestConversation();
   expect(container.querySelector('nav').dataset.visibleTopic).toBe('p2p_1_2');
   expect(sendWSActiveTopic).toHaveBeenLastCalledWith('p2p_1_2');
-  for (const [label, refKey] of [['打开应用', 'appsViewStateRef'], ['打开 SkillHub', 'skillHubViewStateRef']]) {
-    await act(async () => container.querySelector(`[aria-label="${label}"]`).click());
+  for (const [tab, refKey] of [['apps', 'appsViewStateRef'], ['skills', 'skillHubViewStateRef']]) {
+    await openLibraryTab(tab);
     expect(container.querySelector('nav').dataset.visibleTopic).toBe('');
     expect(sendWSActiveTopic).toHaveBeenLastCalledWith('');
     const holder = mocks[refKey];
@@ -393,12 +403,23 @@ test('only marks the displayed conversation active and retains each tool browse 
     await selectTestConversation();
     expect(container.querySelector('nav').dataset.visibleTopic).toBe('p2p_1_2');
     expect(sendWSActiveTopic).toHaveBeenLastCalledWith('p2p_1_2');
-    await act(async () => container.querySelector(`[aria-label="${label}"]`).click());
+    await act(async () => container.querySelector('[aria-label="打开应用与能力"]').click());
+    expect(container.querySelector(`#cc-library-${tab}-tab`).getAttribute('aria-selected')).toBe('true');
     expect(mocks[refKey]).toBe(holder);
     expect(mocks[refKey].current.query).toBe('saved browse query');
     await selectTestConversation();
   }
   expect(mocks.appsViewStateRef).not.toBe(mocks.skillHubViewStateRef);
+
+  await openLibraryTab('apps');
+  const tabs = container.querySelector('.cc-library-tabs');
+  const appsTab = tabs.querySelector('#cc-library-apps-tab');
+  appsTab.focus();
+  await act(async () => appsTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })));
+  expect(container.querySelector('.cc-library-tabs')).toBe(tabs);
+  expect(document.activeElement.id).toBe('cc-library-skills-tab');
+  expect(document.activeElement.getAttribute('aria-selected')).toBe('true');
+  expect(container.querySelectorAll('[aria-label="打开应用与能力"]')).toHaveLength(1);
 });
 
 test('opens the combined computer panel without changing the conversation when a desktop connects', async () => {
@@ -413,11 +434,11 @@ test('opens the combined computer panel without changing the conversation when a
 });
 
 test.each([
-  ['打开应用', 'appsSuspense', false],
-  ['打开应用', 'appsSuspense', true],
-  ['打开 SkillHub', 'skillHubSuspense', false],
-  ['打开 SkillHub', 'skillHubSuspense', true],
-])('cancels %s loading on navigation (%s, handoff already started: %s)', async (label, suspenseKey, completed) => {
+  ['apps', 'appsSuspense', false],
+  ['apps', 'appsSuspense', true],
+  ['skills', 'skillHubSuspense', false],
+  ['skills', 'skillHubSuspense', true],
+])('cancels %s loading on navigation (%s, handoff already started: %s)', async (tab, suspenseKey, completed) => {
   let resolvePage;
   const pendingPage = new Promise(resolve => { resolvePage = resolve; });
   const animations = [];
@@ -432,7 +453,7 @@ test.each([
     await act(async () => renderWorkspace());
     await selectTestConversation();
     mocks[suspenseKey] = pendingPage;
-    await act(async () => container.querySelector(`[aria-label="${label}"]`).click());
+    await openLibraryTab(tab);
     const region = container.querySelector('.v3-main-content');
     const loader = region.querySelector('.cc-loading-state');
     expect(loader).not.toBeNull();
@@ -729,8 +750,8 @@ test.each(['Escape', 'close button'])('restores active conversation composer foc
 test('restores SkillHub entry focus when onboarding replay closes over SkillHub', async () => {
   setCachedUser('2026-09-17T23:59:59Z');
   await act(async () => renderWorkspace());
-  const skillHubEntry = container.querySelector('[aria-label="打开 SkillHub"]');
-  await act(async () => skillHubEntry.click());
+  const skillHubEntry = container.querySelector('[aria-label="打开应用与能力"]');
+  await openLibraryTab('skills');
   expect(container.querySelector('[data-testid="skillhub-view"]')).not.toBeNull();
 
   const profileTrigger = container.querySelector('[aria-label="cats，打开个人菜单"]');
@@ -854,10 +875,7 @@ test('restores a draft when returning from SkillHub after the workspace remounts
     Simulate.change(textarea, { target: { value: textarea.value } });
   });
 
-  await act(async () => {
-    Simulate.click(container.querySelector('[aria-label="打开 SkillHub"]'));
-    await Promise.resolve();
-  });
+  await openLibraryTab('skills');
   expect(container.querySelector('[data-testid="skillhub-view"]')).not.toBeNull();
 
   await act(async () => root.unmount());
@@ -890,10 +908,7 @@ test('restores a new-task draft when returning from SkillHub before a session ex
       inputDrafts: [['new-task', 'new task draft survives SkillHub navigation']],
     });
 
-  await act(async () => {
-    Simulate.click(container.querySelector('[aria-label="打开 SkillHub"]'));
-    await Promise.resolve();
-  });
+  await openLibraryTab('skills');
   expect(container.querySelector('[data-testid="skillhub-view"]')).not.toBeNull();
 
   await act(async () => {

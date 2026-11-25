@@ -13,7 +13,7 @@ import {
   LocalAssistantBar,
   SecondaryViewLoading,
   ProfilePopover,
-  SkillHubSidebarButton,
+  LibrarySidebarButton,
   getMobileSidebarWidth,
   resolveInitialUser,
   resolveDisplayedActiveAgent,
@@ -1193,7 +1193,7 @@ describe('SkillHub sidebar update reminder', () => {
   let root;
   let onOpen;
   const renderButton = async (props = {}) => act(async () => {
-    root.render(<SkillHubSidebarButton updateCount={2} onClick={onOpen} {...props} />);
+    root.render(<LibrarySidebarButton updateCount={2} onClick={onOpen} {...props} />);
   });
   const badge = () => container.querySelector('.cc-skillhub-sidebar-update-badge');
   beforeEach(() => {
@@ -1214,9 +1214,9 @@ describe('SkillHub sidebar update reminder', () => {
   it('keeps the available-update count visible after opening SkillHub', async () => {
     await renderButton();
     expect(badge().textContent).toBe('2');
-    expect(container.querySelector('button').getAttribute('aria-label')).toBe('打开 SkillHub，2 项更新待处理');
+    expect(container.querySelector('button').getAttribute('aria-label')).toBe('打开应用与能力，SkillHub 2 项更新待处理');
     await act(async () => container.querySelector('button').click());
-    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith(true);
     await renderButton({ active: true });
     expect(badge().textContent).toBe('2');
   });

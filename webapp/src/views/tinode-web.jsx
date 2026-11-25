@@ -40,6 +40,7 @@ import KnowledgeWikiView from './knowledge-wiki-view';
 import { ARTIFACT_VIEWER_PATH } from '../artifact-preview-coordinator';
 import Avatar from '../widgets/avatar';
 import LoadingState from '../widgets/loading-state';
+import SlidingSegments from '../widgets/sliding-segments';
 
 import BotModelSelector, {
   describeModelApplyError,
@@ -421,6 +422,19 @@ function TinodeWebApp({ location }) {
   const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeView, setActiveView] = useState('chats');
+  const libraryOpen = activeView === 'apps' || activeView === 'skillhub';
+  const [libraryHeaderControls, setLibraryHeaderControls] = useState(null);
+  const libraryTabKey = viewerUid ? `catsco.library.tab.${viewerUid}` : '';
+  const lastLibraryTabRef = useMemo(() => ({
+    current: libraryTabKey && readStorageValue(libraryTabKey) === 'skillhub' ? 'skillhub' : 'apps',
+  }), [libraryTabKey]);
+  const openLibraryTab = (tab, agent = null) => {
+    lastLibraryTabRef.current = tab;
+    if (libraryTabKey) writeStorageValue(libraryTabKey, tab);
+    if (tab === 'skillhub') setSkillHubInitialAgent(agent);
+    setActiveView(tab);
+    setMobileSidebarOpen(false);
+  };
   // Keep browse-only state while switching tools, without sharing it between accounts.
   const appsViewStateRef = useMemo(() => ({ current: null }), [user?.uid]);
   const skillHubViewStateRef = useMemo(() => ({ current: null }), [user?.uid]);
@@ -428,6 +442,11 @@ function TinodeWebApp({ location }) {
   const skillHubUpdateRequestRef = useRef(0);
   const skillHubCatalogueByIDRef = useRef(new Map());
   const [skillHubInitialAgent, setSkillHubInitialAgent] = useState(null);
+  const skillHubNavigateRef = useRef(null);
+  const registerSkillHubNavigation = useCallback((navigate) => {
+    skillHubNavigateRef.current = navigate;
+    return () => { if (skillHubNavigateRef.current === navigate) skillHubNavigateRef.current = null; };
+  }, []);
   const [activeTopic, _setActiveTopic] = useState(() => (
     user?.uid ? readStoredTopic(user.uid) : null
   ));
@@ -1881,9 +1900,7 @@ function TinodeWebApp({ location }) {
             onStartAgentTask={handleStartAgentTask}
             onNewTask={handleNewTask}
             onOpenSkillHub={(agentId, agent) => {
-              setSkillHubInitialAgent(agent || { uid: agentId, id: agentId });
-              setActiveView('skillhub');
-              setMobileSidebarOpen(false);
+              openLibraryTab('skillhub', agent || { uid: agentId, id: agentId });
             }}
             onOpenCloudArtifacts={handleOpenManagedAgentArtifacts}
             newTaskRequest={newTaskRequest}
@@ -1891,24 +1908,15 @@ function TinodeWebApp({ location }) {
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
             additionalSidebarTools={(
-              <>
-                <SkillHubSidebarButton
-                  active={activeView === 'skillhub'}
-                  updateCount={skillHubUpdateSummary.userUid === String(user?.uid) ? skillHubUpdateSummary.total : 0}
-                  onClick={() => {
-                    setSkillHubInitialAgent(null);
-                    setActiveView('skillhub');
-                    setMobileSidebarOpen(false);
-                  }}
-                />
-                <AppsSidebarButton
-                  active={activeView === 'apps'}
-                  onClick={() => {
-                    setActiveView('apps');
-                    setMobileSidebarOpen(false);
-                  }}
-                />
-              </>
+              <LibrarySidebarButton
+                active={libraryOpen}
+                updateCount={skillHubUpdateSummary.userUid === String(user?.uid) ? skillHubUpdateSummary.total : 0}
+                onClick={(hasUpdates) => {
+                  const tab = hasUpdates ? 'skillhub' : lastLibraryTabRef.current;
+                  if (tab !== activeView) openLibraryTab(tab);
+                  else setMobileSidebarOpen(false);
+                }}
+              />
             )}
             onManageGroup={(group) => {
               setManagedGroup(group);
@@ -1993,24 +2001,55 @@ function TinodeWebApp({ location }) {
         </button>
         <div className="v3-main-body">
           {/* A view owns its loading handoff; navigation must retire that region. */}
-          <div key={activeView} data-loading-region="" className="v3-main-content">
-            {activeView === 'apps' ? (
-              <Suspense fallback={<SecondaryViewLoading kind="apps" label="正在读取应用" />}>
-                <AppsView key={user?.uid} user={user} viewStateRef={appsViewStateRef} />
-              </Suspense>
-            ) : activeView === 'skillhub' ? (
-              <Suspense fallback={<SecondaryViewLoading kind="skills" label="正在读取能力" />}>
-                <SkillHubView
-                  key={user?.uid}
-                  user={user}
-                  viewStateRef={skillHubViewStateRef}
-                  initialAgent={skillHubInitialAgent}
-                  skillHubUpdateSummary={skillHubUpdateSummary}
-                  onRegisterSkillHubCatalogue={registerSkillHubCatalogue}
-                  onRefreshSkillHubUpdateSummary={refreshSkillHubUpdateSummary}
-                  onStartPublicationRepair={startPublicationRepair}
-                />
-              </Suspense>
+          <div key={libraryOpen ? 'library' : activeView} data-loading-region="" className="v3-main-content">
+            {libraryOpen ? (
+              <section className="cc-library-workspace" aria-labelledby="cc-library-title">
+                <header className="cc-library-header" data-library-view={activeView}>
+                  <h1 id="cc-library-title">应用与能力</h1>
+                  <SlidingSegments value={activeView} className="cc-library-tabs" keyboardTabs role="tablist" aria-label="应用与能力">
+                    <button type="button" role="tab" id="cc-library-apps-tab" aria-controls="cc-library-apps-panel"
+                      aria-selected={activeView === 'apps'} onClick={() => {
+                        if (activeView === 'apps') return;
+                        const openApps = () => openLibraryTab('apps');
+                        if (skillHubNavigateRef.current) skillHubNavigateRef.current(openApps);
+                        else openApps();
+                      }}>应用</button>
+                    <button type="button" role="tab" id="cc-library-skills-tab" aria-controls="cc-library-skills-panel"
+                      aria-selected={activeView === 'skillhub'} onClick={() => activeView !== 'skillhub' && openLibraryTab('skillhub')}>SkillHub</button>
+                  </SlidingSegments>
+                  <div className={activeView === 'apps' ? 'cc-library-actions-slot' : 'cc-library-agent-slot'}
+                    ref={setLibraryHeaderControls} />
+                </header>
+                <div className="cc-library-panel" role="tabpanel" id="cc-library-apps-panel" aria-labelledby="cc-library-apps-tab"
+                  hidden={activeView !== 'apps'} data-loading-region="">
+                  {activeView === 'apps' && (
+                    <Suspense fallback={<SecondaryViewLoading kind="apps" label="正在读取应用" />}>
+                      <AppsView key={user?.uid} user={user} viewStateRef={appsViewStateRef}
+                        headerControlsContainer={libraryHeaderControls} embedded />
+                    </Suspense>
+                  )}
+                </div>
+                <div className="cc-library-panel" role="tabpanel" id="cc-library-skills-panel" aria-labelledby="cc-library-skills-tab"
+                  hidden={activeView !== 'skillhub'} data-loading-region="">
+                  {activeView === 'skillhub' && (
+                    <Suspense fallback={<SecondaryViewLoading kind="skills" label="正在读取能力" />}>
+                      <SkillHubView
+                        key={user?.uid}
+                        user={user}
+                        agentPickerContainer={libraryHeaderControls}
+                        viewStateRef={skillHubViewStateRef}
+                        initialAgent={skillHubInitialAgent}
+                        skillHubUpdateSummary={skillHubUpdateSummary}
+                        onRegisterSkillHubCatalogue={registerSkillHubCatalogue}
+                        onRefreshSkillHubUpdateSummary={refreshSkillHubUpdateSummary}
+                        onStartPublicationRepair={startPublicationRepair}
+                        onRegisterNavigation={registerSkillHubNavigation}
+                        embedded
+                      />
+                    </Suspense>
+                  )}
+                </div>
+              </section>
             ) : !showOnboardingPreview && activeTopic ? (
               <MessagesView
                 key={composerDraftOwner || 'anonymous'}
@@ -2472,36 +2511,20 @@ function SidebarContent({
   );
 }
 
-export function SkillHubSidebarButton({ active, onClick, updateCount = 0 }) {
+export function LibrarySidebarButton({ active, onClick, updateCount = 0 }) {
   const updateLabel = updateCount > 0 ? `${updateCount} 项更新待处理` : '';
   return (
     <button
       type="button"
       className={`cc-sidebar-primary cc-sidebar-skillhub-entry${active ? ' active' : ''}`}
-      onClick={onClick}
-      aria-label={updateLabel ? `打开 SkillHub，${updateLabel}` : '打开 SkillHub'}
+      onClick={() => onClick?.(updateCount > 0)}
+      aria-label={updateLabel ? `打开应用与能力，SkillHub ${updateLabel}` : '打开应用与能力'}
       aria-current={active ? 'page' : undefined}
-      title={updateLabel ? `SkillHub：${updateLabel}` : 'SkillHub'}
-    >
-      <Package size={17} />
-      <span>SkillHub</span>
-      {updateLabel && <span className="cc-skillhub-sidebar-update-badge" aria-hidden="true">{updateCount}</span>}
-    </button>
-  );
-}
-
-function AppsSidebarButton({ active, onClick }) {
-  return (
-    <button
-      type="button"
-      className={`cc-sidebar-primary cc-sidebar-apps-entry${active ? ' active' : ''}`}
-      onClick={onClick}
-      aria-label="打开应用"
-      aria-current={active ? 'page' : undefined}
-      title="应用"
+      title={updateLabel ? `应用与能力 · SkillHub ${updateLabel}` : '应用与能力'}
     >
       <AppsGrid size={17} aria-hidden="true" />
-      <span>应用</span>
+      <span>应用与能力</span>
+      {updateLabel && <span className="cc-skillhub-sidebar-update-badge" aria-hidden="true">{updateCount}</span>}
     </button>
   );
 }

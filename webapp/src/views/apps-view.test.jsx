@@ -165,6 +165,54 @@ describe('AppsView', () => {
     });
   }
 
+  test('uses one filter panel with removable criteria and keeps the favorites shortcut independent', async () => {
+    const header = document.createElement('div');
+    container.before(header);
+    try {
+      await act(async () => root.render(<AppsView user={{ uid: 7 }} embedded headerControlsContainer={header} />));
+      const favorites = header.querySelector('button[aria-pressed]');
+      const filter = header.querySelector('.cc-library-filter > button');
+      const panel = header.querySelector('.cc-library-filter-panel');
+      expect(titles()).toHaveLength(2);
+      expect(container.querySelector('.cc-apps-toolbar')).toBeNull();
+      expect(panel.hidden).toBe(true);
+      expect(container.querySelector('.cc-library-filter-chips')).toBeNull();
+
+      await act(async () => container.querySelector('[aria-label="收藏 好友应用"]').click());
+      await act(async () => favorites.click());
+      expect(titles()).toEqual(['好友应用']);
+
+      await act(async () => filter.click());
+      expect(panel.hidden).toBe(false);
+      const source = panel.querySelector('[aria-label="来源 Agent"]');
+      await act(async () => source.click());
+      const listbox = document.querySelector('[role="listbox"][aria-label="来源 Agent"]');
+      const agentOption = [...listbox.querySelectorAll('[role="option"]')].find(option => option.textContent.includes('开发者'));
+      await act(async () => {
+        agentOption.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+        agentOption.click();
+      });
+      expect(panel.hidden).toBe(false);
+      expect(document.activeElement).toBe(source);
+      expect(container.querySelector('[aria-label="清除来源 Agent 筛选 开发者"]')).toBeTruthy();
+      await act(async () => panel.querySelector('[role="switch"]').click());
+      expect(titles()).toEqual([]);
+      expect(favorites.getAttribute('aria-pressed')).toBe('true');
+      await act(async () => source.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+      expect(panel.hidden).toBe(true);
+      expect(document.activeElement).toBe(filter);
+
+      await act(async () => container.querySelector('[aria-label="清除我可管理筛选"]').click());
+      expect(titles()).toEqual(['好友应用']);
+      await act(async () => container.querySelector('[aria-label="清除来源 Agent 筛选 开发者"]').click());
+      expect(container.querySelector('.cc-library-filter-chips')).toBeNull();
+      await act(async () => favorites.click());
+      expect(titles()).toHaveLength(2);
+    } finally {
+      header.remove();
+    }
+  });
+
   test('defaults to 全部 and shows owned and friend apps newest first, never Agent cards', async () => {
     localStorage.setItem('catsco.skillhub.selectedBot.7', '42');
     await act(async () => {

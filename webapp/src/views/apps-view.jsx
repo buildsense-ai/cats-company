@@ -1,13 +1,15 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import SlidingSegments from '../widgets/sliding-segments';
 import ToolbarSearch from '../widgets/toolbar-search';
+import LibraryFilter, { LibraryFilterSelect } from '../widgets/library-filter';
 import {
   ArrowLeft,
   Check,
   Pencil,
   Share2,
 } from 'lucide-react';
-import { AppsGrid, AssistantBadge, ExternalLink, MoreHorizontal, RefreshCw, Star } from '../widgets/desktop-icons';
+import { AppsGrid, AssistantBadge, ExternalLink, MoreHorizontal, RefreshCw, Star, X } from '../widgets/desktop-icons';
 import { api } from '../api';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import CustomSelect from '../widgets/custom-select';
@@ -189,7 +191,35 @@ export default function AppsView(props) {
   return <AppsViewSession key={String(props.user?.uid || '')} {...props} />;
 }
 
-function AppsViewSession({ user = null, viewStateRef }) {
+function AppListControls({
+  query, onQueryChange, favoritesOnly, onToggleFavorites, agents, selectedAgentUID, onSelectAgent,
+  manageableOnly, onManageableChange, filterTriggerRef,
+}) {
+  return (
+    <div className="cc-library-app-actions cc-skillhub-navigation-tools" role="group" aria-label="应用列表操作">
+      <ToolbarSearch id="cc-apps-search-input" label="搜索应用" clearLabel="清除应用搜索"
+        className="cc-library-search cc-skillhub-added-search" value={query} onChange={onQueryChange} focusOnRestore={false} />
+      <button type="button" className="cc-library-list-button" aria-pressed={favoritesOnly} onClick={onToggleFavorites}>
+        <Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'} aria-hidden="true" /> 收藏
+      </button>
+      <LibraryFilter label="应用筛选" triggerRef={filterTriggerRef}>
+        <LibraryFilterSelect label="来源 Agent" value={selectedAgentUID} onValueChange={onSelectAgent}>
+          <option value="">全部 Agent</option>
+          {agents.map(agent => <option key={agentUID(agent)} value={agentUID(agent)}>{agentOptionLabel(agent)}</option>)}
+        </LibraryFilterSelect>
+        <div className="cc-library-filter-toggle">
+          <span>我可管理</span>
+          <button type="button" className="oc-settings-switch" role="switch" aria-label="我可管理"
+            aria-checked={manageableOnly} onClick={() => onManageableChange(!manageableOnly)}>
+            <span aria-hidden="true" />
+          </button>
+        </div>
+      </LibraryFilter>
+    </div>
+  );
+}
+
+function AppsViewSession({ user = null, viewStateRef, embedded = false, headerControlsContainer = null }) {
   const userUID = String(user?.uid || '');
   const cachedView = useRef(viewStateRef?.current?.uid === userUID ? viewStateRef.current : null).current;
   const [agents, setAgents] = useState(() => cachedView?.agents || []);
@@ -221,6 +251,7 @@ function AppsViewSession({ user = null, viewStateRef }) {
   const appsRequestRef = useRef(0);
   const launchRequestRef = useRef(0);
   const listRef = useRef(null);
+  const filterTriggerRef = useRef(null);
   const listScrollTopRef = useRef(cachedView?.scrollTop || 0);
 
   // Keep only catalogue data and browsing choices. Viewer URLs carry short-lived
@@ -388,7 +419,10 @@ function AppsViewSession({ user = null, viewStateRef }) {
       || appTitle(left).localeCompare(appTitle(right), 'zh-CN')), [apps, selectedAgentUID, manageableOnly, favoritesOnly, favoriteKeys, query]);
   const selectedAgent = agents.find((agent) => agentUID(agent) === selectedAgentUID);
   const emptyTitle = query.trim() ? '没有找到匹配的应用' : favoritesOnly ? '当前范围内还没有收藏的应用' : manageableOnly ? '当前范围内没有可管理的应用' : selectedAgent ? '这个 Agent 还没有共享应用' : '还没有共享应用';
-  const emptyCopy = query.trim() ? '换一个关键词，或清除搜索后查看全部。' : favoritesOnly ? '点击应用卡片上的星标，即可在这里快速找到它。' : manageableOnly ? '切换到「全部应用」可继续浏览共享应用。' : 'Agent 分享的应用会出现在这里。';
+  const emptyCopy = query.trim() ? '换一个关键词，或清除搜索后查看全部。'
+    : embedded && (selectedAgent || manageableOnly) ? '调整筛选条件可浏览其他共享应用。'
+    : favoritesOnly ? '点击应用卡片上的星标，即可在这里快速找到它。'
+    : manageableOnly ? '切换到「全部应用」可继续浏览共享应用。' : 'Agent 分享的应用会出现在这里。';
   const listError = error || (failedAgentUIDs.includes(selectedAgentUID)
     ? '这个 Agent 的应用暂时无法加载，请重试。'
     : !selectedAgentUID && failedAgentUIDs.length > 0
@@ -477,36 +511,50 @@ function AppsViewSession({ user = null, viewStateRef }) {
     );
   }
 
+  const agentFilter = (
+    <div className="cc-skillhub-agent-context cc-apps-agent-filter">
+      <label className="cc-skillhub-bot-picker">
+        <span className="cc-skillhub-agent-label"><AssistantBadge size={15} aria-hidden="true" /> 来源 Agent</span>
+        <span className="cc-skillhub-select-wrap">
+          <CustomSelect
+            ariaLabel="选择 Agent"
+            className="cc-skillhub-agent-select"
+            density="comfortable"
+            listboxAriaLabel="Agent 列表"
+            menuClassName="cc-skillhub-agent-options"
+            selectedLabelTitle={selectedAgent ? agentOptionLabel(selectedAgent) : '全部 Agent'}
+            triggerClassName="cc-skillhub-agent-select-trigger"
+            value={selectedAgentUID}
+            onValueChange={setSelectedAgentUID}
+          >
+            <option value="" data-title="全部 Agent">全部 Agent</option>
+            {agents.map((agent) => <option key={agentUID(agent)} value={agentUID(agent)} data-title={agentOptionLabel(agent)}>{agentOptionLabel(agent)}</option>)}
+          </CustomSelect>
+        </span>
+      </label>
+    </div>
+  );
   return (
     <section ref={listRef} className="cc-apps-page" data-loading-region="" aria-label="共享应用" aria-busy={loading} onScroll={rememberListScroll}>
-      <header className="cc-apps-header">
-        <div>
-          <h1>应用</h1>
-          <p className="cc-apps-intro">{selectedAgent ? `${agentTitle(selectedAgent)}分享的应用` : '来自我的 Agent 和好友 Agent 的共享应用'}</p>
-        </div>
-        <div className="cc-skillhub-agent-context cc-apps-agent-filter">
-          <label className="cc-skillhub-bot-picker">
-            <span className="cc-skillhub-agent-label"><AssistantBadge size={15} aria-hidden="true" /> 来源 Agent</span>
-            <span className="cc-skillhub-select-wrap">
-              <CustomSelect
-                ariaLabel="选择 Agent"
-                className="cc-skillhub-agent-select"
-                density="comfortable"
-                listboxAriaLabel="Agent 列表"
-                menuClassName="cc-skillhub-agent-options"
-                selectedLabelTitle={selectedAgent ? agentOptionLabel(selectedAgent) : '全部 Agent'}
-                triggerClassName="cc-skillhub-agent-select-trigger"
-                value={selectedAgentUID}
-                onValueChange={setSelectedAgentUID}
-              >
-                <option value="" data-title="全部 Agent">全部 Agent</option>
-                {agents.map((agent) => <option key={agentUID(agent)} value={agentUID(agent)} data-title={agentOptionLabel(agent)}>{agentOptionLabel(agent)}</option>)}
-              </CustomSelect>
-            </span>
-          </label>
-        </div>
-      </header>
-      <div className="cc-apps-toolbar">
+      {embedded && headerControlsContainer && createPortal(
+        <AppListControls
+          query={query} onQueryChange={setQuery}
+          favoritesOnly={favoritesOnly} onToggleFavorites={() => setFavoritesOnly(current => !current)}
+          agents={agents} selectedAgentUID={selectedAgentUID} onSelectAgent={setSelectedAgentUID}
+          manageableOnly={manageableOnly} onManageableChange={setManageableOnly} filterTriggerRef={filterTriggerRef}
+        />,
+        headerControlsContainer,
+      )}
+      {!embedded && (
+        <header className="cc-apps-header">
+          <div>
+            <h1>应用</h1>
+            <p className="cc-apps-intro">{selectedAgent ? `${agentTitle(selectedAgent)}分享的应用` : '来自我的 Agent 和好友 Agent 的共享应用'}</p>
+          </div>
+          {agentFilter}
+        </header>
+      )}
+      {!embedded && <div className="cc-apps-toolbar">
         <div className="cc-apps-toolbar-filters">
           <SlidingSegments value={manageableOnly ? 'manageable' : favoritesOnly ? 'favorites' : 'all'} className="cc-apps-scope" role="group" aria-label="应用范围">
             <button type="button" aria-pressed={!manageableOnly && !favoritesOnly} onClick={() => { setManageableOnly(false); setFavoritesOnly(false); }}>全部应用</button>
@@ -521,7 +569,23 @@ function AppsViewSession({ user = null, viewStateRef }) {
             <RefreshCw size={16} aria-hidden="true" className={loading ? 'is-spinning' : ''} />
           </button>
         </div>
-      </div>
+      </div>}
+      {embedded && (selectedAgent || manageableOnly) && (
+        <div className="cc-library-filter-chips" role="group" aria-label="已选筛选条件">
+          {selectedAgent && (
+            <button type="button" aria-label={`清除来源 Agent 筛选 ${agentTitle(selectedAgent)}`}
+              onClick={() => { setSelectedAgentUID(''); filterTriggerRef.current?.focus(); }}>
+              <span>{agentTitle(selectedAgent)}</span><X size={14} aria-hidden="true" />
+            </button>
+          )}
+          {manageableOnly && (
+            <button type="button" aria-label="清除我可管理筛选"
+              onClick={() => { setManageableOnly(false); filterTriggerRef.current?.focus(); }}>
+              <span>我可管理</span><X size={14} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )}
 
       {loading && <span className="cc-apps-loading-announcement" role="status">{loadingSummary || '正在加载共享应用…'}</span>}
       {loading && loadingSummary && <div className="cc-apps-loading-progress" aria-hidden="true">{loadingSummary}</div>}
