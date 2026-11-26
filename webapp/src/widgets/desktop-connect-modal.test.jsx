@@ -120,7 +120,7 @@ describe('DesktopConnectModal', () => {
     expect(container.textContent).not.toContain('新手指引');
   });
 
-  test('shows conversation selection, connection and downloads in one computer panel', async () => {
+  test('keeps downloads in the connection flow and returns to the task selection', async () => {
     const devices = [{ deviceId: 'office', displayName: '办公电脑', runtimeRole: 'desktop', routable: true }];
     api.getDevices.mockResolvedValue({ devices });
     api.getConversationDevice.mockResolvedValue({ status: 'selected', selected_device_id: 'office', revision: 'r1', agent_name: '工作助手', devices });
@@ -128,7 +128,7 @@ describe('DesktopConnectModal', () => {
     await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" topicId="p2p_38_42" activeAgent={{ uid: 42 }} onClose={onClose} />));
     expect(container.querySelectorAll('[role=dialog]')).toHaveLength(1);
     expect(container.querySelectorAll('h3')).toHaveLength(1);
-    expect(container.querySelector('h3').textContent).toBe('设备');
+    expect(container.querySelector('h3').textContent).toBe('任务设备');
     expect(container.querySelectorAll('.cc-device-option')).toHaveLength(2);
     expect(container.querySelector('.catsco-device-card')).toBeNull();
     expect(container.querySelector('.catsco-onboarding-replay')).toBeNull();
@@ -136,94 +136,84 @@ describe('DesktopConnectModal', () => {
     expect(container.textContent).not.toContain('最近活动');
     expect(container.textContent).toContain('连接本机');
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
-    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '下载桌面端').click());
+    const clickText = text => act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === text).click());
+    expect(container.textContent).not.toContain('下载桌面端');
+    await clickText('连接本机');
+    await clickText('下载桌面端');
     expect(container.querySelector('.catsco-download-card-primary')).not.toBeNull();
     expect(container.querySelectorAll('[role=dialog]')).toHaveLength(1);
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  test.each(['p2p_38_42', 'grp_38'])('keeps one conversation device list during multi-desktop connection and reselection (%s)', async topicId => {
-    vi.useFakeTimers();
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
-    const devices = [
-      { deviceId: 'office', displayName: '办公电脑', runtimeRole: 'desktop', routable: true },
-      { deviceId: 'home', displayName: '家里电脑', runtimeRole: 'desktop', routable: true },
-    ];
-    api.getDevices.mockResolvedValue({ devices });
-    const group = topicId.startsWith('grp_');
-    devices.forEach(device => { device.ownerUserId = 'usr38'; });
-    api.getGroupDeviceShares.mockResolvedValue({
-      actor_uid: 38, shares: [], devices: [],
-      members: [{ user_id: 38 }, { user_id: 39, username: 'Bob' }, { user_id: 42, is_bot: true, username: 'Bot' }],
-    });
-    const snapshot = { status: 'selected', selected_device_id: 'office', revision: 'r1', devices };
-    api.getConversationDevice.mockResolvedValue(snapshot);
-    api.confirmConversationDevice.mockResolvedValue({ ...snapshot, selected_device_id: 'home', revision: 'r2' });
-    api.createDesktopConnectSession.mockResolvedValue({ code: 'legacy-code' });
-    api.getDesktopConnectStatus.mockResolvedValue({ state: 'claimed' });
-    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" topicId={topicId} activeAgent={{ uid: 42 }} onClose={vi.fn()} />));
-    const expectSingleList = () => {
-      if (group) {
-        expect(container.querySelectorAll('.cc-group-devices')).toHaveLength(1);
-        expect(container.querySelectorAll('.cc-group-devices input[type=radio]')).toHaveLength(3);
-        expect(container.querySelector('#catsco-desktop-modal-title').textContent).toBe('设备与授权');
-        expect(container.querySelectorAll('.cc-group-devices h2')).toHaveLength(0);
-      } else {
-        expect(container.querySelectorAll('[role="group"][aria-label="我的设备"]')).toHaveLength(1);
-        expect(container.querySelectorAll('.cc-device-option')).toHaveLength(3);
-      }
-      expect(container.querySelector('.catsco-device-card')).toBeNull();
-      expect(container.querySelector('[aria-label^="设为本机"]')).toBeNull();
-    };
-    expectSingleList();
-    await act(async () => {
-      container.querySelector('.catsco-connect-actions button').click();
-      await vi.advanceTimersByTimeAsync(2000);
-    });
-    expect(container.textContent).toContain('选择本机桌面设备');
-    expectSingleList();
-    if (group) {
-      api.getConversationDevice.mockResolvedValue({ ...snapshot, selected_device_id: 'home', revision: 'r2' });
-      await act(async () => Simulate.change(container.querySelector('input[type=radio][aria-label*="家里电脑"]')));
-      expect(api.confirmConversationDevice).not.toHaveBeenCalled();
-      await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '确认').click());
-      expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith(topicId, 'usr42', 'home', 'r1', 38);
-      expect(container.querySelector('input[type=radio][aria-label*="家里电脑"]').checked).toBe(true);
-    } else {
-      await act(async () => Simulate.change(container.querySelector('input[value="home"]')));
-      await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '确认').click());
-      expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith(topicId, 42, 'home', 'r1');
-      expect(container.querySelector('input[value="home"]').checked).toBe(true);
-    }
-    expectSingleList();
-
-    // A remembered browser-local computer must not introduce a second list
-    // when the user reopens its selection flow alongside a conversation.
-    await act(async () => root.unmount());
-    window.localStorage.setItem('catsco_preferred_desktop_device:v1:38', 'office');
-    root = createRoot(container);
-    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" topicId={topicId} activeAgent={{ uid: 42 }} onClose={vi.fn()} />));
-    await act(async () => container.querySelector('.catsco-connect-actions button').click());
-    await act(async () => container.querySelector('.catsco-connect-reselect').click());
-    expectSingleList();
+  test('only shows group authorization controls for the group entry', async () => {
+    api.getGroupDeviceShares.mockResolvedValue({ actor_uid: 38, shares: [], devices: [], members: [] });
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="group-devices" topicId="grp_38" onClose={vi.fn()} />));
+    expect(container.querySelector('h3').textContent).toBe('设备与授权');
+    expect(container.querySelector('.cc-group-devices')).not.toBeNull();
+    expect(container.textContent).not.toContain('连接本机');
+    expect(container.textContent).not.toContain('下载桌面端');
   });
 
-  test('places computers above the actions without exposing tool capabilities', async () => {
-    api.getDevices.mockResolvedValue({ devices: [{
-      deviceId: 'office-pc', displayName: 'Office PC', runtimeRole: 'desktop', routable: true,
-      capabilities: ['read_file', 'execute_shell'],
-    }] });
-    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" onClose={vi.fn()} />));
-    const devices = container.querySelector('.catsco-device-section');
-    const actions = container.querySelector('.catsco-connect-actions');
-    expect(devices.textContent).toContain('我的设备');
-    expect(devices.textContent).toContain('Office PC');
-    expect(devices.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(container.querySelector('[aria-label="设备能力"]')).toBeNull();
-    expect(container.textContent).not.toContain('read_file');
-    expect(container.textContent).not.toContain('execute_shell');
-    expect(devices.querySelector('[aria-label="解绑设备 Office PC"]')).not.toBeNull();
+  test('retains the correct owner for same-ID computers in a group-backed solo task', async () => {
+    const snapshot = { status: 'selected', selected_owner_uid: 39, selected_device_id: 'pc', revision: 'r1', devices: [
+      { ownerUserId: 'usr39', deviceId: 'pc', displayName: '他人电脑', routable: true },
+      { ownerUserId: 'usr38', deviceId: 'pc', displayName: '办公电脑', routable: true },
+    ] };
+    api.getConversationDevice.mockResolvedValue(snapshot);
+    api.confirmConversationDevice.mockResolvedValue({ ...snapshot, selected_owner_uid: 38, revision: 'r2' });
+    const onClose = vi.fn();
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" topicId="grp_38" activeAgent={{ uid: 42 }} onClose={onClose} />));
+    expect(container.querySelector('.cc-group-devices')).toBeNull();
+    expect(container.querySelector('input:checked').closest('label').textContent).toContain('他人电脑');
+    await act(async () => Simulate.change(container.querySelector('input[value="pc"]')));
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '确认').click());
+    expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('grp_38', 42, 'pc', 'r1');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  test('selects only an owned desktop for a draft after confirmation and does not infer it from browser preference', async () => {
+    window.localStorage.setItem('catsco_preferred_desktop_device:v1:38', 'office');
+    api.getDevices.mockResolvedValue({ devices: [
+      { deviceId: 'office', displayName: '办公电脑', runtimeRole: 'desktop', routable: true, ownerUserId: 'usr38' },
+      { deviceId: 'off', displayName: '离线电脑', runtimeRole: 'desktop', routable: false },
+      { deviceId: 'server', runtimeRole: 'server', routable: true },
+      { deviceId: 'other', runtimeRole: 'desktop', routable: true, ownerUserId: 'usr99' },
+    ] });
+    const changed = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const onClose = vi.fn();
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" activeAgent={{ uid: 42 }} onDraftDeviceChange={changed} onClose={onClose} />));
+    expect(container.querySelectorAll('[type=radio]')).toHaveLength(3);
+    expect(container.querySelector('input:checked').value).toBe('');
+    expect(container.querySelector('input[value=off]').disabled).toBe(true);
+    await act(async () => Simulate.change(container.querySelector('input[value=office]')));
+    expect(changed).not.toHaveBeenCalled();
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '确认').click());
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '确认').click());
+    expect(changed.mock.calls).toEqual([['office'], ['office']]);
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(api.confirmConversationDevice).not.toHaveBeenCalled();
+  });
+
+  test('returns to cloud selection after connecting a computer without redirecting the new task', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const devices = [{ deviceId: 'pc', displayName: '办公电脑', runtimeRole: 'desktop', routable: true }];
+    api.getDevices.mockResolvedValue({ devices });
+    api.createDesktopConnectSession.mockResolvedValue({ code: 'connect' });
+    api.getDesktopConnectStatus.mockResolvedValue({ state: 'claimed', device_id: 'pc' });
+    const changed = vi.fn(), connected = vi.fn();
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers"
+      onDraftDeviceChange={changed} onConnected={connected} onClose={vi.fn()} />));
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '连接本机').click());
+    await act(async () => container.querySelector('.catsco-connect-actions button').click());
+    await act(async () => vi.advanceTimersByTimeAsync(2700));
+    expect(connected).toHaveBeenCalledOnce();
+    expect(container.querySelector('h3').textContent).toBe('任务设备');
+    expect(container.querySelector('input:checked').value).toBe('');
+    expect(changed).not.toHaveBeenCalled();
+    expect(api.confirmConversationDevice).not.toHaveBeenCalled();
   });
 
   test('loads computers before showing a list or empty state and preserves it during refresh', async () => {
@@ -232,16 +222,16 @@ describe('DesktopConnectModal', () => {
     api.getDevices.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" onClose={vi.fn()} />));
     expect(container.querySelector('.cc-computer-list-region [data-loading-kind="connect"]')).not.toBeNull();
-    expect(container.textContent).not.toContain('暂无设备');
+    expect(container.textContent).not.toContain('暂无已连接的电脑');
     expect(container.querySelector('.catsco-device-card')).toBeNull();
     const snapshot = { devices: [{ deviceId: 'office', displayName: 'Office PC', runtimeRole: 'desktop', routable: true }] };
     await act(async () => finish(snapshot));
     expect(container.querySelector('.cc-computer-list-region [data-loading-kind]')).toBeNull();
-    expect(container.querySelector('.catsco-device-card').textContent).toContain('Office PC');
+    expect(container.querySelector('.cc-device-list').textContent).toContain('Office PC');
     let refresh;
     api.getDevices.mockImplementationOnce(() => new Promise(resolve => { refresh = resolve; }));
-    await act(async () => vi.advanceTimersByTime(5000));
-    expect(container.querySelector('.catsco-device-card').textContent).toContain('Office PC');
+    await act(async () => container.querySelector('[aria-label="刷新设备列表"]').click());
+    expect(container.querySelector('.cc-device-list').textContent).toContain('Office PC');
     expect(container.querySelector('.cc-computer-list-region [data-loading-kind]')).toBeNull();
     await act(async () => refresh(snapshot));
   });
@@ -251,14 +241,14 @@ describe('DesktopConnectModal', () => {
     api.getDevices.mockRejectedValueOnce(new Error('offline'));
     await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" onClose={vi.fn()} />));
     expect(container.querySelector('[role="alert"]').textContent).toContain('暂时无法读取设备');
-    expect(container.textContent).not.toContain('暂无设备');
+    expect(container.textContent).not.toContain('暂无已连接的电脑');
     let finish;
     api.getDevices.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '重新读取设备').click());
+    await act(async () => container.querySelector('[aria-label="刷新设备列表"]').click());
     expect(container.querySelector('.cc-computer-list-region [data-loading-kind="connect"]')).not.toBeNull();
     await act(async () => finish({ devices: [] }));
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(container.textContent).toContain('暂无设备');
+    expect(container.textContent).toContain('暂无已连接的电脑');
     expect(container.querySelector('.cc-computer-list-region [data-loading-kind]')).toBeNull();
   });
 

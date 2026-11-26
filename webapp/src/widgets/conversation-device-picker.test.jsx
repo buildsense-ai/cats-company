@@ -48,6 +48,14 @@ describe('ConversationDevicePicker', () => {
   const click = async (element) => { await act(async () => Simulate.click(element)); };
   const button = (text) => [...document.querySelectorAll('button')].find((element) => element.textContent === text);
   const open = async () => click(container.querySelector('.cc-device-trigger'));
+  const selectMemberPermission = async () => {
+    await click(button('成员授权'));
+    await act(async () => Simulate.change(document.querySelector('input[type=checkbox]'), { target: { checked: true } }));
+  };
+  const selectGroupComputer = async () => {
+    await click(button('助手设备'));
+    await act(async () => Simulate.change(document.querySelector('input[type=radio][aria-label^="为 Cloud Bot 选择"]')));
+  };
 
   it('shows same names with IDs and offline devices, only commits after confirmation', async () => {
     await render(); await open();
@@ -156,7 +164,7 @@ describe('ConversationDevicePicker', () => {
     await render('grp_1');
     await act(async () => old.resolve({ ...directory, status: 'selected', selected_device_id: 'old-private', devices: [{ deviceId: 'old-private', displayName: 'PRIVATE' }] }));
     expect(container.textContent).not.toContain('PRIVATE');
-    expect(api.getConversationDevice).toHaveBeenCalledWith('grp_1', 'usr42');
+    expect(api.getConversationDevice.mock.calls.map(([topic, bot]) => [topic, bot])).toContainEqual(['grp_1', 'usr42']);
   });
 
   it('clears data and ignores an in-flight confirmation after logout', async () => {
@@ -179,14 +187,27 @@ describe('ConversationDevicePicker', () => {
     expect(button('确认').disabled).toBe(true);
   });
 
-  it('shows a separate default-device column for each group Bot', async () => {
+  it('switches assistants and member permissions in separate keyboard-accessible tabs', async () => {
     api.getConversationDevice.mockImplementation(async (_topic, agent) => agent ? directory : { status: 'choose_agent', agents: [{ uid: 'usr42', display_name: 'Cloud Bot' }, { uid: 'usr43', display_name: 'Other Bot' }] });
     await render('grp_1', null); await open();
-    expect(api.getConversationDevice).toHaveBeenCalledWith('grp_1', 'usr42');
-    expect(api.getConversationDevice).toHaveBeenCalledWith('grp_1', 'usr43');
-    expect(document.querySelector('[role=dialog]').textContent).toContain('共享使用权');
+    const requested = api.getConversationDevice.mock.calls.map(([topic, bot]) => [topic, bot]);
+    expect(requested).toContainEqual(['grp_1', 'usr42']);
+    expect(requested).toContainEqual(['grp_1', 'usr43']);
+    const devicesTab = button('助手设备'), membersTab = button('成员授权');
+    expect(devicesTab.getAttribute('aria-selected')).toBe('true');
+    expect(membersTab.getAttribute('aria-selected')).toBe('false');
+    devicesTab.focus();
+    await act(async () => devicesTab.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight', bubbles:true, cancelable:true})));
+    expect(document.activeElement).toBe(membersTab);
+    expect(membersTab.getAttribute('aria-selected')).toBe('true');
     expect(document.querySelectorAll('input[type=checkbox]')).toHaveLength(3);
-    expect(document.querySelectorAll('input[type=radio]')).toHaveLength(8);
+    await act(async () => membersTab.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowLeft', bubbles:true, cancelable:true})));
+    expect(document.activeElement).toBe(devicesTab);
+    expect(devicesTab.getAttribute('aria-selected')).toBe('true');
+    expect(document.querySelectorAll('input[type=radio]')).toHaveLength(4);
+    await click(document.querySelector('[aria-label="选择群内助手"]'));
+    await click([...document.querySelectorAll('[role=option]')].find(option => option.textContent === 'Other Bot'));
+    expect(document.querySelector('input[aria-label="为 Other Bot 切换到云端"]')).not.toBeNull();
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
     expect(document.querySelector('[role=dialog]')).not.toBeNull();
   });
@@ -201,18 +222,16 @@ describe('ConversationDevicePicker', () => {
       ...directory, devices: [{ ...shared, routable: bot === 'usr42', unavailableReason: bot === 'usr43' ? 'group_device_share_upgrade_required' : '' }],
     }));
     await render('grp_1'); await open();
-    const radios = [...document.querySelectorAll('input[type=radio]')].filter(input => input.getAttribute('aria-label').includes('pcB'));
-    expect(radios).toHaveLength(2);
-    expect(radios[0].disabled).toBe(false);
-    expect(radios[1].disabled).toBe(true);
-    expect(radios[1].title).toContain('升级');
-    const panel = document.querySelector('[role=dialog]');
-    expect(panel.querySelectorAll('table')).toHaveLength(1);
-    expect(panel.querySelectorAll('thead')).toHaveLength(1);
-    const sharedRow = radios[0].closest('tr');
-    expect(sharedRow.querySelector('td[colspan="2"]').textContent).toBe('由 Bob 授权');
-    expect(sharedRow.querySelector('input[type=checkbox]')).toBeNull();
-    await act(async () => Simulate.change(radios[0]));
+    const sharedRadio = () => document.querySelector('input[type=radio][aria-label*="pcB"]');
+    expect(sharedRadio().disabled).toBe(false);
+    expect(sharedRadio().closest('label').textContent).toContain('由 Bob 授权');
+    expect(document.querySelector('input[type=checkbox][aria-label*="pcB"]')).toBeNull();
+    await act(async () => Simulate.change(sharedRadio()));
+    await click(document.querySelector('[aria-label="选择群内助手"]'));
+    await click([...document.querySelectorAll('[role=option]')].find(option => option.textContent === 'Old'));
+    expect(sharedRadio().disabled).toBe(true);
+    expect(sharedRadio().title).toContain('升级');
+    expect(button('确认').disabled).toBe(false);
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
     await click(button('确认'));
     expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('grp_1', 'usr42', 'pcB', 'r1', 8);
@@ -228,13 +247,13 @@ describe('ConversationDevicePicker', () => {
   });
   it('keeps group sharing and default edits local until confirmation', async () => {
     await render('grp_1'); await open();
-    const checkbox = document.querySelector('input[type=checkbox]');
-    const radio = document.querySelector('input[type=radio][aria-label^="为 Cloud Bot 选择"]');
-    await act(async () => Simulate.change(checkbox, { target: { checked: true } }));
-    await act(async () => Simulate.change(radio));
+    await selectMemberPermission();
+    await selectGroupComputer();
+    await click(button('成员授权'));
+    expect(document.querySelector('input[type=checkbox]').checked).toBe(true);
     expect(api.setGroupDeviceShare).not.toHaveBeenCalled();
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
-    expect(document.querySelector('[role=dialog]').textContent).toContain('2 项待确认');
+    expect(document.querySelector('[role=dialog]').textContent).not.toContain('项待确认');
     await click(button('确认'));
     expect(api.setGroupDeviceShare).toHaveBeenCalledExactlyOnceWith({ action: 'share', topic_id: 'grp_1', grantee_uid: 8, device_id: 'a', expected_revision: 0, expected_operations: ['read_file', 'execute_shell'] });
     expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('grp_1', 'usr42', 'a', 'r1', 7);
@@ -246,16 +265,20 @@ describe('ConversationDevicePicker', () => {
       return directory;
     });
     await render('grp_1'); await open();
-    expect(document.querySelector('[role=dialog]').querySelector('[aria-label="设备与授权表格"]')).not.toBeNull();
+    expect(document.querySelector('[role=dialog] [aria-label="Cloud Bot 的设备"]')).not.toBeNull();
     const radios = [...document.querySelectorAll('input[type=radio]')];
     expect(radios.some(input => !input.disabled)).toBe(true);
   });
 
   it('cancels draft group edits without saving', async () => {
     await render('grp_1'); await open();
-    await act(async () => Simulate.change(document.querySelector('input[type=checkbox]'), { target: { checked: true } }));
+    expect(button('取消更改').disabled).toBe(true);
+    expect(button('确认').disabled).toBe(true);
+    await selectMemberPermission();
+    expect(button('确认').disabled).toBe(false);
     await click(button('取消更改'));
     expect(document.querySelector('input[type=checkbox]').checked).toBe(false);
+    expect(button('取消更改').disabled).toBe(true);
     expect(button('确认').disabled).toBe(true);
     expect(api.setGroupDeviceShare).not.toHaveBeenCalled();
   });
@@ -276,7 +299,7 @@ describe('ConversationDevicePicker', () => {
     api.getConversationDevice.mockResolvedValue({ ...directory, status: 'selected', selected_device_id: 'a', selected_owner_uid: 7 });
     await render('grp_1'); await open();
     const cloud = document.querySelector('input[aria-label="为 Cloud Bot 切换到云端"]');
-    expect(cloud.closest('tr').querySelector('th').textContent.trim()).toBe('云端');
+    expect(cloud.closest('label').textContent.trim()).toBe('云端');
     await act(async () => Simulate.change(cloud));
     expect(api.confirmConversationDevice).not.toHaveBeenCalled();
     await click(button('确认'));
@@ -307,10 +330,8 @@ describe('ConversationDevicePicker', () => {
   it('does not retry a partially committed group confirmation', async () => {
     api.confirmConversationDevice.mockRejectedValue(new Error('timeout'));
     await render('grp_1'); await open();
-    await act(async () => {
-      Simulate.change(document.querySelector('input[type=checkbox]'), { target: { checked: true } });
-      Simulate.change(document.querySelector('input[type=radio][aria-label^="为 Cloud Bot 选择"]'));
-    });
+    await selectMemberPermission();
+    await selectGroupComputer();
     await click(button('确认'));
     expect(document.querySelector('[role=alert]').textContent).toContain('已确认 1 项');
     expect(button('确认').disabled).toBe(true);
@@ -323,10 +344,8 @@ describe('ConversationDevicePicker', () => {
     const pending = deferred();
     api.setGroupDeviceShare.mockReturnValue(pending.promise);
     await render('grp_1'); await open();
-    await act(async () => {
-      Simulate.change(document.querySelector('input[type=checkbox]'), { target: { checked: true } });
-      Simulate.change(document.querySelector('input[type=radio][aria-label^="为 Cloud Bot 选择"]'));
-    });
+    await selectMemberPermission();
+    await selectGroupComputer();
     await click(button('确认'));
     await act(async () => {
       auth.token = 'next-user'; auth.revision++;

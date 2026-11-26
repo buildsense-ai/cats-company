@@ -906,12 +906,12 @@
 }
 
 @media (min-width: 769px) {
-  .v3-shell-actions > :is(.cc-device-trigger, .v3-cloud-action) {
+  .v3-shell-actions > :is(.cc-collaboration-trigger, .cc-device-trigger, .v3-cloud-action) {
     width: var(--cc-header-action-size);
     height: var(--cc-header-action-size);
   }
 
-  .v3-shell-actions > :is(.cc-device-trigger, .v3-cloud-action) > svg {
+  .v3-shell-actions > :is(.cc-collaboration-trigger, .cc-device-trigger, .v3-cloud-action) > svg {
     width: var(--cc-header-action-icon-size);
     height: var(--cc-header-action-icon-size);
   }

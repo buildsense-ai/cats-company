@@ -81,11 +81,13 @@ function normalizeTaskContext(value) {
   const projectId = Number.isFinite(candidateProjectId) && candidateProjectId > 0
     ? candidateProjectId
     : 0;
-  if (!agent && projectId === 0) return null;
+  const deviceId = typeof value.deviceId === 'string' ? value.deviceId.trim() : '';
+  if (!agent && projectId === 0 && !deviceId) return null;
   return {
     agent,
     projectId,
     projectName: projectId > 0 ? String(value.projectName || '') : '',
+    ...(deviceId && { deviceId }),
   };
 }
 

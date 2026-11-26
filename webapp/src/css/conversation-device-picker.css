@@ -16,19 +16,47 @@
 .cc-device-option input { flex: none; }
 .cc-device-error { color: #b34236; }
 .cc-device-selection { min-width: 0; color: var(--cc-text); }
-.cc-device-selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--cc-text-secondary); font-size: 13px; }
+.cc-device-selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: var(--cc-text-secondary); font-size: 13px; }
 .cc-device-selection-heading > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .cc-device-selection button { border: 0; border-radius: 6px; background: var(--cc-secondary-action-bg, var(--cc-hover)); color: var(--cc-text); padding: 8px 12px; font: inherit; font-size: 13px; cursor: pointer; }
 .cc-device-selection button:hover:not(:disabled) { background: var(--cc-hover); }
 .cc-device-selection button:disabled { opacity: .5; cursor: default; }
-.cc-device-selection-heading button { display: grid; place-items: center; flex: none; min-width: 32px; height: 32px; padding: 0 8px; }
+:is(.cc-device-selection-heading, .cc-group-device-heading) > .cc-device-refresh {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cc-radius-md, 8px);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  cursor: pointer;
+}
+:is(.cc-device-selection-heading, .cc-group-device-heading) > .cc-device-refresh:hover:not(:disabled) { color: var(--cc-text); background: var(--cc-hover); }
+:is(.cc-device-selection-heading, .cc-group-device-heading) > .cc-device-refresh:active:not(:disabled) { background: var(--cc-pressed); }
+@media (pointer: coarse) {
+  :is(.cc-device-selection-heading, .cc-group-device-heading) > .cc-device-refresh { width: 44px; height: 44px; }
+}
 .cc-device-selection p { margin: 12px 0; font-size: 13px; line-height: 1.6; }
+.cc-device-selection .cc-task-device-actions { border-top: 1px solid var(--cc-border); margin-top: 12px; padding-top: 14px; }
+.cc-task-device-actions button:first-child:not(:only-child) { margin-right: auto; }
+.cc-device-selection .cc-task-device-actions button { min-height: 36px; padding: 0 16px; }
+.catsco-desktop-connect-modal.is-computers .cc-settings-secondary-header-copy { flex: 1; }
 .cc-device-selection footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 .cc-device-selection footer p { flex: 1; margin: 0; }
 .cc-device-selection footer button { flex: none; }
 .cc-device-option:has(input:enabled) { cursor: pointer; }
+.cc-device-selection .cc-device-option { border: 0; padding: 10px; min-height: 40px; border-radius: var(--cc-radius-md, 8px); box-sizing: border-box; }
+.cc-device-selection .cc-device-list { display: grid; gap: 3px; }
+.cc-device-selection .cc-device-option:has(input:checked) { background: var(--cc-selected); }
+@media (hover: hover) {
+  .cc-device-selection .cc-device-option:has(input:enabled):hover { background: var(--cc-hover); }
+}
+.cc-device-selection .cc-device-option:has(input:disabled:not(:checked)) { color: var(--cc-text-secondary); }
 .cc-device-option:has(input:checked) { font-weight: 500; }
-.cc-device-option > span:last-child { flex: none; color: var(--cc-text-secondary); }
+.cc-device-option > span:nth-child(3) { flex: none; color: var(--cc-text-secondary); }
 .cc-device-option input { accent-color: var(--cc-text); }
 .cc-device-selection :is(button, input):focus-visible { outline: 2px solid var(--cc-focus-border, var(--cc-text)); outline-offset: 2px; }
 .catsco-desktop-connect-modal.is-computers { width: min(480px, calc(100vw - 32px)); }

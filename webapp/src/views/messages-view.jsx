@@ -870,6 +870,7 @@ export default function MessagesView({
   onActivateTopic,
   onAgentModelChange,
   onActiveAgentChange,
+  onDeviceGroupLoaded,
   cloudArtifactsRequest,
   onCloudArtifactsRequestConsumed,
   messageLocationRequest,
@@ -3492,6 +3493,7 @@ export default function MessagesView({
       });
       setMembers(nextMembers);
       setGroupInfo(nextGroup);
+      if (nextGroup) onDeviceGroupLoaded?.(requestTopic, nextGroup, nextMembers);
     } catch (e) {
       // Cached members, the Agent roster, and message metadata keep sender identity
       // stable while group details are temporarily unavailable.

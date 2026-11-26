@@ -21,6 +21,8 @@ vi.mock('../api', () => {
     getAgents: vi.fn().mockResolvedValue({ agents: [] }),
     getConversations: vi.fn().mockResolvedValue({ conversations: [] }),
     getDevices: vi.fn().mockResolvedValue({ devices: [] }),
+    getConversationDevice: vi.fn(),
+    confirmConversationDevice: vi.fn(),
     getGroupInfo: vi.fn().mockResolvedValue({}),
     getMe: mocks.getMe,
     getWikiMemoryAvailability: vi.fn().mockResolvedValue({ enabled: false }),
@@ -176,10 +178,14 @@ vi.mock('../widgets/empty-task-composer', () => {
 });
 vi.mock('../widgets/catsco-download-modal', () => ({ default: () => null }));
 vi.mock('../widgets/desktop-connect-modal', () => ({
-  default: ({ initialMode, onClose, onConnected }) => (
-    <section data-testid="desktop-connect-modal" data-mode={initialMode}>
+  default: ({ initialMode, onClose, onConnected, draftDeviceId, onDraftDeviceChange }) => (
+    <section data-testid="desktop-connect-modal" data-mode={initialMode} data-draft-device={draftDeviceId}>
       <button type="button" onClick={onClose}>关闭桌面端</button>
       <button type="button" onClick={() => onConnected({})}>桌面端连接成功</button>
+      {onDraftDeviceChange && <>
+        <button type="button" onClick={() => onDraftDeviceChange('office')}>选择电脑</button>
+        <button type="button" onClick={() => onDraftDeviceChange('')}>选择云端</button>
+      </>}
     </section>
   ),
 }));
@@ -259,6 +265,13 @@ beforeEach(() => {
   api.createGroup.mockReset().mockResolvedValue({ group: { id: 901, name: '标注任务', member_count: 2 }, topic: 'grp_901' });
   api.sendMessage.mockReset();
   api.openAgent.mockReset();
+  api.getConversationDevice.mockReset().mockResolvedValue({
+    status: 'unspecified', revision: 'r1', devices: [{ deviceId: 'office', routable: true, ownerUserId: 'usr1' }],
+  });
+  api.confirmConversationDevice.mockReset().mockResolvedValue({
+    status: 'selected', selected_device_id: 'office', selected_owner_uid: 1, revision: 'r2',
+  });
+  api.disbandGroup.mockReset().mockResolvedValue({});
   mocks.getMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', created_at: '2026-01-01T00:00:00Z' });
   mocks.redeemRelayInvite.mockReset().mockResolvedValue({ ok: true });
   mocks.updateMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', display_name: 'Cats' });
@@ -281,6 +294,22 @@ function setCachedUser(createdAt) {
   mocks.getMe.mockResolvedValue(profile);
   localStorage.setItem('oc_user', JSON.stringify(profile));
 }
+
+test.each([
+  ['agent_task', 2, '电脑', 'computers'],
+  ['agent_task', 3, '设备与授权', 'group-devices'],
+  ['group', 2, '设备与授权', 'group-devices'],
+])('restores the device entry for %s with %i members from group metadata', async (kind, count, label, mode) => {
+  localStorage.setItem('v3_last_topic:1', 'grp_901');
+  await act(async () => renderWorkspace());
+  await act(async () => mocks.messageProps.onDeviceGroupLoaded('grp_901', { kind, member_count: count }, [
+    { user_id: 1 }, { user_id: 7, is_bot: true },
+  ]));
+  const trigger = container.querySelector('.cc-device-trigger');
+  expect(trigger.getAttribute('aria-label')).toBe(label);
+  await act(async () => trigger.click());
+  expect(container.querySelector('[data-testid="desktop-connect-modal"]').dataset.mode).toBe(mode);
+});
 
 test.each([false, true])('restores the saved Agent only for a draft with content (%s)', async (withContent) => {
   sessionStorage.setItem('catsco_composer_drafts:v1:1', JSON.stringify({
@@ -425,12 +454,86 @@ test('only marks the displayed conversation active and retains each tool browse 
 test('opens the combined computer panel without changing the conversation when a desktop connects', async () => {
   await act(async () => renderWorkspace());
   await selectTestConversation();
+  await act(async () => mocks.messageProps.onActiveAgentChange({ uid: 2, display_name: '测试助手' }));
   await act(async () => container.querySelector('.cc-device-trigger').click());
   const panel = container.querySelector('[data-testid="desktop-connect-modal"]');
   expect(panel.dataset.mode).toBe('computers');
   await act(async () => [...panel.querySelectorAll('button')].find(button => button.textContent === '桌面端连接成功').click());
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBe(panel);
   expect(container.querySelector('nav').dataset.visibleTopic).toBe('p2p_1_2');
+});
+
+async function prepareDraftWithDevice() {
+  await act(async () => renderWorkspace());
+  await act(async () => mocks.emptyProps.onSelectedAgentChange({ uid: 7 }));
+  await act(async () => container.querySelector('.cc-device-trigger').click());
+  const panel = container.querySelector('[data-testid="desktop-connect-modal"]');
+  await act(async () => [...panel.querySelectorAll('button')].find(b => b.textContent === '选择电脑').click());
+  expect(panel.dataset.draftDevice).toBe('office');
+  expect(api.createGroup).not.toHaveBeenCalled();
+  return panel;
+}
+
+test.each([null, { uid: 9 }])('restores a computer-only draft after reload, including before an Agent is available (%j)', async (agent) => {
+  sessionStorage.setItem('catsco_composer_drafts:v1:1', JSON.stringify({
+    taskContextDrafts: [['new-task', { agent, deviceId: 'office' }]],
+    updatedAt: Date.now(),
+  }));
+  await act(async () => renderWorkspace());
+  expect(mocks.emptyProps.initialAgent?.uid || null).toBe(agent?.uid || null);
+  await act(async () => container.querySelector('.cc-device-trigger').click());
+  expect(container.querySelector('[data-testid="desktop-connect-modal"]').dataset.draftDevice).toBe('office');
+  await act(async () => mocks.emptyProps.onSelectedAgentChange({ uid: 7 }));
+  await mocks.emptyProps.onResolveAgentTopic({ uid: 7 });
+  expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('grp_901', 7, 'office', 'r1');
+});
+
+test('applies this draft’s computer before returning a task for its first message and starts the next draft on cloud', async () => {
+  const panel = await prepareDraftWithDevice();
+  const topic = await mocks.emptyProps.onResolveAgentTopic({ uid: 7 }, { text: '检查电脑上的文件' });
+  expect(topic.topicId).toBe('grp_901');
+  expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith('grp_901', 7, 'office', 'r1');
+  await act(async () => panel.querySelector('button').click());
+  await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === '项目内新建任务').click());
+  expect(readComposerTaskContextDraft(mocks.emptyProps.composerDraftStore, 'new-task')?.deviceId).toBeUndefined();
+  await mocks.emptyProps.onResolveAgentTopic({ uid: 9 }, { text: '测试下一次任务' });
+  expect(api.getConversationDevice).toHaveBeenCalledTimes(1);
+});
+
+test('preserves a device draft if the PC goes offline and retries after the device becomes available', async () => {
+  await prepareDraftWithDevice();
+  api.getConversationDevice.mockResolvedValueOnce({ status: 'unspecified', revision: 'r1', devices: [] });
+  await expect(mocks.emptyProps.onResolveAgentTopic({ uid: 7 })).rejects.toThrow('所选电脑已离线');
+  expect(api.disbandGroup).toHaveBeenCalledWith(901);
+  expect(api.confirmConversationDevice).not.toHaveBeenCalled();
+  expect(readComposerTaskContextDraft(mocks.emptyProps.composerDraftStore, 'new-task').deviceId).toBe('office');
+  await mocks.emptyProps.onResolveAgentTopic({ uid: 7 });
+  expect(api.createGroup).toHaveBeenCalledTimes(2);
+  expect(api.confirmConversationDevice).toHaveBeenCalledTimes(1);
+});
+
+test('reconciles an uncertain device confirmation when retrying the same task with cloud', async () => {
+  const panel = await prepareDraftWithDevice();
+  api.confirmConversationDevice.mockRejectedValueOnce(new Error('timeout'));
+  api.disbandGroup.mockRejectedValueOnce(new Error('unavailable'));
+  await expect(mocks.emptyProps.onResolveAgentTopic({ uid: 7 })).rejects.toThrow('任务设备尚未确认');
+  await act(async () => [...panel.querySelectorAll('button')].find(b => b.textContent === '选择云端').click());
+  api.getConversationDevice.mockResolvedValueOnce({ status: 'selected', selected_device_id: 'office', selected_owner_uid: 1, revision: 'r2' });
+  api.confirmConversationDevice.mockResolvedValueOnce({ status: 'unspecified', selected_device_id: '' });
+  await mocks.emptyProps.onResolveAgentTopic({ uid: 7 });
+  expect(api.confirmConversationDevice).toHaveBeenLastCalledWith('grp_901', 7, '', 'r2');
+  expect(api.createGroup).toHaveBeenCalledTimes(1);
+});
+
+test('does not write or disband using another session after reading the draft device list', async () => {
+  await prepareDraftWithDevice();
+  api.getConversationDevice.mockImplementationOnce(async () => {
+    mocks.sessionRevision++;
+    return {};
+  });
+  await expect(mocks.emptyProps.onResolveAgentTopic({ uid: 7 })).rejects.toThrow('任务已切换');
+  expect(api.confirmConversationDevice).not.toHaveBeenCalled();
+  expect(api.disbandGroup).not.toHaveBeenCalled();
 });
 
 test.each([
