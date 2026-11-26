@@ -308,6 +308,39 @@ func (s *RedisRuntimeState) deliverArtifactResultReceipt(nodeID string, msg *Msg
 	return s.client.Publish(s.ctx, s.nodeInboxChannel(nodeID), payload).Err() == nil
 }
 
+func (s *RedisRuntimeState) deliverArtifactWebMcp(targetNodeID string, env artifactWebMcpClusterEnvelope, now time.Time) bool {
+	if s == nil || s.client == nil {
+		return false
+	}
+	if targetNodeID != "" {
+		if !s.runtimeNodeAlive(targetNodeID) {
+			return false
+		}
+		if hub := s.localHub(targetNodeID); hub != nil {
+			return hub.receiveArtifactWebMcpFromRuntime(env)
+		}
+		payload, err := json.Marshal(redisRuntimeEnvelope{
+			ArtifactWebMcp: &env,
+		})
+		if err != nil {
+			return false
+		}
+		return s.client.Publish(s.ctx, s.nodeInboxChannel(targetNodeID), payload).Err() == nil
+	}
+	payload, err := json.Marshal(redisUserMessageEnvelope{
+		ArtifactWebMcp: &env,
+	})
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	subscriberCount, err := s.client.Publish(ctx, s.userMessageChannel(), payload).Result()
+	// The publishing node itself is subscribed to userMessageChannel, so > 1 is required
+	// to prove at least one peer node is listening (otherwise return false for immediate page_not_open).
+	return err == nil && subscriberCount > 1
+}
+
 func (s *RedisRuntimeState) routeConnected(route runtimeRoute, now time.Time) bool {
 	if s == nil || s.client == nil || !route.validAt(now) {
 		return false
@@ -1486,9 +1519,13 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 			var envelope redisRuntimeEnvelope
 			if item.Channel == s.userMessageChannel() {
 				var userMessage redisUserMessageEnvelope
-				if err := json.Unmarshal([]byte(item.Payload), &userMessage); err == nil && userMessage.UID > 0 && userMessage.Msg != nil {
+				if err := json.Unmarshal([]byte(item.Payload), &userMessage); err == nil {
 					if hub := s.localHub(nodeID); hub != nil {
-						hub.SendToUser(userMessage.UID, userMessage.Msg)
+						if userMessage.ArtifactWebMcp != nil && userMessage.ArtifactWebMcp.SourceRoute.NodeID != nodeID {
+							hub.receiveArtifactWebMcpFromRuntime(*userMessage.ArtifactWebMcp)
+						} else if userMessage.UID > 0 && userMessage.Msg != nil {
+							hub.SendToUser(userMessage.UID, userMessage.Msg)
+						}
 					}
 				}
 				continue
@@ -1510,6 +1547,12 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 						envelope.ArtifactResultReceipt,
 						envelope.ArtifactResultReceiptRoute.toRuntimeRoute(),
 					)
+				}
+				continue
+			}
+			if envelope.ArtifactWebMcp != nil {
+				if hub := s.localHub(nodeID); hub != nil {
+					hub.receiveArtifactWebMcpFromRuntime(*envelope.ArtifactWebMcp)
 				}
 				continue
 			}
@@ -1876,8 +1919,9 @@ type redisThinToolRPCEnvelope struct {
 }
 
 type redisUserMessageEnvelope struct {
-	UID int64          `json:"uid"`
-	Msg *ServerMessage `json:"msg"`
+	UID            int64                          `json:"uid,omitempty"`
+	Msg            *ServerMessage                 `json:"msg,omitempty"`
+	ArtifactWebMcp *artifactWebMcpClusterEnvelope `json:"artifact_webmcp,omitempty"`
 }
 
 type redisMessagingAttentionProbe struct {
@@ -1905,6 +1949,7 @@ type redisRuntimeEnvelope struct {
 	MessagingAttentionProbeReply *redisMessagingAttentionProbeReply `json:"messaging_attention_probe_reply,omitempty"`
 	ArtifactResultReceipt        *MsgArtifactResult                 `json:"artifact_result_receipt,omitempty"`
 	ArtifactResultReceiptRoute   redisRuntimeRoute                  `json:"artifact_result_receipt_route,omitempty"`
+	ArtifactWebMcp               *artifactWebMcpClusterEnvelope     `json:"artifact_webmcp,omitempty"`
 }
 
 func firstDeviceRPCMessage(values ...*MsgDeviceRPC) *MsgDeviceRPC {

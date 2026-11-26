@@ -1737,6 +1737,10 @@ export function wsSendArtifactResultReceipt(receipt) {
   return sendWS({ artifact_result: receipt });
 }
 
+export function wsSendArtifactWebMcp(payload) {
+  return sendWS({ artifact_webmcp: payload });
+}
+
 export function onWSMessage(handler) {
   msgHandlers.push(handler);
   return () => {

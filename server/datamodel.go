@@ -25,6 +25,10 @@ type ClientMessage struct {
 	// ArtifactResult accepts only a receipt from a connected human preview.
 	// Result submission itself uses the authenticated Bot HTTP endpoint.
 	ArtifactResult *MsgArtifactResult `json:"artifact_result,omitempty"`
+	// ArtifactWebMcp carries bidirectional WebMCP tool discovery and RPC frames
+	// between an authenticated human Artifact host (bound via open_ref) and the
+	// owning Bot runtime.
+	ArtifactWebMcp *MsgArtifactWebMcp `json:"artifact_webmcp,omitempty"`
 	// SkillMutationGrant is accepted only from the current authenticated Bot
 	// runtime connection. It issues authorization; it never mutates a Skill.
 	SkillMutationGrant *MsgSkillMutationGrant `json:"skill_mutation_grant,omitempty"`
@@ -47,6 +51,7 @@ type ServerMessage struct {
 	ThinToolRPC        *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
 	DeviceGrantRenewal *MsgDeviceGrantRenewal        `json:"device_grant_renewal,omitempty"`
 	ArtifactResult     *MsgArtifactResult            `json:"artifact_result,omitempty"`
+	ArtifactWebMcp     *MsgArtifactWebMcp            `json:"artifact_webmcp,omitempty"`
 	SkillMutationGrant *MsgSkillMutationGrant        `json:"skill_mutation_grant,omitempty"`
 	// ServiceRunReceipt 是定制应用 run 的生命周期回注回执（完成/失败/待补充输入；
 	// 设计 §3.3-2 回流通道）。跟账号投递：在线即推、离线留存补投。
