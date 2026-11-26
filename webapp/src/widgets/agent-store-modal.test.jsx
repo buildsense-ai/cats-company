@@ -10,6 +10,9 @@ vi.mock('../api', () => ({
     getCloudWorkerMeta: vi.fn(),
     getCloudWorkers: vi.fn(),
     getCloudArtifacts: vi.fn(),
+    getPendingRequests: vi.fn(),
+    getBotFriends: vi.fn(),
+    getAgentChannelBindings: vi.fn(),
     getAgentPrompt: vi.fn(),
     getBotDefinitionPrompt: vi.fn(),
     getBotDefinitionSkills: vi.fn(),
@@ -83,6 +86,9 @@ describe('AgentStoreModal', () => {
       workers: [],
     });
     api.getCloudArtifacts.mockReset().mockResolvedValue({ artifacts: [] });
+    api.getPendingRequests.mockReset().mockResolvedValue({ requests: [] });
+    api.getBotFriends.mockReset().mockResolvedValue({ friends: [] });
+    api.getAgentChannelBindings.mockReset().mockResolvedValue({ bindings: [] });
     api.getAgentPrompt.mockReset().mockResolvedValue({
       application: {
         status: 'applied',
@@ -293,7 +299,7 @@ describe('AgentStoreModal', () => {
     expect(privateButton.disabled).toBe(true);
     expect(container.textContent).toContain('正在更新…');
     await act(async () => { resolveVisibility({ visibility: 'private' }); await Promise.resolve(); });
-    expect(container.textContent).toContain('已更新 · 即时生效');
+    expect(container.textContent).toContain('已更新');
     expect(privateButton.getAttribute('aria-checked')).toBe('false');
     expect(api.setBotVisibility).toHaveBeenCalledWith(42, 'private');
     expect(container.querySelector('.cc-agent-manage-form [type="submit"]').disabled).toBe(true);
@@ -976,7 +982,7 @@ describe('AgentStoreModal', () => {
     expect(settingTriggers.map((trigger) => trigger.querySelector('strong').textContent)).toEqual(['基本信息', '连接与凭证', '使用与协作', '行为与能力', 'Daily Notes']);
     expect(container.querySelector('.cc-agent-manager-tabs')).toBeNull();
     expect(container.querySelector('[aria-label="返回助手列表"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="入口码"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="分享助手"]')).not.toBeNull();
     expect(container.querySelector('.cc-agent-manager-title').textContent).toContain('管理助手 · Dev Agent');
     expect(container.querySelector('.cc-agent-manage-context')).toBeNull();
     const basicTrigger = settingTriggers.find((button) => button.textContent.includes('基本信息'));
@@ -1138,7 +1144,7 @@ describe('AgentStoreModal', () => {
       .map((badge) => badge.textContent)).toEqual(expect.arrayContaining(['公开', '私有']));
     const manageButton = container.querySelector('.cc-agent-card-manage');
     const entryButton = Array.from(container.querySelectorAll('.cc-agent-card-action'))
-      .find((button) => button.textContent.includes('入口码'));
+      .find((button) => button.textContent.includes('分享助手'));
     expect(manageButton?.textContent).toBe('管理');
     expect(manageButton?.classList.contains('oc-btn-default')).toBe(true);
     expect(entryButton?.classList.contains('oc-btn-default')).toBe(true);
@@ -1403,7 +1409,7 @@ describe('AgentStoreModal', () => {
     });
 
     expect(container.textContent).toContain('共享成果');
-    expect(container.textContent).toContain('共 3 项成果 · 2 位上传者');
+    expect(container.querySelector('.cc-agent-artifact-settings h3').textContent).toContain('共享成果· 3');
     expect(container.textContent).toContain('成员上传后直接展示，无需审批');
 
     const manageArtifacts = Array.from(container.querySelectorAll('button'))

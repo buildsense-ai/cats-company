@@ -1072,6 +1072,12 @@ export default function CloudArtifactsPanel({
       : visibleArtifacts.length;
   const artifactTabSelected = tab === 'active' || tab === 'deleted';
   const isOwner = viewerRelation === 'owner';
+  const uploaderCount = isOwner && tab === 'active' && !loading && !error
+    ? new Set(artifacts
+      .filter(item => item.creator_type === 'user' || item.uploader_uid || item.uploader_name)
+      .map(item => String(item.uploader_uid || item.creator_uid || item.uploader_name || item.creator_name || ''))
+      .filter(Boolean)).size
+    : null;
   const canManageTags = viewerRelation === 'owner' || viewerRelation === 'friend';
   const hasAgent = Number(agentUid || 0) > 0;
   const gatewayTitle = gatewayPreview?.title || gatewayPreview?.id || '';
@@ -1378,6 +1384,7 @@ export default function CloudArtifactsPanel({
             <div className="cloud-artifacts-context-note">
               <div className="cloud-artifacts-context-copy">
                 <strong>共享成果</strong>
+                {uploaderCount !== null && <span>共 {artifacts.length} 项成果 · {uploaderCount} 位上传者</span>}
               </div>
               <ArtifactFilters
                 value={effectiveArtifactScope}
