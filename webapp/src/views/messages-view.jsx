@@ -88,6 +88,7 @@ import {
   normalizeArtifactOpenBinding,
   artifactOpenBindingUsable,
 } from '../gateway-annotations';
+import { createGatewayWebMcpHost } from '../gateway-webmcp';
 import { screenshotFile, ownedScreenshotBlock, screenshotWarnings } from '../utils/gateway-annotation-screenshots';
 import { useShowThinkingPreference } from '../utils/show-thinking-preference';
 import { CONVERSATION_ACTIVITY_TIMEOUT, EXECUTION_LABELS, isConversationProcessMessage, isLiquidLight, mergeConversationTaskStatus, useLiquidConversation } from '../utils/liquid-conversation';
@@ -1101,6 +1102,7 @@ export default function MessagesView({
   const annotationSnapshotContextRef = useRef(null);
   const annotationSnapshotDraftsRef = useRef([]);
   const gatewayAnnotationHostRef = useRef(null);
+  const gatewayWebMcpHostRef = useRef(null);
   const gatewayAnnotationPanelStateRef = useRef(null);
   const gatewayAnnotationReadyTimerRef = useRef(0);
   const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(() => initialArtifactPanelRef.current.open);
@@ -1831,6 +1833,7 @@ export default function MessagesView({
       gatewayAnnotationBindingRef.current = null;
       gatewayAnnotationBindingGenerationRef.current += 1;
       clearGatewayAnnotationReadyTimer();
+      gatewayWebMcpHostRef.current?.deactivate('frame_closed');
       setGatewayAnnotationCapture(null);
       resetGatewayAnnotationBinding();
       return;
@@ -1842,6 +1845,7 @@ export default function MessagesView({
       || openBinding.topic_id !== String(topic || '') || change?.signal?.aborted) {
       gatewayAnnotationBindingRef.current = null;
       gatewayAnnotationHostRef.current?.deactivate();
+      gatewayWebMcpHostRef.current?.deactivate('binding_invalid');
       resetGatewayAnnotationBinding();
       setGatewayAnnotationCapabilityNote('会话绑定无效或已过期，请在原会话重新打开应用');
       return;
@@ -1887,6 +1891,11 @@ export default function MessagesView({
     const generation = ++gatewayAnnotationBindingGenerationRef.current;
     const host = gatewayAnnotationHostRef.current;
     host?.deactivate?.();
+    gatewayWebMcpHostRef.current?.activate({
+      frame: binding.frame,
+      openBinding: binding.openBinding,
+      signal: binding.signal,
+    });
 
     const isStale = () => gatewayAnnotationBindingGenerationRef.current !== generation
       || gatewayAnnotationBindingRef.current !== binding;
@@ -2689,12 +2698,18 @@ export default function MessagesView({
       },
     });
     gatewayAnnotationHostRef.current = host;
+    const webmcpHost = createGatewayWebMcpHost({
+      sendWS: api.wsSendArtifactWebMcp,
+    });
+    gatewayWebMcpHostRef.current = webmcpHost;
     window.addEventListener('message', host.handleWindowMessage);
     return () => {
       clearReadyTimer();
       window.removeEventListener('message', host.handleWindowMessage);
       host.dispose();
       if (gatewayAnnotationHostRef.current === host) gatewayAnnotationHostRef.current = null;
+      webmcpHost.dispose();
+      if (gatewayWebMcpHostRef.current === webmcpHost) gatewayWebMcpHostRef.current = null;
     };
   }, []);
 
@@ -3651,6 +3666,9 @@ export default function MessagesView({
       }
       if (msg.artifact_result) {
         void handleArtifactResultRequest(msg.artifact_result);
+      }
+      if (msg.artifact_webmcp) {
+        gatewayWebMcpHostRef.current?.handleServerMessage(msg.artifact_webmcp);
       }
       if (
         isGroup

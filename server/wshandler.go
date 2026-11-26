@@ -70,6 +70,8 @@ type Hub struct {
 	artifactContextSnapshots     *artifactContextSnapshotStore
 	artifactResultWritebacks     *artifactResultWritebackStore
 	artifactTasks                *artifactTaskStore
+	artifactOpenBindings         *ArtifactOpenBindingHandler
+	artifactWebMcp               *artifactWebMcpRouter
 	push                         *PushNotificationService
 	nativePush                   *NativePushService
 	nativeAgentPush              *agentPushTurnCoordinator
@@ -232,6 +234,7 @@ func newHubWithState(db store.Store, rl *RateLimiter, shared sharedRuntimeState,
 			artifactTaskAgentFinishGrace,
 			artifactTaskStoreMaxEntries,
 		).withRuntimeStore(db),
+		artifactWebMcp:      newArtifactWebMcpRouter(),
 		agentPush:           newAgentPushTurnCoordinator(),
 		taskGrace:           90 * time.Second,
 		taskReaperInterval:  30 * time.Second,
@@ -812,14 +815,18 @@ func (h *Hub) getDeviceClient(ownerUID int64, deviceID string) *Client {
 
 func (h *Hub) removeClient(client *Client) (removed bool, lastConn bool, remaining int, onlineUsers int) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	clients, ok := h.clients[client.uid]
 	if !ok {
-		return false, false, 0, len(h.clients)
+		onlineUsers = len(h.clients)
+		h.mu.Unlock()
+		return false, false, 0, onlineUsers
 	}
 	if _, ok := clients[client]; !ok {
-		return false, false, len(clients), len(h.clients)
+		remaining = len(clients)
+		onlineUsers = len(h.clients)
+		h.mu.Unlock()
+		return false, false, remaining, onlineUsers
 	}
 
 	delete(clients, client)
@@ -834,8 +841,11 @@ func (h *Hub) removeClient(client *Client) (removed bool, lastConn bool, remaini
 	} else if client.deviceConnector == nil && !hasMessagingClient(clients) {
 		lastConn = true
 	}
+	onlineUsers = len(h.clients)
+	h.mu.Unlock()
 
-	return removed, lastConn, remaining, len(h.clients)
+	h.cleanupArtifactWebMcpForClient(client)
+	return removed, lastConn, remaining, onlineUsers
 }
 
 func hasMessagingClient(clients map[*Client]struct{}) bool {
@@ -1436,6 +1446,8 @@ func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
 		h.handleThinToolRPC(client, msg.ThinToolRPC)
 	case msg.ArtifactResult != nil:
 		h.handleArtifactResultReceipt(client, msg.ArtifactResult)
+	case msg.ArtifactWebMcp != nil:
+		h.handleArtifactWebMcp(client, msg.ArtifactWebMcp)
 	case msg.SkillMutationGrant != nil:
 		h.handleSkillMutationGrant(client, msg.SkillMutationGrant)
 	case msg.DeviceGrantRenewal != nil:
@@ -1450,7 +1462,7 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 	if msg.DeviceGrantRenewal != nil {
 		return false
 	}
-	if msg.Acc != nil || msg.Login != nil || msg.Sub != nil || msg.Pub != nil || msg.Get != nil || msg.Set != nil || msg.Del != nil || msg.Note != nil || msg.Friend != nil || msg.ArtifactResult != nil || msg.SkillMutationGrant != nil {
+	if msg.Acc != nil || msg.Login != nil || msg.Sub != nil || msg.Pub != nil || msg.Get != nil || msg.Set != nil || msg.Del != nil || msg.Note != nil || msg.Friend != nil || msg.ArtifactResult != nil || msg.ArtifactWebMcp != nil || msg.SkillMutationGrant != nil {
 		return false
 	}
 	actions := 0
@@ -1495,7 +1507,7 @@ func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
 		})
 		return
 	}
-	features := []string{"client_msg_id", "device_rpc", "thin_tool_rpc", "device_grant_renewal.v1", "remote_shell_timeout.v1"}
+	features := []string{"client_msg_id", "device_rpc", "thin_tool_rpc", "device_grant_renewal.v1", "remote_shell_timeout.v1", "artifact_webmcp.v1"}
 	params := map[string]interface{}{
 		"ver":   "0.1.0",
 		"build": "catscompany",

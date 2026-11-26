@@ -120,6 +120,19 @@ func (s *artifactOpenBindingStore) lookup(ref string, uid int64, fingerprint [32
 	return record, !record.revoked
 }
 
+func (s *artifactOpenBindingStore) lookupForActor(ref string, actorUID int64, now time.Time) (artifactOpenBindingRecord, bool) {
+	if s == nil || ref == "" || actorUID <= 0 {
+		return artifactOpenBindingRecord{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[ref]
+	if !ok || !now.Before(record.ExpiresAt) || record.revoked || record.actorUID != actorUID {
+		return artifactOpenBindingRecord{}, false
+	}
+	return record, true
+}
+
 // ArtifactOpenBindingHandler wraps normal message ingestion with a fixed,
 // authenticated launch destination. No provider or internal Agent session API
 // is involved. The ordinary v1 message endpoint remains compatible.
@@ -134,7 +147,11 @@ type ArtifactOpenBindingHandler struct {
 }
 
 func NewArtifactOpenBindingHandler(hub *Hub, messages *MessageHandler, apps *ArtifactAppsHandler) *ArtifactOpenBindingHandler {
-	return &ArtifactOpenBindingHandler{hub: hub, messages: messages, apps: apps, store: newArtifactOpenBindingStore(), now: time.Now}
+	handler := &ArtifactOpenBindingHandler{hub: hub, messages: messages, apps: apps, store: newArtifactOpenBindingStore(), now: time.Now}
+	if hub != nil {
+		hub.SetArtifactOpenBindings(handler)
+	}
+	return handler
 }
 
 func (h *ArtifactLaunchHandler) SetOpenBindingHandler(bindings *ArtifactOpenBindingHandler) {
@@ -475,6 +492,9 @@ func (h *ArtifactOpenBindingHandler) HandleRevoke(w http.ResponseWriter, r *http
 	if _, ok := h.store.lookup(ref, claims.UID, fingerprint, h.now(), true); !ok {
 		openBindingFailure(w, http.StatusForbidden, "artifact_open_binding_invalid")
 		return
+	}
+	if h.hub != nil {
+		h.hub.revokeArtifactWebMcpByOpenRef(ref)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
