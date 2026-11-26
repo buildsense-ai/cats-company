@@ -11,7 +11,21 @@ import {
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '';
 
-let token = readStorageValue('oc_token');
+const TOKEN_STORAGE_KEY = 'oc_token';
+
+function restoreTabToken() {
+  const savedToken = readStorageValue(TOKEN_STORAGE_KEY, 'sessionStorage');
+  if (savedToken !== null) return savedToken || null;
+
+  // An uninitialized tab can inherit the browser's most recent login. Save
+  // the snapshot even when empty so a later reload cannot inherit a new login.
+  const browserToken = readStorageValue(TOKEN_STORAGE_KEY);
+  return writeStorageValue(TOKEN_STORAGE_KEY, browserToken || '', 'sessionStorage')
+    ? browserToken
+    : null;
+}
+
+let token = restoreTabToken();
 const PUSH_REGISTRATION_ID_KEY = 'oc_push_registration_id';
 const PUSH_REGISTRATION_OWNER_KEY = 'oc_push_registration_owner';
 // A registration ID guards server deletes. sessionStorage preserves it across
@@ -92,11 +106,15 @@ const clearPushRegistration = () => {
 };
 
 export function setToken(nextToken) {
+  const previousToken = token;
   token = nextToken;
   authRevision += 1;
-  if (nextToken) writeStorageValue('oc_token', nextToken);
-  else {
-    removeStorageValue('oc_token');
+  const saved = writeStorageValue(TOKEN_STORAGE_KEY, nextToken || '', 'sessionStorage');
+  if (nextToken && saved) writeStorageValue(TOKEN_STORAGE_KEY, nextToken);
+  if (!nextToken) {
+    if (previousToken && readStorageValue(TOKEN_STORAGE_KEY) === previousToken) {
+      removeStorageValue(TOKEN_STORAGE_KEY);
+    }
     clearPushRegistration();
   }
   window.dispatchEvent(new CustomEvent('cc:auth-changed', {

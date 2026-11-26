@@ -6,31 +6,57 @@ import {
   vi,
 } from 'vitest';
 
-let originalStorageDescriptor;
-
 beforeEach(() => {
   vi.resetModules();
-  originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  localStorage.clear();
+  sessionStorage.clear();
 });
 
 afterEach(() => {
-  if (originalStorageDescriptor) {
-    Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
-  }
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
-test('keeps the in-memory session and auth events when local storage is unavailable', async () => {
-  Object.defineProperty(globalThis, 'localStorage', {
-    configurable: true,
-    value: {
-      getItem: vi.fn(() => null),
-      setItem: vi.fn(() => { throw new Error('quota exceeded'); }),
-      removeItem: vi.fn(() => { throw new Error('storage unavailable'); }),
-    },
+test('pins the browser default to each tab once and preserves a tab-local logout', async () => {
+  localStorage.setItem('oc_token', 'account-a');
+  const tabA = await import('./auth-session');
+  expect(tabA.getToken()).toBe('account-a');
+  const savedTabA = sessionStorage.getItem('oc_token');
+
+  sessionStorage.clear();
+  vi.resetModules();
+  const tabB = await import('./auth-session');
+  tabB.setToken('account-b');
+  expect(sessionStorage.getItem('oc_token')).toBe('account-b');
+  expect(localStorage.getItem('oc_token')).toBe('account-b');
+
+  sessionStorage.setItem('oc_token', savedTabA);
+  vi.resetModules();
+  const reloadedTabA = await import('./auth-session');
+  expect(reloadedTabA.getToken()).toBe('account-a');
+  reloadedTabA.setToken(null);
+  expect(localStorage.getItem('oc_token')).toBe('account-b');
+
+  vi.resetModules();
+  expect((await import('./auth-session')).getToken()).toBeNull();
+});
+
+test('keeps an anonymous tab anonymous when another tab logs in', async () => {
+  expect((await import('./auth-session')).getToken()).toBeNull();
+  localStorage.setItem('oc_token', 'other-tab-token');
+  vi.resetModules();
+  expect((await import('./auth-session')).getToken()).toBeNull();
+});
+
+test('keeps the in-memory session and auth events when session storage is unavailable', async () => {
+  localStorage.setItem('oc_token', 'other-tab-token');
+  vi.stubGlobal('sessionStorage', {
+    getItem: () => null,
+    setItem: () => { throw new Error('storage unavailable'); },
   });
 
   const authSession = await import('./auth-session');
+  expect(authSession.getToken()).toBeNull();
   const authChanged = vi.fn();
   window.addEventListener('cc:auth-changed', authChanged);
 
@@ -43,6 +69,7 @@ test('keeps the in-memory session and auth events when local storage is unavaila
   }
 
   expect(authSession.getToken()).toBeNull();
+  expect(localStorage.getItem('oc_token')).toBe('other-tab-token');
   expect(authChanged).toHaveBeenCalledTimes(2);
   expect(authChanged.mock.calls[0][0].detail).toMatchObject({ loggedIn: true });
   expect(authChanged.mock.calls[1][0].detail).toMatchObject({ loggedIn: false });

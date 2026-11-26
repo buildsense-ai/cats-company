@@ -85,7 +85,14 @@
   loginLink.href = '/login?next=' + encodeURIComponent(loginReturn);
 
   var token = '';
-  try { token = localStorage.getItem(tokenKey) || ''; } catch (error) { token = ''; }
+  try {
+    var savedToken = sessionStorage.getItem(tokenKey);
+    if (savedToken === null) {
+      savedToken = localStorage.getItem(tokenKey) || '';
+      sessionStorage.setItem(tokenKey, savedToken);
+    }
+    token = savedToken;
+  } catch (error) { token = ''; }
   if (!token) {
     detail.textContent = '检测到尚未登录，正在前往登录页面…';
     location.replace('/login?next=' + encodeURIComponent(loginReturn));
@@ -98,7 +105,10 @@
     body: JSON.stringify({ app: app, topic_id: params.get('topic') || '' }),
   }).then(function (response) {
     if (response.status === 401) {
-      try { localStorage.removeItem(tokenKey); } catch (error) {}
+      try { sessionStorage.setItem(tokenKey, ''); } catch (error) {}
+      try {
+        if (localStorage.getItem(tokenKey) === token) localStorage.removeItem(tokenKey);
+      } catch (error) {}
       location.replace('/login?next=' + encodeURIComponent(loginReturn));
       return null;
     }

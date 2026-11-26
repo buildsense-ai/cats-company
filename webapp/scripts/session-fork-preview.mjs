@@ -57,7 +57,7 @@ try {
     });
     await context.addInitScript(({ user, source }) => {
       localStorage.setItem('oc_token', `fixture.${btoa(JSON.stringify({ userId: 1, exp: 2100000000 }))}.fixture`);
-      localStorage.setItem('oc_user', JSON.stringify(user));
+      sessionStorage.setItem('oc_user', JSON.stringify(user));
       if (!localStorage.getItem('v3_last_topic:1')) localStorage.setItem('v3_last_topic:1', JSON.stringify({ topicId: source.id, name: source.name, isBot: true, friendId: 2 }));
     }, { user, source });
     const page = await context.newPage();
