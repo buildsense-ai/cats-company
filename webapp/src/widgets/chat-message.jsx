@@ -466,8 +466,45 @@ async function copyTextToClipboard(text) {
   textarea.style.left = '-9999px';
   document.body.appendChild(textarea);
   textarea.select();
-  document.execCommand('copy');
-  document.body.removeChild(textarea);
+  try {
+    if (!document.execCommand('copy')) throw new Error('复制失败');
+  } finally {
+    textarea.remove();
+  }
+}
+
+async function clipboardImagePNG(src) {
+  const url = /^(?:blob:|data:image\/)/i.test(src) ? src : resolveMediaURL(src);
+  const response = await fetch(url);
+  if (!response.ok) throw new Error('图片读取失败');
+  const blob = await response.blob();
+  if (blob.type === 'image/png') return blob;
+
+  const objectURL = URL.createObjectURL(blob);
+  try {
+    const image = new Image();
+    image.src = objectURL;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    canvas.getContext('2d').drawImage(image, 0, 0);
+    return await new Promise((resolve, reject) => canvas.toBlob(png =>
+      png ? resolve(png) : reject(new Error('图片转换失败')), 'image/png'));
+  } finally {
+    URL.revokeObjectURL(objectURL);
+  }
+}
+
+function copyMessageImage(src, caption) {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    throw new Error('当前浏览器不支持复制图片');
+  }
+  // Start the write during the click. The image can finish loading afterwards.
+  const png = clipboardImagePNG(src);
+  const formats = { 'image/png': png };
+  if (caption) formats['text/plain'] = new Blob([caption], { type: 'text/plain' });
+  return Promise.all([png, navigator.clipboard.write([new ClipboardItem(formats)])]);
 }
 
 function groupBlocks(messages) {
@@ -1371,7 +1408,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   const onPreviewFile = onPreviewFileCallback ? previewMessageFile : undefined;
   const [copyState, setCopyState] = useState('');
   useEffect(() => {
-    if (!copyState) return undefined;
+    if (!copyState || copyState === 'copying') return undefined;
     const timer = window.setTimeout(() => setCopyState(''), 1500);
     return () => window.clearTimeout(timer);
   }, [copyState]);
@@ -1464,6 +1501,10 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   const copyText = useMemo(() => (
     buildMessageCopyText(content, renderedTextContent, richBlocks, parsed)
   ), [content, renderedTextContent, richBlocks, parsed]);
+  const singleAttachment = parsed || (richBlocks.length === 1 ? richBlocks[0] : null);
+  const imagePayload = singleAttachment?.payload || singleAttachment;
+  const copyImage = singleAttachment?.type === 'image'
+    || (singleAttachment?.type === 'file' && isImageFile(imagePayload));
   const hasArtifactFirstSummary = artifactsFirst && richBlocks.length > 0 && hasText;
   const artifactFollowupSections = useMemo(() => {
     // Liquid replies share one presentation queue, including text delivered with files.
@@ -1555,7 +1596,14 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     event.stopPropagation();
     setMoreActionsOpen(false);
     try {
-      await copyTextToClipboard(copyText);
+      if (copyImage) {
+        const src = imagePayload.url || imagePayload.thumbnail;
+        if (!src) throw new Error('缺少图片地址');
+        setCopyState('copying');
+        await copyMessageImage(src, parsed ? '' : renderedTextContent.trim());
+      } else {
+        await copyTextToClipboard(copyText);
+      }
       setCopyState('copied');
     } catch (e) {
       setCopyState('failed');
@@ -1777,15 +1825,17 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
             <button
               className={`v3-action-btn${copyState === 'copied' ? ' is-active' : ''}`}
               onClick={handleCopyClick}
-              aria-label={copyState === 'copied' ? '已复制' : t('chat_copy')}
-              title={copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : t('chat_copy')}
-              disabled={!copyText}
+              aria-label={copyState === 'copied' ? '已复制' : copyImage ? '复制图片' : t('chat_copy')}
+              title={copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : copyImage ? '复制图片' : t('chat_copy')}
+              aria-busy={copyState === 'copying' || undefined}
+              disabled={(!copyText && !copyImage) || copyState === 'copying'}
               type="button"
             >
               {copyState === 'copied'
                 ? <Check size={15} className="cc-copy-success-icon" aria-hidden="true" />
                 : <Copy size={15} />}
             </button>
+            {copyImage && copyState === 'failed' && <span role="status">图片复制失败</span>}
             {onRegenerate && (
               <button
                 className={`v3-action-btn v3-regenerate-action${regenerateState === 'pending' ? ' is-pending' : ''}${regenerateState === 'done' ? ' is-active' : ''}`}

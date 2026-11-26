@@ -171,6 +171,38 @@ describe('ChatMessage rich file rendering', () => {
     delete document.documentElement.dataset.liquidVariant;
   });
 
+  it.each(['blocks', 'legacy JSON', 'image file', 'caption'])('copies image data from a %s message before the download completes', async (kind) => {
+    const payload = { url: '/uploads/images/photo.png', thumbnail: '/thumb.png', name: 'photo.png' };
+    const block = { type: kind === 'image file' ? 'file' : 'image', payload };
+    const message = kind === 'legacy JSON' ? { content: JSON.stringify(block) } : {
+      content_blocks: kind === 'caption' ? [{ type: 'text', text: '看这里' }, block] : [block],
+    };
+    vi.stubGlobal('ClipboardItem', class { constructor(formats) { this.formats = formats; } });
+    navigator.clipboard.write = vi.fn(([item]) => item.formats['image/png'].then(() => {}));
+    let finishDownload;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(resolve => { finishDownload = resolve; })));
+    await act(async () => root.render(<ChatMessage message={{ id: 17, ...message }} isSelf />));
+    await act(async () => Simulate.click(container.querySelector('[aria-label="复制图片"]')));
+    const [{ formats }] = navigator.clipboard.write.mock.calls[0][0];
+    expect(Object.keys(formats)).toEqual(kind === 'caption' ? ['image/png', 'text/plain'] : ['image/png']);
+    expect(fetch).toHaveBeenCalledWith(payload.url);
+    expect(container.querySelector('[aria-label="已复制"]')).toBeNull();
+    const png = new Blob(['test image'], { type: 'image/png' });
+    await act(async () => finishDownload({ ok: true, blob: async () => png }));
+    expect(await formats['image/png']).toBe(png);
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-label="已复制"]')).not.toBeNull();
+  });
+
+  it('shows a copy failure when the browser only supports text', async () => {
+    const payload = { url: '/uploads/images/photo.png' };
+    await act(async () => root.render(<ChatMessage message={{ content: { type: 'image', payload } }} isSelf />));
+    await act(async () => Simulate.click(container.querySelector('[aria-label="复制图片"]')));
+    expect(container.textContent).toContain('图片复制失败');
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-label="已复制"]')).toBeNull();
+  });
+
   it('renders an old device share request as history without polling or approval controls', async () => {
     vi.useFakeTimers();
     const fetch = vi.fn();
