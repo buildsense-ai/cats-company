@@ -7,6 +7,8 @@ import {
   isComposerDraftRevisionCurrent,
   readComposerPhoneUploadSession,
   readComposerTaskContextDraft,
+  readComposerReplyDraft,
+  writeComposerReplyDraft,
   readComposerDraftMutationRevision,
   readComposerDraftRevision,
   subscribeComposerDraftStore,
@@ -32,6 +34,20 @@ describe('composer draft storage', () => {
     expect(sessionStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}2`)).toBeNull();
     expect(localStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}1`)).toBeNull();
     expect(sessionStorage.getItem('unrelated-session-state')).toBe('keep');
+  });
+
+  test('restores a quote only for its owner and topic, and removes it after cancellation', () => {
+    const reply = { id: 4, anchorId: 12, author: '助手', excerpt: '结论', source: { start: 2, end: 4 } };
+    const store = createComposerDraftStore('11');
+    writeComposerReplyDraft(store, 'topic-a', reply);
+    store.persist();
+    const restored = createComposerDraftStore('11');
+    expect(readComposerReplyDraft(restored, 'topic-a')).toEqual(reply);
+    expect(readComposerReplyDraft(restored, 'topic-b')).toBeNull();
+    expect(readComposerReplyDraft(createComposerDraftStore('12'), 'topic-a')).toBeNull();
+    writeComposerReplyDraft(restored, 'topic-a', null);
+    restored.persist();
+    expect(readComposerReplyDraft(createComposerDraftStore('11'), 'topic-a')).toBeNull();
   });
 
   test('round-trips text, mentions, and attachments through the public store API', () => {

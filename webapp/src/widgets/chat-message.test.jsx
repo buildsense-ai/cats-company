@@ -1094,6 +1094,53 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.oc-plain-text-table').textContent).toContain('香蕉');
   });
 
+  it('quotes the complete rendered reply by default and respects an explicit selection', async () => {
+    const onReply = vi.fn();
+    await act(async () => {
+      root.render(<ChatMessage message={{ id: 20, from_uid: 2, content: '**bg-summary-test**' }}
+        senderName="云准助手" onReply={onReply} />);
+    });
+    const reply = container.querySelector('.v3-reply-action');
+    await act(async () => Simulate.click(reply));
+    const body = container.querySelector('.v3-message-content');
+    const [text, author, source] = onReply.mock.lastCall;
+    expect(author).toBe('云准助手');
+    expect(text).toContain('下面是本次数据的简版结论。');
+    expect(text).toContain('后台子任务回流测试');
+    expect(text).toContain('表格之外的补充说明。');
+    expect(source).toMatchObject({ start: 0, end: body.textContent.length });
+
+    const range = document.createRange();
+    range.selectNodeContents(container.querySelector('.oc-markdown p:last-child'));
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    await act(async () => {
+      Simulate.pointerDown(reply);
+      selection.removeAllRanges();
+      Simulate.click(reply);
+    });
+    expect(onReply).toHaveBeenLastCalledWith('表格之外的补充说明。', '云准助手', expect.objectContaining({ end: expect.any(Number) }));
+  });
+
+  it('opens the source of a historical attachment quote and retains it on edit and resend', async () => {
+    const onLocateReply = vi.fn();
+    const onEdit = vi.fn();
+    const message = { id: 21, from_uid: 1, reply_to: 20, content: '请看附件' };
+    const replyMessage = { id: 20, seq_id: 12, from_name: '助手',
+      content: JSON.stringify({ type: 'file', payload: { name: '报告.pdf' } }) };
+    await act(async () => root.render(<ChatMessage isSelf message={message} replyMessage={replyMessage}
+      onEdit={onEdit} onLocateReply={onLocateReply} />));
+    const quote = container.querySelector('.v3-inline-reply');
+    expect(quote.textContent).toBe('[文件] 报告.pdf');
+    await act(async () => Simulate.click(quote));
+    expect(onLocateReply).toHaveBeenCalledWith(12, null, 20);
+    await act(async () => Simulate.click(container.querySelector('[aria-label="修改后重新发送（原消息保留）"]')));
+    expect(onEdit).toHaveBeenCalledWith(message, {
+      id: 20, anchorId: 12, author: '助手', excerpt: '[文件] 报告.pdf',
+    });
+  });
+
   it('renders message actions at the lower left and time at the lower right', async () => {
     const onReply = vi.fn();
     const onRegenerate = vi.fn(() => Promise.resolve());

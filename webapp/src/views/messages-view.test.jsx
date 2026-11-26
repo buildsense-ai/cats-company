@@ -90,7 +90,7 @@ vi.mock('../widgets/chat-message', async (importOriginal) => {
             type="button"
             className="mock-reply-message"
             data-message-id={props.message?.id}
-            onClick={props.onReply}
+            onClick={() => props.onReply(props.message.content, props.senderName)}
           >
             reply
           </button>
@@ -2754,7 +2754,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.textContent).toContain('这次拖入没有识别到可上传的文件');
   });
 
-  it('keeps the full reply preview available for single-line CSS truncation and clears it explicitly', async () => {
+  it('lets the composer excerpt locate its source and clears the quote explicitly', async () => {
     const longReply = '这是一段明显超过旧版六十字硬截断限制的回复内容，用来确保预览栏保留完整原文，并交给界面根据实际可用宽度显示省略号，而不是提前丢失后半段文字。';
     api.getMessages.mockResolvedValueOnce({
       messages: [{
@@ -2789,8 +2789,48 @@ describe('MessagesView composer draft isolation', () => {
     expect(closeButton?.getAttribute('aria-label')).toBe('取消回复');
 
     await act(async () => {
+      Simulate.click(replyBar.querySelector('.oc-reply-bar-content'));
+    });
+    const source = container.querySelector('[data-search-message-id="69"]');
+    expect(source.scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'center' }));
+    expect(source.classList.contains('cc-message-search-hit')).toBe(false);
+    expect(composerBox.contains(replyBar)).toBe(true);
+
+    await act(async () => {
       Simulate.click(closeButton);
     });
+    expect(container.querySelector('.oc-reply-bar')).toBeNull();
+  });
+
+  it('restores a failed quoted send and protects a newer draft on a delayed retry failure', async () => {
+    const topic = 'p2p_1_2';
+    const messages = [12, 13].map(id => ({ id, seq_id: id, from_uid: 2, topic_id: topic, type: 'text',
+      content: '消息' + id, created_at: '2026-06-09T00:01:00Z' }));
+    api.getMessages.mockResolvedValue({ messages });
+    await mountTopic(root, topic);
+    const input = container.querySelector('textarea.v3-composer-input');
+    const quote = id => Simulate.click(container.querySelector(`.mock-reply-message[data-message-id="${id}"]`));
+    const send = () => Simulate.keyDown(input, { key: 'Enter', shiftKey: false });
+    await act(async () => { quote(12); typeDraft(input, '第一份草稿'); });
+    api.sendMessage.mockRejectedValueOnce(new Error('offline'));
+    await act(async () => { send(); await flushPromises(); });
+    expect(input.value).toBe('第一份草稿');
+    expect(container.querySelector('.oc-reply-bar-text').textContent).toBe('消息12');
+    expect(api.sendMessage).toHaveBeenCalledWith(topic, '第一份草稿', 12);
+
+    let rejectSend;
+    api.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    await act(async () => { send(); await flushPromises(); });
+    await act(async () => { quote(13); typeDraft(input, '第二份草稿'); });
+    await act(async () => { rejectSend(new Error('offline')); await flushPromises(); });
+    expect(input.value).toBe('第二份草稿');
+    expect(container.querySelector('.oc-reply-bar-text').textContent).toBe('消息13');
+    await mountTopic(root, 'p2p_1_3');
+    expect(container.querySelector('.oc-reply-bar')).toBeNull();
+    await mountTopic(root, topic);
+    expect(container.querySelector('.oc-reply-bar-text').textContent).toBe('消息13');
+    await act(async () => { send(); await flushPromises(); });
+    expect(api.sendMessage).toHaveBeenCalledWith(topic, '第二份草稿', 13);
     expect(container.querySelector('.oc-reply-bar')).toBeNull();
   });
 
@@ -2798,7 +2838,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(openchatThemeCss).toContain('width: 100% !important;');
     expect(openchatThemeCss).not.toContain('width: min(760px, calc(100% - 40px)) !important;');
     expect(openchatThemeCss).toMatch(
-      /\.oc-reply-bar-content \{[^}]*overflow: hidden;[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis;/s,
+      /\.oc-reply-bar-content \{[^}]*min-width: 0;[^}]*overflow: hidden;/s,
     );
   });
 

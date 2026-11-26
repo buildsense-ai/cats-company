@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import AgentProfileView from '../views/agent-profile-view';
 import { CircleAlert, Image, Smartphone } from 'lucide-react';
 import { FileText, Plus, X } from './desktop-icons';
 import { api } from '../api';
@@ -131,6 +133,8 @@ export default function EmptyTaskComposer({
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentsError, setAgentsError] = useState(null);
   const [selectedAgentId, setSelectedAgentId] = useState(initialAgentId);
+  const [profileAgent, setProfileAgent] = useState(null);
+  const profileTriggerRef = useRef(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState(initialDraftAttachments);
   const [attachmentStatus, setAttachmentStatus] = useState(null);
@@ -1110,15 +1114,22 @@ export default function EmptyTaskComposer({
             role="radio"
             aria-checked={selected}
             aria-label={name}
-            aria-haspopup="dialog"
+            aria-haspopup={selected ? 'dialog' : undefined}
             style={agentWheelAppearance(index - selectedAgentIndex)}
             title={name}
             tabIndex={selected ? 0 : -1}
             disabled={isSubmitting}
             className={`cc-new-task-agent-option${selected ? ' is-selected' : ''}`}
             key={key}
-            onClick={() => {
+            onClick={(event) => {
+              const openDetails = key === selectedAgentIdRef.current && !agentWheelScrollingRef.current;
               selectAgent(agent);
+              if (!openDetails) return;
+              if (agent.relation === 'friend' && !agent.is_owner) {
+                profileTriggerRef.current = event.currentTarget;
+                setProfileAgent(agent);
+                return;
+              }
               window.dispatchEvent(new CustomEvent('cc:open-agent-manager', {
                 detail: { agentId: key },
               }));
@@ -1214,6 +1225,11 @@ export default function EmptyTaskComposer({
 
   return (
     <>
+      {profileAgent && createPortal(
+        <AgentProfileView agent={profileAgent} returnFocusRef={profileTriggerRef}
+          onClose={() => setProfileAgent(null)} onBack={() => setProfileAgent(null)} />,
+        document.body,
+      )}
       {heading ? (
         <div className="cc-empty-task-heading">
           <div className="cc-empty-task-heading-content">

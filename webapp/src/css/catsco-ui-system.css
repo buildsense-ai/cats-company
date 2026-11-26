@@ -4178,9 +4178,11 @@ html[data-theme="liquid"] .catsco-brand-mark {
   margin-bottom: 6px;
   padding: 5px 9px;
   overflow: hidden;
-  border-left: 2px solid var(--cc-accent);
-  border-radius: 0 var(--cc-radius-sm) var(--cc-radius-sm) 0;
-  background: color-mix(in srgb, var(--cc-accent) 5%, var(--cc-panel));
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: color-mix(in srgb, var(--cc-text) 5%, var(--cc-panel));
+  text-align: start;
+  cursor: pointer;
   color: var(--cc-muted);
   font-size: 12px;
   line-height: 1.45;
@@ -5021,6 +5023,12 @@ html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
   border-radius: 27px 27px 0 0;
 }
 
+.v3-composer-context:has(.oc-reply-bar) {
+  border-bottom: 0;
+  background: transparent;
+  padding: 7px 8px 0;
+}
+
 .oc-reply-bar {
   width: 100% !important;
   min-height: 40px;
@@ -5028,10 +5036,10 @@ html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
   align-items: center;
   gap: 10px;
   margin: 0 !important;
-  padding: 8px 10px 8px 14px !important;
+  padding: 6px 6px 6px 16px !important;
   border: 0 !important;
-  border-radius: 0 !important;
-  background: transparent !important;
+  border-radius: 18px 18px 8px 8px !important;
+  background: color-mix(in srgb, var(--cc-text) 4%, var(--cc-panel)) !important;
   color: var(--cc-text-secondary) !important;
   box-shadow: none;
   font-size: 12px !important;
@@ -5039,25 +5047,41 @@ html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
 }
 
 .oc-reply-bar .oc-reply-bar-content {
+  position: relative;
   min-width: 0;
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  align-items: stretch;
   flex: 1;
-  gap: 4px;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  padding: 2px 0 2px 34px;
+  text-align: start;
+  font: inherit;
+  cursor: pointer;
 }
 
 .oc-reply-bar .oc-reply-bar-label {
   flex: 0 0 auto;
-  color: var(--cc-accent) !important;
-  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cc-text-secondary) !important;
+  font-weight: 500 !important;
 }
 
 .oc-reply-bar .oc-reply-bar-text {
   min-width: 0;
   overflow: hidden;
-  color: var(--cc-text-secondary) !important;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--cc-text) !important;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .oc-reply-bar .oc-reply-bar-close {
@@ -5079,6 +5103,16 @@ html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
 .oc-reply-bar .oc-reply-bar-close:hover {
   background: var(--cc-hover);
   color: var(--cc-text) !important;
+}
+
+@media (hover: hover) {
+  .oc-reply-bar-content:hover .oc-reply-bar-label { text-decoration: underline; }
+  .v3-inline-reply:hover { background: var(--cc-hover); }
+}
+
+@media (pointer: coarse) {
+  .oc-reply-bar .oc-reply-bar-close { width: 44px; height: 44px; flex-basis: 44px; }
+  .v3-inline-reply { min-height: 32px; }
 }
 
 .v3-attachment-notice {

@@ -344,7 +344,11 @@ function SidebarFloatingMenu({ anchorRef, onClose, className = '', children, ...
   );
 }
 
-export default function ChatListView({
+export default function ChatListView(props) {
+  return <AccountChatList key={props.user?.uid ?? 'guest'} {...props} />;
+}
+
+function AccountChatList({
   activeTopic,
   onSelectTopic,
   onOpenSearch,
@@ -444,6 +448,8 @@ export default function ChatListView({
   const friendSyncQueuedRef = useRef(false);
   const conversationRequestPromiseRef = useRef(null);
   const taskStatusVersionsRef = useRef(new Map());
+  // Live receipts may arrive before the first conversation list resolves.
+  const initialLiveCompletions = useRef(new Set());
   const sidebarListRef = useRef(null);
   const contactsSectionRef = useRef(null);
   const projectsSectionRef = useRef(null);
@@ -527,6 +533,7 @@ export default function ChatListView({
 
   useEffect(() => {
     userUidRef.current = user?.uid;
+    return () => { userUidRef.current = null; };
   }, [user?.uid]);
 
   useEffect(() => {
@@ -855,9 +862,26 @@ export default function ChatListView({
   };
 
   const applyConversations = (result) => {
+    if (userUidRef.current !== user?.uid) return result;
     if (!Array.isArray(result?.conversations)) throw new Error('conversation response is invalid');
+    const incoming = result.conversations.map(conversationSummaryToChat);
+    if (user?.uid && initialLiveCompletions.current) {
+      const dismissed = loadDismissedTaskStatuses(user.uid);
+      if (!dismissed.historyInitialized) {
+        for (const chat of incoming) {
+          if (chat.taskStatus?.state === 'completed' && !dismissed[chat.id]
+            && !initialLiveCompletions.current.has(chat.id)) {
+            dismissed[chat.id] = taskStatusDismissKey(chat.taskStatus);
+          }
+        }
+        dismissed.historyInitialized = true;
+        saveDismissedTaskStatuses(user.uid, dismissed);
+      }
+      setDismissedTaskStatuses(dismissed);
+      initialLiveCompletions.current = null;
+    }
     setChats(previous => reconcileConversationTaskStatuses(
-      result.conversations.map(conversationSummaryToChat), previous,
+      incoming, previous,
       result.taskStatusVersions, taskStatusVersionsRef.current,
     ));
     setConversationsLoaded(true);
@@ -1008,6 +1032,7 @@ export default function ChatListView({
       const taskStatus = normalizeTaskStatus(msg.task_status || msg.ctrl?.params?.task_status);
       if (taskStatus?.topic_id) {
         const topicId = taskStatus.topic_id;
+        if (taskStatus.state === 'completed') initialLiveCompletions.current?.add(topicId);
         const updatedAtMs = taskStatusUpdatedMs(taskStatus) || Date.now();
         setChats((previous) => {
           const index = previous.findIndex((chat) => chat.id === topicId);

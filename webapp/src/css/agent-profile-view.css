@@ -1,0 +1,130 @@
+.cc-agent-profile-shell .cc-agent-detail-sections {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.cc-agent-profile-shell .cc-agent-detail-panel {
+  min-height: 0;
+  padding: 20px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-panel-raised);
+}
+
+.cc-agent-profile-shell .cc-agent-detail-tabs {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  width: min(100%, 348px);
+}
+
+.cc-agent-profile-shell .cc-agent-detail-tabs > button {
+  min-height: 36px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.cc-agent-profile-shell .oc-form-group > h2 {
+  margin: 0 0 8px;
+}
+
+.cc-agent-profile-shell .cc-agent-profile-value {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: auto;
+  min-height: 46px;
+  margin: 0;
+  padding: 12px 16px;
+  overflow-wrap: anywhere;
+}
+
+.cc-agent-profile-shell .cc-agent-profile-value.cc-agent-manage-description {
+  display: block;
+  min-height: 190px;
+  padding: 12px 16px !important;
+  white-space: pre-wrap;
+}
+
+.cc-agent-profile-overview > h2,
+.cc-agent-profile-overview dl,
+.cc-agent-profile-list {
+  margin: 0;
+}
+
+.cc-agent-profile-overview dl > div,
+.cc-agent-profile-list li {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--cc-border);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.cc-agent-profile-overview dl > div {
+  grid-template-columns: minmax(76px, 36%) minmax(0, 1fr);
+}
+
+.cc-agent-profile-overview dd {
+  margin: 0;
+}
+
+.cc-agent-profile-overview dt,
+.cc-agent-profile-list small {
+  color: var(--cc-text-secondary);
+}
+
+.cc-agent-profile-presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.cc-agent-profile-presence.is-online {
+  color: var(--cc-success-text);
+}
+
+.cc-agent-profile-presence::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+}
+
+.cc-agent-profile-shell .cc-agent-profile-capabilities {
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: start;
+}
+
+.cc-agent-profile-list {
+  padding: 0;
+}
+
+.cc-agent-profile-list li {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.cc-agent-profile-list strong {
+  font-weight: var(--cc-font-weight-semibold);
+}
+
+.cc-agent-profile-shell .cc-agent-profile-list p {
+  margin: 4px 0 0;
+  color: var(--cc-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cc-agent-profile-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}

@@ -214,6 +214,8 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     snapshot.structuredMentionDrafts,
     (value) => Array.isArray(value) && value.length > 0,
   ));
+  const replyDrafts = new Map(draftEntries(snapshot.replyDrafts, value =>
+    Number(value?.id) > 0 && Number(value?.anchorId) > 0 && typeof value?.excerpt === 'string'));
   const attachmentDrafts = new Map(draftEntries(
     snapshot.attachmentDrafts,
     (value) => Array.isArray(value) && value.length > 0,
@@ -237,6 +239,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     handoffTarget = null;
     inputDrafts.clear();
     structuredMentionDrafts.clear();
+    replyDrafts.clear();
     attachmentDrafts.clear();
     phoneUploadSessions.clear();
     taskContextDrafts.clear();
@@ -258,6 +261,18 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     // Maps remain exposed for read-only compatibility with older consumers.
     inputDrafts,
     structuredMentionDrafts,
+    getReplyDraft(key) {
+      if (handoffTarget) return handoffTarget.getReplyDraft(key);
+      return replyDrafts.get(normalizeDraftKey(key)) || null;
+    },
+    setReplyDraft(key, value) {
+      if (handoffTarget) return handoffTarget.setReplyDraft(key, value);
+      const normalizedKey = normalizeDraftKey(key);
+      if (!normalizedKey || closed) return;
+      if (value) replyDrafts.set(normalizedKey, value);
+      else replyDrafts.delete(normalizedKey);
+      notify(normalizedKey);
+    },
     attachmentDrafts,
     phoneUploadSessions,
     taskContextDrafts,
@@ -358,6 +373,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       // store can hydrate the late result from either persisted storage copy.
       if (closed || !storageKey) return;
       if (inputDrafts.size === 0
+        && replyDrafts.size === 0
         && structuredMentionDrafts.size === 0
         && attachmentDrafts.size === 0
         && phoneUploadSessions.size === 0
@@ -368,6 +384,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       try {
         const serialized = JSON.stringify({
           inputDrafts: [...inputDrafts],
+          ...(replyDrafts.size ? { replyDrafts: [...replyDrafts] } : {}),
           structuredMentionDrafts: [...structuredMentionDrafts],
           attachmentDrafts: [...attachmentDrafts],
           phoneUploadSessions: [...phoneUploadSessions],
@@ -445,6 +462,21 @@ export function writeComposerInputDraft(store, key, value) {
   if (typeof value === 'string' && value) store.inputDrafts.set(normalizedKey, value);
   else store.inputDrafts.delete?.(normalizedKey);
   markComposerDraftMutation(store, normalizedKey);
+}
+
+export function readComposerReplyDraft(store, key) {
+  return store?.getReplyDraft?.(key) || store?.replyDrafts?.get(key) || null;
+}
+
+export function writeComposerReplyDraft(store, key, reply) {
+  if (!store || !key) return;
+  if (store.setReplyDraft) store.setReplyDraft(key, reply);
+  else {
+    store.replyDrafts ??= new Map();
+    if (reply) store.replyDrafts.set(key, reply);
+    else store.replyDrafts.delete(key);
+  }
+  markComposerDraftMutation(store, key);
 }
 
 export function readComposerMentionDraft(store, key) {
