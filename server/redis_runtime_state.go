@@ -336,7 +336,9 @@ func (s *RedisRuntimeState) deliverArtifactWebMcp(targetNodeID string, env artif
 	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
 	defer cancel()
 	subscriberCount, err := s.client.Publish(ctx, s.userMessageChannel(), payload).Result()
-	return err == nil && subscriberCount > 0
+	// The publishing node itself is subscribed to userMessageChannel, so > 1 is required
+	// to prove at least one peer node is listening (otherwise return false for immediate page_not_open).
+	return err == nil && subscriberCount > 1
 }
 
 func (s *RedisRuntimeState) routeConnected(route runtimeRoute, now time.Time) bool {

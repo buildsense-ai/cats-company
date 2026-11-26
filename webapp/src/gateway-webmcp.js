@@ -48,11 +48,11 @@ function utf8ByteLength(str) {
 }
 
 function fitToolsWithinByteCap(tools, maxBytes = MAX_WEBMCP_PAYLOAD_BYTES) {
-  if (!Array.isArray(tools) || tools.length === 0) return [];
+  if (!Array.isArray(tools) || tools.length === 0) return { tools: [], truncated: false };
   try {
-    if (utf8ByteLength(JSON.stringify(tools)) <= maxBytes) return tools;
+    if (utf8ByteLength(JSON.stringify(tools)) <= maxBytes) return { tools, truncated: false };
   } catch {
-    return [];
+    return { tools: [], truncated: true };
   }
   const fitted = [];
   for (const tool of tools) {
@@ -64,7 +64,7 @@ function fitToolsWithinByteCap(tools, maxBytes = MAX_WEBMCP_PAYLOAD_BYTES) {
       break;
     }
   }
-  return fitted;
+  return { tools: fitted, truncated: fitted.length < tools.length };
 }
 
 function isPlainObject(value) {
@@ -241,7 +241,10 @@ export function createGatewayWebMcpHost({
       if (data.request_id !== current.requestId || current.ready) return;
       current.ready = true;
       clearRetry();
-      const tools = Array.isArray(data.tools) ? data.tools : [];
+      const { tools, truncated } = fitToolsWithinByteCap(Array.isArray(data.tools) ? data.tools : []);
+      if (truncated && typeof console !== 'undefined' && typeof console.warn === 'function') {
+        console.warn(`[gateway-webmcp] ready tool list exceeded ${MAX_WEBMCP_PAYLOAD_BYTES} bytes; truncated to ${tools.length} tool(s)`);
+      }
       current.tools = tools;
       current.synced = true;
       safeSendWS({
@@ -250,7 +253,7 @@ export function createGatewayWebMcpHost({
         tools,
       });
       if (typeof onToolsChange === 'function') {
-        try { onToolsChange(tools); } catch {}
+        try { onToolsChange(tools, { truncated }); } catch {}
       }
       return;
     }
@@ -258,7 +261,10 @@ export function createGatewayWebMcpHost({
     if (!current.ready) return;
 
     if (data.type === GATEWAY_WEBMCP_TOOLS_SYNC_TYPE) {
-      const tools = fitToolsWithinByteCap(Array.isArray(data.tools) ? data.tools : []);
+      const { tools, truncated } = fitToolsWithinByteCap(Array.isArray(data.tools) ? data.tools : []);
+      if (truncated && typeof console !== 'undefined' && typeof console.warn === 'function') {
+        console.warn(`[gateway-webmcp] tools_sync list exceeded ${MAX_WEBMCP_PAYLOAD_BYTES} bytes; truncated to ${tools.length} tool(s)`);
+      }
       current.tools = tools;
       current.synced = true;
       safeSendWS({
@@ -267,7 +273,7 @@ export function createGatewayWebMcpHost({
         tools,
       });
       if (typeof onToolsChange === 'function') {
-        try { onToolsChange(tools); } catch {}
+        try { onToolsChange(tools, { truncated }); } catch {}
       }
       return;
     }
@@ -375,7 +381,7 @@ export function createGatewayWebMcpHost({
     if (state.disposed) return;
     const current = state.session;
     if (!current || !current.ready) return;
-    const tools = fitToolsWithinByteCap(Array.isArray(current.tools) ? current.tools : []);
+    const { tools } = fitToolsWithinByteCap(Array.isArray(current.tools) ? current.tools : []);
     if (tools.length === 0 && !current.synced) return;
     current.synced = true;
     safeSendWS({

@@ -225,4 +225,68 @@ describe('createGatewayWebMcpHost', () => {
     expect(last.error.code).toBe('result_too_large');
     f.host.dispose();
   });
+
+  it('caps oversized ready.tools below 64 KiB WS limit and surfaces truncation via onToolsChange', () => {
+    const wsSent = [];
+    const iframePosted = [];
+    const listeners = new Set();
+    const onToolsChange = vi.fn();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const contentWindow = {
+      postMessage(msg, targetOrigin) {
+        iframePosted.push({ msg, targetOrigin });
+      },
+    };
+    const windowRef = {
+      addEventListener(type, fn) { if (type === 'message') listeners.add(fn); },
+      removeEventListener(type, fn) { if (type === 'message') listeners.delete(fn); },
+    };
+    const host = createGatewayWebMcpHost({
+      sendWS: (payload) => wsSent.push(payload),
+      windowRef,
+      onToolsChange,
+      connectRetryMs: 10_000,
+      maxConnectAttempts: 1,
+    });
+    const openBinding = {
+      open_ref: 'aob_secret_open_ref_cap',
+      app_id: 'my-canvas',
+      topic_id: 'p2p_101_365',
+      app_origin: 'https://artifact.catsco.cc',
+    };
+    host.activate({ frame: { contentWindow }, openBinding });
+    const { session_id, request_id } = iframePosted[0].msg;
+
+    // 64 tools * 1024-char descriptions (~85 KiB > 64 KiB WS limit)
+    const oversizedTools = Array.from({ length: 64 }, (_, idx) => ({
+      name: `tool_${idx}`,
+      description: 'x'.repeat(1024),
+      inputSchema: { type: 'object', properties: {} },
+    }));
+    for (const fn of [...listeners]) {
+      fn({
+        origin: 'https://artifact.catsco.cc',
+        source: contentWindow,
+        data: {
+          contract_version: GATEWAY_WEBMCP_BRIDGE_CONTRACT,
+          type: GATEWAY_WEBMCP_READY_TYPE,
+          session_id,
+          request_id,
+          tools: oversizedTools,
+        },
+      });
+    }
+
+    expect(wsSent).toHaveLength(1);
+    const frameBytes = Buffer.byteLength(JSON.stringify(wsSent[0]), 'utf8');
+    expect(frameBytes).toBeLessThan(65536);
+    expect(wsSent[0].tools.length).toBeGreaterThan(0);
+    expect(wsSent[0].tools.length).toBeLessThan(64);
+    expect(host.tools).toEqual(wsSent[0].tools);
+    expect(onToolsChange).toHaveBeenCalledWith(wsSent[0].tools, { truncated: true });
+    expect(warnSpy).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+    host.dispose();
+  });
 });
