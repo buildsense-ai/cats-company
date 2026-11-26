@@ -1,0 +1,53 @@
+.cc-agent-entry-overlay { z-index: 1200; }
+.oc-modal.cc-agent-entry-dialog {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(480px, calc(100vw - 24px));
+  max-height: min(82dvh, 720px);
+  padding: 0;
+  overflow: hidden;
+}
+.cc-agent-entry-dialog > .oc-modal-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--cc-border);
+}
+.cc-agent-entry-dialog h3 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+.cc-agent-entry-dialog > .oc-modal-body { overflow-y: auto; min-height: 0; padding: 20px; }
+.cc-entry-sharing, .cc-friend-directory { display: grid; gap: 16px; }
+.cc-entry-fields { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cc-entry-fields label, .cc-friend-directory h4 { font-size: 14px; font-weight: var(--cc-font-weight-semibold); }
+.cc-entry-fields > .v3-custom-model-select-wrap { width: min(62%, 218px); }
+.cc-entry-fields button.v3-custom-model-select-trigger { width: 100%; }
+.cc-entry-help, .cc-friend-directory p, .cc-friend-directory small, .cc-entry-qr-error details {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.cc-entry-result { display: grid; justify-items: center; gap: 18px; padding-top: 16px; border-top: 1px solid var(--cc-border); }
+.cc-entry-result > img { border-radius: var(--cc-radius-md); }
+.cc-entry-qr-error { width: 100%; box-sizing: border-box; padding: 20px; display: grid; justify-items: center; gap: 12px; border-radius: var(--cc-radius-md); background: var(--cc-panel-raised); }
+.cc-entry-qr-error p { margin-bottom: 0; }
+.cc-entry-actions, .cc-friend-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cc-agent-entry-dialog .oc-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.cc-friend-directory h4 { margin: 0 0 10px; }
+.cc-friend-directory section + section { border-top: 1px solid var(--cc-border); padding-top: 16px; }
+.cc-friend-directory small { display: block; }
+.cc-friend-identity { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.cc-friend-identity small { font-variant-numeric: tabular-nums; }
+.cc-friend-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 14px; overflow-wrap: anywhere; }
+.cc-friend-row > div:first-child { min-width: 0; }
+.cc-friend-row > button, .cc-friend-actions { flex: none; }
+.cc-friend-directory summary { padding-block: 5px; color: var(--cc-text-secondary); font-size: 13px; }
+.cc-friend-directory summary, .cc-entry-qr-error summary { cursor: pointer; }
+@media (max-width: 520px) {
+  .cc-agent-entry-dialog > .oc-modal-body { padding: 16px; }
+  .cc-entry-sharing > div, .cc-entry-sharing details { min-width: 0; overflow-wrap: anywhere; }
+}

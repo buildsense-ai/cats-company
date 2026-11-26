@@ -19,14 +19,14 @@ import {
   QrCode,
   Settings2,
   Trash2,
-  UsersRound,
-  XCircle,
   Zap,
 } from 'lucide-react';
 import { AssistantBadge, Cloud, Copy, MoreHorizontal, Plus, RefreshCw, Search, X } from './desktop-icons';
 import Avatar from './avatar';
 import LoadingState from './loading-state';
-import { restoreDialogFocus } from '../utils/use-dialog-behavior';
+import AgentFriendAccess from './agent-friend-access';
+import './agent-sharing.css';
+import useDialogBehavior, { restoreDialogFocus } from '../utils/use-dialog-behavior';
 import QRCode from './qr-code';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
@@ -655,7 +655,6 @@ export default function AgentStoreModal({
   const [managedSkills, setManagedSkills] = useState({ count: 0, skills: [], loading: false, error: '' });
   const [artifactSummary, setArtifactSummary] = useState({
     count: 0,
-    uploaderCount: 0,
     loading: false,
     error: '',
   });
@@ -960,28 +959,15 @@ export default function AgentStoreModal({
       .then((response) => {
         if (!active) return;
         const artifacts = Array.isArray(response?.artifacts) ? response.artifacts : [];
-        const uploaders = new Set(
-          artifacts
-            .filter((artifact) => artifact?.creator_type === 'user' || artifact?.uploader_uid || artifact?.uploader_name)
-            .map((artifact) => String(
-              artifact.uploader_uid
-              || artifact.creator_uid
-              || artifact.uploader_name
-              || artifact.creator_name
-              || '',
-            ))
-            .filter(Boolean),
-        );
         setArtifactSummary({
           count: artifacts.length,
-          uploaderCount: uploaders.size,
           loading: false,
           error: '',
         });
       })
       .catch(() => {
         if (!active) return;
-        setArtifactSummary({ count: 0, uploaderCount: 0, loading: false, error: '暂时无法读取成果统计' });
+        setArtifactSummary({ count: 0, loading: false, error: '暂时无法读取成果统计' });
       });
     return () => {
       active = false;
@@ -1818,7 +1804,7 @@ export default function AgentStoreModal({
             </h3>
           </div>
           <div className="cc-agent-manager-header-actions">
-            {tab === 'manage' && editingBot && <button type="button" className="cc-agent-manager-header-action" aria-label="入口码" disabled={manageSaving} onClick={() => setEntryBot(editingBot)}><QrCode size={15} aria-hidden="true" /><span>入口码</span></button>}
+            {tab === 'manage' && editingBot && <button type="button" className="cc-agent-manager-header-action" aria-label="分享助手" disabled={manageSaving} onClick={() => setEntryBot(editingBot)}><QrCode size={15} aria-hidden="true" /><span>分享助手</span></button>}
             {tab !== 'hub' && tab !== 'manage' && tab !== 'create' && (
               <button
                 type="button"
@@ -1989,7 +1975,7 @@ export default function AgentStoreModal({
                                   const confirmed = await feedback.confirm({
                                     title: '重新生成邀请码？',
                                     message: '旧邀请码会立即失效，已分享给别人的邀请码将无法继续使用。',
-                                    confirmLabel: '重新生成',
+                                    confirmLabel: '更换入口码',
                                   });
                                   if (confirmed) handleGenerateBotInviteCode(bot, { regenerate: true });
                                 }}
@@ -2019,10 +2005,10 @@ export default function AgentStoreModal({
                             type="button"
                             className="oc-btn oc-btn-default cc-agent-card-action"
                             onClick={() => setEntryBot(bot)}
-                            title="入口码"
+                            title="分享助手"
                           >
                             <QrCode size={14} aria-hidden="true" />
-                            入口码
+                            分享助手
                           </button>
                         )}
                         {botId && (
@@ -2570,10 +2556,6 @@ export default function AgentStoreModal({
                   </div>
                 </div>
                 )}
-                <section className="cc-agent-connection-access">
-                  <div><h3>入口码与访问权限</h3><p>查看助手入口码，管理已授权的用户。</p></div>
-                  <button type="button" className="oc-btn oc-btn-default" onClick={() => setEntryBot(editingBot)}><QrCode size={16} aria-hidden="true" /> 管理访问</button>
-                </section>
                 </AgentManageSection>
 
               <AgentManageSection
@@ -2586,19 +2568,19 @@ export default function AgentStoreModal({
                 variant="tab"
               >
               <div className="cc-agent-collaboration-grid">
-                <section className="cc-agent-collaboration-card cc-agent-visibility-settings">
-                  <div className="cc-agent-collaboration-heading">
-                    <div>
-                      <h3><UsersRound size={16} strokeWidth={1.8} aria-hidden="true" />好友添加方式</h3>
-                      <p>选择其他用户如何找到并添加助手。</p>
-                    </div>
-                  </div>
+                <AgentFriendAccess
+                  key={editingBot.id || editingBot.uid}
+                  botId={editingBot.id || editingBot.uid}
+                  channelLabel={channelLabel}
+                  onAccessChanged={() => loadBots({ silent: true })}
+                >
                   <div className="cc-agent-artifact-controls">
                     <div className="cc-agent-artifact-policy-copy">
                       <strong>允许被搜索</strong>
                       <span id="cc-agent-search-visibility-description">{normalizeBotVisibility(editingBot.visibility) === BOT_VISIBILITY.PUBLIC
                         ? '可通过名字或 UID 搜索并申请添加'
                         : '不出现在搜索结果中，保留已有授权'}</span>
+                      {currentVisibilityStatus && <small className="cc-agent-setting-feedback" role="status">{currentVisibilityStatus === 'saving' ? '正在更新…' : '已更新'}</small>}
                     </div>
                     <button
                       type="button"
@@ -2614,34 +2596,37 @@ export default function AgentStoreModal({
                       <span aria-hidden="true" />
                     </button>
                   </div>
-                  <small className="cc-agent-setting-feedback" role="status">{currentVisibilityStatus === 'saving' ? '正在更新…' : currentVisibilityStatus === 'saved' ? '已更新 · 即时生效' : '即时生效，无需保存'}</small>
-                </section>
+                </AgentFriendAccess>
 
-                <section className="cc-agent-collaboration-card cc-agent-artifact-settings">
-                  <div className="cc-agent-collaboration-heading">
-                    <div>
-                      <h3><FolderOpen size={16} strokeWidth={1.8} aria-hidden="true" />共享成果</h3>
-                      <p>成员上传后直接展示，无需审批。</p>
-                    </div>
-                  </div>
-
-                  <div className="cc-agent-artifact-summary" aria-live="polite">
-                    <div>
-                      <strong>{artifactSummary.loading ? '正在读取成果…' : artifactSummary.error || `共 ${artifactSummary.count} 项成果 · ${artifactSummary.uploaderCount} 位上传者`}</strong>
-                      <span>所有者始终可以上传和管理全部成果</span>
-                    </div>
-                  </div>
-
+                <section className="cc-agent-collaboration-section cc-agent-artifact-settings">
+                  <header className="cc-agent-collaboration-heading">
+                    <h3>
+                      <FolderOpen size={16} strokeWidth={1.8} aria-hidden="true" />共享成果
+                      {!artifactSummary.loading && !artifactSummary.error &&
+                        <small className="cc-collaboration-count">· {artifactSummary.count}</small>}
+                    </h3>
+                    <button
+                      type="button"
+                      className="cc-collaboration-text-action"
+                      onClick={() => requestLeave(() => onOpenCloudArtifacts?.(editingBot.id || editingBot.uid, editingBot))}
+                      disabled={!onOpenCloudArtifacts}
+                    >
+                      管理成果
+                      <ChevronRight size={16} strokeWidth={1.8} aria-hidden="true" />
+                    </button>
+                  </header>
+                  {artifactSummary.error && <p role="status">{artifactSummary.error}</p>}
                   <div className="cc-agent-artifact-controls">
                     <div className="cc-agent-artifact-policy-copy">
                       <strong>允许成员上传</strong>
-                      <span>{editingBot.newArtifactUploadEnabled ? '成员可以上传新成果' : '成员只能查看已有成果'} · 保存后生效</span>
+                      <span id="cc-agent-upload-policy-description">{editingBot.newArtifactUploadEnabled ? '成员上传后直接展示，无需审批。' : '成员只能查看已有成果。'}保存后生效。</span>
                     </div>
                     <button
                       type="button"
                       role="switch"
                       aria-checked={editingBot.newArtifactUploadEnabled}
                       aria-label="允许成员上传共享成果"
+                      aria-describedby="cc-agent-upload-policy-description"
                       className="cc-agent-artifact-switch"
                       onClick={() => setEditingBot((current) => ({
                         ...current,
@@ -2652,15 +2637,6 @@ export default function AgentStoreModal({
                     </button>
                   </div>
 
-                  <button
-                    type="button"
-                    className="oc-btn oc-btn-default cc-agent-manage-artifacts"
-                    onClick={() => requestLeave(() => onOpenCloudArtifacts?.(editingBot.id || editingBot.uid, editingBot))}
-                    disabled={!onOpenCloudArtifacts}
-                  >
-                    管理成果
-                    <ChevronRight size={16} strokeWidth={1.8} aria-hidden="true" />
-                  </button>
                 </section>
                 </div>
               </AgentManageSection>
@@ -2757,7 +2733,6 @@ export default function AgentStoreModal({
           onClose={() => setEntryBot(null)}
           onCopy={handleCopy}
           copiedField={copiedField}
-          onAccessChanged={() => loadBots({ silent: true })}
         />
       )}
       {skillDetail && typeof document !== 'undefined' && createPortal(
@@ -3117,7 +3092,25 @@ function mergeManageableBots(rawBots, rawAgents, rawFriends = []) {
   });
 }
 
-function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged }) {
+function AgentEntryModal({ bot, onClose, ...shareProps }) {
+  const dialogRef = useRef(null);
+  useDialogBehavior(dialogRef, { onClose, initialFocus: 'heading' });
+  return (
+    <div className="oc-modal-overlay cc-agent-entry-overlay" onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
+      <section ref={dialogRef} className="oc-modal cc-agent-entry-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-entry-dialog-title">
+        <header className="oc-modal-header">
+          <h3 id="agent-entry-dialog-title" className="cc-dialog-reading-focus" tabIndex={-1}>分享助手 · {bot.display_name || bot.username}</h3>
+          <button type="button" className="cc-dialog-close" aria-label="关闭" onClick={onClose}><X size={18} /></button>
+        </header>
+        <div className="oc-modal-body">
+          <AgentEntryShare bot={bot} {...shareProps} />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AgentEntryShare({ bot, onCopy, copiedField }) {
   const feedback = useFeedback();
   const [channel, setChannel] = useState('weixin');
   const [channelAppIds, setChannelAppIds] = useState({ weixin: '', feishu: '', weixin_clawbot: '' });
@@ -3127,13 +3120,8 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [qrImageError, setQrImageError] = useState(false);
-  const [pendingRequests, setPendingRequests] = useState([]);
-  const [botFriends, setBotFriends] = useState([]);
-  const [managedBindings, setManagedBindings] = useState([]);
-  const [accessTab, setAccessTab] = useState('pending');
-  const [pendingLoading, setPendingLoading] = useState(false);
-  const [reviewingUID, setReviewingUID] = useState(null);
-  const [removingFriendUID, setRemovingFriendUID] = useState(null);
+  const [entryLoadAttempt, setEntryLoadAttempt] = useState(0);
+  const [entryLoadFailed, setEntryLoadFailed] = useState(false);
   const [clawBotMobileLink, setClawBotMobileLink] = useState(null);
   const [clawBotMobileLoading, setClawBotMobileLoading] = useState(false);
   const [clawBotMobileError, setClawBotMobileError] = useState('');
@@ -3145,13 +3133,14 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setEntryLoadFailed(false);
     setError('');
     api.getAgentEntries(botId)
       .then((res) => {
         if (!cancelled) setEntries(res.entries || []);
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message || 'Failed to load entry codes');
+        if (!cancelled) { setEntryLoadFailed(true); setError(err.message || '入口码加载失败'); }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -3159,33 +3148,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
     return () => {
       cancelled = true;
     };
-  }, [botId]);
-
-  const loadPendingRequests = useCallback(async () => {
-    if (!botId) return;
-    try {
-      setPendingLoading(true);
-      const [pendingRes, bindingsRes, friendsRes] = await Promise.all([
-        api.getPendingRequests(botId),
-        api.getAgentChannelBindings(botId),
-        api.getBotFriends(botId),
-      ]);
-      setPendingRequests(pendingRes.requests || []);
-      setManagedBindings(bindingsRes.bindings || []);
-      setBotFriends(friendsRes.friends || []);
-    } catch (err) {
-      console.warn('load agent pending requests:', err);
-      setPendingRequests([]);
-      setManagedBindings([]);
-      setBotFriends([]);
-    } finally {
-      setPendingLoading(false);
-    }
-  }, [botId]);
-
-  useEffect(() => {
-    loadPendingRequests();
-  }, [loadPendingRequests]);
+  }, [botId, entryLoadAttempt]);
 
   const channelAppId = channelAppIds[channel] || '';
   const managedChannelAppID = isManagedChannel(channel);
@@ -3318,9 +3281,9 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
           && normalizeChannelAgentAccessMode(entry.access_mode) === normalizeChannelAgentAccessMode(next.access_mode)
         )
       ))]);
-      await loadPendingRequests();
+
     } catch (err) {
-      setError(err.message || 'Failed to generate entry code');
+      setError(err.message || '入口码生成失败');
     } finally {
       setSaving(false);
     }
@@ -3329,9 +3292,9 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
   const handleRegenerate = async () => {
     if (!selected) return;
     const confirmed = await feedback.confirm({
-      title: '重新生成入口码？',
+      title: '更换入口码？',
       message: '重新生成后，旧入口码会立即失效。',
-      confirmLabel: '重新生成',
+      confirmLabel: '更换入口码',
       tone: 'danger',
     });
     if (!confirmed) return;
@@ -3349,124 +3312,20 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
       ))]);
       feedback.notify({ tone: 'success', message: '入口码已重新生成' });
     } catch (err) {
-      setError(err.message || 'Failed to regenerate entry code');
+      setError(err.message || '更换入口码失败');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleReviewRequest = async (request, action) => {
-    const fromUID = request?.from_user_id;
-    if (!fromUID || !botId) return;
-    try {
-      setReviewingUID(fromUID);
-      setError('');
-      if (action === 'accept') {
-        await api.acceptAgentFriend(botId, fromUID);
-      } else {
-        await api.rejectAgentFriend(botId, fromUID);
-      }
-      await loadPendingRequests();
-    } catch (err) {
-      setError(err.message || 'Failed to review friend request');
-    } finally {
-      setReviewingUID(null);
-    }
-  };
-
-  const handleRemoveBotFriend = async (friend) => {
-    const friendUID = friend?.id || friend?.uid;
-    if (!friendUID || !botId) return;
-    const name = friend.display_name || friend.username || `用户 ${friendUID}`;
-    const confirmed = await feedback.confirm({
-      title: `移除“${name}”的使用权限？`,
-      message: '移除后，该用户将无法继续使用这个虚拟员工。',
-      confirmLabel: '移除权限',
-      tone: 'danger',
-    });
-    if (!confirmed) return;
-    try {
-      setRemovingFriendUID(friendUID);
-      setError('');
-      await api.removeBotFriend(botId, friendUID);
-      await loadPendingRequests();
-      if (onAccessChanged) onAccessChanged();
-      feedback.notify({ tone: 'success', message: '使用权限已移除' });
-    } catch (err) {
-      setError(err.message || '移除使用者失败');
-    } finally {
-      setRemovingFriendUID(null);
-    }
-  };
-
-  const bindingsByStatus = useMemo(() => {
-    const buckets = { approved: [], rejected: [], needs_login: [], pending: [] };
-    (managedBindings || []).filter((item) => (
-      normalizeChannelAgentAccessMode(item.access_mode || item.entry_access_mode) === accessMode
-      && normalizeChannel(item.channel || item.binding?.channel) === channel
-      && (!selected?.id || Number(item.binding?.entry_id || item.entry_id || 0) === Number(selected.id))
-    )).forEach((item) => {
-      const status = item.status || item.binding?.status || '';
-      if (status === 'approved' || status === 'active') buckets.approved.push(item);
-      else if (status === 'rejected') buckets.rejected.push(item);
-      else if (status === 'needs_login' || status === 'pending_login') buckets.needs_login.push(item);
-      else if (status === 'pending' || status === 'pending_approval') buckets.pending.push(item);
-    });
-    return buckets;
-  }, [managedBindings, accessMode, channel, selected]);
-
-  useEffect(() => {
-    if (
-      accessTab === 'pending'
-      && pendingRequests.length === 0
-      && bindingsByStatus.pending.length === 0
-      && (botFriends.length > 0 || bindingsByStatus.approved.length > 0)
-    ) {
-      setAccessTab('approved');
-    }
-  }, [accessTab, pendingRequests.length, bindingsByStatus.pending.length, botFriends.length, bindingsByStatus.approved.length]);
-
-  const accessTabs = [
-    ['pending', '待处理', pendingRequests.length + bindingsByStatus.pending.length],
-    ['approved', '已授权', botFriends.length + bindingsByStatus.approved.length],
-    ['rejected', '未通过', bindingsByStatus.rejected.length],
-    ['needs_login', '待登录', bindingsByStatus.needs_login.length],
-  ];
-
   return (
-    <div className="oc-modal-overlay" onClick={onClose} style={{ zIndex: 1200 }}>
-      <div
-        className="oc-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="agent-entry-dialog-title"
-        onClick={e => e.stopPropagation()}
-        style={{ width: 520, maxWidth: '94vw' }}
-      >
-        <div className="oc-modal-header" style={{ padding: '18px 22px', borderBottom: '1px solid var(--v3-border)' }}>
-          <h3 id="agent-entry-dialog-title" style={{ margin: 0, fontSize: 17, color: 'var(--v3-text-name)', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <QrCode size={18} aria-hidden="true" /> {bot.display_name} 入口码
-          </h3>
-          <button type="button" className="oc-btn-default" aria-label="关闭" style={{ width: 32, height: 32, padding: 0, border: 'none', background: 'transparent' }} onClick={onClose}>
-            <X size={18} strokeWidth={1.8} aria-hidden="true" />
-          </button>
-        </div>
-
-        <div className="oc-modal-body" style={{ padding: 22 }}>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
-            {CHANNEL_OPTIONS.map(({ value, label }) => (
-              <button
-                key={value}
-                type="button"
-                className={`oc-btn ${channel === value ? 'oc-btn-primary' : 'oc-btn-default'}`}
-                style={{ flex: 1, padding: '9px 0', borderRadius: 8 }}
-                onClick={() => setChannel(value)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
+    <div className="cc-entry-sharing">
+      <div className="cc-entry-fields">
+        <label>分享渠道</label>
+        <CustomSelect ariaLabel="分享渠道" value={channel} onValueChange={setChannel} disabled={saving}>
+          {CHANNEL_OPTIONS.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+        </CustomSelect>
+      </div>
           {!managedChannelAppID && (
             <div style={{ marginBottom: 16 }}>
               <label className="cc-field-title" style={{ display: 'block', marginBottom: 8 }}>
@@ -3482,39 +3341,22 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
             </div>
           )}
 
-          <div style={{ marginBottom: 16 }}>
-            <div className="cc-field-title" style={{ marginBottom: 8 }}>访问方式</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
-              {[
-                [CHANNEL_AGENT_ACCESS_MODES.APPROVAL_REQUIRED, '好友申请'],
-                [CHANNEL_AGENT_ACCESS_MODES.PUBLIC, '公开访问'],
-              ].map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`oc-btn ${accessMode === value ? 'oc-btn-primary' : 'oc-btn-default'}`}
-                  style={{ padding: '9px 0', borderRadius: 8 }}
-                  onClick={() => setAccessMode(value)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.6, marginTop: 8 }}>
-              {accessMode === CHANNEL_AGENT_ACCESS_MODES.PUBLIC
-                ? '扫码后仍需登录 CatsCo 账号；账号验证通过后可直接对话，不需要管理员审批。设备操作只会使用申请人自己授权的设备。'
-                : isFeishuChannel(channel)
-                  ? '用户用飞书扫码后会打开该虚拟员工的飞书应用或机器人入口；首次进入会提交好友申请，通过并完成 CatsCo 账号绑定后，可直接在飞书对话并使用该账号已连接的设备。'
-                  : isWeixinClawBotChannel(channel)
-                    ? '用户用微信 ClawBot 扫码后会进入独立的 ClawBot 入口；首次进入会提交好友申请，通过后可直接在 ClawBot 对话。'
-                    : '扫码后需要登录 CatsCo 并发送好友申请，通过后才能对话；设备操作只会使用申请人自己授权的设备。'}
-            </div>
-          </div>
+      <div className="cc-entry-fields">
+        <label>入口码类型</label>
+        <CustomSelect ariaLabel="入口码类型" value={accessMode} onValueChange={setAccessMode} disabled={saving}>
+          <option value={CHANNEL_AGENT_ACCESS_MODES.APPROVAL_REQUIRED}>需审批</option>
+          <option value={CHANNEL_AGENT_ACCESS_MODES.PUBLIC}>免审批</option>
+        </CustomSelect>
+      </div>
+      <p className="cc-entry-help">{accessMode === CHANNEL_AGENT_ACCESS_MODES.PUBLIC
+        ? '扫码并登录 CatsCo 后可直接使用此助手。' : '扫码并登录 CatsCo 后，需通过好友申请才能使用。'}设备操作仅使用对方已授权的设备。</p>
 
           {error && <InlineFeedback tone="error" className="cc-agent-entry-feedback">{error}</InlineFeedback>}
 
           {loading ? (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)' }}>正在读取入口码...</div>
+          ) : entryLoadFailed ? (
+            <button className="oc-btn oc-btn-default" onClick={() => setEntryLoadAttempt(value => value + 1)}>重试</button>
           ) : selected && needsWeixinConfig ? (
             <div style={{ padding: 24, border: '1px dashed var(--v3-border)', borderRadius: 8 }}>
               <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, marginBottom: 10 }}>微信公众号入口码尚不可用</div>
@@ -3531,7 +3373,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
                   <Copy size={14} /> {copiedField === `entry_${selected.id}` ? 'Copied!' : '复制测试链接'}
                 </button>
                 <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={handleRegenerate} disabled={saving}>
-                  <RefreshCw size={14} /> 重新生成
+                  <RefreshCw size={14} /> 更换入口码
                 </button>
               </div>
             </div>
@@ -3570,7 +3412,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
                   <Copy size={14} /> {copiedField === `feishu_oauth_${selected.id}` ? 'Copied!' : '复制 OAuth 辅助链接'}
                 </button>
                 <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={handleRegenerate} disabled={saving}>
-                  <RefreshCw size={14} /> 重新生成
+                  <RefreshCw size={14} /> 更换入口码
                 </button>
               </div>
             </div>
@@ -3667,32 +3509,16 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
               )}
             </div>
           ) : selected ? (
-            <>
-              <div style={{ display: 'grid', gridTemplateColumns: '196px 1fr', gap: 18, alignItems: 'center' }}>
-                {displayQrUrl && !qrImageError ? (
-                  <img
-                    src={displayQrUrl}
-                    alt={`${channelLabel(channel)}入口码`}
-                    width={196}
-                    height={196}
-                    onError={() => setQrImageError(true)}
-                    style={{ borderRadius: 8, background: '#fff', border: '1px solid var(--v3-border)', objectFit: 'contain' }}
-                  />
-                ) : (
-                  <QRCode value={displayUrl} size={205} />
-                )}
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 8 }}>
-                    {qrKind === 'feishu_oauth_entry' ? '飞书 OAuth 绑定入口' : qrKind === 'feishu_native_entry' ? '飞书应用入口码' : qrKind === 'weixin_clawbot_ilink_qr' ? '微信 ClawBot 授权码' : displayQrUrl ? '微信公众号参数二维码' : '网页入口链接'}
-                  </div>
-                  <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-main)', fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all', marginBottom: 14 }}>
-                    {displayUrl}
-                  </div>
-                  {isWeixinOfficialChannel(channel) && qrImageError && (
-                    <div style={{ background: 'rgba(250,81,81,0.1)', color: '#FA5151', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
-                      微信二维码加载失败，请检查 AppID/AppSecret、公众号接口权限、服务器 IP 白名单和微信后台消息加解密模式。
-                    </div>
-                  )}
+            <div className="cc-entry-result">
+              {qrImageError && displayQrUrl ? (
+                <div className="cc-entry-qr-error" role="status">
+                  <QrCode size={28} aria-hidden="true" /><strong>公众号二维码加载失败</strong>
+                  <button type="button" className="oc-btn oc-btn-default" onClick={() => setQrImageError(false)}>重试加载</button>
+                  <details><summary>查看排查说明</summary><p>可请管理员检查公众号凭据、接口权限和服务器 IP 白名单。</p></details>
+                </div>
+              ) : displayQrUrl ? (
+                <img src={displayQrUrl} alt={channelLabel(channel) + '入口码'} width={196} height={196} onError={() => setQrImageError(true)} />
+              ) : <QRCode value={displayUrl} size={196} />}
                   {isFeishuChannel(channel) && hasFeishuEntryQRCode && feishuEntryStatus?.native_url && (
                     <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all', marginBottom: 14 }}>
                       飞书原生入口：{feishuEntryStatus.native_url}
@@ -3708,195 +3534,23 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
                       当前入口链接不是公网 HTTPS 地址，手机扫码前需要配置公网访问地址。
                     </div>
                   )}
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={() => onCopy(`entry_${selected.id}`, displayUrl)}>
-                      <Copy size={14} /> {copiedField === `entry_${selected.id}` ? 'Copied!' : '复制'}
-                    </button>
-                    <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={handleRegenerate} disabled={saving}>
-                      <RefreshCw size={14} /> 重新生成
-                    </button>
-                  </div>
-                </div>
+              <div className="cc-entry-actions">
+                {!(displayQrUrl && qrImageError) && <button type="button" className="oc-btn oc-btn-primary" onClick={() => onCopy('entry_' + selected.id, displayUrl)}>
+                  <Copy size={15} />{copiedField === 'entry_' + selected.id ? '已复制' : displayQrUrl ? '复制二维码链接' : '复制入口链接'}
+                </button>}
+                <button type="button" className="oc-btn oc-btn-default" onClick={handleRegenerate} disabled={saving}>更换入口码</button>
               </div>
-              <div style={{ marginTop: 18, borderTop: '1px solid var(--v3-border)', paddingTop: 16 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                    <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13 }}>访问管理</div>
-                    <button type="button" className="oc-btn oc-btn-default" style={{ padding: '5px 9px', borderRadius: 8, fontSize: 12 }} onClick={loadPendingRequests} disabled={pendingLoading}>
-                      {pendingLoading ? '刷新中' : '刷新'}
-                    </button>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 10 }}>
-                    {accessTabs.map(([value, label, count]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        className={`oc-btn ${accessTab === value ? 'oc-btn-primary' : 'oc-btn-default'}`}
-                        style={{ padding: '7px 0', borderRadius: 8, fontSize: 12 }}
-                        onClick={() => setAccessTab(value)}
-                      >
-                        {label}{count ? ` ${count}` : ''}
-                      </button>
-                    ))}
-                  </div>
-                  {accessTab === 'pending' && (pendingRequests.length > 0 || bindingsByStatus.pending.length > 0) ? (
-                    <div style={{ display: 'grid', gap: 8 }}>
-                      {pendingRequests.map((request) => (
-                        <div key={`${request.from_user_id}-${request.created_at || ''}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', alignItems: 'center', gap: 8, border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10 }}>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {request.display_name || request.from_username || `用户 ${request.from_user_id}`}
-                            </div>
-                            <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>申请添加该虚拟员工</div>
-                          </div>
-                          <button type="button" className="oc-btn oc-btn-default" style={{ padding: '7px 9px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 5 }} onClick={() => handleReviewRequest(request, 'reject')} disabled={reviewingUID === request.from_user_id}>
-                            <XCircle size={14} /> 拒绝
-                          </button>
-                          <button type="button" className="oc-btn oc-btn-primary" style={{ padding: '7px 9px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 5 }} onClick={() => handleReviewRequest(request, 'accept')} disabled={reviewingUID === request.from_user_id}>
-                            <CheckCircle size={14} /> 通过
-                          </button>
-                        </div>
-                      ))}
-                      {bindingsByStatus.pending.map((item) => (
-                        <BindingStatusRow key={`pending-${item.binding?.id}`} item={item} note="已绑定 CatsCo，等待好友申请通过" />
-                      ))}
-                    </div>
-                  ) : accessTab === 'pending' ? (
-                    <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>暂无待处理申请。</div>
-                  ) : accessTab === 'approved' && (botFriends.length > 0 || bindingsByStatus.approved.length > 0) ? (
-                    <div style={{ display: 'grid', gap: 8 }}>
-                      {botFriends.map((friend) => (
-                        <BotFriendRow
-                          key={`friend-${friend.id || friend.uid}`}
-                          friend={friend}
-                          removing={removingFriendUID === (friend.id || friend.uid)}
-                          onRemove={() => handleRemoveBotFriend(friend)}
-                        />
-                      ))}
-                      {bindingsByStatus.approved.map((item) => (
-                        <BindingStatusRow
-                          key={`approved-${item.binding?.id}`}
-                          item={item}
-                          note="已通过，可从对应渠道对话"
-                        />
-                      ))}
-                    </div>
-                  ) : bindingsByStatus[accessTab]?.length ? (
-                    <div style={{ display: 'grid', gap: 8 }}>
-                      {bindingsByStatus[accessTab].map((item) => (
-                        <BindingStatusRow
-                          key={`${accessTab}-${item.binding?.id}`}
-                          item={item}
-                          note={accessTab === 'approved' ? '已通过，可从对应渠道对话' : accessTab === 'rejected' ? '已拒绝，不能继续对话' : '已扫码，等待登录 CatsCo'}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>暂无记录。</div>
-                  )}
-              </div>
-            </>
+            </div>
           ) : (
             <>
               <div style={{ padding: 36, textAlign: 'center', border: '1px dashed var(--v3-border)', borderRadius: 8 }}>
-                <div style={{ color: 'var(--v3-text-name)', marginBottom: 12 }}>还没有该渠道的入口码</div>
+                <div style={{ color: 'var(--v3-text-name)', marginBottom: 12 }}>还没有该渠道和类型的入口码</div>
                 <button type="button" className="oc-btn oc-btn-primary" style={{ padding: '10px 18px', borderRadius: 8 }} onClick={handleGenerate} disabled={saving}>
                   {saving ? '正在生成...' : '生成入口码'}
                 </button>
               </div>
-              <div style={{ marginTop: 18, borderTop: '1px solid var(--v3-border)', paddingTop: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                  <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13 }}>访问管理</div>
-                  <button type="button" className="oc-btn oc-btn-default" style={{ padding: '5px 9px', borderRadius: 8, fontSize: 12 }} onClick={loadPendingRequests} disabled={pendingLoading}>
-                    {pendingLoading ? '刷新中' : '刷新'}
-                  </button>
-                </div>
-                {pendingRequests.length > 0 && (
-                  <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
-                    {pendingRequests.map((request) => (
-                      <div key={`${request.from_user_id}-${request.created_at || ''}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', alignItems: 'center', gap: 8, border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10 }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {request.display_name || request.from_username || `用户 ${request.from_user_id}`}
-                          </div>
-                          <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>申请添加该虚拟员工</div>
-                        </div>
-                        <button type="button" className="oc-btn oc-btn-default" style={{ padding: '7px 9px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 5 }} onClick={() => handleReviewRequest(request, 'reject')} disabled={reviewingUID === request.from_user_id}>
-                          <XCircle size={14} /> 拒绝
-                        </button>
-                        <button type="button" className="oc-btn oc-btn-primary" style={{ padding: '7px 9px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 5 }} onClick={() => handleReviewRequest(request, 'accept')} disabled={reviewingUID === request.from_user_id}>
-                          <CheckCircle size={14} /> 通过
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {botFriends.length > 0 ? (
-                  <div style={{ display: 'grid', gap: 8 }}>
-                    {botFriends.map((friend) => (
-                      <BotFriendRow
-                        key={`friend-empty-entry-${friend.id || friend.uid}`}
-                        friend={friend}
-                        removing={removingFriendUID === (friend.id || friend.uid)}
-                        onRemove={() => handleRemoveBotFriend(friend)}
-                      />
-                    ))}
-                  </div>
-                ) : (
-                  <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>暂无已授权使用者。</div>
-                )}
-              </div>
             </>
           )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BotFriendRow({ friend, removing, onRemove }) {
-  const uid = friend?.id || friend?.uid;
-  const name = friend?.display_name || friend?.username || `用户 ${uid || ''}`;
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'center', gap: 8, border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10 }}>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {name}
-        </div>
-        <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.5 }}>
-          CatsCo 好友 · UID {uid}
-        </div>
-      </div>
-      <button
-        type="button"
-        className="oc-btn oc-btn-default"
-        style={{ padding: '7px 9px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 5 }}
-        onClick={onRemove}
-        disabled={removing}
-      >
-        <XCircle size={14} /> {removing ? '移除中' : '移除'}
-      </button>
-    </div>
-  );
-}
-
-function BindingStatusRow({ item, note }) {
-  const binding = item?.binding || {};
-  const user = item?.user || {};
-  const name = user.display_name || user.username || binding.channel_user_id || `绑定 ${binding.id || ''}`;
-  const channel = channelLabel(binding.channel || item?.channel);
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'center', gap: 8, border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10 }}>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {name}
-        </div>
-        <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.5 }}>
-          {channel} · {note}
-        </div>
-      </div>
-      <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>
-        {item?.status || binding.status || ''}
-      </div>
     </div>
   );
 }
