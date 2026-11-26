@@ -24,15 +24,15 @@ import (
 )
 
 const (
-	computeTaskQuoteTool        = "catsco_compute_task_quote"
-	computeTaskStatusTool       = "catsco_compute_task_status"
-	computeTaskQuoteTTL         = 5 * time.Minute
-	computeTaskActivationWindow = 20 * time.Minute
-	computeTaskMaxNodes         = 2
-	computeTaskMaxWallSeconds   = 300
-	computeTaskRoute            = "/api/compute/tasks/"
-	computeTaskWorkerRoute      = "/api/compute/worker"
-	computeTaskConfirmPage      = "/compute/confirm"
+	computeToolName           = "catsco_compute"
+	computeTaskQuoteTool      = "catsco_compute_task_quote"
+	computeTaskStatusTool     = "catsco_compute_task_status"
+	computeTaskQuoteTTL       = 5 * time.Minute
+	computeTaskMaxNodes       = 2
+	computeTaskMaxWallSeconds = 300
+	computeTaskRoute          = "/api/compute/tasks/"
+	computeTaskWorkerRoute    = "/api/compute/worker"
+	computeTaskConfirmPage    = "/compute/confirm"
 )
 
 var computeTaskIDPattern = regexp.MustCompile(`^hpc_[0-9a-f]{32}$`)
@@ -143,7 +143,9 @@ func decodeComputeTaskJSON(r io.Reader, limit int64, result any) error {
 
 func computeTaskAllocation(spec store.ComputeTaskSpec) bool {
 	return spec.Nodes > 0 && spec.Nodes <= computeTaskMaxNodes && spec.LogicalCPUs > 0 && spec.MemoryMiB > 0 &&
-		spec.WallSeconds >= 60 && spec.WallSeconds <= computeTaskMaxWallSeconds && spec.WallSeconds%60 == 0
+		spec.WallSeconds >= 60 && spec.WallSeconds <= computeTaskMaxWallSeconds && spec.WallSeconds%60 == 0 &&
+		spec.MaxResourceSecondsPerNode > 0 && spec.MaxResourceSecondsPerNode%60 == 0 &&
+		spec.MaxResourceSecondsPerNode >= spec.WallSeconds
 }
 
 func computeTaskCharge(rate store.ComputeTaskRate, nodes int, seconds int64) (int64, bool) {
@@ -167,7 +169,7 @@ func computeTaskCharge(rate store.ComputeTaskRate, nodes int, seconds int64) (in
 
 func chooseComputeTaskQuote(spec store.ComputeTaskSpec, catalog []computeTaskSKU, now time.Time) (store.ComputeTaskQuote, bool) {
 	var best store.ComputeTaskQuote
-	maxSeconds := int64(computeTaskActivationWindow/time.Second) + int64(spec.WallSeconds)
+	maxSeconds := int64(spec.MaxResourceSecondsPerNode)
 	for _, sku := range catalog {
 		if sku.LogicalCPUs < spec.LogicalCPUs || sku.MemoryMiB < spec.MemoryMiB {
 			continue
@@ -200,11 +202,142 @@ func computeTaskResult(result any, text string) (*mcp.CallToolResult, any, error
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}, &mcp.TextContent{Text: string(data)}}}, result, nil
 }
+func computeTaskInputSchema() map[string]any {
+	taskProperties := map[string]any{
+		"topology":                      map[string]any{"type": "string", "enum": []string{"independent_shards", "distributed"}, "description": "preview 时使用。independent_shards 表示独立分片，distributed 表示分布式节点"},
+		"shards":                        map[string]any{"type": "integer", "minimum": 1, "description": "preview 的独立分片数，topology=independent_shards 时填写"},
+		"nodes":                         map[string]any{"type": "integer", "minimum": 1, "maximum": 2, "description": "quote 的节点数，或 preview 分布式任务的节点数"},
+		"logical_cpus":                  map[string]any{"type": "integer", "minimum": 1, "description": "每分片或每节点最低逻辑 CPU 数"},
+		"memory_mib":                    map[string]any{"type": "integer", "minimum": 1, "description": "每分片或每节点最低内存 MiB"},
+		"gpu_count":                     map[string]any{"type": "integer", "minimum": 0, "description": "preview 的每分片或每节点最低 GPU 数，没有 GPU 需求填 0"},
+		"memory_mib_per_gpu":            map[string]any{"type": "integer", "minimum": 0, "description": "preview 的每块 GPU 最低显存 MiB"},
+		"wall_seconds":                  map[string]any{"type": "integer", "minimum": 60, "maximum": 300, "description": "quote 的 Slurm 作业最长运行秒数，必须是 60 秒的整倍数"},
+		"max_resource_seconds_per_node": map[string]any{"type": "integer", "minimum": 60, "description": "quote 的每节点资源计费上限，从平台实际观察到资源开始计算，必须是整分钟且不小于 wall_seconds。排队和开通等待不计入"},
+		"estimated_billable_s":          map[string]any{"type": "integer", "minimum": 0, "description": "preview 的预览假设时长，独立任务按每分片填写，分布式任务按每节点填写。没有依据时省略"},
+	}
+	runtimeProperties := map[string]any{
+		"scope":                map[string]any{"type": "string", "enum": []string{"agent_runtime"}, "description": "必须为 agent_runtime"},
+		"platform":             map[string]any{"type": "string", "description": "本机平台名称"},
+		"sampledAt":            map[string]any{"type": "string", "format": "date-time", "description": "资源采样时间"},
+		"cpuLogicalCount":      map[string]any{"type": "integer", "description": "本机逻辑 CPU 数"},
+		"totalMemoryBytes":     map[string]any{"type": "integer", "description": "本机总内存字节数"},
+		"availableMemoryBytes": map[string]any{"type": "integer", "description": "本机当前可用内存字节数"},
+		"nvidiaGpus":           map[string]any{"type": "array", "description": "本机 NVIDIA GPU 采样", "items": map[string]any{"type": "object"}},
+	}
+	return map[string]any{
+		"type":        "object",
+		"description": "Cats 统一算力入口。先用 action=preview 比较资源，再用 action=quote 创建需用户确认的报价，最后用 action=status 查询任务。",
+		"properties": map[string]any{
+			"action":        map[string]any{"type": "string", "enum": []string{"preview", "quote", "status"}, "description": "preview=资源比较，quote=正式报价，status=查询已创建任务"},
+			"task":          map[string]any{"type": "object", "description": "preview 或 quote 的任务参数。字段含义和必填条件由 action 决定", "properties": taskProperties},
+			"agent_runtime": map[string]any{"type": "object", "description": "可选的 local_compute_resources 采样结果，仅 preview 使用", "properties": runtimeProperties},
+			"quote_id":      map[string]any{"type": "string", "description": "status 使用的报价编号，形如 hpc_ 加 32 位小写十六进制字符"},
+		},
+		"required":             []string{"action"},
+		"additionalProperties": false,
+		"oneOf": []any{
+			map[string]any{"properties": map[string]any{"action": map[string]any{"const": "preview"}}, "required": []string{"action", "task"}},
+			map[string]any{"properties": map[string]any{"action": map[string]any{"const": "quote"}}, "required": []string{"action", "task"}},
+			map[string]any{"properties": map[string]any{"action": map[string]any{"const": "status"}}, "required": []string{"action", "quote_id"}},
+		},
+	}
+}
+
+func (h *ComputeTaskHandler) createQuote(ctx context.Context, uid int64, spec store.ComputeTaskSpec) (*mcp.CallToolResult, any, error) {
+	if h == nil || h.store == nil {
+		return serviceToolError("compute_task_unavailable"), nil, nil
+	}
+	if !computeTaskAllocation(spec) {
+		return serviceToolError("invalid_compute_task"), nil, nil
+	}
+	quote, ok := chooseComputeTaskQuote(spec, h.catalog, time.Now().UTC())
+	if !ok {
+		return serviceToolError("no_priced_compute_shape"), nil, nil
+	}
+	id, err := newComputeTaskID()
+	if err != nil {
+		return serviceToolError("compute_quote_unavailable"), nil, nil
+	}
+	quote.ID = id
+	if err := h.store.CreateComputeTaskQuote(ctx, uid, quote); err != nil {
+		return serviceToolError("compute_quote_unavailable"), nil, nil
+	}
+	path := computeTaskConfirmPage + "?quote=" + id
+	return computeTaskResult(struct {
+		store.ComputeTaskQuote
+		ConfirmURL     string `json:"confirm_url"`
+		UnitsPerCredit int64  `json:"units_per_credit"`
+	}{quote, h.publicBaseURL + path, store.ModelCreditUnitsPerCredit},
+		fmt.Sprintf("%s，最多 %s 积分。请本人打开 %s 确认。", quote.SKU, computeCreditText(quote.MaxUnits), h.publicBaseURL+path))
+}
+
+func (h *ComputeTaskHandler) taskStatus(ctx context.Context, uid int64, id string) (*mcp.CallToolResult, any, error) {
+	if h == nil || h.store == nil {
+		return serviceToolError("compute_task_unavailable"), nil, nil
+	}
+	if !computeTaskIDPattern.MatchString(id) {
+		return serviceToolError("compute_task_not_found"), nil, nil
+	}
+	run, err := h.store.GetComputeTask(ctx, uid, id)
+	if err != nil || run == nil {
+		return serviceToolError("compute_task_not_found"), nil, nil
+	}
+	return computeTaskResult(run, "Cats 算力任务状态："+run.State)
+}
+
+func (h *ComputeTaskHandler) addUnifiedTool(srv *mcp.Server, uid int64, snapshotPath string) {
+	tool := &mcp.Tool{
+		Name:        computeToolName,
+		Description: "Cats 统一算力入口。action=preview 只读比较当前 Agent 设备和 Cats 托管 Slurm，action=quote 创建需要用户本人在确认页确认的正式报价，action=status 查询任务状态、资源回收和实际扣费。quote 必须填写 task.max_resource_seconds_per_node，它表示资源被平台实际观察到后每节点最多承担的资源存活秒数。task.wall_seconds 只表示 Slurm 作业时限，排队和开通等待不计入资源计费时长。报价不会自动开通资源。",
+		InputSchema: computeTaskInputSchema(),
+	}
+	srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args struct {
+			Action       string          `json:"action"`
+			Task         json.RawMessage `json:"task"`
+			AgentRuntime json.RawMessage `json:"agent_runtime"`
+			QuoteID      string          `json:"quote_id"`
+		}
+		if len(req.Params.Arguments) == 0 || json.Unmarshal(req.Params.Arguments, &args) != nil {
+			return serviceToolError("invalid_compute_arguments"), nil
+		}
+		var result *mcp.CallToolResult
+		var structured any
+		var err error
+		switch strings.TrimSpace(args.Action) {
+		case "preview":
+			if snapshotPath == "" {
+				return serviceToolError("compute_preview_unavailable"), nil
+			}
+			var previewArgs computePreviewArgs
+			if decodeErr := json.Unmarshal(req.Params.Arguments, &previewArgs); decodeErr != nil {
+				return serviceToolError("invalid_compute_requirements"), nil
+			}
+			result, structured, err = runComputePreview(snapshotPath, previewArgs)
+		case "quote":
+			var request struct {
+				Task store.ComputeTaskSpec `json:"task"`
+			}
+			if decodeErr := json.Unmarshal(req.Params.Arguments, &request); decodeErr != nil {
+				return serviceToolError("invalid_compute_task"), nil
+			}
+			result, structured, err = h.createQuote(ctx, uid, request.Task)
+		case "status":
+			result, structured, err = h.taskStatus(ctx, uid, strings.TrimSpace(args.QuoteID))
+		default:
+			return serviceToolError("compute_action_required"), nil
+		}
+		if err == nil && result != nil && structured != nil {
+			result.StructuredContent = structured
+		}
+		return result, err
+	})
+}
 
 func (h *ComputeTaskHandler) addTools(srv *mcp.Server, uid int64) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        computeTaskQuoteTool,
-		Description: "为固定 Cats 托管 Slurm CPU 验收作业报价。根据任务填写节点数、每节点逻辑 CPU 与 MiB 内存、最长作业时限。支持 1 至 2 节点和 60 至 300 秒的整分钟时限。返回规格、积分上限及本人确认链接。让用户在网页核对并确认。供应商实时库存和 ETA 未知。",
+		Description: "为固定 Cats 托管 Slurm CPU 验收作业报价。Agent 必须填写每节点资源计费上限 max_resource_seconds_per_node，它表示每个节点从资源被实际观察到开始，用户最多承担的资源存活秒数，必须是正数、整分钟且不小于 wall_seconds。wall_seconds 只是 Slurm 作业时限，排队和开通等待不计入用户资源时长。支持 1 至 2 节点和 60 至 300 秒的整分钟作业时限。返回规格、积分上限及本人确认链接。让用户在网页核对并确认。供应商实时库存和 ETA 未知。",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, spec store.ComputeTaskSpec) (*mcp.CallToolResult, any, error) {
 		if !computeTaskAllocation(spec) {
 			return serviceToolError("invalid_compute_task"), nil, nil

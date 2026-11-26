@@ -125,24 +125,27 @@ func TestComputeTaskMCPQuoteAndStatus(t *testing.T) {
 	handler.NotifySubscriptionChanged(uid)
 	names := testToolNames(t, session)
 	otherNames := testToolNames(t, newMCPSession(t, other.URL))
-	for _, tool := range []string{computeTaskQuoteTool, computeTaskStatusTool} {
-		if !containsName(names, tool) || containsName(otherNames, tool) {
-			t.Fatalf("unexpected tool visibility for %s: allowed=%v other=%v", tool, names, otherNames)
-		}
+	if !containsName(names, computeToolName) || containsName(otherNames, computeToolName) {
+		t.Fatalf("unexpected unified tool visibility: allowed=%v other=%v", names, otherNames)
 	}
 	ctx := context.Background()
-	spec := store.ComputeTaskSpec{Nodes: 2, LogicalCPUs: 2, MemoryMiB: 1024, WallSeconds: 60}
-	quoted, err := session.CallTool(ctx, &mcp.CallToolParams{Name: computeTaskQuoteTool, Arguments: spec})
+	invalidSpec := map[string]any{"action": "quote", "task": store.ComputeTaskSpec{Nodes: 2, LogicalCPUs: 2, MemoryMiB: 1024, WallSeconds: 60}}
+	invalid, err := session.CallTool(ctx, &mcp.CallToolParams{Name: computeToolName, Arguments: invalidSpec})
+	if err != nil || !invalid.IsError || !strings.Contains(invalid.Content[0].(*mcp.TextContent).Text, "invalid_compute_task") {
+		t.Fatalf("missing resource cap must be rejected: result=%+v err=%v", invalid, err)
+	}
+	spec := store.ComputeTaskSpec{Nodes: 2, LogicalCPUs: 2, MemoryMiB: 1024, WallSeconds: 60, MaxResourceSecondsPerNode: 600}
+	quoted, err := session.CallTool(ctx, &mcp.CallToolParams{Name: computeToolName, Arguments: map[string]any{"action": "quote", "task": spec}})
 	if err != nil || quoted.IsError {
 		t.Fatalf("quote: result=%+v err=%v", quoted, err)
 	}
-	if st.uid != uid || st.quote.Spec != spec || st.quote.MaxUnits != 21_000_000 || !computeTaskIDPattern.MatchString(st.quote.ID) {
+	if st.uid != uid || st.quote.Spec != spec || st.quote.MaxUnits != 10_000_000 || st.quote.MaxNodeSeconds != 1200 || !computeTaskIDPattern.MatchString(st.quote.ID) {
 		t.Fatalf("stored quote for %d: %+v", st.uid, st.quote)
 	}
 	if !strings.Contains(quoted.Content[0].(*mcp.TextContent).Text, "https://cats.example/compute/confirm?quote="+st.quote.ID) {
 		t.Fatalf("missing confirmation URL: %+v", quoted.Content)
 	}
-	status, err := session.CallTool(ctx, &mcp.CallToolParams{Name: computeTaskStatusTool, Arguments: map[string]string{"quote_id": st.quote.ID}})
+	status, err := session.CallTool(ctx, &mcp.CallToolParams{Name: computeToolName, Arguments: map[string]any{"action": "status", "quote_id": st.quote.ID}})
 	if err != nil || status.IsError || !strings.Contains(status.Content[0].(*mcp.TextContent).Text, "quoted") {
 		t.Fatalf("status: result=%+v err=%v", status, err)
 	}

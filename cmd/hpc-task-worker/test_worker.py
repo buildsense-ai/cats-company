@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from cloud import API_FIELDS, Cloud, WorkerError, query_string, signed_headers
 from slurm import Slurm
-from worker import Cats, LeaseError, Task, main, preflight
+from worker import Cats, LeaseError, Task, main, preflight, resource_budget_seconds
 
 
 QUOTE = "hpc_" + "0123456789abcdef" * 2
@@ -48,7 +48,9 @@ class Fixture:
     def __init__(self):
         self.run = dict(quote_id=QUOTE, lease="hpc_" + "a" * 32, state="active", progress={}, sku="cpu",
                         confirmed_at="2026-01-01T00:00:00Z", sku_logical_cpus=4, sku_memory_mib=1024,
-                        task=dict(nodes=1, logical_cpus=2, memory_mib=512, wall_seconds=60))
+                        max_node_seconds=60,
+                        task=dict(nodes=1, logical_cpus=2, memory_mib=512, wall_seconds=60,
+                                   max_resource_seconds_per_node=60))
         self.calls = []
         self.mutations = []
         self.queues = []
@@ -236,7 +238,16 @@ class SlurmTest(unittest.TestCase):
                 self.assertEqual(slurm.busy(QUEUE, ["wn01"], lambda func, *args: func(*args)), expected)
 
 
+
 class WorkerTest(unittest.TestCase):
+    def test_resource_budget_supports_explicit_and_legacy_quotes(self):
+        f = Fixture()
+        self.assertEqual(resource_budget_seconds(f.run), 60)
+        f.run["task"].pop("max_resource_seconds_per_node")
+        f.run["max_node_seconds"] = 1200
+        self.assertEqual(resource_budget_seconds(f.run), 1200)
+        f.claimed().validate_spec()
+
     def test_lifecycle_full_progress_and_finish(self):
         f = Fixture()
         preflight(f.cloud, f.slurm)
@@ -511,6 +522,7 @@ class WorkerTest(unittest.TestCase):
         f.missing_master = True
         f.advance_to("expand_intent")
         self.assertEqual(f.run["progress"]["expand_operation"], "expand")
+        self.assertNotIn("provision_started_at", f.run["progress"])
         self.assertNotIn("master_order_id", f.run["progress"])
 
     def test_slow_cloud_mutation_receipt_does_not_extend_reads_or_cats(self):

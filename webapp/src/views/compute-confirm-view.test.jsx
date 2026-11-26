@@ -23,13 +23,16 @@ function quoteRun(overrides = {}) {
   return {
     quote_id: QUOTE_ID,
     state: 'quoted',
-    task: { nodes: 2, logical_cpus: 4, memory_mib: 8192, wall_seconds: 300 },
+    task: {
+      nodes: 2, logical_cpus: 4, memory_mib: 8192, wall_seconds: 300,
+      max_resource_seconds_per_node: 600,
+    },
     sku: 'cats.c7.large',
     sku_logical_cpus: 8,
     sku_memory_mib: 16384,
     rate: { units_per_node_period: 2_000_000, period_seconds: 3600, increment_seconds: 60 },
     max_units: 45_000_000,
-    max_node_seconds: 6600,
+    max_node_seconds: 1200,
     expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
     units_per_credit: 1_000_000,
     progress: {},
@@ -133,6 +136,12 @@ describe('ComputeConfirmView', () => {
     const text = container.textContent;
     expect(text).toContain('请求规格');
     expect(text).toContain('2 个节点');
+    expect(text).toContain('作业时限');
+    expect(text).toContain('300 秒（5 分）');
+    expect(text).toContain('资源计费上限');
+    expect(text).toContain('每节点最多 600 秒');
+    expect(text).toContain('10 分');
+    expect(text).toContain('排队/开通等待不计入资源计费时长');
     expect(text).toContain('供应商规格');
     expect(text).toContain('cats.c7.large');
     expect(text).toContain('45 积分');

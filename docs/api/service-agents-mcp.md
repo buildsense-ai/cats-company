@@ -15,7 +15,7 @@
 | --- | --- |
 | `catsco_<slug>` | 每个上架应用对应一个工具（如 `catsco_hello`） |
 | `catsco_run_status` | 查询 run 状态/结果（`{run_id}`） |
-| `catsco_compute_preview` | 预览 Cats 托管 Slurm 和可选的 Agent 运行设备，按部署配置启用 |
+| `catsco_compute` | 统一算力入口，通过 `action=preview`、`action=quote` 和 `action=status` 完成资源比较、正式报价和任务查询 |
 
 `catsco_<slug>` 参数：
 
@@ -26,17 +26,27 @@
 | `client_token` | 幂等键（作用域：同会话内；重发返回同一 run） |
 | `bot_uid` | 可选；以 bot 身份调用时带 bot 的 uid（校验 bot 归属：owner 必须是调用者；若该 bot 定义里显式设了 `serviceAgents`，被调 agent 必须在其中 → 否则 `agent_not_enabled_for_bot`）。不影响 `tools/list`（工具清单跟账号） |
 
-## 算力预览
+## 统一算力入口
 
-Agent 根据任务需求、数据位置、已有上下文和授权选择采样与执行工具。需要补充信息时，可以询问用户是否有自己的服务器、在线设备、集群或其他可用算力。用现有授权核实这些资源，标明用户自报或采样来源，以及尚待确认的容量、费用和预计完工时间。使用资源前确认对应的执行权限。
+`catsco_compute` 把固定 Cats 托管 Slurm CPU 任务的资源比较、正式报价和状态查询合并为一个工具。通过 `action` 选择阶段。
 
-`catsco_compute_preview` 提供 Cats 托管 Slurm 的候选结果。也可以用 XiaoBa 的 `local_compute_resources` 采样当前 Agent 运行设备，将结果传入可选的 `agent_runtime`。这个运行设备可能是电脑或云服务器。参数 `task` 的 `topology` 为 `independent_shards` 或 `distributed`，分别填写正整数 `shards` 或 `nodes`。`logical_cpus`、`memory_mib`、可选 `gpu_count` 和 `memory_mib_per_gpu` 是每分片或每节点的需求。
+| action | 用途 | 必要参数 |
+| --- | --- | --- |
+| `preview` | 比较当前 Agent 设备和 Cats 托管 Slurm，只读返回容量、适配性、费率和预览估算 | `task`，可选 `agent_runtime` |
+| `quote` | 创建需要用户本人确认的正式报价 | `task.nodes`、`logical_cpus`、`memory_mib`、`wall_seconds`、`max_resource_seconds_per_node` |
+| `status` | 查询已创建任务的状态、云操作号、Slurm 作业号、资源回收和实际扣费 | `quote_id` |
 
-结果 `structuredContent` 使用 `catsco.compute-preview.v1`，包含各候选 `fit`、`capacity`、`reason_code`、来源、采样时间和可用的采样字段。独立分片按可顺序执行判断最低资源。分布式任务按所需节点数判断总容量。超过两分钟的采样会降级为未知。当前 Agent 设备标为 `agent_reported`。
+本机资源采样可以由 XiaoBa 的 `local_compute_resources` 提供。它属于本机采样能力，不再作为算力执行入口展示。采样结果放入 `agent_runtime`，并标明来源为 `agent_reported`。没有采样结果时，预览保留未知状态。
 
-文本结果第一段为聊天 Markdown 表格，第二段为结构化结果的 JSON。Agent 可以用表格中的数据和已知的用户资源，在聊天中一并比较运行位置、资源与容量、预计完工、预计积分和费用上限，请用户回复位置偏好。付费执行需另行确认具体报价、费用上限及有效期。给 `task` 传可选的 `estimated_billable_s` 以试算 Slurm 积分，独立任务填每分片的云端计费秒数，分布式任务填每节点的云端计费秒数。时长应来自实测或用户给定的假设。预计完工 `eta_s` 当前为 `null`。
+`preview` 的 `task.topology` 为 `independent_shards` 或 `distributed`，分别填写正整数 `shards` 或 `nodes`。`logical_cpus`、`memory_mib`、可选 `gpu_count` 和 `memory_mib_per_gpu` 是每分片或每节点需求。可选的 `estimated_billable_s` 是预览假设时长，独立任务按每分片填写，分布式任务按每节点填写。它只用于预览估算，不能作为正式费用上限。
 
-云端 `quote.state` 取 `unpriced`、`rate_only` 或 `estimated`。`rate_only` 返回可用费率，缺少时长或金额超出范围时可读 `reason_code`。`estimated` 额外返回 `estimate_units` 和 `billed_s_per_work_unit`。金额除以 `units_per_credit` 即为积分。云端 `max_units` 此阶段为 `null`，正式费用上限及付费确认由执行流程处理。当前设备的 0 积分仅指新增 Cats 算力费。
+`preview` 返回 `catsco.compute-preview.v1` 结构化结果，包含各候选的 `fit`、`capacity`、`reason_code`、来源、采样时间和可用采样字段。文本第一段是聊天 Markdown 表格，第二段是结构化 JSON。预计完工 `eta_s` 当前为 `null`，供应商库存和排队时长未知时必须保留未知。
+
+`quote` 必须填写 `task.max_resource_seconds_per_node`。它表示每节点从平台实际观察到资源开始存活起，用户最多承担的资源秒数。该值必须为正数、整分钟，并且不小于 `wall_seconds`。`wall_seconds` 只表示 Slurm 作业时限，排队和资源开通等待不计入用户资源时长。
+
+报价返回的 `max_node_seconds` 等于节点数乘以每节点资源计费上限，`max_units` 按这个上限和发布费率计算。报价不会自动开通资源。用户在确认页核对并提交 `max_units` 后才会预占积分。任务结束时按资源实际被观察到的时间起点至资源回收时间结算，结算金额不超过报价上限。
+
+旧报价数据可能没有 `max_resource_seconds_per_node`。worker 会从旧报价的 `max_node_seconds / nodes` 回退读取资源预算，旧任务继续按原报价语义结算。
 
 部署方通过 `CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE` 指定一个绝对路径，启用预览。由平台采集器原子更新该路径的本地普通 JSON 文件。采样对应一组节点规格一致的 Slurm 队列，包含 UTC RFC 3339 `sampled_at`、已配置且可调度的 `nodes`、其中完全空闲的 `idle_nodes`、`logical_cpus_per_node`、`memory_mib_per_node`、可选 `gpus_per_node` 和 `memory_mib_per_gpu`。未知的 GPU 字段留空，已确认没有 GPU 时 `gpus_per_node` 为 0。文件缺失、过期或格式异常时云集群状态为未知。
 

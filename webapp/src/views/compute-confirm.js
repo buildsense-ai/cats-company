@@ -94,6 +94,11 @@ export function formatComputeSeconds(value) {
   return remainder ? `${whole} 秒（${minutes} 分 ${remainder} 秒）` : `${whole} 秒（${minutes} 分）`;
 }
 
+export function formatComputeResourceCap(value) {
+  const text = formatComputeSeconds(value);
+  return text ? `每节点最多 ${text}，排队/开通等待不计入资源计费时长` : '';
+}
+
 // Tariff periods are quoted in whole hours or minutes on the server; render the
 // billing unit the way an operator writes it instead of raw seconds.
 export function formatComputePeriod(value) {
