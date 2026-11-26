@@ -276,7 +276,7 @@ beforeEach(() => {
   mocks.redeemRelayInvite.mockReset().mockResolvedValue({ ok: true });
   mocks.updateMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', display_name: 'Cats' });
   window.matchMedia = vi.fn(() => ({ matches: false }));
-  localStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
+  sessionStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -292,7 +292,7 @@ afterEach(async () => {
 function setCachedUser(createdAt) {
   const profile = { uid: 1, username: 'cats', created_at: createdAt };
   mocks.getMe.mockResolvedValue(profile);
-  localStorage.setItem('oc_user', JSON.stringify(profile));
+  sessionStorage.setItem('oc_user', JSON.stringify(profile));
 }
 
 test.each([
@@ -633,7 +633,7 @@ test('preserves new-account eligibility after completing the name onboarding', a
   });
 
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
-  expect(JSON.parse(localStorage.getItem('oc_user'))).toMatchObject({
+  expect(JSON.parse(sessionStorage.getItem('oc_user'))).toMatchObject({
     display_name: 'Alex',
     created_at: '2026-09-18T00:00:01Z',
   });

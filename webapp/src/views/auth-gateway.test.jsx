@@ -70,7 +70,7 @@ describe('AuthGateway login', () => {
     mocks.setToken.mockReset();
     mocks.navigateBrowserPath.mockReset();
     storageWrite = null;
-    localStorage.clear();
+    sessionStorage.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -80,11 +80,11 @@ describe('AuthGateway login', () => {
     await act(async () => root.unmount());
     container.remove();
     storageWrite?.mockRestore();
-    localStorage.clear();
+    sessionStorage.clear();
   });
 
   test('establishes a valid session when the profile cache cannot be written', async () => {
-    storageWrite = vi.spyOn(globalThis.localStorage, 'setItem')
+    storageWrite = vi.spyOn(globalThis.sessionStorage, 'setItem')
       .mockImplementation((key) => {
         if (key === 'oc_user') throw new Error('storage quota exceeded');
       });
@@ -176,7 +176,7 @@ describe('AuthGateway login', () => {
     }
     expect(mocks.setToken).toHaveBeenCalledWith('session-token');
     expect(mocks.navigateBrowserPath).toHaveBeenCalledWith('/onboarding/name', { replace: true });
-    expect(JSON.parse(localStorage.getItem('oc_user'))).toMatchObject({
+    expect(JSON.parse(sessionStorage.getItem('oc_user'))).toMatchObject({
       uid: 42,
       created_at: '2026-09-20T08:30:00Z',
     });

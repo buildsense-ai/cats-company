@@ -85,7 +85,7 @@ beforeEach(() => {
   });
   mocks.setToken.mockClear();
   sessionStorage.clear();
-  localStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
+  sessionStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
   window.history.replaceState(null, '', '/e/invite-1?source=email#accept');
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -144,7 +144,7 @@ test('keeps the current deep link when a WebSocket session expires', async () =>
 });
 
 test('recovers a valid session when its cached profile is missing', async () => {
-  localStorage.removeItem('oc_user');
+  sessionStorage.removeItem('oc_user');
 
   await act(async () => {
     root.render(<TinodeWeb location={{ pathname: '/e/invite-1', search: '', hash: '' }} />);
@@ -154,12 +154,12 @@ test('recovers a valid session when its cached profile is missing', async () => 
     expect(container.querySelector('[data-testid="agent-entry"]')).toBeTruthy();
   });
   expect(mocks.getMe).toHaveBeenCalledTimes(1);
-  expect(JSON.parse(localStorage.getItem('oc_user'))).toMatchObject({ uid: 1, username: 'cats' });
+  expect(JSON.parse(sessionStorage.getItem('oc_user'))).toMatchObject({ uid: 1, username: 'cats' });
   expect(mocks.setToken).not.toHaveBeenCalled();
 });
 
 test('recovers a valid session when caching the recovered profile fails', async () => {
-  localStorage.removeItem('oc_user');
+  sessionStorage.removeItem('oc_user');
   const originalSetItem = Storage.prototype.setItem;
   const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function setItem(key, value) {
     if (key === 'oc_user') throw new DOMException('Storage quota exceeded', 'QuotaExceededError');
@@ -181,7 +181,7 @@ test('recovers a valid session when caching the recovered profile fails', async 
 });
 
 test('keeps a deep link stable while a missing cached profile is recovered', async () => {
-  localStorage.removeItem('oc_user');
+  sessionStorage.removeItem('oc_user');
   let resolveProfile;
   mocks.getMe.mockImplementation(() => new Promise((resolve) => {
     resolveProfile = resolve;
@@ -207,7 +207,7 @@ test('keeps a deep link stable while a missing cached profile is recovered', asy
 });
 
 test('clears a missing-profile session only after the server rejects its token', async () => {
-  localStorage.removeItem('oc_user');
+  sessionStorage.removeItem('oc_user');
   const unauthorized = Object.assign(new Error('登录状态已失效'), { status: 401 });
   mocks.getMe.mockRejectedValue(unauthorized);
 
@@ -221,7 +221,7 @@ test('clears a missing-profile session only after the server rejects its token',
 });
 
 test('clears a missing-profile session when the account no longer exists', async () => {
-  localStorage.removeItem('oc_user');
+  sessionStorage.removeItem('oc_user');
   const missingUser = Object.assign(new Error('用户不存在'), { status: 404 });
   mocks.getMe.mockRejectedValue(missingUser);
 
