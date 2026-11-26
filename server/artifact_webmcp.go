@@ -51,6 +51,7 @@ type MsgArtifactWebMcp struct {
 	BridgeID          string                  `json:"bridge_id,omitempty"`
 	AppID             string                  `json:"app_id,omitempty"`
 	TopicID           string                  `json:"topic_id,omitempty"`
+	ActorUserID       string                  `json:"actor_user_id,omitempty"`
 	CallID            string                  `json:"call_id,omitempty"`
 	Name              string                  `json:"name,omitempty"`
 	Arguments         map[string]interface{}  `json:"arguments,omitempty"`
@@ -306,11 +307,12 @@ func (h *Hub) handleArtifactWebMcpToolsSync(client *Client, msg *MsgArtifactWebM
 	}
 	out := &ServerMessage{
 		ArtifactWebMcp: &MsgArtifactWebMcp{
-			Type:     artifactWebMcpTypeToolsSync,
-			BridgeID: bridge.bridgeID,
-			AppID:    bridge.appID,
-			TopicID:  bridge.topicID,
-			Tools:    append(json.RawMessage(nil), bridge.tools...),
+			Type:        artifactWebMcpTypeToolsSync,
+			BridgeID:    bridge.bridgeID,
+			AppID:       bridge.appID,
+			TopicID:     bridge.topicID,
+			ActorUserID: formatUID(bridge.actorUID),
+			Tools:       append(json.RawMessage(nil), bridge.tools...),
 		},
 	}
 	agentUID := bridge.agentUID
@@ -639,6 +641,7 @@ func (h *Hub) replayLocalArtifactWebMcpBridgesForBot(botClient *Client, botRoute
 		openRef  string
 		appID    string
 		topicID  string
+		actorUID int64
 		human    *Client
 		tools    json.RawMessage
 	}
@@ -654,6 +657,7 @@ func (h *Hub) replayLocalArtifactWebMcpBridgesForBot(botClient *Client, botRoute
 			openRef:  b.openRef,
 			appID:    b.appID,
 			topicID:  b.topicID,
+			actorUID: b.actorUID,
 			human:    b.humanClient,
 			tools:    append(json.RawMessage(nil), b.tools...),
 		})
@@ -670,11 +674,12 @@ func (h *Hub) replayLocalArtifactWebMcpBridgesForBot(botClient *Client, botRoute
 			tools = json.RawMessage("[]")
 		}
 		h.sendArtifactWebMcpToBotTarget(botClient, botRoute, botUID, &MsgArtifactWebMcp{
-			Type:     artifactWebMcpTypeToolsSync,
-			BridgeID: item.bridgeID,
-			AppID:    item.appID,
-			TopicID:  item.topicID,
-			Tools:    tools,
+			Type:        artifactWebMcpTypeToolsSync,
+			BridgeID:    item.bridgeID,
+			AppID:       item.appID,
+			TopicID:     item.topicID,
+			ActorUserID: formatUID(item.actorUID),
+			Tools:       tools,
 		})
 	}
 }

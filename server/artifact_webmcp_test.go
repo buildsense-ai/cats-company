@@ -96,12 +96,14 @@ func TestArtifactWebMcpEndToEndAndSecurity(t *testing.T) {
 	})
 	assertNoServerMsg(t, bot.send)
 
-	// 2. Owning human syncs tools -> Bot receives tools_sync with canonical fields and NO open_ref.
+	// 2. Owning human syncs tools -> Bot receives tools_sync with canonical fields,
+	// server-derived actor_user_id (ignoring any client-spoofed value), and NO open_ref.
 	hub.handleMessage(human, &ClientMessage{
 		ArtifactWebMcp: &MsgArtifactWebMcp{
-			Type:    artifactWebMcpTypeToolsSync,
-			OpenRef: issued.OpenRef,
-			Tools:   json.RawMessage(`[{"name":"relayout","description":"Arrange nodes"}]`),
+			Type:        artifactWebMcpTypeToolsSync,
+			OpenRef:     issued.OpenRef,
+			ActorUserID: "usr999",
+			Tools:       json.RawMessage(`[{"name":"relayout","description":"Arrange nodes"}]`),
 		},
 	})
 	syncMsg := decodeServerMsg(t, bot.send)
@@ -114,7 +116,7 @@ func TestArtifactWebMcpEndToEndAndSecurity(t *testing.T) {
 	if syncMsg.ArtifactWebMcp.OpenRef != "" {
 		t.Fatalf("open_ref must never be forwarded to bot, got %q", syncMsg.ArtifactWebMcp.OpenRef)
 	}
-	if syncMsg.ArtifactWebMcp.AppID != "my-canvas" || syncMsg.ArtifactWebMcp.TopicID != "p2p_101_365" {
+	if syncMsg.ArtifactWebMcp.AppID != "my-canvas" || syncMsg.ArtifactWebMcp.TopicID != "p2p_101_365" || syncMsg.ArtifactWebMcp.ActorUserID != "usr101" {
 		t.Fatalf("unexpected canonical routing: %+v", syncMsg.ArtifactWebMcp)
 	}
 	bridgeID := syncMsg.ArtifactWebMcp.BridgeID
@@ -602,7 +604,7 @@ func TestArtifactWebMcpRedisRuntimeRouting(t *testing.T) {
 		t.Fatal("registerClient(bot2) failed")
 	}
 	replayed := decodeServerMsg(t, bot2.send)
-	if replayed.ArtifactWebMcp == nil || replayed.ArtifactWebMcp.Type != artifactWebMcpTypeToolsSync || replayed.ArtifactWebMcp.BridgeID != bridgeID {
-		t.Fatalf("expected Redis replayed tools_sync on bot reconnect, got %+v", replayed.ArtifactWebMcp)
+	if replayed.ArtifactWebMcp == nil || replayed.ArtifactWebMcp.Type != artifactWebMcpTypeToolsSync || replayed.ArtifactWebMcp.BridgeID != bridgeID || replayed.ArtifactWebMcp.ActorUserID != "usr101" {
+		t.Fatalf("expected Redis replayed tools_sync with actor_user_id=usr101 on bot reconnect, got %+v", replayed.ArtifactWebMcp)
 	}
 }
