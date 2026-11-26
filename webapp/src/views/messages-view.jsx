@@ -5,6 +5,7 @@ import { Download, FileText, RefreshCw, X } from '../widgets/desktop-icons';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq, isWSConnected } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel, hasWorkingSources, workingWikiInjections } from '../widgets/chat-message';
+import { revealReplyExcerpt } from '../widgets/reply-excerpt';
 import WikiInjectionPanel from '../widgets/wiki-injection-panel';
 import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
@@ -46,12 +47,14 @@ import {
   readComposerDraftMutationRevision,
   readComposerDraftRevision,
   readComposerInputDraft,
+  readComposerReplyDraft,
   readComposerMentionDraft,
   readComposerPhoneUploadIgnoredFileKeys,
   readComposerPhoneUploadSession,
   subscribeComposerDraftStore,
   writeComposerAttachmentDraft,
   writeComposerInputDraft,
+  writeComposerReplyDraft,
   writeComposerMentionDraft,
   writeComposerPhoneUploadSession,
 } from '../utils/composer-draft-storage';
@@ -867,6 +870,7 @@ export default function MessagesView({
   onActivateTopic,
   onAgentModelChange,
   onActiveAgentChange,
+  onDeviceGroupLoaded,
   cloudArtifactsRequest,
   onCloudArtifactsRequestConsumed,
   messageLocationRequest,
@@ -1350,6 +1354,7 @@ export default function MessagesView({
   const questionJumpReleaseTimerRef = useRef(null);
   const visibleQuestionAnchorsRef = useRef(new Map());
   const messageHighlightTimerRef = useRef(null);
+  const clearReplyHighlight = useRef(null);
   const previousScrollRef = useRef(null);
   const pendingOlderHistoryAnchorRef = useRef(null);
   const stickToBottomRef = useRef(true);
@@ -1512,6 +1517,7 @@ export default function MessagesView({
         phoneUploadFileKeysRef.current = new Set();
       }
       setInput(nextInput);
+      setReplyTo(readComposerReplyDraft(composerDraftStoreRef.current, topic));
       pendingAttachmentsRef.current = nextAttachments;
       setPendingAttachments(nextAttachments);
       phoneUploadSessionRef.current = nextPhoneUploadSession;
@@ -1614,6 +1620,12 @@ export default function MessagesView({
   const persistComposerDraftStore = useCallback(() => {
     persistComposerDraftStoreValue(composerDraftStoreRef.current);
   }, []);
+
+  const updateReplyDraft = useCallback((draftTopic, value) => {
+    writeComposerReplyDraft(composerDraftStoreRef.current, draftTopic, value);
+    if (activeTopicRef.current === draftTopic) setReplyTo(value);
+    persistComposerDraftStore();
+  }, [persistComposerDraftStore]);
 
   const updateComposerDraft = useCallback((draftTopic, value) => {
     if (!draftTopic) return;
@@ -3313,7 +3325,7 @@ export default function MessagesView({
     setMentionActiveIndex(0);
     mentionRangeRef.current = null;
     clearRuntimePlan();
-    setReplyTo(null);
+    setReplyTo(readComposerReplyDraft(composerDraftStoreRef.current, topic));
     setPreviewFile(null);
     // The application panel belongs to the conversation that opened it: park the
     // outgoing conversation's panel state and bring back the incoming one's,
@@ -3481,6 +3493,7 @@ export default function MessagesView({
       });
       setMembers(nextMembers);
       setGroupInfo(nextGroup);
+      if (nextGroup) onDeviceGroupLoaded?.(requestTopic, nextGroup, nextMembers);
     } catch (e) {
       // Cached members, the Agent roster, and message metadata keep sender identity
       // stable while group details are temporarily unavailable.
@@ -4752,6 +4765,7 @@ export default function MessagesView({
       const currentMentionDraft = readComposerMentionDraft(composerDraftStoreRef.current, topic);
       const draftChangedBeforeClear = (
         currentInputDraft !== originalInput
+        || readComposerReplyDraft(composerDraftStoreRef.current, topic) !== originalReplyTo
         || JSON.stringify(currentMentionDraft) !== JSON.stringify(originalStructuredMentions)
         || readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
           !== snapshotMutationRevision
@@ -4762,6 +4776,7 @@ export default function MessagesView({
         // to the draft being consumed.
         invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
         updateComposerDraft(topic, '');
+        updateReplyDraft(topic, null);
         updateStructuredMentionDraft(topic, []);
         updateAttachmentDraft(topic, []);
         writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
@@ -4804,7 +4819,6 @@ export default function MessagesView({
           clearRuntimePlan();
           setAttachmentStatus(null);
           setInput('');
-          setReplyTo(null);
           phoneUploadSessionRef.current = null;
           phoneUploadTopicRef.current = '';
           setPhoneUploadSession(null);
@@ -4905,6 +4919,7 @@ export default function MessagesView({
       if (
         !stateCleared
         && inputStillMatches
+        && readComposerReplyDraft(composerDraftStoreRef.current, topic) === originalReplyTo
         && attachmentsStillMatch
         // The payload counter also moves on mention-draft writes, which the
         // checks above do not compare. Mid-send mention writes only happen
@@ -4916,6 +4931,7 @@ export default function MessagesView({
       ) {
         invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
         updateComposerDraft(topic, '');
+        updateReplyDraft(topic, null);
         updateStructuredMentionDraft(topic, []);
         updateAttachmentDraft(topic, []);
         writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
@@ -5001,6 +5017,7 @@ export default function MessagesView({
       if (optimisticMessageAdded && activeTopicRef.current === topic) removeOptimisticMessage(tempId);
       const draftHasChangesAfterClear = (
         readComposerInputDraft(composerDraftStoreRef.current, topic) !== ''
+        || Boolean(readComposerReplyDraft(composerDraftStoreRef.current, topic))
         || readComposerMentionDraft(composerDraftStoreRef.current, topic).length > 0
         || readComposerAttachmentDraft(composerDraftStoreRef.current, topic).length > 0
       );
@@ -5011,6 +5028,7 @@ export default function MessagesView({
           === sendClearMutationRevision
       ) {
         updateComposerDraft(topic, originalInput);
+        updateReplyDraft(topic, originalReplyTo);
         updateStructuredMentionDraft(topic, originalStructuredMentions);
         updateAttachmentDraft(topic, attachmentsToSend);
         writeComposerPhoneUploadSession(
@@ -5111,8 +5129,7 @@ export default function MessagesView({
           // the composer draft store already holds it, so only restore the
           // original text when nothing newer was written.
           const pendingInput = readComposerInputDraft(composerDraftStoreRef.current, topic);
-          setInput(pendingInput !== '' ? pendingInput : originalInput);
-          setReplyTo(originalReplyTo);
+          setInput(pendingInput);
         }
         setAttachmentStatus({
           tone: 'error',
@@ -5123,7 +5140,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [conversationFork.blocked, activeBotWorking, liquidConversation, markConversationActivity, askAttachApproval, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
+  }, [conversationFork.blocked, activeBotWorking, liquidConversation, markConversationActivity, askAttachApproval, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateReplyDraft, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!canStopActiveBotWorking || isStopRequested) return;
@@ -6423,7 +6440,8 @@ export default function MessagesView({
   const messageById = useMemo(() => {
     const map = new Map();
     messages.forEach((message) => {
-      map.set(message.id, message);
+      if (message.id != null) map.set(String(message.id), message);
+      else if (message.seq_id != null) map.set(String(message.seq_id), message);
     });
     return map;
   }, [messages]);
@@ -6637,7 +6655,7 @@ export default function MessagesView({
           message: displayMessage,
           sourceMessages: [displayMessage],
           sender,
-          replyMessage: displayMessage.reply_to ? (messageById.get(displayMessage.reply_to) || null) : null,
+          replyMessage: displayMessage.reply_to ? (messageById.get(String(displayMessage.reply_to)) || null) : null,
           isConsecutive: textIsConsecutive,
           isConsecutiveWithoutWorking: textIsConsecutiveWithoutWorking,
           assistantAuthored,
@@ -7053,7 +7071,7 @@ export default function MessagesView({
     }, 0);
   };
 
-  const handleEditMessage = useCallback((message) => {
+  const handleEditMessage = useCallback((message, originalReply = null) => {
     const contentBlocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
     const blockText = contentBlocks
       .filter((block) => block?.type === 'text' && typeof block.text === 'string')
@@ -7070,7 +7088,7 @@ export default function MessagesView({
     updateComposerDraft(topic, originalText);
     updateStructuredMentionDraft(topic, []);
     updateAttachmentDraft(topic, restoredAttachments);
-    setReplyTo(null);
+    updateReplyDraft(topic, originalReply);
     setAttachmentStatus({
       tone: 'success',
       source: 'edit-resend',
@@ -7089,6 +7107,7 @@ export default function MessagesView({
     updateAttachmentDraft,
     updateComposerDraft,
     updateStructuredMentionDraft,
+    updateReplyDraft,
   ]);
 
   const questionNavigationItems = useMemo(
@@ -7236,21 +7255,78 @@ export default function MessagesView({
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [messages, scheduleQuestionJumpRelease]);
 
+  const revealTimelineMessage = useCallback((targetMessageId) => {
+    const target = timelineRef.current?.querySelector(`[data-search-message-id="${targetMessageId}"]`);
+    if (!target) return;
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+    setHighlightedMessageId(targetMessageId);
+    if (messageHighlightTimerRef.current) window.clearTimeout(messageHighlightTimerRef.current);
+    messageHighlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(0), 3000);
+  }, []);
+
+  const pendingQuoteJump = useRef(null);
+  const quoteJumpRequest = useRef(null);
+  useEffect(() => () => {
+    quoteJumpRequest.current?.abort();
+    pendingQuoteJump.current = null;
+    clearReplyHighlight.current?.();
+  }, [topic, user.uid, replyTo]);
+
+  const jumpToQuote = useCallback(async (id, source = null, messageId = id) => {
+    const anchorId = Number(id);
+    if (!anchorId || activeTopicRef.current !== topic) return;
+    setAttachmentStatus(current => current?.source === 'quote-jump' ? null : current);
+    quoteJumpRequest.current?.abort();
+    pendingQuoteJump.current = null;
+    clearReplyHighlight.current?.();
+    const timeline = timelineRef.current;
+    const target = timeline?.querySelector(`[data-search-message-id="${anchorId}"]`);
+    if (target) {
+      clearReplyHighlight.current = revealReplyExcerpt(timeline, target, source);
+      return;
+    }
+    const controller = new AbortController();
+    quoteJumpRequest.current = controller;
+    try {
+      const result = await api.getMessages(topic, PAGE_SIZE, 0, false, 0,
+        { aroundId: anchorId, signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS });
+      if (controller.signal.aborted || activeTopicRef.current !== topic) return;
+      const { visibleMessages } = normalizeHistoryMessages(result.messages || []);
+      const original = visibleMessages.find(item => Number(item.id) === Number(messageId))
+        || visibleMessages.find(item => historyMessageID(item) === anchorId);
+      if (!original) {
+        setAttachmentStatus({ tone: 'info', source: 'quote-jump', message: '当前聊天记录中找不到这条原消息。' });
+        return;
+      }
+      pendingQuoteJump.current = { anchorId: historyMessageID(original), source };
+      stickToBottomRef.current = false;
+      setMessages(current => mergeMessages(visibleMessages, current));
+    } catch {
+      if (!controller.signal.aborted && activeTopicRef.current === topic) {
+        setAttachmentStatus({ tone: 'error', source: 'quote-jump', message: '原消息加载失败，点击引用可以重试。' });
+      }
+    }
+  }, [topic]);
+  React.useLayoutEffect(() => {
+    const pending = pendingQuoteJump.current;
+    if (!pending) return;
+    pendingQuoteJump.current = null;
+    const timeline = timelineRef.current;
+    const target = timeline?.querySelector(`[data-search-message-id="${pending.anchorId}"]`);
+    if (target) clearReplyHighlight.current = revealReplyExcerpt(timeline, target, pending.source);
+    else setAttachmentStatus({ tone: 'info', source: 'quote-jump', message: '当前聊天记录中找不到这条原消息。' });
+  }, [messages]);
+
   useEffect(() => {
     const targetMessageId = messageLocationRequest?.topicId === topic
       ? Number(messageLocationRequest.messageId) || 0
       : 0;
-    if (!targetMessageId || !historyLoaded || refreshingHistory) return undefined;
-    const target = timelineRef.current?.querySelector(`[data-search-message-id="${targetMessageId}"]`);
-    if (!target) return undefined;
-    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    setHighlightedMessageId(targetMessageId);
-    if (messageHighlightTimerRef.current) window.clearTimeout(messageHighlightTimerRef.current);
-    messageHighlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(0), 3000);
+    if (targetMessageId && historyLoaded && !refreshingHistory) revealTimelineMessage(targetMessageId);
     return () => {
       if (messageHighlightTimerRef.current) window.clearTimeout(messageHighlightTimerRef.current);
     };
-  }, [historyLoaded, messageLocationRequest?.requestId, refreshingHistory, topic]);
+  }, [historyLoaded, messageLocationRequest?.requestId, refreshingHistory, topic, revealTimelineMessage]);
 
   const handleTimelineScroll = (e) => {
     if (previewExpanded && !previewContextOpen) return;
@@ -7976,10 +8052,20 @@ export default function MessagesView({
                 senderIsBot={group.sender.isBot}
                 mentionDisplayNames={mentionDisplayNames}
                 replyMessage={group.replyMessage}
+                onLocateReply={jumpToQuote}
                 questionAnchorKey={sameUID(group.message.from_uid, user.uid)
                   ? questionNavigationKey(group.message, i)
                   : undefined}
-                onReply={() => setReplyTo(group.message)}
+                onReply={(excerpt, author, source) => {
+                  updateReplyDraft(topic, {
+                    id: group.message.id ?? historyMessageID(group.message),
+                    anchorId: historyMessageID(group.message),
+                    author: author || group.sender.name,
+                    excerpt: excerpt || '附件',
+                    source: source?.match ? { start: source.start, end: source.end, match: source.match } : null,
+                  });
+                  textareaRef.current?.focus({ preventScroll: true });
+                }}
                 onEdit={sameUID(group.message.from_uid, user.uid) ? handleEditMessage : undefined}
                 onRegenerate={!conversationFork.blocked && canRegenerateAssistantMessages
                   && !sameUID(group.message.from_uid, user.uid)
@@ -8218,17 +8304,25 @@ export default function MessagesView({
             />
             {replyTo && (
               <div className="oc-reply-bar">
-                <div className="oc-reply-bar-content">
-                  <span className="oc-reply-bar-label">{t('chat_reply')}：</span>
-                  <span className="oc-reply-bar-text">
-                    {typeof replyTo.content === 'string' ? replyTo.content : '[media]'}
-                  </span>
-                </div>
+                <button type="button" className="oc-reply-bar-content" aria-label={replyTo.author ? `定位到${replyTo.author}的原消息` : '定位到引用的原消息'}
+                  onClick={() => {
+                    const locateReply = () => jumpToQuote(replyTo.anchorId, replyTo.source, replyTo.id);
+                    if (previewExpanded && !previewContextOpen) {
+                      openPreviewContext();
+                      requestAnimationFrame(locateReply);
+                    } else locateReply();
+                  }}>
+                  <span className="oc-reply-bar-label">{t('chat_reply')} {replyTo.author}</span>
+                  <span className="oc-reply-bar-text">{replyTo.excerpt}</span>
+                </button>
                 <button
                   type="button"
                   className="oc-reply-bar-close"
                   aria-label="取消回复"
-                  onClick={() => setReplyTo(null)}
+                  onClick={() => {
+                    updateReplyDraft(topic, null);
+                    textareaRef.current?.focus({ preventScroll: true });
+                  }}
                 >
                   <X size={16} aria-hidden="true" />
                 </button>

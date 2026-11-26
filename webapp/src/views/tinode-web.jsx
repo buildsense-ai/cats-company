@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo, useSyncExternalStore } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { api, resolveMediaURL, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSActiveTopic, sendWSPageFocus, sendWSPageVisibility } from '../api';
 import { enqueuePushOperation } from '../utils/push-operation';
@@ -29,7 +29,6 @@ import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import StandaloneCloudArtifactsPanel from '../widgets/standalone-cloud-artifacts-panel';
 import ArtifactQuickPicker from '../widgets/artifact-quick-picker';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
-import ConversationDevicePicker from '../widgets/conversation-device-picker';
 import IdentityOnboarding from '../components/identity-onboarding';
 import LiquidFlowBackground, {
   shouldMountLiquidFlowBackground,
@@ -117,7 +116,7 @@ import {
   postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
 import { COMPUTE_CONFIRM_PATH } from './compute-confirm';
-import { BookOpen, Frown, KeyRound, Settings2, LogOut } from 'lucide-react';
+import { BookOpen, Frown, KeyRound, Settings2, LogOut, ShieldCheck, Users } from 'lucide-react';
 import { AppsGrid, Laptop, MoreHorizontal, Package, Plus, Search, Settings, SidebarClose, SidebarOpen } from '../widgets/desktop-icons';
 import './workspace-styles';
 import CloudArtifactsPreview from '../dev/cloud-artifacts-preview';
@@ -325,6 +324,7 @@ function taskContextMatches(context, next) {
   return Boolean(context && next)
     && String(contextAgentID || '') === String(nextAgentID || '')
     && Number(context.projectId || 0) === Number(next.projectId || 0)
+    && (context.deviceId || '') === (next.deviceId || '')
     && String(context.projectName || '') === String(next.projectName || '');
 }
 
@@ -549,6 +549,9 @@ function TinodeWebApp({ location }) {
     NEW_TASK_DRAFT_KEY,
   );
   const hasPersistedTaskPayload = hasNewTaskDraftPayload(composerDraftStoreRef.current);
+  const draftStore = composerDraftStoreRef.current;
+  const draftDeviceId = useSyncExternalStore(draftStore.subscribe,
+    () => readComposerTaskContextDraft(draftStore, NEW_TASK_DRAFT_KEY)?.deviceId || '');
 
   useEffect(() => {
     composerDraftStoreRef.current?.activate?.();
@@ -707,9 +710,19 @@ function TinodeWebApp({ location }) {
   const [relayUsageSummary, setRelayUsageSummary] = useState(null);
   const [activeAgentModel, setActiveAgentModel] = useState(null);
   const [activeAgentState, setActiveAgentState] = useState(null);
+  const [loadedDeviceGroup, setLoadedDeviceGroup] = useState(null);
+  const handleDeviceGroupLoaded = useCallback((topicId, group, members) => {
+    const memberCount = Number(group.member_count || members.length);
+    const soloTask = (group.kind === 'agent_task' || group.is_agent_task === true) && memberCount === 2;
+    const bot = soloTask && members.find(member => member.is_bot || member.account_type === 'bot');
+    setLoadedDeviceGroup({
+      topicId, userId: user?.uid, soloTask,
+      agent: bot ? { uid: bot.user_id, display_name: bot.display_name || bot.username } : null,
+    });
+  }, [user?.uid]);
   const activeTopicId = activeTopic?.topicId || '';
   const visibleTopicId = activeView === 'chats' && !showOnboardingPreview ? activeTopicId : '';
-  const restoredTaskAgent = hasPersistedTaskPayload ? persistedTaskContext?.agent : null;
+  const restoredTaskAgent = hasPersistedTaskPayload || draftDeviceId ? persistedTaskContext?.agent : null;
   const draftAgent = taskDraft ? taskDraft.agent : emptyTaskSelectedAgent || restoredTaskAgent;
   const draftAgentUID = Number(draftAgent?.uid || draftAgent?.id || 0);
   const modelContextId = activeTopicId || (draftAgentUID > 0 ? `draft:${taskDraft?.key || draftAgentUID}` : '');
@@ -744,6 +757,12 @@ function TinodeWebApp({ location }) {
     displayedAgentModel,
     relayUsageSummary,
   );
+  const deviceGroup = loadedDeviceGroup?.topicId === activeTopicId && loadedDeviceGroup?.userId === user?.uid
+    ? loadedDeviceGroup : null;
+  const groupDeviceSharing = Boolean(activeTopic?.isGroup && (deviceGroup
+    ? !deviceGroup.soloTask
+    : activeTopic.isAgentTask === false || activeTopic.memberCount > 2));
+  const deviceAgent = deviceGroup?.agent || displayedActiveAgent;
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
   const openCloudArtifactsForAgent = useCallback((agentUid, selection = {}) => {
     const normalizedAgentUid = Number(agentUid || 0);
@@ -1602,7 +1621,7 @@ function TinodeWebApp({ location }) {
       setActiveTopic(null);
       setActiveView('chats');
       setTaskDraft({ agent, key: `${agentUid}:${taskDraftSequenceRef.current}`, projectId, projectName });
-      syncTaskContextDraft({ agent, projectId, projectName });
+      syncTaskContextDraft({ agent, projectId, projectName, deviceId: destination.deviceId });
       persistComposerDraftStore(store);
       setMobileSidebarOpen(false);
     } finally {
@@ -1631,13 +1650,40 @@ function TinodeWebApp({ location }) {
     const projectName = projectId > 0
       ? String(taskDraft?.projectName || current?.projectName || '')
       : '';
-    syncTaskContextDraft({ agent, projectId, projectName });
+    syncTaskContextDraft({ agent, projectId, projectName, deviceId: current?.deviceId });
   }, [syncTaskContextDraft, taskDraft]);
 
-  const createDraftAgentTaskTopic = useCallback((agent, draft = {}) => {
+  const handleDraftDeviceChange = (deviceId) => {
+    if (draftStore !== composerDraftStoreRef.current || draftTaskContextRef.current.activeTopicId) return false;
+    const transition = draftTaskCoordinatorRef.current.acquire();
+    if (!transition) {
+      feedback.notify({ message: '正在处理当前任务，请稍后再切换电脑。' });
+      return false;
+    }
+    try {
+      const current = readComposerTaskContextDraft(draftStore, NEW_TASK_DRAFT_KEY);
+      syncTaskContextDraft({ ...current, agent: draftAgent, deviceId });
+      return true;
+    } finally {
+      transition.release();
+    }
+  };
+
+  const createDraftAgentTaskTopic = useCallback(async (agent, draft = {}) => {
     const authRevision = getAuthRevision();
     const token = getToken();
-    return draftTaskCoordinatorRef.current.ensure(async () => {
+    const sameSession = () => getAuthRevision() === authRevision && getToken() === token;
+    const { identity } = draftTaskContextRef.current;
+    const agentId = agent.uid || agent.id;
+    const checkDraft = () => {
+      const current = draftTaskContextRef.current;
+      if (!sameSession() || current.identity !== identity
+        || (current.agentId && String(current.agentId) !== String(agentId))) {
+        throw new Error('任务已切换，请在当前任务中重新选择设备。');
+      }
+    };
+    const deviceId = readComposerTaskContextDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY)?.deviceId || '';
+    const result = await draftTaskCoordinatorRef.current.ensure(async () => {
       const created = await createAgentTaskTopic(agent, {
         ...draft,
         projectId: taskDraft
@@ -1647,10 +1693,10 @@ function TinodeWebApp({ location }) {
           ? String(taskDraft.projectName || '')
           : String(persistedTaskContext?.projectName || ''),
       });
-      return {
+      const topic = {
         ...created,
         rollback: async () => {
-          if (getAuthRevision() !== authRevision || getToken() !== token) return false;
+          if (!sameSession()) return false;
           try {
             await api.disbandGroup(created.groupId);
             draftTaskCoordinatorRef.current.forget();
@@ -1658,8 +1704,41 @@ function TinodeWebApp({ location }) {
           } catch { return false; }
         },
       };
+      // If cleanup failed after an ambiguous write, a retry must read the
+      // same task again, even when the user has since switched back to cloud.
+      return { topic, deviceWriteAttempted: false };
     });
-  }, [createAgentTaskTopic, persistedTaskContext?.projectId, persistedTaskContext?.projectName, taskDraft]);
+    if (!deviceId && !result.deviceWriteAttempted) return result.topic;
+    try {
+      const topicId = result.topic.topicId;
+      checkDraft();
+      const snapshot = await api.getConversationDevice(topicId, agentId).catch(() => {
+        throw new Error('暂时无法读取任务设备，请重试。');
+      });
+      checkDraft();
+      if (deviceId && !snapshot.devices?.some(device =>
+        device.deviceId === deviceId && device.routable
+        && (!device.ownerUserId || device.ownerUserId === `usr${user.uid}`))) {
+        throw new Error('所选电脑已离线或不可用，请重新选择任务设备。');
+      }
+      const matches = selection => deviceId
+        ? selection?.selected_device_id === deviceId && selection.status === 'selected'
+          && Number(selection.selected_owner_uid) === Number(user.uid)
+        : selection?.status === 'unspecified';
+      if (!matches(snapshot)) {
+        result.deviceWriteAttempted = true;
+        const confirmed = await api.confirmConversationDevice(topicId, agentId, deviceId, snapshot.revision).catch(() => {
+          throw new Error('任务设备尚未确认，请检查设备后重试。');
+        });
+        checkDraft();
+        if (!matches(confirmed)) throw new Error('任务设备尚未确认，请检查设备后重试。');
+      }
+      return result.topic;
+    } catch (error) {
+      await result.topic.rollback();
+      throw error;
+    }
+  }, [createAgentTaskTopic, persistedTaskContext?.projectId, persistedTaskContext?.projectName, taskDraft, user?.uid]);
 
   const draftProjectId = taskDraft?.projectId || persistedTaskContext?.projectId || 0;
   draftTaskContextRef.current = {
@@ -1808,10 +1887,17 @@ function TinodeWebApp({ location }) {
     return <AgentEntryBindView sceneKey={entrySceneKey} />;
   }
 
+  const openCollaborationManagement = (group) => {
+    setManagedGroup(group);
+    setMobileSidebarOpen(false);
+  };
   const renderLocalAssistantBar = (conversationActions = null) => (
     <LocalAssistantBar
       agentModelState={displayedAgentModel}
       activeAgent={displayedActiveAgent}
+      deviceAgent={deviceAgent}
+      groupDeviceSharing={groupDeviceSharing}
+      onManageGroup={groupDeviceSharing && activeTopic?.groupId ? () => openCollaborationManagement(activeTopic) : undefined}
       currentModelName={currentModelName}
       onDownload={() => openDesktopModal('computers')}
       onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
@@ -1918,10 +2004,7 @@ function TinodeWebApp({ location }) {
                 }}
               />
             )}
-            onManageGroup={(group) => {
-              setManagedGroup(group);
-              setMobileSidebarOpen(false);
-            }}
+            onManageGroup={openCollaborationManagement}
           />
         </div>
         
@@ -2065,6 +2148,7 @@ function TinodeWebApp({ location }) {
                 localAssistantStatus={localAgentStatus}
                 onAgentModelChange={handleActiveAgentModelChange}
                 onActiveAgentChange={handleActiveAgentChange}
+                onDeviceGroupLoaded={handleDeviceGroupLoaded}
                 onOpenDesktopConnect={() => openDesktopModal('connect')}
                 onResolveAgentTopic={resolveAgentTopic}
                 onActivateTopic={activateResolvedTopic}
@@ -2172,9 +2256,11 @@ function TinodeWebApp({ location }) {
           onClose={closeDesktopConnectModal}
           onConnected={desktopModalMode === 'computers' ? () => window.dispatchEvent(new Event('cc:devices-changed')) : handleDesktopConnected}
           onStatusChange={(status) => setLocalAgentStatus(status)}
-          initialMode={desktopModalMode}
+          initialMode={desktopModalMode === 'computers' && groupDeviceSharing ? 'group-devices' : desktopModalMode}
           topicId={desktopModalMode === 'computers' ? activeTopicId : ''}
-          activeAgent={desktopModalMode === 'computers' ? displayedActiveAgent : null}
+          draftDeviceId={draftDeviceId}
+          onDraftDeviceChange={desktopModalMode === 'computers' && !activeTopicId ? handleDraftDeviceChange : undefined}
+          activeAgent={desktopModalMode === 'computers' ? deviceAgent : null}
         />
       )}
 
@@ -2242,7 +2328,10 @@ function TinodeWebApp({ location }) {
   );
 }
 
-export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, topicId = '', title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin, onOpenServiceAgents, mobileModelInfo = null, onNewTask, conversationActions = null }) {
+export function LocalAssistantBar({ agentModelState, activeAgent, deviceAgent = activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, topicId = '', groupDeviceSharing = false, onManageGroup, title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin, onOpenServiceAgents, mobileModelInfo = null, onNewTask, conversationActions = null }) {
+  const DeviceIcon = groupDeviceSharing ? ShieldCheck : Laptop;
+  const deviceLabel = groupDeviceSharing ? '设备与授权' : '电脑';
+  const showDeviceTrigger = !topicId || groupDeviceSharing || Boolean(deviceAgent?.uid || deviceAgent?.id);
   const barRef = useRef(null);
   const mobileActionsRef = useRef(null);
   const mobileActionsTriggerRef = useRef(null);
@@ -2345,9 +2434,18 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
         </div>
       )}
       <div className="v3-shell-actions">
-        {topicId && (activeAgent?.uid || activeAgent?.id || topicId.startsWith('grp_'))
-          ? <ConversationDevicePicker topicId={topicId} activeAgent={activeAgent} onOpen={onDownload} />
-          : <button type="button" className="v3-action-btn cc-device-trigger" onClick={onDownload} aria-label="电脑" title="电脑"><Laptop size={16} aria-hidden="true" /></button>}
+        {onManageGroup && (
+          <button type="button" className="v3-action-btn v3-shell-action-desktop cc-collaboration-trigger"
+            aria-label="协作管理" title="协作管理" aria-haspopup="dialog" onClick={onManageGroup}>
+            <Users size={16} aria-hidden="true" />
+          </button>
+        )}
+        {showDeviceTrigger && (
+          <button type="button" className="v3-action-btn cc-device-trigger" onClick={onDownload}
+            aria-haspopup="dialog" aria-label={deviceLabel} title={deviceLabel}>
+            <DeviceIcon size={16} aria-hidden="true" />
+          </button>
+        )}
         {conversationActions}
         {onOpenServiceAgents && (
           <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenServiceAgents} aria-label="Agent 工具" title="Agent 工具（定制 Agent 工具集）">
@@ -2389,6 +2487,12 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
                 <Plus size={16} aria-hidden="true" />
                 <span>新建任务</span>
               </button>
+              {onManageGroup && (
+                <button type="button" role="menuitem" aria-label="协作管理" onClick={() => { closeMobileActions(); onManageGroup(); }}>
+                  <Users size={16} aria-hidden="true" />
+                  <span>协作管理</span>
+                </button>
+              )}
               {onOpenServiceAgents && (
                 <button type="button" role="menuitem" aria-label="Agent 工具" onClick={() => { closeMobileActions(); onOpenServiceAgents?.(); }}>
                   <Package size={16} aria-hidden="true" />

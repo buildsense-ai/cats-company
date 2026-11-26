@@ -1884,8 +1884,8 @@ describe('CatsCo shell styling', () => {
     expect(noticeRule).toContain('border-bottom: 1px solid');
     expect(ruleFor('.v3-composer-context')).toContain('border-radius: 27px 27px 0 0;');
     expect(ruleFor('.oc-reply-bar')).toContain('width: 100% !important;');
-    expect(ruleFor('.oc-reply-bar')).toContain('border-radius: 0 !important;');
-    expect(ruleFor('.oc-reply-bar')).toContain('background: transparent !important;');
+    expect(ruleFor('.oc-reply-bar .oc-reply-bar-text')).toContain('-webkit-line-clamp: 2;');
+    expect(ruleFor('.oc-reply-bar .oc-reply-bar-text')).toContain('overflow-wrap: anywhere;');
     expect(ruleFor('.oc-reply-bar')).toContain('font-size: 12px !important;');
     expect(css).toContain('width: 32px;');
     expect(css).not.toContain('margin: 0 auto -11px');

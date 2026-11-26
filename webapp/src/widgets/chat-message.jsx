@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { fullReplyExcerpt, selectedReplyExcerpt } from './reply-excerpt';
 import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Terminal, Brain, BookOpen, FilePen, FolderSearch, Globe, Send, Sparkles, GitFork, MessageSquareText, FileCode2, Maximize2, Minimize2, Pencil, Eye, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, Image as ImageIcon, Share2 } from 'lucide-react';
 import { Copy, CornerUpLeft, Download, ExternalLink, FileText, MoreHorizontal, Search, X } from './desktop-icons';
 import t from '../i18n';
@@ -1339,7 +1340,20 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, memoryBranchActive, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp, onWikiInjection, activeInjection }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, memoryBranchActive, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, onLocateReply, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp, onWikiInjection, activeInjection }) {
+  const quotedText = useMemo(() => {
+    if (!replyMessage) return '查看引用的原消息';
+    const blocks = replyMessage.content_blocks || [];
+    const fromBlocks = Array.isArray(blocks) && blocks.filter(block => block?.presentation_role !== 'process')
+      .map(contentBlockCopyText).filter(Boolean).join('\n');
+    const content = replyMessage.content;
+    const parsedContent = typeof content === 'string' && content.trimStart().startsWith('{') ? parseToolInput(content) : content;
+    const raw = fromBlocks || contentBlockCopyText(parsedContent) || (typeof content === 'string' && content) || '附件';
+    if (!shouldRenderMarkdown(raw)) return raw;
+    const template = document.createElement('template');
+    template.innerHTML = renderSafeMarkdown(raw);
+    return template.content.textContent.trim() || raw;
+  }, [replyMessage]);
   const liquidConversation = useLiquidConversation();
   const [replyRevealing, setReplyRevealing] = useState(false);
   const softStream = liquidConversation && !isSelf && Boolean(message._streaming) && !message._stopped
@@ -1365,6 +1379,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   const [messageActionsOpen, setMessageActionsOpen] = useState(false);
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const moreActionsTriggerRef = useRef(null);
+  const replyContentRef = useRef(null);
+  const pointerQuoteRef = useRef(null);
   const moreActionsMenuRef = useRef(null);
   const moreActionsMenuId = `message-more-actions-${useId().replace(/:/g, '')}`;
   const content = message.content;
@@ -1514,13 +1530,25 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   const handleReplyClick = (event) => {
     event.stopPropagation();
     setMoreActionsOpen(false);
-    onReply?.();
+    const body = replyContentRef.current;
+    const selected = pointerQuoteRef.current || selectedReplyExcerpt(body);
+    const excerpt = selected || fullReplyExcerpt(body);
+    const attachmentText = !hasText || parsed ? contentBlockCopyText(parsed) || richBlocks.map(contentBlockCopyText).filter(Boolean).join('\n') : '';
+    pointerQuoteRef.current = null;
+    onReply?.(selected?.text || attachmentText || excerpt?.text || copyText, displayName, excerpt);
   };
 
   const handleEditClick = (event) => {
     event.stopPropagation();
     setMoreActionsOpen(false);
-    onEdit?.(message);
+    if (Number(message.reply_to) > 0) {
+      onEdit?.(message, {
+        id: message.reply_to,
+        anchorId: replyMessage?.seq_id || replyMessage?.id || message.reply_to,
+        author: replyMessage?.from_name || '',
+        excerpt: quotedText,
+      });
+    } else onEdit?.(message);
   };
 
   const handleCopyClick = async (event) => {
@@ -1652,15 +1680,19 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
             </div>
           )}
 
-          {replyMessage && (
-            <div
+          {(replyMessage || Number(message.reply_to) > 0) && (
+            <button type="button"
               className="v3-inline-reply"
-              title={typeof replyMessage.content === 'string' ? replyMessage.content : undefined}
+              title={quotedText}
+              disabled={!onLocateReply}
+              aria-label={replyMessage ? `查看引用的原消息：${quotedText}` : quotedText}
+              onClick={event => {
+                event.stopPropagation();
+                onLocateReply?.(replyMessage?.seq_id || replyMessage?.id || message.reply_to, null, message.reply_to);
+              }}
             >
-              <span>
-                {typeof replyMessage.content === 'string' ? replyMessage.content.slice(0, 80) : '[media]'}
-              </span>
-            </div>
+              {quotedText}
+            </button>
           )}
 
           {!isSelf && (showThinking || executionState || latestMemoryBranches(workingBlocks).length > 0 || workingBlocks.some((item) => item.type === 'wiki_injection' || (item.type === 'tool_pair' && diaryToolView(item)))) && (
@@ -1671,7 +1703,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
           {message?.metadata?.file_annotations && <FileAnnotationCard value={message.metadata.file_annotations} />}
 
           {(replyPending || hasText || richBlocks.length > 0) && (
-            <div className="v3-message-content">
+            <div className="v3-message-content" ref={replyContentRef}>
               {hasArtifactFirstSummary ? (
                 <>
                   <div className="v3-message-deliverables" data-message-part="artifacts">
@@ -1769,6 +1801,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
             {!onEdit && onReply && (
               <button
                 className="v3-action-btn v3-reply-action"
+                onPointerDown={() => { pointerQuoteRef.current = selectedReplyExcerpt(replyContentRef.current); }}
+                onPointerCancel={() => { pointerQuoteRef.current = null; }}
+                onKeyDown={() => { pointerQuoteRef.current = null; }}
                 onClick={handleReplyClick}
                 aria-label={t('chat_reply')}
                 title={t('chat_reply')}
@@ -1874,6 +1909,7 @@ export function chatMessagePropsEqual(prevProps, nextProps) {
     prevProps.senderIsBot === nextProps.senderIsBot &&
     prevProps.mentionDisplayNames === nextProps.mentionDisplayNames &&
     prevProps.replyMessage === nextProps.replyMessage &&
+    prevProps.onLocateReply === nextProps.onLocateReply &&
     prevProps.questionAnchorKey === nextProps.questionAnchorKey &&
     prevProps.onEdit === nextProps.onEdit &&
     prevProps.onRegenerate === nextProps.onRegenerate &&

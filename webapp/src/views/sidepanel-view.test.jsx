@@ -145,6 +145,8 @@ describe('ChatListView sidebar sections', () => {
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
+    // Most cases exercise a returning user's sidebar. Cold-start tests remove this baseline.
+    localStorage.setItem('cc_task_status_dismissed_v1:7', JSON.stringify({ historyInitialized: true }));
     api.getConversations.mockResolvedValue({ conversations: [] });
     api.getConversationFork.mockRejectedValue(Object.assign(new Error('session_fork_not_found'), { status: 404 }));
     api.getFriends.mockResolvedValue({ friends: [] });
@@ -1969,6 +1971,62 @@ describe('ChatListView sidebar sections', () => {
     expect(task.querySelector('.cc-task-row-status.running')).toBeTruthy();
   });
 
+  it('keeps historical completions quiet on first login, across account switches and on refresh', async () => {
+    localStorage.removeItem('cc_task_status_dismissed_v1:7');
+    const task = (id, run) => ({
+      id, name: id, is_group: true, is_agent_task: true,
+      task_status: { topic_id: id, source_uid: 42, run_id: run, state: 'completed' },
+    });
+    const history = [task('grp_one', 'old'), task('grp_two', 'old')];
+    api.getConversations.mockResolvedValue({ conversations: history });
+    await mount();
+    const dots = () => container.querySelectorAll('.cc-task-row-status.completed').length;
+    expect(dots()).toBe(0);
+    // The first account gets a completion while signed out.
+    await mount({ user: { ...user, uid: 8 } });
+    expect(dots()).toBe(0);
+    api.getConversations.mockResolvedValue({ conversations: [task('grp_one', 'new'), history[1]] });
+    await mount();
+    expect(dots()).toBe(1);
+    await remount();
+    expect(dots()).toBe(1);
+    await act(async () => Simulate.click(container.querySelector('.cc-task-row-status.completed').closest('.cc-history-item')));
+    await remount();
+    expect(dots()).toBe(0);
+  });
+
+  it('does not initialize history from a late response after switching away', async () => {
+    localStorage.removeItem('cc_task_status_dismissed_v1:7');
+    let finishFirstAccount;
+    api.getConversations.mockImplementationOnce(() => new Promise(resolve => { finishFirstAccount = resolve; }));
+    await mount();
+    await mount({ user: { ...user, uid: 8 } });
+    await act(async () => finishFirstAccount({ conversations: [{
+      id: 'grp_old', name: 'Previous account', is_group: true, is_agent_task: true,
+      task_status: { state: 'completed', run_id: 'old' },
+    }] }));
+    expect(container.textContent).not.toContain('Previous account');
+    expect(localStorage.getItem('cc_task_status_dismissed_v1:7')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('cc_task_status_dismissed_v1:8'))).not.toHaveProperty('grp_old');
+  });
+
+  it('keeps a live completion that arrives during the initial history request unread after refresh', async () => {
+    localStorage.removeItem('cc_task_status_dismissed_v1:7');
+    const status = { topic_id: 'grp_live', state: 'completed', run_id: 'live' };
+    const response = { conversations: [{
+      id: status.topic_id, name: 'Just finished', is_group: true, is_agent_task: true, task_status: status,
+    }] };
+    let finish;
+    api.getConversations.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await mount();
+    await act(async () => wsHandler({ task_status: status }));
+    await act(async () => finish(response));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    api.getConversations.mockResolvedValue(response);
+    await remount();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+  });
+
   it('changes a background running spinner into an unread completion dot', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
@@ -2184,7 +2242,7 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => wsHandler({ task_status: { ...task.task_status, source_uid: 43, run_id: 'next-run', updated_at: '2026-07-20T04:03:00Z' } }));
     expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
     await remount({ user: { ...user, uid: 8 } });
-    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
   });
 
   it('keeps completion unread while another workspace tool is visible', async () => {

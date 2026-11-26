@@ -3,6 +3,7 @@ import { Copy, RefreshCw, Unlink, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import QRCode from './qr-code';
+import useDialogBehavior from '../utils/use-dialog-behavior';
 
 const MOBILE_CHANNELS = [
   { value: 'weixin', label: '公众号', displayName: '微信公众号' },
@@ -14,7 +15,9 @@ const channelMeta = (value) => (
   MOBILE_CHANNELS.find((item) => item.value === value) || MOBILE_CHANNELS[0]
 );
 
-export default function MobileChannelBindModal({ agentUid, agentName, groupId, topicId, groupName, onClose }) {
+export default function MobileChannelBindModal({ agentUid, agentName, groupId, topicId, groupName, onClose, stacked = false }) {
+  const dialogRef = useRef(null);
+  useDialogBehavior(dialogRef, { onClose, open: stacked });
   const feedback = useFeedback();
   const [channel, setChannel] = useState('weixin');
   const [linkInfo, setLinkInfo] = useState(null);
@@ -220,6 +223,7 @@ export default function MobileChannelBindModal({ agentUid, agentName, groupId, t
     <div className="oc-modal-overlay">
       <div
         className="oc-modal mobile-channel-bind-modal"
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="mobile-channel-dialog-title"

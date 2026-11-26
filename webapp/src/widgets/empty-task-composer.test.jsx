@@ -1291,22 +1291,35 @@ describe('EmptyTaskComposer', () => {
     expect(api.sendMessage).toHaveBeenCalledWith('grp_402', '整理本周运营数据');
   });
 
-  it('opens settings for the clicked Agent, including the already selected Agent', async () => {
+  it('selects an adjacent Agent first and opens settings only on the centered Agent', async () => {
     await mountComposer();
     const dispatch = vi.spyOn(window, 'dispatchEvent');
     try {
-      for (const name of ['运营数据助手', '运营数据助手', '代码审查助手']) {
-        await act(async () => {
-          Simulate.click(container.querySelector(`[role="radio"][aria-label="${name}"]`));
-        });
-        const event = dispatch.mock.calls.at(-1)[0];
-        expect(event.type).toBe('cc:open-agent-manager');
-        expect(event.detail).toEqual({ agentId: name === '运营数据助手' ? '22' : '21' });
-      }
+      const adjacent = container.querySelector('[role="radio"][aria-checked="false"]');
+      await act(async () => Simulate.click(adjacent));
+      const opens = () => dispatch.mock.calls.filter(([event]) => event.type === 'cc:open-agent-manager');
+      expect(opens()).toHaveLength(0);
+      expect(adjacent.getAttribute('aria-checked')).toBe('true');
+      await act(async () => Simulate.click(adjacent));
+      expect(opens()).toHaveLength(1);
       expect(api.sendMessage).not.toHaveBeenCalled();
     } finally {
       dispatch.mockRestore();
     }
+  });
+
+  it('opens a shared Agent profile directly and returns to the same selection', async () => {
+    api.getAgents.mockResolvedValueOnce({ agents: [{ ...agents[0], relation: 'friend', is_cloud: true }] });
+    await mountComposer();
+    const selected = container.querySelector('[role="radio"][aria-checked="true"]');
+    await act(async () => Simulate.click(selected));
+    const dialog = document.body.querySelector('.cc-agent-profile-shell');
+    expect(dialog?.textContent).toContain('代码审查助手');
+    expect(dialog?.querySelectorAll('[role="tab"]')).toHaveLength(3);
+    await act(async () => Simulate.click(dialog.querySelector('[aria-label="返回"]')));
+    expect(document.body.querySelector('.cc-agent-profile-shell')).toBeNull();
+    expect(selected.getAttribute('aria-checked')).toBe('true');
+    expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
   it('switches the vertical Agent wheel with arrow keys', async () => {

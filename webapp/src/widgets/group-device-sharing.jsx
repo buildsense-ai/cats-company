@@ -1,32 +1,49 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Laptop, X } from 'lucide-react';
+import CustomSelect from './custom-select';
+import SlidingSegments from './sliding-segments';
+import LoadingState from './loading-state';
+import useDialogBehavior from '../utils/use-dialog-behavior';
+import { RefreshCw, ShieldCheck, X } from 'lucide-react';
 import { api, getAuthRevision, getToken, isCurrentAuthSession } from '../api';
 import '../css/group-device-sharing.css';
-import { describeShareScope, knownShareScope } from './group-device-share-scope';
+import { knownShareScope } from './group-device-share-scope';
 
 const deviceKey = device => `${device.ownerUserId}/${device.deviceId}`;
 const ownerUid = device => Number(device.ownerUserId.replace(/^usr/, ''));
+const READ_ERROR = '暂时无法读取设备状态，请刷新重试。';
 
 export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }) {
   const [open, setOpen] = useState(embedded);
   const [data, setData] = useState(null);
+  const [botId, setBotId] = useState(null);
+  const [sharingOpen, setSharingOpen] = useState(false);
+  const sharingId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [needsRefresh, setNeedsRefresh] = useState(false);
   const [shareDrafts, setShareDrafts] = useState({});
   const [defaultDrafts, setDefaultDrafts] = useState({});
-  const sequence = useRef(0);
+  const activeRead = useRef(null);
   const saving = useRef(false);
   const dialog = useRef(null);
   const trigger = useRef(null);
 
+  const cancelRead = useCallback(() => {
+    activeRead.current?.abort();
+    activeRead.current = null;
+  }, []);
+
   const load = useCallback(async () => {
-    const seq = ++sequence.current;
     const token = getToken(), revision = getAuthRevision();
-    const current = () => seq === sequence.current && isCurrentAuthSession(token, revision);
+    if (!token || activeRead.current) return;
+    const controller = new AbortController();
+    activeRead.current = controller;
+    const options = { signal: controller.signal, timeoutMs: 15_000 };
+    const current = () => !controller.signal.aborted && isCurrentAuthSession(token, revision);
     try {
-      const [sharingResult, mineResult] = await Promise.allSettled([api.getGroupDeviceShares(topicId), api.getDevices()]);
+      const [sharingResult, mineResult] = await Promise.allSettled([api.getGroupDeviceShares(topicId, options), api.getDevices(options)]);
+      if (!current()) return;
       if (mineResult.status !== 'fulfilled') throw mineResult.reason;
       const mine = mineResult.value;
       const ownDevices = (mine.devices || []).filter(device => device.runtimeRole !== 'server');
@@ -34,7 +51,8 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
       if (sharingResult.status === 'fulfilled') sharing = sharingResult.value;
       else {
         sharingUnavailable = true;
-        const available = await api.getConversationDevice(topicId, '');
+        const available = await api.getConversationDevice(topicId, '', options);
+        if (!current()) return;
         const actor = ownDevices.length ? ownerUid(ownDevices[0]) : 0;
         sharing = { actor_uid: actor, shares: [], devices: [], members: [
           ...(actor ? [{ user_id: actor }] : []),
@@ -42,13 +60,15 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
         ] };
       }
       const bots = sharing.members.filter(member => member.is_bot);
-      const results = await Promise.allSettled(bots.map(bot => api.getConversationDevice(topicId, `usr${bot.user_id}`)));
+      const results = await Promise.allSettled(bots.map(bot => api.getConversationDevice(topicId, `usr${bot.user_id}`, options)));
+      if (!current()) return;
       const snapshots = results.map(result => result.status === 'fulfilled' ? result.value : { status: 'bot_unavailable', devices: [] });
-      if (current()) setData({ ...sharing, bots, snapshots, ownDevices, sharingUnavailable });
-      return current();
+      setData({ ...sharing, bots, snapshots, ownDevices, sharingUnavailable });
+      setError(previous => previous === READ_ERROR ? '' : previous);
     } catch {
-      if (current()) setError('暂时无法读取设备状态，请刷新重试。');
-      return false;
+      if (current()) setError(previous => previous || READ_ERROR);
+    } finally {
+      if (activeRead.current === controller) activeRead.current = null;
     }
   }, [topicId]);
 
@@ -63,39 +83,26 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
     void load();
     const refreshBackground = () => { if (!saving.current) void load(); };
     const reset = () => {
-      ++sequence.current; saving.current = false; setData(null); setOpen(false); setBusy(false);
-      clearDrafts(); setError(''); setNeedsRefresh(false);
-      if (getToken()) void load();
+      cancelRead(); saving.current = false; setData(null); setOpen(embedded); setBusy(false);
+      clearDrafts(); setBotId(null); setSharingOpen(false); setError(''); setNeedsRefresh(false);
+      if (embedded || !open) void load();
     };
     window.addEventListener('cc:devices-changed', refreshBackground);
     window.addEventListener('cc:auth-changed', reset);
     window.addEventListener('focus', refreshBackground);
     const timer = setInterval(() => { if (open) refreshBackground(); }, 3000);
     return () => {
-      ++sequence.current; clearInterval(timer);
+      cancelRead(); clearInterval(timer);
       window.removeEventListener('cc:devices-changed', refreshBackground);
       window.removeEventListener('cc:auth-changed', reset);
       window.removeEventListener('focus', refreshBackground);
     };
-  }, [load, open]);
+  }, [cancelRead, embedded, load, open]);
 
-  useEffect(() => {
-    if (!open || embedded) return undefined;
-    dialog.current?.focus();
-    const close = event => {
-      if (event.key === 'Escape' && !saving.current) { setOpen(false); clearDrafts(); }
-      if (event.key !== 'Tab') return;
-      const controls = [...(dialog.current?.querySelectorAll('button:not(:disabled), input:not(:disabled)') || [])];
-      const first = controls[0], last = controls[controls.length - 1];
-      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) {
-        event.preventDefault(); last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault(); first?.focus();
-      }
-    };
-    document.addEventListener('keydown', close);
-    return () => { document.removeEventListener('keydown', close); trigger.current?.focus(); };
-  }, [open, embedded]);
+  useDialogBehavior(dialog, {
+    open: open && !embedded, returnFocusRef: trigger,
+    onClose: () => { if (!saving.current) { setOpen(false); clearDrafts(); } },
+  });
 
   const stageShare = (device, person, checked) => {
     const key = `${device.deviceId}/${person.user_id}`;
@@ -121,7 +128,7 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
     const token = getToken(), revision = getAuthRevision();
     const current = () => isCurrentAuthSession(token, revision);
     const operation = Symbol('device-confirm');
-    saving.current = operation; ++sequence.current; setBusy(true); setError('');
+    saving.current = operation; cancelRead(); setBusy(true); setError('');
     let completed = 0, noticePending = false;
     try {
       for (const [key, draft] of Object.entries(shareDrafts)) {
@@ -145,8 +152,8 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
         setDefaultDrafts(previous => { const next = { ...previous }; delete next[bot]; return next; });
       }
       if (!current()) return;
-      await load();
       setError(noticePending ? '设置已保存，对话提示暂未确认，请刷新对话核对。' : '');
+      await load();
     } catch {
       if (current()) {
         setNeedsRefresh(true);
@@ -171,78 +178,85 @@ export default function GroupDeviceSharing({ topicId, embedded = false, onOpen }
   const devices = [...(data?.ownDevices || []), ...(data?.devices || [])];
   const newShares = Object.values(shareDrafts).filter(draft => draft.checked);
   const invalidShareScope = newShares.some(draft => !knownShareScope(draft.operations));
-  const table = () => <div className="cc-device-table-scroll" role="region" aria-label="设备与授权表格" tabIndex={0}><table>
-    <thead>
-      <tr><th rowSpan={2} scope="col" aria-label="设备" />{people.length > 0 && <th colSpan={people.length}>共享使用权</th>}{data.bots.length > 0 && <th colSpan={data.bots.length}>默认设备</th>}</tr>
-      <tr>{people.map(person => <th key={person.user_id}>{person.display_name || person.username}</th>)}{data.bots.map((bot, index) => <th key={bot.user_id}>{bot.display_name || bot.username}{data.snapshots[index].status === 'bot_unavailable' && <small>暂不可用</small>}</th>)}</tr>
-    </thead>
-    <tbody>
-      <tr>
-        <th scope="row">{data.bots.length === 1
-          ? <label htmlFor={`cloud-${topicId}-${data.bots[0].user_id}`}>云端</label>
-          : '云端'}</th>
-        {people.length > 0 && <td colSpan={people.length} />}
-        {data.bots.map((bot, index) => {
-          const snapshot = data.snapshots[index], draft = defaultDrafts[bot.user_id];
-          return <td key={bot.user_id}><input type="radio" name={`device-${topicId}-${bot.user_id}`}
-            id={`cloud-${topicId}-${bot.user_id}`}
-            aria-label={`为 ${bot.display_name || bot.username} 切换到云端`}
-            checked={draft ? draft.device === null : !snapshot.selected_device_id}
-            disabled={busy || needsRefresh || snapshot.status === 'bot_unavailable'}
-            onChange={() => stageDefault(null, bot, snapshot)} /></td>;
-        })}
-      </tr>
-      {devices.map(device => {
-      const own = ownerUid(device) === data.actor_uid;
-      return <tr key={deviceKey(device)}>
-        <th scope="row" title={device.deviceId}><strong>{device.displayName || device.deviceId}</strong>
-          {devices.some(other => deviceKey(other) !== deviceKey(device) && (other.displayName || other.deviceId) === (device.displayName || device.deviceId)) && <small>{device.deviceId}</small>}
-          <small>{device.routable ? '在线' : device.unavailableReason === 'group_device_share_upgrade_required' ? '需要升级 Bot' : '离线'}</small></th>
-        {own ? people.map(person => {
-          const share = data.shares.find(item => item.owner_uid === data.actor_uid && item.grantee_uid === person.user_id && item.device_id === device.deviceId);
-          const draft = shareDrafts[`${device.deviceId}/${person.user_id}`];
-          return <td key={person.user_id}><input type="checkbox" aria-label={`共享 ${device.displayName || device.deviceId} 给 ${person.display_name || person.username}`}
-              checked={draft?.checked ?? (share?.status === 'active')} disabled={busy || needsRefresh || data.sharingUnavailable}
-              onChange={event => stageShare(device, person, event.target.checked)} /></td>;
-        }) : people.length > 0 && <td colSpan={people.length}><span>由 {ownerName(device)} 授权</span></td>}
-        {data.bots.map((bot, index) => {
-          const snapshot = data.snapshots[index];
-          const target = snapshot.devices?.find(candidate => candidate.deviceId === device.deviceId && (candidate.ownerUserId || `usr${data.actor_uid}`) === device.ownerUserId);
-          const draft = defaultDrafts[bot.user_id];
-          const selected = draft ? !!draft.device && deviceKey(draft.device) === deviceKey(device) : snapshot.selected_device_id === device.deviceId && Number(snapshot.selected_owner_uid || data.actor_uid) === ownerUid(device);
-          return <td key={bot.user_id}><input type="radio" name={`device-${topicId}-${bot.user_id}`}
-            aria-label={`为 ${bot.display_name || bot.username} 选择 ${device.displayName || device.deviceId}，所有者 ${ownerName(device)}`}
-            title={target?.unavailableReason === 'group_device_share_upgrade_required' ? '需要升级此 Bot' : undefined}
-            checked={selected} disabled={busy || needsRefresh || !target?.routable}
-            onChange={() => stageDefault(device, bot, snapshot)} /></td>;
-        })}
-      </tr>;
-    })}</tbody>
-  </table></div>;
-
+  const memberName = person => person.display_name || person.username || `usr${person.user_id}`;
+  const bot = data?.bots.find(person => person.user_id === botId) || data?.bots[0];
+  const snapshot = bot && data.snapshots[data.bots.indexOf(bot)];
+  const draft = bot && defaultDrafts[bot.user_id];
+  const blocked = busy || needsRefresh;
+  const deviceLabel = device => device.displayName || device.deviceId;
+  const deviceName = device => devices.some(other => deviceKey(other) !== deviceKey(device) && deviceLabel(other) === deviceLabel(device))
+    ? `${deviceLabel(device)} · ${device.deviceId}` : deviceLabel(device);
   const content = <>
     {!embedded && <header><h2>设备与授权</h2><button type="button" aria-label="关闭" disabled={busy} onClick={() => { setOpen(false); clearDrafts(); }}><X size={18} /></button></header>}
-    <div className="cc-device-confirm-actions">
-      <button type="button" disabled={busy} onClick={() => void refresh()}>刷新</button>
-      <button type="button" disabled={busy || !pendingCount} onClick={clearDrafts}>取消更改</button>
-      <button type="button" disabled={busy || needsRefresh || !pendingCount || invalidShareScope} onClick={() => void confirm()}>确认</button>
+    <div className="cc-group-device-heading">
+      <SlidingSegments className="cc-group-device-tabs" role="tablist" aria-label="设备与授权" keyboardTabs value={sharingOpen}>
+        {['助手设备', '成员授权'].map((label, index) => (
+          <button key={label} type="button" role="tab" id={`${sharingId}-tab-${index}`}
+            aria-selected={sharingOpen === Boolean(index)} aria-controls={sharingId} onClick={() => setSharingOpen(Boolean(index))}>{label}</button>
+        ))}
+      </SlidingSegments>
+      {(data || error) && <button type="button" className="cc-device-refresh" aria-label="刷新设备列表" title="刷新设备列表" disabled={busy} onClick={() => void refresh()}><RefreshCw size={16} aria-hidden="true" /></button>}
     </div>
+    <div className="cc-group-device-panel" role="tabpanel" id={sharingId} aria-labelledby={`${sharingId}-tab-${Number(sharingOpen)}`}>
     {error && <p role="alert">{error}</p>}
-    {!data && !error && <p role="status">正在读取设备…</p>}
+    {!data && !error && <LoadingState kind="connect" label="正在读取设备" compact />}
     {data && <>
-      {data.sharingUnavailable && <p role="status">共享暂不可用</p>}
-      {devices.length || data.bots.length ? table() : <p>暂无设备</p>}
-      {data.snapshots.some(snapshot => snapshot.status === 'unavailable') && <p role="status">已选设备不可用</p>}
+      {!sharingOpen && (bot ? <>
+        {data.bots.length > 1 ? <CustomSelect ariaLabel="选择群内助手" value={bot.user_id} onValueChange={value => setBotId(Number(value))} disabled={busy}>
+          {data.bots.map(person => <option key={person.user_id} value={person.user_id}>{memberName(person)}</option>)}
+        </CustomSelect> : <span className="cc-group-bot-name">{memberName(bot)} 使用的设备</span>}
+        <fieldset className="cc-group-device-options" aria-label={`${memberName(bot)} 的设备`}>
+          <label className="cc-group-device-option">
+            <input type="radio" name={`device-${topicId}-${bot.user_id}`} aria-label={`为 ${memberName(bot)} 切换到云端`}
+              checked={snapshot.status !== 'bot_unavailable' && (draft ? draft.device === null : !snapshot.selected_device_id)}
+              disabled={blocked || snapshot.status === 'bot_unavailable'} onChange={() => stageDefault(null, bot, snapshot)} />
+            <span>云端</span>
+          </label>
+          {devices.map(device => {
+            const target = snapshot.devices?.find(candidate => candidate.deviceId === device.deviceId && (candidate.ownerUserId || `usr${data.actor_uid}`) === device.ownerUserId);
+            const selected = draft ? !!draft.device && deviceKey(draft.device) === deviceKey(device) : snapshot.selected_device_id === device.deviceId && Number(snapshot.selected_owner_uid || data.actor_uid) === ownerUid(device);
+            const status = target?.routable ? '在线' : target?.unavailableReason === 'group_device_share_upgrade_required' ? '需要升级助手' : device.routable ? '不可用' : '离线';
+            return <label className="cc-group-device-option" key={deviceKey(device)}>
+              <input type="radio" name={`device-${topicId}-${bot.user_id}`}
+                aria-label={`为 ${memberName(bot)} 选择 ${deviceLabel(device)}，所有者 ${ownerName(device)}`}
+                title={status} checked={selected} disabled={blocked || !target?.routable} onChange={() => stageDefault(device, bot, snapshot)} />
+              <span>{deviceName(device)}{ownerUid(device) !== data.actor_uid && <small>由 {ownerName(device)} 授权</small>}</span>
+              <small>{status}</small>
+            </label>;
+          })}
+        </fieldset>
+        {snapshot.status === 'unavailable' && <p role="status">已选设备不可用</p>}
+        {snapshot.status === 'bot_unavailable' && <p role="status">暂时无法读取这位助手的设备</p>}
+      </> : <p>群内暂无助手</p>)}
+      {sharingOpen && <div className="cc-group-device-shares">
+        {data.sharingUnavailable ? <p role="status">共享暂不可用</p>
+          : !people.length ? <p>群内没有其他成员可授权</p>
+          : !data.ownDevices.length ? <p>尚未连接自己的电脑</p>
+          : data.ownDevices.map(device => <fieldset className="cc-group-device-options" key={deviceKey(device)}>
+            <legend>可使用「{deviceName(device)}」的成员</legend>
+            {people.map(person => {
+              const share = data.shares.find(item => item.owner_uid === data.actor_uid && item.grantee_uid === person.user_id && item.device_id === device.deviceId);
+              const change = shareDrafts[`${device.deviceId}/${person.user_id}`];
+              return <label key={person.user_id} className="cc-group-device-option">
+                <input type="checkbox" aria-label={`共享 ${deviceLabel(device)} 给 ${memberName(person)}`}
+                  checked={change?.checked ?? (share?.status === 'active')} disabled={blocked}
+                  onChange={event => stageShare(device, person, event.target.checked)} />
+                <span>{memberName(person)}</span>
+              </label>;
+            })}
+          </fieldset>)}
+      </div>}
     </>}
-    {newShares.map(draft => <p key={`${draft.deviceId}/${draft.grantee}`} aria-label="共享授权范围">
-      {devices.find(device => device.deviceId === draft.deviceId && ownerUid(device) === data.actor_uid)?.displayName || draft.deviceId}
-      {' → '}{data.members.find(member => member.user_id === draft.grantee)?.display_name || data.members.find(member => member.user_id === draft.grantee)?.username || `usr${draft.grantee}`}：{describeShareScope(draft.operations)}
-    </p>)}
-    {pendingCount > 0 && <p role="status">{pendingCount} 项待确认</p>}
+    </div>
+    {invalidShareScope && <p role="alert">授权范围暂不可确认，请刷新后重试。</p>}
+    <div className="cc-device-confirm-actions">
+      <button type="button" className="oc-btn oc-btn-default" disabled={!pendingCount || busy} onClick={clearDrafts}>取消更改</button>
+      <button type="button" className="oc-btn oc-btn-primary" disabled={!pendingCount || blocked || invalidShareScope} onClick={() => void confirm()}>确认</button>
+    </div>
   </>;
   if (embedded) return <section className="cc-group-devices">{content}</section>;
   return <>
-    <button ref={trigger} type="button" className="cc-device-trigger" aria-label="设备与授权" onClick={() => { if (onOpen) onOpen(); else setOpen(true); }}><Laptop size={18} /></button>
+    <button ref={trigger} type="button" className="cc-device-trigger" aria-label="设备与授权" onClick={() => { if (onOpen) onOpen(); else setOpen(true); }}><ShieldCheck size={18} /></button>
     {open && createPortal(<div className="cc-device-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !saving.current) { setOpen(false); clearDrafts(); } }}>
       <section ref={dialog} className="cc-device-dialog cc-group-devices" role="dialog" aria-modal="true" aria-label="设备与授权" tabIndex={-1}>{content}</section>
     </div>, document.body)}

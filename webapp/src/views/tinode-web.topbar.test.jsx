@@ -529,6 +529,24 @@ describe('LocalAssistantBar model selector', () => {
     expect(onDownload).toHaveBeenCalledTimes(1);
   });
 
+  it('gives a group a dedicated sharing trigger and a single-agent task the computer trigger', async () => {
+    const onDownload = vi.fn();
+    await renderBar({ topicId: 'grp_10', activeAgent: { uid: 43 }, onDownload });
+    const laptop = container.querySelector('button[aria-label="电脑"]');
+    expect(laptop.getAttribute('aria-haspopup')).toBe('dialog');
+    const laptopIcon = laptop.querySelector('svg').outerHTML;
+
+    await renderBar({ topicId: 'grp_20', groupDeviceSharing: true, onDownload });
+    const sharing = container.querySelector('button[aria-label="设备与授权"]');
+    expect(container.querySelector('button[aria-label="电脑"]')).toBeNull();
+    expect(sharing.querySelector('svg').outerHTML).not.toBe(laptopIcon);
+    await act(async () => sharing.click());
+    expect(onDownload).toHaveBeenCalledTimes(1);
+
+    await renderBar({ topicId: 'p2p_1_7' });
+    expect(container.querySelector('.cc-device-trigger')).toBeNull();
+  });
+
   it('always renders the cloud button and enables it when an Agent resource handler is available', async () => {
     const onOpenCloudArtifacts = vi.fn();
     await renderBar({ onOpenCloudArtifacts });
@@ -550,7 +568,7 @@ describe('LocalAssistantBar model selector', () => {
     const onDownload = vi.fn();
     const onNewTask = vi.fn();
     vi.spyOn(api, 'getTopicFiles').mockResolvedValue({ files: [] });
-    await renderBar({ onOpenCloudArtifacts, onDownload, onNewTask, topicId: 'p2p_1_43' });
+    await renderBar({ onOpenCloudArtifacts, onDownload, onNewTask, topicId: 'p2p_1_43', activeAgent: { uid: 43 } });
 
     const moreButton = container.querySelector('button[aria-label="更多操作"]');
     expect(moreButton).toBeTruthy();
