@@ -17,9 +17,22 @@ const (
 	artifactWebMcpTypeToolCall   = "tool_call"
 	artifactWebMcpTypeToolResult = "tool_result"
 
-	artifactWebMcpMaxBridges     = 4096
-	artifactWebMcpMaxPendingCall = 4096
-	artifactWebMcpMaxPayloadSize = 600 * 1024
+	artifactWebMcpClusterKindToolCall   = "tool_call"
+	artifactWebMcpClusterKindToolResult = "tool_result"
+	artifactWebMcpClusterKindBotReplay  = "bot_replay"
+
+	// Aligned below wspump.go maxMessageSize (64 KiB) leaving 16 KiB headroom for
+	// JSON envelope fields so oversized payloads never trigger WS SetReadLimit.
+	artifactWebMcpMaxPayloadSize = 48 * 1024
+
+	// Per-user and per-bridge isolation caps (plus high global ceilings).
+	artifactWebMcpMaxBridgesPerUser   = 32
+	artifactWebMcpMaxBridges          = 8192
+	artifactWebMcpMaxPendingPerBridge = 32
+	artifactWebMcpMaxPendingPerUser   = 128
+	artifactWebMcpMaxPendingCall      = 8192
+	artifactWebMcpPendingCallTTL      = 30 * time.Second
+	artifactWebMcpReaperInterval      = 10 * time.Second
 )
 
 // MsgArtifactWebMcpError is a structured error returned in tool_result frames.
@@ -49,6 +62,13 @@ type MsgArtifactWebMcp struct {
 	Reason            string                  `json:"reason,omitempty"`
 }
 
+type artifactWebMcpClusterEnvelope struct {
+	Kind        string             `json:"kind"`
+	Msg         *MsgArtifactWebMcp `json:"msg,omitempty"`
+	BotUID      int64              `json:"bot_uid,omitempty"`
+	SourceRoute redisRuntimeRoute  `json:"source_route,omitempty"`
+}
+
 type artifactWebMcpBridge struct {
 	bridgeID    string
 	openRef     string
@@ -57,6 +77,7 @@ type artifactWebMcpBridge struct {
 	appID       string
 	topicID     string
 	humanClient *Client
+	tools       json.RawMessage
 	updatedAt   time.Time
 }
 
@@ -65,17 +86,22 @@ type artifactWebMcpPendingCall struct {
 	callID      string
 	appID       string
 	topicID     string
+	actorUID    int64
 	agentUID    int64
 	botClient   *Client
+	botRoute    runtimeRoute
 	humanClient *Client
 	createdAt   time.Time
+	expiresAt   time.Time
 }
 
 type artifactWebMcpRouter struct {
 	mu           sync.Mutex
 	byBridgeID   map[string]*artifactWebMcpBridge
-	byOpenClient map[string]string // openRef + ":" + connID -> bridgeID
+	byOpenClient map[string]string // openRef + "\x00" + connID -> bridgeID
 	pendingCalls map[string]*artifactWebMcpPendingCall
+	now          func() time.Time
+	callTTL      time.Duration
 }
 
 func newArtifactWebMcpRouter() *artifactWebMcpRouter {
@@ -83,7 +109,23 @@ func newArtifactWebMcpRouter() *artifactWebMcpRouter {
 		byBridgeID:   make(map[string]*artifactWebMcpBridge),
 		byOpenClient: make(map[string]string),
 		pendingCalls: make(map[string]*artifactWebMcpPendingCall),
+		now:          time.Now,
+		callTTL:      artifactWebMcpPendingCallTTL,
 	}
+}
+
+func (r *artifactWebMcpRouter) currentTime() time.Time {
+	if r != nil && r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+func (r *artifactWebMcpRouter) pendingTTL() time.Duration {
+	if r != nil && r.callTTL > 0 {
+		return r.callTTL
+	}
+	return artifactWebMcpPendingCallTTL
 }
 
 func newArtifactWebMcpBridgeID() (string, error) {
@@ -106,11 +148,63 @@ func artifactWebMcpOpenClientKey(openRef string, client *Client) string {
 	return openRef + "\x00" + connKey
 }
 
+func marshalArtifactWebMcpTextContent(message string) json.RawMessage {
+	payload, err := json.Marshal([]map[string]string{
+		{"type": "text", "text": message},
+	})
+	if err != nil {
+		return json.RawMessage(`[{"type":"text","text":"internal error"}]`)
+	}
+	return json.RawMessage(payload)
+}
+
 func (h *Hub) SetArtifactOpenBindings(handler *ArtifactOpenBindingHandler) {
 	if h == nil {
 		return
 	}
 	h.artifactOpenBindings = handler
+}
+
+func (h *Hub) sendArtifactWebMcpToUser(uid int64, msg *ServerMessage) {
+	if h == nil || uid <= 0 || msg == nil {
+		return
+	}
+	if h.sharedRuntime != nil {
+		if h.sharedRuntime.broadcastUserMessage(uid, msg) {
+			return
+		}
+	}
+	h.SendToUser(uid, msg)
+}
+
+func (h *Hub) sendArtifactWebMcpToBotTarget(botClient *Client, botRoute runtimeRoute, agentUID int64, msg *MsgArtifactWebMcp) {
+	if h == nil || msg == nil {
+		return
+	}
+	serverMsg := &ServerMessage{ArtifactWebMcp: msg}
+	if botClient != nil {
+		h.SendToClient(botClient, serverMsg)
+		return
+	}
+	if botRoute.NodeID != "" && botRoute.ConnectionID != "" {
+		if botRoute.NodeID == h.nodeID {
+			if target := h.getClientByConnectionID(botRoute.ConnectionID); target != nil {
+				h.SendToClient(target, serverMsg)
+				return
+			}
+		} else if h.sharedRuntime != nil {
+			h.sharedRuntime.deliverArtifactWebMcp(botRoute.NodeID, artifactWebMcpClusterEnvelope{
+				Kind:        artifactWebMcpClusterKindToolResult,
+				Msg:         msg,
+				BotUID:      agentUID,
+				SourceRoute: redisRouteFromRuntime(botRoute),
+			}, time.Now())
+			return
+		}
+	}
+	if agentUID > 0 {
+		h.sendArtifactWebMcpToUser(agentUID, serverMsg)
+	}
 }
 
 func (h *Hub) handleArtifactWebMcp(client *Client, msg *MsgArtifactWebMcp) {
@@ -145,6 +239,9 @@ func (h *Hub) resolveOpenBindingForWS(client *Client, openRef string) (artifactO
 	if h.artifactOpenBindings.now != nil {
 		now = h.artifactOpenBindings.now()
 	}
+	if client.hasAuthSessionFingerprint {
+		return h.artifactOpenBindings.store.lookup(ref, client.uid, client.authSessionFingerprint, now, false)
+	}
 	return h.artifactOpenBindings.store.lookupForActor(ref, client.uid, now)
 }
 
@@ -159,12 +256,13 @@ func (h *Hub) handleArtifactWebMcpToolsSync(client *Client, msg *MsgArtifactWebM
 	if !ok {
 		return
 	}
-	toolsPayload := msg.Tools
+	toolsPayload := append(json.RawMessage(nil), msg.Tools...)
 	if len(toolsPayload) == 0 {
 		toolsPayload = json.RawMessage("[]")
 	}
 
 	r := h.artifactWebMcp
+	now := r.currentTime()
 	r.mu.Lock()
 	ocKey := artifactWebMcpOpenClientKey(record.OpenRef, client)
 	bridgeID := r.byOpenClient[ocKey]
@@ -173,7 +271,13 @@ func (h *Hub) handleArtifactWebMcpToolsSync(client *Client, msg *MsgArtifactWebM
 		bridge = r.byBridgeID[bridgeID]
 	}
 	if bridge == nil {
-		if len(r.byBridgeID) >= artifactWebMcpMaxBridges {
+		userBridges := 0
+		for _, existing := range r.byBridgeID {
+			if existing.actorUID == client.uid {
+				userBridges++
+			}
+		}
+		if userBridges >= artifactWebMcpMaxBridgesPerUser || len(r.byBridgeID) >= artifactWebMcpMaxBridges {
 			r.mu.Unlock()
 			return
 		}
@@ -191,12 +295,14 @@ func (h *Hub) handleArtifactWebMcpToolsSync(client *Client, msg *MsgArtifactWebM
 			appID:       record.AppID,
 			topicID:     record.TopicID,
 			humanClient: client,
-			updatedAt:   time.Now(),
+			tools:       toolsPayload,
+			updatedAt:   now,
 		}
 		r.byBridgeID[bridgeID] = bridge
 		r.byOpenClient[ocKey] = bridgeID
 	} else {
-		bridge.updatedAt = time.Now()
+		bridge.tools = toolsPayload
+		bridge.updatedAt = now
 	}
 	out := &ServerMessage{
 		ArtifactWebMcp: &MsgArtifactWebMcp{
@@ -204,13 +310,13 @@ func (h *Hub) handleArtifactWebMcpToolsSync(client *Client, msg *MsgArtifactWebM
 			BridgeID: bridge.bridgeID,
 			AppID:    bridge.appID,
 			TopicID:  bridge.topicID,
-			Tools:    toolsPayload,
+			Tools:    append(json.RawMessage(nil), bridge.tools...),
 		},
 	}
 	agentUID := bridge.agentUID
 	r.mu.Unlock()
 
-	h.SendToUser(agentUID, out)
+	h.sendArtifactWebMcpToUser(agentUID, out)
 }
 
 func (h *Hub) handleArtifactWebMcpDetach(client *Client, msg *MsgArtifactWebMcp) {
@@ -244,7 +350,7 @@ func (h *Hub) handleArtifactWebMcpDetach(client *Client, msg *MsgArtifactWebMcp)
 
 	h.failPendingWebMcpCalls(failedCalls, "page_not_open", "Artifact page detached")
 	if detached != nil {
-		h.SendToUser(detached.agentUID, &ServerMessage{
+		h.sendArtifactWebMcpToUser(detached.agentUID, &ServerMessage{
 			ArtifactWebMcp: &MsgArtifactWebMcp{
 				Type:     artifactWebMcpTypeDetach,
 				BridgeID: detached.bridgeID,
@@ -266,62 +372,140 @@ func (h *Hub) handleArtifactWebMcpToolCall(client *Client, msg *MsgArtifactWebMc
 	if bridgeID == "" || callID == "" || name == "" {
 		return
 	}
+	botRoute := h.clientRoute(client)
+	if h.dispatchArtifactWebMcpToolCallLocal(client, botRoute, client.uid, msg) {
+		return
+	}
+	// Multi-node routing: if bridge is hosted on another Hub node, forward there.
+	if h.sharedRuntime != nil {
+		forwarded := h.sharedRuntime.deliverArtifactWebMcp("", artifactWebMcpClusterEnvelope{
+			Kind:        artifactWebMcpClusterKindToolCall,
+			Msg:         msg,
+			BotUID:      client.uid,
+			SourceRoute: redisRouteFromRuntime(botRoute),
+		}, time.Now())
+		if forwarded {
+			return
+		}
+	}
+	h.sendArtifactWebMcpToBotTarget(client, botRoute, client.uid, &MsgArtifactWebMcp{
+		Type:     artifactWebMcpTypeToolResult,
+		BridgeID: bridgeID,
+		AppID:    msg.AppID,
+		TopicID:  msg.TopicID,
+		CallID:   callID,
+		IsError:  true,
+		Content:  marshalArtifactWebMcpTextContent("Artifact page is no longer open"),
+		Error: &MsgArtifactWebMcpError{
+			Code:    "page_not_open",
+			Message: "Artifact page is no longer open",
+		},
+	})
+}
 
-	replyNotOpen := func(appID, topicID string) {
-		h.SendToClient(client, &ServerMessage{
-			ArtifactWebMcp: &MsgArtifactWebMcp{
-				Type:     artifactWebMcpTypeToolResult,
-				BridgeID: bridgeID,
-				AppID:    appID,
-				TopicID:  topicID,
-				CallID:   callID,
-				IsError:  true,
-				Content:  json.RawMessage(`[{"type":"text","text":"Artifact page is no longer open"}]`),
-				Error: &MsgArtifactWebMcpError{
-					Code:    "page_not_open",
-					Message: "Artifact page is no longer open",
-				},
+// dispatchArtifactWebMcpToolCallLocal attempts to route a tool_call to a bridge
+// owned by this Hub node. Returns true if the bridge was found on this node
+// (even if rejected due to auth/limits/revocation, in which case an error reply
+// has already been sent). Returns false only when bridgeID is not on this node.
+func (h *Hub) dispatchArtifactWebMcpToolCallLocal(botClient *Client, botRoute runtimeRoute, botUID int64, msg *MsgArtifactWebMcp) bool {
+	bridgeID := strings.TrimSpace(msg.BridgeID)
+	callID := strings.TrimSpace(msg.CallID)
+	name := strings.TrimSpace(msg.Name)
+	if bridgeID == "" || callID == "" || name == "" {
+		return false
+	}
+
+	replyError := func(appID, topicID, code, message string) {
+		h.sendArtifactWebMcpToBotTarget(botClient, botRoute, botUID, &MsgArtifactWebMcp{
+			Type:     artifactWebMcpTypeToolResult,
+			BridgeID: bridgeID,
+			AppID:    appID,
+			TopicID:  topicID,
+			CallID:   callID,
+			IsError:  true,
+			Content:  marshalArtifactWebMcpTextContent(message),
+			Error: &MsgArtifactWebMcpError{
+				Code:    code,
+				Message: message,
 			},
 		})
 	}
 
 	r := h.artifactWebMcp
+	now := r.currentTime()
 	r.mu.Lock()
+	expired := r.pruneExpiredPendingCallsLocked(now)
 	bridge := r.byBridgeID[bridgeID]
-	if bridge == nil || bridge.agentUID != client.uid || bridge.humanClient == nil {
+	if bridge == nil {
 		r.mu.Unlock()
-		replyNotOpen(msg.AppID, msg.TopicID)
-		return
+		if len(expired) > 0 {
+			h.failPendingWebMcpCalls(expired, "tool_call_timeout", "Artifact tool call timed out")
+		}
+		return false
+	}
+	if bridge.agentUID != botUID || bridge.humanClient == nil {
+		appID := bridge.appID
+		topicID := bridge.topicID
+		r.mu.Unlock()
+		if len(expired) > 0 {
+			h.failPendingWebMcpCalls(expired, "tool_call_timeout", "Artifact tool call timed out")
+		}
+		replyError(appID, topicID, "page_not_open", "Artifact page is no longer open")
+		return true
 	}
 	openRef := bridge.openRef
 	humanClient := bridge.humanClient
+	actorUID := bridge.actorUID
 	appID := bridge.appID
 	topicID := bridge.topicID
 	r.mu.Unlock()
 
+	if len(expired) > 0 {
+		h.failPendingWebMcpCalls(expired, "tool_call_timeout", "Artifact tool call timed out")
+	}
+
 	// Re-verify open_ref TTL and revocation before forwarding.
 	if _, ok := h.resolveOpenBindingForWS(humanClient, openRef); !ok {
 		h.revokeArtifactWebMcpByOpenRef(openRef)
-		replyNotOpen(appID, topicID)
-		return
+		replyError(appID, topicID, "page_not_open", "Artifact page is no longer open")
+		return true
 	}
 
 	r.mu.Lock()
-	// Re-check bridge presence after open_ref lookup.
-	if r.byBridgeID[bridgeID] == nil || len(r.pendingCalls) >= artifactWebMcpMaxPendingCall {
+	if r.byBridgeID[bridgeID] == nil {
 		r.mu.Unlock()
-		replyNotOpen(appID, topicID)
-		return
+		replyError(appID, topicID, "page_not_open", "Artifact page is no longer open")
+		return true
+	}
+	bridgePending := 0
+	userPending := 0
+	for _, p := range r.pendingCalls {
+		if p.bridgeID == bridgeID {
+			bridgePending++
+		}
+		if p.actorUID == actorUID {
+			userPending++
+		}
+	}
+	if bridgePending >= artifactWebMcpMaxPendingPerBridge ||
+		userPending >= artifactWebMcpMaxPendingPerUser ||
+		len(r.pendingCalls) >= artifactWebMcpMaxPendingCall {
+		r.mu.Unlock()
+		replyError(appID, topicID, "too_many_pending_calls", "Too many concurrent WebMCP tool calls for this artifact")
+		return true
 	}
 	r.pendingCalls[artifactWebMcpPendingKey(bridgeID, callID)] = &artifactWebMcpPendingCall{
 		bridgeID:    bridgeID,
 		callID:      callID,
 		appID:       appID,
 		topicID:     topicID,
-		agentUID:    client.uid,
-		botClient:   client,
+		actorUID:    actorUID,
+		agentUID:    botUID,
+		botClient:   botClient,
+		botRoute:    botRoute,
 		humanClient: humanClient,
-		createdAt:   time.Now(),
+		createdAt:   now,
+		expiresAt:   now.Add(r.pendingTTL()),
 	}
 	r.mu.Unlock()
 
@@ -336,6 +520,7 @@ func (h *Hub) handleArtifactWebMcpToolCall(client *Client, msg *MsgArtifactWebMc
 			Arguments: msg.Arguments,
 		},
 	})
+	return true
 }
 
 func (h *Hub) handleArtifactWebMcpToolResult(client *Client, msg *MsgArtifactWebMcp) {
@@ -345,9 +530,6 @@ func (h *Hub) handleArtifactWebMcpToolResult(client *Client, msg *MsgArtifactWeb
 	bridgeID := strings.TrimSpace(msg.BridgeID)
 	callID := strings.TrimSpace(msg.CallID)
 	if bridgeID == "" || callID == "" {
-		return
-	}
-	if len(msg.Content)+len(msg.StructuredContent) > artifactWebMcpMaxPayloadSize {
 		return
 	}
 
@@ -362,23 +544,138 @@ func (h *Hub) handleArtifactWebMcpToolResult(client *Client, msg *MsgArtifactWeb
 	delete(r.pendingCalls, key)
 	r.mu.Unlock()
 
-	out := &ServerMessage{
-		ArtifactWebMcp: &MsgArtifactWebMcp{
-			Type:              artifactWebMcpTypeToolResult,
-			BridgeID:          pending.bridgeID,
-			AppID:             pending.appID,
-			TopicID:           pending.topicID,
-			CallID:            pending.callID,
-			IsError:           msg.IsError,
-			Content:           msg.Content,
-			StructuredContent: msg.StructuredContent,
-			Error:             msg.Error,
-		},
+	if len(msg.Content)+len(msg.StructuredContent) > artifactWebMcpMaxPayloadSize {
+		h.sendArtifactWebMcpToBotTarget(pending.botClient, pending.botRoute, pending.agentUID, &MsgArtifactWebMcp{
+			Type:     artifactWebMcpTypeToolResult,
+			BridgeID: pending.bridgeID,
+			AppID:    pending.appID,
+			TopicID:  pending.topicID,
+			CallID:   pending.callID,
+			IsError:  true,
+			Content:  marshalArtifactWebMcpTextContent("Tool result exceeds maximum payload size"),
+			Error: &MsgArtifactWebMcpError{
+				Code:    "result_too_large",
+				Message: "Tool result exceeds maximum payload size",
+			},
+		})
+		return
 	}
-	if pending.botClient != nil {
-		h.SendToClient(pending.botClient, out)
-	} else {
-		h.SendToUser(pending.agentUID, out)
+
+	h.sendArtifactWebMcpToBotTarget(pending.botClient, pending.botRoute, pending.agentUID, &MsgArtifactWebMcp{
+		Type:              artifactWebMcpTypeToolResult,
+		BridgeID:          pending.bridgeID,
+		AppID:             pending.appID,
+		TopicID:           pending.topicID,
+		CallID:            pending.callID,
+		IsError:           msg.IsError,
+		Content:           msg.Content,
+		StructuredContent: msg.StructuredContent,
+		Error:             msg.Error,
+	})
+}
+
+func (h *Hub) receiveArtifactWebMcpFromRuntime(env artifactWebMcpClusterEnvelope) bool {
+	if h == nil || h.artifactWebMcp == nil {
+		return false
+	}
+	sourceRoute := env.SourceRoute.toRuntimeRoute()
+	switch env.Kind {
+	case artifactWebMcpClusterKindToolCall:
+		if env.Msg == nil || env.BotUID <= 0 {
+			return false
+		}
+		return h.dispatchArtifactWebMcpToolCallLocal(nil, sourceRoute, env.BotUID, env.Msg)
+	case artifactWebMcpClusterKindToolResult:
+		if env.Msg == nil {
+			return false
+		}
+		if sourceRoute.ConnectionID != "" {
+			if target := h.getClientByConnectionID(sourceRoute.ConnectionID); target != nil {
+				h.SendToClient(target, &ServerMessage{ArtifactWebMcp: env.Msg})
+				return true
+			}
+		}
+		if env.BotUID > 0 {
+			h.SendToUser(env.BotUID, &ServerMessage{ArtifactWebMcp: env.Msg})
+			return true
+		}
+		return false
+	case artifactWebMcpClusterKindBotReplay:
+		if env.BotUID <= 0 {
+			return false
+		}
+		h.replayLocalArtifactWebMcpBridgesForBot(nil, sourceRoute, env.BotUID)
+		return true
+	}
+	return false
+}
+
+// replayArtifactWebMcpBridgesForBot replays all active bridges owned by botClient
+// across this node and any peer Hub nodes after a Bot (re)connects.
+func (h *Hub) replayArtifactWebMcpBridgesForBot(botClient *Client) {
+	if h == nil || botClient == nil || h.artifactWebMcp == nil {
+		return
+	}
+	if botClient.accountType != types.AccountBot || botClient.deviceConnector != nil {
+		return
+	}
+	botRoute := h.clientRoute(botClient)
+	h.replayLocalArtifactWebMcpBridgesForBot(botClient, botRoute, botClient.uid)
+	if h.sharedRuntime != nil {
+		h.sharedRuntime.deliverArtifactWebMcp("", artifactWebMcpClusterEnvelope{
+			Kind:        artifactWebMcpClusterKindBotReplay,
+			BotUID:      botClient.uid,
+			SourceRoute: redisRouteFromRuntime(botRoute),
+		}, time.Now())
+	}
+}
+
+func (h *Hub) replayLocalArtifactWebMcpBridgesForBot(botClient *Client, botRoute runtimeRoute, botUID int64) {
+	if h == nil || h.artifactWebMcp == nil || botUID <= 0 {
+		return
+	}
+	type replayItem struct {
+		bridgeID string
+		openRef  string
+		appID    string
+		topicID  string
+		human    *Client
+		tools    json.RawMessage
+	}
+	r := h.artifactWebMcp
+	r.mu.Lock()
+	var items []replayItem
+	for _, b := range r.byBridgeID {
+		if b.agentUID != botUID || b.humanClient == nil {
+			continue
+		}
+		items = append(items, replayItem{
+			bridgeID: b.bridgeID,
+			openRef:  b.openRef,
+			appID:    b.appID,
+			topicID:  b.topicID,
+			human:    b.humanClient,
+			tools:    append(json.RawMessage(nil), b.tools...),
+		})
+	}
+	r.mu.Unlock()
+
+	for _, item := range items {
+		if _, ok := h.resolveOpenBindingForWS(item.human, item.openRef); !ok {
+			h.revokeArtifactWebMcpByOpenRef(item.openRef)
+			continue
+		}
+		tools := item.tools
+		if len(tools) == 0 {
+			tools = json.RawMessage("[]")
+		}
+		h.sendArtifactWebMcpToBotTarget(botClient, botRoute, botUID, &MsgArtifactWebMcp{
+			Type:     artifactWebMcpTypeToolsSync,
+			BridgeID: item.bridgeID,
+			AppID:    item.appID,
+			TopicID:  item.topicID,
+			Tools:    tools,
+		})
 	}
 }
 
@@ -393,28 +690,54 @@ func (r *artifactWebMcpRouter) popPendingCallsLocked(bridgeID string) []*artifac
 	return out
 }
 
+func (r *artifactWebMcpRouter) pruneExpiredPendingCallsLocked(now time.Time) []*artifactWebMcpPendingCall {
+	var expired []*artifactWebMcpPendingCall
+	for key, pending := range r.pendingCalls {
+		if !pending.expiresAt.IsZero() && !now.Before(pending.expiresAt) {
+			expired = append(expired, pending)
+			delete(r.pendingCalls, key)
+		}
+	}
+	return expired
+}
+
+func (h *Hub) sweepExpiredArtifactWebMcpCalls() {
+	if h == nil || h.artifactWebMcp == nil {
+		return
+	}
+	r := h.artifactWebMcp
+	r.mu.Lock()
+	expired := r.pruneExpiredPendingCallsLocked(r.currentTime())
+	r.mu.Unlock()
+	if len(expired) > 0 {
+		h.failPendingWebMcpCalls(expired, "tool_call_timeout", "Artifact tool call timed out")
+	}
+}
+
+func (h *Hub) runArtifactWebMcpReaper() {
+	ticker := time.NewTicker(artifactWebMcpReaperInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.sweepExpiredArtifactWebMcpCalls()
+	}
+}
+
 func (h *Hub) failPendingWebMcpCalls(calls []*artifactWebMcpPendingCall, code, message string) {
+	content := marshalArtifactWebMcpTextContent(message)
 	for _, pending := range calls {
-		out := &ServerMessage{
-			ArtifactWebMcp: &MsgArtifactWebMcp{
-				Type:     artifactWebMcpTypeToolResult,
-				BridgeID: pending.bridgeID,
-				AppID:    pending.appID,
-				TopicID:  pending.topicID,
-				CallID:   pending.callID,
-				IsError:  true,
-				Content:  json.RawMessage(`[{"type":"text","text":"` + message + `"}]`),
-				Error: &MsgArtifactWebMcpError{
-					Code:    code,
-					Message: message,
-				},
+		h.sendArtifactWebMcpToBotTarget(pending.botClient, pending.botRoute, pending.agentUID, &MsgArtifactWebMcp{
+			Type:     artifactWebMcpTypeToolResult,
+			BridgeID: pending.bridgeID,
+			AppID:    pending.appID,
+			TopicID:  pending.topicID,
+			CallID:   pending.callID,
+			IsError:  true,
+			Content:  content,
+			Error: &MsgArtifactWebMcpError{
+				Code:    code,
+				Message: message,
 			},
-		}
-		if pending.botClient != nil {
-			h.SendToClient(pending.botClient, out)
-		} else {
-			h.SendToUser(pending.agentUID, out)
-		}
+		})
 	}
 }
 
@@ -445,7 +768,7 @@ func (h *Hub) cleanupArtifactWebMcpForClient(client *Client) {
 
 	h.failPendingWebMcpCalls(failedCalls, "page_not_open", "Artifact page disconnected")
 	for _, b := range detached {
-		h.SendToUser(b.agentUID, &ServerMessage{
+		h.sendArtifactWebMcpToUser(b.agentUID, &ServerMessage{
 			ArtifactWebMcp: &MsgArtifactWebMcp{
 				Type:     artifactWebMcpTypeDetach,
 				BridgeID: b.bridgeID,
@@ -482,7 +805,7 @@ func (h *Hub) revokeArtifactWebMcpByOpenRef(openRef string) {
 
 	h.failPendingWebMcpCalls(failedCalls, "page_not_open", "Artifact open binding revoked")
 	for _, b := range detached {
-		h.SendToUser(b.agentUID, &ServerMessage{
+		h.sendArtifactWebMcpToUser(b.agentUID, &ServerMessage{
 			ArtifactWebMcp: &MsgArtifactWebMcp{
 				Type:     artifactWebMcpTypeDetach,
 				BridgeID: b.bridgeID,

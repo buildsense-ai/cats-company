@@ -3663,6 +3663,7 @@ export default function MessagesView({
         setConversationActivity({});
       } else if (msg._type === 'ws_open') {
         setConversationConnection(current => current === 'connected' ? current : 'reconnecting');
+        gatewayWebMcpHostRef.current?.handleWSOpen();
       }
       if (msg.artifact_result) {
         void handleArtifactResultRequest(msg.artifact_result);

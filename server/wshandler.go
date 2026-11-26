@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -132,8 +133,10 @@ type Client struct {
 	accountType           types.AccountType
 	bodyID                string
 	installationID        string
-	connectionID          string
-	deviceOwnerUID        int64
+	connectionID              string
+	authSessionFingerprint    [32]byte
+	hasAuthSessionFingerprint bool
+	deviceOwnerUID            int64
 	deviceID              string
 	deviceBodyID          string
 	deviceInstallationID  string
@@ -261,6 +264,7 @@ func newHubWithState(db store.Store, rl *RateLimiter, shared sharedRuntimeState,
 	go hub.runConversationTaskReaper()
 	go hub.runConversationTaskStatusDelivery()
 	go hub.runArtifactRuntimeRunReaper()
+	go hub.runArtifactWebMcpReaper()
 	// Bounds how long a session fork may stay pending. A runtime that predates
 	// session forks ignores the control frame silently, so the create path's
 	// single dispatch would otherwise leave the copy open forever.
@@ -632,6 +636,9 @@ func (h *Hub) registerClient(client *Client) bool {
 		h.enqueuePresence(client.uid, "on")
 	}
 	h.bindClientRuntimeRoute(client)
+	if client.accountType == types.AccountBot && client.deviceConnector == nil {
+		h.replayArtifactWebMcpBridgesForBot(client)
+	}
 	return true
 }
 
@@ -1355,20 +1362,29 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var authSessionFingerprint [32]byte
+	hasAuthSessionFingerprint := false
+	if tok := extractToken(r); tok != "" {
+		authSessionFingerprint = sha256.Sum256([]byte(tok))
+		hasAuthSessionFingerprint = true
+	}
+
 	client := &Client{
-		hub:                  hub,
-		conn:                 conn,
-		uid:                  uid,
-		remoteAddr:           requestRemoteAddr(r),
-		displayName:          displayName,
-		accountType:          acctType,
-		bodyID:               bodyID,
-		installationID:       installationID,
-		connectionID:         connectionID,
-		deviceConnector:      connectorClaims,
-		botRuntimeCredential: runtimeCredentialClaims,
-		wikiAgentUID:         wikiAgentUID,
-		send:                 make(chan []byte, 256),
+		hub:                       hub,
+		conn:                      conn,
+		uid:                       uid,
+		remoteAddr:                requestRemoteAddr(r),
+		displayName:               displayName,
+		accountType:               acctType,
+		bodyID:                    bodyID,
+		installationID:            installationID,
+		connectionID:              connectionID,
+		authSessionFingerprint:    authSessionFingerprint,
+		hasAuthSessionFingerprint: hasAuthSessionFingerprint,
+		deviceConnector:           connectorClaims,
+		botRuntimeCredential:      runtimeCredentialClaims,
+		wikiAgentUID:              wikiAgentUID,
+		send:                      make(chan []byte, 256),
 	}
 
 	if !hub.registerClient(client) {

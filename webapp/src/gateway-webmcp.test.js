@@ -177,4 +177,52 @@ describe('createGatewayWebMcpHost', () => {
     });
     f.host.dispose();
   });
+
+  it('re-syncs active tools on WS reconnect (handleWSOpen) and converts oversized tool_result into result_too_large error', () => {
+    const f = createFixture();
+    f.host.activate({ frame: { contentWindow: f.contentWindow }, openBinding: f.openBinding });
+    const { session_id, request_id } = f.iframePosted[0].msg;
+    f.emitFromIframe({
+      contract_version: GATEWAY_WEBMCP_BRIDGE_CONTRACT,
+      type: GATEWAY_WEBMCP_READY_TYPE,
+      session_id,
+      request_id,
+      tools: [{ name: 'relayout', description: 'Arrange nodes' }],
+    });
+    expect(f.wsSent).toHaveLength(1);
+
+    // H2: WS reconnect triggers tools_sync replay
+    f.host.handleWSOpen();
+    expect(f.wsSent).toHaveLength(2);
+    expect(f.wsSent[1]).toEqual({
+      type: 'tools_sync',
+      open_ref: 'aob_secret_open_ref_123',
+      tools: [{ name: 'relayout', description: 'Arrange nodes' }],
+    });
+
+    // H1: Oversized tool_result (> 48 KiB UTF-8) is replaced with a bounded result_too_large error
+    f.host.handleServerMessage({
+      type: 'tool_call',
+      bridge_id: 'awm_bridge_big',
+      app_id: 'my-canvas',
+      topic_id: 'p2p_101_365',
+      call_id: 'call-huge',
+      name: 'relayout',
+      arguments: {},
+    });
+    f.emitFromIframe({
+      contract_version: GATEWAY_WEBMCP_BRIDGE_CONTRACT,
+      type: GATEWAY_WEBMCP_TOOL_RESULT_TYPE,
+      session_id,
+      call_id: 'call-huge',
+      is_error: false,
+      content: [{ type: 'text', text: '中'.repeat(20000) }],
+    });
+    const last = f.wsSent.at(-1);
+    expect(last.type).toBe('tool_result');
+    expect(last.call_id).toBe('call-huge');
+    expect(last.is_error).toBe(true);
+    expect(last.error.code).toBe('result_too_large');
+    f.host.dispose();
+  });
 });

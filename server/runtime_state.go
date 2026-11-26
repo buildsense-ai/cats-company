@@ -77,6 +77,7 @@ type sharedRuntimeState interface {
 	deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time, relay *thinToolRPCRelay) bool
 	deliverArtifactResult(route runtimeRoute, msg *MsgArtifactResult, now time.Time) bool
 	deliverArtifactResultReceipt(nodeID string, msg *MsgArtifactResult, sourceRoute runtimeRoute, now time.Time) bool
+	deliverArtifactWebMcp(targetNodeID string, env artifactWebMcpClusterEnvelope, now time.Time) bool
 	routeConnected(route runtimeRoute, now time.Time) bool
 	setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) error
 	clearMessagingClientAttention(uid int64, route runtimeRoute) error
@@ -297,6 +298,34 @@ func (s *sharedMemoryRuntimeState) deliverArtifactResultReceipt(nodeID string, m
 	hub := s.nodes[nodeID]
 	s.mu.Unlock()
 	return hub != nil && hub.acceptArtifactResultReceipt(msg, sourceRoute)
+}
+
+func (s *sharedMemoryRuntimeState) deliverArtifactWebMcp(targetNodeID string, env artifactWebMcpClusterEnvelope, now time.Time) bool {
+	if s == nil {
+		return false
+	}
+	if targetNodeID != "" {
+		s.mu.Lock()
+		hub := s.nodes[targetNodeID]
+		s.mu.Unlock()
+		return hub != nil && hub.receiveArtifactWebMcpFromRuntime(env)
+	}
+	s.mu.Lock()
+	nodes := make([]*Hub, 0, len(s.nodes))
+	for id, hub := range s.nodes {
+		if id == env.SourceRoute.NodeID || hub == nil {
+			continue
+		}
+		nodes = append(nodes, hub)
+	}
+	s.mu.Unlock()
+	delivered := false
+	for _, hub := range nodes {
+		if hub.receiveArtifactWebMcpFromRuntime(env) {
+			delivered = true
+		}
+	}
+	return delivered
 }
 
 func (s *sharedMemoryRuntimeState) routeConnected(route runtimeRoute, now time.Time) bool {

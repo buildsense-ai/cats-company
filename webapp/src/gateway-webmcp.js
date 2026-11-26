@@ -18,6 +18,55 @@ export const GATEWAY_WEBMCP_TOOLS_SYNC_TYPE = 'catsco.gateway.webmcp.tools_sync.
 export const GATEWAY_WEBMCP_TOOL_CALL_TYPE = 'catsco.gateway.webmcp.tool_call.v1';
 export const GATEWAY_WEBMCP_TOOL_RESULT_TYPE = 'catsco.gateway.webmcp.tool_result.v1';
 
+// Aligned below CatsCo Hub wspump.go maxMessageSize (64 KiB) leaving 16 KiB headroom
+// for JSON envelope fields so oversized payloads never close the chat WebSocket.
+export const MAX_WEBMCP_PAYLOAD_BYTES = 48 * 1024;
+
+const utf8Encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
+function utf8ByteLength(str) {
+  if (typeof str !== 'string') return 0;
+  if (utf8Encoder) return utf8Encoder.encode(str).length;
+  let bytes = 0;
+  for (let i = 0; i < str.length; i += 1) {
+    const code = str.charCodeAt(i);
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+      const next = str.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        i += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+function fitToolsWithinByteCap(tools, maxBytes = MAX_WEBMCP_PAYLOAD_BYTES) {
+  if (!Array.isArray(tools) || tools.length === 0) return [];
+  try {
+    if (utf8ByteLength(JSON.stringify(tools)) <= maxBytes) return tools;
+  } catch {
+    return [];
+  }
+  const fitted = [];
+  for (const tool of tools) {
+    const candidate = [...fitted, tool];
+    try {
+      if (utf8ByteLength(JSON.stringify(candidate)) > maxBytes) break;
+      fitted.push(tool);
+    } catch {
+      break;
+    }
+  }
+  return fitted;
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -209,7 +258,7 @@ export function createGatewayWebMcpHost({
     if (!current.ready) return;
 
     if (data.type === GATEWAY_WEBMCP_TOOLS_SYNC_TYPE) {
-      const tools = Array.isArray(data.tools) ? data.tools : [];
+      const tools = fitToolsWithinByteCap(Array.isArray(data.tools) ? data.tools : []);
       current.tools = tools;
       current.synced = true;
       safeSendWS({
@@ -229,7 +278,7 @@ export function createGatewayWebMcpHost({
       const bridgeId = state.pendingBridgeByCallId.get(callId);
       if (!bridgeId) return;
       state.pendingBridgeByCallId.delete(callId);
-      const reply = {
+      let reply = {
         type: 'tool_result',
         open_ref: current.openRef,
         bridge_id: bridgeId,
@@ -239,6 +288,26 @@ export function createGatewayWebMcpHost({
       };
       if (isPlainObject(data.structured_content)) reply.structured_content = data.structured_content;
       if (isPlainObject(data.error)) reply.error = data.error;
+      let serializedBytes = Infinity;
+      try {
+        serializedBytes = utf8ByteLength(JSON.stringify(reply));
+      } catch {
+        serializedBytes = Infinity;
+      }
+      if (serializedBytes > MAX_WEBMCP_PAYLOAD_BYTES) {
+        reply = {
+          type: 'tool_result',
+          open_ref: current.openRef,
+          bridge_id: bridgeId,
+          call_id: callId,
+          is_error: true,
+          content: [{ type: 'text', text: `Tool result exceeds maximum payload size (${MAX_WEBMCP_PAYLOAD_BYTES} bytes)` }],
+          error: {
+            code: 'result_too_large',
+            message: `Tool result exceeds maximum payload size (${MAX_WEBMCP_PAYLOAD_BYTES} bytes)`,
+          },
+        };
+      }
       safeSendWS(reply);
     }
   }
@@ -302,9 +371,24 @@ export function createGatewayWebMcpHost({
     }
   }
 
+  function handleWSOpen() {
+    if (state.disposed) return;
+    const current = state.session;
+    if (!current || !current.ready) return;
+    const tools = fitToolsWithinByteCap(Array.isArray(current.tools) ? current.tools : []);
+    if (tools.length === 0 && !current.synced) return;
+    current.synced = true;
+    safeSendWS({
+      type: 'tools_sync',
+      open_ref: current.openRef,
+      tools,
+    });
+  }
+
   return {
     activate,
     deactivate,
+    handleWSOpen,
     handleServerMessage,
     handleWindowMessage,
     dispose,
