@@ -209,14 +209,15 @@ func (h *ServiceAgentsMCPHandler) buildServer(callerUID int64) *mcp.Server {
 	}
 	h.addRunStatusTool(srv, callerUID)
 	registered["catsco_run_status"] = struct{}{}
-	if h.computeSnapshotPath != "" {
-		h.addComputePreviewTool(srv)
-		registered[computePreviewToolName] = struct{}{}
-	}
-	if h.computeTasks != nil && h.computeTasks.allowed[callerUID] {
-		h.computeTasks.addTools(srv, callerUID)
-		registered[computeTaskQuoteTool] = struct{}{}
-		registered[computeTaskStatusTool] = struct{}{}
+	if h.computeSnapshotPath != "" || h.computeTasks != nil && h.computeTasks.allowed[callerUID] {
+		if h.computeTasks != nil && h.computeTasks.allowed[callerUID] {
+			h.computeTasks.addUnifiedTool(srv, callerUID, h.computeSnapshotPath)
+		} else {
+			// Preview-only accounts still get the same unified surface. The quote
+			// and status actions return the normal unavailable/not-found errors.
+			(&ComputeTaskHandler{}).addUnifiedTool(srv, callerUID, h.computeSnapshotPath)
+		}
+		registered[computeToolName] = struct{}{}
 	}
 	// 自分享：只有「调用者本身就是 bot、且它的 owner 在内测白名单里」才挂。
 	// 人的工具面里不该出现这个工具（面板上有），否则模型会拿着它去做本该人点的事。
@@ -241,7 +242,7 @@ func (h *ServiceAgentsMCPHandler) canSelfShare(callerUID int64) bool {
 // 当成「已下架」摘掉，而 SDK 只在客户端重新 list 时才回来。
 func isServiceSystemTool(name string) bool {
 	switch name {
-	case "catsco_run_status", serviceShareSelfToolName, computePreviewToolName, computeTaskQuoteTool, computeTaskStatusTool:
+	case "catsco_run_status", serviceShareSelfToolName, computeToolName, computePreviewToolName, computeTaskQuoteTool, computeTaskStatusTool:
 		return true
 	}
 	return false

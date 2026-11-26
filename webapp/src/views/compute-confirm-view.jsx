@@ -20,6 +20,7 @@ import {
   formatComputeCredits,
   formatComputePeriod,
   formatComputeSeconds,
+  formatComputeResourceCap,
   formatComputeTime,
   formatComputeYuan,
   isComputeTerminal,
@@ -63,8 +64,24 @@ function taskSpecText(run) {
   if (Number(task.nodes) > 0) parts.push(`${Number(task.nodes)} 个节点`);
   if (Number(task.logical_cpus) > 0) parts.push(`每节点 ${Number(task.logical_cpus)} 个逻辑 CPU`);
   if (Number(task.memory_mib) > 0) parts.push(`每节点 ${Number(task.memory_mib)} MiB 内存`);
-  if (Number(task.wall_seconds) > 0) parts.push(`作业时限 ${formatComputeSeconds(task.wall_seconds)}`);
   return parts.join(' · ');
+}
+
+function taskWallText(run) {
+  const seconds = Number(run?.task?.wall_seconds);
+  return seconds > 0 ? formatComputeSeconds(seconds) : '';
+}
+
+function resourceCapText(run) {
+  const task = run?.task || {};
+  const nodes = Number(task.nodes);
+  let seconds = Number(task.max_resource_seconds_per_node);
+  if (!(seconds > 0)) {
+    const total = Number(run?.max_node_seconds);
+    if (nodes > 0 && total > 0 && total % nodes === 0) seconds = total / nodes;
+  }
+  if (!(seconds > 0)) return '';
+  return formatComputeResourceCap(seconds);
 }
 
 function skuSpecText(run) {
@@ -236,6 +253,8 @@ export default function ComputeConfirmView({ search = '' }) {
               <Fact label="任务状态" value={`${stateLabel}（${run.state || '未知'}）`} />
               <Fact label="报价编号" value={run.quote_id || quoteId} code />
               <Fact label="请求规格" value={taskSpecText(run)} />
+              <Fact label="作业时限" value={taskWallText(run)} />
+              <Fact label="资源计费上限" value={resourceCapText(run)} />
               <Fact label="供应商规格" value={skuSpecText(run)} />
               <Fact label="积分上限" value={capFacts(run)} />
               <Fact label="计费费率" value={rateFacts(run)} />

@@ -280,6 +280,27 @@ func computePreviewMarkdown(result computePreviewResult) string {
 	return text.String()
 }
 
+func runComputePreview(snapshotPath string, args computePreviewArgs) (*mcp.CallToolResult, any, error) {
+	if !args.Task.valid() {
+		return serviceToolError("invalid_compute_requirements"), nil, nil
+	}
+	slurm := readComputeSlurmSample(snapshotPath)
+	now := time.Now()
+	result := computePreviewResult{
+		SchemaVersion: computePreviewVersion,
+		Task:          args.Task,
+		Options:       []computePreviewOption{previewAgentRuntime(args.Task, args.Runtime, now), previewSlurm(args.Task, slurm, now)},
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		&mcp.TextContent{Text: computePreviewMarkdown(result)},
+		&mcp.TextContent{Text: string(data)},
+	}}, result, nil
+}
+
 func (h *ServiceAgentsMCPHandler) addComputePreviewTool(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        computePreviewToolName,

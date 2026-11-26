@@ -72,6 +72,21 @@ def direct(func, *args):
 def same_enum(left, right):
     return type(left) is type(right) and left == right
 
+def resource_budget_seconds(run):
+    if not isinstance(run, dict) or not isinstance(run.get("task"), dict):
+        return 0
+    spec = run["task"]
+    explicit = spec.get("max_resource_seconds_per_node")
+    if type(explicit) is int and explicit > 0:
+        return explicit
+    nodes = spec.get("nodes")
+    max_node_seconds = run.get("max_node_seconds")
+    if type(nodes) is not int or nodes < 1 or type(max_node_seconds) is not int or max_node_seconds < 1:
+        return 0
+    if max_node_seconds % nodes:
+        return 0
+    return max_node_seconds // nodes
+
 
 class Task:
     def __init__(self, cats, cloud, slurm, run):
@@ -148,6 +163,12 @@ class Task:
             raise WorkerError("invalid pilot allocation")
         if spec["nodes"] > 2 or spec["wall_seconds"] > 300 or spec["wall_seconds"] % 60:
             raise WorkerError("allocation is outside the CPU pilot limits")
+        if "max_resource_seconds_per_node" in spec:
+            cap = spec["max_resource_seconds_per_node"]
+            if type(cap) is not int or cap < spec["wall_seconds"] or cap % 60:
+                raise WorkerError("invalid resource budget")
+        if resource_budget_seconds(self.run) < spec["wall_seconds"]:
+            raise WorkerError("invalid resource budget")
         for key, capacity in (("logical_cpus", "sku_logical_cpus"), ("memory_mib", "sku_memory_mib")):
             if type(self.run.get(capacity)) is not int or spec[key] > self.run[capacity]:
                 raise WorkerError("allocation exceeds the quoted SKU capacity")
@@ -210,6 +231,8 @@ class Task:
                 return "wait"
             raise WorkerError("expansion was unconfirmed but the task queue remained empty")
         ownership = self.ownership()
+        if not self.progress.get("provision_started_at"):
+            ownership["provision_started_at"] = now()
         return self.move("discover_disks", expand_operation=self.recovered_operation("expand"), **ownership)
 
     def recover_shrink_intent(self):
@@ -323,7 +346,7 @@ class Task:
         context = dict(queueUUID=self.progress["queue_id"], count=self.spec["nodes"],
                        imageUUID=sku["imageUUID"], specificationUUID=sku["specificationUUID"])
         return self.request("expand_intent", "expand", "expand_operation", context,
-                            intent={"provision_started_at": now()}, rejected="expand_rejected")
+                            rejected="expand_rejected")
 
     def ownership(self):
         actual = self.own_queue_nodes()
@@ -351,7 +374,10 @@ class Task:
         if not self.confirmed_job("expand_operation"):
             return "wait"
         self.queue_record(bound=True)
-        return self.move("discover_disks", **self.ownership())
+        ownership = self.ownership()
+        if not self.progress.get("provision_started_at"):
+            ownership["provision_started_at"] = now()
+        return self.move("discover_disks", **ownership)
 
     def disks(self):
         volumes = []

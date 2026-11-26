@@ -25,10 +25,11 @@ const (
 
 // ComputeTaskSpec contains the minimum per-node allocation for the fixed CPU workload.
 type ComputeTaskSpec struct {
-	Nodes       int `json:"nodes"`
-	LogicalCPUs int `json:"logical_cpus"`
-	MemoryMiB   int `json:"memory_mib"`
-	WallSeconds int `json:"wall_seconds"`
+	Nodes                     int `json:"nodes" jsonschema:"quote 时的节点数，支持 1 至 2 个节点"`
+	LogicalCPUs               int `json:"logical_cpus" jsonschema:"每节点最低逻辑 CPU 数，必须为正数"`
+	MemoryMiB                 int `json:"memory_mib" jsonschema:"每节点最低内存 MiB，必须为正数"`
+	WallSeconds               int `json:"wall_seconds" jsonschema:"Slurm 作业最长运行秒数，60 至 300 秒且必须是整分钟"`
+	MaxResourceSecondsPerNode int `json:"max_resource_seconds_per_node" jsonschema:"每节点资源计费上限，从平台实际观察到节点资源开始计算，必须为正数、整分钟且不小于 wall_seconds"`
 }
 
 type ComputeTaskRate struct {

@@ -22,12 +22,12 @@ func TestComputePreviewMCP(t *testing.T) {
 	ts := httptest.NewServer(mcpAuthStub(441, handler))
 	t.Cleanup(ts.Close)
 	session := newMCPSession(t, ts.URL)
-	if !containsName(testToolNames(t, session), computePreviewToolName) {
-		t.Fatal("compute preview missing from tools/list")
+	if !containsName(testToolNames(t, session), computeToolName) {
+		t.Fatal("unified compute tool missing from tools/list")
 	}
 	handler.NotifySubscriptionChanged(441)
-	if !containsName(testToolNames(t, session), computePreviewToolName) {
-		t.Fatal("subscription refresh removed compute preview")
+	if !containsName(testToolNames(t, session), computeToolName) {
+		t.Fatal("subscription refresh removed unified compute tool")
 	}
 	writeSample := func(at time.Time, nodes, idle int, pricing any) {
 		t.Helper()
@@ -45,11 +45,11 @@ func TestComputePreviewMCP(t *testing.T) {
 	at := time.Now().UTC()
 	call := func(task computePreviewTask, runtime json.RawMessage) (computePreviewResult, string) {
 		t.Helper()
-		args := map[string]any{"task": task}
+		args := map[string]any{"action": "preview", "task": task}
 		if runtime != nil {
 			args["agent_runtime"] = runtime
 		}
-		resp, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: computePreviewToolName, Arguments: args})
+		resp, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: computeToolName, Arguments: args})
 		if err != nil || resp.IsError {
 			t.Fatalf("preview: result=%+v err=%v", resp, err)
 		}
@@ -171,7 +171,7 @@ func TestComputePreviewMCP(t *testing.T) {
 		{Topology: "distributed", LogicalCPUs: 2, MemoryMiB: 1024},
 		{Topology: "distributed", Nodes: 2, LogicalCPUs: 2, MemoryMiB: 1024, EstimatedBillableS: -1},
 	} {
-		bad, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: computePreviewToolName, Arguments: map[string]any{"task": invalid}})
+		bad, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: computeToolName, Arguments: map[string]any{"action": "preview", "task": invalid}})
 		if err != nil || !bad.IsError {
 			t.Fatalf("invalid task unexpectedly accepted: %+v, %v", bad, err)
 		}
