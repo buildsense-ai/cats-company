@@ -509,6 +509,20 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(f.finished["slurm_node_list"], ["wn01", "wn02"])
         self.assertEqual(f.finished["volume_ids"], ["volume-task", "volume-task2"])
 
+    def test_stalled_provider_expand_adopts_ready_nodes_after_grace(self):
+        f = Fixture()
+        task = f.advance_to("queue_created")
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "expand_intent")
+        self.assertIn("expand_sent_at", f.run["progress"])
+        # The provider accepted the expand but never reports success.
+        f.statuses["expand"] = "running"
+        self.assertEqual(f.claimed().advance(), "wait")
+        # Once the grace period has passed and the quoted nodes are visible, adopt them.
+        f.run["progress"]["expand_sent_at"] = "2026-01-01T00:00:00Z"
+        self.assertEqual(f.claimed().advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "discover_disks")
+        self.assertEqual(f.run["progress"]["node_names"], ["wn01"])
     def test_disk_must_be_system_disk_of_owned_instance(self):
         for changes in (dict(instanceID="other-instance"), dict(system=False)):
             with self.subTest(changes=changes):
@@ -536,6 +550,23 @@ class WorkerTest(unittest.TestCase):
                 self.assertIn(field, f.run["progress"])
                 self.assertEqual(f.run["progress"]["phase"], recovered)
                 self.assertEqual(f.mutations.count(op), 1)
+    def test_unconfirmed_shrink_is_resent_after_grace(self):
+        f = Fixture()
+        task = f.advance_to("slurm_done")
+        f.run["progress"]["provision_started_at"] = "2026-01-01T00:00:00Z"
+        task.progress["provision_started_at"] = "2026-01-01T00:00:00Z"
+        f.lose_ack = "shrink"
+        self.assertEqual(task.advance(), "reconcile")
+        self.assertNotIn("shrink_operation", f.run["progress"])
+        # The provider never applied the change, so the nodes are still ours and the
+        # worker has to resend the shrink instead of waiting for an absence.
+        f.lose_ack = None
+        f.nodes = [dict(OWNED)]
+        f.instances = {"instance-task": dict(id="instance-task", volumeID="volume-task")}
+        f.volumes = {"volume-task": dict(id="volume-task", instanceID="instance-task", system=True)}
+        self.assertEqual(f.claimed().advance(), "next")
+        self.assertEqual(f.mutations.count("shrink"), 2)
+
 
     def test_recovery_handles_create_queue_appearing_or_disappearing(self):
         f = Fixture()

@@ -19,6 +19,9 @@ FAILED_CLOUD = {"failed", "cancel", "console_failed"}
 POLL_SECONDS = 4
 CLAIM_SLICE_SECONDS = 30
 RECOVERY_GRACE_SECONDS = 10 * 60
+# A provider expand job can stay pending while the nodes it created are already registered.
+# After this grace period the worker adopts the observed nodes instead of waiting forever.
+EXPAND_ADOPT_SECONDS = 10 * 60
 MAX_SLURM_WALL_SECONDS = (1 << 31) - 1 - 120
 LOG = logging.getLogger("hpc-task-worker")
 
@@ -254,9 +257,11 @@ class Task:
     def recover_shrink_intent(self):
         if not self.recovery_mature():
             return "wait"
-        if not self.absence(with_resources=True):
-            return "wait"
-        return self.move("nodes_released", shrink_operation=self.recovered_operation("shrink"))
+        if self.absence(with_resources=True):
+            return self.move("nodes_released", shrink_operation=self.recovered_operation("shrink"))
+        # The shrink request never produced a receipt but the nodes are still ours: send it
+        # again instead of waiting forever for an absence that will not happen by itself.
+        return self.retry_shrink()
 
     def recover_delete_intent(self):
         if not self.recovery_mature():
@@ -367,7 +372,7 @@ class Task:
         context = dict(queueUUID=self.progress["queue_id"], count=self.spec["nodes"],
                        imageUUID=sku["imageUUID"], specificationUUID=sku["specificationUUID"])
         return self.request("expand_intent", "expand", "expand_operation", context,
-                            rejected="expand_rejected")
+                            intent={"expand_sent_at": now()}, rejected="expand_rejected")
 
     def ownership(self):
         actual = self.own_queue_nodes()
@@ -392,13 +397,29 @@ class Task:
             raise WorkerError("queue nodes no longer match persisted ownership")
 
     def expanded(self):
-        if not self.confirmed_job("expand_operation"):
-            return "wait"
+        status = self.operation_status("expand_operation")
+        if status != "success":
+            if status in FAILED_CLOUD or status == "force_completed":
+                raise WorkerError(f"provider operation result is {status}")
+            if not self.adoptable_expand():
+                return "wait"
+            LOG.warning("%s adopted nodes while the provider expand job is still %s", self.run["quote_id"], status)
         self.queue_record(bound=True)
         ownership = self.ownership()
         if not self.progress.get("provision_started_at"):
             ownership["provision_started_at"] = now()
         return self.move("discover_disks", **ownership)
+
+    def adoptable_expand(self):
+        sent = self.progress.get("expand_sent_at")
+        if not sent:
+            return False
+        try:
+            if (datetime.now(timezone.utc) - timestamp(sent)).total_seconds() < EXPAND_ADOPT_SECONDS:
+                return False
+            return len(self.own_queue_nodes()) == self.spec["nodes"]
+        except WorkerError:
+            return False
 
     def disks(self):
         volumes = []
