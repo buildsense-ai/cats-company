@@ -509,6 +509,20 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(f.finished["slurm_node_list"], ["wn01", "wn02"])
         self.assertEqual(f.finished["volume_ids"], ["volume-task", "volume-task2"])
 
+    def test_stalled_provider_expand_adopts_ready_nodes_after_grace(self):
+        f = Fixture()
+        task = f.advance_to("queue_created")
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "expand_intent")
+        self.assertIn("expand_sent_at", f.run["progress"])
+        # The provider accepted the expand but never reports success.
+        f.statuses["expand"] = "running"
+        self.assertEqual(f.claimed().advance(), "wait")
+        # Once the grace period has passed and the quoted nodes are visible, adopt them.
+        f.run["progress"]["expand_sent_at"] = "2026-01-01T00:00:00Z"
+        self.assertEqual(f.claimed().advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "discover_disks")
+        self.assertEqual(f.run["progress"]["node_names"], ["wn01"])
     def test_disk_must_be_system_disk_of_owned_instance(self):
         for changes in (dict(instanceID="other-instance"), dict(system=False)):
             with self.subTest(changes=changes):
