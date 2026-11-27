@@ -15,7 +15,7 @@
 | --- | --- |
 | `catsco_<slug>` | 每个上架应用对应一个工具（如 `catsco_hello`） |
 | `catsco_run_status` | 查询 run 状态/结果（`{run_id}`） |
-| `catsco_compute` | 统一算力入口，通过 `action=preview`、`action=quote` 和 `action=status` 完成资源比较、正式报价和任务查询 |
+| `catsco_compute` | 统一算力入口，查询报价目录、比较资源、正式报价和查询任务 |
 
 `catsco_<slug>` 参数：
 
@@ -28,10 +28,11 @@
 
 ## 统一算力入口
 
-`catsco_compute` 把固定 Cats 托管 Slurm CPU 任务的资源比较、正式报价和状态查询合并为一个工具。通过 `action` 选择阶段。
+`catsco_compute` 通过 `action` 查询报价目录、比较资源、创建正式报价和查询任务。当前托管执行使用固定 Slurm CPU 验收作业。
 
 | action | 用途 | 必要参数 |
 | --- | --- | --- |
+| `catalog` | 只读查询当前有效的单节点报价规格、按节点费率和单任务节点上限 | 无 |
 | `preview` | 比较当前 Agent 设备和 Cats 托管 Slurm，只读返回容量、适配性、费率和预览估算 | `task`，可选 `agent_runtime` |
 | `quote` | 创建需要用户本人确认的正式报价 | `task.nodes`、`logical_cpus`、`memory_mib`、`wall_seconds`、`max_resource_seconds_per_node` |
 | `status` | 查询已创建任务的状态、云操作号、Slurm 作业号、资源回收和实际扣费 | `quote_id` |
@@ -42,9 +43,13 @@
 
 `preview` 返回 `catsco.compute-preview.v1` 结构化结果，包含各候选的 `fit`、`capacity`、`reason_code`、来源、采样时间和可用采样字段。文本第一段是聊天 Markdown 表格，第二段是结构化 JSON。预计完工 `eta_s` 当前为 `null`，供应商库存和排队时长未知时必须保留未知。
 
+`catalog` 返回 `skus`、`max_nodes_per_task` 和 `units_per_credit`。规格条目包含每节点的逻辑 CPU、内存、按节点费率、计价周期、取整粒度和费率有效期。正式报价选用满足每节点 CPU 和内存要求的最低价有效规格。多个节点使用同一规格，费用上限按节点数线性增加，CPU 和内存要求仍按每节点校验。目录提供报价条件，实时库存和空闲容量需另外查询。
+
+`wall_seconds` 由 Agent 按任务填写，单位为秒，必须为正数且是整分钟。运营可通过 `CATSCOMPANY_COMPUTE_MAX_WALL_SECONDS` 按队列能力设置报价时限，设置后 `catalog` 返回 `max_wall_seconds`。留空或填 `0` 时 Cats 无额外运营时限，Slurm 仍执行其队列策略。部署时应先升级 worker，再放开原有的 300 秒限制。
+
 `quote` 必须填写 `task.max_resource_seconds_per_node`。它表示每节点从平台实际观察到资源开始存活起，用户最多承担的资源秒数。该值必须为正数、整分钟，并且不小于 `wall_seconds`。`wall_seconds` 只表示 Slurm 作业时限，排队和资源开通等待不计入用户资源时长。
 
-报价返回的 `max_node_seconds` 等于节点数乘以每节点资源计费上限，`max_units` 按这个上限和发布费率计算。报价不会自动开通资源。用户在确认页核对并提交 `max_units` 后才会预占积分。任务结束时按资源实际被观察到的时间起点至资源回收时间结算，结算金额不超过报价上限。
+报价返回的 `max_node_seconds` 等于节点数乘以每节点资源计费上限。`max_units` 按各节点的计费时长取整及发布费率计算。报价不会自动开通资源。用户在确认页核对并提交 `max_units` 后才会预占积分。任务结束时按资源实际被观察到的时间起点至资源回收时间结算，结算金额不超过报价上限。
 
 旧报价数据可能没有 `max_resource_seconds_per_node`。worker 会从旧报价的 `max_node_seconds / nodes` 回退读取资源预算，旧任务继续按原报价语义结算。
 

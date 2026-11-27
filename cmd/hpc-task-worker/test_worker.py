@@ -221,9 +221,10 @@ class Fixture:
         if name == "sbatch":
             assert self.run["progress"]["phase"] == "submit_intent"
             count = self.run["task"]["nodes"]
+            minutes = self.run["task"]["wall_seconds"] // 60
             assert set(argv) >= {f"--partition={QUEUE}", f"--nodelist={','.join(self.node_names)}", "--account=fixed",
                                  "--export=NIL", "--no-requeue", f"--nodes={count}", f"--ntasks={count * 2}",
-                                 "--mem=512M", "--time=1"}
+                                 "--mem=512M", f"--time={minutes}"}
             assert self.slurm_job is False and self.run["progress"]["volume_ids"] == list(self.volumes)
             assert script.startswith("#!/bin/sh\nset -eu\nexec /usr/bin/srun ") and "--account=fixed" in script and "/usr/bin/awk" in script
             self.slurm_job = True
@@ -246,6 +247,22 @@ class Fixture:
 
 
 class SlurmTest(unittest.TestCase):
+    def test_submit_passes_long_wall_time_to_slurm(self):
+        commands = []
+
+        def submit(argv, script):
+            commands.extend(argv)
+            return "123"
+
+        slurm = Slurm({"account": "fixed"}, submit)
+        task = dict(nodes=2, logical_cpus=2, memory_mib=512, wall_seconds=1800)
+        job_id = slurm.submit(QUEUE, ["wn01", "wn02"], JOB, task, lambda func, *args: func(*args))
+        self.assertEqual(job_id, "123")
+        self.assertIn("--time=30", commands)
+        self.assertIn("--deadline=now+32minutes", commands)
+        self.assertIn("--nodes=2", commands)
+        self.assertIn("--ntasks-per-node=2", commands)
+
     def test_terminal_waits_for_missing_job_metadata(self):
         placeholder = "123|allocation||fixed|PENDING|0:0|1|0|0|wn01\n"
         completed = f"123|{JOB}|{QUEUE}|fixed|COMPLETED|0:0|1|1|64M|wn01\n"
@@ -424,6 +441,8 @@ class WorkerTest(unittest.TestCase):
 
     def test_lifecycle_full_progress_and_finish(self):
         f = Fixture()
+        f.run["task"].update(wall_seconds=1800, max_resource_seconds_per_node=2400)
+        f.run["max_node_seconds"] = 2400
         preflight(f.cloud, f.slurm)
         task = f.advance_to("released")
         self.assertEqual(task.advance(), "finish")

@@ -112,9 +112,13 @@ func TestComputeTaskMCPQuoteAndStatus(t *testing.T) {
 	handler := NewServiceAgentsMCPHandler(newFakeServiceAgentStore())
 	handler.SetComputeTasks(&ComputeTaskHandler{
 		store: st, publicBaseURL: "https://cats.example", allowed: map[int64]bool{uid: true},
+		maxWallSeconds: 3600,
 		catalog: []computeTaskSKU{{
 			ID: "c8e.large.2", LogicalCPUs: 2, MemoryMiB: 3584,
 			Tariff: computeSlurmRate{CNYMicrosPerNode: 300_000, PeriodS: 3600, IncrementS: 60, ValidUntil: time.Now().Add(time.Hour)},
+		}, {
+			ID: "expired", LogicalCPUs: 16, MemoryMiB: 32_768,
+			Tariff: computeSlurmRate{CNYMicrosPerNode: 300_000, PeriodS: 3600, IncrementS: 60, ValidUntil: time.Now().Add(-time.Hour)},
 		}},
 	})
 	allowed := httptest.NewServer(mcpAuthStub(uid, handler))
@@ -129,17 +133,42 @@ func TestComputeTaskMCPQuoteAndStatus(t *testing.T) {
 		t.Fatalf("unexpected unified tool visibility: allowed=%v other=%v", names, otherNames)
 	}
 	ctx := context.Background()
+	directory, err := session.CallTool(ctx, &mcp.CallToolParams{Name: computeToolName, Arguments: map[string]any{"action": "catalog"}})
+	if err != nil || directory.IsError {
+		t.Fatalf("catalog: result=%+v err=%v", directory, err)
+	}
+	var catalog struct {
+		SKUs []struct {
+			ID   string                `json:"id"`
+			Rate store.ComputeTaskRate `json:"rate"`
+		} `json:"skus"`
+		MaxNodesPerTask int `json:"max_nodes_per_task"`
+		MaxWallSeconds  int `json:"max_wall_seconds"`
+	}
+	if err := json.Unmarshal([]byte(directory.Content[1].(*mcp.TextContent).Text), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.SKUs) != 1 || catalog.SKUs[0].ID != "c8e.large.2" || catalog.MaxNodesPerTask != 2 || catalog.MaxWallSeconds != 3600 || st.quote.ID != "" {
+		t.Fatalf("invalid read-only catalog result: %+v", catalog)
+	}
 	invalidSpec := map[string]any{"action": "quote", "task": store.ComputeTaskSpec{Nodes: 2, LogicalCPUs: 2, MemoryMiB: 1024, WallSeconds: 60}}
 	invalid, err := session.CallTool(ctx, &mcp.CallToolParams{Name: computeToolName, Arguments: invalidSpec})
 	if err != nil || !invalid.IsError || !strings.Contains(invalid.Content[0].(*mcp.TextContent).Text, "invalid_compute_task") {
 		t.Fatalf("missing resource cap must be rejected: result=%+v err=%v", invalid, err)
 	}
-	spec := store.ComputeTaskSpec{Nodes: 2, LogicalCPUs: 2, MemoryMiB: 1024, WallSeconds: 60, MaxResourceSecondsPerNode: 600}
+	spec := store.ComputeTaskSpec{Nodes: 2, LogicalCPUs: 2, MemoryMiB: 1024, WallSeconds: 1800, MaxResourceSecondsPerNode: 2400}
+	invalidLong := spec
+	invalidLong.WallSeconds, invalidLong.MaxResourceSecondsPerNode = 3660, 4200
+	invalid, err = session.CallTool(ctx, &mcp.CallToolParams{Name: computeToolName, Arguments: map[string]any{"action": "quote", "task": invalidLong}})
+	if err != nil || !invalid.IsError || st.quote.ID != "" {
+		t.Fatalf("quote above configured limit: result=%+v err=%v", invalid, err)
+	}
 	quoted, err := session.CallTool(ctx, &mcp.CallToolParams{Name: computeToolName, Arguments: map[string]any{"action": "quote", "task": spec}})
 	if err != nil || quoted.IsError {
 		t.Fatalf("quote: result=%+v err=%v", quoted, err)
 	}
-	if st.uid != uid || st.quote.Spec != spec || st.quote.MaxUnits != 10_000_000 || st.quote.MaxNodeSeconds != 1200 || !computeTaskIDPattern.MatchString(st.quote.ID) {
+	oneNode, ok := computeTaskCharge(catalog.SKUs[0].Rate, 1, int64(spec.MaxResourceSecondsPerNode))
+	if !ok || oneNode != 20_000_000 || st.uid != uid || st.quote.Spec != spec || st.quote.MaxUnits != 2*oneNode || st.quote.MaxNodeSeconds != 4800 || !computeTaskIDPattern.MatchString(st.quote.ID) {
 		t.Fatalf("stored quote for %d: %+v", st.uid, st.quote)
 	}
 	if !strings.Contains(quoted.Content[0].(*mcp.TextContent).Text, "https://cats.example/compute/confirm?quote="+st.quote.ID) {
@@ -185,5 +214,31 @@ func TestComputeTaskAdmissionPolicyFromEnv(t *testing.T) {
 				t.Fatalf("invalid capacity setting %q must be rejected", tc.value)
 			}
 		})
+	}
+}
+
+func TestComputeTaskMaxWallSecondsFromEnv(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  int
+		valid bool
+	}{
+		{"", 0, true}, {"0", 0, true}, {"7200", 7200, true},
+		{"300.0", 0, false}, {"-60", 0, false}, {"301", 0, false},
+	} {
+		t.Setenv("CATSCOMPANY_COMPUTE_MAX_WALL_SECONDS", tc.value)
+		got, err := computeTaskMaxWallSecondsFromEnv()
+		if (err == nil) != tc.valid || got != tc.want {
+			t.Errorf("setting %q: got %d, %v", tc.value, got, err)
+		}
+	}
+	handler := &ComputeTaskHandler{}
+	spec := store.ComputeTaskSpec{Nodes: 1, LogicalCPUs: 1, MemoryMiB: 256, WallSeconds: 7200, MaxResourceSecondsPerNode: 7800}
+	if !handler.acceptsAllocation(spec) {
+		t.Fatal("unset operational limit rejected a two-hour task")
+	}
+	spec.MaxResourceSecondsPerNode = 7140
+	if handler.acceptsAllocation(spec) {
+		t.Fatal("accepted a resource cap shorter than the job wall time")
 	}
 }

@@ -19,6 +19,7 @@ FAILED_CLOUD = {"failed", "cancel", "console_failed"}
 POLL_SECONDS = 4
 CLAIM_SLICE_SECONDS = 30
 RECOVERY_GRACE_SECONDS = 10 * 60
+MAX_SLURM_WALL_SECONDS = (1 << 31) - 1 - 120
 LOG = logging.getLogger("hpc-task-worker")
 
 
@@ -161,8 +162,8 @@ class Task:
             "nodes", "logical_cpus", "memory_mib", "wall_seconds",
         )):
             raise WorkerError("invalid pilot allocation")
-        if spec["nodes"] > 2 or spec["wall_seconds"] > 300 or spec["wall_seconds"] % 60:
-            raise WorkerError("allocation is outside the CPU pilot limits")
+        if spec["nodes"] > 2 or spec["wall_seconds"] > MAX_SLURM_WALL_SECONDS or spec["wall_seconds"] % 60:
+            raise WorkerError("allocation is outside the supported node count or Slurm time range")
         if "max_resource_seconds_per_node" in spec:
             cap = spec["max_resource_seconds_per_node"]
             if type(cap) is not int or cap < spec["wall_seconds"] or cap % 60:
