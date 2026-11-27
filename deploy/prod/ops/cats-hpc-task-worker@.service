@@ -1,0 +1,23 @@
+[Unit]
+Description=Cats HPC task worker instance %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=galaxy
+Group=galaxy
+WorkingDirectory=/opt/catsco/hpc-task-worker
+EnvironmentFile=/etc/catsco/hpc-task-worker.env
+StateDirectory=catsco-hpc-worker
+StateDirectoryMode=0750
+Environment=CATS_HPC_MUTATION_LOCK_FILE=/var/lib/catsco-hpc-worker/mutation
+ExecStart=/usr/bin/python3.12 -B /opt/catsco/hpc-task-worker/worker.py --config /etc/catsco/hpc-worker-%i.json
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

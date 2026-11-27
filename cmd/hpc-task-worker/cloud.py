@@ -1,17 +1,134 @@
 """CTYun EOP transport and explicit capacity API bindings."""
 
 import base64
+import contextlib
+import errno
 import hashlib
 import hmac
 import http.client
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote, urlsplit
 
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
+
+_LOCAL_MUTATION_LOCKS = {}
+_LOCAL_MUTATION_LOCKS_GUARD = threading.Lock()
+
+
+def _local_mutation_lock(path):
+    with _LOCAL_MUTATION_LOCKS_GUARD:
+        return _LOCAL_MUTATION_LOCKS.setdefault(path, threading.Lock())
+
+
+class MutationGate:
+    def __init__(self, path, timeout_seconds=5.0, interval_seconds=0.2):
+        if not isinstance(path, str) or not os.path.isabs(path):
+            raise ValueError("mutation_lock_file must be an absolute path")
+        if type(timeout_seconds) not in (int, float) or timeout_seconds <= 0:
+            raise ValueError("mutation_lock_timeout_seconds must be positive")
+        if type(interval_seconds) not in (int, float) or interval_seconds < 0:
+            raise ValueError("mutation_cooldown_seconds must be non-negative")
+        if fcntl is None and msvcrt is None:
+            raise WorkerError("cloud mutation locking is unavailable on this platform")
+        self.path = path
+        self.lock_path = path + ".lock"
+        self.timeout_seconds = float(timeout_seconds)
+        self.interval_seconds = float(interval_seconds)
+        self.local = _local_mutation_lock(path)
+        self.handle = None
+        self.lock_handle = None
+        self.file_locked = False
+
+    def __enter__(self):
+        deadline = time.monotonic() + self.timeout_seconds
+        if not self.local.acquire(timeout=self.timeout_seconds):
+            raise MutationLockTimeout("cloud mutation lock timed out")
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            self.lock_handle = open(self.lock_path, "a+b")
+            while True:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(self.lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    else:
+                        self.lock_handle.seek(0)
+                        msvcrt.locking(self.lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    self.file_locked = True
+                    break
+                except OSError as error:
+                    if error.errno not in (
+                        errno.EACCES, errno.EAGAIN, errno.EDEADLK,
+                    ):
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise MutationLockTimeout("cloud mutation lock timed out")
+                    time.sleep(min(0.05, remaining))
+            self.handle = open(self.path, "a+b")
+            self.handle.seek(0)
+            raw = self.handle.read().decode("ascii", errors="ignore").strip()
+            if raw:
+                try:
+                    last = float(raw)
+                except ValueError:
+                    last = 0.0
+                wait = self.interval_seconds - (time.time() - last)
+                if wait > 0:
+                    time.sleep(wait)
+            return self
+        except Exception:
+            self._close()
+            raise
+
+    def __exit__(self, exc_type, exc, traceback):
+        try:
+            if self.handle is not None:
+                self.handle.seek(0)
+                self.handle.truncate()
+                self.handle.write(str(time.time()).encode("ascii"))
+                self.handle.flush()
+        finally:
+            self._close()
+
+    def _close(self):
+        try:
+            if self.lock_handle is not None:
+                try:
+                    if self.file_locked:
+                        if fcntl is not None:
+                            fcntl.flock(self.lock_handle.fileno(), fcntl.LOCK_UN)
+                        else:
+                            self.lock_handle.seek(0)
+                            msvcrt.locking(self.lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+                finally:
+                    self.file_locked = False
+                    self.lock_handle.close()
+                    self.lock_handle = None
+            if self.handle is not None:
+                self.handle.close()
+                self.handle = None
+        finally:
+            if self.local.locked():
+                self.local.release()
 
 IO_TIMEOUT = 8
 CTYUN_MUTATION_TIMEOUT = 30  # The acknowledged intent holds a 45-second lease.
@@ -19,6 +136,10 @@ MAX_RESPONSE = 1024 * 1024
 
 
 class WorkerError(Exception):
+    pass
+
+
+class MutationLockTimeout(WorkerError):
     pass
 
 
@@ -138,6 +259,14 @@ class Cloud:
     def __init__(self, config, ak, sk, transport=None):
         self.transport = transport
         self.ak, self.sk = ak, sk
+        lock_file = os.environ.get("CATS_HPC_MUTATION_LOCK_FILE") or config.get(
+            "mutation_lock_file", os.path.join(tempfile.gettempdir(), "catsco-hpc-task-worker.mutation"),
+        )
+        self.mutation_gate = MutationGate(
+            lock_file,
+            config.get("mutation_lock_timeout_seconds", 5),
+            config.get("mutation_cooldown_seconds", 0.2),
+        )
         self.hosts = {service: https_base(config["hosts"][service]) for service in ("hpc", "ecs", "evs")}
         self.scope = {key: identifier(config[key]) for key in SCOPE}
         self.role = identifier(config["compute_role_uuid"])
@@ -199,7 +328,7 @@ class Cloud:
         if (operation.get("absent_codes") or operation.get("rejected_codes")) and not operation.get("error_code"):
             raise ValueError(f"missing error code selector for {name}")
 
-    def request(self, name, context, request_id=None):
+    def request(self, name, context, request_id=None, before_send=None):
         operation = self.api[name]
         payload = project(self.scope | context, operation)
         if name == "expand":
@@ -212,13 +341,17 @@ class Cloud:
         body = json.dumps(payload, separators=(",", ":")) if method == "POST" else ""
         query = query_string(payload) if method == "GET" else ""
         url = self.hosts[service] + operation["path"] + ("?" + query if query else "")
-        date = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        headers = signed_headers(self.ak, self.sk, query, body, request_id or str(uuid.uuid4()), date)
-        if self.transport is None:
-            timeout = CTYUN_MUTATION_TIMEOUT if request_id is not None else IO_TIMEOUT
-            status, raw = http_request(method, url, headers, body or None, timeout=timeout)
-        else:
-            status, raw = self.transport(method, url, headers, body or None)
+        gate = self.mutation_gate if request_id is not None else contextlib.nullcontext()
+        with gate:
+            if before_send is not None:
+                before_send()
+            date = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            headers = signed_headers(self.ak, self.sk, query, body, request_id or str(uuid.uuid4()), date)
+            if self.transport is None:
+                timeout = CTYUN_MUTATION_TIMEOUT if request_id is not None else IO_TIMEOUT
+                status, raw = http_request(method, url, headers, body or None, timeout=timeout)
+            else:
+                status, raw = self.transport(method, url, headers, body or None)
         if status != 200:
             raise WorkerError(f"{name} returned HTTP {status}")
         try:
@@ -276,8 +409,8 @@ class Cloud:
                 return rows
         raise WorkerError(f"{name} exceeded the pagination limit")
 
-    def outcome(self, name, call, request_id, **context):
-        reply = call(self.request, name, context, request_id)
+    def outcome(self, name, call, request_id, *, before_send=None, **context):
+        reply = call(self.request, name, context, request_id, before_send)
         result = self.record(name, reply)
         identifier(result["jobUUID"])
         if result.get("masterOrderID"):

@@ -303,6 +303,12 @@ func TestPostgresComputeTaskReserveSettleAndRelease(t *testing.T) {
 		final, 120*unit, true, now); !errors.Is(err, store.ErrComputeTaskConflict) {
 		t.Fatalf("a foreign lease must not finish the task, got %v", err)
 	}
+	if err := db.FinishComputeTask(ctx, quote.ID, lease, final, 120*unit, true, now); !errors.Is(err, store.ErrComputeTaskConflict) {
+		t.Fatalf("finish with a different progress snapshot must conflict, got %v", err)
+	}
+	if err := db.SaveComputeTaskProgress(ctx, quote.ID, lease, final); err != nil {
+		t.Fatalf("save final progress: %v", err)
+	}
 	if err := db.FinishComputeTask(ctx, quote.ID, lease, final, quote.MaxUnits+unit, true, now); !errors.Is(err, store.ErrComputeTaskConflict) {
 		t.Fatalf("a charge above the ceiling must be refused, got %v", err)
 	}
@@ -425,6 +431,9 @@ func TestPostgresComputeTaskExpiryAndLeaseFence(t *testing.T) {
 	if err := db.FinishComputeTask(ctx, quote.ID, dead, final, 0, true, later); !errors.Is(err, store.ErrComputeTaskConflict) {
 		t.Fatalf("a replaced worker must not finish the task, got %v", err)
 	}
+	if err := db.SaveComputeTaskProgress(ctx, quote.ID, fresh, final); err != nil {
+		t.Fatalf("save final progress after reclaim: %v", err)
+	}
 	// 零用量结束：整笔预占退回，余额回到预占前。
 	if err := db.FinishComputeTask(ctx, quote.ID, fresh, final, 0, false, later); err != nil {
 		t.Fatalf("finish with zero measured usage: %v", err)
@@ -436,5 +445,130 @@ func TestPostgresComputeTaskExpiryAndLeaseFence(t *testing.T) {
 	if err != nil || failed == nil || failed.State != store.ComputeTaskFailed ||
 		failed.ChargedUnits == nil || *failed.ChargedUnits != 0 {
 		t.Fatalf("a failed run must keep its zero charge: %#v %v", failed, err)
+	}
+}
+func TestPostgresComputeTaskAdmissionLimits(t *testing.T) {
+	db := newComputeTaskTestAdapter(t)
+	ctx := context.Background()
+	unit := store.ModelCreditUnitsPerCredit
+	uid := createCreditTopupTestUser(t, db, "compute-admission-user")
+	grantComputeTaskCredits(t, db, uid, store.ModelCreditBucketPaid, 1000, "topup:compute-admission")
+	now := time.Now().UTC()
+	quotes := []store.ComputeTaskQuote{
+		testComputeTaskQuote("hpc_11111111111111111111111111111111", 60*unit),
+		testComputeTaskQuote("hpc_22222222222222222222222222222222", 60*unit),
+	}
+	for _, quote := range quotes {
+		if err := db.CreateComputeTaskQuote(ctx, uid, quote); err != nil {
+			t.Fatalf("create quote %s: %v", quote.ID, err)
+		}
+		if _, err := db.ConfirmComputeTask(ctx, uid, quote.ID, quote.MaxUnits, now); err != nil {
+			t.Fatalf("confirm quote %s: %v", quote.ID, err)
+		}
+	}
+	policy := store.ComputeTaskAdmissionPolicy{
+		MaxTotalNodes: 1, MaxConcurrentTasks: 1, MaxUserNodes: 1, MaxUserTasks: 1,
+	}
+	type result struct {
+		run *store.ComputeTaskRun
+		err error
+	}
+	results := make(chan result, len(quotes))
+	for index := range quotes {
+		lease := fmt.Sprintf("hpc_%032x", index+1)
+		go func(lease string) {
+			run, err := db.ClaimComputeTaskWithPolicy(ctx, lease, now, now.Add(time.Minute), policy)
+			results <- result{run: run, err: err}
+		}(lease)
+	}
+	var claimed *store.ComputeTaskRun
+	for range quotes {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("concurrent claim failed: %v", got.err)
+		}
+		if got.run != nil {
+			if claimed != nil {
+				t.Fatalf("capacity one admitted two concurrent tasks: %s and %s", claimed.ID, got.run.ID)
+			}
+			claimed = got.run
+		}
+	}
+	if claimed == nil {
+		t.Fatal("one concurrent claim must be admitted")
+	}
+	var state string
+	var admitted int
+	if err := db.db.QueryRowContext(ctx, `SELECT state, admitted_nodes FROM compute_tasks WHERE quote_id = $1`, claimed.ID).Scan(&state, &admitted); err != nil {
+		t.Fatal(err)
+	}
+	if state != store.ComputeTaskActive || admitted != 1 {
+		t.Fatalf("claimed task must hold one node: state=%s admitted=%d", state, admitted)
+	}
+	if err := db.FinishComputeTask(ctx, claimed.ID, claimed.Lease, store.ComputeTaskProgress{}, 0, false, now); err != nil {
+		t.Fatalf("finish admitted task: %v", err)
+	}
+	remaining, err := db.ClaimComputeTaskWithPolicy(ctx, "hpc_33333333333333333333333333333333", now.Add(time.Second), now.Add(time.Minute), policy)
+	if err != nil || remaining == nil {
+		t.Fatalf("released capacity must admit the queued task: %#v %v", remaining, err)
+	}
+	if err := db.FinishComputeTask(ctx, remaining.ID, remaining.Lease, store.ComputeTaskProgress{}, 0, false, now.Add(time.Second)); err != nil {
+		t.Fatalf("finish released capacity task: %v", err)
+	}
+}
+
+func TestPostgresComputeTaskAdmissionBackfillsActiveTasks(t *testing.T) {
+	db := newComputeTaskTestAdapter(t)
+	ctx := context.Background()
+	uid := createCreditTopupTestUser(t, db, "compute-admission-migration")
+	grantComputeTaskCredits(t, db, uid, store.ModelCreditBucketPaid, 1000, "topup:admission-migration")
+	now := time.Now().UTC()
+	for index, nodes := range []int{2, 1} {
+		quote := testComputeTaskQuote(fmt.Sprintf("hpc_%032x", index+1), 60*store.ModelCreditUnitsPerCredit)
+		quote.Spec.Nodes = nodes
+		if err := db.CreateComputeTaskQuote(ctx, uid, quote); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ConfirmComputeTask(ctx, uid, quote.ID, quote.MaxUnits, now.Add(time.Duration(index)*time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lease := "hpc_ffffffffffffffffffffffffffffffff"
+	active, err := db.ClaimComputeTask(ctx, lease, now.Add(time.Second), now.Add(time.Minute))
+	if err != nil || active == nil || active.Spec.Nodes != 2 {
+		t.Fatalf("claim legacy task: %#v %v", active, err)
+	}
+	for _, direction := range []string{"down", "up", "up"} {
+		script, err := os.ReadFile("../migrations/postgres/000086_compute_task_admission." + direction + ".sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.db.ExecContext(ctx, string(script)); err != nil {
+			t.Fatalf("migration %s: %v", direction, err)
+		}
+	}
+	for _, policy := range []store.ComputeTaskAdmissionPolicy{
+		{MaxTotalNodes: 2}, {MaxConcurrentTasks: 1}, {MaxUserNodes: 2}, {MaxUserTasks: 1},
+	} {
+		if run, err := db.ClaimComputeTaskWithPolicy(ctx, "hpc_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", now.Add(time.Second), now.Add(time.Minute), policy); err != nil || run != nil {
+			t.Fatalf("backfilled task must count under policy %+v: %#v %v", policy, run, err)
+		}
+	}
+}
+
+func TestComputeTaskAdmissionMigrationMatchesStartupSchema(t *testing.T) {
+	up, err := os.ReadFile("../migrations/postgres/000086_compute_task_admission.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stripSQLComments(string(up)), stripSQLComments(migrateComputeTaskAdmission); got != want {
+		t.Fatalf("000086_compute_task_admission.up.sql differs from startup migration:\n got: %s\nwant: %s", got, want)
+	}
+	down, err := os.ReadFile("../migrations/postgres/000086_compute_task_admission.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(down), "DROP COLUMN IF EXISTS admitted_nodes") {
+		t.Fatal("000086 down migration must remove admitted_nodes")
 	}
 }

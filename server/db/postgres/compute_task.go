@@ -326,6 +326,13 @@ func (a *Adapter) ConfirmComputeTask(ctx context.Context, uid int64, id string, 
 //
 // 没有可领的任务时返回 (nil, nil)：这是正常空闲，不是错误。
 func (a *Adapter) ClaimComputeTask(ctx context.Context, lease string, now, deadline time.Time) (*store.ComputeTaskRun, error) {
+	return a.ClaimComputeTaskWithPolicy(ctx, lease, now, deadline, store.ComputeTaskAdmissionPolicy{})
+}
+
+// ClaimComputeTaskWithPolicy atomically admits the task and assigns its lease.
+// The transaction advisory lock serializes capacity snapshots across worker
+// instances while row locks keep task claims independent after admission.
+func (a *Adapter) ClaimComputeTaskWithPolicy(ctx context.Context, lease string, now, deadline time.Time, policy store.ComputeTaskAdmissionPolicy) (*store.ComputeTaskRun, error) {
 	lease = strings.TrimSpace(lease)
 	if !validComputeTaskToken(lease) {
 		return nil, fmt.Errorf("invalid compute task lease %q: %w", lease, store.ErrComputeTaskConflict)
@@ -340,25 +347,92 @@ func (a *Adapter) ClaimComputeTask(ctx context.Context, lease string, now, deadl
 		return nil, fmt.Errorf("begin compute task claim: %w", err)
 	}
 	defer tx.Rollback()
-	var id string
-	err = tx.QueryRowContext(ctx, `
-		WITH candidate AS (
-			SELECT quote_id FROM compute_tasks
-			WHERE state = 'queued'
-			   OR (state = 'active' AND lease_expires_at <= $2)
-			ORDER BY CASE state WHEN 'queued' THEN 0 ELSE 1 END, updated_at, quote_id
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
+	if _, err := tx.ExecContext(ctx, `
+		SELECT pg_advisory_xact_lock(hashtextextended('catsco.compute_task.capacity', 0))`); err != nil {
+		return nil, fmt.Errorf("lock compute task capacity: %w", err)
+	}
+	type computeTaskCandidate struct {
+		id            string
+		uid           int64
+		nodes         int
+		admittedNodes int
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT t.quote_id, t.uid, (q.spec->>'nodes')::int, t.admitted_nodes
+		FROM compute_tasks t
+		JOIN compute_task_quotes q ON q.quote_id = t.quote_id AND q.uid = t.uid
+		WHERE t.state = 'queued'
+		   OR (t.state = 'active' AND t.lease_expires_at <= $1)
+		ORDER BY CASE t.state WHEN 'queued' THEN 0 ELSE 1 END, t.updated_at, t.quote_id
+		FOR UPDATE OF t SKIP LOCKED`, now)
+	if err != nil {
+		return nil, fmt.Errorf("select compute task claims: %w", err)
+	}
+	candidates := make([]computeTaskCandidate, 0)
+	for rows.Next() {
+		var candidate computeTaskCandidate
+		if err := rows.Scan(&candidate.id, &candidate.uid, &candidate.nodes, &candidate.admittedNodes); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan compute task claim: %w", err)
+		}
+		if candidate.nodes <= 0 || candidate.admittedNodes < 0 {
+			rows.Close()
+			return nil, fmt.Errorf("compute task %s has invalid capacity reservation: %w", candidate.id, store.ErrComputeTaskConflict)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate compute task claims: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close compute task claims: %w", err)
+	}
+	var (
+		id            string
+		uid           int64
+		nodes         int
+		admittedNodes int
+		found         bool
+	)
+	for _, candidate := range candidates {
+		id, uid, nodes, admittedNodes = candidate.id, candidate.uid, candidate.nodes, candidate.admittedNodes
+		var (
+			usedNodes     int64
+			usedTasks     int64
+			usedUserNodes int64
+			usedUserTasks int64
 		)
-		UPDATE compute_tasks t
-		SET state = 'active', lease = $1, lease_expires_at = $3, updated_at = $2
-		FROM candidate c
-		WHERE t.quote_id = c.quote_id
-		RETURNING t.quote_id`, lease, now, deadline).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COALESCE(SUM(admitted_nodes), 0), COUNT(*),
+			       COALESCE(SUM(admitted_nodes) FILTER (WHERE uid = $1), 0),
+			       COUNT(*) FILTER (WHERE uid = $1)
+			FROM compute_tasks
+			WHERE state = 'active' AND admitted_nodes > 0`, uid).Scan(
+			&usedNodes, &usedTasks, &usedUserNodes, &usedUserTasks); err != nil {
+			return nil, fmt.Errorf("read compute task capacity: %w", err)
+		}
+		additionalNodes := int64(nodes)
+		additionalTasks := int64(1)
+		if admittedNodes > 0 {
+			additionalNodes = 0
+			additionalTasks = 0
+		}
+		if admittedNodes > 0 || !(policy.MaxTotalNodes > 0 && usedNodes+additionalNodes > int64(policy.MaxTotalNodes)) &&
+			!(policy.MaxConcurrentTasks > 0 && usedTasks+additionalTasks > int64(policy.MaxConcurrentTasks)) &&
+			!(policy.MaxUserNodes > 0 && usedUserNodes+additionalNodes > int64(policy.MaxUserNodes)) &&
+			!(policy.MaxUserTasks > 0 && usedUserTasks+additionalTasks > int64(policy.MaxUserTasks)) {
+			found = true
+			break
+		}
+	}
+	if !found {
 		return nil, nil
 	}
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE compute_tasks
+		SET state = 'active', lease = $1, lease_expires_at = $3, admitted_nodes = CASE WHEN admitted_nodes > 0 THEN admitted_nodes ELSE $4 END, updated_at = $2
+		WHERE quote_id = $5`, lease, now, deadline, nodes, id); err != nil {
 		if strings.Contains(err.Error(), "uk_compute_tasks_lease") {
 			return nil, fmt.Errorf("compute task lease %s is already in use: %w", lease, store.ErrComputeTaskConflict)
 		}
@@ -491,6 +565,9 @@ func (a *Adapter) FinishComputeTask(ctx context.Context, id, lease string, progr
 	if state != store.ComputeTaskActive {
 		return fmt.Errorf("compute task %s cannot finish in state %q: %w", id, state, store.ErrComputeTaskConflict)
 	}
+	if !sameProgress {
+		return fmt.Errorf("compute task %s progress changed while finishing: %w", id, store.ErrComputeTaskConflict)
+	}
 	if storedLease != lease {
 		return fmt.Errorf("compute task %s is leased to another worker: %w", id, store.ErrComputeTaskConflict)
 	}
@@ -513,7 +590,7 @@ func (a *Adapter) FinishComputeTask(ctx context.Context, id, lease string, progr
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE compute_tasks
 		SET state = $2, charged_units = $3, progress = $4::jsonb,
-		    lease = '', lease_expires_at = NULL, updated_at = $5
+		    lease = '', lease_expires_at = NULL, admitted_nodes = 0, updated_at = $5
 		WHERE quote_id = $1`, id, terminal, actualUnits, string(raw), now); err != nil {
 		return fmt.Errorf("finish compute task: %w", err)
 	}

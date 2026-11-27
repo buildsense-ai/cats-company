@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from cloud import Cloud, Rejected, WorkerError, http_request, https_base, identifier
+from cloud import Cloud, MutationLockTimeout, Rejected, WorkerError, http_request, https_base, identifier
 from slurm import Slurm, timestamp
 
 
@@ -279,10 +279,15 @@ class Task:
     def request(self, phase, action, receipt, context, intent=None, rejected=None):
         request_id = str(uuid.uuid4())
         trace = f"EOP request ID {request_id}"
-        self.move(phase, problem=trace, **(intent or {}))
+
+        def save_intent():
+            # Refresh the lease after acquiring the cloud lock and before sending the mutation.
+            self.move(phase, problem=trace, **(intent or {}))
+
         try:
-            # The acknowledged intent save renewed the lease for this single mutation.
-            result = self.cloud.outcome(action, direct, request_id, **context)
+            result = self.cloud.outcome(action, direct, request_id, before_send=save_intent, **context)
+        except MutationLockTimeout:
+            return "wait"
         except WorkerError as exc:
             if isinstance(exc, Rejected) and rejected is not None:
                 if action == "expand":

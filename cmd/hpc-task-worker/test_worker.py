@@ -1,12 +1,31 @@
+import atexit
 import copy
 import json
+import os
 import subprocess
+import sys
+import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
-
-from cloud import API_FIELDS, Cloud, WorkerError, query_string, signed_headers
 from slurm import Slurm
+
+_TEST_LOCK_PATHS = set()
+
+
+def _cleanup_test_lock_files():
+    for path in _TEST_LOCK_PATHS:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+atexit.register(_cleanup_test_lock_files)
+
+from cloud import API_FIELDS, Cloud, MutationGate, WorkerError, query_string, signed_headers
 from worker import Cats, LeaseError, Task, main, preflight, resource_budget_seconds
 
 
@@ -73,8 +92,22 @@ class Fixture:
         self.node_names = ["wn01"]
         self.missing_master = False
         self.cats = Cats("https://cats.invalid", "fixture-token", self.http)
-        self.cloud = Cloud(config(), "fixture-ak", "fixture-sk", self.http)
+        fd, self.lock_path = tempfile.mkstemp(prefix="catsco-worker-test-", suffix=".lock")
+        _TEST_LOCK_PATHS.update((self.lock_path, self.lock_path + ".lock"))
+        os.close(fd)
+        os.unlink(self.lock_path)
+        cloud_config = config()
+        cloud_config["mutation_lock_file"] = self.lock_path
+        cloud_config["mutation_cooldown_seconds"] = 0
+        self.cloud = Cloud(cloud_config, "fixture-ak", "fixture-sk", self.http)
         self.slurm = Slurm({"account": "fixed"}, self.command)
+
+    def __del__(self):
+        for path in (getattr(self, "lock_path", ""), getattr(self, "lock_path", "") + ".lock"):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     def claimed(self):
         return Task(self.cats, self.cloud, self.slurm, self.cats.claim())
@@ -239,6 +272,134 @@ class SlurmTest(unittest.TestCase):
 
 
 
+class MutationGateTest(unittest.TestCase):
+    def _start_child(self, path, timeout, hold, interval=0, mode="ok"):
+        code = (
+            "import sys,time\n"
+            "sys.path.insert(0, sys.argv[5])\n"
+            "from cloud import MutationGate\n"
+            "with MutationGate(sys.argv[1], timeout_seconds=float(sys.argv[2]), "
+            "interval_seconds=float(sys.argv[3])):\n"
+            " print('locked', flush=True)\n"
+            " time.sleep(float(sys.argv[4]))\n"
+            " if sys.argv[6] == 'fail':\n"
+            "  raise RuntimeError('child failure')\n"
+        )
+        return subprocess.Popen(
+            [sys.executable, "-c", code, path, str(timeout), str(interval), str(hold),
+             os.path.dirname(__file__), mode],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+    def test_serializes_mutations_across_cloud_instances(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "mutation.lock")
+            gates = [MutationGate(path, timeout_seconds=2, interval_seconds=0) for _ in range(2)]
+            events = []
+            barrier = threading.Barrier(2)
+
+            def run(index):
+                barrier.wait()
+                with gates[index]:
+                    events.append(("start", index))
+                    time.sleep(0.03)
+                    events.append(("end", index))
+
+            threads = [threading.Thread(target=run, args=(index,)) for index in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(len(events), 4)
+            self.assertEqual([event[0] for event in events], ["start", "end", "start", "end"])
+            self.assertEqual(events[0][1], events[1][1])
+            self.assertEqual(events[2][1], events[3][1])
+            self.assertNotEqual(events[0][1], events[2][1])
+
+    def test_serializes_mutations_across_processes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "mutation.lock")
+            first = self._start_child(path, 2, 0.25)
+            second = None
+            try:
+                self.assertEqual(first.stdout.readline().strip(), "locked")
+                second = self._start_child(path, 2, 0)
+                second_output, second_error = second.communicate(timeout=3)
+                self.assertEqual(second.returncode, 0, second_error)
+                self.assertEqual(second_output.strip(), "locked")
+            finally:
+                if second is not None and second.poll() is None:
+                    second.terminate()
+                    second.communicate(timeout=3)
+                if first.poll() is None:
+                    first.terminate()
+                first.communicate(timeout=3)
+
+    def test_process_timeout_does_not_enter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "mutation.lock")
+            first = self._start_child(path, 2, 0.3)
+            second = None
+            try:
+                self.assertEqual(first.stdout.readline().strip(), "locked")
+                second = self._start_child(path, 0.05, 0)
+                second_output, second_error = second.communicate(timeout=2)
+                self.assertNotEqual(second.returncode, 0, second_error)
+                self.assertNotIn("locked", second_output)
+                self.assertIn("cloud mutation lock timed out", second_error)
+            finally:
+                if second is not None and second.poll() is None:
+                    second.terminate()
+                    second.communicate(timeout=3)
+                if first.poll() is None:
+                    first.terminate()
+                first.communicate(timeout=3)
+
+    def test_process_exception_releases_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "mutation.lock")
+            failed = self._start_child(path, 2, 0, mode="fail")
+            output, error = failed.communicate(timeout=2)
+            self.assertNotEqual(failed.returncode, 0, output)
+            self.assertIn("child failure", error)
+            recovered = self._start_child(path, 0.5, 0)
+            recovered_output, recovered_error = recovered.communicate(timeout=2)
+            self.assertEqual(recovered.returncode, 0, recovered_error)
+            self.assertEqual(recovered_output.strip(), "locked")
+
+    def test_cooldown_is_shared_across_processes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "mutation.lock")
+            first = self._start_child(path, 2, 0, interval=0.08)
+            self.assertEqual(first.stdout.readline().strip(), "locked")
+            first_output, first_error = first.communicate(timeout=2)
+            self.assertEqual(first.returncode, 0, first_error)
+            started = time.monotonic()
+            second = self._start_child(path, 2, 0, interval=0.08)
+            second_output, second_error = second.communicate(timeout=2)
+            self.assertEqual(second.returncode, 0, second_error)
+            self.assertEqual(second_output.strip(), "locked")
+            self.assertGreaterEqual(time.monotonic() - started, 0.07)
+
+    def test_cooldown_is_shared_through_lock_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            gate = MutationGate(os.path.join(directory, "mutation.lock"), interval_seconds=0.05)
+            with gate:
+                pass
+            started = time.monotonic()
+            with gate:
+                elapsed = time.monotonic() - started
+            self.assertGreaterEqual(elapsed, 0.04)
+
+    def test_failed_mutation_releases_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "mutation.lock")
+            with self.assertRaises(RuntimeError):
+                with MutationGate(path, interval_seconds=0):
+                    raise RuntimeError("fixture mutation failure")
+            with MutationGate(path, timeout_seconds=0.1, interval_seconds=0):
+                pass
+
 class WorkerTest(unittest.TestCase):
     def test_resource_budget_supports_explicit_and_legacy_quotes(self):
         f = Fixture()
@@ -247,6 +408,19 @@ class WorkerTest(unittest.TestCase):
         f.run["max_node_seconds"] = 1200
         self.assertEqual(resource_budget_seconds(f.run), 1200)
         f.claimed().validate_spec()
+
+    def test_busy_mutation_lock_leaves_intent_unsent_for_retry(self):
+        f = Fixture()
+        task = f.advance_to("queue_created")
+        gate = f.cloud.mutation_gate
+        gate.timeout_seconds = 0.01
+        with MutationGate(gate.path, interval_seconds=0):
+            self.assertEqual(task.advance(), "wait")
+            self.assertEqual(f.run["progress"]["phase"], "queue_created")
+            self.assertNotIn("expand", f.mutations)
+        self.assertEqual(task.advance(), "next")
+        self.assertEqual(f.run["progress"]["phase"], "expand_intent")
+        self.assertEqual(f.mutations.count("expand"), 1)
 
     def test_lifecycle_full_progress_and_finish(self):
         f = Fixture()

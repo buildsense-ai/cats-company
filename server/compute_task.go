@@ -54,11 +54,12 @@ type computeTaskReceiptKicker interface {
 }
 
 type ComputeTaskHandler struct {
-	store         store.ComputeTaskStore
-	catalog       []computeTaskSKU
-	workerToken   string
-	allowed       map[int64]bool
-	publicBaseURL string
+	store          store.ComputeTaskStore
+	catalog        []computeTaskSKU
+	workerToken    string
+	allowed        map[int64]bool
+	publicBaseURL  string
+	capacityPolicy store.ComputeTaskAdmissionPolicy
 	// receiptKicker 可选：装配处注入与投递器同一个实例，finish 成功即时投递。
 	receiptKicker computeTaskReceiptKicker
 }
@@ -70,6 +71,31 @@ func (h *ComputeTaskHandler) SetReceiptKicker(kicker computeTaskReceiptKicker) {
 		return
 	}
 	h.receiptKicker = kicker
+}
+
+func computeTaskAdmissionPolicyFromEnv() (store.ComputeTaskAdmissionPolicy, error) {
+	var policy store.ComputeTaskAdmissionPolicy
+	values := []struct {
+		name  string
+		value *int
+	}{
+		{"CATSCOMPANY_COMPUTE_MAX_TOTAL_NODES", &policy.MaxTotalNodes},
+		{"CATSCOMPANY_COMPUTE_MAX_CONCURRENT_TASKS", &policy.MaxConcurrentTasks},
+		{"CATSCOMPANY_COMPUTE_MAX_USER_NODES", &policy.MaxUserNodes},
+		{"CATSCOMPANY_COMPUTE_MAX_USER_TASKS", &policy.MaxUserTasks},
+	}
+	for _, item := range values {
+		raw := strings.TrimSpace(os.Getenv(item.name))
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || value < 0 {
+			return store.ComputeTaskAdmissionPolicy{}, fmt.Errorf("%s must be a non-negative integer", item.name)
+		}
+		*item.value = int(value)
+	}
+	return policy, nil
 }
 
 func NewComputeTaskHandlerFromEnv(st store.ComputeTaskStore) (*ComputeTaskHandler, error) {
@@ -89,6 +115,10 @@ func NewComputeTaskHandlerFromEnv(st store.ComputeTaskStore) (*ComputeTaskHandle
 			return nil, errors.New("invalid compute task account allowlist")
 		}
 		allowed[uid] = true
+	}
+	capacityPolicy, err := computeTaskAdmissionPolicyFromEnv()
+	if err != nil {
+		return nil, err
 	}
 	f, err := os.Open(file)
 	if err != nil {
@@ -111,7 +141,8 @@ func NewComputeTaskHandlerFromEnv(st store.ComputeTaskStore) (*ComputeTaskHandle
 	}
 	return &ComputeTaskHandler{
 		store: st, catalog: catalog, workerToken: token, allowed: allowed,
-		publicBaseURL: strings.TrimRight(strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL")), "/"),
+		publicBaseURL:  strings.TrimRight(strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL")), "/"),
+		capacityPolicy: capacityPolicy,
 	}, nil
 }
 
@@ -493,7 +524,12 @@ func (h *ComputeTaskHandler) claim(ctx context.Context, w http.ResponseWriter, n
 		computeTaskHTTPError(w, http.StatusServiceUnavailable, "compute_claim_unavailable")
 		return
 	}
-	run, err := h.store.ClaimComputeTask(ctx, lease, now, now.Add(store.ComputeTaskLeaseTTL))
+	var run *store.ComputeTaskRun
+	if admissionStore, ok := h.store.(store.ComputeTaskAdmissionStore); ok {
+		run, err = admissionStore.ClaimComputeTaskWithPolicy(ctx, lease, now, now.Add(store.ComputeTaskLeaseTTL), h.capacityPolicy)
+	} else {
+		run, err = h.store.ClaimComputeTask(ctx, lease, now, now.Add(store.ComputeTaskLeaseTTL))
+	}
 	if err != nil {
 		computeTaskHTTPError(w, http.StatusServiceUnavailable, "compute_claim_unavailable")
 		return
