@@ -53,7 +53,9 @@
 
 旧报价数据可能没有 `max_resource_seconds_per_node`。worker 会从旧报价的 `max_node_seconds / nodes` 回退读取资源预算，旧任务继续按原报价语义结算。
 
-部署方通过 `CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE` 指定一个绝对路径，启用预览。由平台采集器原子更新该路径的本地普通 JSON 文件。采样对应一组节点规格一致的 Slurm 队列，包含 UTC RFC 3339 `sampled_at`、已配置且可调度的 `nodes`、其中完全空闲的 `idle_nodes`、`logical_cpus_per_node`、`memory_mib_per_node`、可选 `gpus_per_node` 和 `memory_mib_per_gpu`。未知的 GPU 字段留空，已确认没有 GPU 时 `gpus_per_node` 为 0。文件缺失、过期或格式异常时云集群状态为未知。
+预览不依赖容量快照。未配置 `CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE` 时，`preview` 直接使用 `catalog` 的已发布规格与费率：返回 `source=platform_catalog`、`catalog.sku_id`、`catalog.on_demand=true`，容量 `capacity=unknown`、`eta_s=null`、`reason_code=slurm_capacity_on_demand`。这对应按需开通的零常驻部署——没有空闲节点可报，库存容量在开通时确认，开通与排队时间不计入用户账单。规格不足时返回 `fit=does_not_fit` 与 `no_published_shape`（无匹配 CPU 规格或含 GPU 需求）或 `nodes_exceed_catalog_limit`（节点数超过报价上限）；`catalog` 为空时返回 `slurm_catalog_unavailable`。
+
+部署方也可以配置 `CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE` 指向一个绝对路径，提供实测容量，此时 `preview` 优先使用该快照并返回 `source=platform_slurm_snapshot`。由平台采集器原子更新该路径的本地普通 JSON 文件。采样对应一组节点规格一致的 Slurm 队列，包含 UTC RFC 3339 `sampled_at`、已配置且可调度的 `nodes`、其中完全空闲的 `idle_nodes`、`logical_cpus_per_node`、`memory_mib_per_node`、可选 `gpus_per_node` 和 `memory_mib_per_gpu`。未知的 GPU 字段留空，已确认没有 GPU 时 `gpus_per_node` 为 0。文件缺失、过期或格式异常时云集群状态为未知，此时预览回落到 `platform_catalog` 口径。
 
 仓库的 `deploy/collect-slurm-snapshot.py` 可在已配置 Slurm 客户端的 Linux 主机上用 Python 3.8 或更新版本运行。为采集器准备平台配置文件，指定一个分区及预期的同规格节点资源。以下示例对应一组 2 CPU、3663 MiB、无 GPU 的节点。
 

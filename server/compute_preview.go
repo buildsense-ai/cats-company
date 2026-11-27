@@ -88,17 +88,25 @@ type computePreviewQuote struct {
 	Reason         string              `json:"reason_code,omitempty"`
 }
 
+type computePreviewCatalog struct {
+	SKU         string `json:"sku_id"`
+	LogicalCPUs int    `json:"logical_cpus_per_node"`
+	MemoryMiB   int    `json:"memory_mib_per_node"`
+	OnDemand    bool   `json:"on_demand"`
+}
+
 type computePreviewOption struct {
-	ID        string                `json:"option_id"`
-	Fit       string                `json:"fit"`
-	Capacity  string                `json:"capacity"`
-	Reason    string                `json:"reason_code"`
-	Source    string                `json:"source"`
-	SampledAt *time.Time            `json:"sampled_at"`
-	Runtime   *computeRuntimeSample `json:"agent_runtime,omitempty"`
-	Slurm     *computeSlurmSample   `json:"slurm,omitempty"`
-	ETAS      *[2]int               `json:"eta_s"`
-	Quote     computePreviewQuote   `json:"quote"`
+	ID        string                 `json:"option_id"`
+	Fit       string                 `json:"fit"`
+	Capacity  string                 `json:"capacity"`
+	Reason    string                 `json:"reason_code"`
+	Source    string                 `json:"source"`
+	SampledAt *time.Time             `json:"sampled_at"`
+	Runtime   *computeRuntimeSample  `json:"agent_runtime,omitempty"`
+	Slurm     *computeSlurmSample    `json:"slurm,omitempty"`
+	Catalog   *computePreviewCatalog `json:"catalog,omitempty"`
+	ETAS      *[2]int                `json:"eta_s"`
+	Quote     computePreviewQuote    `json:"quote"`
 }
 
 type computePreviewResult struct {
@@ -237,6 +245,55 @@ func previewSlurm(task computePreviewTask, sample *computeSlurmSample, now time.
 	return option
 }
 
+// previewCatalog answers the on-demand case: with no capacity snapshot there is
+// nothing idle to report, so the preview compares the published node shapes and
+// tariffs instead of failing. Capacity and ETA stay unknown until provisioning.
+func previewCatalog(task computePreviewTask, catalog []computeTaskSKU, maxNodes int, now time.Time) computePreviewOption {
+	option := computePreviewOption{ID: "slurm", Source: "platform_catalog", Fit: "unknown", Capacity: "unknown", Reason: "slurm_catalog_unavailable", Quote: computePreviewQuote{State: "unpriced"}}
+	if len(catalog) == 0 {
+		return option
+	}
+	if maxNodes < 1 {
+		maxNodes = computeTaskMaxNodes
+	}
+	if task.Nodes > maxNodes {
+		option.Fit, option.Reason = "does_not_fit", "nodes_exceed_catalog_limit"
+		return option
+	}
+	if task.GPUCount > 0 {
+		// The published catalogue only covers CPU shapes.
+		option.Fit, option.Reason = "does_not_fit", "no_published_shape"
+		return option
+	}
+	// Match the quote rule: the cheapest valid tariff per second among the shapes
+	// that fit, because a quote charges the same wall time on any of them.
+	var best *computeTaskSKU
+	var bestRate *computeSlurmRate
+	var bestPerSecond float64
+	for i := range catalog {
+		sku := catalog[i]
+		if sku.LogicalCPUs < task.LogicalCPUs || sku.MemoryMiB < task.MemoryMiB {
+			continue
+		}
+		rate, priced := sku.rate(now)
+		if !priced {
+			continue
+		}
+		perSecond := float64(rate.UnitsPerNodePeriod) / float64(rate.PeriodSeconds)
+		if best == nil || perSecond < bestPerSecond || perSecond == bestPerSecond && sku.ID < best.ID {
+			best, bestRate, bestPerSecond = &catalog[i], &catalog[i].Tariff, perSecond
+		}
+	}
+	if best == nil {
+		option.Fit, option.Reason = "does_not_fit", "no_published_shape"
+		return option
+	}
+	option.Fit, option.Capacity, option.Reason = "fits", "unknown", "slurm_capacity_on_demand"
+	option.Catalog = &computePreviewCatalog{SKU: best.ID, LogicalCPUs: best.LogicalCPUs, MemoryMiB: best.MemoryMiB, OnDemand: true}
+	option.Quote = estimateSlurmCredits(task, bestRate, now)
+	return option
+}
+
 func computePreviewMarkdown(result computePreviewResult) string {
 	labels := map[string]string{
 		"runtime_sample_missing": "待采样", "runtime_sample_stale": "采样过期", "runtime_gpu_unverified": "GPU 待核对",
@@ -246,6 +303,8 @@ func computePreviewMarkdown(result computePreviewResult) string {
 		"slurm_sample_missing": "待采样", "slurm_sample_stale": "采样过期", "slurm_node_shape_insufficient": "当前队列节点规格不足",
 		"slurm_gpu_unverified": "GPU 待核对", "slurm_idle_nodes_available": "有足够空闲节点", "slurm_idle_nodes_insufficient": "空闲节点不足，可能排队",
 		"slurm_nodes_insufficient": "节点规格匹配，需补充节点",
+		"slurm_capacity_on_demand": "按需开通，容量待确认", "slurm_catalog_unavailable": "规格目录不可用",
+		"no_published_shape": "无匹配的发布规格", "nodes_exceed_catalog_limit": "节点数超过报价上限",
 	}
 	var text strings.Builder
 	text.WriteString("| 运行位置 | 资源与容量 | 预计完工 | 预计积分 | 费用上限 |\n| --- | --- | --- | --- | --- |\n")
@@ -274,22 +333,30 @@ func computePreviewMarkdown(result computePreviewResult) string {
 			fmt.Fprintf(&text, " 本次按每%s计费 %d 秒试算。", workUnit, cloud.Quote.BilledS)
 		}
 	}
+	if cloud.Catalog != nil {
+		fmt.Fprintf(&text, " 云端按需开通 %s（%d 核 / %d MiB），容量以开通时为准，开通与排队时间不计入你的账单。", cloud.Catalog.SKU, cloud.Catalog.LogicalCPUs, cloud.Catalog.MemoryMiB)
+	}
 	if result.Options[0].Capacity == "available" {
 		text.WriteString("\n\n要用当前 Agent 设备运行，还是等云端报价再决定？")
 	}
 	return text.String()
 }
 
-func runComputePreview(snapshotPath string, args computePreviewArgs) (*mcp.CallToolResult, any, error) {
+func runComputePreview(snapshotPath string, args computePreviewArgs, catalog []computeTaskSKU, maxNodes int, now time.Time) (*mcp.CallToolResult, any, error) {
 	if !args.Task.valid() {
 		return serviceToolError("invalid_compute_requirements"), nil, nil
 	}
-	slurm := readComputeSlurmSample(snapshotPath)
-	now := time.Now()
+	sample := readComputeSlurmSample(snapshotPath)
+	cloud := previewSlurm(args.Task, sample, now)
+	if sample == nil {
+		// No capacity snapshot is the normal on-demand deployment: compare the
+		// published shapes and tariffs instead of reporting an unusable preview.
+		cloud = previewCatalog(args.Task, catalog, maxNodes, now)
+	}
 	result := computePreviewResult{
 		SchemaVersion: computePreviewVersion,
 		Task:          args.Task,
-		Options:       []computePreviewOption{previewAgentRuntime(args.Task, args.Runtime, now), previewSlurm(args.Task, slurm, now)},
+		Options:       []computePreviewOption{previewAgentRuntime(args.Task, args.Runtime, now), cloud},
 	}
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -307,23 +374,11 @@ func (h *ServiceAgentsMCPHandler) addComputePreviewTool(srv *mcp.Server) {
 		Description: "只读预览任务与 Cats 托管 Slurm 的匹配、容量和预计积分，也可传入当前 Agent 运行设备的采样（如 local_compute_resources）。按任务需要询问用户是否有可用的服务器、在线设备、集群或其他算力，并利用现有授权和工具核实。将这些资源与返回的候选一起用 Markdown 表格比较，标明来源并保留未知的容量、完工时间和费用。可用有依据的 estimated_billable_s 试算 Slurm 积分。请用户回复运行位置偏好，付费执行需要另行确认具体报价、费用上限和有效期。",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args computePreviewArgs) (*mcp.CallToolResult, any, error) {
-		if !args.Task.valid() {
-			return serviceToolError("invalid_compute_requirements"), nil, nil
+		var catalog []computeTaskSKU
+		maxNodes := computeTaskMaxNodes
+		if h.computeTasks != nil {
+			catalog, maxNodes = h.computeTasks.catalog, h.computeTasks.maxNodesPerTask()
 		}
-		slurm := readComputeSlurmSample(h.computeSnapshotPath)
-		now := time.Now()
-		result := computePreviewResult{
-			SchemaVersion: computePreviewVersion,
-			Task:          args.Task,
-			Options:       []computePreviewOption{previewAgentRuntime(args.Task, args.Runtime, now), previewSlurm(args.Task, slurm, now)},
-		}
-		data, err := json.Marshal(result)
-		if err != nil {
-			return nil, nil, err
-		}
-		return &mcp.CallToolResult{Content: []mcp.Content{
-			&mcp.TextContent{Text: computePreviewMarkdown(result)},
-			&mcp.TextContent{Text: string(data)},
-		}}, result, nil
+		return runComputePreview(h.computeSnapshotPath, args, catalog, maxNodes, time.Now())
 	})
 }

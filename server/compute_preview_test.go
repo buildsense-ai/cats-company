@@ -177,3 +177,101 @@ func TestComputePreviewMCP(t *testing.T) {
 		}
 	}
 }
+
+func previewCatalogFixture(now time.Time) []computeTaskSKU {
+	valid := now.Add(time.Hour)
+	return []computeTaskSKU{
+		{ID: "c8e.large.2", LogicalCPUs: 2, MemoryMiB: 3584, Tariff: computeSlurmRate{CNYMicrosPerNode: 300_000, PeriodS: 3600, IncrementS: 60, ValidUntil: valid}},
+		{ID: "s8e.2xlarge.2", LogicalCPUs: 8, MemoryMiB: 32_768, Tariff: computeSlurmRate{CNYMicrosPerNode: 1_010_000, PeriodS: 3600, IncrementS: 60, ValidUntil: valid}},
+	}
+}
+
+// A zero-resident pool has no idle nodes to sample, so preview must still answer
+// with the published shapes and tariffs instead of reporting an unusable tool.
+func TestComputePreviewCatalogFallback(t *testing.T) {
+	now := time.Now().UTC()
+	catalog := previewCatalogFixture(now)
+	preview := func(task computePreviewTask) (computePreviewOption, string) {
+		t.Helper()
+		_, structured, err := runComputePreview("", computePreviewArgs{Task: task}, catalog, 2, now)
+		if err != nil || structured == nil {
+			t.Fatalf("preview: %v", err)
+		}
+		result := structured.(computePreviewResult)
+		if len(result.Options) != 2 || result.SchemaVersion != computePreviewVersion {
+			t.Fatalf("unexpected preview shape: %+v", result)
+		}
+		return result.Options[1], computePreviewMarkdown(result)
+	}
+
+	shards := computePreviewTask{Topology: "independent_shards", Shards: 1, LogicalCPUs: 2, MemoryMiB: 1024, EstimatedBillableS: 600}
+	cloud, markdown := preview(shards)
+	if cloud.Source != "platform_catalog" || cloud.Fit != "fits" || cloud.Capacity != "unknown" ||
+		cloud.Reason != "slurm_capacity_on_demand" || cloud.Catalog == nil || cloud.Catalog.SKU != "c8e.large.2" ||
+		!cloud.Catalog.OnDemand || cloud.Slurm != nil || cloud.SampledAt != nil || cloud.ETAS != nil || cloud.Quote.Max != nil {
+		t.Fatalf("catalog preview must stay unpromised: %+v", cloud)
+	}
+	if cloud.Quote.State != "estimated" || cloud.Quote.Estimate == nil || *cloud.Quote.Estimate != 5_000_000 || cloud.Quote.BilledS != 600 ||
+		!strings.Contains(markdown, "按需开通，容量待确认") || !strings.Contains(markdown, "约 5 积分") ||
+		!strings.Contains(markdown, "按需开通 c8e.large.2") {
+		t.Fatalf("catalog estimate: %+v\n%s", cloud.Quote, markdown)
+	}
+
+	bigger := shards
+	bigger.LogicalCPUs, bigger.MemoryMiB = 4, 16_384
+	if cloud, _ = preview(bigger); cloud.Catalog == nil || cloud.Catalog.SKU != "s8e.2xlarge.2" || cloud.Fit != "fits" {
+		t.Fatalf("smallest fitting shape: %+v", cloud)
+	}
+
+	oversized := shards
+	oversized.LogicalCPUs = 16
+	cloud, _ = preview(oversized)
+	if cloud.Fit != "does_not_fit" || cloud.Reason != "no_published_shape" || cloud.Catalog != nil || cloud.Quote.Rate != nil {
+		t.Fatalf("oversized shape: %+v", cloud)
+	}
+
+	many := shards
+	many.Topology, many.Shards, many.Nodes = "distributed", 0, 3
+	if cloud, _ = preview(many); cloud.Fit != "does_not_fit" || cloud.Reason != "nodes_exceed_catalog_limit" {
+		t.Fatalf("node limit: %+v", cloud)
+	}
+
+	gpu := shards
+	gpu.GPUCount, gpu.MemoryMiBPerGPU = 1, 8192
+	if cloud, _ = preview(gpu); cloud.Fit != "does_not_fit" || cloud.Reason != "no_published_shape" {
+		t.Fatalf("GPU shape: %+v", cloud)
+	}
+}
+
+// The unified tool must answer preview without CATSCOMPANY_COMPUTE_SLURM_SNAPSHOT_FILE.
+func TestComputePreviewWithoutSnapshotPath(t *testing.T) {
+	const uid = 441
+	now := time.Now().UTC()
+	handler := NewServiceAgentsMCPHandler(newFakeServiceAgentStore())
+	handler.SetComputeTasks(&ComputeTaskHandler{
+		allowed: map[int64]bool{uid: true}, catalog: previewCatalogFixture(now),
+	})
+	ts := httptest.NewServer(mcpAuthStub(uid, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+	resp, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      computeToolName,
+		Arguments: map[string]any{"action": "preview", "task": map[string]any{"topology": "independent_shards", "shards": 1, "logical_cpus": 2, "memory_mib": 1024}},
+	})
+	if err != nil || resp.IsError {
+		t.Fatalf("preview without snapshot: result=%+v err=%v", resp, err)
+	}
+	var result computePreviewResult
+	data, err := json.Marshal(resp.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	cloud := result.Options[1]
+	if cloud.Source != "platform_catalog" || cloud.Catalog == nil || cloud.Catalog.SKU != "c8e.large.2" ||
+		cloud.Capacity != "unknown" || cloud.ETAS != nil {
+		t.Fatalf("unexpected catalog preview through MCP: %+v", cloud)
+	}
+}
