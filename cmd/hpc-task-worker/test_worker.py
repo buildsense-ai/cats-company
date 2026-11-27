@@ -26,7 +26,7 @@ def _cleanup_test_lock_files():
 atexit.register(_cleanup_test_lock_files)
 
 from cloud import API_FIELDS, Cloud, MutationGate, WorkerError, query_string, signed_headers
-from worker import Cats, LeaseError, Task, main, preflight, resource_budget_seconds
+from worker import Cats, LeaseError, ProvisionLease, Task, main, preflight, resource_budget_seconds
 
 
 QUOTE = "hpc_" + "0123456789abcdef" * 2
@@ -851,6 +851,32 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(result["Eop-Authorization"],
                          "ak Headers=ctyun-eop-request-id;eop-date Signature=pmveuEm2VRg6b+fTcQo8wgtlRxZIkTz9O2dy5bBhovw=")
 
+
+class ProvisionLeaseTest(unittest.TestCase):
+    def test_only_one_task_provisions_the_cluster(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "provision.lease")
+            first, second = ProvisionLease(path, "hpc_a", 900), ProvisionLease(path, "hpc_b", 900)
+            self.assertTrue(first.acquire())
+            self.assertFalse(second.acquire())
+            # The owner keeps the lease across polling slices.
+            self.assertTrue(first.acquire())
+            first.release()
+            self.assertTrue(second.acquire())
+
+    def test_lease_left_by_a_dead_worker_expires(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "provision.lease")
+            dead = ProvisionLease(path, "hpc_dead", 60)
+            self.assertTrue(dead.acquire())
+            stale = time.time() - 3600
+            os.utime(path, (stale, stale))
+            fresh = ProvisionLease(path, "hpc_next", 60)
+            self.assertTrue(fresh.acquire())
+            self.assertEqual(fresh._owner(), "hpc_next")
+
+    def test_missing_lease_path_disables_the_gate(self):
+        self.assertTrue(ProvisionLease("", "hpc_a", 900).acquire())
 
 if __name__ == "__main__":
     unittest.main()
