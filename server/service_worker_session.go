@@ -104,8 +104,10 @@ func ParseServiceWorkerSession(raw string) (int64, error) {
 // 这里**不再**套 Agent 工具内测白名单（CATSCO_SERVICE_CATALOG_UID_WHITELIST）：
 // 那个名单是「谁能看到/发布 Agent 工具目录」的内测门，跟「谁的 bot 能接单」是两件事。
 // 2026-11-05 线上事故就是这么来的 —— 复用之后不在名单里的账号全部换不到券：
-//   该接口累计 366,006 次 403、只有 7 次 200，客户端每 2 秒重试，
-//   表现为「bot 在线但一直不干活」（用户侧看到的就是 bot 噶了）。
+//
+//	该接口累计 366,006 次 403、只有 7 次 200，客户端每 2 秒重试，
+//	表现为「bot 在线但一直不干活」（用户侧看到的就是 bot 噶了）。
+//
 // 权限边界本来就在 run 级（authorizeWorkerRun 只放自己名下应用的 run），
 // 账号级白名单在这里既不必要，也会把正常用户挡死。
 type ServiceWorkerSessionHandler struct {

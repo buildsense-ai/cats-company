@@ -125,10 +125,10 @@ type CommercialPlan struct {
 // CommercialOrder is an immutable purchase snapshot plus its payment and
 // fulfillment state. Provider secrets and raw callback bodies are never stored.
 type CommercialOrder struct {
-	ID                int64              `json:"id"`
-	OrderNo           string             `json:"order_no"`
-	UID               int64              `json:"uid"`
-	PlanID            int64              `json:"plan_id"`
+	ID      int64  `json:"id"`
+	OrderNo string `json:"order_no"`
+	UID     int64  `json:"uid"`
+	PlanID  int64  `json:"plan_id"`
 	// Kind is "plan" for a package and "credit_topup" for a standalone credit
 	// purchase. A top-up carries plan_id = 0: there is no product row, and the
 	// amount plus the unit snapshot on the order are the whole contract.

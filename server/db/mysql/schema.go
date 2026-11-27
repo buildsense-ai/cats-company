@@ -21,7 +21,7 @@ func (a *Adapter) CreateSchema() error {
 		createConversationNotificationMutesTable,
 		createConversationDeviceSelectionsTable,
 		createMessagesTable,
-createFileUploadsTable,
+		createFileUploadsTable,
 		createFileMessageBindingsTable,
 		createFileMediaSessionsTable,
 		createFileVersionBindingsTable,

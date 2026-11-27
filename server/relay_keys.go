@@ -118,6 +118,7 @@ type relayUsageSummary struct {
 	LimitCNY     float64 `json:"-"`
 	RemainingCNY float64 `json:"-"`
 }
+
 // MarshalJSON 让 credits 模式的摘要不下发旧额度字段。percent/remaining_percent
 // 是没有 omitempty 的 float64（legacy 真正的 0% 必须照常下发），所以只能在
 // credits 模式下换一份线上形状：这两个 0 会被前端当成「额度已用完」。
@@ -140,7 +141,6 @@ func (s relayUsageSummary) MarshalJSON() ([]byte, error) {
 		BillingMode: s.BillingMode,
 	})
 }
-
 
 func NewRelayKeyHandlerFromEnv() *RelayKeyHandler {
 	return &RelayKeyHandler{admin: NewRelayAdminClientFromEnv()}
