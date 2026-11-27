@@ -531,6 +531,16 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(f.claimed().advance(), "next")
         self.assertEqual(f.run["progress"]["phase"], "discover_disks")
         self.assertEqual(f.run["progress"]["node_names"], ["wn01"])
+
+    def test_unknown_provider_status_is_reported_with_its_value(self):
+        # Ctyun reports pre_handling while an expand is being accepted; an
+        # unconfigured status must stay diagnosable from the task problem text.
+        f = Fixture()
+        task = f.advance_to("queue_created")
+        self.assertEqual(task.advance(), "next")
+        f.statuses["expand"] = "pre_handling"
+        self.assertEqual(f.claimed().advance(), "reconcile")
+        self.assertIn("pre_handling", f.run["progress"]["problem"])
     def test_disk_must_be_system_disk_of_owned_instance(self):
         for changes in (dict(instanceID="other-instance"), dict(system=False)):
             with self.subTest(changes=changes):
