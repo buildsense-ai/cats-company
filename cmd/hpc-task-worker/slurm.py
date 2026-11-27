@@ -175,11 +175,11 @@ class Slurm:
 
     @staticmethod
     def memory_satisfies(value, task):
-        match = re.fullmatch(r"([0-9]+)([KMGTP])([cn]?)", value)
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([KMGTP])([cn]?)", value)
         if not match:
             return False
         quantity, unit, scope = match.groups()
-        kib = int(quantity) * 1024 ** "KMGTP".index(unit)
+        kib = float(quantity) * 1024 ** "KMGTP".index(unit)
         if scope == "c":
             kib *= task["logical_cpus"]
         return kib >= task["memory_mib"] * 1024

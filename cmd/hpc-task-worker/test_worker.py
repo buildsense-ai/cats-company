@@ -247,6 +247,14 @@ class Fixture:
 
 
 class SlurmTest(unittest.TestCase):
+    def test_memory_satisfies_accepts_slurm_rounded_units(self):
+        task = dict(nodes=1, logical_cpus=2, memory_mib=3584)
+        self.assertTrue(Slurm.memory_satisfies("3584M", task))
+        self.assertTrue(Slurm.memory_satisfies("3.50G", task))
+        self.assertTrue(Slurm.memory_satisfies("1792Mc", task))
+        self.assertFalse(Slurm.memory_satisfies("3.4G", task))
+        self.assertFalse(Slurm.memory_satisfies("garbage", task))
+
     def test_submit_passes_long_wall_time_to_slurm(self):
         commands = []
 
