@@ -68,6 +68,71 @@ class Cats:
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
+PROVISION_PHASES = frozenset({"prepare", "create_intent", "queue_created", "expand_intent", "discover_disks"})
+
+
+class ProvisionLease:
+    """One task at a time may create a queue and expand it.
+
+    E-HPC serializes queue and node mutations per cluster: a second concurrent
+    expand is rejected without a job receipt. The lease is a small file beside
+    the mutation lock, so both worker processes on the manager agree on who owns
+    the cluster. A lease left behind by a dead worker expires after ttl seconds.
+    """
+
+    def __init__(self, path, owner, ttl_seconds):
+        self.path = path or ""
+        self.owner = owner
+        self.ttl = max(60, int(ttl_seconds or 900))
+
+    def _owner(self):
+        try:
+            with open(self.path, encoding="utf-8") as source:
+                return source.read().strip().split("\n", 1)[0]
+        except FileNotFoundError:
+            return None
+
+    def acquire(self):
+        if not self.path:
+            return True
+        for _ in range(2):
+            try:
+                handle = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                if self._owner() == self.owner:
+                    self.renew()
+                    return True
+                try:
+                    age = time.time() - os.stat(self.path).st_mtime
+                except FileNotFoundError:
+                    continue
+                if age <= self.ttl:
+                    return False
+                try:
+                    os.unlink(self.path)
+                except FileNotFoundError:
+                    pass
+                continue
+            with os.fdopen(handle, "w", encoding="utf-8") as lease:
+                lease.write(self.owner + "\n" + now())
+            return True
+        return False
+
+    def renew(self):
+        if not self.path:
+            return
+        try:
+            os.utime(self.path, None)
+        except FileNotFoundError:
+            pass
+
+    def release(self):
+        if self.path and self._owner() == self.owner:
+            try:
+                os.unlink(self.path)
+            except FileNotFoundError:
+                pass
+
 
 def direct(func, *args):
     return func(*args)
@@ -107,6 +172,10 @@ class Task:
         self.job = "cats-hpc-" + hex_id
         self.spec = run.get("task")
         self.confirmed = run.get("confirmed_at")
+        self.lease = ProvisionLease(
+            getattr(cloud, "provision_lease_file", ""), run["quote_id"],
+            getattr(cloud, "provision_lease_ttl", 900),
+        )
         self.steps = {
             "prepare": self.prepare, "create_intent": self.created, "create_rejected": self.create_rejected,
             "queue_created": self.expand, "expand_intent": self.expanded, "expand_rejected": self.delete_empty,
@@ -138,15 +207,19 @@ class Task:
             if self.progress.get("queue_name", self.queue) != self.queue:
                 raise WorkerError("persisted queue name does not match the task")
             self.validate_spec()
+            if phase in PROVISION_PHASES and not self.lease.acquire():
+                LOG.info("%s waits for the cluster provisioning lease", self.run["quote_id"])
+                return "wait"
             if phase == "create_intent" and not self.progress.get("queue_create_operation"):
-                return self.recover_create_intent()
-            if phase == "expand_intent" and not self.progress.get("expand_operation"):
-                return self.recover_expand_intent()
-            if phase == "shrink_intent" and not self.progress.get("shrink_operation"):
-                return self.recover_shrink_intent()
-            if phase == "delete_intent" and not self.progress.get("queue_delete_operation"):
-                return self.recover_delete_intent()
-            return self.steps[phase]()
+                outcome = self.recover_create_intent()
+            elif phase == "expand_intent" and not self.progress.get("expand_operation"):
+                outcome = self.recover_expand_intent()
+            elif phase == "shrink_intent" and not self.progress.get("shrink_operation"):
+                outcome = self.recover_shrink_intent()
+            elif phase == "delete_intent" and not self.progress.get("queue_delete_operation"):
+                outcome = self.recover_delete_intent()
+            else:
+                outcome = self.steps[phase]()
         except FinishRejected as exc:
             problem = f"manual_finish: {phase}: {exc}"
             self.move("reconcile", problem=problem)
@@ -158,6 +231,9 @@ class Task:
                 self.move("reconcile", problem=problem)
             LOG.warning("%s %s", self.run["quote_id"], problem)
             return "reconcile"
+        if self.progress.get("phase") not in PROVISION_PHASES:
+            self.lease.release()
+        return outcome
 
     def validate_spec(self):
         spec = self.spec

@@ -267,6 +267,10 @@ class Cloud:
             config.get("mutation_lock_timeout_seconds", 5),
             config.get("mutation_cooldown_seconds", 0.2),
         )
+        self.provision_lease_file = os.environ.get("CATS_HPC_PROVISION_LEASE_FILE") or config.get(
+            "provision_lease_file", lock_file + ".provision",
+        )
+        self.provision_lease_ttl = config.get("provision_lease_ttl_seconds", 900)
         self.hosts = {service: https_base(config["hosts"][service]) for service in ("hpc", "ecs", "evs")}
         self.scope = {key: identifier(config[key]) for key in SCOPE}
         self.role = identifier(config["compute_role_uuid"])
