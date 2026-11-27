@@ -46,7 +46,7 @@ type ComputeTaskSpec struct {
 	LogicalCPUs               int `json:"logical_cpus" jsonschema:"每节点最低逻辑 CPU 数，必须为正数"`
 	MemoryMiB                 int `json:"memory_mib" jsonschema:"每节点最低内存 MiB，必须为正数"`
 	WallSeconds               int `json:"wall_seconds" jsonschema:"按实际任务填写的 Slurm 作业最长运行秒数，必须为正数且是整分钟"`
-	MaxResourceSecondsPerNode int `json:"max_resource_seconds_per_node" jsonschema:"每节点资源计费上限，从平台实际观察到节点资源开始计算，必须为正数、整分钟且不小于 wall_seconds"`
+	MaxResourceSecondsPerNode int `json:"max_resource_seconds_per_node" jsonschema:"平台按 wall_seconds 自动推导的每节点计费上限，从实际观察到节点资源开始计算"`
 }
 
 type ComputeTaskRate struct {

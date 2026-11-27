@@ -151,15 +151,12 @@ func TestComputeTaskMCPQuoteAndStatus(t *testing.T) {
 	if len(catalog.SKUs) != 1 || catalog.SKUs[0].ID != "c8e.large.2" || catalog.MaxNodesPerTask != 2 || catalog.MaxWallSeconds != 3600 || st.quote.ID != "" {
 		t.Fatalf("invalid read-only catalog result: %+v", catalog)
 	}
-	invalidSpec := map[string]any{"action": "quote", "task": store.ComputeTaskSpec{Nodes: 2, LogicalCPUs: 2, MemoryMiB: 1024, WallSeconds: 60}}
-	invalid, err := session.CallTool(ctx, &mcp.CallToolParams{Name: computeToolName, Arguments: invalidSpec})
-	if err != nil || !invalid.IsError || !strings.Contains(invalid.Content[0].(*mcp.TextContent).Text, "invalid_compute_task") {
-		t.Fatalf("missing resource cap must be rejected: result=%+v err=%v", invalid, err)
-	}
-	spec := store.ComputeTaskSpec{Nodes: 2, LogicalCPUs: 2, MemoryMiB: 1024, WallSeconds: 1800, MaxResourceSecondsPerNode: 2400}
+	// Callers describe the job shape only; the platform derives the billing ceiling and
+	// ignores any caller-supplied value.
+	spec := store.ComputeTaskSpec{Nodes: 2, LogicalCPUs: 2, MemoryMiB: 1024, WallSeconds: 1800, MaxResourceSecondsPerNode: 60}
 	invalidLong := spec
-	invalidLong.WallSeconds, invalidLong.MaxResourceSecondsPerNode = 3660, 4200
-	invalid, err = session.CallTool(ctx, &mcp.CallToolParams{Name: computeToolName, Arguments: map[string]any{"action": "quote", "task": invalidLong}})
+	invalidLong.WallSeconds = 3660
+	invalid, err := session.CallTool(ctx, &mcp.CallToolParams{Name: computeToolName, Arguments: map[string]any{"action": "quote", "task": invalidLong}})
 	if err != nil || !invalid.IsError || st.quote.ID != "" {
 		t.Fatalf("quote above configured limit: result=%+v err=%v", invalid, err)
 	}
@@ -167,8 +164,13 @@ func TestComputeTaskMCPQuoteAndStatus(t *testing.T) {
 	if err != nil || quoted.IsError {
 		t.Fatalf("quote: result=%+v err=%v", quoted, err)
 	}
-	oneNode, ok := computeTaskCharge(catalog.SKUs[0].Rate, 1, int64(spec.MaxResourceSecondsPerNode))
-	if !ok || oneNode != 20_000_000 || st.uid != uid || st.quote.Spec != spec || st.quote.MaxUnits != 2*oneNode || st.quote.MaxNodeSeconds != 4800 || !computeTaskIDPattern.MatchString(st.quote.ID) {
+	ceiling, ok := computeTaskBillingCeiling(spec.WallSeconds, spec.Nodes)
+	oneNode, okNode := computeTaskCharge(catalog.SKUs[0].Rate, 1, ceiling)
+	if !ok || !okNode || ceiling != 1800 || oneNode != 15_000_000 {
+		t.Fatalf("derived ceiling %d one-node charge %d (%v/%v)", ceiling, oneNode, ok, okNode)
+	}
+	if st.uid != uid || st.quote.Spec.WallSeconds != spec.WallSeconds || st.quote.Spec.MaxResourceSecondsPerNode != int(ceiling) ||
+		st.quote.MaxUnits != 2*oneNode || st.quote.MaxNodeSeconds != 2*ceiling || !computeTaskIDPattern.MatchString(st.quote.ID) {
 		t.Fatalf("stored quote for %d: %+v", st.uid, st.quote)
 	}
 	if !strings.Contains(quoted.Content[0].(*mcp.TextContent).Text, "https://cats.example/compute/confirm?quote="+st.quote.ID) {
@@ -233,12 +235,15 @@ func TestComputeTaskMaxWallSecondsFromEnv(t *testing.T) {
 		}
 	}
 	handler := &ComputeTaskHandler{}
-	spec := store.ComputeTaskSpec{Nodes: 1, LogicalCPUs: 1, MemoryMiB: 256, WallSeconds: 7200, MaxResourceSecondsPerNode: 7800}
+	spec := store.ComputeTaskSpec{Nodes: 1, LogicalCPUs: 1, MemoryMiB: 256, WallSeconds: 7200}
 	if !handler.acceptsAllocation(spec) {
 		t.Fatal("unset operational limit rejected a two-hour task")
 	}
-	spec.MaxResourceSecondsPerNode = 7140
+	if ceiling, ok := computeTaskBillingCeiling(spec.WallSeconds, spec.Nodes); !ok || ceiling != 7200 {
+		t.Fatalf("derived ceiling = %d, %v; want 7200", ceiling, ok)
+	}
+	handler.maxWallSeconds = 3600
 	if handler.acceptsAllocation(spec) {
-		t.Fatal("accepted a resource cap shorter than the job wall time")
+		t.Fatal("accepted a job above the configured operational limit")
 	}
 }
