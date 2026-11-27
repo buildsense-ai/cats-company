@@ -38,6 +38,8 @@ const (
 
 var computeTaskIDPattern = regexp.MustCompile(`^hpc_[0-9a-f]{32}$`)
 var computeTaskSKUPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$`)
+var computeTaskImagePattern = regexp.MustCompile(`^(docker://[A-Za-z0-9][A-Za-z0-9._/:@+-]{2,255}|/[A-Za-z0-9._/-]{2,255}\.sif)$`)
+var computeTaskWorkDirPattern = regexp.MustCompile(`^/[A-Za-z0-9._/-]{1,255}$`)
 
 // computeTaskSKU pins the Slurm-usable capacity and customer tariff of an
 // operator-verified on-demand node shape in the managed HPC pool.
@@ -215,8 +217,27 @@ func computeTaskBillingCeiling(wallSeconds, nodes int) (int64, bool) {
 	return int64(wallSeconds), true
 }
 
+// validComputeTaskWorkload keeps the workload contract narrow: a shell command, an optional
+// container image and an optional absolute work directory. Everything else stays local.
+func validComputeTaskWorkload(w *store.ComputeTaskWorkload) bool {
+	if w == nil {
+		return true
+	}
+	command := strings.TrimSpace(w.Command)
+	if command == "" || len(command) > 8192 {
+		return false
+	}
+	if w.Image != "" && !computeTaskImagePattern.MatchString(w.Image) {
+		return false
+	}
+	return w.WorkDir == "" || computeTaskWorkDirPattern.MatchString(w.WorkDir)
+}
+
 func (h *ComputeTaskHandler) acceptsAllocation(spec store.ComputeTaskSpec) bool {
 	if _, ok := computeTaskBillingCeiling(spec.WallSeconds, spec.Nodes); !ok {
+		return false
+	}
+	if !validComputeTaskWorkload(spec.Workload) {
 		return false
 	}
 	return spec.Nodes <= h.maxNodesPerTask() && spec.LogicalCPUs > 0 && spec.MemoryMiB > 0 &&
@@ -303,6 +324,13 @@ func computeTaskInputSchema(maxWallSeconds int) map[string]any {
 		"memory_mib_per_gpu":   map[string]any{"type": "integer", "minimum": 0, "description": "preview 的每块 GPU 最低显存 MiB"},
 		"wall_seconds":         wallSeconds,
 		"estimated_billable_s": map[string]any{"type": "integer", "minimum": 0, "description": "preview 的预览假设时长，独立任务按每分片填写，分布式任务按每节点填写。没有依据时省略"},
+		"workload": map[string]any{"type": "object", "additionalProperties": false, "description": "可选；在租用节点上执行的作业。缺省时执行内置 CPU 验收作业",
+			"properties": map[string]any{
+				"command": map[string]any{"type": "string", "minLength": 1, "maxLength": 8192, "description": "在分配节点上执行的 Shell 命令"},
+				"image":   map[string]any{"type": "string", "description": "可选容器镜像：绝对 .sif 路径或 docker:// 引用。留空则直接在节点上执行命令"},
+				"workdir": map[string]any{"type": "string", "description": "可选绝对工作目录，默认使用任务专属目录"},
+			},
+			"required": []string{"command"}},
 	}
 	runtimeProperties := map[string]any{
 		"scope":                map[string]any{"type": "string", "enum": []string{"agent_runtime"}, "description": "必须为 agent_runtime"},

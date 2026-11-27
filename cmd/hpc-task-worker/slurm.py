@@ -68,6 +68,9 @@ class Slurm:
         if not re.fullmatch(r"/[A-Za-z0-9_./-]+", self.srun):
             raise ValueError("srun must be an absolute path on the compute nodes")
         self.run = run
+        self.apptainer = config.get("apptainer", "apptainer")
+        if not re.fullmatch(r"[A-Za-z0-9_./-]+", self.apptainer):
+            raise ValueError("apptainer must be a command name or absolute path")
 
     def preflight(self):
         for command in ("sbatch", "sacct", "squeue", "scontrol", "sinfo"):
@@ -86,14 +89,26 @@ class Slurm:
         count, cpus = task["nodes"], task["logical_cpus"]
         minutes = task["wall_seconds"] // 60
         allocation = [f"--nodes={count}", f"--ntasks={count * cpus}", f"--ntasks-per-node={cpus}", "--cpus-per-task=1"]
-        command = [self.srun, f"--account={self.account}", "--exact", "--kill-on-bad-exit=1", *allocation, "/usr/bin/awk",
-                   "BEGIN { x=1; for (i=0; i<1000000; i++) x=(x*48271)%2147483647; print x }"]
-        script = "#!/bin/sh\nset -eu\nexec " + shlex.join(command) + "\n"
+        workload = task.get("workload") or {}
+        if workload:
+            workdir = workload.get("workdir") or f"/home/galaxy/catsco-runs/{job_name}"
+            inner = ["/bin/sh", "-lc", workload["command"]]
+            if workload.get("image"):
+                inner = [self.apptainer, "exec", "--cleanenv", "--bind", workdir, workload["image"], *inner]
+            command = [self.srun, f"--account={self.account}", "--exact", "--kill-on-bad-exit=1", *allocation, *inner]
+            script = ("#!/bin/sh\nset -eu\nmkdir -p " + shlex.quote(workdir) +
+                      "\ncd " + shlex.quote(workdir) + "\nexec " + shlex.join(command) + "\n")
+            output, chdir = f"{workdir}/slurm-%j.out", workdir
+        else:
+            command = [self.srun, f"--account={self.account}", "--exact", "--kill-on-bad-exit=1", *allocation, "/usr/bin/awk",
+                       "BEGIN { x=1; for (i=0; i<1000000; i++) x=(x*48271)%2147483647; print x }"]
+            script = "#!/bin/sh\nset -eu\nexec " + shlex.join(command) + "\n"
+            output, chdir = "/dev/null", "/tmp"
         out = call(self.run, [
             "sbatch", "--parsable", f"--partition={queue}", f"--nodelist={','.join(names)}", f"--account={self.account}",
             f"--job-name={job_name}", "--export=NIL", "--no-requeue", *allocation,
             f"--mem={task['memory_mib']}M", f"--time={minutes}", f"--deadline=now+{minutes + 2}minutes",
-            "--chdir=/tmp", "--output=/dev/null", "--error=/dev/null",
+            f"--chdir={chdir}", f"--output={output}", f"--error={output}",
         ], script)
         job_id, separator, cluster = out.strip().partition(";")
         if separator:
