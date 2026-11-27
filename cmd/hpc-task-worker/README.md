@@ -57,7 +57,7 @@ ECS 和 EVS 支持按精确 ID 过滤的集合或单条查询。单条查询需�
 
 多个 worker 可以使用同一份 Cats 地址、配置文件和凭据并行领取任务。数据库会在 claim 事务内统一执行节点数、任务数和用户配额限制，worker 数量按容量上限部署即可。
 
-仓库提供 `deploy/prod/ops/cats-hpc-task-worker@.service` 模板。每个实例读取 `/etc/catsco/hpc-worker-%i.json`，共享 `/etc/catsco/hpc-task-worker.env` 中的 `CATS_COMPUTE_WORKER_TOKEN`、`CTYUN_AK` 和 `CTYUN_SK`。服务使用 `galaxy` 用户运行，配置中的 `slurm.account` 固定为 `galaxy`，`slurm.srun` 必须填写计算节点上的绝对路径。
+仓库提供 `deploy/prod/ops/cats-hpc-task-worker@.service` 模板，通过 `/usr/bin/python3.12` 以 `galaxy` 用户运行。每个实例读取 `/etc/catsco/hpc-worker-%i.json`，共享 `/etc/catsco/hpc-task-worker.env` 中的 `CATS_COMPUTE_WORKER_TOKEN`、`CTYUN_AK` 和 `CTYUN_SK`。将 Slurm 的 bin 目录放在该环境文件的 `PATH` 首位，配置中的 `slurm.account` 使用 `galaxy`，`slurm.srun` 填写计算节点上 `srun` 的绝对路径。
 
 部署前先对每个配置执行一次 `--preflight`，再启用实例。例如 `cats-hpc-task-worker@1.service` 和 `cats-hpc-task-worker@2.service` 可以使用相同配置并行消费，实例数量由 `CATSCOMPANY_COMPUTE_MAX_CONCURRENT_TASKS` 和天翼云 API 配额共同决定。
 
