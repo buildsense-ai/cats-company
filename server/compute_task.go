@@ -437,7 +437,7 @@ func (h *ComputeTaskHandler) taskStatus(ctx context.Context, uid int64, id strin
 func (h *ComputeTaskHandler) addUnifiedTool(srv *mcp.Server, uid int64, snapshotPath string) {
 	tool := &mcp.Tool{
 		Name:        computeToolName,
-		Description: "Cats 统一算力入口。action=catalog 查询可报价的单节点规格、费率和任务限制，action=preview 比较当前 Agent 设备和 Cats 托管 Slurm，action=quote 根据每节点 CPU、内存、节点数和作业时限生成需本人确认的整节点报价，action=status 查询任务状态和实际扣费。计费从平台观察到节点开始，按实际存活时长结算，每节点上限由平台按作业时限自动推导，调用方不需要填写。报价不会自动开通资源。",
+		Description: "Cats 统一算力入口。action=catalog 查询可报价的单节点规格、费率和任务限制，action=preview 比较当前 Agent 设备和 Cats 云算力（有容量快照时用实测空闲节点，否则按已发布规格给出按需开通的规格、费率与未知容量），action=quote 根据每节点 CPU、内存、节点数和作业时限生成需本人确认的整节点报价，action=status 查询任务状态和实际扣费。计费从平台观察到节点开始，按实际存活时长结算，每节点上限由平台按作业时限自动推导，调用方不需要填写。报价不会自动开通资源。",
 		InputSchema: computeTaskInputSchema(h.maxWallSeconds),
 	}
 	srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -457,14 +457,11 @@ func (h *ComputeTaskHandler) addUnifiedTool(srv *mcp.Server, uid int64, snapshot
 		case "catalog":
 			result, structured, err = h.taskCatalog(time.Now().UTC())
 		case "preview":
-			if snapshotPath == "" {
-				return serviceToolError("compute_preview_unavailable"), nil
-			}
 			var previewArgs computePreviewArgs
 			if decodeErr := json.Unmarshal(req.Params.Arguments, &previewArgs); decodeErr != nil {
 				return serviceToolError("invalid_compute_requirements"), nil
 			}
-			result, structured, err = runComputePreview(snapshotPath, previewArgs)
+			result, structured, err = runComputePreview(snapshotPath, previewArgs, h.catalog, h.maxNodesPerTask(), time.Now().UTC())
 		case "quote":
 			var request struct {
 				Task store.ComputeTaskSpec `json:"task"`
