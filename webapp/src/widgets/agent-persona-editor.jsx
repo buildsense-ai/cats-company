@@ -11,7 +11,7 @@ import AgentPersonaRules from './agent-persona-rules';
 import AgentPersonaTrial from './agent-persona-trial';
 import AgentPersonaPortrait from './agent-persona-portrait';
 
-export default function AgentPersonaEditor({ uid, agent, onAvatarApplied, onPortraitStateChange, saved, draft, onChange, saving, tab, onTabChange }) {
+export default function AgentPersonaEditor({ uid, ownerUID, agent, onAvatarApplied, onPortraitStateChange, saved, draft, onChange, saving, tab, onTabChange }) {
   const [form, setForm] = useState(() => {
     const initial = readPersona(draft);
     return { ...initial, rules: initial.rules.map((rule, id) => ({ ...rule, id })) };
@@ -125,7 +125,7 @@ export default function AgentPersonaEditor({ uid, agent, onAvatarApplied, onPort
           </label>)}</div>
         </fieldset>
         <fieldset className="cc-reply-preferences cc-persona-missing" disabled={saving}>
-          <legend>信息不够时，怎么做？
+          <legend>缺少关键信息时，怎么做？
             {missingInfo && <button type="button" className="cc-preference-clear" aria-label="清除信息不足时的偏好" disabled={saving}
               onClick={event => clearPreference(event, chooseMissingInfo(parts, ''))}>清除</button>}
           </legend>
@@ -143,6 +143,13 @@ export default function AgentPersonaEditor({ uid, agent, onAvatarApplied, onPort
           </div>
           <p><span>你</span>{scenario.question}</p>
           <p aria-live="polite" aria-atomic="true"><span>助手</span>{getReplyExample(priority, parts, scenario.id)}</p>
+          <details className="cc-persona-disclosure cc-persona-followups">
+            <summary>看后续对话</summary>
+            {scenario.followups.map(([question, answer]) => <div key={question}>
+              <p><span>你</span>{question}</p>
+              <p><span>助手</span>{answer}</p>
+            </div>)}
+          </details>
         </section>
       </>}
       <AgentPersonaTrial uid={uid} saved={saved} draft={draft} hidden={tab !== 'reply'}
@@ -157,7 +164,7 @@ export default function AgentPersonaEditor({ uid, agent, onAvatarApplied, onPort
           })}
         </details>
       </>}
-      <AgentPersonaPortrait key={uid} agent={agent} description={form.description} hidden={tab !== 'person'}
+      <AgentPersonaPortrait key={JSON.stringify([ownerUID, uid])} ownerUID={ownerUID} agent={agent} description={form.description} hidden={tab !== 'person'}
         saving={saving} onApplied={onAvatarApplied} onStateChange={onPortraitStateChange} />
       {tab === 'person' && <>
         {personaFields.person.filter(field => !field.background).map(renderChoices)}

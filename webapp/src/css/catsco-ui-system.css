@@ -9373,6 +9373,10 @@ html[data-theme="liquid"] :is(
 .cc-portrait-note { display: grid; gap: 6px; }
 .cc-portrait-note textarea { font-weight: 400; }
 .cc-portrait-actions { flex-wrap: wrap; }
+.cc-portrait-history { display: flex; flex-wrap: wrap; align-items: start; gap: 8px; max-height: 220px; overflow: auto; padding: 3px; }
+.cc-portrait-history button { display: grid; justify-items: center; gap: 4px; padding: 3px; border: 1px solid transparent; border-radius: var(--cc-radius-md); }
+.cc-portrait-history button[aria-pressed="true"] { border-color: var(--cc-text-secondary); }
+.cc-portrait-history img { border-radius: var(--cc-radius-sm); }
 .cc-portrait-editor [role="alert"] { margin: 0; font-size: 13px; color: var(--cc-danger); }
 .cc-persona-trial .cc-persona-heading { margin: 8px 0; }
 .cc-persona-trial small { color: var(--cc-muted); }
@@ -9391,6 +9395,9 @@ html[data-theme="liquid"] :is(
 .cc-persona-disclosure > summary:hover { color: var(--cc-text); }
 .cc-persona-disclosure > summary:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 1px; }
 .cc-persona-disclosure[open] > summary { margin-bottom: 4px; }
+.cc-persona-followups { margin-top: 10px; }
+.cc-persona-followups > summary { padding-bottom: 0; }
+.cc-persona-followups > div + div { margin-top: 10px; }
 .cc-persona-undo-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 12px; color: var(--cc-text-secondary); font-size: 13px; }
 .cc-persona-undo-row summary { cursor: pointer; }
 .cc-persona-undo-row p { margin: 8px 0; line-height: 1.6; white-space: pre-wrap; }

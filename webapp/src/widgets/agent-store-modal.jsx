@@ -2670,7 +2670,7 @@ export default function AgentStoreModal({
                   </div>
                 </section>
 
-                <AgentSystemPromptCard agent={editingBot} onAvatarApplied={(uid, url) => {
+                <AgentSystemPromptCard agent={editingBot} ownerUID={user?.uid} onAvatarApplied={(uid, url) => {
                   const matches = bot => bot && String(bot.id || bot.uid) === String(uid);
                   setEditingBot(bot => matches(bot) ? { ...bot, avatar_url: url, newAvatarUrl: url } : bot);
                   setBots(list => list.map(bot => matches(bot) ? { ...bot, avatar_url: url } : bot));

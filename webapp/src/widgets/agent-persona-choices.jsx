@@ -27,12 +27,12 @@ export default function PersonaChoices({ field, parts, disabled, onChange }) {
   }
 
   return <fieldset className="cc-persona-choices" disabled={disabled}>
-    <legend>{title}{multi && <small>可多选</small>}</legend>
+    <legend>{field.label || title}{multi && <small>可多选</small>}</legend>
     <div>{options.map(label => {
       const selected = parts.includes(prefix + label);
       const Icon = multi ? (selected ? Check : Plus) : (selected ? CircleDot : Circle);
       return <button key={label} type="button" aria-pressed={selected}
-        onClick={() => toggle(label)}><Icon size={13} aria-hidden="true" />{label}</button>;
+        onClick={() => toggle(label)}><Icon size={13} aria-hidden="true" />{field.optionLabels?.[label] || label}</button>;
     })}
       <button type="button" className="cc-persona-custom" ref={trigger} aria-label={'自定义' + title}
         data-filled={Boolean(custom)} aria-expanded={writing} aria-description={custom || undefined} onClick={() => setWriting(!writing)}>

@@ -617,7 +617,11 @@ func (h *BotDefinitionHandler) definitionResponse(
 		"skills": append([]types.BotSkillRef(nil), record.Definition.Skills...),
 	}
 	if record.Definition.Prompt != nil {
-		definition["prompt"] = record.Definition.Prompt
+		prompt := *record.Definition.Prompt
+		if includeSecret && prompt.Selected == "custom" {
+			prompt.CustomSystemPrompt = effectivePersonaPrompt(prompt.CustomSystemPrompt)
+		}
+		definition["prompt"] = &prompt
 	}
 	// nil means account defaults; an explicit empty list disables optional tools.
 	// Preserve that distinction for owner clients reading back their selection.
