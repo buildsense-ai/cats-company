@@ -79,28 +79,30 @@ type ComputeTaskQuote struct {
 
 // ComputeTaskProgress is written only by the platform worker.
 type ComputeTaskProgress struct {
-	Phase                string     `json:"phase,omitempty"`
-	QueueName            string     `json:"queue_name,omitempty"`
-	QueueID              string     `json:"queue_id,omitempty"`
-	QueueCreateOperation string     `json:"queue_create_operation,omitempty"`
-	QueueDeleteOperation string     `json:"queue_delete_operation,omitempty"`
-	MasterOrderID        string     `json:"master_order_id,omitempty"`
-	InstanceIDs          []string   `json:"instance_ids,omitempty"`
-	VolumeIDs            []string   `json:"volume_ids,omitempty"`
-	SlurmExitCode        string     `json:"slurm_exit_code,omitempty"`
-	SlurmNodeList        []string   `json:"slurm_node_list,omitempty"`
-	ExpandOperation      string     `json:"expand_operation,omitempty"`
-	NodeIDs              []string   `json:"node_ids,omitempty"`
-	NodeNames            []string   `json:"node_names,omitempty"`
-	ProvisionStartedAt   *time.Time `json:"provision_started_at,omitempty"`
-	SlurmJobID           string     `json:"slurm_job_id,omitempty"`
-	SlurmState           string     `json:"slurm_state,omitempty"`
-	SlurmElapsed         int64      `json:"slurm_elapsed_seconds,omitempty"`
-	SlurmAllocatedCPUs   int        `json:"slurm_allocated_cpus,omitempty"`
-	SlurmRequestedMem    string     `json:"slurm_requested_memory,omitempty"`
-	ShrinkOperation      string     `json:"shrink_operation,omitempty"`
-	ReleasedAt           *time.Time `json:"released_at,omitempty"`
-	Problem              string     `json:"problem,omitempty"`
+	Phase                string   `json:"phase,omitempty"`
+	QueueName            string   `json:"queue_name,omitempty"`
+	QueueID              string   `json:"queue_id,omitempty"`
+	QueueCreateOperation string   `json:"queue_create_operation,omitempty"`
+	QueueDeleteOperation string   `json:"queue_delete_operation,omitempty"`
+	MasterOrderID        string   `json:"master_order_id,omitempty"`
+	InstanceIDs          []string `json:"instance_ids,omitempty"`
+	// ExpandSentAt lets the worker adopt nodes when a provider expand job stays pending.
+	ExpandSentAt       *time.Time `json:"expand_sent_at,omitempty"`
+	VolumeIDs          []string   `json:"volume_ids,omitempty"`
+	SlurmExitCode      string     `json:"slurm_exit_code,omitempty"`
+	SlurmNodeList      []string   `json:"slurm_node_list,omitempty"`
+	ExpandOperation    string     `json:"expand_operation,omitempty"`
+	NodeIDs            []string   `json:"node_ids,omitempty"`
+	NodeNames          []string   `json:"node_names,omitempty"`
+	ProvisionStartedAt *time.Time `json:"provision_started_at,omitempty"`
+	SlurmJobID         string     `json:"slurm_job_id,omitempty"`
+	SlurmState         string     `json:"slurm_state,omitempty"`
+	SlurmElapsed       int64      `json:"slurm_elapsed_seconds,omitempty"`
+	SlurmAllocatedCPUs int        `json:"slurm_allocated_cpus,omitempty"`
+	SlurmRequestedMem  string     `json:"slurm_requested_memory,omitempty"`
+	ShrinkOperation    string     `json:"shrink_operation,omitempty"`
+	ReleasedAt         *time.Time `json:"released_at,omitempty"`
+	Problem            string     `json:"problem,omitempty"`
 }
 
 type ComputeTaskRun struct {
