@@ -260,6 +260,12 @@ export default function ComputeConfirmView({ search = '' }) {
               <Fact label="计费费率" value={rateFacts(run)} />
               <Fact label="报价有效期" value={quoteOpen ? expiry.label : formatComputeTime(run.expires_at)} />
               <Fact
+                label="排队位置"
+                value={run.state === 'queued' && run.queue_position
+                  ? `第 ${run.queue_position} 位（先到先服务）`
+                  : run.state === 'queued' ? '排队中' : '—'}
+              />
+              <Fact
                 label="库存与排队 ETA"
                 value="未知（开通时由平台核实容量，无法提前给出排队时长）"
               />
