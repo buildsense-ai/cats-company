@@ -233,6 +233,25 @@ func (a *Adapter) GetComputeTask(ctx context.Context, uid int64, id string) (*st
 	return run, nil
 }
 
+// ComputeTaskQueueAhead reports how many queued tasks were confirmed before this
+// one. Claims follow (updated_at, quote_id) order, so this is the FIFO position
+// the caller still waits behind.
+func (a *Adapter) ComputeTaskQueueAhead(ctx context.Context, uid int64, id string) (int, error) {
+	if uid <= 0 || !validComputeTaskToken(id) {
+		return 0, nil
+	}
+	var ahead int
+	if err := a.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		  FROM compute_tasks other
+		  JOIN compute_tasks mine ON mine.quote_id = $1 AND mine.uid = $2
+		 WHERE other.state = 'queued'
+		   AND (other.updated_at, other.quote_id) < (mine.updated_at, mine.quote_id)`, id, uid).Scan(&ahead); err != nil {
+		return 0, fmt.Errorf("count queued compute tasks: %w", err)
+	}
+	return ahead, nil
+}
+
 // ConfirmComputeTask turns one quote into a queued task and holds the whole
 // quoted ceiling in the same transaction.
 //

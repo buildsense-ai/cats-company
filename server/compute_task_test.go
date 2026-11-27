@@ -279,3 +279,29 @@ func TestComputeTaskWorkloadIsOptionalAndValidated(t *testing.T) {
 		}
 	}
 }
+
+type queueAwareComputeTaskStore struct {
+	store.ComputeTaskStore
+	ahead int
+}
+
+func (s queueAwareComputeTaskStore) ComputeTaskQueueAhead(context.Context, int64, string) (int, error) {
+	return s.ahead, nil
+}
+
+func TestComputeTaskQueuePosition(t *testing.T) {
+	const quote = "hpc_0123456789abcdef0123456789abcdef"
+	ctx := context.Background()
+	queued := &store.ComputeTaskRun{State: store.ComputeTaskQueued}
+	position := computeTaskQueuePosition(ctx, queueAwareComputeTaskStore{ahead: 2}, 7, quote, queued)
+	if position == nil || *position != 3 {
+		t.Fatalf("queued task position: %v", position)
+	}
+	active := &store.ComputeTaskRun{State: store.ComputeTaskActive}
+	if position := computeTaskQueuePosition(ctx, queueAwareComputeTaskStore{ahead: 2}, 7, quote, active); position != nil {
+		t.Fatalf("a running task has no queue position: %v", position)
+	}
+	if position := computeTaskQueuePosition(ctx, &computeSettlementStore{}, 7, quote, queued); position != nil {
+		t.Fatalf("stores without queue support must report nothing: %v", position)
+	}
+}

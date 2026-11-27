@@ -552,8 +552,25 @@ func (h *ComputeTaskHandler) serveAccount(w http.ResponseWriter, r *http.Request
 		writeServiceJSON(w, http.StatusOK, struct {
 			*store.ComputeTaskRun
 			UnitsPerCredit int64 `json:"units_per_credit"`
-		}{run, store.ModelCreditUnitsPerCredit})
+			QueuePosition  *int  `json:"queue_position,omitempty"`
+		}{run, store.ModelCreditUnitsPerCredit, computeTaskQueuePosition(r.Context(), h.store, uid, id, run)})
 	}
+}
+
+// computeTaskQueuePosition reports the 1-based FIFO position while a task waits
+// for capacity. Stores that do not track the queue return nil and the page keeps
+// saying the wait is unknown.
+func computeTaskQueuePosition(ctx context.Context, st store.ComputeTaskStore, uid int64, id string, run *store.ComputeTaskRun) *int {
+	queue, ok := st.(store.ComputeTaskQueueStore)
+	if !ok || run == nil || run.State != store.ComputeTaskQueued {
+		return nil
+	}
+	ahead, err := queue.ComputeTaskQueueAhead(ctx, uid, id)
+	if err != nil {
+		return nil
+	}
+	position := ahead + 1
+	return &position
 }
 
 func (h *ComputeTaskHandler) serveWorker(w http.ResponseWriter, r *http.Request) {

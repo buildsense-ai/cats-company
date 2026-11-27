@@ -25,6 +25,12 @@ type ComputeTaskAdmissionStore interface {
 	ClaimComputeTaskWithPolicy(context.Context, string, time.Time, time.Time, ComputeTaskAdmissionPolicy) (*ComputeTaskRun, error)
 }
 
+// ComputeTaskQueueStore is optional: it reports the FIFO position of a queued
+// task so the confirm page can show how many tasks are ahead of the user.
+type ComputeTaskQueueStore interface {
+	ComputeTaskQueueAhead(ctx context.Context, uid int64, id string) (int, error)
+}
+
 var (
 	ErrComputeTaskNotFound = errors.New("compute task not found")
 	ErrComputeTaskConflict = errors.New("compute task state changed")
