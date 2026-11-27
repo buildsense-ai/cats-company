@@ -550,6 +550,23 @@ class WorkerTest(unittest.TestCase):
                 self.assertIn(field, f.run["progress"])
                 self.assertEqual(f.run["progress"]["phase"], recovered)
                 self.assertEqual(f.mutations.count(op), 1)
+    def test_unconfirmed_shrink_is_resent_after_grace(self):
+        f = Fixture()
+        task = f.advance_to("slurm_done")
+        f.run["progress"]["provision_started_at"] = "2026-01-01T00:00:00Z"
+        task.progress["provision_started_at"] = "2026-01-01T00:00:00Z"
+        f.lose_ack = "shrink"
+        self.assertEqual(task.advance(), "reconcile")
+        self.assertNotIn("shrink_operation", f.run["progress"])
+        # The provider never applied the change, so the nodes are still ours and the
+        # worker has to resend the shrink instead of waiting for an absence.
+        f.lose_ack = None
+        f.nodes = [dict(OWNED)]
+        f.instances = {"instance-task": dict(id="instance-task", volumeID="volume-task")}
+        f.volumes = {"volume-task": dict(id="volume-task", instanceID="instance-task", system=True)}
+        self.assertEqual(f.claimed().advance(), "next")
+        self.assertEqual(f.mutations.count("shrink"), 2)
+
 
     def test_recovery_handles_create_queue_appearing_or_disappearing(self):
         f = Fixture()

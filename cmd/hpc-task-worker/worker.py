@@ -257,9 +257,11 @@ class Task:
     def recover_shrink_intent(self):
         if not self.recovery_mature():
             return "wait"
-        if not self.absence(with_resources=True):
-            return "wait"
-        return self.move("nodes_released", shrink_operation=self.recovered_operation("shrink"))
+        if self.absence(with_resources=True):
+            return self.move("nodes_released", shrink_operation=self.recovered_operation("shrink"))
+        # The shrink request never produced a receipt but the nodes are still ours: send it
+        # again instead of waiting forever for an absence that will not happen by itself.
+        return self.retry_shrink()
 
     def recover_delete_intent(self):
         if not self.recovery_mature():
