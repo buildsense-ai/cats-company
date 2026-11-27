@@ -293,8 +293,6 @@ vi.mock('../api', () => ({
     forkConversation: vi.fn(),
     getFriends: vi.fn(),
     getAgents: vi.fn(),
-    getBotDefinitionPrompt: vi.fn(),
-    updateBotDefinitionPrompt: vi.fn(),
     getAgentQuota: vi.fn(),
     getGroupInfo: vi.fn(),
     createChannelIdentityMobileLink: vi.fn(),
@@ -3907,40 +3905,6 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '检查这段代码', undefined);
-  });
-
-  it.each([true, false])('quotes the selected answer to shorten it; saving a default requires ownership (%s) and confirmation', async (owned) => {
-    sourceJourney.enabled = true;
-    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
-    api.getAgents.mockResolvedValue({ agents: [{ uid: 2, is_bot: true, is_owner: owned, display_name: 'Pi' }] });
-    api.getMessages.mockResolvedValueOnce({ messages: [
-      { id: 70, from_uid: 1, type: 'text', content: '给我一些建议' },
-      { id: 71, from_uid: 2, type: 'text', role: 'assistant', content: '第一段比较长的回答。' },
-      { id: 72, from_uid: 1, type: 'text', reply_to: 71, content: '请把引用的这条回复写得简短一点，保留结论、关键依据和必要条件。' },
-      { id: 73, from_uid: 2, type: 'text', role: 'assistant', reply_to: 72, content: '这里是重点。' },
-    ] });
-    api.getBotDefinitionPrompt.mockResolvedValue({ configured: true, revision: 7, definition: { prompt: { selected: 'custom', customSystemPrompt: '性格：耐心\n回答结构：先说结论\n回复篇幅：详细展开\n回答结构：分步说明' } } });
-    await mountTopic(root, 'p2p_1_2');
-    const click = element => act(async () => { element.click(); await flushPromises(); });
-    let row = container.querySelector('[data-search-message-id="73"]');
-    const open = () => click(row.querySelector('[aria-label="更多操作"]'));
-    const item = label => [...row.querySelectorAll('[role="menuitem"]')].find(el => el.textContent.includes(label));
-    await open();
-    if (owned) {
-      feedbackConfirm.mockResolvedValueOnce(false);
-      await click(item('以后默认'));
-      expect(api.updateBotDefinitionPrompt).not.toHaveBeenCalled();
-      await open();
-      await click(item('以后默认'));
-      expect(api.updateBotDefinitionPrompt).toHaveBeenCalledWith('2', 7, { selected: 'custom', customSystemPrompt: '性格：耐心\n回复优先项：尽量简短\n回答结构：分步说明' });
-    } else expect(item('以后默认')).toBeUndefined();
-    row = container.querySelector('[data-search-message-id="71"]');
-    await open();
-    expect(item('以后默认')).toBeUndefined();
-    const previousWrites = api.updateBotDefinitionPrompt.mock.calls.length;
-    await click(item('这条回复简短一点'));
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', expect.stringContaining('简短'), 71);
-    expect(api.updateBotDefinitionPrompt.mock.calls.length).toBe(previousWrites);
   });
 
   it('keeps the visible Artifact focus when regenerating a bot reply', async () => {
