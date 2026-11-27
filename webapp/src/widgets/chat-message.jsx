@@ -1377,7 +1377,7 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, memoryBranchActive, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, onLocateReply, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp, onWikiInjection, activeInjection }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, memoryBranchActive, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, onLocateReply, questionAnchorKey, onReply, onEdit, onRegenerate, allowShorten = false, onRememberBriefReplies, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, conversationForkMidTurn = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp, onWikiInjection, activeInjection }) {
   const quotedText = useMemo(() => {
     if (!replyMessage) return '查看引用的原消息';
     const blocks = replyMessage.content_blocks || [];
@@ -1610,13 +1610,16 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     }
   };
 
-  const handleRegenerateClick = async (event) => {
+  const canShorten = allowShorten && onRegenerate && !isSelf && !parsed && !message._streaming && !replyStreaming
+    && !message._pending && typeof renderedTextContent === 'string' && Boolean(renderedTextContent.trim());
+  const handleRegenerateClick = async (event, mode) => {
     event.stopPropagation();
     if (!onRegenerate || regenerateState === 'pending') return;
     setMoreActionsOpen(false);
     setRegenerateState('pending');
     try {
-      await onRegenerate(message);
+      if (mode === 'shorten') await onRegenerate(message, mode);
+      else await onRegenerate(message);
       setRegenerateState('done');
     } catch (error) {
       setRegenerateState('failed');
@@ -1873,7 +1876,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                 <Pencil size={14} />
               </button>
             )}
-            {(onCreateConversationShare || onCreateConversationFork) && (
+            {(canShorten || onCreateConversationShare || onCreateConversationFork) && (
               <div className="v3-message-more-actions">
                 <button
                   ref={moreActionsTriggerRef}
@@ -1907,6 +1910,15 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       items[next]?.focus();
                     }}
                   >
+                    {canShorten && <button type="button" role="menuitem" disabled={regenerateState === 'pending'}
+                      onClick={event => { moreActionsTriggerRef.current?.focus(); handleRegenerateClick(event, 'shorten'); }}>
+                      <MessageSquareText size={15} aria-hidden="true" />这条回复简短一点
+                    </button>}
+                    {canShorten && onRememberBriefReplies && <button type="button" role="menuitem" onClick={() => {
+                      setMoreActionsOpen(false);
+                      moreActionsTriggerRef.current?.focus();
+                      onRememberBriefReplies(message);
+                    }}><Bookmark size={15} aria-hidden="true" />以后默认简短回复…</button>}
                     {onCreateConversationShare && <button
                       type="button"
                       role="menuitem"
@@ -1963,6 +1975,8 @@ export function chatMessagePropsEqual(prevProps, nextProps) {
     prevProps.questionAnchorKey === nextProps.questionAnchorKey &&
     prevProps.onEdit === nextProps.onEdit &&
     prevProps.onRegenerate === nextProps.onRegenerate &&
+    prevProps.allowShorten === nextProps.allowShorten &&
+    prevProps.onRememberBriefReplies === nextProps.onRememberBriefReplies &&
     prevProps.onCreateConversationShare === nextProps.onCreateConversationShare &&
     prevProps.onCreateConversationFork === nextProps.onCreateConversationFork &&
     prevProps.conversationForkDisabled === nextProps.conversationForkDisabled &&

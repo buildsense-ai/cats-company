@@ -915,6 +915,11 @@ export const api = {
       skill_mutation_mode,
     }),
   deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),
+  generateAssistantPortrait: (prompt, reference, signal) => request('POST',
+    reference ? '/v1/images/edits' : '/v1/images/generations', {
+      prompt, size: '1024x1024', quality: 'medium', n: 1, output_format: 'jpeg',
+      ...(reference ? { images: [{ image_url: reference }] } : {}),
+    }, { signal }),
   setBotVisibility: (uid, visibility) => request('PATCH', `/api/bots/visibility?uid=${uid}&v=${visibility}`),
   setBotSkillsVisibility: (uid, visibility) => request(
     'PATCH',
@@ -932,6 +937,8 @@ export const api = {
     'GET',
     `/api/agents/prompt?uid=${encodeURIComponent(uid)}`,
   ),
+  previewBotPrompt: (uid, prompt, question, signal) => request('POST',
+    `/api/bots/definition/prompt-preview?uid=${encodeURIComponent(uid)}`, { prompt, question }, { signal }),
   updateBotDefinitionPrompt: (uid, revision, prompt) => request(
     'PATCH',
     `/api/bots/definition/prompt?uid=${encodeURIComponent(uid)}`,

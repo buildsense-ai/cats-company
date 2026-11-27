@@ -1355,8 +1355,8 @@ describe('AgentStoreModal', () => {
     const behavior = container.querySelector('.cc-agent-behavior-card');
     expect(behaviorTrigger?.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('.cc-agent-manager-body input[type="text"]')).toBeNull();
-    expect(behavior?.textContent).toContain('行为设定');
-    expect(behavior?.textContent).toContain('使用 XiaoBa 默认提示词');
+    expect(behavior?.textContent).toContain('助手设定');
+    expect(behavior?.textContent).toContain('默认设定');
     expect(summary?.textContent).toContain('能力配置');
     expect(summary?.textContent).toContain('已启用 2 个 Skill');
     expect(container.textContent).not.toContain('技能可见范围');

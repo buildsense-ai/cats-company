@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AgentPersonaEditor from './agent-persona-editor';
 import SlidingSegments from './sliding-segments';
 import { createPortal } from 'react-dom';
 import {
@@ -10,11 +11,11 @@ import {
   LoaderCircle,
   PencilLine,
   RefreshCw,
-  Save,
   X,
 } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
+import { readPersona, readReplyPriority } from '../utils/agent-persona';
 import {
   MAX_SYSTEM_PROMPT_BYTES,
   normalizePromptDefinition,
@@ -43,7 +44,7 @@ function PromptStatus({ state }) {
   );
 }
 
-export default function AgentSystemPromptCard({ agent }) {
+export default function AgentSystemPromptCard({ agent, onAvatarApplied }) {
   const feedback = useFeedback();
   const uid = agentUID(agent);
   const [remote, setRemote] = useState(null);
@@ -52,14 +53,21 @@ export default function AgentSystemPromptCard({ agent }) {
   const [error, setError] = useState('');
   const [editorOpen, setEditorOpen] = useState(false);
   const [draft, setDraft] = useState('');
-  const [editorTouched, setEditorTouched] = useState(false);
+  const [incompleteRule, setIncompleteRule] = useState(false);
+  const [tab, setTab] = useState('reply');
+  const [editorVersion, setEditorVersion] = useState(0);
+  const [portraitState, setPortraitState] = useState('');
+  const [conflict, setConflict] = useState(null);
   const mountedRef = useRef(true);
   const requestRef = useRef(0);
   const editorDialogRef = useRef(null);
-  const editorTextareaRef = useRef(null);
+  const editorTitleRef = useRef(null);
   const editorOpenerRef = useRef(null);
 
   const savedPrompt = useMemo(() => normalizePromptDefinition(remote), [remote]);
+  const savedPriority = useMemo(() => readReplyPriority(
+    readPersona(savedPrompt.customSystemPrompt).description.split(/\r\n|\r|\n/),
+  ), [savedPrompt]);
   const applyState = resolvePromptApplicationState(remote);
   const byteCount = useMemo(() => promptByteLength(draft), [draft]);
   const promptTooLarge = byteCount > MAX_SYSTEM_PROMPT_BYTES;
@@ -90,7 +98,10 @@ export default function AgentSystemPromptCard({ agent }) {
     }
     try {
       const [viewerResponse, ownerResponse] = await Promise.all([
-        api.getAgentPrompt(uid),
+        api.getAgentPrompt(uid).catch(err => {
+          if (silent) throw err;
+          return null;
+        }),
         api.getBotDefinitionPrompt(uid),
       ]);
       if (!mountedRef.current || requestID !== requestRef.current) return null;
@@ -115,16 +126,29 @@ export default function AgentSystemPromptCard({ agent }) {
     setRemote(null);
     setEditorOpen(false);
     setDraft('');
+    setConflict(null);
+    setSaving(false);
     loadPrompt().catch(() => {});
   }, [loadPrompt]);
 
   useEffect(() => {
     if (!remote?.configured || saving || editorOpen || applyState.kind !== 'pending') return undefined;
-    const timer = window.setTimeout(() => loadPrompt({ silent: true }).catch(() => {}), 4000);
-    return () => window.clearTimeout(timer);
+    let cancelled = false;
+    let timer;
+    const poll = async () => {
+      const latest = await loadPrompt({ silent: true });
+      if (!cancelled && (!latest || (latest.configured && resolvePromptApplicationState(latest).kind === 'pending'))) {
+        timer = window.setTimeout(poll, 4000);
+      }
+    };
+    timer = window.setTimeout(poll, 4000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [applyState.kind, editorOpen, loadPrompt, remote?.configured, saving]);
 
-  const savePrompt = useCallback(async (selected, customSystemPrompt) => {
+  const savePrompt = useCallback(async (selected, customSystemPrompt, revision = remote?.revision) => {
     if (!uid || !remote?.configured || saving) return false;
     const requestID = requestRef.current + 1;
     requestRef.current = requestID;
@@ -137,7 +161,7 @@ export default function AgentSystemPromptCard({ agent }) {
     try {
       const ownerResponse = await api.updateBotDefinitionPrompt(
         uid,
-        Number(remote?.revision || 0),
+        Number(revision || 0),
         prompt,
       );
       if (!mountedRef.current || requestID !== requestRef.current) return false;
@@ -150,19 +174,25 @@ export default function AgentSystemPromptCard({ agent }) {
         ),
       };
       setRemote(response);
+      setConflict(null);
       feedback.notify({
         tone: 'success',
         message: selected === 'custom'
-          ? '自定义系统提示词已保存'
-          : '已恢复使用默认系统提示词',
+          ? '助手设定已保存'
+          : '已恢复使用默认设定',
       });
       return true;
     } catch (cause) {
       if (!mountedRef.current || requestID !== requestRef.current) return false;
       if (cause?.status === 409) {
-        setError('行为设定已在别处更新，已重新读取最新版本。请核对后再保存。');
         const latest = await api.getBotDefinitionPrompt(uid).catch(() => null);
-        if (latest && mountedRef.current && requestID === requestRef.current) setRemote(latest);
+        if (!mountedRef.current || requestID !== requestRef.current) return false;
+        if (selected === 'custom') {
+          setConflict({ latest });
+        } else {
+          if (latest) setRemote(latest);
+          setError('设定已在别处更新，请重新选择。');
+        }
       } else {
         setError(cause?.message || '保存行为设定失败');
       }
@@ -177,40 +207,101 @@ export default function AgentSystemPromptCard({ agent }) {
     savePrompt('default', savedPrompt.customSystemPrompt).catch(() => {});
   };
 
+  const initializeDraft = (text) => {
+    setPortraitState('');
+    setDraft(text);
+    setIncompleteRule(readPersona(text).rules.some(rule => rule.occasion.trim() && !rule.instruction.trim()));
+    setTab('reply');
+    setEditorVersion(version => version + 1);
+  };
+
   const openEditor = (event) => {
     if (loading || saving || !remote?.configured) return;
+    requestRef.current += 1;
     editorOpenerRef.current = event.currentTarget;
-    setDraft(savedPrompt.customSystemPrompt);
-    setEditorTouched(false);
+    initializeDraft(savedPrompt.customSystemPrompt);
+    setConflict(null);
     setEditorOpen(true);
     setError('');
   };
 
   const closeEditor = useCallback(async () => {
-    if (saving) return;
-    if (editorContentDirty) {
+    if (saving || portraitState === 'applying') return;
+    const requestID = requestRef.current;
+    if (editorContentDirty || portraitState) {
       const confirmed = await feedback.confirm({
-        title: '放弃未保存的修改？',
-        message: '关闭编辑器后，本次系统提示词修改不会保留。',
+        title: portraitState ? '关闭助手设定？' : '放弃未保存的修改？',
+        message: [editorContentDirty && '尚未保存的设定将丢失。',
+          portraitState === 'generating' ? '关闭会停止生成并清除形象草稿。' : portraitState && '尚未采用的形象或调整想法将丢失。'].filter(Boolean).join(''),
         confirmLabel: '放弃修改',
+        cancelLabel: '继续编辑',
         tone: 'danger',
       });
-      if (!confirmed) return;
+      if (!confirmed || !mountedRef.current || requestID !== requestRef.current) return;
     }
+    requestRef.current += 1;
+    if (conflict?.latest) setRemote(conflict.latest);
+    if (conflict && !conflict.latest) loadPrompt();
+    setConflict(null);
     setEditorOpen(false);
-  }, [editorContentDirty, feedback, saving]);
+  }, [conflict, editorContentDirty, feedback, loadPrompt, saving, portraitState]);
+
+  const loadConflictingDraft = async () => {
+    if (!conflict || saving || portraitState === 'applying') return;
+    const requestID = ++requestRef.current;
+    if ((editorContentDirty || portraitState) && !await feedback.confirm({
+      title: '载入最新版？',
+      message: '载入后将替换这里尚未保存的修改。' + (portraitState ? '形象草稿也会清除。' : ''),
+      confirmLabel: '载入最新版',
+    })) return;
+    if (!mountedRef.current || requestID !== requestRef.current) return;
+    setSaving(true);
+    try {
+      const latest = conflict.latest || await api.getBotDefinitionPrompt(uid);
+      if (!mountedRef.current || requestID !== requestRef.current) return;
+      setRemote(latest);
+      initializeDraft(normalizePromptDefinition(latest).customSystemPrompt);
+      setConflict(null);
+      setError('');
+    } catch (cause) {
+      if (mountedRef.current && requestID === requestRef.current) setError(cause?.message || '读取最新版失败，请重试。');
+    } finally {
+      if (mountedRef.current && requestID === requestRef.current) setSaving(false);
+    }
+  };
 
   const saveCustomPrompt = async () => {
-    if (!editorDirty || promptTooLarge || customPromptEmpty) return;
-    const saved = await savePrompt('custom', draft);
-    if (saved) setEditorOpen(false);
+    if (!editorDirty || promptTooLarge || customPromptEmpty || incompleteRule || portraitState === 'applying') return;
+    const requestID = requestRef.current;
+    if (conflict && (!conflict.latest || !await feedback.confirm({
+      title: '用当前草稿覆盖最新版？',
+      message: '其他地方保存的修改将被这份草稿替换。',
+      confirmLabel: '覆盖并保存',
+      tone: 'danger',
+    }))) return;
+    if (!mountedRef.current || requestID !== requestRef.current) return;
+    const saved = await savePrompt('custom', draft, conflict?.latest?.revision);
+    if (saved) {
+      if (portraitState) editorTitleRef.current?.focus({ preventScroll: true });
+      else setEditorOpen(false);
+    }
   };
 
   useEffect(() => {
     if (!editorOpen) return undefined;
-    const frame = window.requestAnimationFrame(() => editorTextareaRef.current?.focus());
+    const frame = window.requestAnimationFrame(() => editorTitleRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      editorOpenerRef.current?.focus();
+    };
+  }, [editorOpen]);
+
+  useEffect(() => {
+    if (!editorOpen) return undefined;
     const handleKeyDown = (event) => {
-      if (!event.target.closest?.('.cc-agent-prompt-editor-dialog')) return;
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || document.querySelector('.cc-confirm-overlay')) return;
+      const inside = editorDialogRef.current?.contains(event.target);
+      if (!inside && event.target !== document.body) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
@@ -219,12 +310,15 @@ export default function AgentSystemPromptCard({ agent }) {
       }
       if (event.key !== 'Tab' || !editorDialogRef.current) return;
       const focusable = Array.from(editorDialogRef.current.querySelectorAll(
-        'button:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
-      )).filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+        'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => element.tabIndex >= 0 && element.getClientRects().length && element.getAttribute('aria-hidden') !== 'true');
       if (focusable.length === 0) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
+      if (!inside) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && (document.activeElement === first || document.activeElement === editorTitleRef.current)) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -234,26 +328,24 @@ export default function AgentSystemPromptCard({ agent }) {
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => {
-      window.cancelAnimationFrame(frame);
       document.removeEventListener('keydown', handleKeyDown);
-      if (editorOpenerRef.current instanceof HTMLElement) editorOpenerRef.current.focus();
     };
   }, [closeEditor, editorOpen]);
 
-  const modeLabel = savedPrompt.selected === 'custom' ? '已设置自定义提示词' : '使用 XiaoBa 默认提示词';
+  const modeLabel = savedPrompt.selected === 'custom' ? savedPriority?.label || '自定义设定' : '默认设定';
 
   return (
     <section className="cc-agent-behavior-card" aria-labelledby="cc-agent-behavior-title">
       <div className="cc-agent-behavior-heading">
         <div className="cc-agent-behavior-icon" aria-hidden="true"><FileText size={18} /></div>
         <div className="cc-agent-behavior-copy">
-          <h3 id="cc-agent-behavior-title">行为设定</h3>
-          <p>设置这个 Agent 在每次新会话中遵循的长期角色、边界与工作规则。</p>
+          <h3 id="cc-agent-behavior-title">助手设定</h3>
+          <p>选择你喜欢的回复方式，也可以定制助手的性格和习惯。</p>
         </div>
         {!loading && remote?.configured && <PromptStatus state={applyState} />}
       </div>
 
-      {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
+      {error && !editorOpen && <InlineFeedback tone="error">{error}</InlineFeedback>}
 
       {loading ? (
         <div className="cc-agent-behavior-loading" role="status">
@@ -273,10 +365,10 @@ export default function AgentSystemPromptCard({ agent }) {
       ) : (
         <div className="cc-agent-behavior-controls">
           <div className="cc-agent-behavior-current">
-            <span>系统提示词</span>
+            <span>当前使用</span>
             <strong>{modeLabel}</strong>
           </div>
-          <SlidingSegments value={savedPrompt.selected} className="cc-agent-behavior-mode" role="group" aria-label="系统提示词模式">
+          <SlidingSegments value={savedPrompt.selected} className="cc-agent-behavior-mode" role="group" aria-label="助手设定模式">
             <button
               type="button"
               className={savedPrompt.selected === 'default' ? 'active' : ''}
@@ -297,7 +389,7 @@ export default function AgentSystemPromptCard({ agent }) {
               onClick={openEditor}
             >
               <PencilLine size={14} />
-              {savedPrompt.selected === 'custom' ? '编辑内容' : '自定义'}
+              {savedPrompt.selected === 'custom' ? '编辑设定' : '自定义'}
             </button>
           </SlidingSegments>
         </div>
@@ -322,55 +414,49 @@ export default function AgentSystemPromptCard({ agent }) {
           >
             <header className="cc-agent-prompt-editor-header">
               <div>
-                <span><FileText size={15} aria-hidden="true" /> 行为设定</span>
-                <h2 id="cc-agent-prompt-editor-title">编辑系统提示词</h2>
+                <h2 ref={editorTitleRef} tabIndex={-1} id="cc-agent-prompt-editor-title">助手设定</h2>
                 <p id="cc-agent-prompt-editor-description">
-                  这些规则会在这个 Agent 的每次新会话中生效。
+                  {agent.display_name || agent.username} · 保存后用于新会话
                 </p>
               </div>
-              <button type="button" onClick={() => closeEditor()} aria-label="关闭系统提示词编辑器">
+              <button type="button" disabled={saving || portraitState === 'applying'} onClick={() => closeEditor()} aria-label="关闭助手设定">
                 <X size={18} />
               </button>
             </header>
 
             {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
+            {conflict && <InlineFeedback tone="warning">
+              设定已在别处更新，你的草稿已保留。
+              <button type="button" className="cc-persona-reload" disabled={saving || portraitState === 'applying'} onClick={loadConflictingDraft}>载入最新版</button>
+            </InlineFeedback>}
 
-            <div className="cc-agent-prompt-editor-field">
-              <div>
-                <label htmlFor="cc-agent-prompt-editor-text">自定义内容</label>
-                <span className={promptTooLarge ? 'is-error' : ''} title={`已使用 ${byteCount.toLocaleString()} / ${MAX_SYSTEM_PROMPT_BYTES.toLocaleString()} 字节`}>
-                  {promptTooLarge ? '内容过长' : `${Array.from(draft).length.toLocaleString()} 字符`}
-                </span>
-              </div>
-              <textarea
-                ref={editorTextareaRef}
-                id="cc-agent-prompt-editor-text"
-                value={draft}
-                disabled={saving}
-                onChange={(event) => { setEditorTouched(true); setDraft(event.target.value); }}
-                placeholder="输入这个 Agent 应遵循的角色、边界、工作方式与限制..."
-                spellCheck="false"
-              />
-              {customPromptEmpty && (editorTouched
-                ? <p className="is-error">自定义系统提示词不能为空。</p>
-                : <p>填写助手的角色、工作方式和回答要求，保存后启用。</p>)}
-              {promptTooLarge && <p className="is-error">内容过长，请精简后再保存（最大 1 MiB）。</p>}
-            </div>
+            <AgentPersonaEditor key={editorVersion} uid={uid} agent={agent} onAvatarApplied={onAvatarApplied} onPortraitStateChange={setPortraitState}
+              saved={savedPrompt.selected === 'custom' ? savedPrompt.customSystemPrompt : ''} draft={draft} tab={tab} onTabChange={setTab} onChange={(text, incomplete) => {
+              setDraft(text);
+              setIncompleteRule(incomplete);
+            }} saving={saving} />
+            {promptTooLarge && <InlineFeedback tone="error">内容过长，请精简后再保存（最大 1 MiB）。</InlineFeedback>}
 
             <footer className="cc-agent-prompt-editor-actions">
-              <span>{saving ? '正在保存…' : editorContentDirty ? '有未保存的修改' : savedPrompt.selected === 'custom' ? '内容已保存' : customPromptEmpty ? '填写后可保存' : '保存后启用自定义提示词'}</span>
+              {incompleteRule ? (
+                <button type="button" className="cc-persona-fix-rule" onClick={() => {
+                  setTab('rules');
+                  window.requestAnimationFrame(() => editorDialogRef.current?.querySelector('textarea[data-incomplete="true"]')?.focus());
+                }}>补全场景约定</button>
+              ) : (
+                <span role="status">{saving ? '正在处理…' : editorContentDirty ? '有未保存的修改' : savedPrompt.selected === 'custom' ? '内容已保存' : customPromptEmpty ? '选一项或写一句即可保存' : '保存后启用自定义设定'}</span>
+              )}
               <div>
-                <button type="button" className="oc-btn oc-btn-default" disabled={saving} onClick={() => closeEditor()}>
+                <button type="button" className="oc-btn oc-btn-default" disabled={saving || portraitState === 'applying'} onClick={() => closeEditor()}>
                   取消
                 </button>
                 <button
                   type="button"
                   className="oc-btn oc-btn-primary"
-                  disabled={!editorDirty || saving || promptTooLarge || customPromptEmpty}
+                  disabled={!editorDirty || saving || promptTooLarge || customPromptEmpty || incompleteRule || portraitState === 'applying' || Boolean(conflict && !conflict.latest)}
                   onClick={saveCustomPrompt}
                 >
-                  {saving ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}
-                  {saving ? '保存中' : '保存修改'}
+                  {saving ? '处理中' : conflict ? '覆盖并保存' : '保存修改'}
                 </button>
               </div>
             </footer>

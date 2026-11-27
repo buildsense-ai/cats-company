@@ -2670,7 +2670,12 @@ export default function AgentStoreModal({
                   </div>
                 </section>
 
-                <AgentSystemPromptCard agent={editingBot} />
+                <AgentSystemPromptCard agent={editingBot} onAvatarApplied={(uid, url) => {
+                  const matches = bot => bot && String(bot.id || bot.uid) === String(uid);
+                  setEditingBot(bot => matches(bot) ? { ...bot, avatar_url: url, newAvatarUrl: url } : bot);
+                  setBots(list => list.map(bot => matches(bot) ? { ...bot, avatar_url: url } : bot));
+                  onBotsChanged?.();
+                }} />
 
               <section className="cc-agent-capability-summary" aria-labelledby="cc-agent-capability-summary-title">
                 <div className="cc-agent-capability-summary-icon" aria-hidden="true">

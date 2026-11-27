@@ -37,6 +37,8 @@ import {
 } from '../office/pending-versions.js';
 import ImageViewport from '../widgets/image-viewport';
 import { useFeedback } from '../components/feedback-system';
+import { chooseReplyPreference, readPersona, replyPreferences, writePersona } from '../utils/agent-persona';
+import { MAX_SYSTEM_PROMPT_BYTES, normalizePromptDefinition, promptByteLength } from '../utils/system-prompt';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
   invalidateComposerDraftRevision,
@@ -734,6 +736,8 @@ export function canonicalizeStructuredMentionText(text, selections = []) {
       return `${result.slice(0, selection.start)}${canonicalToken}${result.slice(selection.end)}`;
     }, value);
 }
+
+const SHORTEN_REPLY_REQUEST = '请把引用的这条回复写得简短一点，保留结论、关键依据和必要条件。';
 
 function historyMessageID(message) {
   const id = Number(message?.seq_id || message?.id || 0);
@@ -5188,21 +5192,26 @@ export default function MessagesView({
     }
   }, [canStopActiveBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, liquidConversation, messages, topic, workingState.key, workingState.responderUid]);
 
-  const handleRegenerateMessage = useCallback(async (message) => {
+  const handleRegenerateMessage = useCallback(async (message, mode = 'regenerate') => {
     if (conversationFork.blocked) throw new Error('新会话尚未就绪');
     if (sendInFlightRef.current) {
       throw new Error('当前有消息正在发送');
     }
 
-    const messages = latestMessagesRef.current;
-    const messageIndex = messages.findIndex((item) => item.id === message?.id);
-    const previousTask = (messageIndex < 0 ? messages : messages.slice(0, messageIndex))
-      .slice()
-      .reverse()
-      .find((item) => sameUID(item.from_uid, user.uid) && isFinalTextMessage(item));
-    const taskText = typeof previousTask?.content === 'string' ? previousTask.content.trim() : '';
-    if (!taskText) {
-      throw new Error('没有找到可以重新发送的上一条任务');
+    const shorten = mode === 'shorten';
+    const replyTo = shorten ? (Number(message?.id) || historyMessageID(message)) : undefined;
+    let taskText = SHORTEN_REPLY_REQUEST;
+    if (shorten) {
+      if (!(replyTo > 0) || message._pending || message._streaming) throw new Error('请等回复完成后再试');
+    } else {
+      const messages = latestMessagesRef.current;
+      const messageIndex = messages.findIndex((item) => item.id === message?.id);
+      const previousTask = (messageIndex < 0 ? messages : messages.slice(0, messageIndex))
+        .slice()
+        .reverse()
+        .find((item) => sameUID(item.from_uid, user.uid) && isFinalTextMessage(item));
+      taskText = typeof previousTask?.content === 'string' ? previousTask.content.trim() : '';
+      if (!taskText) throw new Error('没有找到可以重新发送的上一条任务');
     }
 
     sendInFlightRef.current = true;
@@ -5217,6 +5226,7 @@ export default function MessagesView({
       topic_id: topic,
       from_uid: user.uid,
       content: taskText,
+      ...(shorten ? { reply_to: replyTo } : {}),
       type: 'text',
       msg_type: 'text',
       created_at: new Date().toISOString(),
@@ -5224,16 +5234,21 @@ export default function MessagesView({
     }]));
 
     try {
-      const artifactContext = await captureArtifactMessageContext();
-      const sendPayload = withArtifactContextRef(taskText, artifactContext.contextRef);
-      const result = await api.sendMessage(topic, sendPayload, undefined);
+      let sendPayload = taskText;
+      if (!shorten) {
+        const artifactContext = await captureArtifactMessageContext();
+        sendPayload = withArtifactContextRef(taskText, artifactContext.contextRef);
+      }
+      const result = await api.sendMessage(topic, sendPayload, replyTo);
+      if (activeTopicRef.current !== topic) return;
       finalizeOptimisticMessage(tempId, result);
     } catch (error) {
+      if (activeTopicRef.current !== topic) throw error;
       removeOptimisticMessage(tempId);
       setAwaitingAgentReply(false);
       setAttachmentStatus({
         tone: 'error',
-        message: error?.message ? `重新生成失败：${error.message}` : '重新生成失败，请稍后重试。',
+        message: `${shorten ? '简写请求发送失败' : '重新生成失败'}：${error?.message || '请稍后重试'}`,
       });
       throw error;
     } finally {
@@ -5999,6 +6014,45 @@ export default function MessagesView({
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
+  const ownedPreferenceUID = isGroup
+    ? (isAgentTask && (groupAgent?.is_owner === true || groupAgent?.relation === 'owner') ? parseUid(groupAgent.uid || groupAgent.id) : 0)
+    : (peerIsOwnedBot ? peerUID : 0);
+  const savingBriefPreference = useRef(false);
+  const rememberBriefReplies = useCallback(async (source) => {
+    const uid = parseUid(source?.from_uid);
+    if (!uid || uid !== ownedPreferenceUID || savingBriefPreference.current) return;
+    savingBriefPreference.current = true;
+    const authRevision = getAuthRevision();
+    const stillCurrent = () => activeTopicRef.current === topic && getAuthRevision() === authRevision;
+    try {
+      const remote = await api.getBotDefinitionPrompt(String(uid));
+      if (!stillCurrent()) return;
+      if (!remote?.configured) throw new Error('请先启动这个助手，再设置回复偏好。');
+      const saved = normalizePromptDefinition(remote);
+      const form = readPersona(saved.customSystemPrompt);
+      const brief = replyPreferences.find(item => item.value === '尽量简短');
+      const description = chooseReplyPreference(form.description.split(/(\r\n|\n|\r)/), brief);
+      if (saved.selected === 'custom' && description === form.description) {
+        feedback.notify({ message: '这个助手已设为简短回复' });
+        return;
+      }
+      const prompt = writePersona({ ...form, description });
+      if (promptByteLength(prompt) > MAX_SYSTEM_PROMPT_BYTES) throw new Error('设定过长，请在助手设定中精简文字后再保存。');
+      const enablingDraft = saved.selected === 'default' && saved.customSystemPrompt.trim();
+      const confirmed = await feedback.confirm({
+        title: '将这个助手设为简短回复？',
+        message: (enablingDraft ? '这也会启用此前保存的自定义设定。' : '') + '这项修改会用于所有使用该助手的新会话。',
+        confirmLabel: '保存偏好',
+      });
+      if (!confirmed || !stillCurrent()) return;
+      await api.updateBotDefinitionPrompt(String(uid), remote.revision, { selected: 'custom', customSystemPrompt: prompt });
+      if (stillCurrent()) feedback.notify({ tone: 'success', message: '已保存到助手设定' });
+    } catch (error) {
+      if (stillCurrent()) feedback.notify({ tone: 'error', message: error?.status === 409 ? '设定刚刚有更新，请重新操作以使用最新版本。' : error?.message || '暂时无法保存回复偏好' });
+    } finally {
+      savingBriefPreference.current = false;
+    }
+  }, [feedback, ownedPreferenceUID, topic]);
   const forkEligible = !conversationFork.blocked && canForkConversation({
     topic, userId: user.uid, agents: availableAgents,
     group: String(groupInfo?.id) === String(groupId) ? groupInfo : null, members,
@@ -6507,6 +6561,7 @@ export default function MessagesView({
     const workingByFallbackTurn = new Map();
     let currentWorking = null;
     let latestHumanPromptKey = '';
+    let latestHumanMessage = null;
     let prevSenderUid = null;
     let prevTime = 0;
     let prevVisibleSenderUid = null;
@@ -6565,6 +6620,7 @@ export default function MessagesView({
 
       if (isFinalTextMessage(msg) && !assistantAuthored) {
         latestHumanPromptKey = messageTurnIdentity(msg, index);
+        latestHumanMessage = msg;
       }
 
       const turn = assistantWorkTurn(msg, sender.isBot, latestHumanPromptKey);
@@ -6669,12 +6725,16 @@ export default function MessagesView({
           && (msgTime - prevVisibleTime < 5 * 60 * 1000)
         );
 
+        const replyMessage = displayMessage.reply_to ? messageById.get(String(displayMessage.reply_to)) : null;
+        const request = displayMessage.reply_to ? replyMessage : latestHumanMessage;
         groups.push({
           type: 'text',
           message: displayMessage,
           sourceMessages: [displayMessage],
           sender,
-          replyMessage: displayMessage.reply_to ? (messageById.get(String(displayMessage.reply_to)) || null) : null,
+          replyMessage: replyMessage || null,
+          followsShortenRequest: assistantAuthored && request?.content === SHORTEN_REPLY_REQUEST
+            && request.reply_to > 0 && sameUID(request.from_uid, user.uid),
           isConsecutive: textIsConsecutive,
           isConsecutiveWithoutWorking: textIsConsecutiveWithoutWorking,
           assistantAuthored,
@@ -8086,6 +8146,10 @@ export default function MessagesView({
                   textareaRef.current?.focus({ preventScroll: true });
                 }}
                 onEdit={sameUID(group.message.from_uid, user.uid) ? handleEditMessage : undefined}
+                allowShorten={!conversationShareMode && !activeBotWorking && !isSendingMessage
+                  && historyMessageID(group.message) > 0}
+                onRememberBriefReplies={group.followsShortenRequest && ownedPreferenceUID > 0 && sameUID(group.message.from_uid, ownedPreferenceUID)
+                  ? rememberBriefReplies : undefined}
                 onRegenerate={!conversationFork.blocked && canRegenerateAssistantMessages
                   && !sameUID(group.message.from_uid, user.uid)
                   && isAssistantAuthoredMessage(group.message, group.sender.isBot)
