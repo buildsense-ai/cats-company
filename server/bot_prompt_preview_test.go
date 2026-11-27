@@ -23,7 +23,7 @@ func TestOwnerPromptPreview(t *testing.T) {
 			t.Error(err)
 		}
 		if r.URL.Path != "/v1/messages" || r.Header.Get("x-api-key") != "test-token" || body["model"] != previewModel || body["tools"] != nil ||
-			!strings.Contains(body["system"].(string), "draft setting") {
+			!strings.Contains(body["system"].(string), effectivePersonaPrompt("怎么称呼我：同学")) {
 			t.Error("unexpected text preview request")
 		}
 		_, _ = w.Write([]byte(`{"content":[{"type":"thinking","text":"private"},{"type":"text","text":"trial answer"}]}`))
@@ -43,7 +43,7 @@ func TestOwnerPromptPreview(t *testing.T) {
 		{0, "{}", http.StatusUnauthorized},
 		{8, "{}", http.StatusForbidden},
 		{7, `{"question":" "}`, http.StatusBadRequest},
-		{7, `{"prompt":"draft setting","question":"what next?"}`, http.StatusOK},
+		{7, `{"prompt":"怎么称呼我：同学","question":"what next?"}`, http.StatusOK},
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/api/bots/definition/prompt-preview?uid=43", strings.NewReader(tc.input))
 		req = req.WithContext(context.WithValue(req.Context(), uidKey, tc.owner))

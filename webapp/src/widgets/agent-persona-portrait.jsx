@@ -3,6 +3,7 @@ import { ChevronDown, LoaderCircle, WandSparkles } from 'lucide-react';
 import { api, getAuthRevision } from '../api';
 import Avatar from './avatar';
 import { personaFields } from '../utils/agent-persona';
+import { readPortraitHistory, storePortrait } from '../utils/persona-portrait-history';
 
 export const PortraitSampleContext = createContext('');
 const directions = ['自由发挥', '人物', '动物'];
@@ -35,26 +36,37 @@ async function normalizePortrait(source) {
   return canvas.toDataURL('image/jpeg', 0.9);
 }
 
-export default function AgentPersonaPortrait({ agent, description, hidden, saving, onApplied, onStateChange }) {
+export default function AgentPersonaPortrait({ agent, ownerUID, description, hidden, saving, onApplied, onStateChange }) {
   const sample = useContext(PortraitSampleContext);
   const id = useId();
   const [open, setOpen] = useState(false);
   const [direction, setDirection] = useState(directions[0]);
   const [note, setNote] = useState('');
   const [candidate, setCandidate] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyError, setHistoryError] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const pending = useRef(null);
   const uid = agent.uid || agent.id;
+  const scope = ownerUID && uid ? JSON.stringify([sample ? 'preview' : 'account', String(ownerUID), String(uid)]) : '';
   const name = agent.newDisplayName || agent.display_name || agent.username || '助手';
   const avatar = agent.newAvatarUrl || agent.avatar_url;
   const editing = candidate?.direction === direction;
   const waiting = ['generate', 'refine', 'sample'].includes(busy);
   const waitingLabel = busy === 'sample' ? '正在读取示例图…' : busy === 'refine' ? '正在微调形象…' : '正在生成形象…';
   const portraitState = busy === 'apply' ? 'applying' : waiting ? 'generating'
-    : (candidate && !candidate.applied) || note.trim() ? 'draft' : '';
+    : (candidate && !candidate.applied && !history.some(item => item.id === candidate.id)) || note.trim() ? 'draft' : '';
   useLayoutEffect(() => { onStateChange?.(portraitState); }, [onStateChange, portraitState]);
   useEffect(() => () => { pending.current?.abort(); }, [uid]);
+  useEffect(() => {
+    if (!open || !scope) return;
+    let active = true;
+    readPortraitHistory(scope).then(rows => {
+      if (active) setHistory(current => [...current, ...rows.filter(row => !current.some(item => item.id === row.id))]);
+    }).catch(() => { if (active) setHistoryError('未能读取此浏览器的形象历史。'); });
+    return () => { active = false; };
+  }, [open, scope]);
 
   function cancel() {
     pending.current?.abort();
@@ -65,6 +77,7 @@ export default function AgentPersonaPortrait({ agent, description, hidden, savin
   async function generate(useSample = false) {
     if (pending.current) return;
     const controller = new AbortController();
+    const revision = getAuthRevision();
     pending.current = controller;
     const refine = !useSample && editing && Boolean(note.trim());
     setBusy(useSample ? 'sample' : refine ? 'refine' : 'generate');
@@ -79,10 +92,22 @@ export default function AgentPersonaPortrait({ agent, description, hidden, savin
         source = 'data:image/jpeg;base64,' + bytes;
       }
       const image = await normalizePortrait(source);
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || revision !== getAuthRevision()) return;
       if (useSample) setDirection('动物');
-      setCandidate({ image, direction: useSample ? '动物' : direction, sample: useSample });
+      const next = { id: crypto.randomUUID(), created: Date.now(), image, direction: useSample ? '动物' : direction, sample: useSample };
+      setCandidate(next);
       setNote('');
+      if (!useSample) {
+        try {
+          if (!scope) throw new Error();
+          await storePortrait(scope, next);
+          if (controller.signal.aborted || revision !== getAuthRevision()) return;
+          setHistory(current => [next, ...current.filter(item => item.id !== next.id)]);
+          setHistoryError('');
+        } catch {
+          if (!controller.signal.aborted) setHistoryError('未能保存到此浏览器。当前图片仍可用作头像。');
+        }
+      }
     } catch (err) {
       if (!controller.signal.aborted) setError(err.status === 401 ? '请登录后生成自己的形象。' : err.message || '生成失败，请重试。');
     } finally {
@@ -112,6 +137,16 @@ export default function AgentPersonaPortrait({ agent, description, hidden, savin
       if (getAuthRevision() !== revision) return;
       onApplied?.(uid, url);
       if (!controller.signal.aborted) setCandidate({ ...candidate, uploaded: url, applied: true });
+      if (scope && !candidate.sample) {
+        const item = { ...candidate, uploaded: url };
+        delete item.applied;
+        try {
+          await storePortrait(scope, item);
+          if (!controller.signal.aborted) setHistory(current => [item, ...current.filter(row => row.id !== item.id)].sort((a, b) => b.created - a.created));
+        } catch {
+          if (!controller.signal.aborted) setHistoryError('头像已更新，但未能更新此浏览器的形象历史。');
+        }
+      }
     } catch (err) {
       if (!controller.signal.aborted) setError(err.message || '头像保存失败，请重试。');
     } finally {
@@ -155,7 +190,21 @@ export default function AgentPersonaPortrait({ agent, description, hidden, savin
           onClick={apply}>{candidate.applied ? '已用作头像' : busy === 'apply' ? '正在保存…' : '用作头像'}</button>}
       </div>
       {!waiting && <small role="status">{candidate?.applied ? '头像已更新。' :
+        history.some(item => item.id === candidate?.id) ? '已存入此浏览器的形象历史。' :
         candidate ? '采用后会立即更新头像。' : '生成时会参考助手的性格、爱好和外观设定。'}</small>}
+      {historyError && <small role="status">{historyError}</small>}
+      {history.length > 0 && <details className="cc-persona-disclosure">
+        <summary>历史形象（{history.length}）</summary>
+        <div className="cc-portrait-history">{history.map((item, index) => {
+          const applied = Boolean(item.uploaded && item.uploaded === avatar);
+          return <button key={item.id} type="button" disabled={Boolean(busy) || saving}
+            aria-label={'查看形象 ' + (history.length - index) + (applied ? '，使用中' : '')}
+            aria-pressed={candidate?.id === item.id}
+            onClick={() => { setCandidate({ ...item, applied }); setDirection(item.direction); setError(''); }}>
+            <img width="52" height="52" src={item.image} alt="" />{applied && <small>使用中</small>}
+          </button>;
+        })}</div>
+      </details>}
     </div>}
   </section>;
 }

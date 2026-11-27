@@ -35,7 +35,7 @@ export function writePersona({ description, rules, boundaries }) {
 export const personaFields = {
   person: [
     { title: '相处身份', options: ['搭档', '教练', '学姐', '朋友'], example: '例如：和我一起做项目的学长' },
-    { title: '怎么称呼我', options: ['直接用“你”', '同学', '伙伴'], example: '写下你喜欢的称呼' },
+    { title: '怎么称呼我', label: '需要称呼时', optionLabels: { '直接用“你”': '自然称呼' }, options: ['直接用“你”', '同学', '伙伴'], example: '写下你喜欢的称呼' },
     { title: '性格', multi: true, options: ['坦率', '耐心', '幽默', '好奇', '沉稳'], example: '例如：慢热，但熟悉之后很健谈' },
     { title: '兴趣爱好', multi: true, options: ['阅读', '音乐', '电影', '旅行', '游戏', '画画'], example: '例如：古生物、收集黑胶唱片' },
     { title: '性别', background: true, options: ['女', '男'], example: '写下助手的性别设定' },

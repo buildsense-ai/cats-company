@@ -44,7 +44,7 @@ function PromptStatus({ state }) {
   );
 }
 
-export default function AgentSystemPromptCard({ agent, onAvatarApplied }) {
+export default function AgentSystemPromptCard({ agent, ownerUID, onAvatarApplied }) {
   const feedback = useFeedback();
   const uid = agentUID(agent);
   const [remote, setRemote] = useState(null);
@@ -430,7 +430,7 @@ export default function AgentSystemPromptCard({ agent, onAvatarApplied }) {
               <button type="button" className="cc-persona-reload" disabled={saving || portraitState === 'applying'} onClick={loadConflictingDraft}>载入最新版</button>
             </InlineFeedback>}
 
-            <AgentPersonaEditor key={editorVersion} uid={uid} agent={agent} onAvatarApplied={onAvatarApplied} onPortraitStateChange={setPortraitState}
+            <AgentPersonaEditor key={editorVersion} uid={uid} ownerUID={ownerUID} agent={agent} onAvatarApplied={onAvatarApplied} onPortraitStateChange={setPortraitState}
               saved={savedPrompt.selected === 'custom' ? savedPrompt.customSystemPrompt : ''} draft={draft} tab={tab} onTabChange={setTab} onChange={(text, incomplete) => {
               setDraft(text);
               setIncompleteRule(incomplete);

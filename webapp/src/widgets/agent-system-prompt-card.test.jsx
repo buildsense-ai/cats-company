@@ -361,9 +361,8 @@ describe('AgentSystemPromptCard', () => {
     const dialog = document.querySelector('.cc-agent-prompt-editor-dialog');
     const find = label => [...dialog.querySelectorAll('button')].find(button => button.textContent.trim() === label);
     const sample = () => dialog.querySelector('.cc-persona-example [aria-live]').textContent;
-    const first = sample();
-    await click(find('换个问题'));
-    expect(sample()).not.toBe(first);
+    await click(dialog.querySelector('.cc-persona-followups summary'));
+    expect(dialog.querySelector('.cc-persona-followups').open).toBe(true);
     expect(dialog.querySelector('footer .oc-btn-primary').disabled).toBe(true);
     const radio = dialog.querySelector('.cc-reply-preferences input[value="先说结论"]');
     await click(radio);
@@ -371,6 +370,10 @@ describe('AgentSystemPromptCard', () => {
     await revealField(find('轻松俏皮'));
     await click(find('轻松俏皮'));
     expect(sample()).not.toBe(direct);
+    const dinner = sample();
+    await click(find('换个问题'));
+    expect(sample()).not.toBe(dinner);
+    expect(dialog.querySelector('.cc-persona-followups').textContent).toContain('再短一点。');
     expect(radio.checked).toBe(true);
     expect(api.updateBotDefinitionPrompt).not.toHaveBeenCalled();
   });

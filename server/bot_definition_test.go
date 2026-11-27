@@ -656,6 +656,40 @@ func TestRuntimeDefinitionNormalizesHistoricalEmptyLocalHandoff(t *testing.T) {
 	}
 }
 
+func TestPersonaGuidanceOnlyAffectsRuntimeCustomPrompt(t *testing.T) {
+	db := &botDefinitionTestStore{owners: map[int64]int64{43: 7}}
+	models := &botModelConfigTestStore{owners: db.owners}
+	handler := NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models))
+	for _, tc := range []struct {
+		selected, raw string
+		guided        bool
+	}{
+		{"custom", "怎么称呼我：同学", true},
+		{"custom", `{"助手设定":"称呼随意","场景约定":[],"行为边界":"发送前问我"}`, true},
+		{"default", "怎么称呼我：同学", false},
+		{"custom", "Keep this system prompt verbatim.", false},
+	} {
+		prompt := &types.BotPromptDefinition{Selected: tc.selected, CustomSystemPrompt: tc.raw}
+		record := &types.BotDefinitionRecord{Exists: true, Definition: types.BotDefinition{
+			Model: types.BotDefinitionModel{Kind: "local"}, Prompt: prompt,
+		}}
+		for _, runtime := range []bool{true, false} {
+			resp, err := handler.definitionResponse(7, 43, record, runtime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := resp["definition"].(map[string]interface{})["prompt"].(*types.BotPromptDefinition).CustomSystemPrompt
+			want := tc.raw
+			if runtime && tc.guided {
+				want = personaConversationDefaults + "\n\n" + tc.raw
+			}
+			if got != want || prompt.CustomSystemPrompt != tc.raw {
+				t.Fatalf("unexpected prompt for %q (runtime=%v)", tc.raw, runtime)
+			}
+		}
+	}
+}
+
 func TestRuntimeDefinitionAcknowledgementRedactsCustomModelSecret(t *testing.T) {
 	enableBotModelEncryption(t)
 	codec, err := newBotModelSecretCodecFromEnv()

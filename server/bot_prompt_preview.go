@@ -69,7 +69,7 @@ func (h *BotDefinitionHandler) handleOwnerPromptPreview(w http.ResponseWriter, r
 	}
 	system := "你正在进行助手回复试答。请直接以助手身份回答用户的问题。本次仅能生成文字。"
 	if input.Prompt != "" {
-		system += "\n\n助手设定如下：\n" + input.Prompt
+		system += "\n\n助手设定如下：\n" + effectivePersonaPrompt(input.Prompt)
 	}
 	body, _ := json.Marshal(map[string]any{"model": previewModel, "max_tokens": 1024, "stream": false, "system": system, "messages": []map[string]string{{"role": "user", "content": input.Question}}})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
