@@ -123,6 +123,9 @@ func TestPostgresComputeTaskReceiptWrittenOnFinish(t *testing.T) {
 	}
 
 	final := store.ComputeTaskProgress{Phase: "released", SlurmJobID: "job-7", SlurmExitCode: "0:0", ReleasedAt: &now}
+	if err := db.SaveComputeTaskProgress(ctx, quote.ID, lease, final); err != nil {
+		t.Fatalf("save final progress: %v", err)
+	}
 	if err := db.FinishComputeTask(ctx, quote.ID, lease, final, 120*unit, true, now); err != nil {
 		t.Fatalf("finish: %v", err)
 	}

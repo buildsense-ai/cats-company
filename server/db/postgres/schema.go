@@ -44,7 +44,7 @@ func (a *Adapter) createSchema(ctx context.Context, conn *sql.Conn) error {
 		createGroupDeviceShares,
 		upgradeConversationDeviceSelectionOwner,
 		createMessagesTable,
-createFileUploadsTable,
+		createFileUploadsTable,
 		createFileMessageBindingsTable,
 		createFileMediaSessionsTable,
 		createFileVersionBindingsTable,
@@ -261,6 +261,8 @@ createFileUploadsTable,
 		// 行。钱走 model credit 账本（用 quote_id 作幂等键），所以必须排在 068 之后；
 		// 两张表都只引用 users，与云机器升配互不相干。
 		createComputeTaskTables,
+		// 000086：已有 compute_tasks 表补齐数据库容量预留字段。
+		migrateComputeTaskAdmission,
 		// Cats 算力任务终态回执收件箱（migration 000085）：quote_id 唯一引用
 		// compute_tasks，一个任务至多一份回执。必须排在 083 之后（外键指向
 		// compute_tasks）；与 service_run_receipts 是两条独立链路。

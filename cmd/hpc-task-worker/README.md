@@ -52,3 +52,13 @@ ECS 和 EVS 支持按精确 ID 过滤的集合或单条查询。单条查询需�
 `reconcile` 的 `problem` 以前一次 intent 或检查阶段开头。worker 在后续领取时从该阶段恢复。若缺失云端操作 `jobUUID`，可用 intent 中提前记录的 EOP request ID 查供应商记录。确认原操作属于此任务后，将其 `jobUUID` 补入相应 `*_operation` 字段。`force_completed` 或失败云作业进入对账。未知 `sbatch` 结果由完整 quote ID 派生的 Slurm job name 通过 `squeue` 和 `sacct` 恢复。若两个接口均未找到匹配项，worker 继续保留对账状态。
 
 `released` 提交已完成的云回收和 Slurm 会计记录。`rejected` 提交明确拒绝且无容量开通的结果。金额由 Cats 服务端计算。
+
+## 多实例运行
+
+多个 worker 可以使用同一份 Cats 地址、配置文件和凭据并行领取任务。数据库会在 claim 事务内统一执行节点数、任务数和用户配额限制，worker 数量按容量上限部署即可。
+
+仓库提供 `deploy/prod/ops/cats-hpc-task-worker@.service` 模板。每个实例读取 `/etc/catsco/hpc-worker-%i.json`，共享 `/etc/catsco/hpc-task-worker.env` 中的 `CATS_COMPUTE_WORKER_TOKEN`、`CTYUN_AK` 和 `CTYUN_SK`。服务使用 `galaxy` 用户运行，配置中的 `slurm.account` 固定为 `galaxy`，`slurm.srun` 必须填写计算节点上的绝对路径。
+
+部署前先对每个配置执行一次 `--preflight`，再启用实例。例如 `cats-hpc-task-worker@1.service` 和 `cats-hpc-task-worker@2.service` 可以使用相同配置并行消费，实例数量由 `CATSCOMPANY_COMPUTE_MAX_CONCURRENT_TASKS` 和天翼云 API 配额共同决定。
+
+systemd 模板让同一台主机上的实例共享 `/var/lib/catsco-hpc-worker/mutation`，并通过 `CATS_HPC_MUTATION_LOCK_FILE` 指定该路径。手动启动时可以用 `cloud.mutation_lock_file` 指定共享的绝对路径，默认使用系统临时目录下的 `catsco-hpc-task-worker.mutation`。worker 会在状态文件旁创建 `.lock` 文件，目录须可读写。`cloud.mutation_lock_timeout_seconds` 默认 5 秒，`cloud.mutation_cooldown_seconds` 默认 0.2 秒。worker 获得锁后先保存意图并续租，再发送 create、expand、shrink 或 delete 请求。等锁超时会继续等待。请求已发出但结果未知时走现有恢复流程。

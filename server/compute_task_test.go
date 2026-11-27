@@ -150,3 +150,40 @@ func TestComputeTaskMCPQuoteAndStatus(t *testing.T) {
 		t.Fatalf("status: result=%+v err=%v", status, err)
 	}
 }
+func TestComputeTaskAdmissionPolicyFromEnv(t *testing.T) {
+	for _, name := range []string{
+		"CATSCOMPANY_COMPUTE_MAX_TOTAL_NODES",
+		"CATSCOMPANY_COMPUTE_MAX_CONCURRENT_TASKS",
+		"CATSCOMPANY_COMPUTE_MAX_USER_NODES",
+		"CATSCOMPANY_COMPUTE_MAX_USER_TASKS",
+	} {
+		t.Setenv(name, "")
+	}
+	policy, err := computeTaskAdmissionPolicyFromEnv()
+	if err != nil || !policy.Unlimited() {
+		t.Fatalf("empty capacity settings must keep unlimited behavior: %#v %v", policy, err)
+	}
+	t.Setenv("CATSCOMPANY_COMPUTE_MAX_TOTAL_NODES", "8")
+	t.Setenv("CATSCOMPANY_COMPUTE_MAX_CONCURRENT_TASKS", "3")
+	t.Setenv("CATSCOMPANY_COMPUTE_MAX_USER_NODES", "2")
+	t.Setenv("CATSCOMPANY_COMPUTE_MAX_USER_TASKS", "1")
+	policy, err = computeTaskAdmissionPolicyFromEnv()
+	if err != nil || policy != (store.ComputeTaskAdmissionPolicy{MaxTotalNodes: 8, MaxConcurrentTasks: 3, MaxUserNodes: 2, MaxUserTasks: 1}) {
+		t.Fatalf("capacity settings must parse as a shared policy: %#v %v", policy, err)
+	}
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"negative", "-1"},
+		{"fraction", "1.5"},
+		{"text", "many"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CATSCOMPANY_COMPUTE_MAX_TOTAL_NODES", tc.value)
+			if _, err := computeTaskAdmissionPolicyFromEnv(); err == nil {
+				t.Fatalf("invalid capacity setting %q must be rejected", tc.value)
+			}
+		})
+	}
+}

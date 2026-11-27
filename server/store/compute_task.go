@@ -8,6 +8,23 @@ import (
 	"time"
 )
 
+type ComputeTaskAdmissionPolicy struct {
+	MaxTotalNodes      int
+	MaxConcurrentTasks int
+	MaxUserNodes       int
+	MaxUserTasks       int
+}
+
+func (p ComputeTaskAdmissionPolicy) Unlimited() bool {
+	return p.MaxTotalNodes == 0 && p.MaxConcurrentTasks == 0 && p.MaxUserNodes == 0 && p.MaxUserTasks == 0
+}
+
+// ComputeTaskAdmissionStore is optional so existing lifecycle fakes can keep
+// using ClaimComputeTask while PostgreSQL enforces shared capacity limits.
+type ComputeTaskAdmissionStore interface {
+	ClaimComputeTaskWithPolicy(context.Context, string, time.Time, time.Time, ComputeTaskAdmissionPolicy) (*ComputeTaskRun, error)
+}
+
 var (
 	ErrComputeTaskNotFound = errors.New("compute task not found")
 	ErrComputeTaskConflict = errors.New("compute task state changed")
