@@ -247,3 +247,35 @@ func TestComputeTaskMaxWallSecondsFromEnv(t *testing.T) {
 		t.Fatal("accepted a job above the configured operational limit")
 	}
 }
+
+func TestComputeTaskWorkloadIsOptionalAndValidated(t *testing.T) {
+	handler := &ComputeTaskHandler{}
+	base := store.ComputeTaskSpec{Nodes: 1, LogicalCPUs: 1, MemoryMiB: 256, WallSeconds: 600}
+	if !handler.acceptsAllocation(base) {
+		t.Fatal("builtin job without workload must stay accepted")
+	}
+	good := base
+	good.Workload = &store.ComputeTaskWorkload{Command: "foamRun -solver incompressibleFluid",
+		Image: "docker://openfoam/openfoam12-paraview512:latest"}
+	if !handler.acceptsAllocation(good) {
+		t.Fatal("valid caller workload was rejected")
+	}
+	withDir := base
+	withDir.Workload = &store.ComputeTaskWorkload{Command: "ls", WorkDir: "/home/galaxy/runs/case1"}
+	if !handler.acceptsAllocation(withDir) {
+		t.Fatal("absolute work directory was rejected")
+	}
+	for _, invalid := range []*store.ComputeTaskWorkload{
+		{Command: "   "},
+		{Command: strings.Repeat("a", 8193)},
+		{Command: "true", Image: "docker://bad image"},
+		{Command: "true", Image: "relative/path.sif"},
+		{Command: "true", WorkDir: "relative/dir"},
+	} {
+		spec := base
+		spec.Workload = invalid
+		if handler.acceptsAllocation(spec) {
+			t.Fatalf("accepted invalid workload %+v", invalid)
+		}
+	}
+}

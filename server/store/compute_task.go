@@ -40,13 +40,22 @@ const (
 	ComputeTaskLeaseTTL  = 45 * time.Second
 )
 
-// ComputeTaskSpec contains the minimum per-node allocation for the fixed CPU workload.
+// ComputeTaskWorkload is what the caller runs inside the leased nodes. The platform
+// provisions capacity and scheduling only; software and data stay the caller's concern.
+type ComputeTaskWorkload struct {
+	Command string `json:"command" jsonschema:"在分配节点上执行的 Shell 命令，必填"`
+	Image   string `json:"image,omitempty" jsonschema:"可选容器镜像，绝对 .sif 路径或 docker:// 引用；留空则在节点上直接执行命令"`
+	WorkDir string `json:"workdir,omitempty" jsonschema:"可选工作目录，必须为绝对路径；默认使用任务专属目录"`
+}
+
+// ComputeTaskSpec contains the minimum per-node allocation and the workload to run.
 type ComputeTaskSpec struct {
-	Nodes                     int `json:"nodes" jsonschema:"quote 时的节点数，支持 1 至 2 个节点"`
-	LogicalCPUs               int `json:"logical_cpus" jsonschema:"每节点最低逻辑 CPU 数，必须为正数"`
-	MemoryMiB                 int `json:"memory_mib" jsonschema:"每节点最低内存 MiB，必须为正数"`
-	WallSeconds               int `json:"wall_seconds" jsonschema:"按实际任务填写的 Slurm 作业最长运行秒数，必须为正数且是整分钟"`
-	MaxResourceSecondsPerNode int `json:"max_resource_seconds_per_node" jsonschema:"平台按 wall_seconds 自动推导的每节点计费上限，从实际观察到节点资源开始计算"`
+	Nodes                     int                  `json:"nodes" jsonschema:"quote 时的节点数，支持 1 至 2 个节点"`
+	LogicalCPUs               int                  `json:"logical_cpus" jsonschema:"每节点最低逻辑 CPU 数，必须为正数"`
+	MemoryMiB                 int                  `json:"memory_mib" jsonschema:"每节点最低内存 MiB，必须为正数"`
+	WallSeconds               int                  `json:"wall_seconds" jsonschema:"按实际任务填写的 Slurm 作业最长运行秒数，必须为正数且是整分钟"`
+	MaxResourceSecondsPerNode int                  `json:"max_resource_seconds_per_node" jsonschema:"平台按 wall_seconds 自动推导的每节点计费上限，从实际观察到节点资源开始计算"`
+	Workload                  *ComputeTaskWorkload `json:"workload,omitempty" jsonschema:"可选；缺省时执行内置 CPU 验收作业"`
 }
 
 type ComputeTaskRate struct {

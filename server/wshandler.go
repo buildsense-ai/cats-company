@@ -125,32 +125,32 @@ type presenceEvent struct {
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub                   *Hub
-	conn                  *websocket.Conn
-	uid                   int64
-	remoteAddr            string
-	displayName           string
-	accountType           types.AccountType
-	bodyID                string
-	installationID        string
+	hub                       *Hub
+	conn                      *websocket.Conn
+	uid                       int64
+	remoteAddr                string
+	displayName               string
+	accountType               types.AccountType
+	bodyID                    string
+	installationID            string
 	connectionID              string
 	authSessionFingerprint    [32]byte
 	hasAuthSessionFingerprint bool
 	deviceOwnerUID            int64
-	deviceID              string
-	deviceBodyID          string
-	deviceInstallationID  string
-	deviceConnector       *DeviceConnectorClaims
-	wikiAgentUID          int64
-	botRuntimeCredential  *botRuntimeCredentialClaims
-	runtimeCapabilities   map[string]struct{}
-	runtimeCapabilitiesMu sync.RWMutex
-	messagingAttention    messagingClientAttention
-	messagingAttentionMu  sync.RWMutex
-	attentionSyncMu       sync.Mutex
-	send                  chan []byte
-	sendMu                sync.RWMutex
-	sendClosed            bool
+	deviceID                  string
+	deviceBodyID              string
+	deviceInstallationID      string
+	deviceConnector           *DeviceConnectorClaims
+	wikiAgentUID              int64
+	botRuntimeCredential      *botRuntimeCredentialClaims
+	runtimeCapabilities       map[string]struct{}
+	runtimeCapabilitiesMu     sync.RWMutex
+	messagingAttention        messagingClientAttention
+	messagingAttentionMu      sync.RWMutex
+	attentionSyncMu           sync.Mutex
+	send                      chan []byte
+	sendMu                    sync.RWMutex
+	sendClosed                bool
 }
 
 func (c *Client) setRuntimeCapabilities(values []string) {

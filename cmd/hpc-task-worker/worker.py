@@ -164,6 +164,21 @@ class Task:
             raise WorkerError("invalid pilot allocation")
         if spec["nodes"] > 2 or spec["wall_seconds"] > MAX_SLURM_WALL_SECONDS or spec["wall_seconds"] % 60:
             raise WorkerError("allocation is outside the supported node count or Slurm time range")
+        workload = spec.get("workload")
+        if workload is not None:
+            if not isinstance(workload, dict):
+                raise WorkerError("invalid workload")
+            command = workload.get("command")
+            if not isinstance(command, str) or not command.strip() or len(command) > 8192:
+                raise WorkerError("invalid workload command")
+            image = workload.get("image", "")
+            if image and not isinstance(image, str):
+                raise WorkerError("invalid workload image")
+            if image and not re.fullmatch(r"docker://[A-Za-z0-9][A-Za-z0-9._/:@+-]{2,255}|/[A-Za-z0-9._/-]{2,255}\.sif", image):
+                raise WorkerError("invalid workload image")
+            workdir = workload.get("workdir", "")
+            if workdir and (not isinstance(workdir, str) or not re.fullmatch(r"/[A-Za-z0-9._/-]{1,255}", workdir)):
+                raise WorkerError("invalid workload directory")
         if "max_resource_seconds_per_node" in spec:
             cap = spec["max_resource_seconds_per_node"]
             if type(cap) is not int or cap < spec["wall_seconds"] or cap % 60:

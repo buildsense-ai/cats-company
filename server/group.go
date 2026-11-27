@@ -216,17 +216,17 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 	})
 
 	response := map[string]interface{}{
-		"group_id":     groupID,
-		"topic":        topicID,
-		"name":         req.Name,
-		"group":        responseGroup,
-		"created_at":   createdAt,
-		"avatar_url":   avatarURL,
-		"kind":         req.Kind,
-		"has_bot":      hasBot,
+		"group_id":      groupID,
+		"topic":         topicID,
+		"name":          req.Name,
+		"group":         responseGroup,
+		"created_at":    createdAt,
+		"avatar_url":    avatarURL,
+		"kind":          req.Kind,
+		"has_bot":       hasBot,
 		"is_agent_task": req.Kind == types.GroupKindAgentTask,
-		"member_count": memberCount,
-		"agent_ids":    agentIDs,
+		"member_count":  memberCount,
+		"agent_ids":     agentIDs,
 	}
 	writeJSON(w, http.StatusOK, response)
 }

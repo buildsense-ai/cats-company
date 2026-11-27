@@ -23,15 +23,15 @@ func creditOnlyTestPlan() *types.CommercialPlan {
 
 func legacyBudgetTestPlan() *types.CommercialPlan {
 	return &types.CommercialPlan{
-		ID:            10,
-		Slug:          "legacy-budget",
-		Name:          "Legacy Budget",
-		PriceFen:      5900,
-		Currency:      "CNY",
-		SaleState:     "public",
-		State:         0,
-		DurationDays:  30,
-		ModelBudgets:  map[string]float64{"deepseek-flash": 20},
+		ID:           10,
+		Slug:         "legacy-budget",
+		Name:         "Legacy Budget",
+		PriceFen:     5900,
+		Currency:     "CNY",
+		SaleState:    "public",
+		State:        0,
+		DurationDays: 30,
+		ModelBudgets: map[string]float64{"deepseek-flash": 20},
 	}
 }
 

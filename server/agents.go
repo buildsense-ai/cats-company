@@ -57,6 +57,7 @@ type agentQuotaSummary struct {
 	// 百分比，好友看到的摘要只有「使用账户点数」；余额不进这个响应。
 	BillingMode string `json:"billing_mode,omitempty"`
 }
+
 // MarshalJSON 让 credits 模式的摘要不下发旧额度百分比。remaining_percent 是
 // 没有 omitempty 的 float64（legacy 真正的 0% 必须照常下发），所以只能在
 // credits 模式下换一份线上形状：这个 0 会被好友端当成「额度已用完」。
@@ -79,7 +80,6 @@ func (s agentQuotaSummary) MarshalJSON() ([]byte, error) {
 		BillingMode:     s.BillingMode,
 	})
 }
-
 
 type agentQuotaCacheEntry struct {
 	response  agentQuotaResponse

@@ -25,6 +25,7 @@ type botAccessManagementStore struct {
 	removedA      int64
 	removedB      int64
 }
+
 func (s *botAccessManagementStore) GetUser(id int64) (*types.User, error) {
 	return s.users[id], nil
 }

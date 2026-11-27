@@ -14,26 +14,26 @@ type SessionForkRequest struct {
 	// The anchor is a source message ID, not a turn number: turn numbering is a
 	// client-side view over the same rows, and a count would silently point at a
 	// different place once history is compacted or a message is deleted.
-	UntilMessageID int64 `json:"until_message_id,omitempty"`
-	ActorUserID    int64 `json:"-"`
-	AgentUID       int64 `json:"-"`
+	UntilMessageID int64  `json:"until_message_id,omitempty"`
+	ActorUserID    int64  `json:"-"`
+	AgentUID       int64  `json:"-"`
 	BodyID         string `json:"-"`
 }
 
 // SessionFork is a durable operation, not a chat message or an execution request.
 type SessionFork struct {
-	RequestID      string           `json:"request_id"`
-	SourceTopicID  string           `json:"source_topic_id"`
-	TargetTopicID  string           `json:"target_topic_id"`
-	State          string           `json:"state"`
-	Error          string           `json:"error,omitempty"`
-	ActorUserID    int64            `json:"-"`
-	AgentUID       int64            `json:"-"`
-	Name           string           `json:"-"`
-	BodyID         string           `json:"-"`
-	SourceRevision int64            `json:"-"`
-	TargetRevision int64            `json:"-"`
-	SourceLastSeq  int64            `json:"-"`
+	RequestID      string `json:"request_id"`
+	SourceTopicID  string `json:"source_topic_id"`
+	TargetTopicID  string `json:"target_topic_id"`
+	State          string `json:"state"`
+	Error          string `json:"error,omitempty"`
+	ActorUserID    int64  `json:"-"`
+	AgentUID       int64  `json:"-"`
+	Name           string `json:"-"`
+	BodyID         string `json:"-"`
+	SourceRevision int64  `json:"-"`
+	TargetRevision int64  `json:"-"`
+	SourceLastSeq  int64  `json:"-"`
 	// SourceTurnCount is how many complete user turns the copied range contains.
 	// The runtime cannot match on cloud message IDs (a live session records them
 	// only on the restore path), so the turn count is what tells it where to cut
@@ -48,8 +48,8 @@ type SessionFork struct {
 	// turns dropped by compaction are the difference between the total and what
 	// the runtime retains.
 	SourceTotalTurns int64            `json:"-"`
-	MessageIDMap   map[string]int64 `json:"-"`
-	CreatedAt      time.Time        `json:"-"`
+	MessageIDMap     map[string]int64 `json:"-"`
+	CreatedAt        time.Time        `json:"-"`
 }
 
 // Terminal failure reasons the server records on its own behalf, as opposed to
@@ -77,12 +77,12 @@ type SessionForkCompletion struct {
 }
 
 type SessionForkControl struct {
-	RequestID     string           `json:"request_id"`
-	SourceTopicID string           `json:"source_topic_id"`
-	TargetTopicID string           `json:"target_topic_id"`
-	ActorUserID   int64            `json:"actor_user_id"`
-	AgentUID      int64            `json:"agent_uid"`
-	SourceLastSeq int64            `json:"source_last_seq"`
+	RequestID     string `json:"request_id"`
+	SourceTopicID string `json:"source_topic_id"`
+	TargetTopicID string `json:"target_topic_id"`
+	ActorUserID   int64  `json:"actor_user_id"`
+	AgentUID      int64  `json:"agent_uid"`
+	SourceLastSeq int64  `json:"source_last_seq"`
 	// SourceTurnCount bounds the runtime's local transcript. It counts complete
 	// user turns in the copied range using the same rule the server applied, so
 	// both sides cut at the same place. A runtime must not infer this from message

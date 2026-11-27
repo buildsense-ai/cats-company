@@ -263,6 +263,40 @@ class SlurmTest(unittest.TestCase):
         self.assertIn("--nodes=2", commands)
         self.assertIn("--ntasks-per-node=2", commands)
 
+    def test_submit_runs_caller_workload_in_container(self):
+        commands, scripts = [], []
+
+        def submit(argv, script):
+            commands.extend(argv)
+            scripts.append(script)
+            return "123"
+
+        slurm = Slurm({"account": "fixed"}, submit)
+        task = dict(nodes=1, logical_cpus=2, memory_mib=512, wall_seconds=600,
+                    workload=dict(command="foamRun -solver incompressibleFluid",
+                                  image="docker://openfoam/openfoam12-paraview512:latest"))
+        self.assertEqual(slurm.submit(QUEUE, ["wn01"], JOB, task, lambda func, *args: func(*args)), "123")
+        self.assertIn(f"--chdir=/home/galaxy/catsco-runs/{JOB}", commands)
+        self.assertIn(f"--output=/home/galaxy/catsco-runs/{JOB}/slurm-%j.out", commands)
+        self.assertIn("apptainer", scripts[0])
+        self.assertIn("--cleanenv", scripts[0])
+        self.assertIn("docker://openfoam/openfoam12-paraview512:latest", scripts[0])
+        self.assertIn("foamRun -solver incompressibleFluid", scripts[0])
+
+    def test_submit_falls_back_to_builtin_job_without_workload(self):
+        commands = []
+
+        def submit(argv, script):
+            commands.extend(argv)
+            commands.append(script)
+            return "123"
+
+        slurm = Slurm({"account": "fixed"}, submit)
+        task = dict(nodes=1, logical_cpus=1, memory_mib=64, wall_seconds=60)
+        slurm.submit(QUEUE, ["wn01"], JOB, task, lambda func, *args: func(*args))
+        self.assertIn("--chdir=/tmp", commands)
+        self.assertTrue(any("/usr/bin/awk" in str(item) for item in commands))
+
     def test_terminal_waits_for_missing_job_metadata(self):
         placeholder = "123|allocation||fixed|PENDING|0:0|1|0|0|wn01\n"
         completed = f"123|{JOB}|{QUEUE}|fixed|COMPLETED|0:0|1|1|64M|wn01\n"
