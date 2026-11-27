@@ -330,7 +330,7 @@ class Task:
         status = self.cloud.status(job_uuid, self.check)
         if status == "success" or status in FAILED_CLOUD or status == "force_completed" or status in self.cloud.pending:
             return status
-        raise WorkerError("provider returned an unrecognized job result")
+        raise WorkerError(f"provider returned an unrecognized job result: {status}")
 
     def confirmed_job(self, receipt):
         status = self.operation_status(receipt)
@@ -574,7 +574,7 @@ class Task:
 def preflight(cloud, slurm):
     status = cloud.status(cloud.probe_job_id, direct)
     if status not in cloud.pending | FAILED_CLOUD | {"success", "force_completed"}:
-        raise WorkerError("cloud job status preflight returned an unrecognized result")
+        raise WorkerError(f"cloud job status preflight returned an unrecognized result: {status}")
     slurm.preflight()
 
 
