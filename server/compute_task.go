@@ -202,12 +202,25 @@ func (h *ComputeTaskHandler) maxNodesPerTask() int {
 	return limit
 }
 
+// computeTaskBillingCeiling is the per-node billable ceiling: exactly the job wall time the
+// caller asked for. Provisioning, Slurm hand-off and release are operator cost and never
+// extend what a user can be charged.
+func computeTaskBillingCeiling(wallSeconds, nodes int) (int64, bool) {
+	if nodes < 1 || wallSeconds < 60 || wallSeconds%60 != 0 || int64(wallSeconds) > computeTaskMaxSlurmWallSeconds {
+		return 0, false
+	}
+	if int64(wallSeconds) > maxComputeJSONInteger/int64(nodes) {
+		return 0, false
+	}
+	return int64(wallSeconds), true
+}
+
 func (h *ComputeTaskHandler) acceptsAllocation(spec store.ComputeTaskSpec) bool {
-	return spec.Nodes > 0 && spec.Nodes <= h.maxNodesPerTask() && spec.LogicalCPUs > 0 && spec.MemoryMiB > 0 &&
-		spec.WallSeconds >= 60 && spec.WallSeconds%60 == 0 && int64(spec.WallSeconds) <= computeTaskMaxSlurmWallSeconds &&
-		(h.maxWallSeconds == 0 || spec.WallSeconds <= h.maxWallSeconds) &&
-		spec.MaxResourceSecondsPerNode >= spec.WallSeconds && spec.MaxResourceSecondsPerNode%60 == 0 &&
-		int64(spec.MaxResourceSecondsPerNode) <= maxComputeJSONInteger/int64(spec.Nodes)
+	if _, ok := computeTaskBillingCeiling(spec.WallSeconds, spec.Nodes); !ok {
+		return false
+	}
+	return spec.Nodes <= h.maxNodesPerTask() && spec.LogicalCPUs > 0 && spec.MemoryMiB > 0 &&
+		(h.maxWallSeconds == 0 || spec.WallSeconds <= h.maxWallSeconds)
 }
 
 func computeTaskCharge(rate store.ComputeTaskRate, nodes int, seconds int64) (int64, bool) {
@@ -239,7 +252,11 @@ func (sku computeTaskSKU) rate(now time.Time) (store.ComputeTaskRate, bool) {
 
 func chooseComputeTaskQuote(spec store.ComputeTaskSpec, catalog []computeTaskSKU, now time.Time) (store.ComputeTaskQuote, bool) {
 	var best store.ComputeTaskQuote
-	maxSeconds := int64(spec.MaxResourceSecondsPerNode)
+	ceiling, ok := computeTaskBillingCeiling(spec.WallSeconds, spec.Nodes)
+	if !ok {
+		return best, false
+	}
+	spec.MaxResourceSecondsPerNode = int(ceiling)
 	for _, sku := range catalog {
 		if sku.LogicalCPUs < spec.LogicalCPUs || sku.MemoryMiB < spec.MemoryMiB {
 			continue
@@ -248,13 +265,13 @@ func chooseComputeTaskQuote(spec store.ComputeTaskSpec, catalog []computeTaskSKU
 		if !available {
 			continue
 		}
-		amount, ok := computeTaskCharge(rate, spec.Nodes, maxSeconds)
+		amount, ok := computeTaskCharge(rate, spec.Nodes, ceiling)
 		if !ok || amount == 0 || best.MaxUnits > 0 && (amount > best.MaxUnits || amount == best.MaxUnits && sku.ID >= best.SKU) {
 			continue
 		}
 		best = store.ComputeTaskQuote{
 			Spec: spec, SKU: sku.ID, SKUCPUs: sku.LogicalCPUs, SKUMemoryMiB: sku.MemoryMiB, Rate: rate,
-			MaxUnits: amount, MaxNodeSeconds: int64(spec.Nodes) * maxSeconds,
+			MaxUnits: amount, MaxNodeSeconds: int64(spec.Nodes) * ceiling,
 			ExpiresAt: now.Add(computeTaskQuoteTTL),
 		}
 		if sku.Tariff.ValidUntil.Before(best.ExpiresAt) {
@@ -277,16 +294,15 @@ func computeTaskInputSchema(maxWallSeconds int) map[string]any {
 		wallSeconds["maximum"] = maxWallSeconds
 	}
 	taskProperties := map[string]any{
-		"topology":                      map[string]any{"type": "string", "enum": []string{"independent_shards", "distributed"}, "description": "preview 时使用。independent_shards 表示独立分片，distributed 表示分布式节点"},
-		"shards":                        map[string]any{"type": "integer", "minimum": 1, "description": "preview 的独立分片数，topology=independent_shards 时填写"},
-		"nodes":                         map[string]any{"type": "integer", "minimum": 1, "description": "quote 的节点数，或 preview 分布式任务的节点数。报价节点上限可通过 catalog 查询"},
-		"logical_cpus":                  map[string]any{"type": "integer", "minimum": 1, "description": "每分片或每节点最低逻辑 CPU 数"},
-		"memory_mib":                    map[string]any{"type": "integer", "minimum": 1, "description": "每分片或每节点最低内存 MiB"},
-		"gpu_count":                     map[string]any{"type": "integer", "minimum": 0, "description": "preview 的每分片或每节点最低 GPU 数，没有 GPU 需求填 0"},
-		"memory_mib_per_gpu":            map[string]any{"type": "integer", "minimum": 0, "description": "preview 的每块 GPU 最低显存 MiB"},
-		"wall_seconds":                  wallSeconds,
-		"max_resource_seconds_per_node": map[string]any{"type": "integer", "minimum": 60, "description": "quote 的每节点资源计费上限，从平台实际观察到资源开始计算，必须是整分钟且不小于 wall_seconds。排队和开通等待不计入"},
-		"estimated_billable_s":          map[string]any{"type": "integer", "minimum": 0, "description": "preview 的预览假设时长，独立任务按每分片填写，分布式任务按每节点填写。没有依据时省略"},
+		"topology":             map[string]any{"type": "string", "enum": []string{"independent_shards", "distributed"}, "description": "preview 时使用。independent_shards 表示独立分片，distributed 表示分布式节点"},
+		"shards":               map[string]any{"type": "integer", "minimum": 1, "description": "preview 的独立分片数，topology=independent_shards 时填写"},
+		"nodes":                map[string]any{"type": "integer", "minimum": 1, "description": "quote 的节点数，或 preview 分布式任务的节点数。报价节点上限可通过 catalog 查询"},
+		"logical_cpus":         map[string]any{"type": "integer", "minimum": 1, "description": "每分片或每节点最低逻辑 CPU 数"},
+		"memory_mib":           map[string]any{"type": "integer", "minimum": 1, "description": "每分片或每节点最低内存 MiB"},
+		"gpu_count":            map[string]any{"type": "integer", "minimum": 0, "description": "preview 的每分片或每节点最低 GPU 数，没有 GPU 需求填 0"},
+		"memory_mib_per_gpu":   map[string]any{"type": "integer", "minimum": 0, "description": "preview 的每块 GPU 最低显存 MiB"},
+		"wall_seconds":         wallSeconds,
+		"estimated_billable_s": map[string]any{"type": "integer", "minimum": 0, "description": "preview 的预览假设时长，独立任务按每分片填写，分布式任务按每节点填写。没有依据时省略"},
 	}
 	runtimeProperties := map[string]any{
 		"scope":                map[string]any{"type": "string", "enum": []string{"agent_runtime"}, "description": "必须为 agent_runtime"},
@@ -393,7 +409,7 @@ func (h *ComputeTaskHandler) taskStatus(ctx context.Context, uid int64, id strin
 func (h *ComputeTaskHandler) addUnifiedTool(srv *mcp.Server, uid int64, snapshotPath string) {
 	tool := &mcp.Tool{
 		Name:        computeToolName,
-		Description: "Cats 统一算力入口。action=catalog 查询可报价的单节点规格、费率和任务限制，action=preview 比较当前 Agent 设备和 Cats 托管 Slurm，action=quote 根据每节点 CPU、内存、节点数和作业时限生成需本人确认的整节点报价，action=status 查询任务状态和实际扣费。task.max_resource_seconds_per_node 是每节点从资源被实际观察到起的计费上限，必须为整分钟且不小于 task.wall_seconds。报价不会自动开通资源。",
+		Description: "Cats 统一算力入口。action=catalog 查询可报价的单节点规格、费率和任务限制，action=preview 比较当前 Agent 设备和 Cats 托管 Slurm，action=quote 根据每节点 CPU、内存、节点数和作业时限生成需本人确认的整节点报价，action=status 查询任务状态和实际扣费。计费从平台观察到节点开始，按实际存活时长结算，每节点上限由平台按作业时限自动推导，调用方不需要填写。报价不会自动开通资源。",
 		InputSchema: computeTaskInputSchema(h.maxWallSeconds),
 	}
 	srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -444,7 +460,7 @@ func (h *ComputeTaskHandler) addUnifiedTool(srv *mcp.Server, uid int64, snapshot
 func (h *ComputeTaskHandler) addTools(srv *mcp.Server, uid int64) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        computeTaskQuoteTool,
-		Description: "为 Cats 托管 Slurm CPU 验收作业报价。按实际任务填写整分钟作业时限、节点数、每节点 CPU 和内存。Agent 必须填写整分钟的每节点资源计费上限，且不小于 wall_seconds。当前可报价规格和限制可通过 catsco_compute 的 catalog 查询。",
+		Description: "为 Cats 托管 Slurm CPU 作业报价。按实际任务填写整分钟作业时限、节点数、每节点 CPU 和内存；平台据此推导每节点计费上限并在确认时预留额度。当前可报价规格和限制可通过 catsco_compute 的 catalog 查询。",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, spec store.ComputeTaskSpec) (*mcp.CallToolResult, any, error) {
 		return h.createQuote(ctx, uid, spec)
 	})

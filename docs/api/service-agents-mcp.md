@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | `catalog` | 只读查询当前有效的单节点报价规格、按节点费率和单任务节点上限 | 无 |
 | `preview` | 比较当前 Agent 设备和 Cats 托管 Slurm，只读返回容量、适配性、费率和预览估算 | `task`，可选 `agent_runtime` |
-| `quote` | 创建需要用户本人确认的正式报价 | `task.nodes`、`logical_cpus`、`memory_mib`、`wall_seconds`、`max_resource_seconds_per_node` |
+| `quote` | 创建需要用户本人确认的正式报价 | `task.nodes`、`logical_cpus`、`memory_mib`、`wall_seconds` |
 | `status` | 查询已创建任务的状态、云操作号、Slurm 作业号、资源回收和实际扣费 | `quote_id` |
 
 本机资源采样可以由 XiaoBa 的 `local_compute_resources` 提供。它属于本机采样能力，不再作为算力执行入口展示。采样结果放入 `agent_runtime`，并标明来源为 `agent_reported`。没有采样结果时，预览保留未知状态。
@@ -47,9 +47,9 @@
 
 `wall_seconds` 由 Agent 按任务填写，单位为秒，必须为正数且是整分钟。运营可通过 `CATSCOMPANY_COMPUTE_MAX_WALL_SECONDS` 按队列能力设置报价时限，设置后 `catalog` 返回 `max_wall_seconds`。留空或填 `0` 时 Cats 无额外运营时限，Slurm 仍执行其队列策略。部署时应先升级 worker，再放开原有的 300 秒限制。
 
-`quote` 必须填写 `task.max_resource_seconds_per_node`。它表示每节点从平台实际观察到资源开始存活起，用户最多承担的资源秒数。该值必须为正数、整分钟，并且不小于 `wall_seconds`。`wall_seconds` 只表示 Slurm 作业时限，排队和资源开通等待不计入用户资源时长。
+`quote` 只需要作业形状：节点数、每节点逻辑 CPU、每节点内存和 `wall_seconds`。每节点计费上限就等于用户填写的作业时限，开机、提交、恢复和释放的时间由运营承担，不计入用户账单；调用方额外填写的上限字段不会生效。`wall_seconds` 只表示 Slurm 作业时限，排队和资源开通等待不计入用户资源时长。
 
-报价返回的 `max_node_seconds` 等于节点数乘以每节点资源计费上限。`max_units` 按各节点的计费时长取整及发布费率计算。报价不会自动开通资源。用户在确认页核对并提交 `max_units` 后才会预占积分。任务结束时按资源实际被观察到的时间起点至资源回收时间结算，结算金额不超过报价上限。
+报价返回的 `max_node_seconds` 等于节点数乘以用户填写的作业时限。`max_units` 按该时长取整及发布费率计算，用于确认时预留额度。报价不会自动开通资源。任务结束时按资源实际被观察到的时间起点至资源回收时间结算，实际扣费不超过用户填写的作业时限，作业超出该时限会被 Slurm 终止并进入回收。
 
 旧报价数据可能没有 `max_resource_seconds_per_node`。worker 会从旧报价的 `max_node_seconds / nodes` 回退读取资源预算，旧任务继续按原报价语义结算。
 
