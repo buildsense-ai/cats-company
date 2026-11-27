@@ -1432,6 +1432,8 @@ func main() {
 	mux.HandleFunc("/api/bots/definition", ownerAuthWithDB(botDefinitionHandler.HandleOwnerDefinition))
 	mux.HandleFunc("/api/bots/definition/model", ownerAuthWithDB(botDefinitionHandler.HandleOwnerModel))
 	mux.HandleFunc("/api/bots/definition/prompt", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPrompt))
+	previewLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{Name: "bot_prompt_preview", Limit: 12, Window: time.Minute, Burst: 4})
+	mux.HandleFunc("/api/bots/definition/prompt-preview", ownerAuthWithDB(previewLimit(botDefinitionHandler.HandleOwnerPromptPreview)))
 	mux.HandleFunc("/api/bots/definition/prompt-visibility", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPromptVisibility))
 	mux.HandleFunc("/api/bots/definition/skills", ownerAuthWithDB(botDefinitionHandler.HandleOwnerSkills))
 	mux.HandleFunc("/api/bots/definition/service-agents", ownerAuthWithDB(botDefinitionHandler.HandleOwnerServiceAgents))

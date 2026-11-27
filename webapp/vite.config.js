@@ -32,6 +32,10 @@ const proxy = {
     target: backendTarget,
     changeOrigin: true,
   },
+  '/v1/images/': {
+    target: localEnv.VITE_IMAGE_GATEWAY_TARGET || backendTarget,
+    changeOrigin: true,
+  },
   '/local': {
     target: backendTarget,
     changeOrigin: true,

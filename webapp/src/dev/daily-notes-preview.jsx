@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { PersonaTrialDemo } from '../widgets/agent-persona-trial';
+import { PortraitSampleContext } from '../widgets/agent-persona-portrait';
+import samplePortrait from './persona-fox.jpg';
 import '@fontsource-variable/inter';
 import '@fontsource-variable/noto-sans-sc';
 import '../views/workspace-styles';
@@ -19,6 +22,7 @@ import AgentStoreModal from '../widgets/agent-store-modal';
 
 const AGENT_UID = 574;
 const params = new URLSearchParams(location.search);
+const personaPreview = params.get('section') === 'persona';
 const latency = Number(params.get('latency') || 400);
 const days = Number(params.get('days') || 20);
 const pageDays = Number(params.get('pageDays') || 8);
@@ -136,12 +140,56 @@ api.getLocalSkills = async () => ({ skills: [] });
 api.getAgentEntries = async () => ({ entries: [] });
 api.getBotFriends = async () => ({ friends: [] });
 
+if (personaPreview) {
+  const photoKey = 'catsco.demo.persona-avatar';
+  const roster = api.getMyBots;
+  api.getMyBots = async () => {
+    const { bots } = await roster();
+    return { bots: bots.map(bot => ({ ...bot, avatar_url: sessionStorage.getItem(photoKey) || '' })) };
+  };
+  api.uploadFile = file => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ url: reader.result });
+    reader.onerror = () => reject(new Error('无法读取预览图片'));
+    reader.readAsDataURL(file);
+  });
+  api.updateBot = async (uid, changes) => {
+    if (Number(uid) !== AGENT_UID) throw new Error('预览助手已切换');
+    if (changes.avatar_url) sessionStorage.setItem(photoKey, changes.avatar_url);
+    return {};
+  };
+  const storageKey = 'catsco.demo.persona-prompt';
+  const read = () => JSON.parse(sessionStorage.getItem(storageKey) || 'null') || {
+    configured: true, revision: 1, definition: { prompt: { selected: 'default' } },
+  };
+  api.getAgentPrompt = api.getBotDefinitionPrompt = async () => read();
+  api.updateBotDefinitionPrompt = async (_, revision, prompt) => {
+    const next = { configured: true, revision: revision + 1, definition: { prompt }, runtime: { appliedRevision: revision + 1 } };
+    sessionStorage.setItem(storageKey, JSON.stringify(next));
+    return next;
+  };
+}
+
 function DailyNotesPreview() {
   const [theme, setTheme] = useState(params.get('theme') || 'light');
+  useEffect(() => {
+    if (!personaPreview || params.get('tab') !== 'person') return;
+    const timer = setInterval(() => {
+      const tab = document.getElementById('cc-persona-tab-person');
+      if (tab) { clearInterval(timer); tab.click(); }
+    }, 100);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   // The modal settles on its first section after loading; open the tab once it has.
   useEffect(() => {
     const timer = setInterval(() => {
+      if (personaPreview) {
+        const button = document.querySelector('.cc-agent-behavior-mode button:last-child');
+        if (button) { clearInterval(timer); button.click(); }
+        else [...document.querySelectorAll('.cc-agent-manage-section-trigger')].find(el => el.textContent.includes('行为与能力'))?.click();
+        return;
+      }
       if (document.querySelector('.cc-daily-notes')) { clearInterval(timer); return; }
       [...document.querySelectorAll('.cc-agent-manage-section-trigger')].find((button) => button.textContent.includes('Daily Notes'))?.click();
     }, 250);
@@ -149,10 +197,14 @@ function DailyNotesPreview() {
   }, []);
   return (
     <FeedbackProvider>
-      <button type="button" style={{ position: 'fixed', right: 12, top: 12, zIndex: 10000 }} onClick={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}>
+      {!personaPreview && <button type="button" style={{ position: 'fixed', right: 12, top: 12, zIndex: 10000 }} onClick={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}>
         {theme === 'dark' ? '浅色' : '深色'}
-      </button>
-      <AgentStoreModal initialAgentId={AGENT_UID} onClose={() => {}} user={{ uid: 275, username: 'preview' }} />
+      </button>}
+      <PersonaTrialDemo.Provider value={personaPreview}>
+        <PortraitSampleContext.Provider value={personaPreview ? samplePortrait : ''}>
+          <AgentStoreModal initialAgentId={AGENT_UID} onClose={() => {}} user={{ uid: 275, username: 'preview' }} />
+        </PortraitSampleContext.Provider>
+      </PersonaTrialDemo.Provider>
     </FeedbackProvider>
   );
 }

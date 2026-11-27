@@ -1,0 +1,17 @@
+.cc-persona-rule-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cc-persona-body .cc-persona-rule-suggestions button {
+  min-height: 34px;
+  padding-inline: 10px;
+  border: 1px solid var(--cc-border-strong);
+}
+.cc-persona-rule-suggestions button:disabled { cursor: default; color: var(--cc-muted); }
+.cc-persona-rule-suggestions button[aria-pressed="true"] {
+  color: var(--cc-text);
+  background: var(--cc-control-surface);
+}
+.cc-persona-bounds .cc-persona-rule-suggestions { margin-bottom: 9px; }
+.cc-persona-rule small { color: var(--cc-danger); font-size: 12px; }
